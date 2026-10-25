@@ -9,7 +9,7 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // Presentation and menu-only fields are recreated by the host and are never persisted.
 const omitted = new Set(['physics', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus']);
 const legacyDiscarded = new Set(['rendererStatus']);
-const optional = new Set(['lastShot', 'playerNoise', 'soundFlood', 'menuHistory']);
+const optional = new Set(['lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence']);
 const fail = message => { throw new Error(`Invalid game save: ${message}`); };
 const plain = value => value !== null && typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -129,8 +129,10 @@ function validateRuntime(project, state, baseline) {
   if (state.player.z !== undefined && !Number.isFinite(state.player.z)) fail('invalid player z');
   const entities = new Map(baseline.entities.map(entity => [entity.id, entity])), seen = new Set();
   for (const entity of state.entities) {
-    if (!plain(entity) || !entities.has(entity.id) || seen.has(entity.id)) fail('unknown or duplicate entity');
-    seen.add(entity.id); matchShape(entity, entities.get(entity.id), `entity ${entity.id}`);
+    if (!plain(entity) || seen.has(entity.id)) fail('unknown or duplicate entity');
+    const template = entities.get(entity.id) || (typeof entity.spawnedFrom === 'string' && entities.get(entity.spawnedFrom));
+    if (!template) fail('unknown entity');
+    seen.add(entity.id); matchShape(entity, template, `entity ${entity.id}`);
     for (const key of ['x', 'y']) if (!Number.isFinite(entity[key])) fail('invalid entity position');
     if (entity.z !== undefined && !Number.isFinite(entity.z)) fail('invalid entity height');
   }

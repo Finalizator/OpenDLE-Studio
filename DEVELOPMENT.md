@@ -135,6 +135,14 @@ provider credits or network access are required for tests.
 
 ## What works
 
+- **Visual scripting scopes:** every behaviour is an editable event. Rules are
+  authored in two explicit scopes — **game/engine-wide** rules and **object-local**
+  rules (`ownerId` for one instance, `forEachType` for a whole object type) — while
+  both execute in one deterministic top-to-bottom order. Object script sheets
+  enforce that they only contain object rules. See
+  [Docs/visual-scripting.md](Docs/visual-scripting.md) for the model, phases,
+  patterns and the complete generated condition/action catalogue.
+
 - **Construct-inspired workspace:** compact neutral-gray panels, Properties
   on the left, Menu and document tabs across the top, a searchable Project
   tree and a single world-layer object list on the right, and a persistent
@@ -149,6 +157,15 @@ provider credits or network access are required for tests.
   Fly freely, select rendered objects/walls/sectors or vertex markers, edit
   Properties, drag colored transform handles, place objects and draw rooms.
   Both views edit the same project and share undo/redo and save/export.
+  Drag textures or flats from the Asset Browser straight onto wall sides and
+  floor/ceiling surfaces, drag sprite or model assets onto objects to assign
+  them, and drag objects from the object list onto the floor. Floors and
+  ceilings can be raised and lowered in 3D with a live numeric readout (undone
+  through the normal edit path), so imported geometry is movable vertically as
+  well as horizontally; per-vertex slopes are not implemented. Ceilings are
+  visible from below, off-screen selection helpers are culled, and vertex
+  markers only appear for the selected vertex or the endpoints of the selected
+  wall.
 - **Event sheet:** scene-wide and object-attached ordered rules, multiple AND
   or OR conditions, optional NOT on non-triggers, nested sub-events,
   comments, active/collapsible groups, ordered actions, enabled/once flags
@@ -728,6 +745,29 @@ No maps are silently discarded for unsupported formats: a full-game import
 fails without replacing the current project. Limits remain 128 levels, 3000
 shared assets, existing asset budgets and 128 MiB portable JSON. Full imports
 can take substantially longer than one-map imports; dialogs allow five minutes.
+
+#### Decompiled import cache
+
+An import already produces the complete native project — decoded PNG images,
+visual scripts, HUD and menus — so repeating that conversion for the same source
+is wasted work. `server/import-cache.js` stores the finished import result under
+`data/import-cache/<key>.json` and serves it on the next request:
+
+- the key covers the source (SHA-256 of a WAD/archive, or a size+mtimestamp
+  signature for unpacked package folders), map/scope/base options, and an
+  engine fingerprint built from the importer source files plus `version.ini`, so
+  upgrading engine code automatically invalidates stale entries;
+- hits skip package reading and conversion entirely and answer immediately;
+- entries are bounded (16 files / 384 MiB by default) and pruned oldest-first;
+- a corrupt, tampered or version-mismatched entry is treated as a miss, never
+  as data; a read-only or full data folder silently degrades to a normal import;
+- `POST /api/import/...?fresh=1` (or `{"fresh":true}`) forces a real
+  reconversion; `GET /api/import-cache` reports entries/bytes/hits/misses and
+  `DELETE /api/import-cache` clears it;
+- the import summary in the editor states when a result came from the cache.
+
+The cache is not a second project format: it stores exactly what the importer
+returns, so cached and fresh imports are interchangeable and both are validated.
 GPU preview loads only assets referenced by the current level, including indirect
 sprite rotation views (front/side/back and mirrored frames). Missing referenced
 images report their asset name rather than rendering an untextured white sprite.
@@ -922,7 +962,71 @@ Skill 5 is **not yet exact Nightmare**: fast actor states and monster respawn
 remain unimplemented. Other compatibility settings are not presented as if
 OpenDLE could honor them.
 
+### Level music
+
+Doom soundtracks are stored as MIDI (`MThd`) or Doom MUS (`MUS\x1a`) lumps, not
+as playable audio. OpenDLE imports every music lump as a `music` asset (bounded:
+2 MiB per track, 32 MiB total, 128 tracks) and synthesises it in the browser:
+
+- `shared/music.js` parses MIDI (variable-length deltas, running status, tempo
+  map, program changes, note pairing) and MUS (140 Hz ticks, controller/program
+  events, percussion on channel 15), returning one normalised score of timed
+  notes with General MIDI families and a loop length. SMPTE-timed MIDI and
+  arbitrary SysEx are rejected rather than guessed.
+- `public/music-player.js` schedules those notes on the Web Audio graph with a
+  small per-family oscillator patch (attack/decay/sustain/release plus one
+  harmonic) and filtered-noise percussion. It schedules a 1.5 s lookahead window,
+  loops the score, caps concurrent voices, and never spins when a note lies
+  outside the window; a stalled tab resets instead of replaying thousands of
+  past notes.
+- Track choice: `MAPINFO` `music = "D_XXX"` wins, then the classic Doom II table
+  (MAP01 `D_RUNNIN` ... MAP32 `D_ULTIMA`) or the level's own `D_E<e>M<m>` lump
+  with a fallback to `D_E<e>M2`. A level whose track is missing is silent rather
+  than pointing at a non-existent asset. `shared/game-levels.js` stores the
+  resolved track on each level, so every map of an imported campaign plays its
+  own music and the selection survives level switches and saves.
+- Volume and mute follow the existing Music volume setting; music is independent
+  of sound effects and is disposed with the preview.
+
+Verified: `D_RUNNIN` parses to 1361 notes over 133 s, `D_OPENIN` to 4116 notes,
+and a browser preview schedules oscillators for the current level.
+
+The editor status line reports the soundtrack on start ("Music: D_RUNNIN") and
+names the cause when nothing plays: no music assets in the project (reimport
+needed), a requested track that is not embedded, a score that failed to parse, or
+a music volume of 0. Silent music is therefore diagnosable without a console. Importing
+soundtracks is not sample-accurate OPL emulation: instruments are approximations,
+and pitch bends, vibrato and tracker effects are not emulated.
+
+### Frame performance and stall fixes
+
+
+The intermittent 1-5 second gameplay stalls were shader compiles, not geometry
+cost. Three.js compiles a program the first time a material is drawn, and doors,
+lifts and lowering floors reveal upper/lower/middle textures that only exist once
+they move, so the first door opening compiled programs mid-game (measured 857 ms
+for one sector height change; the same change afterwards 4.8 ms). `shared/sectors.js`
+now exposes `surfaceMaterials()`, which enumerates every surface a level can ever
+show, and `public/render.js` builds and `compileAsync`s those materials in the
+warm-up scene; projectile materials are pooled and prewarmed the same way. The
+same change now costs about 12 ms.
+
+Per-frame work was also reduced: sorted sprite-clip/asset maps replace linear
+`find` scans (`spriteView` 0.73 -> 0.044 ms/frame on a 576-sprite fixture),
+`sectorAt` uses a uniform grid (1.92 -> 0.168 ms/frame across 513 entities), and
+`public/hud-view.js` only writes a style, class, label or DOM attribute when the
+computed value actually changes instead of rewriting every element every frame.
+
+Opt-in counters (`canvas.dataset.perfCounters = 'on'`) expose `frameMs`,
+`frameMaxMs`, `frameStalls`, `worldRebuildMs` and `worldRebuilds`; `preview.perf()`
+returns the same numbers.
+
+Remaining known hotspots, in order: HUD DOM updates for very large layouts,
+`syncWorld()` rebuilding a moving-sector trimesh on each world revision, sector
+advance allocations, and JSON `pairKey` collision keys.
+
 ### Renderer selection and GLSL effects
+
 
 OpenDLE now prefers **WebGPU** when the browser can initialize a usable adapter
 and device, and falls back to **WebGL2** otherwise. The preview reports the
@@ -1502,6 +1606,31 @@ the UI reports this and keeps edits in memory.
    A new browser-native runtime does not inherit these semantics automatically;
    compatibility needs runtime implementation and representative game fixtures,
    not just additional archive readers.
+
+Planning documents: [visual scripting](Docs/visual-scripting.md),
+[renderer backends](Docs/renderer-backends.md),
+[multiplayer](Docs/multiplayer-plan.md),
+[Photocraft image-editor integration](Docs/photocraft-integration-plan.md).
+
+### Standalone playable export
+
+**Export playable app** builds a self-contained ZIP (`server/export-build.js`)
+containing first-party engine files, the browser assets the studio serves from
+`node_modules` (Three.js build, Rapier WASM loader, GLTF loader closure), the
+exported project under `data/project.json`, this LICENSE, a build manifest and
+both `launch.sh` and `launch.cmd`. No `node_modules` tree is copied: a
+dependency-free `server/export-launcher.js` serves the bundle, and the launch
+script opens an installed Chromium-based browser in `--app` window mode so the
+game looks like a native window, falling back to the default browser with a
+message. Requirements: Node.js 22+ and a Chromium-based browser. The bundle is
+bounded (128 MiB, 10,000 files), uses safe relative paths only, and writes a
+zip that the project's own archive reader accepts. A 68 MB Freedoom campaign
+exports to a 23 MB zip that boots and serves its health endpoint from the
+extracted folder.
+
+This is a *portable* build, not a signed installer: there is no embedded browser
+runtime (an embedded WebView would add a licence and a 100+ MB runtime per
+platform) and GPU support is whatever the user's browser provides.
 
 ## License and references
 

@@ -88,11 +88,19 @@ export function validateProject(project, { gameLevelIds } = {}) {
   const assets = project.assets || [];
   array(assets, 'Assets', 3000);
   const assetIds = new Set();
-  let assetBytes = 0, soundBytes = 0;
+  let assetBytes = 0, soundBytes = 0, musicBytes = 0;
   for (const asset of assets) {
     unique(asset, 'Asset');
     text(asset.name, 'Asset name', 100);
-    assert(['texture', 'flat', 'sky', 'sprite', 'weapon', 'model', 'font', 'sound'].includes(asset.kind), 'Invalid asset kind');
+    assert(['texture', 'flat', 'sky', 'sprite', 'weapon', 'model', 'font', 'sound', 'music'].includes(asset.kind), 'Invalid asset kind');
+    if (asset.kind === 'music') {
+      assert(['midi', 'mus'].includes(asset.format), 'Invalid music format');
+      assert(typeof asset.src === 'string' && /^data:audio\/(midi|x-midi|x-mus);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Music must be embedded MIDI or Doom MUS');
+      musicBytes += asset.src.length;
+      assert(asset.src.length <= 2 * 1024 * 1024 && musicBytes <= 32 * 1024 * 1024, 'Embedded music budget exceeded (2 MiB per track, 32 MiB total)');
+      assert(assets.filter(candidate => candidate.kind === 'music' && candidate.name === asset.name).length === 1, 'Music names must be unique');
+      assetIds.add(asset.id); continue;
+    }
     if (asset.kind === 'sound') {
       assert(typeof asset.src === 'string' && /^data:audio\/(wav|ogg|mpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Sounds must be embedded WAV/OGG/MP3');
       soundBytes += asset.src.length;
@@ -131,7 +139,7 @@ export function validateProject(project, { gameLevelIds } = {}) {
   const assetRef = (id, label) => {
     if (id !== undefined && id !== null) {
       assert(assetIds.has(id), `${label} references an unknown asset`);
-      if (label !== 'Model') assert(!['model', 'font', 'sound'].includes(assets.find(asset => asset.id === id).kind), `${label} requires an image`);
+      if (label !== 'Model') assert(!['model', 'font', 'sound', 'music'].includes(assets.find(asset => asset.id === id).kind), `${label} requires an image`);
     }
   };
   for (const asset of assets) if (asset.rotations !== undefined) {
@@ -302,7 +310,7 @@ export function validateProject(project, { gameLevelIds } = {}) {
   for (const sheet of sheets) {
     unique(sheet, 'Event sheet');
     text(sheet.name, 'Sheet name', 100);
-    assert(['engine', 'game'].includes(sheet.section), 'Unknown event sheet section');
+    assert(['engine', 'game', 'object'].includes(sheet.section), 'Unknown event sheet section');
     assert(typeof sheet.enabled === 'boolean', 'Sheet enabled must be boolean');
     assert(['beforePhysics', 'afterPhysics', 'interface'].includes(sheet.phase), 'Unknown event sheet phase');
   }
@@ -429,6 +437,11 @@ export function validateProject(project, { gameLevelIds } = {}) {
       if (command.type === 'loadGameLevel')
         assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId), 'Command references an unknown game level');
       if (['saveGame', 'loadGame'].includes(command.type)) assert(Number.isInteger(command.slot), 'Game save slot must be an integer');
+      if (command.type === 'spawnEntity') assert(project.map.entities.some(entity => entity.id === command.templateId), 'Spawn command references an unknown template object');
+      if (command.type === 'distanceBetween') {
+        assert(typeof command.otherId === 'string' && ['$player', '$self'].includes(command.otherId) || entityIds.has(command.otherId),
+          'Distance condition references an unknown comparison object');
+      }
       if (command.type === 'selectGameEpisode')
         assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId) ||
           !project.game && !gameLevelIds && project.gameMenus?.episodes?.some(episode => episode.levelId === command.levelId),

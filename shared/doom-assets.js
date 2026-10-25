@@ -1,4 +1,4 @@
-import { doomSound } from './sound.js';
+import { doomSound, encodeMusic } from './sound.js';
 import { decodeFON2 } from './doom-font.js';
 const decoder = new TextDecoder('ascii');
 export function doomName(bytes) {
@@ -123,6 +123,22 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     soundBytes += src.length;
     check(soundBytes <= 64 * 1024 * 1024 && assets.length < 512, 'WAD sound budget exceeded');
     assets.push({ id: `sound_${name}`, name, kind: 'sound', src });
+  }
+  // Music lumps: standard MIDI ('MThd') or Doom MUS ('MUS\x1a'), usually named D_*.
+  let musicBytes = 0, musicCount = 0;
+  for (const [name, lump] of lumpMap) {
+    if (lump.size < 16) continue;
+    const head = data(lump);
+    const midi = head[0] === 77 && head[1] === 84 && head[2] === 104 && head[3] === 100;
+    const mus = head[0] === 77 && head[1] === 85 && head[2] === 83 && head[3] === 0x1a;
+    if (!midi && !mus) continue;
+    if (!/^D_[A-Z0-9_]+$/.test(name) && !midi && !mus) continue;
+    let src;
+    try { src = encodeMusic(head, midi ? 'midi' : 'mus'); }
+    catch (error) { warnings.add(`Music ${name} was not imported: ${error.message}`); continue; }
+    musicBytes += src.length;
+    if (musicBytes > 32 * 1024 * 1024 || ++musicCount > 128) { warnings.add('Music budget exceeded; remaining tracks were skipped.'); break; }
+    assets.push({ id: `music_${name}`, name, kind: 'music', format: midi ? 'midi' : 'mus', src });
   }
   let totalPixels = 0;
   function patch(name) {

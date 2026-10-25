@@ -9,7 +9,7 @@ import { requestMouseLock } from './pointer-lock.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
 import { shaderTemplate } from '/shared/shaders.js';
 import { recoverProject } from './project-recovery.js';
-import { eventBranch, eventDepth, moveEventBranch, removeEventBranch } from '/shared/events.js';
+import { eventBranch, eventDepth, moveEventBranch, removeEventBranch, eventScope } from '/shared/events.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, defaultEngineCommand, installEngineScripts } from '/shared/engine-script.js';
 import { createHUDEditor } from './hud-editor.js';
 import { createHUDView } from './hud-view.js';
@@ -20,6 +20,7 @@ import { createAudioPlayer } from './audio.js';
 import { encodeSound } from '/shared/sound.js';
 import { importedGameplayGaps } from './gameplay-readiness.js';
 import { installGameMenu } from '/shared/game-menu.js';
+import { installDefaultHUD } from '/shared/hud.js';
 import { installIntermission } from '/shared/intermission.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
@@ -38,7 +39,7 @@ const collapsedGroups = new Set(), collapsedEvents = new Set();
 const openSpriteClips = new Set();
 let previewRenderer = null, previewLoading = false, mapSectors = [];
 let previewGeneration = 0;
-let audioPlayer = null;
+let audioPlayer = null, audioContext = null, hudWarningShown = false, musicReported = false;
 let settingsRevision = -1, settingsStorageKey = '';
 let hudView = null, previewProject = null, hudCursorActive = false;
 let saveIdentityVersion = -1, saveIdentityPromise = null, previewSaveIdentity = '', saveBusy = false;
@@ -319,10 +320,25 @@ function renderEntities() {
     script.classList.toggle('selected', scriptScope === entity.id);
     $('object-scripts').append(script);
   }
+  $('object-scripts').append(button('+ New object script sheet', () => attachObjectScriptSheet(), 'tree-link'));
   filterProject();
 }
-function filterProject() {
-  const query = $('project-search').value.trim().toLowerCase();
+function attachObjectScriptSheet() {
+  const entity = project.map.entities.find(item => item.id === selection?.id) ||
+    project.map.entities.find(item => item.type !== 'player') || project.map.entities[0];
+  if (!entity) throw new Error('Add an object before creating an object script sheet');
+  edit(next => {
+    const used = new Set([...next.eventSheets, ...next.eventGroups, ...next.events].map(item => item.id));
+    let id = `object_${entity.id}_${next.eventSheets.length}`;
+    while (used.has(id)) id += '_';
+    next.eventSheets.push({ id, name: `${entity.name} script`.slice(0, 100), section: 'object', enabled: true, phase: 'afterPhysics' });
+    next.eventGroups.push({ id: `${id}_group`, sheetId: id, name: `${entity.name} logic`.slice(0, 100), enabled: true });
+    next.events.push({ id: `${id}_start`, name: `${entity.name} / on start`.slice(0, 100), sheetId: id, groupId: `${id}_group`,
+      ownerId: entity.id, enabled: true, once: true, condition: { type: 'onStart' }, conditions: [], actions: [] });
+    scriptScope = `$sheet:${id}`;
+  }, `Created an editable object script sheet for ${entity.name}.`);
+}
+function filterProject() {  const query = $('project-search').value.trim().toLowerCase();
   for (const parent of ['project-objects', 'object-scripts', 'engine-sheets', 'game-sheets']) for (const element of $(parent).children) {
     element.hidden = !element.textContent.toLowerCase().includes(query);
   }
@@ -490,7 +506,8 @@ function renderEngineTweaks() {
   const tweaks = readEngineTweaks();
   $('engine-jumping').checked = tweaks.jumping;
   const fields = $('engine-setting-fields'); fields.replaceChildren();
-  for (const [key, label] of [['fov', 'Field of view'], ['resolution', 'Render resolution'], ['brightness', 'Brightness'], ['muted', 'Mute preview audio']]) {
+  for (const [key, label] of [['fov', 'Field of view'], ['resolution', 'Render resolution'], ['brightness', 'Brightness'], ['muted', 'Mute preview audio'],
+    ['bunnyhop', 'Simulated bunnyhop (speed gain while chaining jumps)'], ['bunnyhopGain', 'Bunnyhop speed gain per chained jump']]) {
     const wrapper = make('label', label), input = document.createElement('input'), spec = GAME_SETTINGS[key];
     input.type = typeof spec.value === 'boolean' ? 'checkbox' : 'number'; input.setAttribute('aria-label', label);
     if (input.type === 'checkbox') input.checked = tweaks[key];
@@ -518,6 +535,20 @@ function showTab(tab) {
   document.querySelectorAll('[data-tab]').forEach(element => element.classList.toggle('active', element.dataset.tab === tab));
   if (tab === 'about') {
     $('engine-version').textContent = 'Loading OpenDLE: Studio version...';
+    const cacheStatus = $('import-cache-status');
+    const renderCache = async () => {
+      try {
+        const info = await api('/api/import-cache');
+        cacheStatus.textContent = info.enabled
+          ? `Decompiled import cache: ${info.entries} saved import(s), ${(info.bytes / 1048576).toFixed(1)} MiB, ${info.hits} cache hit(s). Repeating an import loads the finished native project instead of converting again.`
+          : 'Decompiled import cache: disabled for this server.';
+      } catch (error) { cacheStatus.textContent = `Decompiled import cache unavailable: ${error.message}`; }
+    };
+    void renderCache();
+    $('import-cache-clear').onclick = guard(async () => {
+      await api('/api/import-cache', { method: 'DELETE' });
+      $('import-cache-status').textContent = 'Decompiled import cache cleared. The next import of each game will convert again.';
+    });
     api('/api/health').then(info => {
       $('engine-version').textContent = `OpenDLE: Studio version: ${info.version}`;
     }).catch(error => {
@@ -720,7 +751,7 @@ function renderEvents() {
   if (currentSheet) {
     $('sheet-title').textContent = `${currentSheet.section === 'engine' ? 'Engine' : 'Game'} / ${currentSheet.name}`;
     $('events-tab').textContent = `${currentSheet.name} events`;
-    $('sheet-description').textContent = 'Editable event rules, not hidden built-in behavior. Sheets filter the global execution order; before-physics rules run first.';
+    $('sheet-description').textContent = 'Editable event rules, not hidden built-in behavior. Engine rules run for the whole game; object rules are local to one object instance or object type. Before-physics rules run first.';
   }
   for (const section of ['engine', 'game']) {
     const tree = $(`${section}-sheets`); tree.replaceChildren();
@@ -736,7 +767,7 @@ function renderEvents() {
   if (currentSheet) {
     const update = (key, value) => edit(next => { next.eventSheets.find(sheet => sheet.id === currentSheet.id)[key] = value; });
     field(properties, 'Name', input(currentSheet.name, 'text', value => update('name', value)));
-    field(properties, 'Section', select(['engine', 'game'], currentSheet.section, value => update('section', value)));
+    field(properties, 'Section', select(['engine', 'game', 'object'], currentSheet.section, value => update('section', value)));
     field(properties, 'Phase', select(['beforePhysics', 'afterPhysics', 'interface'], currentSheet.phase, value => update('phase', value)));
     properties.append(checkbox('Sheet enabled', currentSheet.enabled, value => update('enabled', value)),
       button('Delete sheet and rules', () => {
@@ -769,7 +800,7 @@ function renderEvents() {
     const modify = fn => edit(next => fn(next.events[index]));
     const context = scriptContext(event);
     const meta = make('details', undefined, 'event-meta');
-    meta.append(make('summary', `${String(index + 1).padStart(2, '0')}  ${event.once ? 'Once' : ''}${event.enabled ? '' : ' Disabled'}`));
+    meta.append(make('summary', `${String(index + 1).padStart(2, '0')}  ${eventScope(event) === 'object' ? 'Object' : 'Game'}${event.once ? ' · Once' : ''}${event.enabled ? '' : ' · Disabled'}`));
     field(meta, 'Rule name', input(event.name || event.id, 'text', value => modify(item => { item.name = value; })));
     field(meta, 'Sheet', select([['', 'Unfiled / scene'], ...(project.eventSheets || []).map(sheet => [sheet.id, `${sheet.section} / ${sheet.name}`])],
       event.sheetId || '', value => edit(next => {
@@ -1081,7 +1112,12 @@ function renderAssets() {
   const assets = (project.assets || []).filter(asset => (filter === 'all' || asset.kind === filter) && asset.name.toLowerCase().includes(search));
   for (const asset of assets) {
     const tile = make('div', undefined, 'asset-tile'), image = make('img');
-    if (asset.kind === 'sound') {
+    if (asset.kind === 'music') {
+      tile.append(make('strong', '♪'), make('strong', asset.name), make('small', `${asset.format.toUpperCase()} score / plays as level music`),
+        button('Set as level music', () => edit(next => {
+          next.environment = { ...next.environment, music: asset.name, musicAsset: asset.id };
+        }, `Level music set to ${asset.name}.`)));
+    } else if (asset.kind === 'sound') {
       const audio = document.createElement('audio');
       audio.controls = true; audio.preload = 'none'; audio.src = asset.src;
       audio.style.width = '100%';
@@ -1396,6 +1432,10 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
   if (!project.eventSheets.some(sheet => sheet.id === 'intermission_sheet')) {
     edit(next => installIntermission(next), 'Editable level intermission added. Save to keep it in the project.');
   }
+  if (!project.hud) {
+    edit(next => installDefaultHUD(next), 'This project had no HUD, so an editable default HUD was added. Save to keep it.');
+    hudWarningShown = false;
+  }
   validateProject(project);
   const gaps = importedGameplayGaps(project);
   if (project.events.length === 0 && gaps.length && !confirm('This is a geometry-only import with no gameplay rules. Weapons, enemies and pickups will not work. Cancel and restore your gameplay draft or reimport the WAD. Continue with a geometry-only preview?')) return;
@@ -1432,12 +1472,16 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       }
     }
     Object.assign(settings, readEngineTweaks());
-    audioPlayer = createAudioPlayer(snapshot, message => mouseStatus(message, true));
+    audioPlayer = createAudioPlayer(snapshot, message => mouseStatus(message, true), undefined, primeAudio() || undefined);
     status('Loading renderer and embedded images (WebGPU preferred, WebGL fallback)...');
     const nextRuntime = restored?.runtime || createRuntime(snapshot, { settings, gameMode, progress,
       screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing' });
     nextRuntime.gameMode = gameMode;
     nextRuntime.hudState.cursor = nextRuntime.gameScreen !== 'playing';
+    if (nextRuntime.settings.viewSize === 11 && (snapshot.hud?.elements || []).some(element => element.statusbar)) {
+      nextRuntime.message = 'Status bar hidden (Screen size 11). Raise Screen size in Options to show it again.';
+      nextRuntime.messageTime = 8;
+    }
     try { nextRuntime.saveSlots = saveSlotLabels(await gameSaves.list(identity)); }
     catch (error) { nextRuntime.saveStatus = `Saved games unavailable: ${error.message}`; status(nextRuntime.saveStatus, true); }
     if (generation !== previewGeneration) throw new Error('Preview was stopped while loading.');
@@ -1503,10 +1547,22 @@ async function processGameSave(request) {
 }
 $('play-level').addEventListener('change', guard(async () => {
   if (!runtime || previewLoading) return;
+  hudWarningShown = false; musicReported = false;
   await beginPreview(runtime.gameMode, structuredClone(runtime.settings), true, $('play-level').value);
 }));
-$('play').addEventListener('click', guard(() => beginPreview(false)));
-$('play-game').addEventListener('click', guard(() => beginPreview(true)));
+$('play').addEventListener('click', guard(() => { primeAudio(); hudWarningShown = false; musicReported = false; return beginPreview(false); }));
+$('play-game').addEventListener('click', guard(() => { primeAudio(); hudWarningShown = false; musicReported = false; return beginPreview(true); }));
+// Browsers only allow audio to start inside a user gesture. Creating the
+// AudioContext here (not after the asynchronous preview setup) keeps sound and
+// music working even when loading takes seconds.
+function primeAudio() {
+  if (audioContext) { audioContext.resume().catch(() => {}); return audioContext; }
+  const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!Context) return null;
+  try { audioContext = new Context(); audioContext.resume().catch(() => {}); }
+  catch { audioContext = null; }
+  return audioContext;
+}
 function pauseGame() {
   if (!runtime || !runtime.hasGame) return;
   setGameScreen(runtime, runtime.gameScreen === 'playing' ? 'pause' : 'playing');
@@ -1659,6 +1715,31 @@ function frame(now) {
       audioPlayer?.update(runtime);
       previewRenderer.render(runtime, runtime.gameScreen === 'playing' ? dt : 0);
       syncHUDCursor(); hudView?.update(runtime);
+      if (!musicReported && audioPlayer?.musicInfo) {
+        const music = audioPlayer.musicInfo();
+        if (music.playing || (music.hasMusicAssets && music.requested) || !music.hasMusicAssets) {
+          musicReported = true;
+          if (music.playing) {
+            status(`Music: ${music.track}${music.volume === 0 ? ' — music volume is 0, raise it in Options' : ''}`, music.volume === 0);
+          } else if (music.requested && !music.track) {
+            status(`Music ${music.requested} is not embedded in this project. Reimport the game to add its MIDI/MUS soundtrack.`, true);
+          } else if (music.error) {
+            status(`Music could not start: ${music.error}`, true);
+          } else if (!music.hasMusicAssets) {
+            status('No music assets in this project. Reimport the game with the current version to add MIDI/MUS soundtracks.', true);
+          }
+        }
+      }
+      if (!hudWarningShown && runtime.gameScreen === 'playing' && hudView?.nodes?.size) {
+        hudWarningShown = true;
+        if (![...hudView.nodes.values()].some(entry => !entry.node.hidden)) {
+          const hiddenBySize = runtime.settings.viewSize === 11 &&
+            (previewProject.hud?.elements || []).some(element => element.statusbar);
+          status(hiddenBySize
+            ? 'The status bar is hidden because Screen size is 11. Open Options and raise Screen size (- gives a smaller screen, + shows the bar), or reset settings.'
+            : 'No HUD elements are visible. Check HUD element visibility and display mode in the HUD designer.', true);
+        }
+      }
     } catch (error) { stopPreview(); status(`Preview failed: ${error.message}`, true); }
     if (!runtime) { requestAnimationFrame(frame); return; }
     $('game-message').textContent = !previewProject.hud && runtime.messageTime > 0 ? runtime.message : '';
@@ -1707,6 +1788,20 @@ $('export').addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   status('Project exported');
 });
+$('export-build').addEventListener('click', guard(async () => {
+  $('export-build').disabled = true;
+  status('Packaging a standalone desktop build (engine files, project data and launch scripts)...');
+  try {
+    const { response } = await requestWithSession(`/api/export/build?platform=${encodeURIComponent(navigator.platform.toLowerCase().includes('win') ? 'windows' : navigator.platform.toLowerCase().includes('mac') ? 'macos' : 'linux')}`, {}, token);
+    if (!response.ok) throw new Error(`Export failed (HTTP ${response.status})`);
+    const blob = await response.blob();
+    const name = /filename="([^"]+)"/.exec(response.headers.get('content-disposition') || '')?.[1] || 'opendle-game.zip';
+    const url = URL.createObjectURL(blob);
+    const link = make('a'); link.href = url; link.download = name; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    status(`Standalone build downloaded: ${name} (${(blob.size / 1048576).toFixed(1)} MiB). Unzip it and run the launch script; it needs Node.js 22+ and a Chromium-based browser for app-window mode.`);
+  } finally { $('export-build').disabled = false; }
+}));
 $('open').addEventListener('click', () => $('project-file').click());
 $('project-file').addEventListener('change', guard(async event => {
   const file = event.target.files[0];
@@ -1778,7 +1873,8 @@ $('import-map').addEventListener('click', async () => {
       });
     if (controller.signal.aborted) return;
     if (version !== editVersion) throw new Error('Project changed during import. Retry to avoid overwriting new edits.');
-    const summary = `Imported ${result.project.game?.levels.length || 1} level(s), starting at ${map}: ${result.project.assets.length} shared assets. Use Editing level to edit another map, Play game for the game entry, or the in-game Level selector to play any imported map.`;
+    const cacheNote = result.cached ? ` Loaded from the decompiled import cache (${Math.round(result.cached.bytes / 1024)} KiB, imported ${new Date(result.cached.importedAt).toLocaleString()}) in place of a full conversion.` : '';
+    const summary = `Imported ${result.project.game?.levels.length || 1} level(s), starting at ${map}: ${result.project.assets.length} shared assets.${cacheNote} Use Editing level to edit another map, Play game for the game entry, or the in-game Level selector to play any imported map.`;
     replace(result.project, summary);
     $('import-summary').textContent = `${summary} Import notes`;
     $('import-warnings').textContent = result.warnings.join('\n');
@@ -1844,6 +1940,59 @@ $('package-library').addEventListener('click', guard(async () => {
   await inspectLocalPackage();
   $('package-dialog').showModal();
 }));
+// One-click import: choose a local game/mod and convert it immediately with
+// automatic entry detection and standalone/declared-base policy.
+async function quickImport() {
+  const library = await api('/api/packages');
+  const wads = (await api('/api/wads')).files;
+  if (!library.packages.length && !wads.length) throw new Error('No local games found under Projects. Add a WAD, PK3 or IPK3 there first.');
+  const candidates = [...library.packages.map(item => ({ kind: 'package', name: item.name, label: `${item.name} (${item.type})` })),
+    ...wads.map(name => ({ kind: 'wad', name, label: `${name} (WAD)` }))];
+  const dialog = document.createElement('dialog');
+  dialog.setAttribute('aria-label', 'Quick import game or mod');
+  const heading = document.createElement('h2'); heading.textContent = 'Quick import game or mod';
+  const note = document.createElement('p'); note.className = 'muted';
+  note.textContent = 'Converts the selected local game into native OpenDLE content: geometry, artwork, HUD, menus and visual scripts. Standalone games need no base; mods use their declared base automatically. Resource-only packages such as brightmaps, lights or actor libraries are listed too but are meant to accompany a game, not replace one.';
+  const list = document.createElement('div'); list.className = 'button-row'; list.style.flexWrap = 'wrap';
+  const state = document.createElement('p'); state.className = 'muted';
+  const close = document.createElement('button'); close.type = 'button'; close.textContent = 'Close';
+  close.addEventListener('click', () => dialog.close());
+  dialog.append(heading, note, list, state, close);
+  document.body.append(dialog);
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  for (const candidate of candidates) {
+    const item = document.createElement('button'); item.type = 'button'; item.textContent = candidate.label;
+    item.addEventListener('click', async () => {
+      item.disabled = true;
+      const version = editVersion;
+      try {
+        state.textContent = `Importing ${candidate.label}... this can take a few minutes for a full game.`;
+        const result = candidate.kind === 'wad'
+          ? await api('/api/import/local-wad', { method: 'POST', body: JSON.stringify({ name: candidate.name, scope: 'game' }) })
+          : await (async () => {
+            const inspection = await api('/api/packages/inspect', { method: 'POST', body: JSON.stringify({ name: candidate.name }) });
+            const wadName = inspection.game?.requiredBase
+              ? [...library.wads].find(name => name.split('/').at(-1).toLowerCase() === inspection.game.requiredBase.toLowerCase())
+              : null;
+            return api('/api/import/local-package', { method: 'POST', body: JSON.stringify({ name: candidate.name, map: 'auto',
+              scope: 'game', ...(wadName ? { base: wadName } : {}) }) });
+          })();
+        if (version !== editVersion) throw new Error('Project changed during import. Retry to avoid overwriting new edits.');
+        const levels = result.project.game?.levels.length || 1;
+        const summary = `Imported ${result.project.title}: ${levels} level(s), ${result.project.assets.length} shared assets.${result.cached ? ' Served from the decompiled import cache.' : ''}`;
+        replace(result.project, summary);
+        status(summary);
+        dialog.close();
+      } catch (error) {
+        state.textContent = `Import failed: ${error.message}`;
+        status(`Import failed: ${error.message}`, true);
+      } finally { item.disabled = false; }
+    });
+    list.append(item);
+  }
+  dialog.showModal();
+}
+$('quick-import').addEventListener('click', guard(quickImport));
 async function inspectLocalPackage() {
   packageSource = null;
   const name = $('package-source').value;
@@ -1900,7 +2049,7 @@ $('package-import').addEventListener('click', async () => {
     let summary;
     if (result.project) {
       summary = result.entry
-        ? `Imported ${result.project.title}: ${result.project.game?.levels.length || 1} level(s), entry ${result.entry.map}, ${result.project.assets.length} shared assets.`
+        ? `Imported ${result.project.title}: ${result.project.game?.levels.length || 1} level(s), entry ${result.entry.map}, ${result.project.assets.length} shared assets.${result.cached ? ' Loaded from the decompiled import cache.' : ''}`
         : `Imported package map: ${result.project.assets.length} images, ${result.project.hud.elements.length} HUD elements.`;
       replace(result.project, summary);
     } else {

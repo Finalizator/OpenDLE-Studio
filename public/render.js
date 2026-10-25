@@ -3,7 +3,7 @@ import { uniform, vec2, vec3, vec4, materialColor, positionWorld, positionGeomet
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
-import { sectorGeometry, sectorAt, sectorShapes } from '/shared/sectors.js';
+import { sectorGeometry, createSectorIndex, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
 import { wallSegments } from '/shared/runtime.js';
 import { GLTFLoader } from '/vendor/three-addons/loaders/GLTFLoader.js';
 import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js';
@@ -13,7 +13,8 @@ import { createPhysics } from '/shared/physics.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { gameView } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
-import { clipFrame, spriteView } from '/shared/sprite-animation.js';
+import { createSpriteIndex } from '/shared/sprite-animation.js';
+import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 
 export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc' };
 let rapierReady;
@@ -63,15 +64,18 @@ export async function createPreview(canvas, project, state, { editor = false } =
   }
   const loader = new THREE.TextureLoader();
   let physics = null, environmentTarget = null;
-  const models = new Map(), mixers = new Set(), pointLights = [];
+  const models = new Map(), modelList = [], mixers = new Set(), pointLights = [];
   const projectileMeshes = new Map();
+  // Never rendered: it only exists so compileAsync can build every preview pipeline
+  // while the level loads instead of the first time a surface becomes visible.
+  const warmupScene = new THREE.Scene();
   const backgroundScene = new THREE.Scene(), backgroundCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const overlayScene = new THREE.Scene(), overlayCamera = new THREE.OrthographicCamera(0, 320, 200, 0, -1, 1);
   let disposed = false;
   function dispose() {
     if (disposed) return;
     disposed = true;
-    for (const object of projectileMeshes.values()) { if (object.isMesh) object.geometry.dispose(); object.material.dispose(); }
+    // Projectile meshes share pooled geometries and materials tracked by the sets below.
     projectileMeshes.clear();
     physics?.dispose(); state.physics = null;
     mixers.forEach(mixer => mixer.stopAllAction());
@@ -96,7 +100,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     canvas.dataset.shaderError = '';
     // Load sequential batches to bound temporary decoded-image memory.
     const levelAssets = project.game ? new Set(gameLevelAssetIds(project)) : null;
-    const assets = (project.assets || []).filter(asset => !['model', 'font', 'sound'].includes(asset.kind) &&
+    const assets = (project.assets || []).filter(asset => !['model', 'font', 'sound', 'music'].includes(asset.kind) &&
       (!levelAssets || levelAssets.has(asset.id)));
     for (let offset = 0; offset < assets.length; offset += 16) await Promise.all(assets.slice(offset, offset + 16).map(async asset => {
       const texture = await loader.loadAsync(asset.src);
@@ -229,7 +233,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       surface.userData.selection = { kind: 'wall', id: wall.id };
     }
     const sectorMap = new Map(geometry.map(sector => [sector.id, sector]));
-    for (const wall of wallSegments(project)) worldPart([wall.right?.sectorId, wall.left?.sectorId], () => {
+    const wallLines = wallSegments(project);
+    for (const wall of wallLines) worldPart([wall.right?.sectorId, wall.left?.sectorId], () => {
       if (!wall.right && !wall.left) {
         if (wall.solid) {
           wallQuad(wall, wall.start, wall.end, 0, wall.height, wall.assetId, null, 255, wall.height);
@@ -264,6 +269,22 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const fallback = { rings: [[{ x: -20000, y: -20000 }, { x: 20000, y: -20000 }, { x: 20000, y: 20000 }, { x: -20000, y: 20000 }]], light: 255 };
       plane(fallback, 0, null, false);
     }
+    // Three compiles a shader program the first time a material is drawn. Doors and
+    // lifts reveal surfaces (the upper/lower/middle textures of the neighbouring
+    // sector) that only exist once they move, so those materials get built and the
+    // warm-up scene below compiles them during load instead of mid-game.
+    const warmMaterials = new Set(), warmQuad = new THREE.PlaneGeometry(1, 1);
+    geometries.add(warmQuad);
+    function warmMaterial(assetId, level, color, masked) {
+      if (assetId && !textures.has(assetId)) return;
+      const surface = material(assetId, level, color, masked, true);
+      if (warmMaterials.has(surface)) return;
+      warmMaterials.add(surface);
+      warmupScene.add(new THREE.Mesh(warmQuad, surface));
+    }
+    if (!editor) for (const surface of surfaceMaterials(geometry, wallLines, project.environment)) {
+      warmMaterial(surface.assetId, surface.level, surface.color, surface.masked);
+    }
     const skyAsset = assetMap.get(project.environment.skyAsset);
     if (project.environment.skybox) {
       const faces = ['px', 'nx', 'py', 'ny', 'pz', 'nz'].map(face => {
@@ -291,42 +312,58 @@ export async function createPreview(canvas, project, state, { editor = false } =
       mesh(new THREE.PlaneGeometry(2, 2), backgroundMaterial, backgroundScene);
       backgroundScene.userData.panorama = backgroundMaterial;
     }
-    const sprites = new Map();
-    for (const entity of project.map.entities) {
-      if (entity.type === 'player' && !editor) continue;
-      if (entity.modelAsset) {
-        const loaded = modelAssets.get(entity.modelAsset), object = cloneModel(loaded.scene);
-        const root = new THREE.Group(); root.add(object); scene.add(root);
-        root.userData.selection = { kind: 'entity', id: entity.id };
-        object.scale.setScalar(entity.modelScale ?? 32);
-        object.traverse(node => {
-          if (node.geometry) geometries.add(node.geometry);
-          if (node.material) {
-            const copy = original => {
-              const result = withEffect(original.clone()); materials.add(result);
-              if (result.color) result.userData.baseColor = result.color.clone();
-              for (const value of Object.values(result)) if (value?.isTexture) textures.set(value.uuid, value);
-              return result;
-            };
-            node.material = Array.isArray(node.material) ? node.material.map(copy) : copy(node.material);
-          }
-        });
-        const mixer = new THREE.AnimationMixer(object); mixers.add(mixer);
-        const entry = { root, mixer, clips: loaded.animations, revision: -1, action: null };
-        mixer.addEventListener('finished', () => state.animationFinished.add(entity.id));
-        models.set(entity.id, entry);
-        continue;
-      }
+    const sprites = new Map(), spriteList = [];
+    let spriteTemplate = null;
+    // Sprites and models are created on demand so runtime spawns appear without a
+    // rebuild; removed entities are hidden instead of disposed (their objects can
+    // be reused when an id comes back).
+    function addSprite(entity) {
       const asset = assetMap.get(entity.spriteAsset);
-      const mat = withEffect(new THREE.SpriteNodeMaterial({ map: imageTexture(entity.spriteAsset),
-        color: asset ? '#ffffff' : entityColors[entity.type], alphaTest: .5, transparent: false, sizeAttenuation: true }));
-      const sprite = new THREE.Sprite(mat); materials.add(mat);
+      const map = entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
+      const color = asset ? '#ffffff' : entityColors[entity.type] || '#ffffff';
+      const material = spriteTemplate ? spriteTemplate.clone()
+        : withEffect(new THREE.SpriteNodeMaterial({ map, color, alphaTest: .5, transparent: false, sizeAttenuation: true }));
+      if (spriteTemplate) { material.map = map; material.color.set(color); }
+      materials.add(material); spriteTemplate ||= material;
+      const sprite = new THREE.Sprite(material);
       sprite.userData.selection = { kind: 'entity', id: entity.id };
-      const scale = entity.spriteScale || 1;
-      sprite.scale.set((asset?.width || 24) * scale, (asset?.height || 40) * scale, 1);
-      sprite.center.set(asset ? asset.offsetX / asset.width : .5, asset ? 1 - asset.offsetY / asset.height : 0);
       scene.add(sprite); sprites.set(entity.id, sprite);
+      spriteList.push({ id: entity.id, sprite, frame: undefined, flip: false, scale: 0, red: 0, green: 0, blue: 0 });
     }
+    function addModel(entity) {
+      const loaded = modelAssets.get(entity.modelAsset);
+      if (!loaded) throw new Error(`Model ${entity.modelAsset} was not loaded`);
+      const object = cloneModel(loaded.scene), root = new THREE.Group(); root.add(object); scene.add(root);
+      root.userData.selection = { kind: 'entity', id: entity.id };
+      object.scale.setScalar(entity.modelScale ?? 32);
+      const tinted = [];
+      object.traverse(node => {
+        if (node.geometry) geometries.add(node.geometry);
+        if (node.material) {
+          const copy = original => {
+            const result = withEffect(original.clone()); materials.add(result);
+            if (result.color) { result.userData.baseColor = result.color.clone(); tinted.push(result); }
+            for (const value of Object.values(result)) if (value?.isTexture) textures.set(value.uuid, value);
+            return result;
+          };
+          node.material = Array.isArray(node.material) ? node.material.map(copy) : copy(node.material);
+        }
+      });
+      const mixer = new THREE.AnimationMixer(object); mixers.add(mixer);
+      mixer.addEventListener('finished', () => state.animationFinished.add(entity.id));
+      const entry = { id: entity.id, root, object, mixer, clips: loaded.animations, revision: -1, action: null, tinted, shade: -1 };
+      models.set(entity.id, entry); modelList.push(entry);
+    }
+    // Runtime spawns reuse the loaded model, fall back to the entity sprite, and are
+    // otherwise skipped instead of failing the frame.
+    const unrenderable = new Set();
+    function addEntity(entity) {
+      if (!entity.modelAsset) { addSprite(entity); return; }
+      if (modelAssets.has(entity.modelAsset)) { addModel(entity); return; }
+      if (entity.spriteAsset) { addSprite(entity); return; }
+      unrenderable.add(entity.id);
+    }
+    for (const entity of project.map.entities) if (editor || entity.type !== 'player') addEntity(entity);
     const weaponOverlays = new Map();
     const weaponIds = new Set([project.environment.weaponAsset, ...Object.values(project.environment.weaponAssets || {}),
       ...project.events.flatMap(event => event.actions.filter(action => action.type === 'playWeaponClip')
@@ -342,36 +379,142 @@ export async function createPreview(canvas, project, state, { editor = false } =
     }
     const baseColors = new Map(project.map.entities.filter(entity => editor || entity.type !== 'player')
       .map(entity => [entity.id, new THREE.Color(entity.spriteAsset ? '#ffffff' : entityColors[entity.type])]));
+    function baseColorFor(entity) {
+      let color = baseColors.get(entity.id);
+      if (!color) {
+        color = new THREE.Color(entity.spriteAsset ? '#ffffff' : entityColors[entity.type] || '#ffffff');
+        baseColors.set(entity.id, color);
+      }
+      return color;
+    }
+    // Projectile materials used to be built (and compiled) the moment a missile was
+    // fired, which stalls the first shot while the driver compiles the shader. Warm
+    // one template per kind up front and pool the instances afterwards.
+    const projectileGeometry = new THREE.SphereGeometry(3, 8, 6), impactGeometry = new THREE.SphereGeometry(6, 8, 6);
+    geometries.add(projectileGeometry); geometries.add(impactGeometry);
+    const effectTexture = (project.assets || []).find(asset => textures.has(asset.id))?.id || null;
+    const effectTemplates = {
+      sprite: withEffect(new THREE.SpriteNodeMaterial({ map: effectTexture ? imageTexture(effectTexture) : null,
+        transparent: true, alphaTest: .1, depthWrite: false })),
+      mesh: withEffect(new THREE.MeshBasicNodeMaterial({ color: '#ffffff' })),
+    };
+    materials.add(effectTemplates.sprite); materials.add(effectTemplates.mesh);
+    const effectPools = { sprite: [], mesh: [] };
+    function takeEffectMaterial(kind, projectile) {
+      const material = effectPools[kind].pop() || effectTemplates[kind].clone();
+      materials.add(material);
+      if (kind === 'mesh') material.color.set(projectile.color || '#ffffff');
+      return material;
+    }
+    warmupScene.add(new THREE.Sprite(effectTemplates.sprite));
+    warmupScene.add(new THREE.Mesh(projectileGeometry, effectTemplates.mesh));
     const triangulate = (outer, holes) => THREE.ShapeUtils.triangulateShape(outer.map(point => new THREE.Vector2(point.x, point.y)),
       holes.map(ring => ring.map(point => new THREE.Vector2(point.x, point.y))));
     if (!editor) { physics = createPhysics(project, state, RAPIER, triangulate); state.physics = physics; }
+    const sectorIndex = createSectorIndex(geometry);
+    const spriteIndex = createSpriteIndex(project);
     const sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
-    let worldRevision = state.worldRevision;
-    let appliedResolution = '';
+    let worldRevision = state.worldRevision, appliedResolution = '';
+    // Everything below is scratch state reused by every frame: precomputed lookups,
+    // pooled objects and cached DOM/style writes keep the loop allocation-light.
+    const entityIndex = new Map(), activeLights = [];
+    const clearColors = new Map(), animatedMaterials = new Map();
+    const cameraDirection = new THREE.Vector3();
+    const frameStats = createFrameStats({ window: 120, stallMs: 50 });
+    const writeDataset = createDatasetWriter(canvas);
+    const effectMeshes = new Map(), effectList = [];
+    const shaderUniformEntries = shaderEffect ? Object.entries(shaderEffect.uniforms) : [];
+    const shaderDefaults = selectedShader?.uniforms || {};
+    const clock = () => (globalThis.performance?.now?.() ?? Date.now());
+    let animatedMaterialCount = -1, viewportSignature = '', viewportJson = '';
+    let styleFilter = null, styleRendering = null, frameRevision = 0;
+    let lastRebuildMs = 0, rebuilds = 0;
+    function clearColor(value) {
+      let color = clearColors.get(value);
+      if (!color) clearColors.set(value, color = new THREE.Color(value));
+      return color;
+    }
+    // Animated world surfaces are only touched when their frame actually changed;
+    // the old loop walked every cached material twice per frame.
+    function materialsForAsset(assetId) {
+      if (animatedMaterialCount !== materialCache.size) {
+        animatedMaterials.clear(); animatedMaterialCount = materialCache.size;
+        for (const material of materialCache.values()) {
+          const list = animatedMaterials.get(material.userData.assetId);
+          if (list) list.push(material); else animatedMaterials.set(material.userData.assetId, [material]);
+        }
+      }
+      return animatedMaterials.get(assetId);
+    }
+    function updateEffect(effect, elapsed) {
+      const frame = spriteIndex.frame(effect.clipId, elapsed);
+      let entry = effectMeshes.get(effect.id);
+      if (!entry) {
+        const object = frame.assetId ? new THREE.Sprite(takeEffectMaterial('sprite', effect))
+          : new THREE.Mesh(effect.radius ? impactGeometry : projectileGeometry, takeEffectMaterial('mesh', effect));
+        scene.add(object);
+        entry = { id: effect.id, object, frame: undefined, revision: frameRevision };
+        effectMeshes.set(effect.id, entry); effectList.push(entry);
+      }
+      entry.revision = frameRevision;
+      if (frame.assetId && entry.frame !== frame.assetId) {
+        const asset = assetMap.get(frame.assetId);
+        entry.object.material.map = imageTexture(frame.assetId);
+        entry.object.scale.set(asset.width, asset.height, 1);
+        entry.object.userData.frame = frame.assetId;
+        entry.frame = frame.assetId;
+      }
+      entry.object.position.set(effect.x, effect.z, effect.y);
+    }
     function render(state, dt = 0) {
+      const started = clock();
+      renderFrame(state, dt);
+      const elapsed = clock() - started;
+      frameStats.push(elapsed);
+      if (canvas.dataset.perfCounters === 'on') {
+        writeDataset('frameMs', elapsed.toFixed(2));
+        writeDataset('frameMaxMs', frameStats.max.toFixed(2));
+        writeDataset('frameStalls', frameStats.stalls);
+        writeDataset('worldRebuildMs', lastRebuildMs.toFixed(2));
+        writeDataset('worldRebuilds', rebuilds);
+      }
+    }
+    function renderFrame(state, dt) {
       if (!editor && state.settings) {
         const resolution = `${state.settings.resolution}/${state.settings.lowDetail}`;
         if (appliedResolution !== resolution) {
           appliedResolution = resolution;
           renderer.setSize(Math.round(800 * state.settings.resolution / (state.settings.lowDetail ? 2 : 1)),
             Math.round(450 * state.settings.resolution), false);
-          canvas.style.imageRendering = state.settings.lowDetail ? 'pixelated' : '';
         }
-        camera.fov = state.settings.fov;
-        canvas.style.filter = `brightness(${state.settings.brightness})`;
+        const rendering = state.settings.lowDetail ? 'pixelated' : '';
+        if (styleRendering !== rendering) { styleRendering = rendering; canvas.style.imageRendering = rendering; }
+        const filter = `brightness(${state.settings.brightness})`;
+        if (styleFilter !== filter) { styleFilter = filter; canvas.style.filter = filter; }
       }
       effectTime.value = Number.isFinite(state.time) ? state.time : 0;
       effectEnabled.value = state.shaderEnabled === false ? 0 : 1;
-      if (shaderEffect) for (const [name, uniform] of Object.entries(shaderEffect.uniforms)) {
-        const value = state.shaderUniforms instanceof Map ? state.shaderUniforms.get(name) : state.shaderUniforms?.[name];
-        uniform.value = Number.isFinite(value) && Math.abs(value) <= 1e20 ? value : selectedShader.uniforms[name];
+      for (let index = 0; index < shaderUniformEntries.length; index++) {
+        const entry = shaderUniformEntries[index];
+        const value = state.shaderUniforms instanceof Map ? state.shaderUniforms.get(entry[0]) : state.shaderUniforms?.[entry[0]];
+        entry[1].value = Number.isFinite(value) && Math.abs(value) <= 1e20 ? value : shaderDefaults[entry[0]];
       }
-      canvas.dataset.shaderEnabled = String(Boolean(shaderEffect) && state.shaderEnabled !== false);
-      if (!editor) for (const animation of project.materialAnimations || []) {
-        const frame = clipFrame(project, animation.clipId, state.time + animation.offset);
-        for (const material of materialCache.values()) if (material.userData.assetId === animation.assetId) material.map = imageTexture(frame.assetId);
+      writeDataset('shaderEnabled', Boolean(shaderEffect) && state.shaderEnabled !== false);
+      if (!editor && project.materialAnimations) for (let index = 0; index < project.materialAnimations.length; index++) {
+        const animation = project.materialAnimations[index];
+        const frame = spriteIndex.frame(animation.clipId, state.time + animation.offset);
+        if (!frame.assetId) continue;
+        const list = materialsForAsset(animation.assetId);
+        if (!list) continue;
+        for (let entry = 0; entry < list.length; entry++) {
+          const material = list[entry];
+          if (material.userData.frameAsset === frame.assetId) continue;
+          material.userData.frameAsset = frame.assetId;
+          material.map = imageTexture(frame.assetId);
+        }
       }
       if (!editor && worldRevision !== state.worldRevision) {
+        const rebuildStarted = clock();
         const changed = new Set();
         for (const sector of geometry) {
           const key = `${sector.floorHeight}/${sector.ceilingHeight}`;
@@ -379,6 +522,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         }
         for (const entry of worldParts) if (entry.sectorIds.some(id => changed.has(id))) rebuildPart(entry);
         worldRevision = state.worldRevision;
+        lastRebuildMs = clock() - rebuildStarted; rebuilds++;
       }
       renderer.info.reset();
       if (!editor) {
@@ -388,65 +532,89 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const inset = view.inset;
         renderer.setScissorTest(false);
         renderer.setViewport(0, 0, canvas.width, canvas.height);
-        renderer.setClearColor('#272a2e'); renderer.clear();
+        renderer.setClearColor(clearColor('#272a2e')); renderer.clear();
         // The shared WebGPU/WebGL renderer uses a top-left viewport origin.
         renderer.setViewport(view.x / detail, view.y, view.width / detail, view.height);
         renderer.setScissor(view.x / detail, view.y, view.width / detail, view.height);
         renderer.setScissorTest(true);
-        camera.aspect = view.width / view.height; camera.updateProjectionMatrix();
-        canvas.dataset.hudInset = String(inset);
-        canvas.dataset.gameViewport = JSON.stringify(view);
+        const signature = `${view.x}/${view.y}/${view.width}/${view.height}/${inset}`;
+        if (viewportSignature !== signature) { viewportSignature = signature; viewportJson = JSON.stringify(view); }
+        writeDataset('hudInset', inset);
+        writeDataset('gameViewport', viewportJson);
+        const aspect = view.width / view.height;
+        if (camera.aspect !== aspect || camera.fov !== state.settings.fov) {
+          camera.aspect = aspect; camera.fov = state.settings.fov; camera.updateProjectionMatrix();
+        }
         let selected = project.environment.weaponAssets
           ? project.environment.weaponAssets[state.inventory.selectedWeapon] : project.environment.weaponAsset;
         const weaponAnimation = state.weaponAnimations.get(state.inventory.selectedWeapon);
         if (weaponAnimation) {
-          const frame = clipFrame(project, weaponAnimation.clipId, state.time - weaponAnimation.start);
-          if (frame && !frame.finished) selected = frame.assetId;
+          const frame = spriteIndex.frame(weaponAnimation.clipId, state.time - weaponAnimation.start);
+          if (frame.assetId && !frame.finished) selected = frame.assetId;
         }
-        canvas.dataset.weaponFrame = selected || '';
+        writeDataset('weaponFrame', selected || '');
         for (const [id, overlay] of weaponOverlays) overlay.visible = id === selected;
         const recoil = state.lastShot && state.time - state.lastShot.time < .12 ? 6 * (1 - (state.time - state.lastShot.time) / .12) : 0;
         for (const overlay of weaponOverlays.values()) {
           overlay.userData.restY ??= overlay.position.y;
           overlay.position.y = overlay.userData.restY - recoil;
         }
-        canvas.dataset.weapon = state.inventory.selectedWeapon;
+        writeDataset('weapon', state.inventory.selectedWeapon);
       }
-      const floor = state.player.z ?? sectorAt(geometry, state.player.x, state.player.y)?.floorHeight ?? 0;
+      const floor = state.player.z ?? sectorIndex.at(state.player.x, state.player.y)?.floorHeight ?? 0;
       if (!editor) camera.position.set(state.player.x, floor + 48, state.player.y);
       const pitch = state.player.pitch;
       if (!editor) camera.lookAt(state.player.x + Math.cos(pitch) * Math.cos(state.player.angle),
         floor + 48 + Math.sin(pitch), state.player.y + Math.cos(pitch) * Math.sin(state.player.angle));
-      lightRadii.fill(0); lightColors.forEach(color => color.setRGB(0, 0, 0));
-      lightNodes.forEach(light => { light.radius.value = 0; });
-      const lights = state.entities.filter(entity => entity.type === 'light' && entity.light).slice(0, 16);
-      lights.forEach((entity, index) => {
-        const z = entity.z ?? sectorAt(geometry, entity.x, entity.y)?.floorHeight ?? 0;
+      lightRadii.fill(0);
+      for (let index = 0; index < lightColors.length; index++) lightColors[index].setRGB(0, 0, 0);
+      for (let index = 0; index < lightNodes.length; index++) lightNodes[index].radius.value = 0;
+      activeLights.length = 0;
+      for (let index = 0; index < state.entities.length && activeLights.length < 16; index++) {
+        const entity = state.entities[index];
+        if (entity.type === 'light' && entity.light) activeLights.push(entity);
+      }
+      for (let index = 0; index < activeLights.length; index++) {
+        const entity = activeLights[index];
+        const z = entity.z ?? sectorIndex.at(entity.x, entity.y)?.floorHeight ?? 0;
         lightPositions[index].set(entity.x, z + 48, entity.y);
         lightColors[index].set(entity.light.color).multiplyScalar(entity.light.intensity);
         lightRadii[index] = entity.light.radius;
         lightNodes[index].radius.value = entity.light.radius;
-        if (pointLights[index]) {
-          pointLights[index].position.copy(lightPositions[index]); pointLights[index].color.set(entity.light.color);
-          pointLights[index].intensity = entity.light.intensity * 25; pointLights[index].distance = entity.light.radius;
-          pointLights[index].decay = 1;
+        const light = pointLights[index];
+        if (light) {
+          light.position.copy(lightPositions[index]); light.color.set(entity.light.color);
+          light.intensity = entity.light.intensity * 25; light.distance = entity.light.radius; light.decay = 1;
         }
-      });
-      pointLights.slice(lights.length).forEach(light => { light.intensity = 0; });
-      const entities = new Map(state.entities.map(entity => [entity.id, entity]));
-      for (const [id, entry] of models) {
-        const entity = entities.get(id); entry.root.visible = Boolean(entity);
+      }
+      for (let index = activeLights.length; index < pointLights.length; index++) pointLights[index].intensity = 0;
+      entityIndex.clear();
+      for (let index = 0; index < state.entities.length; index++) {
+        const entity = state.entities[index];
+        entityIndex.set(entity.id, entity);
+        if (entity.type === 'player' && !editor) continue;
+        if (unrenderable.has(entity.id)) continue;
+        if (entity.modelAsset ? !models.has(entity.id) : !sprites.has(entity.id)) addEntity(entity);
+      }
+      for (let index = 0; index < modelList.length; index++) {
+        const entry = modelList[index];
+        const entity = entityIndex.get(entry.id);
+        if (entry.root.visible !== Boolean(entity)) entry.root.visible = Boolean(entity);
         if (!entity) continue;
-        if (editor) entry.root.children[0].scale.setScalar(entity.modelScale ?? 32);
-        const sector = sectorAt(geometry, entity.x, entity.y);
+        if (editor) entry.object.scale.setScalar(entity.modelScale ?? 32);
+        const sector = sectorIndex.at(entity.x, entity.y);
         entry.root.position.set(entity.x, entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0), entity.y);
         if (entity.rotation) entry.root.quaternion.copy(entity.rotation);
         else entry.root.rotation.set(0, -entity.angle * Math.PI / 180, 0);
-        entry.root.traverse(node => {
-          const list = node.material ? Array.isArray(node.material) ? node.material : [node.material] : [];
-          for (const mat of list) if (mat.userData.baseColor) mat.color.copy(mat.userData.baseColor).multiplyScalar(Math.max(.03, (sector?.light ?? 255) / 255));
-        });
-        const requested = state.animations.get(id);
+        const shade = Math.max(.03, (sector?.light ?? 255) / 255);
+        if (entry.shade !== shade) {
+          entry.shade = shade;
+          for (let tint = 0; tint < entry.tinted.length; tint++) {
+            const material = entry.tinted[tint];
+            material.color.copy(material.userData.baseColor).multiplyScalar(shade);
+          }
+        }
+        const requested = state.animations.get(entry.id);
         if (requested && requested.revision !== entry.revision) {
           entry.mixer.stopAllAction(); entry.revision = requested.revision;
           if (requested.playing) {
@@ -456,62 +624,73 @@ export async function createPreview(canvas, project, state, { editor = false } =
             action.setLoop(requested.loop ? THREE.LoopRepeat : THREE.LoopOnce, requested.loop ? Infinity : 1);
             action.clampWhenFinished = !requested.loop; action.timeScale = requested.speed; action.reset().play();
             entry.action = action;
-          }
+          } else entry.action = null;
         }
-        entry.mixer.update(Math.min(.05, dt));
+        if (entry.action) entry.mixer.update(Math.min(.05, dt));
       }
-      for (const [id, sprite] of sprites) {
-        const entity = entities.get(id);
-        sprite.visible = Boolean(entity);
+      for (let index = 0; index < spriteList.length; index++) {
+        const record = spriteList[index], sprite = record.sprite;
+        const entity = entityIndex.get(record.id);
+        if (sprite.visible !== Boolean(entity)) sprite.visible = Boolean(entity);
         if (!entity) continue;
-        {
-          const { assetId, flip } = editor ? { assetId: entity.spriteAsset, flip: false } : spriteView(project, state, entity);
-          const asset = assetMap.get(assetId), scale = entity.spriteScale || 1;
-          sprite.material.map = imageTexture(assetId);
+        let assetId, flip;
+        if (editor) { assetId = entity.spriteAsset; flip = false; }
+        else { const view = spriteIndex.view(state, entity, state.player); assetId = view.assetId; flip = view.flip; }
+        const scale = entity.spriteScale || 1;
+        if (record.frame !== assetId || record.flip !== flip || record.scale !== scale) {
+          const asset = assetMap.get(assetId);
+          if (record.frame !== assetId) sprite.material.map = assetId ? imageTexture(assetId) : null;
           sprite.scale.set((asset?.width || 24) * scale * (flip ? -1 : 1), (asset?.height || 40) * scale, 1);
           sprite.center.set(asset ? asset.offsetX / asset.width : .5, asset ? 1 - asset.offsetY / asset.height : 0);
-          sprite.userData.frame = assetId;
-          sprite.userData.flip = flip;
+          sprite.userData.frame = assetId; sprite.userData.flip = flip;
+          record.frame = assetId; record.flip = flip; record.scale = scale;
         }
-        const sector = sectorAt(geometry, entity.x, entity.y);
+        const sector = sectorIndex.at(entity.x, entity.y);
         sprite.position.set(entity.x, entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0), entity.y);
-        const illumination = new THREE.Color().setRGB(1, 1, 1).multiplyScalar(Math.max(.03, (sector?.light ?? 255) / 255));
-        lights.forEach((light, index) => {
-          const distance = sprite.position.distanceTo(lightPositions[index]);
-          const amount = Math.max(0, 1 - distance / light.light.radius);
-          illumination.add(lightColors[index].clone().multiplyScalar(amount * amount));
-        });
-        sprite.material.color.copy(baseColors.get(id)).multiply(illumination);
-      }
-      const effects = [...(state.projectiles || []), ...(state.impacts || [])];
-      const activeProjectiles = new Set(effects.map(projectile => projectile.id));
-      for (const [id, object] of projectileMeshes) if (!activeProjectiles.has(id)) {
-        scene.remove(object); if (object.isMesh) object.geometry.dispose(); object.material.dispose(); projectileMeshes.delete(id);
-      }
-      for (const projectile of effects) {
-        const frame = clipFrame(project, projectile.clipId, projectile.start === undefined ? projectile.age : state.time - projectile.start);
-        if (!projectileMeshes.has(projectile.id)) {
-          const object = frame ? new THREE.Sprite(withEffect(new THREE.SpriteNodeMaterial({ transparent: true, alphaTest: .1, depthWrite: false })))
-            : new THREE.Mesh(new THREE.SphereGeometry(projectile.radius ? 6 : 3, 8, 6), withEffect(new THREE.MeshBasicNodeMaterial({ color: projectile.color })));
-          scene.add(object); projectileMeshes.set(projectile.id, object);
+        let red = Math.max(.03, (sector?.light ?? 255) / 255), green = red, blue = red;
+        for (let light = 0; light < activeLights.length; light++) {
+          const dx = sprite.position.x - lightPositions[light].x;
+          const dy = sprite.position.y - lightPositions[light].y;
+          const dz = sprite.position.z - lightPositions[light].z;
+          const amount = Math.max(0, 1 - Math.sqrt(dx * dx + dy * dy + dz * dz) / activeLights[light].light.radius);
+          if (!amount) continue;
+          const falloff = amount * amount;
+          red += lightColors[light].r * falloff;
+          green += lightColors[light].g * falloff;
+          blue += lightColors[light].b * falloff;
         }
-        const object = projectileMeshes.get(projectile.id);
-        if (frame) {
-          const asset = assetMap.get(frame.assetId);
-          object.material.map = imageTexture(frame.assetId); object.scale.set(asset.width, asset.height, 1);
-          object.userData.frame = frame.assetId;
+        if (record.red !== red || record.green !== green || record.blue !== blue) {
+          record.red = red; record.green = green; record.blue = blue;
+          const base = baseColorFor(entity);
+          sprite.material.color.setRGB(base.r * red, base.g * green, base.b * blue);
         }
-        object.position.set(projectile.x, projectile.z, projectile.y);
+      }
+      frameRevision++;
+      if (state.projectiles) for (let index = 0; index < state.projectiles.length; index++) {
+        const projectile = state.projectiles[index];
+        updateEffect(projectile, projectile.start === undefined ? projectile.age : state.time - projectile.start);
+      }
+      if (state.impacts) for (let index = 0; index < state.impacts.length; index++) {
+        const impact = state.impacts[index];
+        updateEffect(impact, state.time - impact.start);
+      }
+      for (let index = effectList.length - 1; index >= 0; index--) {
+        const entry = effectList[index];
+        if (entry.revision === frameRevision) continue;
+        scene.remove(entry.object);
+        effectPools[entry.object.isMesh ? 'mesh' : 'sprite'].push(entry.object.material);
+        effectMeshes.delete(entry.id);
+        effectList.splice(index, 1);
       }
       renderer.autoClear = true;
-      renderer.setClearColor(project.environment.sky);
+      renderer.setClearColor(clearColor(project.environment.sky));
       if (backgroundScene.userData.skybox) {
         backgroundScene.userData.skybox.position.copy(camera.position);
         renderer.render(backgroundScene, camera);
       } else {
         const panorama = backgroundScene.userData.panorama;
         if (panorama) {
-          const direction = camera.getWorldDirection(new THREE.Vector3());
+          const direction = camera.getWorldDirection(cameraDirection);
           panorama.userData.panoramaUniforms.heading.value = editor ? Math.atan2(direction.z, direction.x) : state.player.angle;
           panorama.userData.panoramaUniforms.pitch.value = editor ? Math.asin(direction.y) : pitch;
           panorama.userData.panoramaUniforms.aspect.value = camera.aspect;
@@ -526,19 +705,22 @@ export async function createPreview(canvas, project, state, { editor = false } =
       renderer.clearDepth(); renderer.render(overlayScene, overlayCamera);
       renderer.setScissorTest(false);
       if (shaderCompileError) throw new Error(`GPU shader compilation failed: ${shaderCompileError}`);
-      canvas.dataset.rendered = 'true';
-      canvas.dataset.triangles = String(renderer.info.render.triangles);
-      canvas.dataset.physics = editor ? 'disabled-editor' : 'rapier';
-      canvas.dataset.modelCount = String(models.size);
-      canvas.dataset.animationTime = String([...models.values()][0]?.action?.time || 0);
-      canvas.dataset.projectiles = String(state.projectiles?.length || 0);
-      canvas.dataset.worldRevision = String(state.worldRevision || 0);
+      writeDataset('rendered', 'true');
+      writeDataset('triangles', renderer.info.render.triangles);
+      writeDataset('physics', editor ? 'disabled-editor' : 'rapier');
+      writeDataset('modelCount', models.size);
+      writeDataset('animationTime', modelList[0]?.action?.time || 0);
+      writeDataset('projectiles', state.projectiles?.length || 0);
+      writeDataset('worldRevision', state.worldRevision || 0);
     }
     await renderer.compileAsync(scene, camera);
+    // Compiling the projectile templates here is what keeps the first shot from
+    // freezing the tab while the GPU driver links a brand new pipeline.
+    await renderer.compileAsync(warmupScene, camera);
     if (backgroundScene.children.length) await renderer.compileAsync(backgroundScene, backgroundScene.userData.skybox ? camera : backgroundCamera);
     if (overlayScene.children.length) await renderer.compileAsync(overlayScene, overlayCamera);
     if (shaderCompileError) throw new Error(`GPU shader compilation failed: ${shaderCompileError}`);
-    return { render, dispose, scene, camera, renderer, rendererStatus };
+    return { render, dispose, scene, camera, renderer, rendererStatus, perf: () => frameStats.summary() };
   } catch (error) {
     dispose();
     throw new Error(`Preview could not load: ${error.message}`);

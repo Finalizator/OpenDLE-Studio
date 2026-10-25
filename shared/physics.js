@@ -282,6 +282,16 @@ export function createPhysics(project, state, R, triangulate) {
       const body = bodies.get(id);
       if (body?.isDynamic()) body.setLinvel({ x: vector.x, y: vector.z, z: vector.y }, true);
     },
+    gravityScale(id, scale) {
+      const body = bodies.get(id);
+      if (body) body.setGravityScale(scale, true);
+    },
+    damping(id, value) {
+      const body = bodies.get(id);
+      if (!body) return;
+      body.setLinearDamping(value);
+      body.setAngularDamping(value);
+    },
     force(id, vector) {
       if (!bodies.get(id)?.isDynamic()) return;
       const previous = forces.get(id) || { x: 0, y: 0, z: 0 };

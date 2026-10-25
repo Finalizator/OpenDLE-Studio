@@ -13,6 +13,8 @@ export const GAME_SETTINGS = {
   lowDetail: { value: false },
   viewSize: { value: 10, min: 3, max: 11, step: 1 },
   difficulty: { value: 4, min: 1, max: 5, step: 1 },
+  bunnyhop: { value: false },
+  bunnyhopGain: { value: .02, min: 0, max: .1, step: .01 },
 };
 export const GAME_BINDINGS = {
   KeyW: 'Forward', KeyS: 'Backward', KeyA: 'Strafe left', KeyD: 'Strafe right',

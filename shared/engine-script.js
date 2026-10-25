@@ -25,6 +25,9 @@ export const ENGINE_CONDITIONS = [
   { type: 'playerReachesEntity', label: 'Player: overlaps pickup reach', target: true,
     fields: [numeric('distance', 36, 0, 65536), numeric('height', 56, 0, 65536), numeric('below', 8, 0, 65536)] },
   { type: 'entityDamaged', label: 'Object: health decreased', target: true, fields: [] },
+  { type: 'entityAlive', label: 'Object: is alive (health above zero)', target: true, fields: [] },
+  { type: 'distanceBetween', label: 'Objects: compare distance between two objects', target: true, fields: [
+    { name: 'otherId', kind: 'string', value: '$player' }, comparison(), numeric('distance', 128, 0, 65536)] },
   { type: 'spriteState', label: 'Object: sprite animation state', target: true, fields: [choice('state', 'walk', ['stand', 'walk', 'attack', 'pain', 'death'])] },
   { type: 'enemyAlert', label: 'Enemy: remembers player', target: true, fields: [] },
   { type: 'enemyHearsPlayer', label: 'Enemy: hears player weapon through open sectors', target: true, fields: [] },
@@ -92,6 +95,13 @@ export const ENGINE_ACTIONS = [
     { name: 'sound', value: 'DSDOROPN', kind: 'string', optional: true },
   ] },
   { type: 'playSound', label: 'Audio: play embedded sound by name', fields: [{ name: 'sound', value: 'DSPISTOL', kind: 'string' }, numeric('volume', .7, 0, 1)] },
+  { type: 'spawnEntity', label: 'Object: spawn a new object from a template', fields: [
+    { name: 'templateId', kind: 'text', value: '' }, numeric('x', 0, -65536, 65536), numeric('y', 0, -65536, 65536),
+    { ...numeric('z', 0, -65536, 65536), optional: true }, { ...numeric('angle', 0, -3600, 3600), optional: true },
+    { name: 'name', value: '', kind: 'string', optional: true }] },
+  { type: 'setEntityScale', label: 'Object: set visual scale', target: true, fields: [numeric('scale', 1, .01, 20)] },
+  { type: 'setGravityScale', label: 'Physics: set gravity scale', target: true, fields: [numeric('scale', 1, 0, 10)] },
+  { type: 'setDamping', label: 'Physics: set linear damping', target: true, fields: [numeric('damping', .1, 0, 100)] },
   { type: 'moveEnemy', label: 'Enemy: move toward player with collision', fields: [numeric('speed', 80, 0, 1024)], target: true },
   { type: 'facePlayer', label: 'Enemy: face player for attack', fields: [], target: true },
   { type: 'enemyHitscan', label: 'Enemy: trace shot at player', fields: [numeric('damage', 3, 0, 10000), numeric('diceSides', 5, 1, 256), numeric('range', 1024, 1, 65536),

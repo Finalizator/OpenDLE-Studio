@@ -19,6 +19,7 @@ coverage/
 /build/
 /test-results/
 /playwright-report/
+/scratch/
 *.log
 *.tsbuildinfo
 

@@ -8,6 +8,11 @@ export function createHUDView(host, project, { editor = false, select, click, er
   const root = document.createElement('div'); root.className = 'hud-root'; host.append(root);
   const nodes = new Map(), assets = new Map((project.assets || []).map(asset => [asset.id, asset]));
   const fonts = new Map(), faces = [], prefix = `OpenDLE_HUD_${++viewId}_`;
+  // Per-frame lookups must not scan arrays: these are constant for the view.
+  const menuIds = new Set(project.gameMenus?.elementIds || []);
+  const styleByName = new Map((hud.styles || []).map(style => [style.name, style]));
+  const fontById = new Map(hud.fonts.map(font => [font.id, font]));
+  let anySelectorVisible = false;
   let disposed = false;
   let currentState;
   for (const style of hud.styles || []) for (const [property, value] of Object.entries(style.properties)) {
@@ -27,7 +32,8 @@ export function createHUDView(host, project, { editor = false, select, click, er
     visual.className = 'hud-visual'; content.className = 'hud-content';
     node.append(visual); visual.append(content);
     (element.parentId ? nodes.get(element.parentId).node : root).append(node);
-    nodes.set(element.id, { node, visual, content, lastText: null });
+    nodes.set(element.id, { node, visual, content, lastText: null,
+      layout: '', visualKey: '', contentKey: '', hidden: null, selected: null, pointer: null, tab: null, label: null });
     if (editor) node.addEventListener('pointerdown', event => {
       event.stopPropagation(); select?.(element.id, event);
     });
@@ -45,6 +51,7 @@ export function createHUDView(host, project, { editor = false, select, click, er
   }
   function update(state, { selectedId, cursor = state.hudState.cursor } = {}) {
     currentState = state;
+    anySelectorVisible = false;
     const width = host.clientWidth, height = host.clientHeight;
     if (!width || !height) return;
     const viewport = hudViewport(hud, width, height);
@@ -56,31 +63,45 @@ export function createHUDView(host, project, { editor = false, select, click, er
       const element = state.hudState.elements.get(source.id), { node, visual, content } = nodes.get(source.id);
       const parent = rectangles.get(element.parentId) || viewport;
       const rect = hudRect(element, parent.width, parent.height); rectangles.set(element.id, rect);
-      node.style.left = `${rect.x}px`; node.style.top = `${rect.y}px`;
-      node.style.width = `${rect.width}px`; node.style.height = `${rect.height}px`;
-      node.style.opacity = String(element.opacity);
-      node.style.transform = `rotate(${element.rotation}deg) scale(${element.scale})`;
-      node.style.transformOrigin = `${element.pivotX * 100}% ${element.pivotY * 100}%`;
-      node.style.zIndex = String(element.z);
+      const entry = nodes.get(source.id);
+      const layout = `${rect.x}|${rect.y}|${rect.width}|${rect.height}|${element.opacity}|${element.rotation}|${element.scale}|${element.pivotX}|${element.pivotY}|${element.z}`;
+      if (layout !== entry.layout) {
+        entry.layout = layout;
+        node.style.left = `${rect.x}px`; node.style.top = `${rect.y}px`;
+        node.style.width = `${rect.width}px`; node.style.height = `${rect.height}px`;
+        node.style.opacity = String(element.opacity);
+        node.style.transform = `rotate(${element.rotation}deg) scale(${element.scale})`;
+        node.style.transformOrigin = `${element.pivotX * 100}% ${element.pivotY * 100}%`;
+        node.style.zIndex = String(element.z);
+      }
       const boundVisibility = !element.visibilityBinding || (Boolean(hudBinding(element.visibilityBinding, state)) !== Boolean(element.visibilityInverted));
       const onMenu = state.gameScreen && state.gameScreen !== 'playing';
-      const menuElement = project.gameMenus?.elementIds.includes(source.id);
+      const menuElement = menuIds.has(source.id);
       const shown = (!element.parentId || visibility.get(element.parentId)) &&
         element.visible && boundVisibility && (editor || !element.statusbar || state.settings?.viewSize !== 11) && (!onMenu || menuElement) && (editor ||
         (element.display === 'always' || element.display === (cursor ? 'cursor' : 'game')));
       visibility.set(element.id, shown);
-      node.hidden = !shown;
-      node.classList.toggle('hud-selected', selectedId === element.id);
-      node.style.pointerEvents = editor || element.interactive && cursor && state.hud ? 'auto' : 'none';
-      if (!editor && element.interactive) node.tabIndex = shown && cursor && state.hud ? 0 : -1;
-      visual.style.cssText = '';
-      Object.assign(visual.style, { color: element.color, backgroundColor: element.background, fontSize: `${element.fontSize}px`,
-        textAlign: element.align, alignItems: element.type === 'bar' ? 'stretch' : 'center',
-        imageRendering: hud.pixelated ? 'pixelated' : 'auto',
-        fontFamily: fonts.has(element.fontId) ? `"${fonts.get(element.fontId)}"` : 'monospace' });
-      const style = hud.styles?.find(style => style.name === element.styleClass);
-      for (const [key, value] of Object.entries(style?.properties || {})) visual.style.setProperty(key, value);
+      if (entry.hidden !== shown) { entry.hidden = shown; node.hidden = !shown; }
+      const selected = selectedId === element.id;
+      if (entry.selected !== selected) { entry.selected = selected; node.classList.toggle('hud-selected', selected); }
+      const pointer = editor || element.interactive && cursor && state.hud ? 'auto' : 'none';
+      if (entry.pointer !== pointer) { entry.pointer = pointer; node.style.pointerEvents = pointer; }
+      const tab = !editor && element.interactive ? shown && cursor && state.hud ? 0 : -1 : null;
+      if (tab !== null && entry.tab !== tab) { entry.tab = tab; node.tabIndex = tab; }
+      if (element.menuSelector && shown) anySelectorVisible = true;
+      // Static visual styling only changes when the authored element changes.
+      const style = styleByName.get(element.styleClass);
+      const visualKey = `${element.color}|${element.background}|${element.fontSize}|${element.align}|${element.type}|${hud.pixelated}|${element.fontId}|${element.styleClass}|${element.assetId}|${element.fillAssetId}|${element.imageRepeat}|${element.slice && JSON.stringify(element.slice)}|${element.sprite && `${JSON.stringify(element.sprite)}:${Math.floor(element.frame)}`}|${element.fillDirection}`;
       const asset = assets.get(element.assetId);
+      if (visualKey !== entry.visualKey) {
+        entry.visualKey = visualKey;
+        visual.style.cssText = '';
+        Object.assign(visual.style, { color: element.color, backgroundColor: element.background, fontSize: `${element.fontSize}px`,
+          textAlign: element.align, alignItems: element.type === 'bar' ? 'stretch' : 'center',
+          imageRendering: hud.pixelated ? 'pixelated' : 'auto',
+          fontFamily: fonts.has(element.fontId) ? `"${fonts.get(element.fontId)}"` : 'monospace' });
+        for (const [key, value] of Object.entries(style?.properties || {})) visual.style.setProperty(key, value);
+      }
       if (asset) {
         if (element.slice) {
           const { top, right, bottom, left } = element.slice;
@@ -104,6 +125,9 @@ export function createHUDView(host, project, { editor = false, select, click, er
         const fillAsset = assets.get(element.fillAssetId);
         const amount = Math.max(0, Math.min(1, value / element.maximum));
         const direction = element.fillDirection || 'right', vertical = ['up', 'down'].includes(direction);
+        const contentKey = `${amount}|${direction}|${rect.width}|${rect.height}|${fillAsset ? fillAsset.id : element.color}`;
+        if (contentKey !== entry.contentKey) {
+        entry.contentKey = contentKey;
         Object.assign(content.style, {
           position: 'absolute', width: `${vertical ? 100 : amount * 100}%`, height: `${vertical ? amount * 100 : 100}%`,
           left: direction === 'left' ? 'auto' : '0', right: direction === 'left' ? '0' : 'auto',
@@ -113,11 +137,12 @@ export function createHUDView(host, project, { editor = false, select, click, er
           backgroundSize: `${rect.width}px ${rect.height}px`, backgroundRepeat: 'no-repeat',
           backgroundPosition: `${direction === 'left' ? 'right' : 'left'} ${direction === 'up' ? 'bottom' : 'top'}`,
         });
+        }
       } else {
-        const text = hudText(element, state), font = hud.fonts.find(font => font.id === element.fontId);
+        const text = hudText(element, state), font = fontById.get(element.fontId);
         const cache = `${text}\0${element.fontId}\0${element.fontSize}`;
-        if (cache !== nodes.get(source.id).lastText) {
-          nodes.get(source.id).lastText = cache;
+        if (cache !== entry.lastText) {
+          entry.lastText = cache;
           content.replaceChildren();
           if (font?.type === 'bitmap') {
             content.style.lineHeight = '0';
@@ -143,7 +168,8 @@ export function createHUDView(host, project, { editor = false, select, click, er
           } else { content.style.lineHeight = ''; content.textContent = text; content.removeAttribute('aria-label'); }
         }
       }
-      node.setAttribute('aria-label', element.interactive && !menuElement ? hudText(element, state) || element.name : element.name);
+      const label = element.interactive && !menuElement ? (hudText(element, state) || element.name) : element.name;
+      if (entry.label !== label) { entry.label = label; node.setAttribute('aria-label', label); }
     }
     if (!editor && state.gameScreen !== 'playing') {
       const candidates = [...nodes].filter(([id, entry]) => entry.node.tabIndex === 0 &&
@@ -151,8 +177,7 @@ export function createHUDView(host, project, { editor = false, select, click, er
         project.hud.elements.find(element => element.id === id)?.interactive);
       if (!candidates.some(([id]) => id === state.hudState.focused)) state.hudState.focused = candidates[0]?.[0] || null;
     }
-    root.classList.toggle('hud-native-selector', !editor && hud.elements.some(element =>
-      element.menuSelector && !nodes.get(element.id).node.hidden));
+    root.classList.toggle('hud-native-selector', !editor && anySelectorVisible);
     return { ...viewport, rectangles };
   }
   return { update, nodes, dispose() {

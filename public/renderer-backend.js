@@ -31,6 +31,21 @@ export function selectRendererBackend({ secureContext = globalThis.isSecureConte
   return { requested: 'webgpu', backend: 'webgpu', fallbackReason: '' };
 }
 
+// Browsers cannot pick a graphics API for WebGPU, but they can prefer a discrete
+// adapter. Older builds expose requestAdapterInfo(), newer ones the info property.
+export async function gpuAdapterInfo(gpu = globalThis.navigator?.gpu) {
+  try {
+    if (!gpu?.requestAdapter) return '';
+    const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
+    if (!adapter) return '';
+    const info = adapter.info || (typeof adapter.requestAdapterInfo === 'function' ? await adapter.requestAdapterInfo() : null);
+    if (!info) return '';
+    return [info.vendor, info.architecture, info.device, info.description].filter(value => typeof value === 'string' && value).join(' / ');
+  } catch {
+    return '';
+  }
+}
+
 export async function createBrowserRenderer(WebGPURenderer, canvas, environment) {
   const restoration = contextRestorations.get(canvas);
   if (restoration) {
@@ -39,7 +54,8 @@ export async function createBrowserRenderer(WebGPURenderer, canvas, environment)
     if (error) throw error;
   }
   const selection = selectRendererBackend(environment);
-  const renderer = new WebGPURenderer({ canvas, antialias: false, alpha: false, forceWebGL: selection.backend === 'webgl2' });
+  const renderer = new WebGPURenderer({ canvas, antialias: false, alpha: false, forceWebGL: selection.backend === 'webgl2',
+    powerPreference: 'high-performance' });
   try {
     await renderer.init();
   } catch (error) {
@@ -50,6 +66,7 @@ export async function createBrowserRenderer(WebGPURenderer, canvas, environment)
   const status = {
     requested: 'webgpu', backend,
     fallbackReason: backend === 'webgl2' ? selection.fallbackReason || 'WebGPU adapter/device initialization failed; Three.js initialized its WebGL 2 fallback.' : '',
+    adapter: backend === 'webgpu' ? await gpuAdapterInfo(environment?.gpu ?? globalThis.navigator?.gpu) : '',
   };
   const dispose = renderer.dispose.bind(renderer);
   let disposed = false;
@@ -64,5 +81,6 @@ export async function createBrowserRenderer(WebGPURenderer, canvas, environment)
   canvas.dataset.rendererBackend = status.backend;
   canvas.dataset.rendererFallback = status.fallbackReason;
   canvas.dataset.rendererRequested = status.requested;
+  canvas.dataset.rendererAdapter = status.adapter;
   return { renderer, status };
 }

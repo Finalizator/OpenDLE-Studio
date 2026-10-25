@@ -1,4 +1,20 @@
+import { resolveLevelMusic } from './music.js';
+
 const sharedKeys = new Set(['version', 'title', 'assets', 'game']);
+
+/**
+ * Point a level's environment at its music asset. MAPINFO `music` wins; classic
+ * Doom/Doom II level tables supply the default. Missing tracks stay unset so the
+ * level is simply silent instead of referencing a non-existent asset.
+ */
+export function applyLevelMusic(data, levelId, explicit, assets) {
+  const track = resolveLevelMusic(levelId, explicit);
+  if (!track) return data;
+  const asset = assets.find(candidate => candidate.kind === 'music' && candidate.name.toUpperCase() === track.toUpperCase());
+  if (!asset) return data;
+  data.environment = { ...(data.environment || {}), music: asset.name, musicAsset: asset.id };
+  return data;
+}
 
 function levelData(project) {
   return Object.fromEntries(Object.entries(project).filter(([key]) => !sharedKeys.has(key)));
@@ -15,7 +31,7 @@ export function gameLevelAssetIds(project) {
   const assets = new Map(project.assets.map(asset => [asset.id, asset]));
   // Rotation tables can refer back to their base frame or to other tables.
   for (const id of references) visit(assets.get(id)?.rotations);
-  return project.assets.filter(asset => asset.kind === 'sound' || references.has(asset.id)).map(asset => asset.id);
+  return project.assets.filter(asset => ['sound', 'music'].includes(asset.kind) || references.has(asset.id)).map(asset => asset.id);
 }
 
 export function selectGameLevel(project, id) {
@@ -85,8 +101,9 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
       return value;
     }
     const route = routes.get(entry.id);
-    levels.push({ id: entry.id, name: route?.name || entry.name || entry.id, assetIds: [...new Set(assetIds)],
-      data: remap(levelData(project)) });
+    const data = remap(levelData(project));
+    applyLevelMusic(data, entry.id, route?.music, assets);
+    levels.push({ id: entry.id, name: route?.name || entry.name || entry.id, assetIds: [...new Set(assetIds)], data });
     for (const warning of entry.warnings || []) warnings.add(`${entry.id}: ${warning}`);
   }
   for (let i = 0; i < levels.length; i++) {
@@ -129,9 +146,11 @@ export function parseLevelRoutes(sources) {
       const id = match[1].replaceAll('"', '').toUpperCase(), route = { ...routes.get(id) };
       if (match[2]) route.name = match[2];
       const body = clean.slice(map.lastIndex, end - 1);
-      for (const field of body.matchAll(/\b(next|secretnext)\s*=\s*("[^"]*"|[a-zA-Z0-9_-]+)/gi)) {
+      for (const field of body.matchAll(/\b(next|secretnext|music)\s*=\s*("[^"]*"|[a-zA-Z0-9_-]+)/gi)) {
         const value = field[2].replaceAll('"', '').toUpperCase();
-        route[field[1].toLowerCase() === 'next' ? 'next' : 'secretNext'] = /^END/.test(value) ? null : value;
+        const key = field[1].toLowerCase();
+        if (key === 'music') { route.music = value; continue; }
+        route[key === 'next' ? 'next' : 'secretNext'] = /^END/.test(value) ? null : value;
       }
       routes.set(id, route); map.lastIndex = end;
     }

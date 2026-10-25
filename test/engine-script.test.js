@@ -95,6 +95,7 @@ test('every Engine command has shared editor defaults and validates after adding
     const isCondition = ENGINE_CONDITIONS.includes(command);
     rule(project, isCondition ? value : { type: 'always' }, isCondition ? [{ type: 'showMessage', message: 'yes' }] : [value],
       { sheetId: project.eventSheets[0].id });
+    if (command.type === 'spawnEntity') { value.templateId = project.map.entities[0].id; value.x = 0; value.y = 0; }
     validateProject(project);
   }
 });

@@ -84,6 +84,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     entities,
     levelStatistics: createLevelStatistics(entities, project.map.sectors || []),
     intermission: null,
+    bunnyhop: { multiplier: 1, chain: 0, lastJump: -Infinity, lastLanding: -Infinity },
     fired: new Set(),
     started: false,
     message: '',
@@ -154,12 +155,29 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     });
   };
   const previousPosition = { x: player.x, y: player.y };
+  const grounded = state.physics ? state.physics.grounded : true;
+  const jumpHeld = state.settings.jumping && !hud.cursor && state.playerStats.health > 0 &&
+    (state.scriptedInput ? state.input.jump : pressed.has('Space'));
+  const bunnyhop = state.bunnyhop ||= { multiplier: 1, chain: 0, airborne: false, lastJump: -Infinity, lastLanding: -Infinity };
+  if (grounded && bunnyhop.airborne) bunnyhop.lastLanding = state.time;
+  bunnyhop.airborne = !grounded;
+  if (!state.settings.bunnyhop) { bunnyhop.multiplier = 1; bunnyhop.chain = 0; }
+  else if (grounded) {
+    if (jumpHeld) {
+      bunnyhop.chain = state.time - bunnyhop.lastLanding <= .3 ? bunnyhop.chain + 1 : 1;
+      bunnyhop.multiplier = Math.min(1 + state.settings.bunnyhopGain * 12, 1 + state.settings.bunnyhopGain * bunnyhop.chain);
+      bunnyhop.lastJump = state.time;
+    } else if (state.time - bunnyhop.lastJump > .1) {
+      bunnyhop.chain = 0;
+      bunnyhop.multiplier = Math.max(1, bunnyhop.multiplier - state.settings.bunnyhopGain * 8 * dt);
+    }
+  }
+  const speed = runMultiplier * bunnyhop.multiplier;
   state.physics?.syncWorld();
-  if (state.physics) state.physics.step(dt, { x: dt ? dx * runMultiplier / dt : 0, y: dt ? dy * runMultiplier / dt : 0,
-    jump: state.settings.jumping && !hud.cursor && state.playerStats.health > 0 && (state.scriptedInput ? state.input.jump : pressed.has('Space')) });
+  if (state.physics) state.physics.step(dt, { x: dt ? dx * speed / dt : 0, y: dt ? dy * speed / dt : 0, jump: jumpHeld });
   else {
-    if (canMove(player.x + dx * runMultiplier, player.y)) player.x += dx * runMultiplier;
-    if (canMove(player.x, player.y + dy * runMultiplier)) player.y += dy * runMultiplier;
+    if (canMove(player.x + dx * speed, player.y)) player.x += dx * speed;
+    if (canMove(player.x, player.y + dy * speed)) player.y += dy * speed;
   }
   state.worldTriggers.cross = crossedWalls(state, previousPosition);
   updateLevelStatistics(state);
@@ -314,6 +332,19 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         return target && compareValues(target.health ?? 20, condition.operator, condition.value);
       }
       if (condition.type === 'entityHasHealth') return findTarget(condition.entityId)?.health !== undefined;
+      if (condition.type === 'entityAlive') {
+        const target = findTarget(condition.entityId);
+        return Boolean(target) && (target.health ?? 20) > 0;
+      }
+      if (condition.type === 'distanceBetween') {
+        const left = findTarget(condition.entityId);
+        const reference = condition.otherId === '$player'
+          ? state.entities.find(entity => entity.type === 'player')?.id
+          : condition.otherId === '$self' ? event.ownerId : condition.otherId;
+        const right = reference ? findTarget(reference) : null;
+        if (left && right) return compareValues(Math.hypot(left.x - right.x, left.y - right.y), condition.operator, condition.distance);
+        return false;
+      }
       if (condition.type === 'variableCompare') return compare(state.variables[condition.variable], condition.operator, condition.value);
       if (condition.type === 'timerReady') return state.time + 1e-9 >= (state.timers.get(`${event.ownerId || '$scene'}:${condition.timer}`) || 0);
       if (condition.type === 'timerExists') return state.timers.has(`${event.ownerId || '$scene'}:${condition.timer}`);
@@ -386,6 +417,31 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         }
         case 'playWeaponClip': state.weaponAnimations.set(action.weapon, { clipId: action.clipId, start: state.time }); break;
+        case 'spawnEntity': {
+          const template = project.map.entities.find(entity => entity.id === action.templateId);
+          if (!template) throw new Error(`Unknown spawn template ${action.templateId}`);
+          state.spawnSequence = (state.spawnSequence || 0) + 1;
+          let id = `spawn_${action.templateId}_${state.spawnSequence}`;
+          while (state.entities.some(entity => entity.id === id)) id += '_';
+          const spawned = structuredClone(template);
+          Object.assign(spawned, { id, x: action.x, y: action.y, spawnedFrom: action.templateId,
+            variables: { ...(template.variables || {}) } });
+          if (action.z !== undefined) spawned.z = action.z;
+          if (action.angle !== undefined) spawned.angle = action.angle;
+          if (action.name) spawned.name = action.name.slice(0, 100);
+          state.entities.push(spawned);
+          state.worldRevision++;
+          break;
+        }
+        case 'setEntityScale': {
+          const entity = findTarget(action.entityId);
+          if (entity) { entity.spriteScale = action.scale; if (entity.modelAsset) entity.modelScale = action.scale; }
+          break;
+        }
+        case 'setGravityScale':
+          state.physics?.gravityScale(resolveEntityId(event, action.entityId), action.scale); break;
+        case 'setDamping':
+          state.physics?.damping(resolveEntityId(event, action.entityId), action.damping); break;
         case 'moveSector': moveSector(state, action); break;
         case 'setWeaponOwned': {
           if (action.owned === 'yes') {

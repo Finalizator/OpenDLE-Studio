@@ -21,10 +21,12 @@ GDevelop-style condition/action scripting.
 - **Visual world editing:** build and edit sectors, rooms, materials, lighting
   and objects in 2D and 3D.
 - **Editable gameplay:** attach visual events to objects, use local variables
-  and expressions, and customize imported gameplay.
+  and expressions, and customize imported gameplay. Game-wide and object-local
+  scripts are separate authoring scopes; see
+  [visual scripting](Docs/visual-scripting.md).
 - **Bring your worlds along:** import WAD, PK3 and standalone IPK3 resources,
-  classic Doom and UDMF game levels, textures, sprites, weapons, sounds and
-  supported game menus.
+  classic Doom and UDMF game levels, textures, sprites, weapons, sounds,
+  MIDI/MUS level music and supported game menus.
   Keep supported original episode menus and editable level-finish screens;
   switch levels in the editor or during play.
 - **Design the interface:** edit HUDs and menus with responsive layouts,

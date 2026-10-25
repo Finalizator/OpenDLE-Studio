@@ -1,3 +1,21 @@
+/**
+ * Two authoring scopes, both ordinary editable events:
+ * - "object": logic owned by one object instance (`ownerId`) or applied to every
+ *   instance of an object type (`forEachType`). This is local behaviour.
+ * - "game": scene/engine-wide rules that are not bound to an object instance.
+ * The runtime executes both in one top-to-bottom order; the split is authoring
+ * structure, not a hidden engine difference.
+ */
+export function eventScope(event) {
+  return event.ownerId !== undefined || event.forEachType ? 'object' : 'game';
+}
+
+export function eventScopeCounts(events) {
+  const counts = { object: 0, game: 0, sheets: { engine: 0, game: 0, object: 0 } };
+  for (const event of events) counts[eventScope(event)]++;
+  return counts;
+}
+
 export function eventDepth(events, event) {
   const byId = new Map(events.map(event => [event.id, event]));
   let depth = 0;
@@ -30,7 +48,7 @@ export function moveEventBranch(project, id, direction) {
 }
 
 export function validateEventStructure(project, assert) {
-  const sheets = new Set((project.eventSheets || []).map(sheet => sheet.id));
+  const sheets = new Map((project.eventSheets || []).map(sheet => [sheet.id, sheet]));
   const groups = new Map((project.eventGroups || []).map(group => [group.id, group]));
   const previous = new Map(), stack = [];
   for (const group of groups.values()) {
@@ -40,6 +58,12 @@ export function validateEventStructure(project, assert) {
     if (event.groupId !== undefined) {
       const group = groups.get(event.groupId);
       assert(group && group.sheetId === event.sheetId, 'Event group must exist in the same sheet');
+    }
+    // Object-scope sheets are contracts: they only hold object-local rules.
+    // Engine/game sheets remain permissive so imported projects stay valid.
+    if (sheets.get(event.sheetId)?.section === 'object') {
+      assert(event.ownerId !== undefined || event.forEachType,
+        'An object script sheet can only contain object-owned or for-each rules');
     }
     if (event.parentId !== undefined) {
       const parent = previous.get(event.parentId);

@@ -1,10 +1,15 @@
-export function createAudioPlayer(project, onError, AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext) {
-  if (!AudioContextClass) throw new Error('Web Audio is unavailable in this browser');
-  const context = new AudioContextClass(), assets = new Map(project.assets.filter(asset => asset.kind === 'sound').map(asset => [asset.name, asset]));
+import { parseMusic } from '../shared/music.js';
+import { createMusicScheduler, musicBytes } from './music-player.js';
+
+export function createAudioPlayer(project, onError, AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext, existingContext) {
+  if (!AudioContextClass && !existingContext) throw new Error('Web Audio is unavailable in this browser');
+  const context = existingContext || new AudioContextClass();
+  const assets = new Map(project.assets.filter(asset => asset.kind === 'sound').map(asset => [asset.name, asset]));
   const buffers = new Map(), voices = new Set();
   const master = context.createGain(); master.connect(context.destination);
   const musicGain = context.createGain(); musicGain.connect(context.destination);
-  let music = null, musicName = null;
+  let music = null, musicName = null, musicScore = null, musicStarted = false;
+  let musicRequested = null, musicTrack = null, musicError = null, musicVolume = 1;
   let disposed = false;
   let reportedOverflow = false;
   const report = error => { if (!disposed) onError(`Audio: ${error.message}`); };
@@ -14,6 +19,7 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
   };
   // Called from the Play click before asynchronous renderer loading.
   resume();
+  const musicScheduler = createMusicScheduler(context, { destination: musicGain, onError: report });
   function load(name) {
     if (!assets.has(name)) return Promise.reject(new Error(`Unknown embedded sound: ${name}`));
     if (!buffers.has(name)) {
@@ -25,11 +31,30 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
   }
   return {
     resume,
+    /** Diagnostics for the editor status line: is a soundtrack embedded and playing? */
+    musicInfo() {
+      return { requested: musicRequested, track: musicTrack, playing: Boolean(musicScore) && musicScheduler.playing,
+        hasMusicAssets: project.assets.some(asset => asset.kind === 'music'), error: musicError, volume: musicVolume };
+    },
     update(state) {
       master.gain.value = state.settings?.muted ? 0 : state.settings?.volume ?? 1;
-      musicGain.gain.value = state.settings?.muted ? 0 : state.settings?.musicVolume ?? .5;
-      const track = project.assets.find(asset => asset.kind === 'sound' && asset.music);
-      if (track && musicName !== track.name) {
+      musicVolume = state.settings?.musicVolume ?? .5;
+      musicGain.gain.value = state.settings?.muted ? 0 : musicVolume;
+      const requested = project.environment?.musicAsset || project.environment?.music;
+      musicRequested ??= requested || null;
+      const track = project.assets.find(asset => asset.kind === 'music' &&
+        (asset.id === requested || asset.name === requested)) ||
+        project.assets.find(asset => asset.kind === 'sound' && asset.music);
+      if (track && track.kind === 'music' && !musicStarted) {
+        musicStarted = true;
+        try {
+          musicScore = parseMusic(musicBytes(track), track.name);
+          musicTrack = track.name;
+          if (!musicScheduler.start(musicScore)) { musicScore = null; musicError = 'the score has no playable notes'; }
+        } catch (error) { musicError = error.message; report(new Error(`Music ${track.name}: ${error.message}`)); }
+        return;
+      }
+      if (track && track.kind === 'sound' && musicName !== track.name) {
         musicName = track.name;
         load(track.name).then(buffer => {
           if (disposed) return;
@@ -60,10 +85,12 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
     },
     dispose() {
       disposed = true;
+      musicScheduler.dispose();
       music?.stop(); music?.disconnect(); master.disconnect(); musicGain.disconnect();
       for (const source of voices) source.stop();
       voices.clear(); buffers.clear();
-      context.close().catch(error => onError(`Audio cleanup: ${error.message}`));
+      // A shared (primed) context outlives one preview, so only close our own.
+      if (!existingContext) context.close().catch(error => onError(`Audio cleanup: ${error.message}`));
     },
   };
 }

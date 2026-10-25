@@ -211,7 +211,7 @@ test('real Freedoom MAP01 imports bounded portable textures, sectors, skies, spr
   validateProject(project);
   assert.equal(project.map.sectors.length, 130);
   assert.equal(project.map.walls.length, 653);
-  const images = project.assets.filter(asset => asset.kind !== 'sound');
+  const images = project.assets.filter(asset => !['sound', 'music'].includes(asset.kind));
   assert.ok(images.length >= 200 && images.length < 1000);
   assert.ok(project.assets.filter(asset => asset.kind === 'sound').length > 90);
   for (const kind of ['texture', 'flat', 'sky', 'sprite', 'weapon']) assert.ok(project.assets.some(asset => asset.kind === kind), kind);
@@ -219,8 +219,10 @@ test('real Freedoom MAP01 imports bounded portable textures, sectors, skies, spr
   assert.equal(sectorAt(sectorGeometry(project), spawn.x, spawn.y).floorHeight, 0);
   assert.ok(project.map.entities.some(entity => entity.light));
   assert.ok(project.environment.weaponAsset);
-  assert.ok(JSON.stringify(project).length < 7 * 1024 * 1024);
+  assert.ok(JSON.stringify(project).length < 8.5 * 1024 * 1024);
   assert.ok(project.assets.some(asset => asset.name === 'INTERPIC'));
+  assert.ok(project.assets.filter(asset => asset.kind === 'music').length >= 30, 'music lumps are imported');
+  assert.equal(project.environment.music, 'D_RUNNIN');
   for (const asset of images) {
     const png = PNG.sync.read(Buffer.from(asset.src.split(',')[1], 'base64'));
     assert.equal(png.width, asset.width); assert.equal(png.height, asset.height);

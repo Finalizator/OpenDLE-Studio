@@ -22,35 +22,84 @@ export const doomWalk = {
 };
 
 export function clipFrame(project, clipId, elapsed) {
-  const clip = project.spriteClips?.find(clip => clip.id === clipId);
-  if (!clip) return null;
-  const duration = clip.frames.length * clip.seconds;
-  const time = clip.loop ? Math.max(0, elapsed) % duration : Math.min(Math.max(0, elapsed), duration - 1e-8);
-  return { assetId: clip.frames[Math.floor(time / clip.seconds)], finished: !clip.loop && elapsed >= duration };
+  const index = spriteIndex(project);
+  if (!index.clips.has(clipId)) return null;
+  return index.frame(clipId, elapsed);
+}
+
+const indexCache = new WeakMap();
+
+// Sprite lookups are per entity per frame; the index turns the two linear scans
+// (clip by id and asset by id) into map hits and reuses one result object.
+export function spriteIndex(project) {
+  const assets = project.assets, clips = project.spriteClips;
+  const cached = indexCache.get(project);
+  if (cached && cached.assetList === assets && cached.clipList === clips &&
+    cached.assetCount === (assets?.length || 0) && cached.clipCount === (clips?.length || 0)) return cached;
+  const index = createSpriteIndex(project);
+  index.assetList = assets; index.clipList = clips;
+  index.assetCount = assets?.length || 0; index.clipCount = clips?.length || 0;
+  indexCache.set(project, index);
+  return index;
+}
+
+export function createSpriteIndex(project) {
+  const assetById = new Map((project.assets || []).map(asset => [asset.id, asset]));
+  const clipById = new Map((project.spriteClips || []).map(clip => [clip.id, clip]));
+  const frameResult = { assetId: null, finished: false };
+  const viewResult = { assetId: null, flip: false };
+  function frame(clipId, elapsed) {
+    const clip = clipById.get(clipId);
+    if (!clip) { frameResult.assetId = null; frameResult.finished = false; return frameResult; }
+    const duration = clip.frames.length * clip.seconds;
+    const time = clip.loop ? Math.max(0, elapsed) % duration : Math.min(Math.max(0, elapsed), duration - 1e-8);
+    frameResult.assetId = clip.frames[Math.floor(time / clip.seconds)];
+    frameResult.finished = !clip.loop && elapsed >= duration;
+    return frameResult;
+  }
+  function asset(id) { return assetById.get(id); }
+  function clip(id) { return clipById.get(id); }
+  function view(state, entity, viewer = state.player) {
+    const animation = state.spriteAnimations?.get(entity.id);
+    const clipId = animation?.clipId || entity.spriteStates?.stand;
+    let assetId = entity.spriteAsset;
+    if (clipId) {
+      const current = frame(clipId, animation ? state.time - animation.start : state.time);
+      if (current.assetId) assetId = current.assetId;
+    }
+    const rotations = assetById.get(assetId)?.rotations;
+    if (!rotations) { viewResult.assetId = assetId; viewResult.flip = false; return viewResult; }
+    const bearing = Math.atan2(viewer.y - entity.y, viewer.x - entity.x) * 180 / Math.PI;
+    const rotation = ((Math.floor(((entity.angle || 0) - bearing + 22.5) / 45) % 8) + 8) % 8;
+    const sprite = rotations[rotation];
+    viewResult.assetId = sprite.assetId;
+    viewResult.flip = Boolean(sprite.flip);
+    return viewResult;
+  }
+  return { assets: assetById, clips: clipById, asset, clip, frame, view };
 }
 
 export function setSpriteState(project, state, entity, name, restart = false) {
   const clipId = entity.spriteStates?.[name];
   if (!clipId) return;
+  const index = spriteIndex(project);
   const current = state.spriteAnimations.get(entity.id);
   if (current?.name === name && !restart) return;
-  if (current && !['death', 'pain'].includes(name) && !clipFrame(project, current.clipId, state.time - current.start)?.finished &&
-    !project.spriteClips.find(clip => clip.id === current.clipId).loop) return;
+  if (current && !['death', 'pain'].includes(name) && !index.frame(current.clipId, state.time - current.start).finished &&
+    !index.clip(current.clipId)?.loop) return;
   state.spriteAnimations.set(entity.id, { clipId, name, start: state.time });
 }
 
 export function spriteAsset(project, state, entity) {
+  const index = spriteIndex(project);
   const animation = state.spriteAnimations.get(entity.id);
-  return clipFrame(project, animation?.clipId || entity.spriteStates?.stand, animation ? state.time - animation.start : state.time)?.assetId || entity.spriteAsset;
+  const clipId = animation?.clipId || entity.spriteStates?.stand;
+  return (clipId ? index.frame(clipId, animation ? state.time - animation.start : state.time).assetId : null) || entity.spriteAsset;
 }
 
 export function spriteView(project, state, entity, viewer = state.player) {
-  const assetId = spriteAsset(project, state, entity);
-  const rotations = project.assets.find(asset => asset.id === assetId)?.rotations;
-  if (!rotations) return { assetId, flip: false };
-  const bearing = Math.atan2(viewer.y - entity.y, viewer.x - entity.x) * 180 / Math.PI;
-  const rotation = ((Math.floor(((entity.angle || 0) - bearing + 22.5) / 45) % 8) + 8) % 8;
-  return rotations[rotation];
+  const view = spriteIndex(project).view(state, entity, viewer);
+  return { assetId: view.assetId, flip: view.flip };
 }
 
 export function installSpriteAnimations(project, assets) {
@@ -58,6 +107,8 @@ export function installSpriteAnimations(project, assets) {
   const used = new Set([...project.assets, ...project.events, ...project.eventSheets, ...project.eventGroups,
     ...project.map.vertices, ...project.map.walls, ...project.map.sectors, ...project.map.entities,
     ...(project.hud ? [...project.hud.elements, ...project.hud.fonts, ...project.hud.animations] : [])].map(item => item.id));
+  const assetById = new Map(project.assets.map(asset => [asset.id, asset]));
+  const existingClips = new Map(project.spriteClips.map(clip => [clip.id, clip]));
   function clip(prefix, name, letters, seconds, loop, kind = 'sprite') {
     const frames = [];
     for (const letter of letters) {
@@ -67,10 +118,11 @@ export function installSpriteAnimations(project, assets) {
     }
     if (!frames.length) return null;
     let id = `clip_${prefix}_${name}`;
-    const existing = project.spriteClips.find(clip => clip.id === id);
-    if (existing) return id;
+    if (existingClips.has(id)) return id;
     while (used.has(id)) id += '_';
-    used.add(id); project.spriteClips.push({ id, name: `${prefix} / ${name}`, frames, seconds, loop });
+    used.add(id);
+    const created = { id, name: `${prefix} / ${name}`, frames, seconds, loop };
+    project.spriteClips.push(created); existingClips.set(id, created);
     return id;
   }
   project.materialAnimations = [];
@@ -86,7 +138,7 @@ export function installSpriteAnimations(project, assets) {
     }
   }
   for (const entity of project.map.entities) {
-    const asset = project.assets.find(asset => asset.id === entity.spriteAsset);
+    const asset = assetById.get(entity.spriteAsset);
     if (!asset) continue;
     const prefix = asset.name.slice(0, 4);
     const [walkLetters, walkSeconds] = doomWalk[prefix] || ['ABCD', 8 / 35];

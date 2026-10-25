@@ -13,6 +13,8 @@ import { readWad } from '../shared/wad.js';
 import { openLocalBrowser } from './browser.js';
 import { readEngineVersion } from './version.js';
 import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, inspectPackage, importPackage } from './packages.js';
+import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
+import { createPortableBuild } from './export-build.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function equal(a, b) {
@@ -29,6 +31,7 @@ export function createApp({
   projectsDir = resolve(root, 'Projects'),
   openBrowser = openLocalBrowser,
   versionFile = resolve(root, 'version.ini'),
+  importCache,
 } = {}) {
   readEngineVersion(versionFile);
   const app = express();
@@ -95,33 +98,83 @@ export function createApp({
     if (scope !== undefined && !['game', 'level'].includes(scope)) throw new Error('Import scope must be game or level');
     return scope !== 'level';
   };
-  app.post('/api/import/local-wad', (req, res) => res.json(importWad(localWad(req.body.name), req.body.map,
-    { fullGame: fullGameImport(req.body.scope), title: req.body.name.replace(/\.wad$/i, '') })));
+  const cache = importCache === null ? null : importCache || createImportCache({
+    directory: resolve(root, 'data/import-cache'), fingerprint: importCacheFingerprint(root),
+  });
+  const fresh = query => query.fresh === '1' || query.fresh === 'true';
+  const fileStamp = name => {
+    const info = statSync(resolve(projectsDir, name), { throwIfNoEntry: false });
+    return info?.isFile() ? `${name}:${info.size}:${info.mtimeMs}` : `${name}:missing`;
+  };
+  app.post('/api/import/local-wad', (req, res) => {
+    const bytes = localWad(req.body.name), options = { fullGame: fullGameImport(req.body.scope), title: req.body.name.replace(/\.wad$/i, '') };
+    const key = importCacheKey(['wad', createHash('sha256').update(bytes).digest('hex'), req.body.map ?? '', options.fullGame, options.title]);
+    const cached = fresh(req.body) ? null : cache?.get(key);
+    const result = cached || importWad(bytes, req.body.map, options);
+    if (!cached) cache?.set(key, result);
+    res.json({ ...result, cached: cached?.cached || null });
+  });
   app.post('/api/import/wad', express.raw({ type: 'application/octet-stream', limit: '128mb' }), (req, res) => {
     if (!Buffer.isBuffer(req.body)) throw new Error('Expected a binary WAD body');
-    res.json(importWad(req.body, req.query.map, { fullGame: fullGameImport(req.query.scope) }));
+    const options = { fullGame: fullGameImport(req.query.scope) };
+    const key = importCacheKey(['wad', createHash('sha256').update(req.body).digest('hex'), req.query.map ?? '', options.fullGame, null]);
+    const cached = fresh(req.query) ? null : cache?.get(key);
+    const result = cached || importWad(req.body, req.query.map, options);
+    if (!cached) cache?.set(key, result);
+    res.json({ ...result, cached: cached?.cached || null });
   });
   app.get('/api/packages', (req, res) => res.json(packageLibrary(projectsDir)));
   app.post('/api/packages/inspect', async (req, res) => res.json(inspectPackage(await readLocalPackage(projectsDir, req.body.name))));
   app.post('/api/packages/upload/inspect', express.raw({ type: 'application/octet-stream', limit: '128mb' }), async (req, res) =>
     res.json(inspectPackage(await readPackageArchive(req.body))));
   app.post('/api/import/local-package', async (req, res) => {
+    const source = resolve(projectsDir, String(req.body.name || ''));
+    const signature = statSync(source, { throwIfNoEntry: false })?.isDirectory() ? directorySignature(source) : fileStamp(req.body.name);
+    const options = { map: req.body.map, paths: req.body.paths, fullGame: fullGameImport(req.body.scope),
+      base: req.body.base ? fileStamp(req.body.base) : null };
+    const key = importCacheKey(['package', req.body.name, signature, options]);
+    const cached = fresh(req.body) ? null : cache?.get(key);
+    if (cached) return res.json({ ...cached, cached: cached.cached || null });
     const files = await readLocalPackage(projectsDir, req.body.name);
-    res.json(importPackage(files, { map: req.body.map, paths: req.body.paths,
-      fullGame: fullGameImport(req.body.scope),
-      baseBytes: req.body.base ? localWadBytes(projectsDir, req.body.base) : undefined }));
+    const result = importPackage(files, { map: req.body.map, paths: req.body.paths,
+      fullGame: options.fullGame,
+      baseBytes: req.body.base ? localWadBytes(projectsDir, req.body.base) : undefined });
+    cache?.set(key, result);
+    res.json({ ...result, cached: null });
   });
   app.post('/api/import/package', express.raw({ type: 'application/octet-stream', limit: '128mb' }), async (req, res) => {
     const files = await readPackageArchive(req.body);
     const inspection = inspectPackage(files);
     const indices = typeof req.query.images === 'string' && req.query.images ? req.query.images.split(',') : [];
     if (indices.some(index => !/^\d+$/.test(index) || !inspection.images[Number(index)])) throw new Error('Invalid package image selection');
-    res.json(importPackage(files, { map: req.query.map, paths: indices.map(index => inspection.images[Number(index)]),
-      fullGame: fullGameImport(req.query.scope),
-      baseBytes: req.query.base ? localWadBytes(projectsDir, req.query.base) : undefined }));
+    const options = { map: req.query.map, paths: indices.map(index => inspection.images[Number(index)]),
+      fullGame: fullGameImport(req.query.scope), base: req.query.base ? req.query.base : null };
+    const key = importCacheKey(['package-upload', createHash('sha256').update(req.body).digest('hex'), options]);
+    const cached = fresh(req.query) ? null : cache?.get(key);
+    const result = cached || importPackage(files, { map: req.query.map, paths: options.paths,
+      fullGame: options.fullGame,
+      baseBytes: req.query.base ? localWadBytes(projectsDir, req.query.base) : undefined });
+    if (!cached) cache?.set(key, result);
+    res.json({ ...result, cached: cached?.cached || null });
   });
-  app.get('/api/project', (req, res) => res.json(store.snapshot()));
-  app.put('/api/project', (req, res) => res.json(store.update(req.body.project, req.body.revision)));
+  app.get('/api/import-cache', (req, res) => {
+    const files = cache?.files() || [];
+    res.set('Cache-Control', 'no-store').json({ enabled: Boolean(cache), ...(cache?.stats() || {}),
+      entries: files.length, bytes: files.reduce((sum, file) => sum + file.size, 0) });
+  });
+  app.delete('/api/import-cache', (req, res) => {
+    cache?.clear();
+    res.json({ cleared: Boolean(cache) });
+  });
+  app.get('/api/export/build', async (req, res) => {
+    const project = store.snapshot().project;
+    const built = await createPortableBuild({ project, projectJson: JSON.stringify(project),
+      version: readEngineVersion(versionFile), platform: req.query.platform || process.platform });
+    res.set({ 'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${built.filename}"`,
+      'Content-Length': String(built.bytes.length) }).send(built.bytes);
+  });
+  app.get('/api/project', (req, res) => res.json(store.snapshot()));  app.put('/api/project', (req, res) => res.json(store.update(req.body.project, req.body.revision)));
   let aiBusy = false;
   app.post('/api/ai', async (req, res) => {
     if (aiBusy) return res.status(429).json({ error: 'An AI request is already running' });

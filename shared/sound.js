@@ -10,6 +10,18 @@ export function encodeSound(bytes, format) {
   return `data:audio/${format === 'mp3' ? 'mpeg' : format};base64,${btoa(binary)}`;
 }
 
+export function encodeMusic(bytes, format) {
+  if (!['midi', 'mus'].includes(format)) throw new Error(`Unsupported music format ${format}`);
+  const header = format === 'midi'
+    ? bytes[0] === 77 && bytes[1] === 84 && bytes[2] === 104 && bytes[3] === 100
+    : bytes[0] === 77 && bytes[1] === 85 && bytes[2] === 83 && bytes[3] === 0x1a;
+  if (!header) throw new Error(`Invalid ${format === 'midi' ? 'MIDI' : 'MUS'} music data`);
+  if (bytes.length > 2 * 1024 * 1024) throw new Error('Music track exceeds 2 MiB');
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+  return `data:audio/${format === 'midi' ? 'midi' : 'x-mus'};base64,${btoa(binary)}`;
+}
+
 export function wavSound(samples, sampleRate) {
   if (!(samples instanceof Uint8Array) || !samples.length || samples.length > 2 * 1024 * 1024 ||
     !Number.isInteger(sampleRate) || sampleRate < 4000 || sampleRate > 48000) throw new Error('Invalid PCM sound samples/rate');
