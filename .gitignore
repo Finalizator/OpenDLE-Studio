@@ -34,3 +34,9 @@ Thumbs.db
 
 # Workspace AI rules
 /.github/copilot-instructions.md
+
+# Internal planning notes and working questions (not published documentation)
+/Docs/open-questions.md
+/Docs/multiplayer-plan.md
+/Docs/photocraft-integration-plan.md
+/Docs/renderer-backends.md

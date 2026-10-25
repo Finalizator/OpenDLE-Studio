@@ -1607,10 +1607,7 @@ the UI reports this and keeps edits in memory.
    compatibility needs runtime implementation and representative game fixtures,
    not just additional archive readers.
 
-Planning documents: [visual scripting](Docs/visual-scripting.md),
-[renderer backends](Docs/renderer-backends.md),
-[multiplayer](Docs/multiplayer-plan.md),
-[Photocraft image-editor integration](Docs/photocraft-integration-plan.md).
+Visual scripting reference: [Docs/visual-scripting.md](Docs/visual-scripting.md).
 
 ### Standalone playable export
 
