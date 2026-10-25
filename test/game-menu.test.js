@@ -214,15 +214,18 @@ test('classic WAD menus import their own title, option and skill patches and sur
   const title = p.hud.elements.find(item => item.name === `${p.title} background`);
   assert.equal(p.assets.find(asset => asset.id === title.assetId).name, 'TITLEPIC');
   assert.equal(p.hud.elements.some(item => item.name === `${p.title} heading`), false);
-  for (const background of p.hud.elements.filter(item => p.gameMenus.elementIds.includes(item.id) && item.name.endsWith(' background'))) {
+  const frame = p.hud.elements.find(item => item.name === 'Game menu canvas');
+  for (const background of p.hud.elements.filter(item => item.parentId === frame.id && item.name.endsWith(' background'))) {
     assert.deepEqual(background.anchors, { left: 0, top: 0, right: 1, bottom: 1 });
     assert.equal(background.width, 0); assert.equal(background.height, 0);
   }
   assert.ok(p.assets.some(asset => asset.name === 'M_OPTION'));
+  for (const name of ['M_LOADG', 'M_SAVEG', 'M_LSLEFT', 'M_LSCNTR', 'M_LSRGHT'])
+    assert.ok(p.assets.some(asset => asset.name === name), `original save/load artwork ${name}`);
+  assert.ok(p.hud.elements.some(item => item.name === 'save slot 1 border' && item.imageRepeat === 'repeat-x'));
   assert.ok(p.hud.elements.some(item => item.interactive && item.assetId && p.assets.find(a => a.id === item.assetId).name === 'M_NGAME'));
   assert.ok(p.map.entities.some(entity => entity.skillMask));
   assert.ok(warnings.some(w => /MUS\/MIDI/.test(w)));
-  const frame = p.hud.elements.find(item => item.name === 'Game menu canvas');
   const help = p.hud.elements.find(item => item.name === 'Imported help artwork');
   assert.equal(help.parentId, frame.id);
   assert.deepEqual([help.x, help.y, help.width, help.height], [0, 0, 320, 200]);

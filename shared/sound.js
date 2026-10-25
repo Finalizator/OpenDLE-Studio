@@ -4,7 +4,7 @@ export function encodeSound(bytes, format) {
     bytes[8] === 87 && bytes[9] === 65 && bytes[10] === 86 && bytes[11] === 69
     : format === 'ogg' ? signature(79, 103, 103, 83) && bytes.length >= 27
       : format === 'mp3' && bytes.length >= 4 && (signature(73, 68, 51) || bytes[0] === 255 && (bytes[1] & 224) === 224);
-  if (!valid || bytes.length > 4 * 1024 * 1024) throw new Error(`Invalid or oversized ${format} sound`);
+  if (!valid || bytes.length > 8 * 1024 * 1024) throw new Error(`Invalid or oversized ${format} sound (maximum 8 MiB)`);
   let binary = '';
   for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
   return `data:audio/${format === 'mp3' ? 'mpeg' : format};base64,${btoa(binary)}`;

@@ -4,6 +4,7 @@ import { GAME_HUD_BINDINGS, GAME_SETTINGS } from './game-settings.js';
 
 export const HUD_PROPERTIES = ['x', 'y', 'width', 'height', 'opacity', 'scale', 'rotation', 'value', 'frame', 'fontSize'];
 export const HUD_STATS = ['health', 'armor', 'bullets'];
+export const MAX_HUD_ELEMENTS = 512;
 const limits = {
   x: [-16384, 16384], y: [-16384, 16384], width: [-16384, 16384], height: [-16384, 16384],
   opacity: [0, 1], scale: [.01, 20], rotation: [-3600, 3600], value: [-1e9, 1e9],
@@ -44,7 +45,7 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
     }
     assert(size <= 2 * 1024 * 1024, 'HUD imported sources exceed 2 MiB');
   }
-  list(hud.fonts, 64, 'fonts'); list(hud.elements, 256, 'elements'); list(hud.animations, 128, 'animations');
+  list(hud.fonts, 64, 'fonts'); list(hud.elements, MAX_HUD_ELEMENTS, 'elements'); list(hud.animations, 128, 'animations');
   if (hud.styles !== undefined) {
     list(hud.styles, 128, 'CSS classes');
     const names = new Set();
@@ -195,6 +196,8 @@ export function hudBinding(binding, state) {
   if (binding.startsWith('key:') && state.settings?.bindings?.[binding.slice(4)]) return state.settings.bindings[binding.slice(4)];
   if (binding === 'game:screen') return state.gameScreen || 'playing';
   if (binding === 'game:binding') return state.bindingKey ? `Press a key or mouse button for ${state.bindingKey}; Escape cancels` : 'Select a binding to change it';
+  if (/^game:save[1-6]$/.test(binding)) return state.saveSlots?.[Number(binding.at(-1)) - 1] || 'Empty slot';
+  if (binding === 'game:saveStatus') return state.saveStatus || '';
   if (binding === 'message') return state.settings?.messages === false ? '' : state.messageTime > 0 ? state.message : '';
   if (binding.startsWith('var:')) return state.variables[binding.slice(4)];
   return playerBinding(binding, state);

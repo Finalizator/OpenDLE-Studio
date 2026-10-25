@@ -674,8 +674,23 @@ the new-game entry and normal/secret exit destinations. **Play level** tests the
 edited map; **Play game** opens the campaign entry. The preview toolbar's **Level**
 selector starts any imported level with fresh inventory without changing the
 editor selection or original game artwork. New game resets to the configured
-entry. MCP exposes `game_level_select` and `game_level_set_routes`; visual scripts
+entry unless the imported game's episode menu selects another start map.
+MCP exposes `game_level_select` and `game_level_set_routes`; visual scripts
 can use `loadGameLevel(levelId)` or `finishLevel(exit:normal|secret)`.
+
+Original episode selection is translated into native editable HUD elements and
+interface event rules, not added as an engine overlay. MAPINFO/ZMAPINFO episode
+blocks (including bounded includes, `clearepisodes`, removal, name, patch and
+`noskillmenu`) populate the imported MENUDEF EpisodeMenu at its authored
+position, font and line spacing. SkillMenu's engine-populated difficulty rows
+are also converted; previously an otherwise empty MENUDEF template lost these
+rows. Classic Doom uses its available episode start maps and M_EPI artwork;
+Doom II does not acquire an invented level menu. A single episode normally
+skips selection. MENUDEF commands consisting only of `map LEVEL` become native
+`loadGameLevel` actions when that level is available; arbitrary console commands
+are not executed. Original episode source text is retained under
+`gameMenus.episodeSources`. Custom scripted menu classes and arbitrary
+script-generated level lists still require translation.
 
 Classic Doom exit specials 11/51 (use), 52/124 (cross) and 197/198 (shoot), plus
 UDMF Exit_Normal/Exit_Secret (243/244) with explicit supported player activation
@@ -685,8 +700,24 @@ fields; end-game destinations end the campaign. Health, armor, ammo and weapon
 inventory carry across exits; keys and per-map world state reset. Generated
 initial-player-stat rules use `levelTransition` so they do not erase carried
 progress. Manual level selection starts fresh. Arbitrary scripted transitions,
-hub persistence, intermissions, old unbraced MAPINFO syntax, dependency loading
-and complete episode-menu translation remain unsupported.
+hub persistence, old unbraced MAPINFO syntax and dependency loading remain
+unsupported.
+
+Finishing a level opens an editable native intermission before loading the next
+map. Its HUD elements, bindings and interface events are available in the HUD
+designer's **intermission** screen and **Level intermission** event sheet.
+Original INTERPIC/WIMAP backgrounds, level-title and WI label artwork are used
+when available; otherwise native text is used. Crowded imported HUDs use a
+compact six-element layout. The editable HUD budget is 512 elements, shared by
+gameplay, original menus, save/load slots and intermissions. Kills,
+countable items, discovered secret sectors and elapsed time are collected from
+the current runtime, not invented percentages. Continue (click, Enter or Space)
+follows the configured normal/secret route and carries progress; final exits
+show the results before completing the campaign. GZDoom custom intermission
+scripts, multiplayer tallies and animated episode travel routes are not
+translated yet. Existing projects need a full reimport (or a deliberate menu
+rebuild) to install the new editable menu/intermission elements; restarting the
+service alone does not rewrite saved projects.
 
 For PK3 `maps/*.wad`, filenames define logical level names even when internal
 markers duplicate or differ (as in the supplied Furdoom). A custom named
@@ -704,9 +735,22 @@ images report their asset name rather than rendering an untextured white sprite.
 **Play level** still launches the current map immediately. **Play game** opens
 the imported game's title menu first, then New game and skill selection.
 Escape or **Pause / options** opens an in-game menu without advancing gameplay;
-Resume keeps the same runtime, while New game starts the current imported map
-from scratch. Stop preview / Quit returns to the editor. This is not yet a
-multi-map campaign launcher or a savegame system.
+Resume keeps the same runtime, while New game starts the campaign entry or
+selected episode from scratch. Stop preview / Quit returns to the editor.
+
+Save game / Load game pages are native editable HUD and interface events,
+including original `M_SAVEG` / `M_LOADG` patches and dynamic MENUDEF
+SaveGameMenu / LoadGameMenu rows when provided. Six browser-local slots retain
+the current map, player/inventory, enemies, collected objects, variables,
+timers, moving sectors, animation and physics state. Saving requires an active,
+living game, and overwriting an occupied slot requires an in-game confirmation.
+Loading restores the saved map and runtime rather than restarting the level or
+only restoring inventory. Saves use IndexedDB, not localStorage; browser storage
+failures are displayed on the menu and in editor status. They survive closing
+the preview or reloading Studio on the same browser origin. They are not
+GZDoom `.zds` files or project saves. Slots are isolated by a content identity of
+the editable game, so changed/imported content cannot accidentally load an
+incompatible runtime. Clearing site data removes browser-local saves.
 
 Imported menu elements now sit inside a centered, fixed virtual canvas rather
 than spreading across a widescreen HUD. A separate black letterbox hides the
@@ -738,7 +782,7 @@ Classic animated skull cursors and MENUDEF `Selector` patches are editable HUD
 images driven by `hudFocused` visual conditions. Mouse hover and Up/Down choose
 rows; Enter activates them. Auxiliary +/- hit regions are excluded from keyboard
 row navigation (`menuSelectable:false`). Identical cursor artwork is shared
-across pages to stay within the 256-element limit. Cursor animations use the
+across pages to stay within the editable HUD budget. Cursor animations use the
 `interface` playback clock, which continues while gameplay and its HUD animations
 are paused. The HUD timeline exposes both playback clocks. Imported selectors
 replace the browser focus outline only when visible; editor selection outlines
@@ -930,8 +974,8 @@ not Doom's random table, autoaim, refire spread or weapon-state machine.
 Not implemented: complete weapon state machines and power-ups,
 full monster states/pathfinding/special attacks, music, gibs,
 full Doom-specific pickup behavior, difficulty rules, generalized locked switches,
-crushers and remaining linedef/sector specials, hazards/secrets/exits, intermission
-or savegames. These need
+crushers and remaining linedef/sector specials, complete hazards/secrets/exits,
+scripted GZDoom intermissions and original GZDoom save-file compatibility. These need
 additional native primitives plus editable default rules and compatibility
 tests; installing the starter does not make an imported WAD play like Doom.
 
@@ -1172,14 +1216,25 @@ properties and explicit warnings for remaining behavior gaps. Standalone WAD imp
 set. Package map import can explicitly layer one base IWAD under package
 resources; arbitrary multi-mod load orders are not implemented.
 
-### PK3 archives and unpacked resource packages
+### PK3/IPK3 archives and unpacked resource packages
 
 `.pk3` is GZDoom's **ZIP-based resource/mod container**, not a replacement game
 engine or a different WAD map format. It can contain images, nested map WADs,
 audio and gameplay definitions. `.pk7` uses 7z and is not supported here; `.k3`
 is not the usual GZDoom package extension.
 
-- **Import PK3** uploads an archive. **Local package library** discovers `.pk3`
+`.ipk3` uses the same archive format for standalone games. It is discovered and
+imported directly, without running the bundled executable. A standalone game
+does not acquire an unrelated Doom II campaign just because its map filename
+is `map01.wad`; only explicitly referenced base destinations are added. Its base
+selector defaults to **None**, rather than silently applying the installed
+Freedoom IWAD; users can still choose an additional base explicitly.
+The supplied `GZPT/GZPT.ipk3` imports both TITLEMAP and PT01, and
+`intoOblivion/gameData.ipk3` imports its single packaged map. Both were verified
+without an external base. These successful native imports do not imply complete
+conversion of their ACS/ZScript/custom actors; compatibility warnings remain.
+
+- **Import PK3 / IPK3** uploads an archive. **Local package library** discovers `.pk3`/`.ipk3`
   archives and unpacked package folders under `Projects/`, including nested
   distribution folders. Nothing is extracted or executed. Archive reading uses
   `yauzl`; PK3 CRC validation requires Node **22.2+** (Node 24 is recommended).
@@ -1420,8 +1475,9 @@ before persistence. All IDs share a namespace. Projects allow up to 20,000
 vertices, 20,000 walls, 5,000 objects, 500 rules and 100 variables. WAD imports are
 limited to 128 MiB and project HTTP bodies to 128 MiB. Embedded PNG sources are
 limited to 6 MiB per image and 48 MiB shared image/model/font data, with up to
-3,000 assets. Embedded sounds have a separate 64 MiB total, 6 MiB per source;
-ordinary sound file uploads are limited to 4 MiB before base64 encoding.
+3,000 assets. Embedded sounds have a separate 64 MiB total, 12 MiB per source;
+ordinary sound file uploads and package WAV/OGG/MP3 resources are limited to
+8 MiB before base64 encoding.
 WAD image decoding is bounded to 32 million aggregate pixels; malformed image
 offsets, counts and posts fail explicitly. Undo history is bounded to 10
 snapshots for asset-bearing projects (40 otherwise) to limit memory use.

@@ -219,7 +219,8 @@ test('real Freedoom MAP01 imports bounded portable textures, sectors, skies, spr
   assert.equal(sectorAt(sectorGeometry(project), spawn.x, spawn.y).floorHeight, 0);
   assert.ok(project.map.entities.some(entity => entity.light));
   assert.ok(project.environment.weaponAsset);
-  assert.ok(JSON.stringify(project).length < 6 * 1024 * 1024);
+  assert.ok(JSON.stringify(project).length < 7 * 1024 * 1024);
+  assert.ok(project.assets.some(asset => asset.name === 'INTERPIC'));
   for (const asset of images) {
     const png = PNG.sync.read(Buffer.from(asset.src.split(',')[1], 'base64'));
     assert.equal(png.width, asset.width); assert.equal(png.height, asset.height);

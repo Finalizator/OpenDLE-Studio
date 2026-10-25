@@ -1,9 +1,11 @@
-import { hudElement, installDefaultHUD } from './hud.js';
+import { hudElement, installDefaultHUD, MAX_HUD_ELEMENTS } from './hud.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
+import { installIntermission } from './intermission.js';
 
 const aliases = {
   mainmenu: 'title', optionsmenu: 'settings', skillmenu: 'difficulty', playerclassmenu: 'difficulty',
-  episodemenu: 'difficulty', quitmenu: 'quit', readthismenu: 'help',
+  episodemenu: 'episode', quitmenu: 'quit', readthismenu: 'help',
+  savegamemenu: 'save', loadgamemenu: 'load',
   soundoptions: 'audio', mouseoptions: 'controls', controls: 'controls', videomode: 'display',
 };
 const cvars = { snd_sfxvolume: 'volume', snd_musicvolume: 'musicVolume', mouse_sensitivity: 'sensitivity',
@@ -11,17 +13,20 @@ const cvars = { snd_sfxvolume: 'volume', snd_musicvolume: 'musicVolume', mouse_s
   detaillevel: 'lowDetail', screenblocks: 'viewSize' };
 export const menuScreen = name => aliases[name.toLowerCase()] || `mod_${name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}`;
 
-export function rebuildGameMenu(project, assets, definitions = [], warnings = []) {
+export function rebuildGameMenu(project, assets, definitions = [], warnings = [], episodeInfo) {
+  episodeInfo ||= { episodes: project.gameMenus?.episodes || [], sources: project.gameMenus?.episodeSources || [],
+    levelIds: project.game?.levels.map(level => level.id) || [] };
   const removed = new Set(project.gameMenus?.elementIds || []);
   project.hud.elements = project.hud.elements.filter(item => !removed.has(item.id));
   project.hud.fonts = project.hud.fonts.filter(font => (!font.id.startsWith('menu_') && font.name !== 'Imported menu small font') ||
     project.hud.elements.some(element => element.fontId === font.id));
   project.hud.animations = project.hud.animations.filter(clip => !clip.tracks.some(track => removed.has(track.elementId)));
-  project.events = project.events.filter(event => event.sheetId !== 'game_menu_sheet');
-  project.eventGroups = project.eventGroups.filter(group => group.sheetId !== 'game_menu_sheet');
-  project.eventSheets = project.eventSheets.filter(sheet => sheet.id !== 'game_menu_sheet');
+  const generatedSheets = new Set(['game_menu_sheet', 'intermission_sheet']);
+  project.events = project.events.filter(event => !generatedSheets.has(event.sheetId));
+  project.eventGroups = project.eventGroups.filter(group => !generatedSheets.has(group.sheetId));
+  project.eventSheets = project.eventSheets.filter(sheet => !generatedSheets.has(sheet.id));
   delete project.gameMenus;
-  return installGameMenu(project, assets, definitions, warnings);
+  return installGameMenu(project, assets, definitions, warnings, episodeInfo);
 }
 
 export function attachMenuElement(project, item, screen) {
@@ -108,10 +113,16 @@ export function parseMenuDefinitions(source, label = 'MENUDEF', resolve) {
   return { menus, warnings, sources, defaults };
 }
 
-export function installGameMenu(project, assets, definitions = [], warnings = []) {
+export function installGameMenu(project, assets, definitions = [], warnings = [], episodeInfo = { episodes: [], sources: [] }) {
   if (project.eventSheets.some(sheet => sheet.id === 'game_menu_sheet')) return project;
   if (!project.hud) installDefaultHUD(project);
   const hud = project.hud, sx = hud.width / 320, sy = hud.height / 200;
+  const episodes = episodeInfo.episodes;
+  const newGameScreen = episodes.length > 1 ? 'episode' : 'difficulty';
+  const newGameActions = () => episodes.length === 1 && episodes[0].noSkillMenu
+    ? episodeActions(episodes[0]) : [go(newGameScreen)];
+  const skills = ['I am too young to die', 'Hey, not too rough', 'Hurt me plenty', 'Ultra-Violence', 'Nightmare!'];
+  const skillPatches = ['M_JKILL', 'M_ROUGH', 'M_HURT', 'M_ULTRA', 'M_NMARE'];
   const used = new Set([...project.assets, ...project.events, ...project.eventSheets, ...project.eventGroups,
     ...Object.values(project.map).filter(Array.isArray).flat(), ...hud.elements, ...hud.fonts, ...hud.animations].map(item => item.id));
   let sequence = 0;
@@ -147,14 +158,14 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
   const screen = name => ({ type: 'gameScreen', screen: name });
   const go = name => ({ type: 'setGameScreen', screen: name });
   function rule(name, condition, actions, conditions = []) {
-    project.events.push({ id: id(), name, sheetId: sheet.id, groupId: group.id, enabled: true, once: false, condition, conditions, actions });
+    project.events.push({ id: id(), name: name.slice(0, 100), sheetId: sheet.id, groupId: group.id, enabled: true, once: false, condition, conditions, actions });
   }
   rule('Hide menu letterbox during gameplay', { type: 'always' },
     [{ type: 'setHUDVisible', elementId: backdrop.id, visible: 'no' }]);
   rule('Show menu letterbox on menu screens', { type: 'gameScreen', screen: 'playing', inverted: true },
     [{ type: 'setHUDVisible', elementId: backdrop.id, visible: 'yes' }]);
   function element(page, type, name, x, y, width, height, extra = {}) {
-    const item = { ...hudElement(id(), type, name), x: x * sx, y: y * sy, width: width * sx, height: height * sy,
+    const item = { ...hudElement(id(), type, name.slice(0, 100)), x: x * sx, y: y * sy, width: width * sx, height: height * sy,
       parentId: frame.id, fontSize: (menuFont?.cellHeight || 8) * sy, z: 9000, visible: false,
       ...(menuFont && ['text', 'button'].includes(type) ? { fontId: menuFont.id } : {}), ...extra };
     hud.elements.push(item);
@@ -193,15 +204,27 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
     const background = hud.elements.find(item => item.name === `${project.title} background`);
     Object.assign(background, { type: 'image', assetId: title.id });
   }
-  button('title', 'New game', 68, [go('difficulty')], 'M_NGAME');
-  button('title', 'Options', 90, [go('settings')], 'M_OPTION');
-  button('title', 'Read this', 112, [go('help')], 'M_RDTHIS');
-  button('title', 'Quit', 134, [go('quit')], 'M_QUITG');
+  button('title', 'New game', 64, newGameActions(), 'M_NGAME');
+  button('title', 'Options', 80, [go('settings')], 'M_OPTION');
+  button('title', 'Load game', 96, [go('load')], 'M_LOADG');
+  button('title', 'Save game', 112, [go('save')], 'M_SAVEG');
+  button('title', 'Read this', 128, [go('help')], 'M_RDTHIS');
+  button('title', 'Quit', 144, [go('quit')], 'M_QUITG');
   page('pause', 'Paused', null);
-  button('pause', 'Resume', 55, [go('playing')]);
-  button('pause', 'Options', 80, [go('settings')], 'M_OPTION');
-  button('pause', 'New game', 105, [go('difficulty')], 'M_NGAME');
-  button('pause', 'Main menu', 130, [go('title')]);
+  button('pause', 'Resume', 42, [go('playing')]);
+  button('pause', 'Save game', 62, [go('save')], 'M_SAVEG');
+  button('pause', 'Load game', 82, [go('load')], 'M_LOADG');
+  button('pause', 'Options', 102, [go('settings')], 'M_OPTION');
+  button('pause', 'New game', 122, newGameActions(), 'M_NGAME');
+  button('pause', 'Main menu', 142, [go('title')]);
+  for (const name of ['save', 'load']) {
+    page(name, name === 'save' ? 'Save game' : 'Load game', 'return', name === 'save' ? 'M_SAVEG' : 'M_LOADG');
+    saveRows(name, 50, 48, 20);
+  }
+  page('save_confirm', 'Overwrite this saved game?', 'save');
+  button('save_confirm', 'Overwrite save', 80, [{ type: 'confirmSaveGame' }]);
+  button('save_confirm', 'Cancel', 110, [go('save')]);
+  element('save_confirm', 'text', 'Save result', 16, 145, 288, 28, { binding: 'game:saveStatus' });
   page('settings', 'Options', 'return', 'M_OPTTTL');
   for (const [index, [label, name]] of [['Sound', 'audio'], ['Display', 'display'], ['Controls', 'controls']].entries())
     button('settings', label, 48 + index * 25, [go(name)]);
@@ -243,11 +266,16 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
   });
   element('keys', 'text', 'Binding capture status', 20, 164, 280, 14, { binding: 'game:binding', fontSize: 7 * sy });
   page('difficulty', 'Choose skill', 'return', 'M_SKILL');
-  ['I am too young to die', 'Hey, not too rough', 'Hurt me plenty', 'Ultra-Violence', 'Nightmare!'].forEach((label, index) => {
+  skills.forEach((label, index) => {
     button('difficulty', label, 45 + index * 24, [
       { type: 'setGameSetting', setting: 'difficulty', value: index + 1 }, { type: 'startGame' },
-    ], ['M_JKILL', 'M_ROUGH', 'M_HURT', 'M_ULTRA', 'M_NMARE'][index]);
+    ], skillPatches[index]);
   });
+  if (episodes.length > 1) {
+    page('episode', 'Which episode?', 'return', 'M_EPISOD');
+    episodes.forEach((episode, index) => button('episode', episode.name, 50 + index * 20,
+      episodeActions(episode), episode.patch));
+  }
   page('quit', 'Return to editor?', 'return');
   button('quit', 'Return to editor', 80, [{ type: 'quitGame' }]);
   const help = art('HELP1') || art('HELP') || art('CREDIT');
@@ -262,15 +290,42 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
   else element('help', 'text', 'Controls help', 20, 40, 280, 120,
     { text: 'WASD: move\nMouse: look / fire\nSpace: jump / E: use\n1-9: weapons\nEscape: pause\nOptions: change controls and settings' });
   // Existing gameplay HUD is suppressed on menus without changing its authored state.
-  project.gameMenus = { version: 1, presentation: 2, entry: 'title', screens: [...pages], sources: [] };
+  project.gameMenus = { version: 1, presentation: 2, entry: 'title', screens: [...pages], sources: [],
+    episodes, episodeSources: episodeInfo.sources };
   if (assets) installClassicOptions();
   translateDefinitions();
   installSelectors();
+  const existingElements = new Set(hud.elements.map(item => item.id));
+  installIntermission(project, assets);
+  pages.add('intermission');
   project.gameMenus.screens = [...pages];
-  project.gameMenus.elementIds = hud.elements.filter(item => item.id.startsWith('menu_')).map(item => item.id);
-  if (hud.elements.length > 256) throw new Error('Imported menus exceed the editable HUD element limit (256)');
+  project.gameMenus.elementIds = hud.elements.filter(item => item.id.startsWith('menu_') || !existingElements.has(item.id)).map(item => item.id);
+  if (hud.elements.length > MAX_HUD_ELEMENTS) throw new Error(`Imported menus exceed the editable HUD element limit (${MAX_HUD_ELEMENTS})`);
   return project;
 
+  function episodeActions(episode) {
+    return [{ type: 'selectGameEpisode', levelId: episode.levelId },
+      episode.noSkillMenu ? { type: 'startGame' } : go('difficulty')];
+  }
+  function saveRows(name, x, y, spacing, font = item => item) {
+    const left = art('M_LSLEFT'), middle = art('M_LSCNTR'), right = art('M_LSRGHT');
+    for (let slot = 1; slot <= 6; slot++) {
+      if (left && middle && right) {
+        element(name, 'image', `${name} slot ${slot} border left`, x - left.width, y + 7,
+          left.width, left.height, { assetId: left.id });
+        element(name, 'image', `${name} slot ${slot} border`, x, y + 7,
+          middle.width * 24, middle.height, { assetId: middle.id, imageRepeat: 'repeat-x' });
+        element(name, 'image', `${name} slot ${slot} border right`, x + middle.width * 24, y + 7,
+          right.width, right.height, { assetId: right.id });
+      }
+      const item = button(name, `${name === 'save' ? 'Save' : 'Load'} slot ${slot}`, y,
+        [{ type: name === 'save' ? 'saveGame' : 'loadGame', slot }], null, x, middle ? middle.width * 24 : 248);
+      item.text = `${slot}. {game:save${slot}}`; font(item);
+      y += spacing;
+    }
+    element(name, 'text', `${name} game status`, 16, 166, 288, 16,
+      { binding: 'game:saveStatus', fontSize: 7 * sy });
+  }
   function clearPage(name) {
     const removed = new Set(hud.elements.filter(item => project.events.some(event =>
       event.condition.type === 'gameScreen' && event.condition.screen === name &&
@@ -439,13 +494,28 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
                 align: type === 'statictextcentered' ? 'center' : 'left', ...(image ? { assetId: image.id } : {}) }));
           } else if (['patchitem', 'textitem', 'submenu', 'command'].includes(type)) {
             const target = args[type === 'patchitem' || type === 'textitem' ? 2 : 1];
-            const action = /^newgame$/i.test(target) ? { type: 'setGameScreen', screen: 'difficulty' }
+            const mapCommand = /^map\s+([a-zA-Z0-9_-]+)$/i.exec(target || '');
+            if (mapCommand) {
+              const levelId = mapCommand[1].toUpperCase();
+              if (!episodeInfo.levelIds?.includes(levelId)) {
+                warnings.push(`${definition.name}/${menu.name}: level command ${levelId} is unavailable; omitted`);
+                continue;
+              }
+              row();
+              applyFont(button(activePage, args[0], y, [{ type: 'loadGameLevel', levelId }],
+                type === 'patchitem' ? args[0] : null, x));
+              y += spacing; continue;
+            }
+            const action = /^(?:menu_)?savegame$/i.test(target) ? go('save')
+              : /^(?:menu_)?loadgame$/i.test(target) ? go('load')
+              : /^newgame$/i.test(target) ? go(newGameScreen)
               : /^(quit|exit)$/i.test(target) ? go('quit')
                 : go(menuScreen(target || 'MainMenu'));
-            const supported = /menu$/i.test(target || '') || ['submenu', 'patchitem', 'textitem'].includes(type) || /^(newgame|quit|exit)$/i.test(target || '');
+            const supported = /menu$/i.test(target || '') || ['submenu', 'patchitem', 'textitem'].includes(type) || /^(newgame|quit|exit|(?:menu_)?savegame|(?:menu_)?loadgame)$/i.test(target || '');
             if (!supported) { warnings.push(`${definition.name}/${menu.name}: command ${target} is not executable; omitted`); continue; }
             row();
-            applyFont(button(activePage, args[0], y, [action], type === 'patchitem' ? args[0] : null, x)); y += spacing;
+            applyFont(button(activePage, args[0], y, /^newgame$/i.test(target) ? newGameActions() : [action],
+              type === 'patchitem' ? args[0] : null, x)); y += spacing;
           } else if (['slider', 'option'].includes(type)) {
             const key = cvars[String(args[1]).toLowerCase()];
             if (!key) { warnings.push(`${definition.name}/${menu.name}: setting ${args[1]} has no engine implementation; omitted`); continue; }
@@ -460,8 +530,26 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
             row();
             const item = button(activePage, args[0], y, [{ type: 'captureGameBinding', key }], null, x);
             item.text = `${args[0]}: {key:${key}}`; applyFont(item); y += spacing;
+          } else if (['netgamemessage', 'playermessage'].includes(type)) {
+            // These gate multiplayer-only flows; the imported runtime is single-player.
           } else
             warnings.push(`${definition.name}/${menu.name}: unsupported directive ${type}`);
+        }
+        // GZDoom populates these rows at runtime, outside the MENUDEF text.
+        if (menu.name.toLowerCase() === 'episodemenu') {
+          for (const episode of episodes) {
+            applyFont(button(activePage, episode.name, y, episodeActions(episode), episode.patch, x));
+            y += spacing;
+          }
+        } else if (menu.name.toLowerCase() === 'skillmenu') {
+          skills.forEach((label, index) => {
+            applyFont(button(activePage, label, y, [
+              { type: 'setGameSetting', setting: 'difficulty', value: index + 1 }, { type: 'startGame' },
+            ], null, x));
+            y += spacing;
+          });
+        } else if (['savegamemenu', 'loadgamemenu'].includes(menu.name.toLowerCase())) {
+          saveRows(activePage, x, y, spacing, applyFont);
         }
       }
       for (const event of project.events.filter(event => event.sheetId === sheet.id)) for (const action of event.actions) {

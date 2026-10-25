@@ -1,4 +1,4 @@
-import { hudElement, bitmapGlyph } from './hud.js';
+import { hudElement, bitmapGlyph, MAX_HUD_ELEMENTS } from './hud.js';
 import { ammoMaximum } from './player-state.js';
 
 const MAX_SOURCE = 1024 * 1024;
@@ -326,7 +326,7 @@ export function importSBarInfo(project, assets, definitions, warnings = []) {
     }
   }
   compile(selected.children || []);
-  if (hud.elements.length > 256) throw new Error(`${definition.name}: SBARINFO exceeds 256 editable HUD elements`);
+  if (hud.elements.length > MAX_HUD_ELEMENTS) throw new Error(`${definition.name}: SBARINFO exceeds ${MAX_HUD_ELEMENTS} editable HUD elements`);
   project.hud = hud;
   project.eventGroups.push(group);
   project.events.push(...events);

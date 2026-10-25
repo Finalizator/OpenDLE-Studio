@@ -20,10 +20,13 @@ import { createAudioPlayer } from './audio.js';
 import { encodeSound } from '/shared/sound.js';
 import { importedGameplayGaps } from './gameplay-readiness.js';
 import { installGameMenu } from '/shared/game-menu.js';
+import { installIntermission } from '/shared/intermission.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
 import { selectGameLevel } from '/shared/game-levels.js';
 import { requireLicenseAgreement } from './license-agreement.js';
+import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
+import * as gameSaves from './game-saves.js';
 
 const $ = id => document.getElementById(id);
 $('asset-dock').append($('assets-panel'));
@@ -34,9 +37,11 @@ let scriptScope = '$all';
 const collapsedGroups = new Set(), collapsedEvents = new Set();
 const openSpriteClips = new Set();
 let previewRenderer = null, previewLoading = false, mapSectors = [];
+let previewGeneration = 0;
 let audioPlayer = null;
 let settingsRevision = -1, settingsStorageKey = '';
 let hudView = null, previewProject = null, hudCursorActive = false;
+let saveIdentityVersion = -1, saveIdentityPromise = null, previewSaveIdentity = '', saveBusy = false;
 let lookDrag = null, draggedLook = false;
 let wadImport = null;
 let packageSource = null, packageInspection = null, packageBusy = false, packageController = null;
@@ -1330,6 +1335,7 @@ async function reloadProject(initial = false) {
     : recovery?.warning || 'Server project loaded', Boolean(recovery?.warning));
 }
 function stopPreview() {
+  previewGeneration++;
   audioPlayer?.dispose(); audioPlayer = null;
   lookDrag = null; draggedLook = false;
   if (document.pointerLockElement === $('preview')) document.exitPointerLock();
@@ -1382,19 +1388,33 @@ $('system-browser').addEventListener('click', guard(async () => {
     mouseStatus(`Cannot open the system browser: ${error.message}. Open ${location.origin} manually in Chrome/Firefox. If you just updated OpenDLE, restart the local service first.`, true);
   } finally { $('system-browser').disabled = false; }
 }));
-async function beginPreview(gameMode = false, resumeSettings, start = false, levelId, progress) {
+async function beginPreview(gameMode = false, resumeSettings, start = false, levelId, progress, savedGame) {
   if (previewLoading) return;
   if (!project.gameMenus) {
     edit(next => installGameMenu(next), 'Editable game menus added. Save to keep them in the project.');
+  }
+  if (!project.eventSheets.some(sheet => sheet.id === 'intermission_sheet')) {
+    edit(next => installIntermission(next), 'Editable level intermission added. Save to keep it in the project.');
   }
   validateProject(project);
   const gaps = importedGameplayGaps(project);
   if (project.events.length === 0 && gaps.length && !confirm('This is a geometry-only import with no gameplay rules. Weapons, enemies and pickups will not work. Cancel and restore your gameplay draft or reimport the WAD. Continue with a geometry-only preview?')) return;
   previewLoading = true; $('play').disabled = true; $('play-game').disabled = true; $('play-level').disabled = true;
-  const snapshot = structuredClone(project);
-  if (snapshot.game) selectGameLevel(snapshot, levelId || (gameMode ? snapshot.game.entry : snapshot.game.active));
   const version = editVersion;
+  const generation = ++previewGeneration;
+  let replacingPreview = false;
   try {
+    if (saveIdentityVersion !== version || !saveIdentityPromise) {
+      saveIdentityVersion = version; saveIdentityPromise = gameSaveIdentity(project);
+    }
+    const identity = await saveIdentityPromise;
+    if (generation !== previewGeneration) throw new Error('Preview was stopped while loading.');
+    if (version !== editVersion) throw new Error('Project changed while preview loaded. Play again.');
+    const snapshot = structuredClone(project);
+    if (snapshot.game && !savedGame) selectGameLevel(snapshot, levelId || (gameMode ? snapshot.game.entry : snapshot.game.active));
+    const restored = savedGame ? restoreGameSave(snapshot, savedGame, identity) : null;
+    installIntermission(snapshot);
+    replacingPreview = true;
     if (runtime) {
       audioPlayer?.dispose(); audioPlayer = null;
       previewRenderer?.dispose(); previewRenderer = null;
@@ -1414,15 +1434,22 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     Object.assign(settings, readEngineTweaks());
     audioPlayer = createAudioPlayer(snapshot, message => mouseStatus(message, true));
     status('Loading renderer and embedded images (WebGPU preferred, WebGL fallback)...');
-    const nextRuntime = createRuntime(snapshot, { settings, gameMode, progress,
+    const nextRuntime = restored?.runtime || createRuntime(snapshot, { settings, gameMode, progress,
       screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing' });
+    nextRuntime.gameMode = gameMode;
     nextRuntime.hudState.cursor = nextRuntime.gameScreen !== 'playing';
+    try { nextRuntime.saveSlots = saveSlotLabels(await gameSaves.list(identity)); }
+    catch (error) { nextRuntime.saveStatus = `Saved games unavailable: ${error.message}`; status(nextRuntime.saveStatus, true); }
+    if (generation !== previewGeneration) throw new Error('Preview was stopped while loading.');
     const preview = await createPreview($('preview'), snapshot, nextRuntime);
+    if (generation !== previewGeneration) { preview.dispose(); throw new Error('Preview was stopped while loading.'); }
     if (version !== editVersion) { preview.dispose(); throw new Error('Project changed while preview loaded. Play again.'); }
     previewRenderer = preview;
+    if (restored?.physicsData) nextRuntime.physics.restoreState(restored.physicsData);
     runtime = nextRuntime;
     settingsRevision = -1;
     previewProject = snapshot;
+    previewSaveIdentity = identity;
     hudView = createHUDView($('hud-overlay'), snapshot, {
       click: id => { if (runtime?.hudState.cursor && !runtime.bindingKey) runtime.hudState.clicked.add(id); },
       error: message => mouseStatus(message, true),
@@ -1436,12 +1463,43 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       : 'Click: mouse look (or left-drag). Escape releases cursor, then opens the pause menu. WASD moves, arrows turn, Space jumps; E / F / Q trigger events.';
     if (!$('play-dialog').open) $('play-dialog').showModal();
     $('preview').focus(); keys.clear(); pressed.clear();
-    stepRuntime(snapshot, runtime, 0, keys);
+    if (!restored) stepRuntime(snapshot, runtime, 0, keys);
     hudView.update(runtime);
     mouseStatus('Mouse is free. Click the view or Capture mouse. If the browser blocks capture, use drag-look or open this URL in a desktop browser.');
-    status(`${preview.rendererStatus?.backend || 'GPU'} preview ready${preview.rendererStatus?.fallbackReason ? ` — ${preview.rendererStatus.fallbackReason}` : ''}`);
-  } catch (error) { stopPreview(); throw error; }
+    if (runtime.saveStatus) status(runtime.saveStatus, true);
+    else status(`${preview.rendererStatus?.backend || 'GPU'} preview ready${preview.rendererStatus?.fallbackReason ? ` — ${preview.rendererStatus.fallbackReason}` : ''}`);
+  } catch (error) { if (replacingPreview || !runtime) stopPreview(); throw error; }
   finally { previewLoading = false; $('play').disabled = false; $('play-game').disabled = false; $('play-level').disabled = false; }
+}
+function saveSlotLabels(slots) {
+  return Array.from({ length: 6 }, (_, index) => {
+    const slot = slots.find(slot => slot?.slot === index + 1);
+    return slot ? `${slot.levelId || 'Level'} / ${new Date(slot.createdAt).toLocaleString()}` : '';
+  });
+}
+async function processGameSave(request) {
+  if (saveBusy || !runtime || previewLoading) return;
+  const session = runtime, identity = previewSaveIdentity;
+  saveBusy = true;
+  try {
+    session.saveStatus = request.type === 'save' ? 'Saving game...' : 'Loading game...';
+    if (request.type === 'save') {
+      const record = captureGameSave(previewProject, session, identity);
+      await gameSaves.save(identity, request.slot, record);
+      const slots = await gameSaves.list(identity);
+      if (runtime === session) {
+        session.saveSlots = saveSlotLabels(slots);
+        session.saveStatus = `Game saved in slot ${request.slot}.`;
+        setGameScreen(session, 'save');
+      }
+    } else {
+      const record = await gameSaves.load(identity, request.slot);
+      if (runtime === session) await beginPreview(session.gameMode, session.settings, true, undefined, undefined, record);
+    }
+  } catch (error) {
+    if (runtime === session) session.saveStatus = `${request.type === 'save' ? 'Save' : 'Load'} failed: ${error.message}`;
+    status(`${request.type === 'save' ? 'Save' : 'Load'} failed: ${error.message}`, true);
+  } finally { saveBusy = false; }
 }
 $('play-level').addEventListener('change', guard(async () => {
   if (!runtime || previewLoading) return;
@@ -1577,6 +1635,8 @@ function frame(now) {
         catch (error) { mouseStatus(`Settings could not be saved: ${error.message}`, true); }
       }
       const requests = runtime.menuRequests.splice(0);
+      const saveRequest = requests.find(request => ['save', 'load'].includes(request?.type));
+      if (saveRequest) void processGameSave(saveRequest);
       const levelRequest = requests.find(request => request?.type === 'level');
       if (levelRequest) {
         const settings = structuredClone(runtime.settings), mode = runtime.gameMode;
@@ -1590,9 +1650,10 @@ function frame(now) {
       if (requests.includes('fullscreen')) {
         togglePreviewFullscreen().catch(error => mouseStatus(`Fullscreen failed: ${error.message}`, true));
       }
-      if (requests.includes('start')) {
+      const startRequest = requests.find(request => request?.type === 'start');
+      if (requests.includes('start') || startRequest) {
         const settings = structuredClone(runtime.settings), mode = runtime.gameMode;
-        beginPreview(mode, settings, true).catch(error => status(`New game failed: ${error.message}`, true));
+        beginPreview(mode, settings, true, startRequest?.levelId).catch(error => status(`New game failed: ${error.message}`, true));
         requestAnimationFrame(frame); return;
       }
       audioPlayer?.update(runtime);
@@ -1762,18 +1823,22 @@ function showPackageInspection(inspection) {
   $('package-advanced').open = false;
   $('package-kind').value = '';
   const game = inspection.game;
-  $('package-game-info').textContent = [game?.title, game?.requiredBase ? `Requires: ${game.requiredBase}` : 'Base game not declared by the mod.',
+  $('package-game-info').textContent = [game?.title, game?.standalone ? 'Standalone game — no base selected by default.'
+    : game?.requiredBase ? `Requires: ${game.requiredBase}` : 'Base game not declared by the mod.',
     game?.entryError || game?.entryReason].filter(Boolean).join(' · ');
-  if (game?.requiredBase) {
+  if (game?.standalone) $('package-base').value = '';
+  else if (game?.requiredBase) {
     const match = [...$('package-base').options].find(option => option.value.split('/').at(-1).toLowerCase() === game.requiredBase.toLowerCase());
     $('package-base').value = match?.value || '';
   }
   $('package-notes').textContent = inspection.warnings.join('\n');
-  $('package-status').textContent = game?.entryError || 'Choose the required base game, then Import game.';
+  $('package-status').textContent = game?.entryError || (game?.standalone
+    ? 'Standalone game: Import game directly, or choose a base explicitly if additional resources are needed.'
+    : 'Choose the required base game, then Import game.');
 }
 $('package-library').addEventListener('click', guard(async () => {
   const library = await packageBases();
-  if (!library.packages.length) throw new Error('No PK3 archives or unpacked resource folders found under Projects');
+  if (!library.packages.length) throw new Error('No PK3/IPK3 archives or unpacked resource folders found under Projects');
   $('package-source').replaceChildren(...library.packages.map(item => new Option(`${item.name} (${item.type})`, item.name)));
   $('package-source-label').hidden = false;
   await inspectLocalPackage();
@@ -1794,7 +1859,7 @@ $('package-source').addEventListener('change', guard(async () => {
 $('package-file').addEventListener('change', guard(async event => {
   const file = event.target.files[0]; event.target.value = '';
   if (!file) return;
-  if (file.size > 128 * 1024 * 1024) throw new Error('PK3 exceeds the 128 MiB import limit');
+  if (file.size > 128 * 1024 * 1024) throw new Error('PK3/IPK3 exceeds the 128 MiB import limit');
   packageSource = null;
   await packageBases();
   const buffer = await file.arrayBuffer();
@@ -1873,7 +1938,7 @@ $('sound-file').addEventListener('change', guard(async event => {
   if (files.length > 64) throw new Error('Import at most 64 sounds at once');
   const imported = [];
   for (const file of files) {
-    if (file.size > 4 * 1024 * 1024) throw new Error(`Sound ${file.name} exceeds 4 MiB`);
+    if (file.size > 8 * 1024 * 1024) throw new Error(`Sound ${file.name} exceeds 8 MiB`);
     const extension = file.name.split('.').pop().toLowerCase();
     const name = file.name.replace(/\.[^.]+$/, '').toUpperCase();
     if (!name || name.length > 100) throw new Error('Sound names must be 1-100 characters');

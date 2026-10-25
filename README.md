@@ -22,11 +22,13 @@ GDevelop-style condition/action scripting.
   and objects in 2D and 3D.
 - **Editable gameplay:** attach visual events to objects, use local variables
   and expressions, and customize imported gameplay.
-- **Bring your worlds along:** import WAD and PK3 resources, classic Doom and
-  UDMF game levels, textures, sprites, weapons, sounds and supported game menus.
-  Switch levels in the editor or during play.
+- **Bring your worlds along:** import WAD, PK3 and standalone IPK3 resources,
+  classic Doom and UDMF game levels, textures, sprites, weapons, sounds and
+  supported game menus.
+  Keep supported original episode menus and editable level-finish screens;
+  switch levels in the editor or during play.
 - **Design the interface:** edit HUDs and menus with responsive layouts,
-  animations and gameplay bindings.
+  animations and gameplay bindings, including native browser save/load slots.
 - **Browser-native rendering:** WebGPU preferred, WebGL2 fallback, Rapier
   physics and portable GLSL effects.
 - **AI-ready tools:** MCP integration and optional DeepSeek-assisted edits,

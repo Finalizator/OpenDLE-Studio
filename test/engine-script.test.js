@@ -68,7 +68,7 @@ test('validation rejects broken sheets, unbounded commands, invalid targets and 
 test('every Engine command has shared editor defaults and validates after adding required references', () => {
   for (const command of [...ENGINE_ACTIONS, ...ENGINE_CONDITIONS]) {
     const project = fixture(), value = defaultEngineCommand(command.type);
-    if (command.type === 'loadGameLevel')
+    if (['loadGameLevel', 'selectGameEpisode'].includes(command.type))
       Object.assign(project, assembleGameLevels([{ id: 'MAP01', project: structuredClone(project) }], 'MAP01', project.title).project);
     if (['gameScreen', 'setGameScreen'].includes(command.type)) value.screen = 'playing';
     if (['setShaderUniform', 'setShaderEnabled', 'shaderEnabled'].includes(command.type)) {

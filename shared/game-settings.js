@@ -20,9 +20,11 @@ export const GAME_BINDINGS = {
   KeyE: 'Use', ShiftLeft: 'Run', Mouse0: 'Fire',
 };
 export const GAME_HUD_BINDINGS = [...Object.keys(GAME_SETTINGS).map(key => `setting:${key}`),
-  ...Object.keys(GAME_BINDINGS).map(key => `key:${key}`), 'game:screen', 'game:binding'];
+  ...Object.keys(GAME_BINDINGS).map(key => `key:${key}`), 'game:screen', 'game:binding',
+  ...Array.from({ length: 6 }, (_, index) => `game:save${index + 1}`), 'game:saveStatus'];
 
 export function setGameScreen(state, target) {
+  if (state.intermission && !state.intermission.confirmed && target !== 'intermission') return;
   const history = state.menuHistory ||= [];
   let screen = target;
   if (target === 'return') screen = history.pop() || (state.hasGame ? 'pause' : 'title');
@@ -35,6 +37,7 @@ export function setGameScreen(state, target) {
     }
   }
   if (screen === 'title') state.hasGame = false;
+  if (screen !== 'save_confirm') state.pendingSaveSlot = null;
   state.gameScreen = screen;
   state.bindingKey = null;
   state.hudState.cursor = screen !== 'playing';

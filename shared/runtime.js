@@ -9,7 +9,7 @@ import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile,
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { clipFrame, setSpriteState } from './sprite-animation.js';
 import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
-import { nextGameLevel } from './game-levels.js';
+import { createLevelStatistics, updateLevelStatistics, recordRemovedEntity, beginIntermission, continueIntermission } from './intermission.js';
 
 export function distanceToSegment(x, y, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -46,10 +46,14 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
   const inventory = progress ? structuredClone(progress.inventory) : initialInventory();
   if (progress) inventory.keys.clear();
   const playerStats = progress ? structuredClone(progress.playerStats) : initialPlayerStats();
+  const entities = structuredClone(project.map.entities).filter(entity => !entity.skillMask || (entity.skillMask & skillBit))
+    .map(entity => ({ ...entity, variables: { ...(entity.variables || {}) } }));
   return {
     settings: userSettings, settingsRevision: 0, gameScreen: screen, gameMode,
     hasGame: screen === 'playing', bindingKey: null,
     menuRequests: [], interfaceStarted: false,
+    saveSlots: Array(6).fill(''), saveStatus: '', pendingSaveSlot: null,
+    newGameLevel: project.game && project.gameMenus?.episodes?.length === 1 ? project.gameMenus.episodes[0].levelId : null,
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0 },
     playerStats, inventory, levelTransition: Boolean(progress),
     face: 'idle',
@@ -77,8 +81,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     impacts: [],
     worldTriggers: { use: null, cross: new Set(), shoot: new Set() },
     variables: { ...project.variables },
-    entities: structuredClone(project.map.entities).filter(entity => !entity.skillMask || (entity.skillMask & skillBit))
-      .map(entity => ({ ...entity, variables: { ...(entity.variables || {}) } })),
+    entities,
+    levelStatistics: createLevelStatistics(entities, project.map.sectors || []),
+    intermission: null,
     fired: new Set(),
     started: false,
     message: '',
@@ -125,6 +130,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.worldTriggers.use = !hud.cursor && state.playerStats.health > 0 && pressed.has('KeyE') ? useWall(state) : null;
   state.worldTriggers.shoot.clear();
   runRules('beforePhysics');
+  if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
   if (!state.scriptedInput && !hud.cursor) player.angle += ((keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0)) * dt * 2.2;
   const forward = hud.cursor ? 0 : state.scriptedInput ? state.input.forward : ((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)) * 160;
   const strafe = hud.cursor ? 0 : state.scriptedInput ? state.input.strafe : ((keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0)) * 160;
@@ -156,9 +162,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (canMove(player.x, player.y + dy * runMultiplier)) player.y += dy * runMultiplier;
   }
   state.worldTriggers.cross = crossedWalls(state, previousPosition);
+  updateLevelStatistics(state);
   state.messageTime = Math.max(0, state.messageTime - dt);
   runRules('afterPhysics');
+  if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
   advanceProjectiles(state, dt);
+  updateLevelStatistics(state);
   state.input.mouseX = 0; state.input.mouseY = 0;
   state.animationFinished.clear();
   state.feedback.health = state.playerStats.health;
@@ -176,7 +185,11 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         ? state.entities.filter(entity => entity.type === source.forEachType).map(entity => ({ ...source, ownerId: entity.id })) : [source];
       for (const event of instances) {
         if (!runEvent(event, Boolean(source.forEachType), phase)) continue;
-        for (const child of children.get(source.id) || []) visit(child, event.ownerId);
+        if (phase !== 'interface' && state.gameScreen !== 'playing') return;
+        for (const child of children.get(source.id) || []) {
+          visit(child, event.ownerId);
+          if (phase !== 'interface' && state.gameScreen !== 'playing') return;
+        }
       }
     }
     for (const source of project.events) {
@@ -184,6 +197,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       const sheet = project.eventSheets?.find(sheet => sheet.id === source.sheetId);
       if (sheet?.enabled === false || (sheet?.phase || 'afterPhysics') !== phase) continue;
       visit(source);
+      if (phase !== 'interface' && state.gameScreen !== 'playing') break;
     }
   }
   function runEvent(event, perInstance, phase) {
@@ -325,21 +339,33 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     for (const sourceAction of event.actions) {
       const action = resolveCommand(sourceAction);
       switch (action.type) {
+        case 'saveGame':
+          if (!state.hasGame || state.intermission || state.playerStats.health <= 0) {
+            state.saveStatus = 'Start or resume a living game before saving.'; break;
+          }
+          if (state.saveSlots[action.slot - 1]) {
+            state.pendingSaveSlot = action.slot; setGameScreen(state, 'save_confirm');
+          } else state.menuRequests.push({ type: 'save', slot: action.slot });
+          break;
+        case 'confirmSaveGame':
+          if (state.pendingSaveSlot && state.hasGame && !state.intermission && state.playerStats.health > 0) {
+            state.menuRequests.push({ type: 'save', slot: state.pendingSaveSlot });
+            state.pendingSaveSlot = null;
+          }
+          break;
+        case 'loadGame':
+          if (!state.saveSlots[action.slot - 1]) { state.saveStatus = 'This save slot is empty.'; break; }
+          state.menuRequests.push({ type: 'load', slot: action.slot }); break;
         case 'setGameScreen': setGameScreen(state, action.screen); break;
-        case 'startGame': state.menuRequests.push('start'); break;
+        case 'selectGameEpisode':
+          if (!project.game?.levels.some(level => level.id === action.levelId)) throw new Error(`Unknown game level ${action.levelId}`);
+          state.newGameLevel = action.levelId; break;
+        case 'startGame': state.menuRequests.push(state.newGameLevel ? { type: 'start', levelId: state.newGameLevel } : 'start'); break;
         case 'loadGameLevel':
           if (!project.game?.levels.some(level => level.id === action.levelId)) throw new Error(`Unknown game level ${action.levelId}`);
           state.menuRequests.push({ type: 'level', levelId: action.levelId, carryProgress: false }); break;
-        case 'finishLevel': {
-          if (!project.game) {
-            state.message = 'Level complete. Reimport the full game to continue to another level.'; state.messageTime = 10;
-            setGameScreen(state, 'pause'); break;
-          }
-          const levelId = nextGameLevel(project.game, action.exit === 'secret');
-          if (levelId) state.menuRequests.push({ type: 'level', levelId, carryProgress: true });
-          else { state.menuRequests.push('complete'); setGameScreen(state, 'title'); }
-          break;
-        }
+        case 'finishLevel': beginIntermission(project, state, action.exit === 'secret'); break;
+        case 'continueIntermission': continueIntermission(state); break;
         case 'quitGame': state.menuRequests.push('quit'); break;
         case 'requestFullscreen': state.menuRequests.push('fullscreen'); break;
         case 'captureGameBinding': state.bindingKey = action.key; break;
@@ -450,6 +476,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         case 'removeEntity': {
           const id = resolveEntityId(event, action.entityId);
+          recordRemovedEntity(state, state.entities.find(item => item.id === id));
           state.physics?.remove(id); state.animations.delete(id);
           state.spriteAnimations.delete(id);
           state.entities = state.entities.filter(item => item.id !== id);
@@ -494,6 +521,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         }
       }
+      if (phase !== 'interface' && state.gameScreen !== 'playing') return true;
     }
     return true;
   }

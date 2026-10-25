@@ -8,6 +8,7 @@ import { installEngineScripts } from '../shared/engine-script.js';
 import { installGameMenu } from '../shared/game-menu.js';
 import { assembleGameLevels, selectGameLevel, nextGameLevel, parseLevelRoutes, gameLevelAssetIds } from '../shared/game-levels.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
+import { continueIntermission } from '../shared/intermission.js';
 import { importWad } from '../server/import.js';
 import { applyTool } from '../server/tools.js';
 import { ProjectStore } from '../server/store.js';
@@ -125,6 +126,8 @@ test('finish/load level actions request an actual campaign transition and valida
     actions: [{ type: 'finishLevel', exit: 'normal' }] };
   p.events.push(event); validateProject(p);
   const s = createRuntime(p); stepRuntime(p, s, 0, new Set());
+  assert.equal(s.gameScreen, 'intermission'); assert.deepEqual(s.menuRequests, []);
+  continueIntermission(s);
   assert.deepEqual(s.menuRequests, [{ type: 'level', levelId: 'MAP02', carryProgress: true }]);
   event.actions = [{ type: 'loadGameLevel', levelId: 'MAP02' }]; validateProject(p);
   const load = createRuntime(p); stepRuntime(p, load, 0, new Set());
@@ -173,6 +176,8 @@ test('full WAD imports retain every native map, share assets and compile origina
   const state = createRuntime(p);
   state.player.y = 100; state.player.angle = Math.PI / 2;
   stepRuntime(p, state, 0, new Set(), new Set(['KeyE']));
+  assert.equal(state.gameScreen, 'intermission'); assert.deepEqual(state.menuRequests, []);
+  continueIntermission(state);
   assert.deepEqual(state.menuRequests, [{ type: 'level', levelId: 'MAP02', carryProgress: true }]);
   selectGameLevel(p, 'MAP02'); assert.equal(p.game.active, 'MAP02'); assert.equal(p.game.levels[1].next, null);
   assert.equal(importWad(bytes, 'MAP02', { fullGame: false }).project.game, undefined);

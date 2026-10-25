@@ -9,6 +9,7 @@ import { parseUDMF, udmfRecords } from './udmf.js';
 import { installGameMenu } from './game-menu.js';
 import { importSBarInfo } from './sbarinfo.js';
 import { assembleGameLevels, parseLevelRoutes } from './game-levels.js';
+import { parseGameEpisodes } from './game-episodes.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
 
@@ -20,9 +21,13 @@ export function importWadGame(wad, entry, options = {}) {
     if (lump.size > 1024 * 1024) throw new Error('MAPINFO exceeds 1 MiB');
     return new TextDecoder().decode(new Uint8Array(wad.buffer, lump.start, lump.size));
   });
-  function* levels() { for (const id of wad.maps) yield { id, ...importWadMap(wad, id, options) }; }
+  const episodeInfo = parseGameEpisodes(sources, wad.maps);
+  function* levels() {
+    for (const id of wad.maps) yield { id, ...importWadMap(wad, id, { ...options, episodeInfo }) };
+  }
   const result = assembleGameLevels(levels(),
     entry, options.title || 'Imported WAD game', parseLevelRoutes(sources));
+  result.warnings.push(...episodeInfo.warnings);
   validateProject(result.project);
   return result;
 }
@@ -47,7 +52,7 @@ export function readWad(buffer, { allowNoMaps = false } = {}) {
   return { buffer, lumps, maps: [...new Set(maps)] };
 }
 
-export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources } = {}) {
+export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo } = {}) {
   const start = wad.lumps.findLastIndex(lump => lump.name === mapName);
   if (start < 0) throw new Error('Map not found');
   const mapLumps = [];
@@ -230,13 +235,13 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   const definitions = wad.lumps.filter(lump => lump.name === 'MENUDEF').map(lump => ({
     ...hudSource(lump), resolve: resolveHUD,
   }));
-  installGameMenu(project, assets, [...definitions, ...menuDefinitions], warnings);
+  installGameMenu(project, assets, [...definitions, ...menuDefinitions], warnings, episodeInfo);
   if (wad.lumps.some(lump => lump.name.startsWith('D_'))) warnings.push('Doom MUS/MIDI music is not synthesized yet; music controls apply to browser-decodable tracks only.');
-  warnings.push('Menus are editable HUD/events. MENUDEF support is partial: custom menu classes, arbitrary CVARs/commands, savegames and exact Nightmare respawn/fast states are not translated yet. Full-game imports support native level selection and supported exits; scripted campaign behavior is not executed.');
+  warnings.push('Menus are editable HUD/events. MENUDEF support is partial: custom menu classes, arbitrary CVARs/commands and exact Nightmare respawn/fast states are not translated yet. Native browser save slots do not interoperate with GZDoom .zds saves. Full-game imports support native level selection and supported exits; scripted campaign behavior is not executed.');
   if (assets) warnings.push(...assets.warnings);
   const unsupported = [...new Set(project.map.entities.filter(entity => entity.type === 'pickup' &&
     [2022, 2023, 2024, 2025, 2026, 2045].includes(entity.doomType)).map(entity => entity.doomType))];
   if (unsupported.length) warnings.push(`Power-up effects are not imported for Doom thing types ${unsupported.join(', ')}; these objects remain visible until scripted.`);
-  validateProject(project);
+  validateProject(project, { gameLevelIds: episodeInfo?.levelIds ? new Set(episodeInfo.levelIds) : undefined });
   return { project, warnings };
 }

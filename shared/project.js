@@ -2,7 +2,7 @@ import { sectorGeometry } from './sectors.js';
 import { decodeDataURI, readModel, validateModelDocument } from './gltf.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand } from './engine-script.js';
 import { validateEventStructure } from './events.js';
-import { validateHUD, validateHUDProperty } from './hud.js';
+import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
 import { WEAPONS } from './player-state.js';
 import { isExpression, validateExpression, validateVariables, scalar, expressionContext } from './expressions.js';
 import { validateShaders } from './shaders.js';
@@ -96,7 +96,7 @@ export function validateProject(project, { gameLevelIds } = {}) {
     if (asset.kind === 'sound') {
       assert(typeof asset.src === 'string' && /^data:audio\/(wav|ogg|mpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Sounds must be embedded WAV/OGG/MP3');
       soundBytes += asset.src.length;
-      assert(asset.src.length <= 6 * 1024 * 1024 && soundBytes <= 64 * 1024 * 1024, 'Embedded sound budget exceeded (6 MiB each, 64 MiB total)');
+      assert(asset.src.length <= 12 * 1024 * 1024 && soundBytes <= 64 * 1024 * 1024, 'Embedded sound budget exceeded (12 MiB each, 64 MiB total)');
       assert(assets.filter(candidate => candidate.kind === 'sound' && candidate.name === asset.name).length === 1, 'Sound names must be unique');
       assetIds.add(asset.id); continue;
     }
@@ -326,8 +326,31 @@ export function validateProject(project, { gameLevelIds } = {}) {
     for (const name of project.gameMenus.screens) identifier(name, 'Game menu screen');
     assert(new Set(project.gameMenus.screens).size === project.gameMenus.screens.length, 'Duplicate game menu screens');
     assert(project.gameMenus.screens.includes(project.gameMenus.entry), 'Unknown game entry menu');
-    array(project.gameMenus.elementIds, 'Game menu HUD IDs', 256);
+    array(project.gameMenus.elementIds, 'Game menu HUD IDs', MAX_HUD_ELEMENTS);
     for (const id of project.gameMenus.elementIds) assert(project.hud?.elements.some(item => item.id === id), 'Menu references an unknown HUD element');
+    if (project.gameMenus.episodes !== undefined) {
+      array(project.gameMenus.episodes, 'Game episodes', 32);
+      const episodeIds = new Set();
+      for (const episode of project.gameMenus.episodes) {
+        object(episode, 'Game episode');
+        identifier(episode.levelId, 'Episode level');
+        assert(!episodeIds.has(episode.levelId), 'Duplicate episode entry');
+        episodeIds.add(episode.levelId);
+        text(episode.name, 'Episode name', 100);
+        if (episode.patch !== undefined) text(episode.patch, 'Episode patch', 100);
+        if (episode.key !== undefined) text(episode.key, 'Episode key', 8);
+        assert(typeof episode.noSkillMenu === 'boolean', 'Episode skill-menu flag must be boolean');
+        if (project.game || gameLevelIds) assert(project.game?.levels.some(level => level.id === episode.levelId) ||
+          gameLevelIds?.has(episode.levelId), 'Episode references an unknown game level');
+      }
+    }
+    if (project.gameMenus.episodeSources !== undefined) {
+      array(project.gameMenus.episodeSources, 'Episode definition sources', 64);
+      for (const source of project.gameMenus.episodeSources) {
+        text(source.name, 'Episode definition filename', 256);
+        assert(typeof source.source === 'string' && source.source.length <= 1024 * 1024, 'Invalid episode definition source');
+      }
+    }
     if (project.gameMenus.sources !== undefined) {
       array(project.gameMenus.sources, 'Menu definition sources', 64);
       for (const source of project.gameMenus.sources) {
@@ -405,6 +428,11 @@ export function validateProject(project, { gameLevelIds } = {}) {
       if (definition.wall) assert(walls.some(wall => wall.id === command.wallId), 'Command references an unknown wall');
       if (command.type === 'loadGameLevel')
         assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId), 'Command references an unknown game level');
+      if (['saveGame', 'loadGame'].includes(command.type)) assert(Number.isInteger(command.slot), 'Game save slot must be an integer');
+      if (command.type === 'selectGameEpisode')
+        assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId) ||
+          !project.game && !gameLevelIds && project.gameMenus?.episodes?.some(episode => episode.levelId === command.levelId),
+        'Episode command references an unknown game level');
       if (definition.sector) assert(sectorIds.has(command.sectorId), 'Command references an unknown sector');
       if (definition.spriteClip) clipRef(command.clipId);
       for (const key of ['clipId', 'impactClipId']) if (['launchProjectile', 'enemyProjectile'].includes(command.type) && command[key] !== undefined) clipRef(command[key]);

@@ -10,6 +10,7 @@ import { decodePatch, decodeFlat } from '../shared/doom-assets.js';
 import { encodeImage, cachedImageEncoder } from './import.js';
 import { doomSound, encodeSound } from '../shared/sound.js';
 import { assembleGameLevels, parseLevelRoutes } from '../shared/game-levels.js';
+import { parseGameEpisodes } from '../shared/game-episodes.js';
 
 const MiB = 1024 * 1024;
 const MAX_BYTES = 128 * MiB, MAX_FILES = 10000;
@@ -49,7 +50,7 @@ export function packageLibrary(root) {
       const name = `${prefix}${entry.name}`, path = resolve(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isFile() && /\.wad$/i.test(name)) wads.push(name);
-      else if (entry.isFile() && /\.pk3$/i.test(name)) packages.push({ name, type: 'pk3' });
+      else if (entry.isFile() && /\.i?pk3$/i.test(name)) packages.push({ name, type: 'pk3', ...(/\.ipk3$/i.test(name) ? { standalone: true } : {}) });
       else if (entry.isDirectory()) {
         if (resourcesDirectory(path)) packages.push({ name, type: 'directory' });
         else walk(path, `${name}/`, depth + 1);
@@ -124,8 +125,10 @@ export async function readPackageArchive(buffer) {
 export async function readLocalPackage(root, name) {
   const path = inside(root, name), info = lstatSync(path);
   if (info.isFile()) {
-    check(/\.pk3$/i.test(name) && info.size <= MAX_BYTES, 'Expected a PK3 of at most 128 MiB');
-    return readPackageArchive(readFileSync(path));
+    check(/\.i?pk3$/i.test(name) && info.size <= MAX_BYTES, 'Expected a PK3/IPK3 of at most 128 MiB');
+    const files = await readPackageArchive(readFileSync(path));
+    files.standalone = /\.ipk3$/i.test(name);
+    return files;
   }
   check(info.isDirectory() && resourcesDirectory(path), 'Not an unpacked resource package');
   const files = new Map();
@@ -181,7 +184,7 @@ export function inspectPackage(files) {
   if (!images.length) warnings.push('No images found in supported textures/flats/sprites/graphics/patches/hires namespaces. Brightmaps and other engine-specific namespaces are not imported.');
   const formats = images.filter(name => ['.jpg', '.jpeg', '.webp', '.dds', '.tga', '.pcx'].includes(extname(name)));
   if (formats.length) warnings.push(`${formats.length} images use unsupported JPEG/WebP/DDS/TGA/PCX package formats; selecting these reports an error. PNG and palette-based Doom patches/flats are supported.`);
-  const game = packageGameInfo(files, maps);
+  const game = { ...packageGameInfo(files, maps), standalone: Boolean(files.standalone) };
   return { maps, images, warnings, game };
 }
 function packageGameInfo(files, maps) {
@@ -296,19 +299,37 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     const entry = selected ? logicalId(selected) : (map === 'base-entry' && base ?
       base.maps.includes('MAP01') ? 'MAP01' : base.maps.includes('E1M1') ? 'E1M1' : base.maps[0] : null);
     check(entry, 'Game entry map not found; select the required base IWAD');
-    const routes = parseLevelRoutes([...files].filter(([path]) => /(^|\/)[z]?mapinfo(?:[./]|$)/i.test(path))
-      .map(([path, file]) => {
-        check(file.data && file.size <= MiB, `MAPINFO ${path} exceeds 1 MiB or was not retained`);
-        return file.data.toString('utf8');
-      }));
-    const baseCampaign = !inspection.maps.length || inspection.maps.every(item => /^(MAP\d\d|E\dM\d)$/.test(logicalId(item)));
+    const metadata = name => {
+      const file = files.get(name);
+      if (!file) return null;
+      check(file.data && file.size <= MiB, `MAPINFO ${name} exceeds 1 MiB or was not retained`);
+      return { name, source: file.data.toString('utf8') };
+    };
+    const resolveMetadata = (name, parent) => {
+      safePath(name);
+      const directory = parent.includes('/') ? parent.slice(0, parent.lastIndexOf('/') + 1) : '';
+      return metadata(name.toLowerCase()) || metadata(`${directory}${name.toLowerCase()}`);
+    };
+    const definitions = [...files.keys()].filter(path => /^[z]?mapinfo(?:[./]|$)/i.test(path))
+      .map(path => ({ ...metadata(path), resolve: resolveMetadata }));
+    const candidateIds = [...inspection.maps.map(logicalId), ...base?.maps || []];
+    const episodeInfo = parseGameEpisodes(definitions, candidateIds, { inferClassic: false });
+    const replacesEpisodes = episodeInfo.sources.some(definition => /\bclearepisodes\b/i.test(
+      definition.source.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, ' ')));
+    const baseCampaign = !inspection.maps.length || !inspection.game.standalone && !replacesEpisodes &&
+      inspection.maps.every(item => /^(MAP\d\d|E\dM\d)$/.test(logicalId(item)));
+    if (baseCampaign) Object.assign(episodeInfo, parseGameEpisodes(definitions, candidateIds));
+    const routes = parseLevelRoutes(episodeInfo.sources.map(source => source.source));
     const maps = new Map((baseCampaign ? base?.maps || [] : [])
       .map(id => [id, { id: `base:${id}`, marker: id, supported: true }]));
     for (const item of inspection.maps) maps.set(logicalId(item), item);
+    for (const episode of episodeInfo.episodes)
+      if (!maps.has(episode.levelId) && base?.maps.includes(episode.levelId))
+        maps.set(episode.levelId, { id: `base:${episode.levelId}`, marker: episode.levelId, supported: true });
     for (const route of routes.values()) for (const id of [route.next, route.secretNext])
       if (id && !maps.has(id) && base?.maps.includes(id)) maps.set(id, { id: `base:${id}`, marker: id, supported: true });
     check(maps.size <= 128, 'Game exceeds 128 levels');
-    const shared = { inspection, base, decode: imageDecoder(files, paletteFrom(base, files)), encodeImage: cachedImageEncoder() };
+    const shared = { inspection, base, decode: imageDecoder(files, paletteFrom(base, files)), encodeImage: cachedImageEncoder(), episodeInfo };
     function* levels() {
       for (const [id, item] of maps) {
         check(item.supported, `${item.marker}: ${item.format} map is not supported; full-game import was not applied`);
@@ -316,6 +337,7 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
       }
     }
     const result = assembleGameLevels(levels(), entry, inspection.game.title || 'Imported package game', routes);
+    result.warnings.push(...episodeInfo.warnings);
     validateProject(result.project);
     return { ...result, entry: { map: entry, path: selected?.path || null,
       reason: inspection.game.entryReason, mapCount: maps.size } };
@@ -378,7 +400,8 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
       catch (error) { aliasWarnings.push(`Sound ${path} was not imported: ${error.message}`); continue; }
     }
     soundBytes += src.length;
-    check(sounds.size < 512 && soundBytes <= 64 * MiB && src.length <= 6 * MiB, 'Package sound budget exceeded');
+    check(sounds.size < 512 && soundBytes <= 64 * MiB && src.length <= 12 * MiB,
+      `Package sound budget exceeded at ${path} (${file.data.length} source bytes, ${src.length} embedded bytes; 12 MiB each, 64 MiB total)`);
     if (sounds.has(name)) aliasWarnings.push(`Sound filename ${name}: ${path} replaces an earlier file with the same basename.`);
     sounds.set(name, src);
   }
@@ -405,7 +428,8 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     fontResources.set(basename(path, extname(path)).toUpperCase(), new Uint8Array(file.data));
   }
   const result = importWadMap(combined, selected.marker,
-    { encodeImage: context?.encodeImage || encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources });
+    { encodeImage: context?.encodeImage || encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources,
+      episodeInfo: context?.episodeInfo });
   let musicBytes = 0;
   for (const [path, file] of files) if (path.startsWith('music/')) {
     const format = extname(path).slice(1);

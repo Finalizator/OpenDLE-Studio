@@ -5,7 +5,7 @@ import { doomWalk } from './sprite-animation.js';
 import { doomThings } from './doom-assets.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 
-export const INPUT_KEYS = ['Tab', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyE', 'KeyF', 'KeyQ',
+export const INPUT_KEYS = ['Tab', 'Enter', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyE', 'KeyF', 'KeyQ',
   'ShiftLeft', 'ShiftRight', 'ControlLeft', 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Mouse0', 'Mouse2'];
 const numeric = (name, value, min, max) => ({ name, value, kind: 'number', min, max });
 const choice = (name, value, options) => ({ name, value, kind: 'choice', options });
@@ -59,10 +59,15 @@ export const ENGINE_CONDITIONS = [
   { type: 'variableCompare', label: 'System: compare variable', fields: [comparison(), { name: 'value', kind: 'value', value: 0 }], variable: true },
 ];
 export const ENGINE_ACTIONS = [
+  { type: 'saveGame', label: 'Game: save to slot', fields: [numeric('slot', 1, 1, 6)] },
+  { type: 'loadGame', label: 'Game: load slot', fields: [numeric('slot', 1, 1, 6)] },
+  { type: 'confirmSaveGame', label: 'Game: confirm overwriting save', fields: [] },
   { type: 'setGameScreen', label: 'Game: open menu / resume', fields: [{ name: 'screen', kind: 'text', value: 'title' }] },
   { type: 'startGame', label: 'Game: start a new game', fields: [] },
+  { type: 'selectGameEpisode', label: 'Game: select new game episode', fields: [{ name: 'levelId', kind: 'text', value: 'MAP01' }] },
   { type: 'loadGameLevel', label: 'Game: load a level', fields: [{ name: 'levelId', kind: 'text', value: 'MAP01' }] },
   { type: 'finishLevel', label: 'Game: finish level / follow exit', fields: [choice('exit', 'normal', ['normal', 'secret'])] },
+  { type: 'continueIntermission', label: 'Game: continue after level intermission', fields: [] },
   { type: 'quitGame', label: 'Game: return to editor', fields: [] },
   { type: 'requestFullscreen', label: 'Game: toggle fullscreen', fields: [] },
   { type: 'resetGameSettings', label: 'Game: reset user settings', fields: [] },

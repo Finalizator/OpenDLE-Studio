@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateRawSync, crc32 } from 'node:zlib';
 import { PNG } from 'pngjs';
@@ -9,7 +8,7 @@ import { readPackageArchive, readLocalPackage, packageLibrary, inspectPackage, i
 import { createApp } from '../server/index.js';
 import { ProjectStore } from '../server/store.js';
 import { createProject, validateProject } from '../shared/project.js';
-import { wavSound } from '../shared/sound.js';
+import { wavSound, encodeSound } from '../shared/sound.js';
 import { selectGameLevel } from '../shared/game-levels.js';
 
 function archive(entries) {
@@ -48,7 +47,7 @@ function wad(lumps) {
   });
   return bytes;
 }
-function mapWad(marker = 'ROOMONE') {
+function mapWad(marker = 'ROOMONE', withPalette = false) {
   const things = Buffer.alloc(10); things.writeUInt16LE(1, 6); things.writeUInt16LE(7, 8);
   const vertices = Buffer.alloc(16), lines = Buffer.alloc(56);
   [[-128, -128], [128, -128], [128, 128], [-128, 128]].forEach(([x, y], index) => {
@@ -59,7 +58,7 @@ function mapWad(marker = 'ROOMONE') {
   const side = Buffer.alloc(30); side.write('WALL', 20);
   const sector = Buffer.alloc(26); sector.writeInt16LE(128, 2); sector.write('STONE', 4); sector.write('STONE', 12);
   return wad([[marker, Buffer.alloc(0)], ['THINGS', things], ['LINEDEFS', lines], ['SIDEDEFS', side],
-    ['VERTEXES', vertices], ['SECTORS', sector]]);
+    ['VERTEXES', vertices], ['SECTORS', sector], ...(withPalette ? [['PLAYPAL', Buffer.alloc(768, 100)]] : [])]);
 }
 const png = () => PNG.sync.write({ width: 2, height: 2, data: Buffer.from(Array(4).fill([255, 40, 10, 255]).flat()) });
 const base = () => wad([['PLAYPAL', Buffer.alloc(768, 100)]]);
@@ -179,14 +178,67 @@ test('PK3 and directory readers retain sound bytes; filename overrides bind nati
 const entries = () => [['textures/wall.png', png()], ['flats/stone.png', png()], ['graphics/stbar.png', png()],
   ['maps/room.wad', mapWad()], ['zscript.txt', Buffer.from('not executed')]];
 function directory(t) {
-  const root = mkdtempSync(join(tmpdir(), 'opendle-packages-'));
+  const root = mkdtempSync(join(process.cwd(), '.opendle-packages-'));
   t.after(() => rmSync(root, { recursive: true }));
   return root;
 }
+test('IPK3 standalone libraries inspect and import all packaged maps without unrelated base levels', async t => {
+  const root = directory(t);
+  const content = [...entries().filter(([path]) => !path.startsWith('maps/')),
+    ['maps/map01.wad', mapWad('MAIN01')]];
+  writeFileSync(join(root, 'game.ipk3'), archive(content));
+  assert.deepEqual(packageLibrary(root).packages, [{ name: 'game.ipk3', type: 'pk3', standalone: true }]);
+  const files = await readLocalPackage(root, 'game.ipk3');
+  const inspection = inspectPackage(files);
+  assert.equal(inspection.game.standalone, true);
+  const { project, entry } = importPackage(files, { map: 'auto', fullGame: true,
+    baseBytes: mapWad('MAP02', true) });
+  assert.deepEqual(project.game.levels.map(level => level.id), ['MAP01']);
+  assert.equal(entry.mapCount, 1);
+  validateProject(project);
+});
+test('ClearEpisodes in included MAPINFO bounds campaigns while ordinary classic mods retain base maps', async () => {
+  const content = [...entries().filter(([path]) => !path.startsWith('maps/')),
+    ['maps/map01.wad', mapWad('MAIN01')], ['mapinfo', Buffer.from('include "metadata/campaign"')],
+    ['metadata/campaign', Buffer.from('ClearEpisodes\nEpisode MAP01 { Name = "Standalone" }')]];
+  const files = await readPackageArchive(archive(content));
+  const options = { map: 'auto', fullGame: true, baseBytes: mapWad('MAP02', true) };
+  const result = importPackage(files, options);
+  assert.deepEqual(result.project.game.levels.map(level => level.id), ['MAP01']);
+  files.delete('mapinfo'); files.delete('metadata/campaign');
+  assert.deepEqual(importPackage(files, options).project.game.levels.map(level => level.id), ['MAP02', 'MAP01']);
+});
+test('standalone campaigns retain explicitly routed base destinations and reject unsupported maps without omission', async () => {
+  const files = await readPackageArchive(archive([...entries().filter(([path]) => !path.startsWith('maps/')),
+    ['maps/map01.wad', mapWad('MAIN01')],
+    ['mapinfo', Buffer.from('ClearEpisodes\nEpisode MAP01 { Name = "Game" }\nMap MAP01 { Next = "MAP02" }')]]));
+  files.standalone = true;
+  const options = { map: 'auto', fullGame: true, baseBytes: mapWad('MAP02', true) };
+  const result = importPackage(files, options);
+  assert.deepEqual(result.project.game.levels.map(level => level.id), ['MAP01', 'MAP02']);
+  assert.equal(result.project.game.levels[0].next, 'MAP02');
+  const unsupported = wad([['BADMAP', Buffer.alloc(0)], ['THINGS', Buffer.alloc(0)],
+    ['BEHAVIOR', Buffer.alloc(0)], ['LINEDEFS', Buffer.alloc(0)], ['SIDEDEFS', Buffer.alloc(0)],
+    ['VERTEXES', Buffer.alloc(0)], ['SECTORS', Buffer.alloc(0)]]);
+  files.set('maps/badmap.wad', { data: unsupported, size: unsupported.length });
+  assert.throws(() => importPackage(files, options), /Hexen map is not supported; full-game import was not applied/);
+});
+test('full package imports preserve large cutscene Ogg audio within explicit portable budgets', async () => {
+  const bytes = Buffer.alloc(6_248_896); bytes.write('OggS');
+  const files = await readPackageArchive(archive([...entries(), ['sounds/cutscene/final.ogg', bytes]]));
+  const { project } = importPackage(files, { map: 'auto', fullGame: true, baseBytes: base() });
+  const sound = project.assets.find(asset => asset.name === 'FINAL' && asset.kind === 'sound');
+  assert.equal(Buffer.from(sound.src.split(',')[1], 'base64').length, bytes.length);
+  validateProject(project);
+  assert.throws(() => encodeSound(Buffer.alloc(8 * 1024 * 1024 + 1, 79), 'ogg'), /maximum 8 MiB/);
+  assert.throws(() => encodeSound(Buffer.from('not an ogg stream'), 'ogg'), /Invalid/);
+});
 test('full package imports retain filename-based maps even with duplicate internal markers and declared routing', async t => {
   const content = [...entries().filter(([path]) => !path.startsWith('maps/')),
     ['maps/first.wad', mapWad('WRONG')], ['maps/second.wad', mapWad('WRONG')],
-    ['mapinfo', Buffer.from('episode FIRST { name = "Game" }\nmap FIRST "First room" { next = "SECOND" }\nmap SECOND { next = EndGameC }')]];
+    ['mapinfo', Buffer.from('episode FIRST { name = "Game" }\ninclude "metadata/episodes"\nmap FIRST "First room" { next = "SECOND" }\nmap SECOND { next = EndGameC }')],
+    ['metadata/episodes', Buffer.from('episode SECOND { name = "Second campaign" }')],
+    ['menudef', Buffer.from('ListMenu "EpisodeMenu" {\nPosition 32, 64\nLineSpacing 20\n}\nListMenu "SkillMenu" {\nPosition 32, 64\n}')]];
   const root = directory(t);
   for (const [path, bytes] of content) {
     const absolute = join(root, 'Game', path);
@@ -197,6 +249,9 @@ test('full package imports retain filename-based maps even with duplicate intern
     assert.deepEqual(project.game.levels.map(level => level.id), ['FIRST', 'SECOND']);
     assert.equal(entry.map, 'FIRST'); assert.equal(project.game.entry, 'FIRST');
     assert.equal(project.game.levels[0].next, 'SECOND'); assert.equal(project.game.levels[1].next, null);
+    assert.deepEqual(project.gameMenus.episodes.map(episode => episode.levelId), ['FIRST', 'SECOND']);
+    assert.ok(project.hud.elements.some(item => item.name === 'Second campaign' && item.interactive));
+    assert.ok(project.hud.elements.some(item => item.name === 'Hurt me plenty' && item.interactive));
     selectGameLevel(project, 'SECOND'); validateProject(project);
     assert.equal(project.game.active, 'SECOND');
   }
@@ -336,6 +391,7 @@ test('local library discovers nested PK3s, unpacked packages and base WADs witho
 test('authenticated HTTP supports local/upload inspection, image batches and classic map import without mutating saved project', async t => {
   const root = directory(t), bytes = archive(entries());
   writeFileSync(join(root, 'mod.pk3'), bytes); writeFileSync(join(root, 'base.wad'), base());
+  writeFileSync(join(root, 'standalone.ipk3'), bytes);
   const store = new ProjectStore(), { app } = createApp({ store, token: 'package-test', projectsDir: root });
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
@@ -348,6 +404,11 @@ test('authenticated HTTP supports local/upload inspection, image batches and cla
   };
   assert.equal((await fetch(`${url}/api/packages`)).status, 401);
   const inspection = await json('/api/packages/inspect', { name: 'mod.pk3' });
+  const standaloneInspection = await json('/api/packages/inspect', { name: 'standalone.ipk3' });
+  assert.equal(standaloneInspection.game.standalone, true);
+  const standalone = await json('/api/import/local-package', { name: 'standalone.ipk3', map: 'auto', base: 'base.wad' });
+  assert.deepEqual(standalone.project.game.levels.map(level => level.id), ['ROOM']);
+  validateProject(standalone.project);
   const local = await json('/api/import/local-package', { name: 'mod.pk3', paths: ['textures/wall.png'] });
   const binary = { Authorization: headers.Authorization, 'Content-Type': 'application/octet-stream' };
   const uploaded = await fetch(`${url}/api/packages/upload/inspect`, { method: 'POST', headers: binary, body: bytes });

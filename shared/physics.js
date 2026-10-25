@@ -4,6 +4,46 @@ export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
 export const pairKey = (a, b) => JSON.stringify([a, b].sort());
 
+// This portable snapshot deliberately contains no Rapier handles or WASM memory.
+export function validatePhysicsState(snapshot, expectedIds) {
+  const fail = message => { throw new Error(`Invalid physics save: ${message}`); };
+  const object = value => value && Object.getPrototypeOf(value) === Object.prototype;
+  const vector = (value, keys) => object(value) && Object.keys(value).length === keys.length &&
+    keys.every(key => Number.isFinite(value[key]));
+  if (!object(snapshot) || snapshot.version !== 1 || !Array.isArray(snapshot.bodies)) fail('unsupported snapshot');
+  const ids = new Set();
+  for (const body of snapshot.bodies) {
+    if (!object(body) || typeof body.id !== 'string' || ids.has(body.id) ||
+      !vector(body.translation, ['x', 'y', 'z']) || !vector(body.rotation, ['x', 'y', 'z', 'w']) ||
+      !vector(body.linvel, ['x', 'y', 'z']) || !vector(body.angvel, ['x', 'y', 'z']) ||
+      typeof body.sleeping !== 'boolean') fail('invalid body');
+    const length = Math.hypot(...Object.values(body.rotation));
+    if (Math.abs(length - 1) > .001) fail('invalid body quaternion');
+    ids.add(body.id);
+  }
+  if (expectedIds && (ids.size !== expectedIds.size || [...ids].some(id => !expectedIds.has(id)))) fail('body IDs do not match level');
+  for (const field of ['active', 'contacts', 'started', 'ended']) {
+    if (!Array.isArray(snapshot[field]) || new Set(snapshot[field]).size !== snapshot[field].length) fail(`invalid ${field}`);
+    for (const key of snapshot[field]) {
+      let pair;
+      try { pair = JSON.parse(key); } catch { fail(`invalid ${field} pair`); }
+      if (!Array.isArray(pair) || pair.length !== 2 || pair[0] === pair[1] ||
+        !pair.every(id => typeof id === 'string' && (id === '$world' || ids.has(id))) ||
+        key !== pairKey(...pair)) fail(`invalid ${field} pair`);
+    }
+  }
+  if (!Array.isArray(snapshot.forces)) fail('invalid forces');
+  const forceIds = new Set();
+  for (const entry of snapshot.forces) {
+    if (!Array.isArray(entry) || entry.length !== 2 || !ids.has(entry[0]) || forceIds.has(entry[0]) ||
+      !vector(entry[1], ['x', 'y', 'z'])) fail('invalid force');
+    forceIds.add(entry[0]);
+  }
+  if (!Number.isFinite(snapshot.accumulator) || snapshot.accumulator < -1e-9 || snapshot.accumulator > FIXED_STEP * 8 ||
+    !Number.isFinite(snapshot.verticalSpeed) || typeof snapshot.grounded !== 'boolean') fail('invalid stepping state');
+  return snapshot;
+}
+
 export function collisionMesh(project, triangulate, { sectors: liveSectors, moving, dynamic = false } = {}) {
   const positions = [], indices = [];
   function triangle(a, b, c) {
@@ -51,6 +91,8 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
 }
 
 export function createPhysics(project, state, R, triangulate) {
+  const initialUnbodiedHeights = new Map(state.entities.filter(entity => entity.type !== 'player' &&
+    (!entity.physics || entity.physics.body === 'none') && Number.isFinite(entity.z)).map(entity => [entity.id, entity.z]));
   const world = new R.World({ x: 0, y: -9.81, z: 0 }), events = new R.EventQueue(true);
   world.timestep = FIXED_STEP;
   const moving = new Set(project.events.flatMap(event => event.actions.filter(action => action.type === 'moveSector').map(action => action.sectorId)));
@@ -132,6 +174,45 @@ export function createPhysics(project, state, R, triangulate) {
     world, bodies,
     syncWorld,
     get contacts() { return contacts; }, get started() { return started; }, get ended() { return ended; }, get grounded() { return grounded; },
+    saveState() {
+      const vector = value => ({ x: value.x || 0, y: value.y || 0, z: value.z || 0 });
+      return {
+        version: 1,
+        bodies: [...bodies].map(([id, body]) => ({
+          id, translation: vector(body.translation()), rotation: { ...vector(body.rotation()), w: body.rotation().w },
+          linvel: vector(body.linvel()), angvel: vector(body.angvel()), sleeping: body.isSleeping(),
+        })),
+        active: [...active], contacts: [...contacts], started: [...started], ended: [...ended],
+        forces: [...forces].map(([id, force]) => [id, { ...force }]), accumulator, verticalSpeed, grounded,
+      };
+    },
+    restoreState(snapshot) {
+      validatePhysicsState(snapshot, new Set(bodies.keys()));
+      syncWorld();
+      for (const saved of snapshot.bodies) {
+        const body = bodies.get(saved.id);
+        body.setTranslation(saved.translation, false); body.setRotation(saved.rotation, false);
+        if (body.isKinematic()) {
+          body.setNextKinematicTranslation(saved.translation); body.setNextKinematicRotation(saved.rotation);
+          // Rapier ignores velocity setters for position-based kinematics.
+          body.setBodyType(R.RigidBodyType.KinematicVelocityBased, false);
+          body.setLinvel(saved.linvel, false); body.setAngvel(saved.angvel, false);
+          body.setBodyType(R.RigidBodyType.KinematicPositionBased, false);
+        } else {
+          body.setLinvel(saved.linvel, false); body.setAngvel(saved.angvel, false);
+        }
+        if (saved.sleeping) body.sleep(); else body.wakeUp();
+      }
+      active.clear(); for (const key of snapshot.active) active.add(key);
+      contacts = new Set(snapshot.contacts); started = new Set(snapshot.started); ended = new Set(snapshot.ended);
+      forces.clear(); for (const [id, force] of snapshot.forces) forces.set(id, { ...force });
+      ({ accumulator, verticalSpeed, grounded } = snapshot);
+      events.clear();
+      world.propagateModifiedBodyPositionsToColliders();
+      sync();
+      for (const entity of state.entities) if (!bodies.has(entity.id) && initialUnbodiedHeights.has(entity.id))
+        entity.z = initialUnbodiedHeights.get(entity.id);
+    },
     step(dt, movement) {
       started = new Set(); ended = new Set();
       accumulator = Math.min(accumulator + dt, FIXED_STEP * 8);
@@ -212,6 +293,7 @@ export function createPhysics(project, state, R, triangulate) {
       colliderIds.delete(collider.handle); world.removeRigidBody(body); bodies.delete(id); colliders.delete(id);
       forces.delete(id);
       for (const key of active) if (JSON.parse(key).includes(id)) active.delete(key);
+      for (const set of [contacts, started, ended]) for (const key of set) if (JSON.parse(key).includes(id)) set.delete(key);
     },
     dispose() { world.removeCharacterController(controller); events.free(); world.free(); },
   };
