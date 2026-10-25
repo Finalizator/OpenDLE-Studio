@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenDLE: Studio</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/hud.css">
+  <script type="importmap">
+    {"imports":{"three":"/vendor/three/three.webgpu.js","three/webgpu":"/vendor/three/three.webgpu.js","three/tsl":"/vendor/three/three.tsl.js","three/addons/":"/vendor/three-addons/"}}
+  </script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <dialog id="license-dialog" aria-labelledby="license-heading">
+    <h1 id="license-heading">OpenDLE: Studio license agreement</h1>
+    <p>Read the license before using the editor. Acceptance is saved in this browser for this exact license document. No online account is required.</p>
+    <pre id="license-text" tabindex="0" aria-label="Full license text">Loading license...</pre>
+    <p id="license-message" role="status"></p>
+    <div class="button-row"><button id="license-decline">Decline and close</button><button id="license-accept" class="primary" disabled>I accept the license</button></div>
+  </dialog>
+  <div id="editor-shell" hidden inert>
+  <header>
+    <button id="menu-toggle" aria-expanded="false" aria-controls="file-menu">Menu</button>
+    <button id="undo" title="Undo last edit">Undo</button><button id="redo">Redo</button>
+    <button id="save">Save</button><button id="play" class="primary">Play level</button><button id="play-game">Play game</button>
+    <nav class="document-tabs" aria-label="Editors">
+      <button data-tab="map" class="active">Layout 1</button>
+      <button data-tab="events" id="events-tab">Event sheet 1</button>
+      <button data-tab="environment">Environment</button>
+      <button data-tab="tweaks">Engine tweaks</button>
+      <button data-tab="hud">HUD</button>
+      <button data-tab="assets">Assets</button>
+    </nav>
+    <span id="dirty" class="badge">Saved</span>
+  </header>
+  <div id="file-menu" class="filebar" hidden>
+    <button id="new">New project</button><button id="open">Open project</button><button id="export">Export project</button>
+    <button id="wad">Import WAD + assets</button><button id="local-wad">Local WAD library</button><button id="package-upload">Import PK3</button><button id="package-library">Local package library</button><button id="reload">Reload server</button><button id="restore">Restore local draft</button>
+    <button data-tab="about">About</button>
+    <input id="project-file" type="file" accept=".json,.opendle" hidden>
+    <input id="wad-file" type="file" accept=".wad" hidden>
+    <input id="package-file" type="file" accept=".pk3" hidden>
+    <span class="muted">OpenDLE: Studio / local-first studio</span>
+  </div>
+  <main>
+    <aside class="left" aria-label="Properties bar">
+      <div class="dock-heading">Properties <span id="selection-kind">Layout</span></div>
+      <label class="project-title">Project name<input id="title" aria-label="Project title" maxlength="100"></label>
+      <div id="inspector"></div>
+      <div class="property-help"><strong>Properties</strong><p>Select an object in the layout or Project bar. Open its visual script to edit attached events.</p></div>
+    </aside>
+    <section class="workspace">
+      <div class="document-content">
+      <div id="gameplay-warning" class="info" role="status" hidden><strong>Imported gameplay needs updating</strong><p id="gameplay-warning-text"></p><button id="reimport-gameplay">Reimport WAD with gameplay</button></div>
+      <section id="map-panel" class="panel">
+        <div class="layout-toolbar"><strong>Layout 1 / editor only — use Play world for gameplay</strong><button id="view-2d" aria-pressed="true">2D</button><button id="view-3d" aria-pressed="false">3D</button><button id="layout-events">Event sheet</button></div>
+        <div class="map-tools">
+          <label>Tool <select id="tool"><option value="select">Select / move</option><option value="room">Draw room</option><option value="entity">Place entity</option></select></label>
+          <label>Entity <select id="entity-type"><option>enemy</option><option>pickup</option><option>light</option><option>decoration</option><option>player</option></select></label>
+          <label>Grid <select id="grid"><option>16</option><option>8</option><option>32</option><option>64</option></select></label>
+          <button id="fit">Fit world</button>
+          <label id="transform-field" hidden>Transform<select id="transform-mode" aria-label="3D transform"><option value="move">Move</option><option value="rotate">Rotate object</option><option value="scale">Scale visual</option></select></label>
+          <label id="ceiling-field" hidden><input id="show-ceilings" type="checkbox">Show ceilings</label>
+          <label id="surface-field" hidden>Sector handle<select id="sector-surface"><option value="floorHeight">Floor</option><option value="ceilingHeight">Ceiling</option></select></label>
+        </div>
+        <div class="canvas-wrap" id="map-wrap"><canvas id="map" aria-label="Visual map editor" tabindex="0"></canvas><canvas id="scene-3d" aria-label="3D scene editor" tabindex="0" hidden></canvas><div id="scene-loading" role="status" hidden></div><div id="scene-hint" class="canvas-hint">Wheel: zoom · Right-drag: pan · Select wall, vertex or object to edit</div></div>
+        <div class="map-footer"><span id="map-stats"></span><span id="coordinates">X 0 / Y 0</span></div>
+        <details id="import-report" class="info" hidden><summary id="import-summary"></summary><pre id="import-warnings"></pre></details>
+      </section>
+      <section id="events-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1 id="sheet-title">Event sheet 1</h1><p id="sheet-description">Scene and object logic in execution order.</p></div><button id="add-event" class="primary">+ Add event</button></div>
+        <div class="sheet-toolbar"><label>Show scripts for <select id="script-scope" aria-label="Script scope"></select></label><span id="script-count" class="badge"></span><button id="add-group">+ Group</button><button id="add-sheet">+ Sheet</button></div>
+        <div id="sheet-properties" class="sheet-toolbar"></div>
+        <p class="muted">Double-click a condition/action or press Enter to edit. Numbered margins open event options, comments, AND/OR logic and sub-events. Groups can be collapsed or deactivated. Engine defaults remain an incomplete FPS starter.</p>
+        <div class="sheet-columns"><span>#</span><span>Conditions</span><span>Actions</span></div>
+        <div id="event-list"></div>
+      </section>
+      <section id="environment-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1>Environment & variables</h1><p>Set the atmosphere and game state.</p></div></div>
+        <div id="environment-form"></div>
+      </section>
+      <section id="hud-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1>HUD overlay</h1><p>Anchored layouts, nine-patch panels, fonts, CSS classes, animations and visual scripts.</p></div></div>
+        <div id="hud-editor"></div>
+      </section>
+      <section id="assets-panel" class="panel" hidden>
+        <div class="dock-heading">Asset browser <button id="expand-assets" aria-expanded="false">Expand</button></div>
+        <div class="asset-browser-body">
+        <div class="panel-heading"><div><h1>Assets & sectors</h1><p>Images, sounds, Blockbench GLB/glTF models, animations and sector surfaces.</p></div><button id="import-sound">Import sounds</button><button id="import-model">Import models</button><button id="import-model-folder">Model folder</button><button id="import-image" class="primary">Import images</button></div>
+        <div class="asset-toolbar">
+          <label>Import as <select id="image-kind"><option value="texture">Wall texture</option><option value="flat">Floor / ceiling</option><option value="sky">Sky panorama / cube face</option><option value="sprite">Object sprite</option><option value="weapon">Weapon overlay</option></select></label>
+          <label>Filter <select id="asset-filter"><option value="all">All assets</option><option value="texture">Textures</option><option value="flat">Floors / ceilings</option><option value="sky">Skies</option><option value="sprite">Sprites</option><option value="weapon">Weapons</option><option value="sound">Sounds</option><option value="model">3D models</option><option value="font">Fonts</option></select></label>
+          <label>Search <input id="asset-search" type="search" placeholder="Asset name"></label>
+        </div>
+        <div class="asset-library"><nav id="asset-folders" aria-label="Asset categories"></nav><div id="asset-list" class="asset-grid"></div></div>
+        <details class="asset-help"><summary>Sprite &amp; surface animations</summary><p>Edit imported frame order, timing and loops. Assign object states in Properties; weapon and projectile clips are referenced by Engine actions.</p><button id="add-sprite-animation">Add sprite animation</button><div id="sprite-animation-list"></div></details>
+        <details class="asset-help"><summary>Import help &amp; sectors</summary>
+        <p class="info">Import PNG, JPEG or WebP (up to 2048x2048). Images are normalized to PNG and embedded in the project. Select a wall, sector or object to assign materials. Weapon sprites are visuals only.</p>
+        <h2>Sectors</h2><p class="muted">Select a sector here or click inside its floor in the Layout. Edit heights, floor/ceiling materials, sky and light in Properties.</p>
+        <div id="sector-list" class="sector-list"></div>
+        </details>
+        <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+        <input id="sound-file" type="file" accept=".wav,.ogg,.mp3" multiple hidden>
+        <input id="model-file" type="file" accept=".glb,.gltf,.bin,.png,.jpg,.jpeg,.webp" multiple hidden>
+        <input id="model-directory" type="file" webkitdirectory multiple hidden>
+        <details class="asset-help"><summary>Blockbench export help</summary><p class="info">Export uncompressed glTF 2.0 / GLB, not Minecraft JSON. Select the .gltf plus its .bin and textures together, or import the containing folder for nested resources (GLB is simplest). Meshes, materials, hierarchy, skins, morph targets and exported clips are retained. Assign a model in object Properties; configure primitive colliders separately.</p></details>
+        </div>
+      </section>
+      <section id="tweaks-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1>Engine tweaks</h1><p>OpenDLE preview overrides, independent of imported game menus.</p></div></div>
+        <div class="prose">
+          <label><input id="engine-jumping" type="checkbox" checked> Enable jumping</label>
+          <p>Space jumps; E uses doors and switches. Enabled by default. Applies to all projects in this browser, including Play level and Play game.</p>
+          <p>Jumping respects walls, ceilings and grounded physics, but can bypass original map puzzles. Disable for classic no-jump movement. The jump input rule remains editable in visual scripts.</p>
+          <p id="engine-tweaks-status" role="status"></p>
+        </div>
+      </section>
+      <section id="about-panel" class="panel" hidden>
+        <p id="engine-version" role="status">OpenDLE: Studio version: not loaded</p>
+        <p>Engine license: OpenDLE: Studio Source-Available Commercial License v1.0, effective 25 October 2026. Licensor: Oleksandr Prokuronov, acting as an individual. Contact and royalty reporting: <a href="mailto:korbazster2@gmail.com">korbazster2@gmail.com</a>. Per game: USD 200 at USD 10,000 in lifetime developer receipts, then 2% of subsequent receipts. Monthly reporting remains required; payment instructions are supplied privately before payment is due. The licensor may waive or reduce payments by written agreement. Bulgarian law applies, subject to mandatory protections. Self-drafted; no legal review claimed. Third-party code and game content retain their own licenses.</p>
+        <p>Games generating no receipts throughout their lifetime owe no engine royalties, license fees or royalty reports under this license version. Free-to-download games generating receipts from ads, donations, sponsorships or purchases follow the normal threshold. Government taxes and third-party obligations are unaffected.</p>
+        <p>No revenue disclosure, registration or financial evidence is required by the license before a game first reaches USD 10,000 in lifetime receipts. Afterward, the licensor may expressly accept self-reported figures on trust and waive supporting documents or reporting requirements in writing. A reporting waiver does not itself waive royalties.</p>
+        <p>License-update policy: no annual expiry. Online license checking and acceptance prompts are planned, not implemented; current permissions continue until an implemented mechanism presents updated terms. Once active, broader tool use requires explicit acceptance of presented updates, including for older engine versions. Without accepting, users may keep their already-obtained version for private, non-commercial learning, teaching and research under their last accepted terms; no monetization or new public game releases are permitted by this fallback. Already-released game builds retain their original terms and obligations.</p>
+        <div class="panel-heading"><div><h1>OpenDLE: Studio</h1><p>A source-available game engine and visual editor, not a GZDoom port.</p></div></div>
+        <div class="prose">
+          <h2>Working in this milestone</h2>
+          <p>A Construct-inspired workspace with Properties, Project and Objects bars; shared 2D/3D room, wall, vertex and entity editing; a 3D fly camera and transform handles; undo/redo; JSON projects; sector materials and lighting; object-owned event sheets; WebGPU-preferred rendering with WebGL2 fallback and Rapier 3D physics; Blockbench GLB/glTF meshes, skins and exported animations; local DeepSeek proposals; MCP tools.</p>
+          <h2>Visual scripting scope</h2>
+          <p>Double-click an object or choose Edit object script in Properties to attach conditions and actions to that instance. HUD elements link to rules through HUD element IDs. Sheets support nested events, AND/OR conditions, NOT, comments and active groups. Global and per-object variables support numbers, text and booleans. Event parameters accept bounded math/text expressions; shader uniforms and effect toggles are visual commands too. Environment includes a portable GLSL effect editor, not unrestricted GLSL or automatic GZDoom shader translation. Browser WebGPU may use Vulkan internally, but native Vulkan is not exposed directly. This is an original editor, not Construct or GDevelop project-format compatibility: families, automatic instance picking, reusable behaviors and node graphs are not implemented.</p>
+          <h2>Doom II compatibility: static map and asset preview</h2>
+          <p>Import classic little-endian IWAD/PWAD maps with sector geometry, composed wall textures, flats, palette-decoded sprites, sky, weapon overlays and an editable status bar reconstructed from WAD artwork. Digit fonts, face clips, weapon slots, keys and ammo bind to runtime inventory. Imported Engine sheets contain editable inventory, pickup and selection rules. Use Local WAD library to import your Freedoom file from Projects. No commercial game assets are included. Existing imports need reimporting to obtain this HUD; save/export custom edits first.</p>
+          <p>The target is full, one-way GZDoom game import into native, editable OpenDLE content; OpenDLE extensions need not run in GZDoom. Import PK3 opens ZIP resource packages; Local package library discovers unpacked folders and nested packages under Projects. Classic Doom and UDMF geometry import with an optional base IWAD. UDMF source properties are retained as provenance. Binary Hexen maps and PK7 are not supported yet.</p>
+          <p>The WebGL renderer supports floor/ceiling heights, two-sided wall openings, masked midtextures, animated billboard sprites, weapon/impact frames, classic animated surfaces, sector light levels, up to 16 colored point lights and panorama or six-face skies. Nine weapons, visible projectiles, basic enemy chasing/attacks, classic doors/lifts/floor movement, sound playback and inventory/pickups use editable Engine rules. Space/E uses doors and switches. Remaining compatibility gaps include exact weapon/actor state machines, directional sprite rotations, special monster abilities, power-ups, exact face logic, generalized specials, advanced UDMF properties, music, ACS, DECORATE, ZScript and custom HUD/texture definitions. These are in scope but not implemented; geometry import is not full gameplay compatibility.</p>
+          <h2>Visual editors, incrementally</h2>
+          <p>This foundation covers maps, events, imported images, sector surfaces, material assignments, sky and weapon selection, light settings and a separate HUD designer. HUDs support anchored drag/resize layouts, nine-patch images, web/grid-bitmap fonts, scoped CSS classes, sprite-frame/tween animations, engine bindings and clickable visual scripts. Canva PNG/JPG/WebP exports are flattened images, not editable Canva layers. Full texture painting, world sprite animation authoring and audio editing remain future work. A complete game engine is a multi-milestone project.</p>
+          <h2>AI is optional</h2>
+          <p>The editor works without a provider account. Set DEEPSEEK_API_KEY on the local server to request tool-driven drafts. Review and explicitly apply each draft. Project content is sent to DeepSeek only when you request it. MCP clients can edit the saved server project directly; reload to see their changes.</p>
+        </div>
+      </section>
+      </div>
+      <section id="asset-dock" aria-label="Asset browser"></section>
+    </section>
+    <aside class="right" aria-label="Project bar">
+      <div class="dock-heading">Project <span>OpenDLE: Studio</span></div>
+      <input id="project-search" type="search" placeholder="Search project" aria-label="Search project">
+      <div class="project-tree">
+        <strong id="project-name">Project</strong>
+        <details open><summary>Layouts</summary><button data-tab="map" class="tree-link">Layout 1</button></details>
+        <details open><summary>HUD overlays</summary><button data-tab="hud" class="tree-link">Game HUD / designer</button></details>
+        <details><summary>Event sheets</summary><button id="scene-script" class="tree-link">Event sheet 1</button><div id="object-scripts"></div></details>
+        <details open><summary>Engine</summary><div id="engine-sheets"></div><button id="install-engine" class="tree-link">Install editable FPS starter</button></details>
+        <details open><summary>Game event sheets</summary><div id="game-sheets"></div></details>
+        <details open><summary>Objects</summary><div id="project-objects"></div></details>
+        <button data-tab="assets" class="tree-link">Assets & sectors</button>
+        <details><summary>Project settings</summary><button data-tab="environment" class="tree-link">Environment & variables</button><button data-tab="about" class="tree-link">Compatibility</button></details>
+      </div>
+      <section class="layers-dock" aria-label="Layers and objects">
+        <div class="dock-heading">Layers - Layout 1 <span>1 world layer</span></div>
+        <button id="world-layer" class="layer-row">World / Layer 0</button>
+        <p class="layer-help">Objects in the world layer. Double-click to edit a visual script.</p>
+        <div id="entities" class="entity-list" aria-label="Objects bar"></div>
+      </section>
+      <details class="assistant-dock">
+      <summary class="assistant-heading">DeepSeek assistant <span id="ai-state" class="badge">Checking</span></summary>
+      <div class="assistant-body">
+      <p class="muted">Describe an edit. Review the draft before it touches your world.</p>
+      <label for="prompt">Your instruction</label>
+      <textarea id="prompt" rows="4" maxlength="8000" placeholder="Add a blue room to the east and a pickup inside it."></textarea>
+      <button id="ask-ai" class="primary">Propose changes</button>
+      <p class="privacy">Sends the saved project and this prompt to DeepSeek. API key stays on this computer's server.</p>
+      <pre id="ai-result" aria-live="polite"></pre>
+      <details id="ai-draft" hidden><summary>Inspect proposed project JSON</summary><pre id="ai-project"></pre></details>
+      <div class="button-row"><button id="apply-ai" hidden>Apply draft</button><button id="discard-ai" hidden>Discard</button></div>
+      </div>
+      </details>
+    </aside>
+  </main>
+  <footer><span id="status" role="status">Connecting to local service...</span><span>Layout 1 / WebGPU preferred + WebGL2 fallback / experimental</span></footer>
+  <dialog id="play-dialog">
+    <div class="preview-heading"><strong id="preview-title">Play world</strong><button id="pause-game">Pause / options</button><button id="hud-cursor">HUD cursor / Tab</button><button id="capture-mouse">Capture mouse</button><button id="system-browser">Open in system browser</button><button id="stop">Stop preview</button></div>
+    <p id="mouse-status" role="status"></p>
+    <div id="preview-stage"><canvas id="preview" width="800" height="450" tabindex="0" aria-label="First-person game preview"></canvas><div id="hud-overlay" class="hud-overlay"></div></div>
+    <div id="preview-controls" class="preview-controls"></div>
+    <div id="game-message" aria-live="polite"></div><div id="game-variables"></div>
+  </dialog>
+  <dialog id="import-dialog"><h2>Import WAD map & assets</h2><p>Choose a classic Doom or UDMF map. Imports sectors, textures, sky, sprites, weapon overlays, sounds and an editable classic status bar from WAD artwork, plus nine-weapon, enemy combat, inventory and pickup scripts. Use Play world to run gameplay; 3D layout mode is editing only. Full GZDoom behavior and custom HUD translation remain implementation gaps. The current project is replaced; undo is available.</p><label id="local-wad-label" hidden>Local WAD<select id="local-wad-select"></select></label><label>Map<select id="wad-map" aria-label="WAD map"></select></label><p id="import-status" role="status"></p><div class="button-row"><button id="import-map" class="primary">Import map & assets</button><button id="cancel-import">Cancel</button></div></dialog>
+  <dialog id="package-dialog">
+    <h2>Import game</h2>
+    <p>Choose a mod and its base game. OpenDLE finds the entry level and resolves its resources automatically. Import replaces the current scene; undo is available.</p>
+    <label id="package-source-label">Mod<select id="package-source" aria-label="Local package"></select></label>
+    <label>Base game<select id="package-base" aria-label="Package base IWAD"></select></label>
+    <p id="package-game-info"></p>
+    <p>Current compatibility: entry-level geometry and referenced artwork import; full game scripts, custom HUD behavior and level progression are still being implemented.</p>
+    <details id="package-advanced"><summary>Advanced: choose a level or extract images</summary>
+    <label>Map / import mode<select id="package-map" aria-label="Package map"></select></label>
+    <label>Image category<select id="package-kind" aria-label="Package image category"><option value="">From package namespace</option><option value="texture">Wall texture</option><option value="flat">Floor / ceiling</option><option value="sky">Sky</option><option value="sprite">Sprite / HUD image</option><option value="weapon">Weapon overlay</option></select></label>
+    <label>Image search<input id="package-search" type="search" aria-label="Package image search"></label>
+    <label>Images (select 1–64 per batch; Ctrl/Shift for multiple)<select id="package-images" aria-label="Package images" multiple size="10"></select></label>
+    <p id="package-count"></p>
+    </details>
+    <details><summary>Compatibility details</summary><pre id="package-notes"></pre></details>
+    <p id="package-status" role="status"></p>
+    <div class="button-row"><button id="package-import" class="primary">Import game</button><button id="package-cancel">Cancel</button></div>
+  </dialog>
+  </div>
+</body>
+</html>

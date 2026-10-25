@@ -1,0 +1,297 @@
+OpenDLE: Studio Source-Available Commercial License
+Version 1.0 - Effective 25 October 2026
+
+Licensor: Oleksandr Prokuronov, acting as an individual.
+Contact and royalty reporting email: korbazster2@gmail.com
+Payment instructions: supplied privately by the Licensor on a case-by-case basis.
+
+This license offers the permissions below for Engine code distributed with it
+by the Licensor. By exercising those permissions, you agree to these terms.
+If you do not agree, do not exercise the permissions granted by this license.
+Rights available independently under applicable law remain unaffected.
+
+1. Scope and ownership
+
+"Engine" means the original OpenDLE: Studio (OpenDLE) code and documentation made
+available by the Licensor with this license. Third-party software, reference
+trees, game content, names and trademarks are excluded and retain their own
+terms. This license cannot grant rights the Licensor does not own or control.
+The Licensor retains ownership of the Engine. You retain ownership of your
+original games, assets and modifications, subject to rights in the Engine.
+This is a custom source-available license, not an open-source license.
+
+2. Permissions
+
+Subject to these terms, you may inspect the Engine source, privately use and
+modify the Engine, develop games, and distribute and sell those games with
+the runtime components necessary to run them. Browser-delivered runtime code
+is permitted as part of a game; this is not permission to distribute an engine
+editor, engine SDK, independent engine product or general-purpose engine fork.
+You are not required to publish the source code of your games or your private
+modifications to the Engine.
+Preserve Engine copyright/license notices and supply this license with any
+Engine components distributed with a game.
+
+3. Source redistribution and forks
+
+Except for game runtime distribution under section 2 and contributions under
+section 6, you may not publish, distribute, sublicense or sell the Engine or
+its modified source, independent engine forks, editors or SDKs without separate
+written permission. Private modifications are allowed.
+
+If the Licensor publishes a public repository on a hosting platform, viewing,
+copying or forking strictly as permitted by that platform's applicable terms
+is not prohibited by this license. Such platform permissions do not grant
+additional rights to publish independent Engine releases or avoid royalties.
+Contribution-only forks necessary to submit changes to the official repository
+are permitted for that purpose, not as independent maintained distributions.
+
+4. Per-game royalties
+
+All amounts and thresholds below are in United States dollars (USD).
+"Game" includes the same game's releases on different platforms, editions,
+ports, DLC and related sales. Account for that Game across your controlled
+publishing entities; a new edition, publisher or store account does not restart
+its threshold. Do not include unrelated games or unrelated business income.
+
+"Receipts" means amounts received by you or on your behalf from exploitation
+of the Game, after deducting store/payment processing fees, sales taxes
+collected for government authorities, refunds and chargebacks. Include game
+sales, DLC, in-game purchases, advertising, sponsorships, donations attributable
+to the Game and game licensing receipts.
+Do not deduct development costs, wages, marketing costs, income taxes or these
+royalties. This basis is receipts, not accounting profit. Do not deduct any
+amount twice. Convert non-USD receipts consistently using a documented exchange
+rate applicable when received.
+
+Zero-receipts games are permanently royalty-exempt under this version of the
+license: a Game that generates no Receipts throughout its lifetime owes the
+Licensor no royalty, catch-up payment, minimum fee, license fee or royalty
+reporting obligation. No fee or tax payable to the Licensor is imposed merely
+for creating, distributing or playing such a Game. This does not exempt anyone
+from taxes or obligations owed to government authorities or other parties.
+
+"Free", "non-profit" or charitable status alone does not determine eligibility.
+A free-to-download Game with advertising, donations, sponsorships or optional
+purchases generating Receipts follows the normal threshold rules. If a
+previously zero-receipts Game later generates Receipts, apply those rules from
+its first Receipts; no royalty is charged for the earlier zero-receipts period.
+A later zero-receipts month does not cancel already accrued royalties or the
+reporting obligations of a Game that previously reached the threshold.
+
+Before cumulative lifetime Receipts for a Game reach USD 10,000, no royalty
+is payable. When they first reach USD 10,000, a USD 200 catch-up royalty becomes
+payable. Every dollar of Receipts above USD 10,000 is also subject to a 2%
+royalty.
+
+Calculate the USD 10,000 threshold separately for each Game by adding that
+Game's qualifying Receipts over its entire lifetime, across all months and
+years. The total does not reset when a new month or year begins. For example,
+USD 6,000 in one year plus USD 4,000 in the next year reaches the threshold
+and triggers the USD 200 catch-up royalty.
+
+After the threshold is reached, there is no new USD 10,000 allowance in later
+months or years. Subsequent Receipts remain subject to the 2% royalty even in
+a month with only USD 100 in Receipts (USD 2 royalty), subject to the refund
+and credit rules below. The USD 200 catch-up royalty is triggered only once
+for that Game. A separate Game has its own lifetime threshold, but editions,
+platform releases, ports and DLC of the same Game share that Game's threshold
+as defined above.
+
+Examples (no subsequent refunds):
+  Lifetime Receipts USD 9,999: total royalty USD 0.
+  Lifetime Receipts USD 10,000: total royalty USD 200.
+  Lifetime Receipts USD 12,000: total royalty USD 240.
+  A subsequent month's Receipts of USD 3,000: additional royalty USD 60.
+
+Pay the USD 200 catch-up amount within 30 days after the end of the calendar
+month in which the threshold is reached, even if no further sales occur.
+It is not deferred until additional money is earned. In that month also pay
+2% of the portion above the threshold. In later months report and pay 2% of
+that month's Receipts within 30 days after month end. Do not charge 2% again
+on the first USD 10,000 in addition to the USD 200.
+
+Payment instructions are not public. Submit reports and request instructions at
+the contact email above. A payment is due only after the Licensor has privately
+provided payment instructions; until then, royalties accrue but payment is not
+late. If instructions arrive after the normal payment deadline, the Licensor
+and developer must agree in writing on a payment date for the accrued balance.
+Monthly reporting remains due on the normal schedule.
+
+The Licensor may expressly waive a payment or agree to a lower amount in
+writing, including by email. Such an agreement must identify the Game and the
+amounts or reporting periods covered. Unless expressly stated otherwise, it
+does not waive reporting, future royalties or any other developer's obligations.
+Silence, a delayed response or failure to request payment is not by itself a
+waiver of accrued royalties.
+
+After the threshold is reached, refunds/chargebacks reduce the royalty-bearing
+receipts base and can generate a credit against future royalties, not a cash
+refund. Do not collect the catch-up royalty a second time if receipts later
+drop below and recross the threshold. Total royalties cannot be negative.
+
+This is a contractual royalty, not a tax. You are responsible for reporting
+and payment; the Engine does not automatically withhold store payouts.
+If law requires withholding from a royalty payment, remit the withholding to
+the appropriate authority and provide evidence to the Licensor.
+
+5. Reporting
+
+Before a Game first reaches USD 10,000 in cumulative lifetime Receipts, you
+are not required by this license to register the Game with the Licensor,
+notify the Licensor of its revenue, submit revenue reports, or disclose sales
+figures, store statements, invoices, bank records or other financial evidence.
+You remain responsible for tracking the threshold yourself. Once it is reached,
+the first report must include the cumulative total, including earlier Receipts;
+separate reports for earlier below-threshold months are not required.
+
+Starting with the month the threshold is reached, submit a monthly statement
+within 30 days after month end identifying the Game, monthly and cumulative
+Receipts, deductions, exchange rates, royalty calculation and credits. Report
+zero-receipt months as well. Send reports to the contact email above and use
+the payment instructions privately supplied by the Licensor. Keep sufficient
+records to substantiate statements. This license grants no separate contractual
+audit access or special late-payment penalties. Rights and remedies provided
+by applicable law remain unaffected.
+
+For clarity, capitalized "Receipts" means the monetary amounts defined in
+section 4, not documentary receipts or proof of sales. A monthly statement
+is your own report; this license does not routinely require attaching store
+statements, invoices or bank records to it.
+
+The Licensor may agree in writing, including by email, to accept your declared
+figures on a trust basis without supporting financial documents. Such an
+agreement must identify the Game and the periods covered, or expressly state
+that it continues for future periods. It may simplify or waive the reporting
+details above, or waive reports entirely, if expressly stated. No supporting
+documents need be provided to the Licensor for the agreed scope. Keep records
+needed to calculate royalties and satisfy applicable law; this does not require
+sending those records to the Licensor under the trust arrangement.
+
+For example, the Licensor may accept your declaration that a Game generated
+USD 13,000 in cumulative Receipts, waive documentary proof for that period,
+and privately provide payment instructions. Without a separate royalty waiver
+or reduction, the total royalty remains USD 260, less royalties already paid
+and applicable credits. Accepting self-reported figures does not itself waive
+payment, forgive inaccuracies, change the royalty basis or exempt other Games.
+Merely supplying payment instructions is not a waiver of reporting; any waiver
+must be express. Statutory obligations and legally compelled disclosures are
+unaffected.
+
+6. Voluntary contributions
+
+Contributing is optional. You may propose your changes to the official OpenDLE: Studio
+repository. You retain copyright in your original contribution.
+Before merging a contribution, the Licensor must obtain your explicit agreement
+granting a worldwide, perpetual, irrevocable, non-exclusive, royalty-free right
+to use, modify, reproduce, distribute, sublicense and relicense that contribution,
+including in future commercial releases with different license/payment terms.
+An unsolicited patch or pull request alone is not treated as that agreement.
+Only grant rights you control, and identify all third-party code and notices.
+
+7. License updates, acceptance and future versions
+
+There is no annual expiry or renewal requirement. The Licensor may publish
+updated Engine license terms, including different royalty rates, thresholds
+or payment terms, or a different governing law, for future development-tool use.
+The conditional update policy below applies even
+when you continue using an older Engine version rather than upgrading it.
+
+Activation condition: the notice-and-acceptance mechanism described below is
+not currently implemented. Until it is implemented and actually presents
+updated terms to you, your accepted permissions continue without a time limit;
+publication of new terms alone does not suspend tool use or force acceptance.
+There is no current online-check, registration or periodic renewal requirement.
+
+After that mechanism is implemented, when an updated license is presented to
+you through its notice
+procedure, continued development-tool use outside the educational fallback below
+requires your express acceptance of those updated terms. Until that acceptance,
+stop tool use outside that fallback; you may still access the license notice
+and acceptance interface to review or accept the update. Silence, an online
+check, downloading terms or merely displaying them is not acceptance.
+
+Educational fallback: if you decline or have not accepted updated terms, you
+may continue using your already-obtained Engine version solely for private,
+non-commercial learning, teaching and research under your last accepted
+license, subject to this fallback's narrower scope. You may create and run
+private exercises and prototypes for those purposes. This permission has no
+annual expiry and does not require accepting the updated terms.
+
+The fallback does not permit monetization, paid development services,
+development for commercial release, or new public game releases, including
+free releases. It does not grant rights to redistribute Engine source or
+independent forks, or to obtain later Engine versions. Educational or non-profit
+labels alone do not authorize activities outside this scope. Broader tool use
+requires express acceptance of the updated terms or a separate agreement.
+Existing payment and reporting obligations are not waived by entering this
+fallback, and the protected rights for already-released builds below remain.
+
+The update trigger is presentation through that notice procedure, not the
+passage of time or merely editing an undisclosed website or repository file.
+An unavailable licensing service does not itself constitute notice or
+acceptance. Updates do not retroactively change accrued royalties or the
+protected game rights below. Mandatory protections under applicable law remain
+unaffected by this continued-use condition or the notice procedure.
+
+Game builds publicly released before updated terms are presented to you are
+grandfathered: those already-released builds may continue to be distributed,
+sold and played under the license terms under which they were released,
+including the original royalty rates, thresholds, reporting requirements and
+zero-receipts exemption. Future receipts from those builds remain governed by
+those original terms. Declining an Engine license update does not disable their runtime or
+require players to accept a new Engine license.
+
+Except for private exercises and prototypes within the educational fallback,
+developing or publishing new games, updates, ports or DLC using the Engine
+after updated terms are presented requires acceptance of the update or a
+separate agreement. These new releases follow the updated accepted terms;
+they do not retroactively relicense grandfathered builds or their receipts.
+Accepting updated terms does not reset a Game's cumulative receipts or charge the initial
+threshold royalty twice. Where differently licensed releases of the same Game
+coexist, the updated agreement must specify how bundled/shared receipts are allocated
+before those releases are commercially distributed; do not silently apply a
+new rate to grandfathered receipts.
+
+Planned implementation: the tool will check the current license online and
+display changed terms for express acceptance. Online checking, acceptance
+records, update notification and offline behavior are not
+implemented by this document and must be finalized before this policy is
+activated. No automatic acceptance or undisclosed future terms are authorized.
+Third-party rights and agreed contribution grants remain applicable.
+
+8. Restrictions and reservation of rights
+
+Do not remove required notices or misrepresent the origin of the Engine.
+No trademark rights or endorsement are granted. No rights are granted beyond
+the express permissions in this agreement and applicable mandatory
+law. Royalty-free private development does not waive royalties on Game receipts.
+
+9. Warranty and liability
+
+To the extent permitted by applicable law, the Engine is provided "AS IS",
+without warranty, and the Licensor disclaims liability for damages arising
+from its use. Mandatory statutory rights are not excluded.
+
+10. Governing law and disputes
+
+This agreement is governed by the laws of the Republic of Bulgaria, without
+prejudice to mandatory protections or rules that apply regardless of a
+contractual choice of law. Courts with jurisdiction are determined by applicable
+law; no exclusive court or mandatory arbitration is selected by this license.
+
+The Licensor may propose a different governing law in future license terms
+under section 7. A new choice does not automatically amend an existing
+agreement, change accrued obligations or remove mandatory protections.
+Grandfathered game rights remain subject to their original applicable terms.
+
+11. General
+
+Written individual agreements, including express royalty waivers or reductions,
+control only to the extent of their stated scope. If a provision cannot lawfully
+be enforced, mandatory law controls; the remaining provisions continue to the
+extent permitted by law.
+
+This is a self-drafted license and is not represented as reviewed or approved
+by legal counsel. That disclosure does not suspend the permissions expressly
+granted in this license.

@@ -1,0 +1,24 @@
+{
+  "name": "opendle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "description": "OpenDLE: Studio - source-available browser-native visual game engine with local DeepSeek and MCP tools",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "test": "node --test test/*.test.js",
+    "test:freedoom": "node scripts/check-freedoom.js",
+    "check": "node scripts/check.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.0",
+    "@dimforge/rapier3d-compat": "^0.19.3",
+    "express": "^5.1.0",
+    "pngjs": "^7.0.0",
+    "three": "^0.180.0",
+    "yauzl": "^3.2.0",
+    "zod": "^3.25.0"
+  }
+}

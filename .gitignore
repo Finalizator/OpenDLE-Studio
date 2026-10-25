@@ -1,0 +1,31 @@
+# Installed dependencies
+node_modules/
+
+# Local credentials; keep the safe configuration template
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# User-supplied games, reference distributions and saved project assets
+/Projects/
+/Ancestors/
+/data/
+
+# Generated output and test artifacts
+coverage/
+/dist/
+/build/
+/test-results/
+/playwright-report/
+*.log
+*.tsbuildinfo
+
+# Local editor and operating-system files
+/.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
