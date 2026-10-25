@@ -317,6 +317,7 @@ export function validateProject(project) {
   if (project.gameMenus !== undefined) {
     object(project.gameMenus, 'Game menus');
     assert(project.gameMenus.version === 1, 'Unknown game menu version');
+    if (project.gameMenus.presentation !== undefined) assert(project.gameMenus.presentation === 2, 'Unknown game menu presentation version');
     array(project.gameMenus.screens, 'Game menu screens', 128);
     for (const name of project.gameMenus.screens) identifier(name, 'Game menu screen');
     assert(new Set(project.gameMenus.screens).size === project.gameMenus.screens.length, 'Duplicate game menu screens');
@@ -405,7 +406,7 @@ export function validateProject(project) {
       if (definition.hudElement) {
         const element = project.hud?.elements.find(element => element.id === command.elementId);
         assert(element, 'Command references an unknown HUD element');
-        if (command.type === 'hudClicked') assert(element.interactive, 'HUD click conditions need an interactive element');
+        if (['hudClicked', 'hudFocused'].includes(command.type)) assert(element.interactive, 'HUD click/focus conditions need an interactive element');
         if (command.type === 'setHUDProperty' && !isExpression(command.value)) validateHUDProperty(command.property, command.value, element, assert);
         if (['setHUDText', 'setHUDBinding'].includes(command.type) && !isExpression(command.text)) {
           const override = command.type === 'setHUDText' ? { text: command.text } : { binding: command.binding };

@@ -169,7 +169,11 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
       value => update(hud => { hud.elements.find(item => item.id === element.id).anchors[key] = value; }));
     field(properties, 'Display mode', element.display, value => updateElement('display', value), ['always', 'game', 'cursor']);
     check(properties, 'Visible', element.visible, value => updateElement('visible', value));
+    check(properties, 'Classic status bar (hidden at Screen size 11)', Boolean(element.statusbar),
+      value => updateElement('statusbar', value));
     check(properties, 'Clickable (cursor mode)', element.interactive, value => updateElement('interactive', value));
+    if (element.interactive) check(properties, 'Keyboard menu selection', element.menuSelectable !== false,
+      value => updateElement('menuSelectable', value));
     field(properties, 'Text alignment', element.align, value => updateElement('align', value), ['left', 'center', 'right']);
     field(properties, 'Binding', element.binding, value => updateElement('binding', value),
       ['', ...HUD_PLAYER_BINDINGS, ...GAME_HUD_BINDINGS, 'message', ...Object.keys(current.variables).map(key => `var:${key}`)]);
@@ -181,6 +185,12 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
       if (value) item.maxLength = value; else delete item.maxLength;
     }));
     for (const key of ['value', 'maximum']) field(properties, key, element[key], value => updateElement(key, value));
+    if (element.type === 'bar') {
+      field(properties, 'Fill direction', element.fillDirection || 'right',
+        value => updateElement('fillDirection', value), ['right', 'left', 'up', 'down']);
+      field(properties, 'Fill image', element.fillAssetId || '', value => updateElement('fillAssetId', value),
+        [['', 'Solid color'], ...imageOptions()]);
+    }
     field(properties, 'Font', element.fontId || '', value => updateElement('fontId', value), [['', 'Built-in monospace'], ...current.hud.fonts.map(font => [font.id, font.name])]);
     field(properties, 'CSS class', element.styleClass || '', value => updateElement('styleClass', value),
       [['', 'None'], ...(current.hud.styles || []).map(style => style.name)]);
@@ -190,6 +200,10 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
       delete item.slice; delete item.sprite;
     }), [['', 'None'], ...imageOptions()]);
     if (element.assetId) {
+      check(properties, 'Tile image horizontally', element.imageRepeat === 'repeat-x', value => update(hud => {
+        const item = hud.elements.find(item => item.id === element.id);
+        if (value) item.imageRepeat = 'repeat-x'; else delete item.imageRepeat;
+      }));
       check(properties, 'Nine-patch', Boolean(element.slice), value => update(hud => {
         const item = hud.elements.find(item => item.id === element.id);
         if (value) { item.slice = { left: 0, top: 0, right: 0, bottom: 0 }; delete item.sprite; } else delete item.slice;
@@ -240,12 +254,14 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
     }));
     check(animationPanel, 'Loop', clip.loop, value => change(clip => { clip.loop = value; }));
     check(animationPanel, 'Autoplay', clip.autoPlay, value => change(clip => { clip.autoPlay = value; }));
+    field(animationPanel, 'Playback clock', clip.phase || 'game', value => change(clip => { clip.phase = value; }),
+      [['game', 'Gameplay (paused on menus)'], ['interface', 'Interface (continues on menus)']]);
     animationPanel.append(button('Preview animation', () => {
       cancelAnimationFrame(animationFrame); state.hudState = createHUDState(current); state.hudState.playing.clear();
       playHUDAnimation(current, state.hudState, clip.id);
       let previous = performance.now();
       const frame = now => {
-        advanceHUD(current, state.hudState, Math.min(.1, (now - previous) / 1000)); previous = now;
+        advanceHUD(current, state.hudState, Math.min(.1, (now - previous) / 1000), clip.phase || 'game'); previous = now;
         view.update(state, { selectedId });
         if (state.hudState.playing.size) animationFrame = requestAnimationFrame(frame);
       };
@@ -350,9 +366,17 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
       for (const key of draft.type === 'bitmap' ? ['name', 'cellWidth', 'cellHeight', 'columns', 'chars'] : ['name']) {
         field(body, key, draft[key], value => { draft[key] = value; });
       }
-      if (draft.type === 'bitmap') body.append(node('p', 'Characters are read left-to-right, top-to-bottom. Missing glyphs render as spaces; raster colors come from the atlas.', 'muted'));
+      if (draft.type === 'bitmap') {
+        field(body, 'Space advance (0 = cell width)', draft.spaceWidth || 0, value => {
+          if (value) draft.spaceWidth = value; else delete draft.spaceWidth;
+        });
+        field(body, 'Glyph advances (comma-separated; empty = cell width)', draft.widths?.join(', ') || '', value => {
+          if (value.trim()) draft.widths = value.split(',').map(Number); else delete draft.widths;
+        });
+        body.append(node('p', 'Characters are read left-to-right, top-to-bottom. Provide one advance per character for proportional fonts. Missing lowercase uses uppercase when available; other missing glyphs render as spaces. Raster colors come from the atlas.', 'muted'));
+      }
     }, () => update(hud => {
-      if (add) hud.fonts.push(draft); else Object.assign(hud.fonts.find(item => item.id === draft.id), draft);
+      if (add) hud.fonts.push(draft); else hud.fonts[hud.fonts.findIndex(item => item.id === draft.id)] = draft;
     }, 'HUD font saved'));
   }
   function applyCSS(source, replace = false) {

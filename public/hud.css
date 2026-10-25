@@ -6,6 +6,7 @@
 .hud-element { position: absolute; box-sizing: border-box; user-select: none; touch-action: none; pointer-events: none; }
 .hud-element[role="button"] { cursor: pointer; }
 .hud-element[role="button"]:focus-visible { outline: 2px solid #63d8ff; }
+.hud-native-selector .hud-element[role="button"][data-menu-selectable="true"]:focus-visible { outline: none; }
 .hud-visual { position: absolute; inset: 0; box-sizing: border-box; background-size: 100% 100%; background-repeat: no-repeat; display: flex; align-items: center; }
 .hud-content { width: 100%; max-height: 100%; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.05; box-sizing: border-box; }
 .hud-glyph { display: inline-block; vertical-align: middle; image-rendering: pixelated; }

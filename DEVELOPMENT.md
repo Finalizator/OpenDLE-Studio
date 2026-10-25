@@ -655,17 +655,127 @@ Resume keeps the same runtime, while New game starts the current imported map
 from scratch. Stop preview / Quit returns to the editor. This is not yet a
 multi-map campaign launcher or a savegame system.
 
+Imported menu elements now sit inside a centered, fixed virtual canvas rather
+than spreading across a widescreen HUD. A separate black letterbox hides the
+world outside menu artwork. Gameplay HUD anchors retain their existing responsive
+behavior. Full-page help artwork keeps its source proportions and has no added
+heading or Back button: click the artwork or press Escape to return. Menu
+navigation tracks the actual submenu ancestry, including custom screens.
+
+For classic WAD interfaces the Options/Sound pages use that WAD's `M_*` label
+and thermometer patches, including live messages, sensitivity and volume
+controls. Detail now halves horizontal world-render resolution without reducing
+HUD resolution. Screen size (3–11) centers a smaller world viewport; size 11
+hides the classic status bar. Both support mouse clicks and Left/Right on the
+selected row. These are browser-native equivalents, not software-renderer
+emulation; original border textures are not yet reproduced. Missing patches
+are diagnosed. Distinct
+`M_OPTION` and `M_OPTTTL` artwork is preserved, not recolored to match artificially.
+Available `STCFN` glyphs supply proportional bitmap lettering for generated text.
+Imported ListMenu positions are no longer shifted or paginated to fit our
+generic layout, and no generated heading/Back button is added to such menus.
+`DefaultListMenu` / `DefaultOptionMenu` font, selector and line-spacing directives
+are inherited by translated menus. FON2 font resources in WADs and packages become
+embedded, proportional bitmap atlases, including kerning and transparency.
+`BigFont` can resolve the game's `DBIGFONT`. Original palette colors are retained;
+named color-range translations, FONTDEFS, FON1 and scripted font classes remain
+unsupported and are not claimed as exact reproductions.
+
+Classic animated skull cursors and MENUDEF `Selector` patches are editable HUD
+images driven by `hudFocused` visual conditions. Mouse hover and Up/Down choose
+rows; Enter activates them. Auxiliary +/- hit regions are excluded from keyboard
+row navigation (`menuSelectable:false`). Identical cursor artwork is shared
+across pages to stay within the 256-element limit. Cursor animations use the
+`interface` playback clock, which continues while gameplay and its HUD animations
+are paused. The HUD timeline exposes both playback clocks. Imported selectors
+replace the browser focus outline only when visible; editor selection outlines
+remain unchanged. Arbitrary scripted menu classes still require translation.
+
+OpenDLE-only resolution, FOV, brightness, mute and reset controls are in the
+editor's **Engine tweaks**, with fullscreen on the preview toolbar, not injected
+into imported menus. Global browser preferences migrate from the earlier
+jump-only preference object. An explicitly authored MENUDEF setting can still
+use its mapped game setting; unsupported CVARs remain diagnosed.
+
 WAD imports reconstruct classic menus from that WAD's own `TITLEPIC`, `M_*`,
 skill and help patches, with editable text fallbacks for missing artwork. WAD
 `MENUDEF` lumps and package `menudef` / `menudef.txt` files are translated per
 game. Supported declarations include `ListMenu`, `OptionMenu`, position/spacing,
 titles, static text/patches (including centered patches), patch/text items,
 submenus, supported command links, mapped sliders/options and common control
-bindings. Long menus become linked HUD pages. Source definitions remain in
+bindings. Long OptionMenus become linked HUD pages; ListMenus retain their
+authored positions. Source definitions remain in
 `gameMenus.sources`; diagnostics identify unsupported directives, conditional
 blocks, unresolved links, commands and CVARs. Arbitrary console commands are
-never executed. Custom scripted menu classes, includes, LANGUAGE text lookups
+never executed. Nested `#include` resources are resolved in WADs and packages;
+original root and included sources remain in `gameMenus.sources`. Missing
+includes, cycles, excessive depth or oversized sources fail import explicitly.
+Custom scripted menu classes, LANGUAGE text lookups
 and the full GZDoom option/CVAR system are **not** translated yet.
+
+### Custom SBARINFO HUD import
+
+WAD `SBARINFO` lumps and root package `sbarinfo` / `sbarinfo.txt` now compile
+into ordinary editable HUD elements and the **Imported SBARINFO** visual-event
+group. The last SBARINFO resource overrides earlier resources. Nested
+`#include` directives resolve resource names case-insensitively; packages also
+resolve paths relative to the including file. Arbitrary include filenames are
+retained when at most 1 MiB, within the existing 128 MiB package budget.
+Original definitions are retained in `hud.sources`, not executed by the runtime.
+
+Current translation supports:
+
+- `height`, `resolution`, `statusbar normal` or `fullscreen`, `forcescaled` and
+  `fullscreenoffsets`; normal coordinates use a bottom-centered virtual space
+  (320x200 by default). The `monospacefonts true, "0"` mode uses fixed glyph cells.
+  A normal layout takes priority, otherwise fullscreen is used. Other modes
+  remain in source and are diagnosed; runtime layout switching is not implemented.
+- Static `drawimage`, signed patch offsets, `center` / `centerbottom` alignment
+  and negative fullscreen coordinates anchored to the right/bottom edges.
+- `drawnumber` health, armor, selected-weapon ammo (`ammo1`),
+  `ammo(Clip|Shell|RocketAmmo|Cell)`, corresponding `ammocapacity(...)`,
+  the unparenthesized forms, `alignment(left|center|right)` and `whennotzero`.
+  Untranslated Doom digit fonts use imported bitmap atlases when complete;
+  custom FON2 resources retain proportional metrics and their source palette.
+  Missing fonts fall back to monospace with diagnostics. Named color-range
+  translations are diagnosed (Doom digit fallback uses approximate text colors).
+  Values use the
+  existing editable HUD `maxLength` formatting, not full GZDoom number formatting.
+- Literal `drawstring` in `font, untranslated, "text", x, y` form, using embedded
+  FON2 resources when present, otherwise an explicit monospace-font fallback
+  diagnostic.
+- Textured health/armor `drawbar`, horizontal/vertical fill and `reverse`.
+  The foreground is clipped rather than stretched as the value changes.
+  **Fill direction** is editable in the HUD designer (`right|left|up|down`)
+  and through HUD properties in MCP. **Fill image** / `fillAssetId` chooses
+  its foreground; existing `assetId` bar backgrounds retain their behavior.
+- `ifhealth N` means health **at least N**, not a comparison-operator syntax.
+  `ifinvulnerable`, `isselected` with a standard Doom weapon, and `ininventory`
+  with a standard Doom key, weapon, backpack or ammo type compile to live
+  visual conditions. Ammo quantity thresholds, `not`, nested conditions and
+  `else` are supported. Unknown conditions omit both branches with diagnostics,
+  never accidentally display them unconditionally.
+- `drawswitchableimage` for Doom key slots (including combined card/skull
+  states) and weapon slots produces live, editable inventory-dependent images.
+  `gamemode` branches evaluate for the engine's singleplayer runtime; this
+  does not introduce multiplayer support.
+
+Limits are 1 MiB per source, 2 MiB expanded definitions, 64 source resources,
+16 include/block levels and 4096 parsed commands, plus existing HUD/event/asset
+limits. Malformed syntax and unresolved includes fail import. Unsupported
+drawing commands/options emit source/line diagnostics. A missing supported
+statusbar block is explicitly diagnosed before classic-HUD fallback; an
+intentionally empty supported block stays empty.
+
+This is **not full SBARINFO or scripted-interface compatibility**: additional
+inventory types, other dynamic icons, mugshot commands, inventory bars, popups,
+translations, custom FONTDEFS, numeric flags/interpolation, other game families,
+HUD mode switching and ZScript statusbar/menu classes remain to be implemented.
+The classic HUD's existing reconstructed mugshot/inventory behavior is unchanged
+when no custom SBARINFO is selected. Existing saved projects are not rewritten;
+reimport to translate newly supported definitions.
+
+### Menu and gameplay editing
 
 Menus are ordinary HUD elements with an editable **Game menus** event sheet,
 not a separate hard-coded HTML overlay. Its `interface` phase runs while the
@@ -689,6 +799,16 @@ Engine tweaks is an editor section, not an imported in-game menu. Its choice
 persists for all projects in this browser and overrides the game's saved jump
 setting when launching either preview mode. In-game Reset settings does not
 reset this engine override.
+
+`setting("volume")` and other typed setting expressions can drive ordinary
+HUD-property actions (for example, the imported thermometer marker positions).
+HUD bitmap fonts optionally retain proportional `widths` and `spaceWidth`;
+`imageRepeat: "repeat-x"` tiles an imported thermometer strip without stretching
+its individual pixels. These remain portable HUD properties, editable in the
+designer and through MCP. `rebuildGameMenu` replaces only menu-owned elements and
+the Game menus sheet; callers must validate the result and obtain confirmation
+before replacing authored menu edits. Saved projects are not automatically
+rewritten on load.
 Render resolution scales the drawing buffer from 0.5x to 1.5x in both windowed
 and fullscreen previews; the world and weapon stay above the reserved HUD area.
 Rebinding swaps occupied keys rather than creating ambiguous duplicates.
@@ -1052,8 +1172,10 @@ is not the usual GZDoom package extension.
   Missing base palettes report an error. Map and image imports do not silently
   save over the server project.
 - Binary Hexen maps remain visible but disabled. ZScript, DECORATE, ACS,
-  MAPINFO, GAMEINFO, SBARINFO, TEXTURES, GLDEFS and other definitions are
+  MAPINFO, GAMEINFO, TEXTURES, GLDEFS and other definitions are
   **not executed or translated**. Their presence is reported in import notes.
+  MENUDEF and SBARINFO have the bounded partial translation described above;
+  this does not execute ZScript or custom actors.
   Images imported from a mod do not automatically create its custom actors,
   scripted HUD or composite texture definitions. Sound/music/native model
   definitions are also outside this importer.

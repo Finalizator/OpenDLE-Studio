@@ -36,7 +36,8 @@ export function importDoomHUD(project, assets) {
   const panel = add('Status bar', 'panel', { x: -160, y: -32, width: 320, height: 32,
     anchors: { left: .5, right: .5, top: 1, bottom: 1 }, z: 10, background: '#000000' });
   add('Status bar widescreen backing', 'panel', { anchors: { left: 0, right: 1, top: 1, bottom: 1 },
-    x: 0, y: -32, width: 0, height: 32, background: '#272a2e', z: 9 });
+    x: 0, y: -32, width: 0, height: 32, background: '#272a2e', z: 9, statusbar: true });
+  panel.statusbar = true;
   function patch(name, label, x, y, extra = {}) {
     if (!assets.has(name)) { assets.warnings.add(`Missing HUD patch ${name}; omitted ${label}.`); return null; }
     const assetId = assets.get(name, 'sprite'), asset = assets.assets.find(asset => asset.id === assetId);

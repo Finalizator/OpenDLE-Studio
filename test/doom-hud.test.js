@@ -227,7 +227,8 @@ test('Freedoom status bar imports with its artwork on MAP01 and survives disk pe
   assert.equal(project.playerControl, 'events');
   assert.ok(project.assets.some(asset => asset.name === 'STBAR'));
   assert.ok(project.hud.elements.some(element => element.name === 'Player face'));
-  assert.equal(project.hud.fonts.length, 2); assert.equal(project.hud.animations.length, 5);
+  assert.equal(project.hud.fonts.filter(font => font.name !== 'Imported menu small font').length, 2);
+  assert.equal(project.hud.animations.filter(clip => clip.phase !== 'interface').length, 5);
   assert.ok(!warnings.some(warning => /Missing HUD|Incomplete .*HUD/.test(warning)));
   const state = createRuntime(project); step(project, state);
   assert.equal(hudText(project.hud.elements.find(element => element.name === 'Selected weapon ammo'), state), '50');

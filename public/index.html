@@ -114,6 +114,9 @@
           <label><input id="engine-jumping" type="checkbox" checked> Enable jumping</label>
           <p>Space jumps; E uses doors and switches. Enabled by default. Applies to all projects in this browser, including Play level and Play game.</p>
           <p>Jumping respects walls, ceilings and grounded physics, but can bypass original map puzzles. Disable for classic no-jump movement. The jump input rule remains editable in visual scripts.</p>
+          <div id="engine-setting-fields"></div>
+          <button id="engine-tweaks-reset" type="button">Reset engine tweaks</button>
+          <p>Browser render resolution, field of view, brightness and mute are preview overrides here, not extra entries in the imported game's menus. Fullscreen is available on the editor's preview toolbar.</p>
           <p id="engine-tweaks-status" role="status"></p>
         </div>
       </section>
@@ -179,7 +182,7 @@
   </main>
   <footer><span id="status" role="status">Connecting to local service...</span><span>Layout 1 / WebGPU preferred + WebGL2 fallback / experimental</span></footer>
   <dialog id="play-dialog">
-    <div class="preview-heading"><strong id="preview-title">Play world</strong><button id="pause-game">Pause / options</button><button id="hud-cursor">HUD cursor / Tab</button><button id="capture-mouse">Capture mouse</button><button id="system-browser">Open in system browser</button><button id="stop">Stop preview</button></div>
+    <div class="preview-heading"><strong id="preview-title">Play world</strong><button id="pause-game">Pause / options</button><button id="hud-cursor">HUD cursor / Tab</button><button id="capture-mouse">Capture mouse</button><button id="preview-fullscreen">Fullscreen</button><button id="system-browser">Open in system browser</button><button id="stop">Stop preview</button></div>
     <p id="mouse-status" role="status"></p>
     <div id="preview-stage"><canvas id="preview" width="800" height="450" tabindex="0" aria-label="First-person game preview"></canvas><div id="hud-overlay" class="hud-overlay"></div></div>
     <div id="preview-controls" class="preview-controls"></div>

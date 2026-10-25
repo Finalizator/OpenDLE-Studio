@@ -35,6 +35,15 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
   assert(['fit', 'stretch', 'integer'].includes(hud.scaleMode), 'Unknown HUD scaling mode');
   if (hud.reserveBottom !== undefined) num(hud.reserveBottom, 0, hud.height - 1, 'reserved game-view bottom');
   if (hud.pixelated !== undefined) assert(typeof hud.pixelated === 'boolean', 'HUD pixelated must be boolean');
+  if (hud.sources !== undefined) {
+    list(hud.sources, 64, 'imported sources');
+    let size = 0;
+    for (const source of hud.sources) {
+      obj(source, 'imported source'); text(source.name, 512, 'source name'); text(source.source, 1024 * 1024, 'source');
+      size += source.source.length;
+    }
+    assert(size <= 2 * 1024 * 1024, 'HUD imported sources exceed 2 MiB');
+  }
   list(hud.fonts, 64, 'fonts'); list(hud.elements, 256, 'elements'); list(hud.animations, 128, 'animations');
   if (hud.styles !== undefined) {
     list(hud.styles, 128, 'CSS classes');
@@ -55,6 +64,12 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
       }
       text(font.chars, 4096, 'bitmap character order'); assert(font.chars.length > 0, 'Bitmap font needs characters');
       assert(new Set([...font.chars]).size === [...font.chars].length, 'Bitmap font characters must be unique');
+      if (font.spaceWidth !== undefined) num(font.spaceWidth, 1, 512, 'font space width');
+      if (font.widths !== undefined) {
+        list(font.widths, 4096, 'glyph widths');
+        assert(font.widths.length === [...font.chars].length, 'HUD font glyph widths must match character order');
+        for (const width of font.widths) num(width, 1, 512, 'glyph width');
+      }
       assert(font.columns * font.cellWidth <= asset.width &&
         Math.ceil([...font.chars].length / font.columns) * font.cellHeight <= asset.height, 'Bitmap font cells exceed its atlas');
     }
@@ -78,7 +93,15 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
     }
     num(element.pivotX, 0, 1, 'pivot X'); num(element.pivotY, 0, 1, 'pivot Y'); num(element.z, -10000, 10000, 'layer');
     num(element.maximum, .001, 1e9, 'bar maximum');
+    if (element.fillDirection !== undefined)
+      assert(['right', 'left', 'up', 'down'].includes(element.fillDirection), 'Unknown HUD bar fill direction');
+    if (element.fillAssetId !== undefined && element.fillAssetId !== '') {
+      assert(element.type === 'bar', 'HUD fill image requires a bar element'); image(element.fillAssetId);
+    }
+    if (element.imageRepeat !== undefined) assert(element.imageRepeat === 'repeat-x', 'Unknown HUD image repeat mode');
     assert(typeof element.visible === 'boolean' && typeof element.interactive === 'boolean', 'HUD visible/interactive must be boolean');
+    for (const key of ['statusbar', 'menuSelectable', 'menuSelector']) if (element[key] !== undefined)
+      assert(typeof element[key] === 'boolean', `HUD ${key} must be boolean`);
     assert(['always', 'game', 'cursor'].includes(element.display), 'Unknown HUD display mode');
     text(element.text, 2000, 'text'); text(element.binding, 100, 'binding');
     const bindings = [...HUD_PLAYER_BINDINGS, ...GAME_HUD_BINDINGS, 'message', ...Object.keys(variables).map(key => `var:${key}`)];
@@ -118,6 +141,7 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
     unique(clip, 'HUD animation'); text(clip.name, 100, 'animation name');
     num(clip.duration, .001, 3600, 'animation duration');
     assert(typeof clip.loop === 'boolean' && typeof clip.autoPlay === 'boolean', 'HUD animation loop/autoplay must be boolean');
+    if (clip.phase !== undefined) assert(['game', 'interface'].includes(clip.phase), 'Unknown HUD animation phase');
     list(clip.tracks, 64, 'animation tracks');
     const targets = new Set();
     for (const track of clip.tracks) {
@@ -182,6 +206,13 @@ export function hudText(element, state) {
   return element.maxLength ? text.slice(-element.maxLength) : text;
 }
 
+export function bitmapGlyph(font, char) {
+  const chars = [...font.chars], exact = chars.indexOf(char), index = exact >= 0 ? exact : chars.indexOf(char.toUpperCase());
+  const advance = char === ' ' && font.spaceWidth !== undefined ? font.spaceWidth
+    : index >= 0 ? font.widths?.[index] ?? font.cellWidth : font.cellWidth;
+  return { index, advance };
+}
+
 export function createHUDState(project) {
   const hud = { elements: new Map((project.hud?.elements || []).map(element => [element.id, structuredClone(element)])),
     playing: new Map(),
@@ -208,10 +239,11 @@ export function playHUDAnimation(project, hud, id) {
   applyHUDPose(clip, hud, 0);
 }
 
-export function advanceHUD(project, hud, dt) {
+export function advanceHUD(project, hud, dt, phase = 'game') {
   hud.finished.clear();
   for (const [id, playback] of hud.playing) {
     const clip = project.hud.animations.find(clip => clip.id === id);
+    if ((clip.phase || 'game') !== phase) continue;
     playback.time += dt;
     const done = playback.time + 1e-9 >= clip.duration;
     const time = clip.loop ? playback.time % clip.duration : Math.min(playback.time, clip.duration);

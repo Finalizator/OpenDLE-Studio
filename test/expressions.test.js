@@ -12,6 +12,16 @@ const expr = source => ({ expr: source });
 const context = { time: 3, dt: .05, random: () => .25, reference: () => 10 };
 const evaluate = source => evaluateExpression(expr(source), context);
 const tick = (p, s) => stepRuntime(p, s, .05, new Set());
+test('setting expressions validate names and read live settings for editable menu sliders', () => {
+  const p = createProject(), s = createRuntime(p), event = { id: 'setting_test' };
+  const context = expressionContext(p, event, s);
+  validateExpression(expr('setting("volume")'), context);
+  assert.equal(evaluateExpression(expr('setting("volume")'), context), .8);
+  s.settings.volume = .25;
+  assert.equal(evaluateExpression(expr('setting("volume") * 120'), context), 30);
+  assert.throws(() => validateExpression(expr('setting("constructor")'), context), /Unknown setting/);
+  assert.throws(() => validateExpression(expr('setting("missing")'), context), /Unknown setting/);
+});
 function fixture() {
   const p = createProject(); p.events = [];
   p.variables = { score: 0, title: 'Hello', enabled: true };

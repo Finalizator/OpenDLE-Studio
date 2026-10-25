@@ -148,7 +148,11 @@ test('all supplied Ascent and Furdoom UDMF maps import as native editable projec
       assert.equal(project.importSource.namespace, 'zdoom', item.id);
       assert.ok(project.map.vertices.length > 3, item.id);
       assert.ok(project.map.entities.some(entity => entity.type === 'player'), item.id);
-      assert.equal(project.hud.fonts.length, 2, item.id);
+      if (project.hud.sources?.length) {
+        assert.ok(project.hud.sources.some(source => /sbarinfo/i.test(source.name)), item.id);
+        assert.ok(project.hud.elements.some(element => element.binding === 'health'), item.id);
+        assert.ok(project.eventGroups.some(group => group.name === 'Imported SBARINFO'), item.id);
+      } else assert.equal(project.hud.fonts.filter(font => font.name !== 'Imported menu small font').length, 2, item.id);
       validateProject(project);
     }
   }

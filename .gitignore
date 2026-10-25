@@ -29,3 +29,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+
+# Workspace AI rules
+/.github/copilot-instructions.md

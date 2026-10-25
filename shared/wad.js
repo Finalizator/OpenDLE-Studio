@@ -7,6 +7,7 @@ import { importDoomHUD, installDoomInventoryScripts } from './doom-hud.js';
 import { installDefaultHUD } from './hud.js';
 import { parseUDMF, udmfRecords } from './udmf.js';
 import { installGameMenu } from './game-menu.js';
+import { importSBarInfo } from './sbarinfo.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
 
@@ -30,7 +31,7 @@ export function readWad(buffer, { allowNoMaps = false } = {}) {
   return { buffer, lumps, maps: [...new Set(maps)] };
 }
 
-export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [] } = {}) {
+export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources } = {}) {
   const start = wad.lumps.findLastIndex(lump => lump.name === mapName);
   if (start < 0) throw new Error('Map not found');
   const mapLumps = [];
@@ -66,7 +67,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       x: view.getInt16(0, true), y: view.getInt16(2, true), angle: view.getInt16(4, true), elevation: 0 })),
   };
   const { vertices, lines, sides, sectors, things } = data;
-  const assets = encodeImage ? createDoomAssets(wad, encodeImage, images) : null;
+  const assets = encodeImage ? createDoomAssets(wad, encodeImage, images, fontResources) : null;
   const material = (name, kind) => assets?.get(name, kind) || null;
   const project = createProject();
   project.title = `${mapName} - imported WAD`;
@@ -191,12 +192,26 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   installWorldScripts(project, warnings);
   const generatedSounds = project.assets.filter(asset => asset.kind === 'sound' && asset.generated).length;
   if (generatedSounds) warnings.push(`${generatedSounds} missing standard combat sounds use generated OpenDLE fallback effects, editable as sound assets.`);
-  if (assets) importDoomHUD(project, assets);
-  else installDefaultHUD(project);
+  const hudSource = lump => {
+    if (lump.size > 1024 * 1024) throw new Error(`Interface resource ${lump.name} exceeds 1 MiB`);
+    return { name: `WAD:${lump.name}`, source: new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(wad.buffer, lump.start, lump.size)) };
+  };
+  const resolveHUD = name => {
+    const lump = wad.lumps.findLast(lump => lump.name === name.toUpperCase());
+    return lump ? hudSource(lump) : null;
+  };
+  const wadHUD = wad.lumps.filter(lump => lump.name === 'SBARINFO').map(lump => ({ ...hudSource(lump), resolve: resolveHUD }));
+  const customHUD = [...wadHUD, ...hudDefinitions];
+  if (assets) {
+    if (!importSBarInfo(project, assets, customHUD, warnings)) importDoomHUD(project, assets);
+  } else {
+    if (customHUD.length) warnings.push('Custom SBARINFO HUD was not imported: no image encoder supplied.');
+    installDefaultHUD(project);
+  }
   installDoomInventoryScripts(project);
   if (assets) installSpriteAnimations(project, assets);
   const definitions = wad.lumps.filter(lump => lump.name === 'MENUDEF').map(lump => ({
-    name: 'WAD MENUDEF', source: new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(wad.buffer, lump.start, lump.size)),
+    ...hudSource(lump), resolve: resolveHUD,
   }));
   installGameMenu(project, assets, [...definitions, ...menuDefinitions], warnings);
   if (wad.lumps.some(lump => lump.name.startsWith('D_'))) warnings.push('Doom MUS/MIDI music is not synthesized yet; music controls apply to browser-decodable tracks only.');

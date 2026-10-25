@@ -62,6 +62,72 @@ function mapWad(marker = 'ROOMONE') {
 }
 const png = () => PNG.sync.write({ width: 2, height: 2, data: Buffer.from(Array(4).fill([255, 40, 10, 255]).flat()) });
 const base = () => wad([['PLAYPAL', Buffer.alloc(768, 100)]]);
+test('PK3 and directory FON2 fonts drive both MENUDEF and SBARINFO with portable glyph metrics', async t => {
+  const font = Buffer.from([70, 79, 78, 50, 2, 0, 65, 66, 1, 0, 1, 0, 1, 0, 0, 0, 0, 255, 90, 30, 1, 1, 0, 255, 1]);
+  const source = [...entries(), ['dbigfont.fon2', font], ['graphics/cursor01.png', png()],
+    ['menudef', Buffer.from(`DefaultListMenu {
+      Font "BigFont", "Untranslated"
+      Selector "CURSOR01", -10, -2
+    }
+    ListMenu "MainMenu" {
+      Position 40, 60
+      TextItem "AB", "a", "SkillMenu"
+    }`)],
+    ['sbarinfo', Buffer.from('statusbar normal { drawstring DBIGFONT, untranslated, "AB", 10, 180; }')]];
+  const root = directory(t);
+  for (const [path, bytes] of source) {
+    const absolute = join(root, 'FontGame', path);
+    mkdirSync(join(absolute, '..'), { recursive: true }); writeFileSync(absolute, bytes);
+  }
+  for (const files of [await readPackageArchive(archive(source)), await readLocalPackage(root, 'FontGame')]) {
+    const { project } = importPackage(files, { map: 'auto', baseBytes: base() });
+    validateProject(project);
+    const menu = project.hud.elements.find(item => item.name === 'AB');
+    const hud = project.hud.elements.find(item => item.text === 'AB' && !project.gameMenus.elementIds.includes(item.id));
+    const menuFont = project.hud.fonts.find(font => font.id === menu.fontId);
+    const hudFont = project.hud.fonts.find(font => font.id === hud.fontId);
+    assert.equal(menuFont.type, 'bitmap'); assert.equal(hudFont.type, 'bitmap');
+    assert.equal(menuFont.assetId, hudFont.assetId);
+    assert.deepEqual(menuFont.widths, [1, 1]);
+    assert.deepEqual([hud.width, hud.height], [2, 2]);
+    assert.equal(project.assets.filter(asset => asset.id === menuFont.assetId).length, 1);
+    assert.ok(project.hud.elements.some(item => item.menuSelector));
+  }
+});
+test('custom SBARINFO loads from WAD, PK3 and directories with extensionless relative includes', async t => {
+  const content = [...entries(), ['SBARINFO', Buffer.from('#include "ui/entry"')],
+    ['ui/entry', Buffer.from('#include "layout.custom"')],
+    ['ui/layout.custom', Buffer.from('height 20; statusbar normal { drawimage "stbar", 0, 180; ininventory BlueCard { drawnumber 3, HUDFONT_DOOM, untranslated, health, 90, 180; } }')]];
+  const root = directory(t);
+  for (const [path, bytes] of content) {
+    const absolute = join(root, 'Custom', path);
+    mkdirSync(join(absolute, '..'), { recursive: true }); writeFileSync(absolute, bytes);
+  }
+  const zipped = await readPackageArchive(archive(content)), local = await readLocalPackage(root, 'Custom');
+  for (const files of [zipped, local]) {
+    assert.ok(files.get('ui/entry').data); assert.ok(files.get('ui/layout.custom').data);
+    const { project } = importPackage(files, { map: 'auto', baseBytes: base() });
+    assert.equal(project.hud.reserveBottom, 20);
+    assert.deepEqual(project.hud.sources.map(source => source.name), ['sbarinfo', 'ui/entry', 'ui/layout.custom']);
+    assert.ok(project.events.some(event => event.conditions?.some(condition => condition.type === 'keyOwned')));
+    assert.equal(project.hud.elements.filter(element => !project.gameMenus.elementIds.includes(element.id)).length, 2);
+    validateProject(JSON.parse(JSON.stringify(project)));
+  }
+  const { importWadMap, readWad } = await import('../shared/wad.js');
+  const { encodeImage } = await import('../server/import.js');
+  const combined = wad([['PLAYPAL', Buffer.alloc(768, 100)], ['SBARINFO', Buffer.from('#include "CUSTOM"')],
+    ['CUSTOM', Buffer.from('statusbar normal { drawnumber 3, HUDFONT_DOOM, untranslated, health, 90, 180; }')]]);
+  const resource = readWad(combined.buffer.slice(combined.byteOffset, combined.byteOffset + combined.length), { allowNoMaps: true });
+  const mapBytes = mapWad(), map = readWad(mapBytes.buffer.slice(mapBytes.byteOffset, mapBytes.byteOffset + mapBytes.length));
+  const bytes = Buffer.concat([Buffer.from(map.buffer), Buffer.from(resource.buffer)]);
+  const imported = importWadMap({ buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length),
+    maps: map.maps, lumps: [...map.lumps, ...resource.lumps.map(lump => ({ ...lump, start: lump.start + map.buffer.byteLength }))] },
+  'ROOMONE', { encodeImage });
+  assert.ok(imported.project.hud.sources.some(source => source.name === 'WAD:CUSTOM'));
+  assert.ok(imported.project.hud.elements.some(element => element.binding === 'health'));
+  zipped.set('ui/entry', { size: 30, data: Buffer.from('#include "../outside"') });
+  assert.throws(() => importPackage(zipped, { map: 'auto', baseBytes: base() }), /Unsafe package entry/);
+});
 test('per-package MENUDEF and menu artwork translate into editable game-specific menu controls', async () => {
   const files = await readPackageArchive(archive([...entries(), ['menudef', Buffer.from(`
 ListMenu "MainMenu"

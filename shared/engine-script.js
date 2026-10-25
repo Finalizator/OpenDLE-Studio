@@ -44,6 +44,7 @@ export const ENGINE_CONDITIONS = [
   { type: 'entityDoomType', label: 'Object: Doom thing type', fields: [numeric('doomType', 2007, 0, 65535)], target: true },
   { type: 'hudAnimationPlaying', label: 'HUD: animation is playing', fields: [], hudAnimation: true },
   { type: 'hudClicked', label: 'HUD: on element clicked', fields: [], hudElement: true },
+  { type: 'hudFocused', label: 'HUD: element selected / focused', fields: [], hudElement: true },
   { type: 'hudAnimationFinished', label: 'HUD: on animation finished', fields: [], hudAnimation: true },
   { type: 'hudStatChanged', label: 'HUD: player stat changed', fields: [choice('stat', 'health', PLAYER_STATS), choice('direction', 'decreased', ['decreased', 'increased', 'changed'])] },
   { type: 'groupActive', label: 'System: group is active', fields: [], group: true },

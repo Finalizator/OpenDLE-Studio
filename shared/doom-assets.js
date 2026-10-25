@@ -1,4 +1,5 @@
 import { doomSound } from './sound.js';
+import { decodeFON2 } from './doom-font.js';
 const decoder = new TextDecoder('ascii');
 export function doomName(bytes) {
   return decoder.decode(bytes).replace(/\0.*$/, '').toUpperCase();
@@ -94,7 +95,7 @@ export function composeTexture(definition, getPatch) {
   return result;
 }
 
-export function createDoomAssets(wad, encodeImage, images = new Map()) {
+export function createDoomAssets(wad, encodeImage, images = new Map(), fontResources = new Map()) {
   const lumpMap = new Map(wad.lumps.map(lump => [lump.name, lump]));
   const flats = new Set();
   let inFlats = false;
@@ -252,7 +253,26 @@ export function createDoomAssets(wad, encodeImage, images = new Map()) {
     return { assetId: asset.id, cellWidth, cellHeight, columns, rows, left, top,
       frames: Object.fromEntries(patches.map((name, index) => [name, index])) };
   }
-  return { get, sprite, spriteFrame, atlas, materialSequences, assets, warnings, has: name => lumpMap.has(name) || definitions.has(name) ||
+  const fonts = new Map();
+  function font(name) {
+    name = name.toUpperCase();
+    if (fonts.has(name)) return fonts.get(name);
+    const candidates = name === 'BIGFONT' ? [name, 'DBIGFONT'] : name === 'SMALLFONT' ? [name, 'SMALLFNT'] : [name];
+    const key = candidates.find(key => fontResources.has(key) || lumpMap.has(key) &&
+      doomName(data(lumpMap.get(key)).subarray(0, 4)) === 'FON2');
+    if (!key) return null;
+    if (fonts.has(key)) { fonts.set(name, fonts.get(key)); return fonts.get(key); }
+    const decoded = decodeFON2(fontResources.get(key) || data(lumpMap.get(key)));
+    const { pixels, width, height, ...layout } = decoded;
+    totalPixels += width * height;
+    check(totalPixels <= 32 * 1024 * 1024 && assets.length < 3000, 'WAD font atlas budget exceeded');
+    const assetId = `asset_font_${key}`;
+    if (!assets.some(asset => asset.id === assetId)) assets.push({ id: assetId, name: key, kind: 'sprite', width, height,
+      src: encodeImage({ pixels, width, height }) });
+    const result = { name: key, type: 'bitmap', assetId, ...layout };
+    fonts.set(key, result); fonts.set(name, result); return result;
+  }
+  return { get, sprite, spriteFrame, atlas, font, materialSequences, assets, warnings, has: name => lumpMap.has(name) || definitions.has(name) ||
     ['sprite', 'weapon', 'texture', 'flat'].some(kind => images.has(`${kind}_${name}`)) };
 }
 

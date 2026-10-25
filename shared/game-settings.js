@@ -10,6 +10,8 @@ export const GAME_SETTINGS = {
   messages: { value: true },
   alwaysRun: { value: false },
   jumping: { value: true },
+  lowDetail: { value: false },
+  viewSize: { value: 10, min: 3, max: 11, step: 1 },
   difficulty: { value: 4, min: 1, max: 5, step: 1 },
 };
 export const GAME_BINDINGS = {
@@ -20,11 +22,29 @@ export const GAME_BINDINGS = {
 export const GAME_HUD_BINDINGS = [...Object.keys(GAME_SETTINGS).map(key => `setting:${key}`),
   ...Object.keys(GAME_BINDINGS).map(key => `key:${key}`), 'game:screen', 'game:binding'];
 
+export function setGameScreen(state, target) {
+  const history = state.menuHistory ||= [];
+  let screen = target;
+  if (target === 'return') screen = history.pop() || (state.hasGame ? 'pause' : 'title');
+  else if (screen !== state.gameScreen) {
+    if (['playing', 'title', 'pause'].includes(screen)) history.length = 0;
+    else if (history.at(-1) === screen) history.pop();
+    else {
+      history.push(state.gameScreen);
+      if (history.length > 128) history.shift();
+    }
+  }
+  if (screen === 'title') state.hasGame = false;
+  state.gameScreen = screen;
+  state.bindingKey = null;
+  state.hudState.cursor = screen !== 'playing';
+}
+
 export function validateSetting(name, value) {
   const spec = GAME_SETTINGS[name];
   if (!spec || typeof value !== typeof spec.value ||
     typeof value === 'number' && (!Number.isFinite(value) || value < spec.min || value > spec.max ||
-      name === 'difficulty' && !Number.isInteger(value))) throw new Error(`Invalid game setting ${name}: ${value}`);
+      ['difficulty', 'viewSize'].includes(name) && !Number.isInteger(value))) throw new Error(`Invalid game setting ${name}: ${value}`);
   return value;
 }
 export function validBinding(code) {

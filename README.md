@@ -45,7 +45,8 @@ projects—with room to build beyond the original engine.
 **This is an early engine, not complete GZDoom compatibility.** Imported weapons,
 enemies, pickups, doors and lifts have working visual-script implementations,
 but exact behavior and advanced features remain incomplete. Arbitrary
-ACS/ZScript/DECORATE and full custom HUD/menu translation are not yet supported.
+ACS/ZScript/DECORATE remain unsupported. Custom SBARINFO HUDs and MENUDEF menus
+have editable, partial translation—not yet full GZDoom interface compatibility.
 No commercial game data is included; supply content you have permission to use.
 
 ## Source available. Contributions welcome.

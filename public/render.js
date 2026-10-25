@@ -11,7 +11,7 @@ import { RoomEnvironment } from '/vendor/three-addons/environments/RoomEnvironme
 import RAPIER from '/vendor/rapier/rapier.mjs';
 import { createPhysics } from '/shared/physics.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
-import { hudViewport } from '/shared/hud.js';
+import { gameView } from '/shared/game-view.js';
 import { clipFrame, spriteView } from '/shared/sprite-animation.js';
 
 export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc' };
@@ -338,12 +338,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
     if (!editor) { physics = createPhysics(project, state, RAPIER, triangulate); state.physics = physics; }
     const sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
     let worldRevision = state.worldRevision;
-    let appliedResolution = 1;
+    let appliedResolution = '';
     function render(state, dt = 0) {
       if (!editor && state.settings) {
-        if (appliedResolution !== state.settings.resolution) {
-          appliedResolution = state.settings.resolution;
-          renderer.setSize(Math.round(800 * appliedResolution), Math.round(450 * appliedResolution), false);
+        const resolution = `${state.settings.resolution}/${state.settings.lowDetail}`;
+        if (appliedResolution !== resolution) {
+          appliedResolution = resolution;
+          renderer.setSize(Math.round(800 * state.settings.resolution / (state.settings.lowDetail ? 2 : 1)),
+            Math.round(450 * state.settings.resolution), false);
+          canvas.style.imageRendering = state.settings.lowDetail ? 'pixelated' : '';
         }
         camera.fov = state.settings.fov;
         canvas.style.filter = `brightness(${state.settings.brightness})`;
@@ -370,17 +373,20 @@ export async function createPreview(canvas, project, state, { editor = false } =
       }
       renderer.info.reset();
       if (!editor) {
-        const inset = state.hud && project.hud?.reserveBottom
-          ? Math.round(project.hud.reserveBottom * hudViewport(project.hud, canvas.width, canvas.height).sy) : 0;
+        const detail = state.settings.lowDetail ? 2 : 1;
+        const view = gameView(project.hud || { width: 320, height: 200 }, state.settings,
+          canvas.width * detail, canvas.height, state.hud);
+        const inset = view.inset;
         renderer.setScissorTest(false);
         renderer.setViewport(0, 0, canvas.width, canvas.height);
         renderer.setClearColor('#272a2e'); renderer.clear();
         // The shared WebGPU/WebGL renderer uses a top-left viewport origin.
-        renderer.setViewport(0, 0, canvas.width, canvas.height - inset);
-        renderer.setScissor(0, 0, canvas.width, canvas.height - inset);
+        renderer.setViewport(view.x / detail, view.y, view.width / detail, view.height);
+        renderer.setScissor(view.x / detail, view.y, view.width / detail, view.height);
         renderer.setScissorTest(true);
-        camera.aspect = canvas.width / (canvas.height - inset); camera.updateProjectionMatrix();
+        camera.aspect = view.width / view.height; camera.updateProjectionMatrix();
         canvas.dataset.hudInset = String(inset);
+        canvas.dataset.gameViewport = JSON.stringify(view);
         let selected = project.environment.weaponAssets
           ? project.environment.weaponAssets[state.inventory.selectedWeapon] : project.environment.weaponAsset;
         const weaponAnimation = state.weaponAnimations.get(state.inventory.selectedWeapon);

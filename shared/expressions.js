@@ -1,3 +1,5 @@
+import { GAME_SETTINGS } from './game-settings.js';
+
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), player("health"), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
 export const isExpression = value => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && typeof value.expr === 'string';
@@ -93,7 +95,7 @@ const textFunctions = {
   contains: [2, 2, (s, needle) => text(s).includes(text(needle))],
   find: [2, 2, (s, needle) => text(s).indexOf(text(needle))],
 };
-const references = { global: 1, local: 1, object: 2, property: 2, player: 1 };
+const references = { global: 1, local: 1, object: 2, property: 2, player: 1, setting: 1 };
 const properties = new Set(['x', 'y', 'z', 'angle', 'health', 'elevation', 'name', 'type', 'doomType']);
 const playerStats = new Set(['health', 'armor', 'armorDivisor', 'bullets', 'shells', 'rockets', 'cells',
   'maxBullets', 'maxShells', 'maxRockets', 'maxCells', 'invulnerable', 'berserk', 'invisible', 'radiationSuit', 'lightAmp']);
@@ -118,6 +120,10 @@ export function expressionContext(project, event, state, dt = 0) {
       return state.randomSeed / 4294967296;
     },
     reference(kind, args) {
+      if (kind === 'setting') {
+        if (!Object.hasOwn(GAME_SETTINGS, args[0])) throw new Error(`Unknown setting expression: ${args[0]}`);
+        return state ? state.settings[args[0]] : GAME_SETTINGS[args[0]].value;
+      }
       if (kind === 'global') return variable(state?.variables || project.variables, args[0]);
       if (kind === 'player') {
         if (!playerStats.has(args[0])) throw new Error(`Unknown player expression stat: ${args[0]}`);

@@ -69,9 +69,10 @@ function imageKind(name) {
   return ['', '.png', '.lmp', '.jpg', '.jpeg', '.webp', '.dds', '.tga', '.pcx'].includes(extname(name))
     ? imageFolders.get(folder) : undefined;
 }
-function needed(name) {
+function needed(name, size) {
+  // Includes may have arbitrary names/extensions. Keep small resources within the existing package budget.
   return name.startsWith('sounds/') || name.startsWith('music/') || Boolean(imageKind(name)) || /\.wad$/i.test(name) || /^playpal(\.lmp)?$/i.test(name) ||
-    /^(?:gameinfo|[z]?mapinfo|menudef)(?:[./]|$)/i.test(name) || /\.(?:txt|techbase|pk3t)$/i.test(name);
+    /^(?:gameinfo|[z]?mapinfo|menudef|sbarinfo)(?:[./]|$)/i.test(name) || /\.(?:txt|techbase|pk3t)$/i.test(name) || size <= MiB;
 }
 export async function readPackageArchive(buffer) {
   check(typeof zlib.crc32 === 'function', 'PK3 archive CRC validation requires Node.js 22.2 or newer');
@@ -96,7 +97,7 @@ export async function readPackageArchive(buffer) {
         if (name.endsWith('/')) { zip.readEntry(); return; }
         check(!files.has(name), `Duplicate package path: ${name}`);
         files.set(name, { size: entry.uncompressedSize });
-        if (!needed(name)) { zip.readEntry(); return; }
+        if (!needed(name, entry.uncompressedSize)) { zip.readEntry(); return; }
         zip.openReadStream(entry, (error, stream) => {
           if (error) { fail(error); return; }
           const chunks = [];
@@ -140,7 +141,7 @@ export async function readLocalPackage(root, name) {
       total += info.size;
       check(total <= MAX_BYTES, 'Package expanded data exceeds 128 MiB');
       check(!files.has(name), `Duplicate package path: ${name}`);
-      files.set(name, { size: info.size, ...(needed(name) ? { data: readFileSync(child) } : {}) });
+      files.set(name, { size: info.size, ...(needed(name, info.size) ? { data: readFileSync(child) } : {}) });
     }
   }
   walk(path);
@@ -166,10 +167,10 @@ function mapsIn(files) {
   return maps;
 }
 export function inspectPackage(files) {
-  const warnings = ['PK3 is a ZIP resource container, not an engine. MENUDEF translation is partial; arbitrary game scripts are not executed.'];
+  const warnings = ['PK3 is a ZIP resource container, not an engine. MENUDEF/SBARINFO translation is partial; arbitrary game scripts are not executed.'];
   const unsupported = [...files.keys()].filter(name => /(^|\/)(zscript|decorate|mapinfo|gameinfo|gldefs|sndinfo|animdefs|sbarinfo|modeldef|loadacs|cvarinfo|language|textures)([./]|$)|^acs\/|^filter\//i.test(name) &&
-    !imageKind(name));
-  if (unsupported.length) warnings.push(`${unsupported.length} script/definition/filter files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Custom actors, HUD definitions, texture definitions, animations and filters need separate runtime support.`);
+    !imageKind(name) && !/^sbarinfo(?:\.txt)?$/i.test(name));
+  if (unsupported.length) warnings.push(`${unsupported.length} script/definition/filter files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Custom actors, scripted HUDs, texture definitions, animations and filters need separate runtime support.`);
   const maps = mapsIn(files), rejected = maps.filter(map => !map.supported);
   if (rejected.length) warnings.push(`${rejected.length} binary Hexen maps cannot be imported yet; image assets can still be imported.`);
   if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry imports natively, but script execution, advanced rendering and map-special behavior are still incomplete. Full GZDoom fidelity remains the target, not current capability.');
@@ -348,10 +349,29 @@ export function importPackage(files, { map, paths, baseBytes } = {}) {
     if (sounds.has(name)) aliasWarnings.push(`Sound filename ${name}: ${path} replaces an earlier file with the same basename.`);
     sounds.set(name, src);
   }
-  const menuDefinitions = [...files].filter(([name]) => /(^|\/)menudef(?:\.txt)?$/i.test(name)).map(([name, file]) => ({
-    name, source: new TextDecoder('utf-8', { fatal: true }).decode(file.data),
-  }));
-  const result = importWadMap(combined, selected.marker, { encodeImage, images, sounds, menuDefinitions });
+  const interfaceText = path => {
+    const file = files.get(path);
+    if (!file) return null;
+    check(file.size <= MiB && file.data, `Interface resource ${path} exceeds 1 MiB or was not retained`);
+    return { name: path, source: new TextDecoder('utf-8', { fatal: true }).decode(file.data) };
+  };
+  const resolveInterface = (name, parent) => {
+    safePath(name);
+    const path = name.toLowerCase(), directory = parent.includes('/') ? parent.slice(0, parent.lastIndexOf('/') + 1) : '';
+    return interfaceText(path) || interfaceText(`${directory}${path}`);
+  };
+  const menuDefinitions = [...files.keys()].filter(name => /(^|\/)menudef(?:\.txt)?$/i.test(name))
+    .map(name => ({ ...interfaceText(name), resolve: resolveInterface }));
+  const hudDefinitions = [...files.keys()].filter(name => /^(?:sbarinfo|sbarinfo\.txt)$/i.test(name))
+    .map(name => ({ ...interfaceText(name), resolve: resolveInterface }));
+  for (const name of files.keys()) if (/\/sbarinfo(?:\.txt)?$/i.test(name))
+    aliasWarnings.push(`${name}: filtered/nested SBARINFO is not selected automatically; root SBARINFO may include it explicitly.`);
+  const fontResources = new Map();
+  for (const [path, file] of files) if (/\.fon2$/i.test(path) || !path.includes('/') && file.data?.toString('ascii', 0, 4) === 'FON2') {
+    check(file.data && file.size <= MiB, `Font ${path} exceeds 1 MiB or was not retained`);
+    fontResources.set(basename(path, extname(path)).toUpperCase(), new Uint8Array(file.data));
+  }
+  const result = importWadMap(combined, selected.marker, { encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources });
   let musicBytes = 0;
   for (const [path, file] of files) if (path.startsWith('music/')) {
     const format = extname(path).slice(1);

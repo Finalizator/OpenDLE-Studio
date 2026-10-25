@@ -8,7 +8,7 @@ import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeed
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { clipFrame, setSpriteState } from './sprite-animation.js';
-import { gameSettings, changeSetting } from './game-settings.js';
+import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
 
 export function distanceToSegment(x, y, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -105,6 +105,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   dt = Math.max(0, Math.min(0.05, dt));
   const player = state.player, hud = state.hudState;
   state.sounds.length = 0;
+  advanceHUD(project, state.hudState, dt, 'interface');
   runRules('interface');
   state.interfaceStarted = true;
   state.hudState.cursor = state.gameScreen !== 'playing' || state.hudState.cursor;
@@ -273,6 +274,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       if (condition.type === 'hudAnimationPlaying') return hud.playing.has(condition.animationId);
       if (condition.type === 'hudClicked') return hud.clicked.has(condition.elementId);
+      if (condition.type === 'hudFocused') return hud.focused === condition.elementId;
       if (condition.type === 'hudAnimationFinished') return hud.finished.has(condition.animationId);
       if (condition.type === 'hudStatChanged') {
         const key = `${eventKey}:${condition.stat}:${condition.direction}`;
@@ -285,7 +287,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       if (condition.type === 'onStart') return phase === 'interface' ? !state.interfaceStarted : !state.started;
       if (condition.type === 'always') return true;
-      if (condition.type === 'keyPressed') return (condition.key === 'Tab' || !hud.cursor) && pressed.has(condition.key);
+      if (condition.type === 'keyPressed') return (phase === 'interface' || condition.key === 'Tab' || !hud.cursor) && pressed.has(condition.key);
       if (condition.type === 'keyHeld') return !hud.cursor && keys.has(condition.key);
       if (condition.type === 'mouseMoved') return !hud.cursor && (state.input.mouseX !== 0 || state.input.mouseY !== 0);
       if (condition.type === 'playerStat') return compareValues(state.playerStats[condition.stat], condition.operator, condition.value);
@@ -319,14 +321,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     for (const sourceAction of event.actions) {
       const action = resolveCommand(sourceAction);
       switch (action.type) {
-        case 'setGameScreen': {
-          let screen = action.screen;
-          if (screen === 'return') screen = state.hasGame ? 'pause' : 'title';
-          if (screen !== 'playing') state.bindingKey = null;
-          if (screen === 'title') state.hasGame = false;
-          state.gameScreen = screen; hud.cursor = screen !== 'playing';
-          break;
-        }
+        case 'setGameScreen': setGameScreen(state, action.screen); break;
         case 'startGame': state.menuRequests.push('start'); break;
         case 'quitGame': state.menuRequests.push('quit'); break;
         case 'requestFullscreen': state.menuRequests.push('fullscreen'); break;

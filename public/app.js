@@ -20,7 +20,8 @@ import { createAudioPlayer } from './audio.js';
 import { encodeSound } from '/shared/sound.js';
 import { importedGameplayGaps } from './gameplay-readiness.js';
 import { installGameMenu } from '/shared/game-menu.js';
-import { gameSettings, bindKey, mappedKeys, validBinding } from '/shared/game-settings.js';
+import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
+import { engineTweaks } from '/shared/engine-tweaks.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 
 const $ = id => document.getElementById(id);
@@ -446,18 +447,35 @@ function renderInspector() {
 }
 function readEngineTweaks() {
   const stored = localStorage.getItem('opendle-engine-tweaks');
-  if (stored === null) return { jumping: true };
-  const tweaks = JSON.parse(stored);
-  if (!tweaks || typeof tweaks !== 'object' || Array.isArray(tweaks) || typeof tweaks.jumping !== 'boolean') {
-    throw new Error('Saved engine tweaks are invalid; choose Enable jumping again to replace them.');
-  }
-  return { jumping: tweaks.jumping };
+  return engineTweaks(stored === null ? {} : JSON.parse(stored));
+}
+function saveEngineTweaks(changes) {
+  const tweaks = engineTweaks({ ...readEngineTweaks(), ...changes });
+  localStorage.setItem('opendle-engine-tweaks', JSON.stringify(tweaks));
+  if (runtime) { Object.assign(runtime.settings, tweaks); runtime.settingsRevision++; }
+  $('engine-tweaks-status').textContent = 'Saved for all projects in this browser.';
 }
 $('engine-jumping').addEventListener('change', guard(() => {
-  const jumping = $('engine-jumping').checked;
-  localStorage.setItem('opendle-engine-tweaks', JSON.stringify({ jumping }));
-  if (runtime) { runtime.settings.jumping = jumping; runtime.settingsRevision++; }
-  $('engine-tweaks-status').textContent = 'Saved for all projects in this browser.';
+  saveEngineTweaks({ jumping: $('engine-jumping').checked });
+}));
+function renderEngineTweaks() {
+  const tweaks = readEngineTweaks();
+  $('engine-jumping').checked = tweaks.jumping;
+  const fields = $('engine-setting-fields'); fields.replaceChildren();
+  for (const [key, label] of [['fov', 'Field of view'], ['resolution', 'Render resolution'], ['brightness', 'Brightness'], ['muted', 'Mute preview audio']]) {
+    const wrapper = make('label', label), input = document.createElement('input'), spec = GAME_SETTINGS[key];
+    input.type = typeof spec.value === 'boolean' ? 'checkbox' : 'number'; input.setAttribute('aria-label', label);
+    if (input.type === 'checkbox') input.checked = tweaks[key];
+    else { input.min = spec.min; input.max = spec.max; input.step = spec.step; input.value = tweaks[key]; }
+    input.addEventListener('change', guard(() => saveEngineTweaks({ [key]: input.type === 'checkbox' ? input.checked : Number(input.value) })));
+    wrapper.append(input); fields.append(wrapper);
+  }
+}
+$('engine-tweaks-reset').addEventListener('click', guard(() => {
+  const tweaks = engineTweaks();
+  localStorage.setItem('opendle-engine-tweaks', JSON.stringify(tweaks));
+  if (runtime) { Object.assign(runtime.settings, tweaks); runtime.settingsRevision++; }
+  renderEngineTweaks(); $('engine-tweaks-status').textContent = 'Engine tweaks reset.';
 }));
 function showTab(tab) {
   if (tab !== 'hud') hudEditor.stopPreview();
@@ -466,7 +484,7 @@ function showTab(tab) {
   }
   for (const name of ['map', 'events', 'environment', 'hud', 'tweaks', 'about']) $(name + '-panel').hidden = tab !== name;
   if (tab === 'tweaks') {
-    try { $('engine-jumping').checked = readEngineTweaks().jumping; }
+    try { renderEngineTweaks(); }
     catch (error) { $('engine-tweaks-status').textContent = error.message; status(error.message, true); }
   }
   document.querySelectorAll('[data-tab]').forEach(element => element.classList.toggle('active', element.dataset.tab === tab));
@@ -1369,7 +1387,7 @@ async function beginPreview(gameMode = false, resumeSettings, start = false) {
         settings = gameSettings(); localStorage.setItem(settingsStorageKey, JSON.stringify(settings));
       }
     }
-    settings.jumping = readEngineTweaks().jumping;
+    Object.assign(settings, readEngineTweaks());
     audioPlayer = createAudioPlayer(snapshot, message => mouseStatus(message, true));
     status('Loading renderer and embedded images (WebGPU preferred, WebGL fallback)...');
     const nextRuntime = createRuntime(snapshot, { settings, gameMode, screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing' });
@@ -1401,11 +1419,16 @@ $('play').addEventListener('click', guard(() => beginPreview(false)));
 $('play-game').addEventListener('click', guard(() => beginPreview(true)));
 function pauseGame() {
   if (!runtime || !runtime.hasGame) return;
-  runtime.gameScreen = runtime.gameScreen === 'playing' ? 'pause' : 'playing';
-  runtime.hudState.cursor = runtime.gameScreen !== 'playing';
+  setGameScreen(runtime, runtime.gameScreen === 'playing' ? 'pause' : 'playing');
   runtime.bindingKey = null; keys.clear(); pressed.clear(); syncHUDCursor();
 }
 $('pause-game').addEventListener('click', pauseGame);
+async function togglePreviewFullscreen() {
+  if (!document.fullscreenEnabled) throw new Error('Fullscreen is unavailable in this browser or embedded preview. Open in system browser.');
+  if (document.fullscreenElement) await document.exitFullscreen();
+  else await $('preview-stage').requestFullscreen();
+}
+$('preview-fullscreen').addEventListener('click', guard(togglePreviewFullscreen));
 $('stop').addEventListener('click', stopPreview);
 function backFromGameMenu(event) {
   event.preventDefault();
@@ -1413,9 +1436,7 @@ function backFromGameMenu(event) {
   if (!runtime) return;
   if (runtime.gameScreen === 'playing' || runtime.gameScreen === 'pause') pauseGame();
   else {
-    runtime.gameScreen = runtime.gameScreen === 'title' ? 'quit'
-      : ['settings', 'difficulty', 'help', 'quit'].includes(runtime.gameScreen) ? (runtime.hasGame ? 'pause' : 'title') : 'settings';
-    runtime.hudState.cursor = true;
+    setGameScreen(runtime, runtime.gameScreen === 'title' ? 'quit' : 'return');
   }
 }
 $('play-dialog').addEventListener('cancel', backFromGameMenu);
@@ -1482,12 +1503,17 @@ document.addEventListener('keydown', event => {
       return;
     }
     if (runtime.gameScreen !== 'playing') {
-      if (['ArrowUp', 'ArrowDown', 'Enter'].includes(event.code)) {
-        event.preventDefault();
-        const buttons = [...$('hud-overlay').querySelectorAll('[role="button"]')].filter(node => node.tabIndex === 0);
-        const index = buttons.indexOf(document.activeElement);
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(event.code)) {
+        event.preventDefault(); event.stopPropagation();
+        if (['ArrowLeft', 'ArrowRight'].includes(event.code)) {
+          if (!keys.has(event.code)) pressed.add(event.code);
+          keys.add(event.code); return;
+        }
+        const buttons = [...$('hud-overlay').querySelectorAll('[role="button"]')].filter(node => node.tabIndex === 0 && node.dataset.menuSelectable !== 'false');
+        const index = buttons.findIndex(node => node.dataset.hudId === runtime.hudState.focused);
         if (event.code === 'Enter') buttons[index < 0 ? 0 : index]?.click();
-        else buttons[(index + (event.code === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
+        else buttons[(index < 0 ? event.code === 'ArrowDown' ? 0 : buttons.length - 1
+          : (index + (event.code === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length)]?.focus();
       }
       return;
     }
@@ -1509,7 +1535,9 @@ function frame(now) {
   const dt = (now - lastFrame) / 1000; lastFrame = now;
   if (runtime) {
     try {
-      stepRuntime(previewProject, runtime, dt, mappedKeys(keys, runtime.settings), mappedKeys(pressed, runtime.settings)); pressed.clear();
+      const onMenu = runtime.gameScreen !== 'playing';
+      stepRuntime(previewProject, runtime, dt, onMenu ? keys : mappedKeys(keys, runtime.settings),
+        onMenu ? pressed : mappedKeys(pressed, runtime.settings)); pressed.clear();
       if (settingsRevision !== runtime.settingsRevision) {
         settingsRevision = runtime.settingsRevision;
         try { localStorage.setItem(settingsStorageKey, JSON.stringify(runtime.settings)); }
@@ -1518,9 +1546,7 @@ function frame(now) {
       const requests = runtime.menuRequests.splice(0);
       if (requests.includes('quit')) { stopPreview(); requestAnimationFrame(frame); return; }
       if (requests.includes('fullscreen')) {
-        if (!document.fullscreenEnabled) mouseStatus('Fullscreen is unavailable in this browser or embedded preview. Open in system browser.', true);
-        else (document.fullscreenElement ? document.exitFullscreen() : $('preview-stage').requestFullscreen())
-          .catch(error => mouseStatus(`Fullscreen failed: ${error.message}`, true));
+        togglePreviewFullscreen().catch(error => mouseStatus(`Fullscreen failed: ${error.message}`, true));
       }
       if (requests.includes('start')) {
         const settings = structuredClone(runtime.settings), mode = runtime.gameMode;
