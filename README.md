@@ -6,6 +6,16 @@ OpenDLE: Studio is an experimental, source-available game engine and visual
 editor combining Doom-style worlds, a Construct-inspired workspace and
 GDevelop-style condition/action scripting.
 
+![OpenDLE: Studio editor workspace](./Docs/editor_overall.png)
+
+## See it in action
+
+| Visual event scripting | HUD and menu design |
+| --- | --- |
+| ![Visual event sheets with conditions and actions](./Docs/event_sheets.png) | ![WYSIWYG HUD designer](./Docs/hud_designer.png) |
+
+![In-game testing in the browser](./Docs/ingame_testing.png)
+
 ## Create without starting from code
 
 - **Visual world editing:** build and edit sectors, rooms, materials, lighting
