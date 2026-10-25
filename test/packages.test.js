@@ -10,6 +10,7 @@ import { createApp } from '../server/index.js';
 import { ProjectStore } from '../server/store.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { wavSound } from '../shared/sound.js';
+import { selectGameLevel } from '../shared/game-levels.js';
 
 function archive(entries) {
   const local = [], central = [];
@@ -182,6 +183,24 @@ function directory(t) {
   t.after(() => rmSync(root, { recursive: true }));
   return root;
 }
+test('full package imports retain filename-based maps even with duplicate internal markers and declared routing', async t => {
+  const content = [...entries().filter(([path]) => !path.startsWith('maps/')),
+    ['maps/first.wad', mapWad('WRONG')], ['maps/second.wad', mapWad('WRONG')],
+    ['mapinfo', Buffer.from('episode FIRST { name = "Game" }\nmap FIRST "First room" { next = "SECOND" }\nmap SECOND { next = EndGameC }')]];
+  const root = directory(t);
+  for (const [path, bytes] of content) {
+    const absolute = join(root, 'Game', path);
+    mkdirSync(join(absolute, '..'), { recursive: true }); writeFileSync(absolute, bytes);
+  }
+  for (const files of [await readPackageArchive(archive(content)), await readLocalPackage(root, 'Game')]) {
+    const { project, entry } = importPackage(files, { map: 'auto', baseBytes: base(), fullGame: true });
+    assert.deepEqual(project.game.levels.map(level => level.id), ['FIRST', 'SECOND']);
+    assert.equal(entry.map, 'FIRST'); assert.equal(project.game.entry, 'FIRST');
+    assert.equal(project.game.levels[0].next, 'SECOND'); assert.equal(project.game.levels[1].next, null);
+    selectGameLevel(project, 'SECOND'); validateProject(project);
+    assert.equal(project.game.active, 'SECOND');
+  }
+});
 test('PK3 reads stored/Deflate resources, classifies custom map markers and imports images without executing scripts', async () => {
   const files = await readPackageArchive(archive([...entries(), ['graphics/extra.png', png(), { method: 0 }]]));
   const inspection = inspectPackage(files);
@@ -337,7 +356,8 @@ test('authenticated HTTP supports local/upload inspection, image batches and cla
   assert.deepEqual((await batch.json()).assets, local.assets);
   const imported = await json('/api/import/local-package', { name: 'mod.pk3', map: inspection.maps[0].id, base: 'base.wad' });
   validateProject(imported.project);
-  const uploadedMap = await fetch(`${url}/api/import/package?map=${encodeURIComponent(inspection.maps[0].id)}&base=base.wad`,
+  assert.equal(imported.project.game.levels.length, 1);
+  const uploadedMap = await fetch(`${url}/api/import/package?map=${encodeURIComponent(inspection.maps[0].id)}&base=base.wad&images=`,
     { method: 'POST', headers: binary, body: bytes });
   assert.deepEqual((await uploadedMap.json()).project, imported.project);
   assert.equal(store.snapshot().revision, 0);

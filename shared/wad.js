@@ -8,8 +8,24 @@ import { installDefaultHUD } from './hud.js';
 import { parseUDMF, udmfRecords } from './udmf.js';
 import { installGameMenu } from './game-menu.js';
 import { importSBarInfo } from './sbarinfo.js';
+import { assembleGameLevels, parseLevelRoutes } from './game-levels.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
+
+export function importWadGame(wad, entry, options = {}) {
+  if (wad.maps.length > 128) throw new Error('A game exceeds the 128-level limit');
+  entry ||= wad.maps.includes('MAP01') ? 'MAP01' : wad.maps.includes('E1M1') ? 'E1M1' : wad.maps[0];
+  if (!wad.maps.includes(entry)) throw new Error(`Game entry map not found: ${entry}`);
+  const sources = wad.lumps.filter(lump => ['MAPINFO', 'ZMAPINFO'].includes(lump.name)).map(lump => {
+    if (lump.size > 1024 * 1024) throw new Error('MAPINFO exceeds 1 MiB');
+    return new TextDecoder().decode(new Uint8Array(wad.buffer, lump.start, lump.size));
+  });
+  function* levels() { for (const id of wad.maps) yield { id, ...importWadMap(wad, id, options) }; }
+  const result = assembleGameLevels(levels(),
+    entry, options.title || 'Imported WAD game', parseLevelRoutes(sources));
+  validateProject(result.project);
+  return result;
+}
 
 export function readWad(buffer, { allowNoMaps = false } = {}) {
   if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 12) throw new Error('WAD header is truncated');
@@ -100,7 +116,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     const sector = project.map.sectors.find(sector => sector.id === (right || left)?.sectorId);
     return {
       id: `w${index}`, a: `v${a}`, b: `v${b}`, right, left, flags: record.flags,
-      special: record.special || 0, tag: record.tag || 0, ...(source ? { specialFormat: 'zdoom', args: record.args } : {}),
+      special: record.special || 0, tag: record.tag || 0, ...(source ? { specialFormat: 'zdoom', args: record.args,
+        activationModes: [...new Set(record.activationModes)] } : {}),
       color: '#9aa3ab', height: sector ? Math.max(8, Math.min(4096, sector.ceilingHeight - sector.floorHeight)) : 128,
       solid: !left || !right || Boolean(record.flags & 1),
     };
@@ -215,7 +232,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   }));
   installGameMenu(project, assets, [...definitions, ...menuDefinitions], warnings);
   if (wad.lumps.some(lump => lump.name.startsWith('D_'))) warnings.push('Doom MUS/MIDI music is not synthesized yet; music controls apply to browser-decodable tracks only.');
-  warnings.push('Menus are editable HUD/events. MENUDEF support is partial: custom menu classes, arbitrary CVARs/commands, savegames, episode/map progression and exact Nightmare respawn/fast states are not translated yet.');
+  warnings.push('Menus are editable HUD/events. MENUDEF support is partial: custom menu classes, arbitrary CVARs/commands, savegames and exact Nightmare respawn/fast states are not translated yet. Full-game imports support native level selection and supported exits; scripted campaign behavior is not executed.');
   if (assets) warnings.push(...assets.warnings);
   const unsupported = [...new Set(project.map.entities.filter(entity => entity.type === 'pickup' &&
     [2022, 2023, 2024, 2025, 2026, 2045].includes(entity.doomType)).map(entity => entity.doomType))];

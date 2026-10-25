@@ -22,6 +22,7 @@ import { importedGameplayGaps } from './gameplay-readiness.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
+import { selectGameLevel } from '/shared/game-levels.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 
 const $ = id => document.getElementById(id);
@@ -92,6 +93,15 @@ function render() {
   if (!['$all', '$scene'].includes(scriptScope) && !project.map.entities.some(entity => entity.id === scriptScope) &&
     !project.eventSheets?.some(sheet => scriptScope === `$sheet:${sheet.id}`)) scriptScope = '$all';
   $('title').value = project.title;
+  $('game-level-label').hidden = !project.game;
+  $('game-level').replaceChildren(...(project.game?.levels || []).map(level =>
+    new Option(`${level.id} — ${level.name}`, level.id, false, level.id === project.game.active)));
+  const currentLevel = project.game?.levels.find(level => level.id === project.game.active);
+  for (const [id, value, ending] of [['game-entry-level', project.game?.entry, false],
+    ['game-next-level', currentLevel?.next, true], ['game-secret-level', currentLevel?.secretNext, true]]) {
+    $(id).replaceChildren(...(ending ? [new Option('End campaign', '', false, !value)] : []),
+      ...(project.game?.levels || []).map(level => new Option(`${level.id} — ${level.name}`, level.id, false, level.id === value)));
+  }
   $('project-name').textContent = project.title;
   $('dirty').textContent = dirty ? 'Unsaved' : 'Saved';
   $('undo').disabled = history.length === 0;
@@ -181,7 +191,7 @@ $('sector-surface').addEventListener('change', () => {
 function commit(next, message = 'Project updated') {
   validateProject(next);
   history.push(structuredClone(project));
-  const maxHistory = (project.assets?.length || next.assets?.length) ? 10 : 40;
+  const maxHistory = project.game || next.game ? 3 : (project.assets?.length || next.assets?.length) ? 10 : 40;
   if (history.length > maxHistory) history.shift();
   future = [];
   project = next;
@@ -210,6 +220,19 @@ function replace(next, message) {
   commit(next, message);
   fitMap();
 }
+$('game-level').addEventListener('change', guard(() => {
+  const id = $('game-level').value;
+  edit(next => selectGameLevel(next, id), `Editing ${id}; other level edits are retained.`);
+  selection = null; scriptScope = '$all'; render(); fitMap();
+}));
+for (const [id, key] of [['game-next-level', 'next'], ['game-secret-level', 'secretNext'], ['game-entry-level', 'entry']])
+  $(id).addEventListener('change', guard(() => {
+    const value = $(id).value;
+    edit(next => {
+      if (key === 'entry') next.game.entry = value;
+      else next.game.levels.find(level => level.id === next.game.active)[key] = value || null;
+    }, 'Campaign routing updated.');
+  }));
 function make(tag, text, className) {
   const element = document.createElement(tag);
   if (text !== undefined) element.textContent = text;
@@ -1359,7 +1382,7 @@ $('system-browser').addEventListener('click', guard(async () => {
     mouseStatus(`Cannot open the system browser: ${error.message}. Open ${location.origin} manually in Chrome/Firefox. If you just updated OpenDLE, restart the local service first.`, true);
   } finally { $('system-browser').disabled = false; }
 }));
-async function beginPreview(gameMode = false, resumeSettings, start = false) {
+async function beginPreview(gameMode = false, resumeSettings, start = false, levelId, progress) {
   if (previewLoading) return;
   if (!project.gameMenus) {
     edit(next => installGameMenu(next), 'Editable game menus added. Save to keep them in the project.');
@@ -1367,8 +1390,9 @@ async function beginPreview(gameMode = false, resumeSettings, start = false) {
   validateProject(project);
   const gaps = importedGameplayGaps(project);
   if (project.events.length === 0 && gaps.length && !confirm('This is a geometry-only import with no gameplay rules. Weapons, enemies and pickups will not work. Cancel and restore your gameplay draft or reimport the WAD. Continue with a geometry-only preview?')) return;
-  previewLoading = true; $('play').disabled = true; $('play-game').disabled = true;
+  previewLoading = true; $('play').disabled = true; $('play-game').disabled = true; $('play-level').disabled = true;
   const snapshot = structuredClone(project);
+  if (snapshot.game) selectGameLevel(snapshot, levelId || (gameMode ? snapshot.game.entry : snapshot.game.active));
   const version = editVersion;
   try {
     if (runtime) {
@@ -1390,7 +1414,8 @@ async function beginPreview(gameMode = false, resumeSettings, start = false) {
     Object.assign(settings, readEngineTweaks());
     audioPlayer = createAudioPlayer(snapshot, message => mouseStatus(message, true));
     status('Loading renderer and embedded images (WebGPU preferred, WebGL fallback)...');
-    const nextRuntime = createRuntime(snapshot, { settings, gameMode, screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing' });
+    const nextRuntime = createRuntime(snapshot, { settings, gameMode, progress,
+      screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing' });
     nextRuntime.hudState.cursor = nextRuntime.gameScreen !== 'playing';
     const preview = await createPreview($('preview'), snapshot, nextRuntime);
     if (version !== editVersion) { preview.dispose(); throw new Error('Project changed while preview loaded. Play again.'); }
@@ -1402,7 +1427,10 @@ async function beginPreview(gameMode = false, resumeSettings, start = false) {
       click: id => { if (runtime?.hudState.cursor && !runtime.bindingKey) runtime.hudState.clicked.add(id); },
       error: message => mouseStatus(message, true),
     });
-    $('preview-title').textContent = project.title;
+    $('preview-title').textContent = `${snapshot.title}${snapshot.game ? ` / ${snapshot.game.active}` : ''}`;
+    $('play-level-label').hidden = !snapshot.game;
+    $('play-level').replaceChildren(...(snapshot.game?.levels || []).map(level =>
+      new Option(`${level.id} — ${level.name}`, level.id, false, level.id === snapshot.game.active)));
     $('preview-controls').textContent = runtime.scriptedInput
       ? 'Editable Engine controls: WASD / arrows / mouse look. Space: jump (editor Engine tweaks). E: use doors and switches. Left mouse: fire selected weapon (pistol/shotgun bullets are instant hitscan, not flying missiles). 1-9: select owned weapons (8=chainsaw, 9=super shotgun). Right-drag: look without capture. Tab: HUD cursor. Escape releases cursor, then opens the pause menu.'
       : 'Click: mouse look (or left-drag). Escape releases cursor, then opens the pause menu. WASD moves, arrows turn, Space jumps; E / F / Q trigger events.';
@@ -1413,8 +1441,12 @@ async function beginPreview(gameMode = false, resumeSettings, start = false) {
     mouseStatus('Mouse is free. Click the view or Capture mouse. If the browser blocks capture, use drag-look or open this URL in a desktop browser.');
     status(`${preview.rendererStatus?.backend || 'GPU'} preview ready${preview.rendererStatus?.fallbackReason ? ` — ${preview.rendererStatus.fallbackReason}` : ''}`);
   } catch (error) { stopPreview(); throw error; }
-  finally { previewLoading = false; $('play').disabled = false; $('play-game').disabled = false; }
+  finally { previewLoading = false; $('play').disabled = false; $('play-game').disabled = false; $('play-level').disabled = false; }
 }
+$('play-level').addEventListener('change', guard(async () => {
+  if (!runtime || previewLoading) return;
+  await beginPreview(runtime.gameMode, structuredClone(runtime.settings), true, $('play-level').value);
+}));
 $('play').addEventListener('click', guard(() => beginPreview(false)));
 $('play-game').addEventListener('click', guard(() => beginPreview(true)));
 function pauseGame() {
@@ -1496,6 +1528,7 @@ document.addEventListener('mousemove', event => {
 });
 document.addEventListener('keydown', event => {
   if (runtime && $('play-dialog').open) {
+    if (event.target === $('play-level')) return;
     if (event.code === 'Escape') { backFromGameMenu(event); return; }
     if (runtime.bindingKey && event.code !== 'Escape') {
       event.preventDefault();
@@ -1544,6 +1577,15 @@ function frame(now) {
         catch (error) { mouseStatus(`Settings could not be saved: ${error.message}`, true); }
       }
       const requests = runtime.menuRequests.splice(0);
+      const levelRequest = requests.find(request => request?.type === 'level');
+      if (levelRequest) {
+        const settings = structuredClone(runtime.settings), mode = runtime.gameMode;
+        const progress = levelRequest.carryProgress ? { playerStats: runtime.playerStats, inventory: runtime.inventory } : null;
+        beginPreview(mode, settings, true, levelRequest.levelId, progress)
+          .catch(error => { stopPreview(); status(`Level change failed: ${error.message}`, true); });
+        requestAnimationFrame(frame); return;
+      }
+      if (requests.includes('complete')) status('Campaign complete. Choose New game or select another level.');
       if (requests.includes('quit')) { stopPreview(); requestAnimationFrame(frame); return; }
       if (requests.includes('fullscreen')) {
         togglePreviewFullscreen().catch(error => mouseStatus(`Fullscreen failed: ${error.message}`, true));
@@ -1599,7 +1641,7 @@ $('restore').addEventListener('click', guard(() => {
   if (confirm('Restore your last browser draft? You can undo this change.')) replace(JSON.parse(draft), 'Browser draft restored; save to keep it on the server');
 }));
 $('export').addEventListener('click', () => {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }));
+  const url = URL.createObjectURL(new Blob([JSON.stringify(project, null, project.game ? 0 : 2)], { type: 'application/json' }));
   const link = make('a'); link.href = url; link.download = `${project.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.opendle.json`; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   status('Project exported');
@@ -1629,6 +1671,7 @@ function closeWadImport() {
   $('import-dialog').close(); loadedWad = null;
 }
 function showWadImport() {
+  $('wad-scope').value = 'game';
   $('import-status').textContent = 'Ready to import. Your current project stays unchanged until import succeeds.';
   $('import-status').classList.remove('error');
   $('import-report').hidden = true;
@@ -1654,26 +1697,27 @@ async function loadLocalMaps() {
 $('local-wad-select').addEventListener('change', guard(loadLocalMaps));
 $('import-map').addEventListener('click', async () => {
   if (wadImport || !loadedWad) return;
-  const controller = new AbortController(), source = loadedWad, map = $('wad-map').value;
+  const controller = new AbortController(), source = loadedWad, map = $('wad-map').value, scope = $('wad-scope').value;
   let timedOut = false;
-  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 90000);
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 300000);
   wadImport = controller;
   $('import-map').disabled = true;
   $('import-map').textContent = 'Importing...';
   $('import-dialog').setAttribute('aria-busy', 'true');
-  $('wad-map').disabled = true; $('local-wad-select').disabled = true;
+  $('wad-map').disabled = true; $('local-wad-select').disabled = true; $('wad-scope').disabled = true;
   const version = editVersion;
   try {
-    const message = `Importing ${map}: decoding sectors, images and editable WAD status bar...`;
+    const message = scope === 'game' ? `Importing all WAD levels (starting at ${map}); this may take a few minutes...`
+      : `Importing ${map}: decoding sectors, images and editable WAD status bar...`;
     status(message); $('import-status').textContent = message; $('import-status').classList.remove('error');
     const result = source.localName
-      ? await api('/api/import/local-wad', { method: 'POST', signal: controller.signal, body: JSON.stringify({ name: source.localName, map }) })
-      : await api(`/api/import/wad?map=${encodeURIComponent(map)}`, {
+      ? await api('/api/import/local-wad', { method: 'POST', signal: controller.signal, body: JSON.stringify({ name: source.localName, map, scope }) })
+      : await api(`/api/import/wad?map=${encodeURIComponent(map)}&scope=${scope}`, {
         method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/octet-stream' }, body: source.buffer,
       });
     if (controller.signal.aborted) return;
     if (version !== editVersion) throw new Error('Project changed during import. Retry to avoid overwriting new edits.');
-    const summary = `Imported ${map}: ${result.project.assets?.filter(asset => !['sound', 'font', 'model'].includes(asset.kind)).length || 0} images, ${result.project.assets?.filter(asset => asset.kind === 'sound').length || 0} sounds, ${result.project.events.length} visual rules, ${result.project.spriteClips?.length || 0} animation clips, ${result.project.map.sectors.length} sectors, ${result.project.hud?.elements.length || 0} editable HUD elements. Click Play world to run gameplay; Space/E uses doors and switches. The 3D layout is editing only.`;
+    const summary = `Imported ${result.project.game?.levels.length || 1} level(s), starting at ${map}: ${result.project.assets.length} shared assets. Use Editing level to edit another map, Play game for the game entry, or the in-game Level selector to play any imported map.`;
     replace(result.project, summary);
     $('import-summary').textContent = `${summary} Import notes`;
     $('import-warnings').textContent = result.warnings.join('\n');
@@ -1681,13 +1725,14 @@ $('import-map').addEventListener('click', async () => {
     wadImport = null; closeWadImport();
   } catch (error) {
     if (controller.signal.aborted && !timedOut) { status('WAD import cancelled; project unchanged.'); return; }
-    const message = `WAD import failed: ${timedOut ? 'No response within 90 seconds. Check that the local server is running, then retry.' : error.message}`;
+    const message = `WAD import failed: ${timedOut ? 'No response within five minutes. Check that the local server is running, then retry.' : error.message}`;
     $('import-status').textContent = message; $('import-status').classList.add('error'); status(message, true);
   } finally {
     clearTimeout(timeout);
     if (wadImport === controller) wadImport = null;
     $('import-map').disabled = false; $('wad-map').disabled = false; $('local-wad-select').disabled = false;
-    $('import-map').textContent = 'Import map & assets'; $('import-dialog').removeAttribute('aria-busy');
+    $('wad-scope').disabled = false;
+    $('import-map').textContent = 'Import game & assets'; $('import-dialog').removeAttribute('aria-busy');
   }
 });
 $('asset-filter').addEventListener('change', renderAssets);
@@ -1706,7 +1751,8 @@ function showPackageImages() {
 }
 function showPackageInspection(inspection) {
   packageInspection = inspection;
-  $('package-map').replaceChildren(new Option('Automatic — mod entry level', 'auto'),
+  $('package-scope').value = 'game';
+  $('package-map').replaceChildren(new Option('Automatic — game entry level', 'auto'),
     new Option('Extract selected images only', ''),
     ...inspection.maps.map(map => {
       const option = new Option(`${map.name} — ${map.format}${map.supported ? '' : ' (unsupported)'}`, map.id);
@@ -1767,20 +1813,21 @@ $('package-cancel').addEventListener('click', cancelPackage);
 $('package-dialog').addEventListener('cancel', event => { event.preventDefault(); cancelPackage(); });
 $('package-import').addEventListener('click', async () => {
   if (!packageSource || packageBusy) return;
-  const source = packageSource, map = $('package-map').value, base = $('package-base').value, kind = $('package-kind').value;
+  const source = packageSource, map = $('package-map').value, base = $('package-base').value, kind = $('package-kind').value,
+    scope = $('package-scope').value;
   const paths = [...$('package-images').selectedOptions].map(option => option.value);
   if (!map && (!paths.length || paths.length > 64)) {
     $('package-status').textContent = 'Select 1–64 images, or choose a supported map.'; return;
   }
   const controller = new AbortController(), version = editVersion;
   packageController = controller; packageBusy = true;
-  const timeout = setTimeout(() => controller.abort(new Error('Package import timed out after 90 seconds')), 90000);
-  for (const id of ['package-source', 'package-base', 'package-map', 'package-kind', 'package-search', 'package-images', 'package-import']) $(id).disabled = true;
+  const timeout = setTimeout(() => controller.abort(new Error('Package import timed out after five minutes')), 300000);
+  for (const id of ['package-source', 'package-base', 'package-map', 'package-scope', 'package-kind', 'package-search', 'package-images', 'package-import']) $(id).disabled = true;
   $('package-status').textContent = 'Importing package resources...';
   try {
-    const query = new URLSearchParams({ map, base, images: paths.map(path => packageInspection.images.indexOf(path)).join(',') });
+    const query = new URLSearchParams({ map, base, scope, images: paths.map(path => packageInspection.images.indexOf(path)).join(',') });
     const result = source.name
-      ? await api('/api/import/local-package', { method: 'POST', signal: controller.signal, body: JSON.stringify({ name: source.name, map, base, paths }) })
+      ? await api('/api/import/local-package', { method: 'POST', signal: controller.signal, body: JSON.stringify({ name: source.name, map, base, paths, scope }) })
       : await api(`/api/import/package?${query}`, { method: 'POST', signal: controller.signal,
         headers: { 'Content-Type': 'application/octet-stream' }, body: source.buffer });
     if (controller.signal.aborted) return;
@@ -1788,7 +1835,7 @@ $('package-import').addEventListener('click', async () => {
     let summary;
     if (result.project) {
       summary = result.entry
-        ? `Imported ${result.project.title}: entry level ${result.entry.path || result.entry.map}, ${result.project.assets.length} referenced images.`
+        ? `Imported ${result.project.title}: ${result.project.game?.levels.length || 1} level(s), entry ${result.entry.map}, ${result.project.assets.length} shared assets.`
         : `Imported package map: ${result.project.assets.length} images, ${result.project.hud.elements.length} HUD elements.`;
       replace(result.project, summary);
     } else {
@@ -1807,7 +1854,7 @@ $('package-import').addEventListener('click', async () => {
     $('package-status').textContent = message; status(message, true);
   } finally {
     clearTimeout(timeout); packageBusy = false; packageController = null;
-    for (const id of ['package-source', 'package-base', 'package-map', 'package-kind', 'package-search', 'package-images', 'package-import']) $(id).disabled = false;
+    for (const id of ['package-source', 'package-base', 'package-map', 'package-scope', 'package-kind', 'package-search', 'package-images', 'package-import']) $(id).disabled = false;
   }
 });
 $('asset-search').addEventListener('input', renderAssets);

@@ -12,6 +12,7 @@ import RAPIER from '/vendor/rapier/rapier.mjs';
 import { createPhysics } from '/shared/physics.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { gameView } from '/shared/game-view.js';
+import { gameLevelAssetIds } from '/shared/game-levels.js';
 import { clipFrame, spriteView } from '/shared/sprite-animation.js';
 
 export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc' };
@@ -38,6 +39,12 @@ export async function createPreview(canvas, project, state, { editor = false } =
   const camera = new THREE.PerspectiveCamera(70, 800 / 450, 1, 40000);
   const geometry = editor ? sectorGeometry(project) : state.sectors;
   const textures = new Map(), assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
+  function imageTexture(id) {
+    if (!id) return null;
+    const result = textures.get(id);
+    if (!result) throw new Error(`Preview image ${assetMap.get(id)?.name || id} (${id}) was not loaded`);
+    return result;
+  }
   const materials = new Set(), geometries = new Set();
   const lightPositions = Array.from({ length: 16 }, () => new THREE.Vector3());
   const lightColors = Array.from({ length: 16 }, () => new THREE.Color(0));
@@ -88,7 +95,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
     canvas.dataset.shaderId = selectedShader?.id || '';
     canvas.dataset.shaderError = '';
     // Load sequential batches to bound temporary decoded-image memory.
-    const assets = (project.assets || []).filter(asset => !['model', 'font', 'sound'].includes(asset.kind));
+    const levelAssets = project.game ? new Set(gameLevelAssetIds(project)) : null;
+    const assets = (project.assets || []).filter(asset => !['model', 'font', 'sound'].includes(asset.kind) &&
+      (!levelAssets || levelAssets.has(asset.id)));
     for (let offset = 0; offset < assets.length; offset += 16) await Promise.all(assets.slice(offset, offset + 16).map(async asset => {
       const texture = await loader.loadAsync(asset.src);
       if (texture.image.width !== asset.width || texture.image.height !== asset.height) {
@@ -169,7 +178,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const key = `${assetId}/${level}/${color}/${masked}/${oneSided}`;
       if (materialCache.has(key)) return materialCache.get(key);
       const result = withEffect(new THREE.MeshBasicNodeMaterial({
-        map: textures.get(assetId) || null, color: assetId ? '#ffffff' : color,
+        map: imageTexture(assetId), color: assetId ? '#ffffff' : color,
         side: oneSided ? THREE.FrontSide : THREE.DoubleSide, alphaTest: masked ? .5 : 0,
       }));
       result.userData.assetId = assetId;
@@ -258,7 +267,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     const skyAsset = assetMap.get(project.environment.skyAsset);
     if (project.environment.skybox) {
       const faces = ['px', 'nx', 'py', 'ny', 'pz', 'nz'].map(face => {
-        const result = new THREE.MeshBasicMaterial({ map: textures.get(project.environment.skybox[face]), side: THREE.BackSide, depthWrite: false });
+        const result = new THREE.MeshBasicMaterial({ map: imageTexture(project.environment.skybox[face]), side: THREE.BackSide, depthWrite: false });
         materials.add(result); return result;
       });
       const box = new THREE.BoxGeometry(20000, 20000, 20000);
@@ -277,7 +286,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const v = doom ? clamp(tan(clamp(elevation, -1.4, 1.4)).mul(.65).add(.5), .001, .999) : elevation.div(Math.PI).add(.5);
       const backgroundMaterial = new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
       backgroundMaterial.vertexNode = vec4(positionGeometry.xy, 0, 1);
-      backgroundMaterial.fragmentNode = texture(textures.get(skyAsset.id), vec2(u, v));
+      backgroundMaterial.fragmentNode = texture(imageTexture(skyAsset.id), vec2(u, v));
       backgroundMaterial.userData.panoramaUniforms = { heading, pitch, aspect, fieldOfView };
       mesh(new THREE.PlaneGeometry(2, 2), backgroundMaterial, backgroundScene);
       backgroundScene.userData.panorama = backgroundMaterial;
@@ -309,7 +318,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         continue;
       }
       const asset = assetMap.get(entity.spriteAsset);
-      const mat = withEffect(new THREE.SpriteNodeMaterial({ map: textures.get(entity.spriteAsset) || null,
+      const mat = withEffect(new THREE.SpriteNodeMaterial({ map: imageTexture(entity.spriteAsset),
         color: asset ? '#ffffff' : entityColors[entity.type], alphaTest: .5, transparent: false, sizeAttenuation: true }));
       const sprite = new THREE.Sprite(mat); materials.add(mat);
       sprite.userData.selection = { kind: 'entity', id: entity.id };
@@ -324,7 +333,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         .flatMap(action => project.spriteClips?.find(clip => clip.id === action.clipId)?.frames || []))].filter(Boolean));
     for (const weaponId of editor ? [] : weaponIds) {
       const weapon = assetMap.get(weaponId);
-      const mat = new THREE.MeshBasicMaterial({ map: textures.get(weapon.id), transparent: true, depthTest: false, depthWrite: false });
+      const mat = new THREE.MeshBasicMaterial({ map: imageTexture(weapon.id), transparent: true, depthTest: false, depthWrite: false });
       const overlay = mesh(new THREE.PlaneGeometry(weapon.width, weapon.height), mat, overlayScene);
       const left = weapon.offsetX === undefined ? 160 - weapon.width / 2 : -weapon.offsetX;
       const top = weapon.offsetY === undefined ? 200 - weapon.height : 32 - weapon.offsetY;
@@ -360,7 +369,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       canvas.dataset.shaderEnabled = String(Boolean(shaderEffect) && state.shaderEnabled !== false);
       if (!editor) for (const animation of project.materialAnimations || []) {
         const frame = clipFrame(project, animation.clipId, state.time + animation.offset);
-        for (const material of materialCache.values()) if (material.userData.assetId === animation.assetId) material.map = textures.get(frame.assetId);
+        for (const material of materialCache.values()) if (material.userData.assetId === animation.assetId) material.map = imageTexture(frame.assetId);
       }
       if (!editor && worldRevision !== state.worldRevision) {
         const changed = new Set();
@@ -458,7 +467,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         {
           const { assetId, flip } = editor ? { assetId: entity.spriteAsset, flip: false } : spriteView(project, state, entity);
           const asset = assetMap.get(assetId), scale = entity.spriteScale || 1;
-          sprite.material.map = textures.get(assetId) || null;
+          sprite.material.map = imageTexture(assetId);
           sprite.scale.set((asset?.width || 24) * scale * (flip ? -1 : 1), (asset?.height || 40) * scale, 1);
           sprite.center.set(asset ? asset.offsetX / asset.width : .5, asset ? 1 - asset.offsetY / asset.height : 0);
           sprite.userData.frame = assetId;
@@ -489,7 +498,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const object = projectileMeshes.get(projectile.id);
         if (frame) {
           const asset = assetMap.get(frame.assetId);
-          object.material.map = textures.get(frame.assetId); object.scale.set(asset.width, asset.height, 1);
+          object.material.map = imageTexture(frame.assetId); object.scale.set(asset.width, asset.height, 1);
           object.userData.frame = frame.assetId;
         }
         object.position.set(projectile.x, projectile.z, projectile.y);

@@ -131,6 +131,8 @@ export function udmfRecords(document) {
       special: number(p, 'special', 0, { integer: true, min: 0, max: 65535 }),
       tag: number(p, 'id', 0, { integer: true, min: 0, max: 65535 }),
       args: Array.from({ length: 5 }, (_, i) => number(p, `arg${i}`, 0, { integer: true, min: -32768, max: 32767 })),
+      activationModes: [['playercross', 'cross'], ['playeruse', 'use'], ['playeruseback', 'use'], ['impact', 'shoot']]
+        .filter(([key]) => bool(p, key)).map(([, mode]) => mode),
       flags: (bool(p, 'blocking') || bool(p, 'blockplayers') || bool(p, 'blockeverything') ? 1 : 0) |
         (bool(p, 'dontpegtop') ? 8 : 0) | (bool(p, 'dontpegbottom') ? 16 : 0) })),
     things: byType('thing').map(p => ({

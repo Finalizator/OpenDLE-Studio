@@ -6,10 +6,14 @@ import { installDefaultHUD, hudElement } from '../shared/hud.js';
 import { parseHUDCSS } from '../shared/hud-style.js';
 import { PLAYER_STATS, WEAPONS, KEYS, AMMO_TYPES } from '../shared/player-state.js';
 import { installGameMenu, attachMenuElement } from '../shared/game-menu.js';
+import { selectGameLevel } from '../shared/game-levels.js';
 
 const coordinate = z.number().min(-65536).max(65536);
 export const toolDefinitions = [
   { name: 'project_get', description: 'Read the complete active OpenDLE project.', shape: {} },
+  { name: 'game_level_select', description: 'Select an imported game level for editing by its ID. Preserves the current level edits, shared assets and every other level. Read project_get.game.levels first. Does not run or reset gameplay.', shape: { levelId: z.string().min(1).max(80) } },
+  { name: 'game_level_set_routes', description: 'Edit campaign entry or a level normal/secret exit destination. null ends the campaign. References must exist. Does not alter maps or visual scripts.', shape: {
+    levelId: z.string(), next: z.string().nullable().optional(), secretNext: z.string().nullable().optional(), entry: z.boolean().optional() } },
   { name: 'game_menu_install', description: 'Install editable title/pause/settings HUDs and interface-phase visual rules on a project without game menus. Imported WAD/PK3 menus are installed by their importer; this explicit tool adds the no-artwork fallback. Does not overwrite existing menus. User settings are browser-local, not authored project variables.', shape: {} },
   { name: 'variables_set', description: 'Replace global or object-local initial variables with a complete record of numbers, text or booleans. Omit entityId for globals. Existing script/expression references are validated; types stay fixed during Play.',
     shape: { entityId: z.string().optional(), variables: z.record(z.union([z.number().finite(), z.string().max(4096), z.boolean()])) } },
@@ -119,6 +123,14 @@ export function applyTool(project, name, args) {
   let next = structuredClone(project);
   switch (name) {
     case 'project_get': return { project: next, changed: false };
+    case 'game_level_select': selectGameLevel(next, input.levelId); break;
+    case 'game_level_set_routes': {
+      const level = next.game?.levels.find(level => level.id === input.levelId);
+      if (!level) throw new Error(`Unknown game level ${input.levelId}`);
+      for (const key of ['next', 'secretNext']) if (Object.hasOwn(input, key)) level[key] = input[key];
+      if (input.entry) next.game.entry = input.levelId;
+      break;
+    }
     case 'game_menu_install':
       if (next.gameMenus) throw new Error('Game menus already exist; edit their HUD elements and interface events');
       installGameMenu(next); break;

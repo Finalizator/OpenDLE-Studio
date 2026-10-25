@@ -109,6 +109,16 @@ export function installWorldScripts(project, warnings) {
   for (const wall of project.map.walls) {
     const special = wall.special || 0;
     if (!special) continue;
+    const classicExit = wall.specialFormat !== 'zdoom' && [11, 51, 52, 124, 197, 198].includes(special);
+    const zdoomExit = wall.specialFormat === 'zdoom' && [243, 244].includes(special);
+    if (classicExit || zdoomExit) {
+      const modes = zdoomExit ? wall.activationModes || [] :
+        [[52, 124].includes(special) ? 'cross' : [197, 198].includes(special) ? 'shoot' : 'use'];
+      if (!modes.length) warnings.push(`Exit ${wall.id} has no supported player activation; retained for visual-script editing.`);
+      for (const mode of modes) rule(`Exit level / ${wall.id}`, { type: 'wallActivated', wallId: wall.id, mode },
+        [{ type: 'finishLevel', exit: [51, 124, 198, 244].includes(special) ? 'secret' : 'normal' }], { once: true });
+      continue;
+    }
     if (wall.specialFormat === 'zdoom') { unhandled.add(`zdoom:${special}`); continue; }
     const local = manual.has(special), door = doors.get(special), lift = lifts.get(special);
     const lower = floorLower.get(special), raise = floorRaise.get(special), perpetual = [53, 87].includes(special);

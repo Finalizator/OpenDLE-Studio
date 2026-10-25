@@ -9,6 +9,7 @@ import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile,
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { clipFrame, setSpriteState } from './sprite-animation.js';
 import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
+import { nextGameLevel } from './game-levels.js';
 
 export function distanceToSegment(x, y, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -38,19 +39,21 @@ export function castRay(x, y, dx, dy, walls) {
   return nearest;
 }
 
-export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false } = {}) {
+export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false, progress } = {}) {
   const spawn = project.map.entities.find(entity => entity.type === 'player');
   const userSettings = gameSettings(settings);
   const skillBit = userSettings.difficulty <= 2 ? 1 : userSettings.difficulty === 3 ? 2 : 4;
+  const inventory = progress ? structuredClone(progress.inventory) : initialInventory();
+  if (progress) inventory.keys.clear();
+  const playerStats = progress ? structuredClone(progress.playerStats) : initialPlayerStats();
   return {
     settings: userSettings, settingsRevision: 0, gameScreen: screen, gameMode,
     hasGame: screen === 'playing', bindingKey: null,
     menuRequests: [], interfaceStarted: false,
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0 },
-    playerStats: initialPlayerStats(),
-    inventory: initialInventory(),
+    playerStats, inventory, levelTransition: Boolean(progress),
     face: 'idle',
-    feedback: { damage: null, weaponPickupTime: -Infinity, attackTime: 0, health: 100 },
+    feedback: { damage: null, weaponPickupTime: -Infinity, attackTime: 0, health: playerStats.health },
     scriptedInput: project.playerControl === 'events',
     input: { mouseX: 0, mouseY: 0, forward: 0, strafe: 0, jump: false },
     time: 0,
@@ -275,6 +278,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (condition.type === 'hudAnimationPlaying') return hud.playing.has(condition.animationId);
       if (condition.type === 'hudClicked') return hud.clicked.has(condition.elementId);
       if (condition.type === 'hudFocused') return hud.focused === condition.elementId;
+      if (condition.type === 'levelTransition') return state.levelTransition;
       if (condition.type === 'hudAnimationFinished') return hud.finished.has(condition.animationId);
       if (condition.type === 'hudStatChanged') {
         const key = `${eventKey}:${condition.stat}:${condition.direction}`;
@@ -323,6 +327,19 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       switch (action.type) {
         case 'setGameScreen': setGameScreen(state, action.screen); break;
         case 'startGame': state.menuRequests.push('start'); break;
+        case 'loadGameLevel':
+          if (!project.game?.levels.some(level => level.id === action.levelId)) throw new Error(`Unknown game level ${action.levelId}`);
+          state.menuRequests.push({ type: 'level', levelId: action.levelId, carryProgress: false }); break;
+        case 'finishLevel': {
+          if (!project.game) {
+            state.message = 'Level complete. Reimport the full game to continue to another level.'; state.messageTime = 10;
+            setGameScreen(state, 'pause'); break;
+          }
+          const levelId = nextGameLevel(project.game, action.exit === 'secret');
+          if (levelId) state.menuRequests.push({ type: 'level', levelId, carryProgress: true });
+          else { state.menuRequests.push('complete'); setGameScreen(state, 'title'); }
+          break;
+        }
         case 'quitGame': state.menuRequests.push('quit'); break;
         case 'requestFullscreen': state.menuRequests.push('fullscreen'); break;
         case 'captureGameBinding': state.bindingKey = action.key; break;

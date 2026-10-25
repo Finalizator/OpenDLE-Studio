@@ -185,6 +185,9 @@ test('WAD library/import APIs are authenticated, bounded to WAD files and return
   const response = await fetch(`${url}/api/import/local-wad`, { method: 'POST', headers, body: JSON.stringify({ name: 'freedoom2.wad', map: 'MAP01' }) });
   const draft = await response.json();
   assert.equal(response.status, 200);
+  assert.equal(draft.project.game.levels.length, 32);
+  assert.equal(draft.project.game.entry, 'MAP01');
+  assert.ok(draft.project.game.levels.some(level => level.id === 'MAP32'));
   assert.equal(draft.project.map.sectors.length, 130);
   assert.ok(draft.project.assets.some(asset => asset.kind === 'weapon'));
   assert.equal(draft.project.playerControl, 'events');
@@ -196,7 +199,7 @@ test('WAD library/import APIs are authenticated, bounded to WAD files and return
   const saved = await fetch(`${url}/api/project`, { method: 'PUT', headers, body: JSON.stringify({ project: draft.project, revision: 0 }) });
   assert.equal(saved.status, 200);
   assert.equal(store.snapshot().project.assets.length, draft.project.assets.length);
-  const uploaded = await fetch(`${url}/api/import/wad?map=MAP01`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/octet-stream' },
+  const uploaded = await fetch(`${url}/api/import/wad?map=MAP01&scope=level`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/octet-stream' },
     body: readFileSync(new URL('../Projects/freedoom2.wad', import.meta.url)) });
   assert.equal(uploaded.status, 200);
   assert.deepEqual((await uploaded.json()).project.hud, draft.project.hud);

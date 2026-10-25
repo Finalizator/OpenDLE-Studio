@@ -42,7 +42,7 @@ export function resolveEntityId(event, id) {
   return id === '$self' ? event.ownerId : id;
 }
 
-export function validateProject(project) {
+export function validateProject(project, { gameLevelIds } = {}) {
   object(project, 'Project');
   assert(project.version === VERSION, `Unsupported project version; expected ${VERSION}`);
   text(project.title, 'Title', 100);
@@ -196,6 +196,10 @@ export function validateProject(project) {
       for (const key of ['upper', 'middle', 'lower']) assetRef(side[key], 'Side material');
     }
     if (wall.flags !== undefined) number(wall.flags, 'Wall flags', 0, 65535);
+    if (wall.activationModes !== undefined) {
+      array(wall.activationModes, 'Wall activation modes', 3);
+      for (const mode of wall.activationModes) assert(['use', 'cross', 'shoot'].includes(mode), 'Unknown wall activation mode');
+    }
     for (const key of ['special', 'tag']) if (wall[key] !== undefined) {
       number(wall[key], `Wall ${key}`, 0, 65535); assert(Number.isInteger(wall[key]), `Wall ${key} must be an integer`);
     }
@@ -399,6 +403,8 @@ export function validateProject(project) {
         if (command.type === 'addObjectVariable') assert(targets.every(entity => typeof entity.variables[command.variable] === 'number'), 'Only numeric object variables can be added');
       }
       if (definition.wall) assert(walls.some(wall => wall.id === command.wallId), 'Command references an unknown wall');
+      if (command.type === 'loadGameLevel')
+        assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId), 'Command references an unknown game level');
       if (definition.sector) assert(sectorIds.has(command.sectorId), 'Command references an unknown sector');
       if (definition.spriteClip) clipRef(command.clipId);
       for (const key of ['clipId', 'impactClipId']) if (['launchProjectile', 'enemyProjectile'].includes(command.type) && command[key] !== undefined) clipRef(command[key]);
@@ -508,6 +514,32 @@ export function validateProject(project) {
         }
       }
     }
+  }
+  if (project.game !== undefined) {
+    const game = project.game;
+    object(game, 'Game'); assert(game.version === 1, 'Unknown game format');
+    array(game.levels, 'Game levels', 128); assert(game.levels.length > 0, 'Game needs levels');
+    const levelIds = new Set();
+    for (const level of game.levels) {
+      object(level, 'Game level'); identifier(level.id, 'Level ID'); text(level.name, 'Level name', 100);
+      assert(!levelIds.has(level.id), `Duplicate game level ${level.id}`); levelIds.add(level.id);
+      object(level.data, 'Level data');
+      assert(!['game', 'version', 'title', 'assets'].some(key => Object.hasOwn(level.data, key)), 'Level data must not nest shared game fields');
+      array(level.assetIds, 'Level assets', 3000);
+      assert(new Set(level.assetIds).size === level.assetIds.length, 'Duplicate level asset references');
+      if (level.id !== game.active)
+        for (const id of level.assetIds) assert(assetIds.has(id), `Level ${level.id} references unknown asset ${id}`);
+    }
+    assert(levelIds.has(game.entry) && levelIds.has(game.active), 'Game entry/active level is missing');
+    for (const level of game.levels) {
+      for (const key of ['next', 'secretNext'])
+        assert(level[key] === null || levelIds.has(level[key]), `Level ${level.id} has an unknown ${key} destination`);
+      if (level.id === game.active) continue;
+      const retained = new Set(level.assetIds);
+      validateProject({ version: project.version, title: project.title,
+        assets: assets.filter(asset => retained.has(asset.id)), ...level.data }, { gameLevelIds: levelIds });
+    }
+    assert(JSON.stringify(game).length <= 128 * 1024 * 1024, 'Game level data exceeds 128 MiB');
   }
   return project;
 }

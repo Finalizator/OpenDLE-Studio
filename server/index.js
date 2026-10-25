@@ -91,10 +91,15 @@ export function createApp({
     const buffer = localWad(req.params.name);
     res.json({ maps: readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)).maps });
   });
-  app.post('/api/import/local-wad', (req, res) => res.json(importWad(localWad(req.body.name), req.body.map)));
+  const fullGameImport = scope => {
+    if (scope !== undefined && !['game', 'level'].includes(scope)) throw new Error('Import scope must be game or level');
+    return scope !== 'level';
+  };
+  app.post('/api/import/local-wad', (req, res) => res.json(importWad(localWad(req.body.name), req.body.map,
+    { fullGame: fullGameImport(req.body.scope), title: req.body.name.replace(/\.wad$/i, '') })));
   app.post('/api/import/wad', express.raw({ type: 'application/octet-stream', limit: '128mb' }), (req, res) => {
     if (!Buffer.isBuffer(req.body)) throw new Error('Expected a binary WAD body');
-    res.json(importWad(req.body, req.query.map));
+    res.json(importWad(req.body, req.query.map, { fullGame: fullGameImport(req.query.scope) }));
   });
   app.get('/api/packages', (req, res) => res.json(packageLibrary(projectsDir)));
   app.post('/api/packages/inspect', async (req, res) => res.json(inspectPackage(await readLocalPackage(projectsDir, req.body.name))));
@@ -103,14 +108,16 @@ export function createApp({
   app.post('/api/import/local-package', async (req, res) => {
     const files = await readLocalPackage(projectsDir, req.body.name);
     res.json(importPackage(files, { map: req.body.map, paths: req.body.paths,
+      fullGame: fullGameImport(req.body.scope),
       baseBytes: req.body.base ? localWadBytes(projectsDir, req.body.base) : undefined }));
   });
   app.post('/api/import/package', express.raw({ type: 'application/octet-stream', limit: '128mb' }), async (req, res) => {
     const files = await readPackageArchive(req.body);
     const inspection = inspectPackage(files);
-    const indices = typeof req.query.images === 'string' ? req.query.images.split(',') : [];
+    const indices = typeof req.query.images === 'string' && req.query.images ? req.query.images.split(',') : [];
     if (indices.some(index => !/^\d+$/.test(index) || !inspection.images[Number(index)])) throw new Error('Invalid package image selection');
     res.json(importPackage(files, { map: req.query.map, paths: indices.map(index => inspection.images[Number(index)]),
+      fullGame: fullGameImport(req.query.scope),
       baseBytes: req.query.base ? localWadBytes(projectsDir, req.query.base) : undefined }));
   });
   app.get('/api/project', (req, res) => res.json(store.snapshot()));

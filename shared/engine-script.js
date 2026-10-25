@@ -15,6 +15,7 @@ const timer = () => ({ name: 'timer', value: 'weapon', kind: 'text' });
 const projectileClips = () => ['clipId', 'impactClipId'].map(name => ({ name, kind: 'text', optional: true }));
 
 export const ENGINE_CONDITIONS = [
+  { type: 'levelTransition', label: 'Game: level entered with campaign inventory', fields: [] },
   { type: 'gameScreen', label: 'Game: active menu / gameplay screen', fields: [{ name: 'screen', kind: 'text', value: 'title' }] },
   { type: 'shaderEnabled', label: 'Shader: effect is enabled', fields: [] },
   { type: 'expressionCompare', label: 'System: compare math / text expressions', fields: [
@@ -60,6 +61,8 @@ export const ENGINE_CONDITIONS = [
 export const ENGINE_ACTIONS = [
   { type: 'setGameScreen', label: 'Game: open menu / resume', fields: [{ name: 'screen', kind: 'text', value: 'title' }] },
   { type: 'startGame', label: 'Game: start a new game', fields: [] },
+  { type: 'loadGameLevel', label: 'Game: load a level', fields: [{ name: 'levelId', kind: 'text', value: 'MAP01' }] },
+  { type: 'finishLevel', label: 'Game: finish level / follow exit', fields: [choice('exit', 'normal', ['normal', 'secret'])] },
   { type: 'quitGame', label: 'Game: return to editor', fields: [] },
   { type: 'requestFullscreen', label: 'Game: toggle fullscreen', fields: [] },
   { type: 'resetGameSettings', label: 'Game: reset user settings', fields: [] },
@@ -182,7 +185,7 @@ export function installEngineScripts(project, { organizeStarter = false, include
   rule('Player', 'initial_stats', { type: 'onStart' }, [
     { type: 'setPlayerStat', stat: 'health', value: 100 }, { type: 'setPlayerStat', stat: 'armor', value: 0 },
     { type: 'setPlayerStat', stat: 'armorDivisor', value: 3 }, { type: 'setPlayerStat', stat: 'bullets', value: 50 },
-  ]);
+  ], [{ type: 'levelTransition', inverted: true }]);
   for (const [key, forward, strafe] of [['KeyW', 160, 0], ['KeyS', -160, 0], ['KeyA', 0, -160], ['KeyD', 0, 160]]) {
     rule('Input', `move_${key}`, { type: 'keyHeld', key }, [{ type: 'movePlayer', forward, strafe }], [alive]);
   }

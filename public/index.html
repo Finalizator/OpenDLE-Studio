@@ -48,6 +48,12 @@
     <aside class="left" aria-label="Properties bar">
       <div class="dock-heading">Properties <span id="selection-kind">Layout</span></div>
       <label class="project-title">Project name<input id="title" aria-label="Project title" maxlength="100"></label>
+      <div id="game-level-label" hidden>
+        <label>Editing level<select id="game-level" aria-label="Editing game level"></select></label>
+        <label>New game starts at<select id="game-entry-level" aria-label="Game entry level"></select></label>
+        <label>Normal exit<select id="game-next-level" aria-label="Normal exit destination"></select></label>
+        <label>Secret exit<select id="game-secret-level" aria-label="Secret exit destination"></select></label>
+      </div>
       <div id="inspector"></div>
       <div class="property-help"><strong>Properties</strong><p>Select an object in the layout or Project bar. Open its visual script to edit attached events.</p></div>
     </aside>
@@ -182,13 +188,13 @@
   </main>
   <footer><span id="status" role="status">Connecting to local service...</span><span>Layout 1 / WebGPU preferred + WebGL2 fallback / experimental</span></footer>
   <dialog id="play-dialog">
-    <div class="preview-heading"><strong id="preview-title">Play world</strong><button id="pause-game">Pause / options</button><button id="hud-cursor">HUD cursor / Tab</button><button id="capture-mouse">Capture mouse</button><button id="preview-fullscreen">Fullscreen</button><button id="system-browser">Open in system browser</button><button id="stop">Stop preview</button></div>
+    <div class="preview-heading"><strong id="preview-title">Play world</strong><label id="play-level-label" hidden>Level<select id="play-level" aria-label="In-game level selector"></select></label><button id="pause-game">Pause / options</button><button id="hud-cursor">HUD cursor / Tab</button><button id="capture-mouse">Capture mouse</button><button id="preview-fullscreen">Fullscreen</button><button id="system-browser">Open in system browser</button><button id="stop">Stop preview</button></div>
     <p id="mouse-status" role="status"></p>
     <div id="preview-stage"><canvas id="preview" width="800" height="450" tabindex="0" aria-label="First-person game preview"></canvas><div id="hud-overlay" class="hud-overlay"></div></div>
     <div id="preview-controls" class="preview-controls"></div>
     <div id="game-message" aria-live="polite"></div><div id="game-variables"></div>
   </dialog>
-  <dialog id="import-dialog"><h2>Import WAD map & assets</h2><p>Choose a classic Doom or UDMF map. Imports sectors, textures, sky, sprites, weapon overlays, sounds and an editable classic status bar from WAD artwork, plus nine-weapon, enemy combat, inventory and pickup scripts. Use Play world to run gameplay; 3D layout mode is editing only. Full GZDoom behavior and custom HUD translation remain implementation gaps. The current project is replaced; undo is available.</p><label id="local-wad-label" hidden>Local WAD<select id="local-wad-select"></select></label><label>Map<select id="wad-map" aria-label="WAD map"></select></label><p id="import-status" role="status"></p><div class="button-row"><button id="import-map" class="primary">Import map & assets</button><button id="cancel-import">Cancel</button></div></dialog>
+  <dialog id="import-dialog"><h2>Import WAD game</h2><p>Import all levels and their sectors, textures, sky, sprites, weapons, sounds, HUDs, menus and supported visual gameplay scripts. Choose the starting level below; other levels remain editable and selectable during play. Unsupported maps fail explicitly without replacing your project. Full GZDoom scripted behavior remains incomplete. The current project is replaced; undo is available.</p><label id="local-wad-label" hidden>Local WAD<select id="local-wad-select"></select></label><label>Import scope<select id="wad-scope"><option value="game">Full game — all levels</option><option value="level">Selected level only</option></select></label><label>Starting / selected level<select id="wad-map" aria-label="WAD map"></select></label><p id="import-status" role="status"></p><div class="button-row"><button id="import-map" class="primary">Import game & assets</button><button id="cancel-import">Cancel</button></div></dialog>
   <dialog id="package-dialog">
     <h2>Import game</h2>
     <p>Choose a mod and its base game. OpenDLE finds the entry level and resolves its resources automatically. Import replaces the current scene; undo is available.</p>
@@ -198,6 +204,7 @@
     <p>Current compatibility: entry-level geometry and referenced artwork import; full game scripts, custom HUD behavior and level progression are still being implemented.</p>
     <details id="package-advanced"><summary>Advanced: choose a level or extract images</summary>
     <label>Map / import mode<select id="package-map" aria-label="Package map"></select></label>
+    <label>Import scope<select id="package-scope"><option value="game">Full game — all levels</option><option value="level">Selected level only</option></select></label>
     <label>Image category<select id="package-kind" aria-label="Package image category"><option value="">From package namespace</option><option value="texture">Wall texture</option><option value="flat">Floor / ceiling</option><option value="sky">Sky</option><option value="sprite">Sprite / HUD image</option><option value="weapon">Weapon overlay</option></select></label>
     <label>Image search<input id="package-search" type="search" aria-label="Package image search"></label>
     <label>Images (select 1–64 per batch; Ctrl/Shift for multiple)<select id="package-images" aria-label="Package images" multiple size="10"></select></label>

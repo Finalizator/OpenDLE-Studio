@@ -7,8 +7,9 @@ import { PNG } from 'pngjs';
 import { readWad, importWadMap } from '../shared/wad.js';
 import { validateProject } from '../shared/project.js';
 import { decodePatch, decodeFlat } from '../shared/doom-assets.js';
-import { encodeImage } from './import.js';
+import { encodeImage, cachedImageEncoder } from './import.js';
 import { doomSound, encodeSound } from '../shared/sound.js';
+import { assembleGameLevels, parseLevelRoutes } from '../shared/game-levels.js';
 
 const MiB = 1024 * 1024;
 const MAX_BYTES = 128 * MiB, MAX_FILES = 10000;
@@ -282,14 +283,44 @@ function mergeWads(sources) {
   return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), lumps,
     maps: [...new Set(sources.flatMap(source => source.maps))] };
 }
-export function importPackage(files, { map, paths, baseBytes } = {}) {
-  const inspection = inspectPackage(files), base = baseBytes ? wad(baseBytes) : null;
+export function importPackage(files, { map, paths, baseBytes, fullGame = false, context } = {}) {
+  const inspection = context?.inspection || inspectPackage(files), base = context?.base || (baseBytes ? wad(baseBytes) : null);
   const automatic = map === 'auto';
   if (automatic) {
     check(!inspection.game.entryError, inspection.game.entryError);
     map = inspection.game.entryMap || 'base-entry';
   }
-  const palette = paletteFrom(base, files), decode = imageDecoder(files, palette);
+  if (fullGame && map) {
+    const selected = inspection.maps.find(item => item.id === map);
+    const logicalId = item => item.path?.startsWith('maps/') ? basename(item.path, '.wad').toUpperCase() : item.marker;
+    const entry = selected ? logicalId(selected) : (map === 'base-entry' && base ?
+      base.maps.includes('MAP01') ? 'MAP01' : base.maps.includes('E1M1') ? 'E1M1' : base.maps[0] : null);
+    check(entry, 'Game entry map not found; select the required base IWAD');
+    const routes = parseLevelRoutes([...files].filter(([path]) => /(^|\/)[z]?mapinfo(?:[./]|$)/i.test(path))
+      .map(([path, file]) => {
+        check(file.data && file.size <= MiB, `MAPINFO ${path} exceeds 1 MiB or was not retained`);
+        return file.data.toString('utf8');
+      }));
+    const baseCampaign = !inspection.maps.length || inspection.maps.every(item => /^(MAP\d\d|E\dM\d)$/.test(logicalId(item)));
+    const maps = new Map((baseCampaign ? base?.maps || [] : [])
+      .map(id => [id, { id: `base:${id}`, marker: id, supported: true }]));
+    for (const item of inspection.maps) maps.set(logicalId(item), item);
+    for (const route of routes.values()) for (const id of [route.next, route.secretNext])
+      if (id && !maps.has(id) && base?.maps.includes(id)) maps.set(id, { id: `base:${id}`, marker: id, supported: true });
+    check(maps.size <= 128, 'Game exceeds 128 levels');
+    const shared = { inspection, base, decode: imageDecoder(files, paletteFrom(base, files)), encodeImage: cachedImageEncoder() };
+    function* levels() {
+      for (const [id, item] of maps) {
+        check(item.supported, `${item.marker}: ${item.format} map is not supported; full-game import was not applied`);
+        yield { id, ...importPackage(files, { map: item.id, baseBytes, context: shared }) };
+      }
+    }
+    const result = assembleGameLevels(levels(), entry, inspection.game.title || 'Imported package game', routes);
+    validateProject(result.project);
+    return { ...result, entry: { map: entry, path: selected?.path || null,
+      reason: inspection.game.entryReason, mapCount: maps.size } };
+  }
+  const palette = paletteFrom(base, files), decode = context?.decode || imageDecoder(files, palette);
   if (!map) {
     check(Array.isArray(paths) && paths.length > 0 && paths.length <= 64 && new Set(paths).size === paths.length,
       'Select 1-64 distinct package image paths');
@@ -305,7 +336,9 @@ export function importPackage(files, { map, paths, baseBytes } = {}) {
     });
     return { assets, warnings: inspection.warnings };
   }
-  const selected = map === 'base-entry' && automatic && !inspection.maps.length && base
+  const selected = typeof map === 'string' && map.startsWith('base:') && base?.maps.includes(map.slice(5))
+    ? { marker: map.slice(5), supported: true, path: null }
+    : map === 'base-entry' && automatic && !inspection.maps.length && base
     ? { marker: base.maps.includes('MAP01') ? 'MAP01' : base.maps.includes('E1M1') ? 'E1M1' : base.maps[0], supported: true, path: null }
     : inspection.maps.find(item => item.id === map);
   if (automatic && !inspection.maps.length && !base) throw new Error('This mod needs a base game. Select its required base IWAD before importing.');
@@ -371,7 +404,8 @@ export function importPackage(files, { map, paths, baseBytes } = {}) {
     check(file.data && file.size <= MiB, `Font ${path} exceeds 1 MiB or was not retained`);
     fontResources.set(basename(path, extname(path)).toUpperCase(), new Uint8Array(file.data));
   }
-  const result = importWadMap(combined, selected.marker, { encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources });
+  const result = importWadMap(combined, selected.marker,
+    { encodeImage: context?.encodeImage || encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources });
   let musicBytes = 0;
   for (const [path, file] of files) if (path.startsWith('music/')) {
     const format = extname(path).slice(1);

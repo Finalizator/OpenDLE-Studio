@@ -648,6 +648,59 @@ instead of appearing to be a functioning gameplay import.
 
 ### Play game, imported menus and user settings
 
+#### Full-game import and levels
+
+The WAD/PK3 import dialogs and HTTP import endpoints now default to **Full game**,
+not a single-map extraction. The map choice selects the starting level. Use
+**Selected level only** (`scope:"level"` for JSON requests or `scope=level` for
+uploads) when intentionally extracting one map. Image-only package extraction
+is unchanged. The low-level `importWadMap` and explicit-map `importWad` helpers
+remain single-map APIs; `importWad` without a map imports the full WAD.
+
+A portable `project.game` stores entry/active level IDs, level names, normal and
+secret exit destinations, and native per-level data. Assets are shared and
+deduplicated; colliding generated atlases receive distinct IDs and their
+references are remapped. All maps keep their editable geometry, environment,
+variables, visual scripts, HUD/menu layouts, animation clips and provenance.
+The root project is authoritative for the currently edited level; switching
+levels stores those edits before restoring another level. Inactive snapshots
+are validated, not treated as opaque unchecked blobs. Save/export includes all
+levels. Full-game exports use compact JSON to stay within the 128 MiB file limit.
+Large games may exceed browser localStorage draft capacity: the editor reports
+backup failures explicitly; save to the local server or export instead.
+
+**Editing level** selects an editable map. The adjoining controls configure
+the new-game entry and normal/secret exit destinations. **Play level** tests the
+edited map; **Play game** opens the campaign entry. The preview toolbar's **Level**
+selector starts any imported level with fresh inventory without changing the
+editor selection or original game artwork. New game resets to the configured
+entry. MCP exposes `game_level_select` and `game_level_set_routes`; visual scripts
+can use `loadGameLevel(levelId)` or `finishLevel(exit:normal|secret)`.
+
+Classic Doom exit specials 11/51 (use), 52/124 (cross) and 197/198 (shoot), plus
+UDMF Exit_Normal/Exit_Secret (243/244) with explicit supported player activation
+flags, compile into editable `finishLevel` rules. Transitions follow standard
+Doom/Doom II normal/secret destinations or supported MAPINFO `next`/`secretnext`
+fields; end-game destinations end the campaign. Health, armor, ammo and weapon
+inventory carry across exits; keys and per-map world state reset. Generated
+initial-player-stat rules use `levelTransition` so they do not erase carried
+progress. Manual level selection starts fresh. Arbitrary scripted transitions,
+hub persistence, intermissions, old unbraced MAPINFO syntax, dependency loading
+and complete episode-menu translation remain unsupported.
+
+For PK3 `maps/*.wad`, filenames define logical level names even when internal
+markers duplicate or differ (as in the supplied Furdoom). A custom named
+campaign imports its own maps plus explicitly referenced base destinations,
+not an unrelated base campaign. Classic MAPxx/ExMy replacement packages retain
+the base maps they do not replace; mapless resource mods use the base campaign.
+No maps are silently discarded for unsupported formats: a full-game import
+fails without replacing the current project. Limits remain 128 levels, 3000
+shared assets, existing asset budgets and 128 MiB portable JSON. Full imports
+can take substantially longer than one-map imports; dialogs allow five minutes.
+GPU preview loads only assets referenced by the current level, including indirect
+sprite rotation views (front/side/back and mirrored frames). Missing referenced
+images report their asset name rather than rendering an untextured white sprite.
+
 **Play level** still launches the current map immediately. **Play game** opens
 the imported game's title menu first, then New game and skill selection.
 Escape or **Pause / options** opens an in-game menu without advancing gameplay;
