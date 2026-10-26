@@ -28,6 +28,7 @@ import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { upgradePickupReach } from '/shared/doom-hud.js';
+import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
 import { installIntermission } from '/shared/intermission.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
@@ -239,6 +240,7 @@ async function refreshScene() {
       },
     }, scenePose);
     if (sceneMode !== '3d' || project !== snapshot) { scenePose = editor.pose(); editor.dispose(); return; }
+    editor.settings(readEngineTweaks());
     sceneEditor = editor; sceneProject = snapshot;
     sceneEditor.select(selection); sceneEditor.mode($('transform-mode').value); sceneEditor.ceilings($('show-ceilings').checked);
     status('3D scene ready. Right-drag + WASD/QE flies. Select and drag a colored axis to edit.');
@@ -639,6 +641,7 @@ function saveEngineTweaks(changes) {
   const tweaks = engineTweaks({ ...readEngineTweaks(), ...changes });
   localStorage.setItem('opendle-engine-tweaks', JSON.stringify(tweaks));
   if (runtime) { Object.assign(runtime.settings, tweaks); runtime.settingsRevision++; }
+  sceneEditor?.settings(tweaks);
   $('engine-tweaks-status').textContent = 'Saved for all projects in this browser.';
 }
 $('engine-jumping').addEventListener('change', guard(() => {
@@ -648,20 +651,36 @@ function renderEngineTweaks() {
   const tweaks = readEngineTweaks();
   $('engine-jumping').checked = tweaks.jumping;
   const fields = $('engine-setting-fields'); fields.replaceChildren();
-  for (const [key, label] of [['fov', 'Field of view'], ['resolution', 'Render resolution'], ['brightness', 'Brightness'], ['muted', 'Mute preview audio'],
-    ['bunnyhop', 'Simulated bunnyhop (speed gain while chaining jumps)'], ['bunnyhopGain', 'Bunnyhop speed gain per chained jump']]) {
-    const wrapper = make('label', label), input = document.createElement('input'), spec = GAME_SETTINGS[key];
-    input.type = typeof spec.value === 'boolean' ? 'checkbox' : 'number'; input.setAttribute('aria-label', label);
-    if (input.type === 'checkbox') input.checked = tweaks[key];
-    else { input.min = spec.min; input.max = spec.max; input.step = spec.step; input.value = tweaks[key]; }
-    input.addEventListener('change', guard(() => saveEngineTweaks({ [key]: input.type === 'checkbox' ? input.checked : Number(input.value) })));
-    wrapper.append(input); fields.append(wrapper);
+  for (const [key, label] of [['renderResolution', 'Render resolution'], ['fov', 'Field of view'], ['resolution', 'Render scale'], ['brightness', 'Brightness'],
+    ['muted', 'Mute preview audio'], ['bunnyhop', 'Simulated bunnyhop (speed gain while chaining jumps)'],
+    ['bunnyhopGain', 'Bunnyhop speed gain per chained jump']]) {
+    const wrapper = make('label', label), spec = GAME_SETTINGS[key];
+    if (spec.options) {
+      const select = document.createElement('select');
+      for (const entry of RENDER_RESOLUTIONS) {
+        const option = document.createElement('option');
+        option.value = entry.value; option.textContent = entry.label;
+        select.append(option);
+      }
+      select.value = tweaks[key];
+      select.addEventListener('change', guard(() => saveEngineTweaks({ [key]: select.value })));
+      wrapper.append(select);
+    } else {
+      const input = document.createElement('input');
+      input.type = typeof spec.value === 'boolean' ? 'checkbox' : 'number'; input.setAttribute('aria-label', label);
+      if (input.type === 'checkbox') input.checked = tweaks[key];
+      else { input.min = spec.min; input.max = spec.max; input.step = spec.step; input.value = tweaks[key]; }
+      input.addEventListener('change', guard(() => saveEngineTweaks({ [key]: input.type === 'checkbox' ? input.checked : Number(input.value) })));
+      wrapper.append(input);
+    }
+    fields.append(wrapper);
   }
 }
 $('engine-tweaks-reset').addEventListener('click', guard(() => {
   const tweaks = engineTweaks();
   localStorage.setItem('opendle-engine-tweaks', JSON.stringify(tweaks));
   if (runtime) { Object.assign(runtime.settings, tweaks); runtime.settingsRevision++; }
+  sceneEditor?.settings(tweaks);
   renderEngineTweaks(); $('engine-tweaks-status').textContent = 'Engine tweaks reset.';
 }));
 /** Reads the engine version once and caches it for the About tab and log headers. */

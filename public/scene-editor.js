@@ -18,7 +18,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   const state = createRuntime(project);
   state.animations.clear();
   const view = await createPreview(canvas, project, state, { editor: true });
-  const { scene, camera, renderer } = view;
+  const { scene, camera } = view;
   let sectors = sectorGeometry(project);
   let sectorById = new Map(sectors.map(sector => [sector.id, sector]));
   let wallById = new Map(project.map.walls.map(wall => [wall.id, wall]));
@@ -688,11 +688,13 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       return true;
     },
     mode(value) { mode = value; },
+    /** Engine tweaks (render resolution, FOV, brightness) apply to the editor preview too. */
+    settings(values) { Object.assign(state.settings, values || {}); },
     pose() { return { position: camera.position.clone(), yaw, pitch, speed }; },
     frame(dt) {
       const rect = canvas.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
-      if (canvas.width !== Math.round(rect.width) || canvas.height !== Math.round(rect.height)) renderer.setSize(Math.round(rect.width), Math.round(rect.height), false);
+      // The renderer owns the drawing-buffer size (Engine tweaks render resolution).
       camera.aspect = rect.width / rect.height; camera.updateProjectionMatrix();
       if (action?.kind === 'fly') {
         rightVector.set(-Math.sin(yaw), 0, Math.cos(yaw));

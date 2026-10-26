@@ -1,3 +1,5 @@
+import { RENDER_RESOLUTION_VALUES } from './render-resolution.js';
+
 export const GAME_SETTINGS = {
   volume: { value: .8, min: 0, max: 1, step: .1 },
   musicVolume: { value: .5, min: 0, max: 1, step: .1 },
@@ -5,6 +7,8 @@ export const GAME_SETTINGS = {
   sensitivity: { value: 1, min: .1, max: 5, step: .1 },
   invertY: { value: false },
   fov: { value: 70, min: 50, max: 120, step: 5 },
+  // Selectable internal render resolution; see shared/render-resolution.js.
+  renderResolution: { value: 'display', options: RENDER_RESOLUTION_VALUES },
   resolution: { value: 1, min: .5, max: 1.5, step: .25 },
   brightness: { value: 1, min: .5, max: 2, step: .1 },
   messages: { value: true },
@@ -49,7 +53,8 @@ export function validateSetting(name, value) {
   const spec = GAME_SETTINGS[name];
   if (!spec || typeof value !== typeof spec.value ||
     typeof value === 'number' && (!Number.isFinite(value) || value < spec.min || value > spec.max ||
-      ['difficulty', 'viewSize'].includes(name) && !Number.isInteger(value))) throw new Error(`Invalid game setting ${name}: ${value}`);
+      ['difficulty', 'viewSize'].includes(name) && !Number.isInteger(value)) ||
+    spec.options && !spec.options.includes(value)) throw new Error(`Invalid game setting ${name}: ${value}`);
   return value;
 }
 export function validBinding(code) {

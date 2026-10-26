@@ -11,6 +11,7 @@ import { RoomEnvironment } from '/vendor/three-addons/environments/RoomEnvironme
 import RAPIER from '/vendor/rapier/rapier.mjs';
 import { createPhysics } from '/shared/physics.js';
 import { liveProjectPlan, modelWorldBox, entityOrigin } from '/shared/entity-visuals.js';
+import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { gameView } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
@@ -737,19 +738,38 @@ export async function createPreview(canvas, project, state, { editor = false } =
         writeDataset('worldRebuilds', rebuilds);
       }
     }
-    function renderFrame(state, dt) {
-      if (!editor && state.settings) {
-        const resolution = `${state.settings.resolution}/${state.settings.lowDetail}`;
-        if (appliedResolution !== resolution) {
-          appliedResolution = resolution;
-          renderer.setSize(Math.round(800 * state.settings.resolution / (state.settings.lowDetail ? 2 : 1)),
-            Math.round(450 * state.settings.resolution), false);
-        }
-        const rendering = state.settings.lowDetail ? 'pixelated' : '';
-        if (styleRendering !== rendering) { styleRendering = rendering; canvas.style.imageRendering = rendering; }
-        const filter = `brightness(${state.settings.brightness})`;
-        if (styleFilter !== filter) { styleFilter = filter; canvas.style.filter = filter; }
+    // The drawing buffer follows the Engine tweak instead of a fixed 800x450 frame,
+    // so the game renders at the panel's real size (or a chosen preset) and only the
+    // canvas element is scaled by CSS. The editor preview uses the same policy.
+    function applyRenderSize(settings) {
+      const rect = canvas.getBoundingClientRect();
+      const size = renderBufferSize({
+        resolution: settings?.renderResolution,
+        scale: settings?.resolution,
+        lowDetail: settings?.lowDetail,
+        cssWidth: rect.width || canvas.clientWidth,
+        cssHeight: rect.height || canvas.clientHeight,
+        devicePixelRatio: globalThis.devicePixelRatio || 1,
+        maxSize: Math.min(4096, renderer.backend?.device?.limits?.maxTextureDimension2D || 4096),
+      });
+      const key = `${size.width}x${size.height}`;
+      if (appliedResolution !== key) {
+        appliedResolution = key;
+        renderer.setSize(size.width, size.height, false);
+        writeDataset('renderResolution', key);
       }
+      const rendering = size.pixelated ? 'pixelated' : '';
+      if (styleRendering !== rendering) { styleRendering = rendering; canvas.style.imageRendering = rendering; }
+      return size;
+    }
+    function renderFrame(state, dt) {
+      if (state.settings) {
+        applyRenderSize(state.settings);
+        if (!editor) {
+          const filter = `brightness(${state.settings.brightness})`;
+          if (styleFilter !== filter) { styleFilter = filter; canvas.style.filter = filter; }
+        }
+      } else applyRenderSize(null);
       effectTime.value = Number.isFinite(state.time) ? state.time : 0;
       effectEnabled.value = state.shaderEnabled === false ? 0 : 1;
       for (let index = 0; index < shaderUniformEntries.length; index++) {

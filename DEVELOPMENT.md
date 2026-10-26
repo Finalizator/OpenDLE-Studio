@@ -1077,6 +1077,19 @@ attaches a new element to a menu. The bounded event budget is 2048 rules.
 
 Live options include effects/music volume, mute, sensitivity, invert Y, field
 of view, render resolution, brightness, messages, always-run and key bindings.
+
+**Render resolution** (`renderResolution`, `shared/render-resolution.js`) is the
+selectable internal resolution the renderer draws at; the canvas is then scaled
+by CSS to fit its panel. `display` renders at the panel's real pixel size with
+the device pixel ratio capped at 2 — the sharpest option and the default, since
+the game previously rendered a fixed 800×450 buffer however large the window
+was. A preset (`1280x720`, `1600x900`, `1920x1080`, `2560x1440`, `3840x2160`)
+fixes the vertical resolution and keeps the panel's aspect ratio instead of
+stretching. The legacy `resolution` scale multiplies the result (0.5–1.5×, so
+1.5 supersamples) and classic low detail still halves horizontal resolution; a
+buffer smaller than the panel is upscaled with `image-rendering: pixelated`.
+The editor preview follows the same policy, so imported models and artwork are
+inspected at the resolution the game runs at.
 The editor's **Engine tweaks / Enable jumping** is enabled by default, independently
 of the imported WAD or PK3. Space requests a normal grounded physics jump; E uses
 doors and switches. Disable jumping for classic no-jump movement. Jumping can
