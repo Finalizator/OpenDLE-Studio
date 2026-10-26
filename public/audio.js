@@ -1,11 +1,17 @@
 import { parseMusic } from '../shared/music.js';
+import { soundCandidates, soundTable, VANILLA_SOUNDS } from '../shared/sndinfo.js';
 import { createMusicScheduler, musicBytes } from './music-player.js';
 
 export function createAudioPlayer(project, onError, AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext, existingContext) {
   if (!AudioContextClass && !existingContext) throw new Error('Web Audio is unavailable in this browser');
   const context = existingContext || new AudioContextClass();
-  const assets = new Map(project.assets.filter(asset => asset.kind === 'sound').map(asset => [asset.name, asset]));
-  const buffers = new Map(), voices = new Set();
+  // Sound assets are matched case-insensitively: WAD lumps are upper case,
+  // DECORATE and ACS name them in lower case, and a mod may do either.
+  const assets = new Map(project.assets.filter(asset => asset.kind === 'sound').map(asset => [asset.name.toUpperCase(), asset]));
+  // The game's own SNDINFO wins, but the built-in vanilla table is always merged
+  // in: a project imported before SNDINFO support still resolves `grunt/sight`.
+  const aliases = soundTable(VANILLA_SOUNDS, project.soundAliases);
+  const missing = new Set(), buffers = new Map(), voices = new Set();
   const master = context.createGain(); master.connect(context.destination);
   const musicGain = context.createGain(); musicGain.connect(context.destination);
   let music = null, musicName = null, musicScore = null, musicStarted = false;
@@ -20,14 +26,35 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
   // Called from the Play click before asynchronous renderer loading.
   resume();
   const musicScheduler = createMusicScheduler(context, { destination: musicGain, onError: report });
-  function load(name) {
-    if (!assets.has(name)) return Promise.reject(new Error(`Unknown embedded sound: ${name}`));
-    if (!buffers.has(name)) {
-      const binary = atob(assets.get(name).src.split(',')[1]);
-      const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
-      buffers.set(name, context.decodeAudioData(bytes.buffer));
+  /**
+   * Resolves a logical name (`grunt/sight`) or lump name (`dspistol`) to an asset.
+   * A `$random` group is a list, so the first member that actually exists wins.
+   */
+  function assetFor(name) {
+    const key = String(name ?? '').toUpperCase();
+    for (const candidate of soundCandidates(key, aliases)) {
+      const asset = assets.get(candidate.toUpperCase());
+      if (asset) return asset;
     }
-    return buffers.get(name);
+    return null;
+  }
+  function load(name) {
+    const asset = assetFor(name);
+    if (!asset) {
+      // One report per missing name: a monster that cannot find its sight sound
+      // would otherwise repeat the same message on every encounter.
+      if (!missing.has(name)) {
+        missing.add(name);
+        return Promise.reject(new Error(`Unknown embedded sound: ${name}`));
+      }
+      return Promise.resolve(null);
+    }
+    if (!buffers.has(asset.id)) {
+      const binary = atob(asset.src.split(',')[1]);
+      const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+      buffers.set(asset.id, context.decodeAudioData(bytes.buffer));
+    }
+    return buffers.get(asset.id);
   }
   return {
     resume,
@@ -78,7 +105,7 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
         const attenuation = event.x === undefined ? 1 : Math.max(0, 1 - Math.hypot(event.x - state.player.x, event.y - state.player.y) / 1200);
         if (!attenuation) continue;
         load(event.name).then(buffer => {
-          if (disposed) return;
+          if (disposed || !buffer) return;
           if (voices.size >= 32) {
             const oldest = voices.values().next().value;
             oldest.stop(); voices.delete(oldest);

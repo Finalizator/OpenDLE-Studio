@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 import { doomName } from '../shared/doom-assets.js';
 import { importActors } from '../shared/actors.js';
+import { parseSndInfo } from '../shared/sndinfo.js';
 
 /**
  * Actor source collection.
@@ -57,8 +58,8 @@ export function zipEntryData(zip, entry) {
 /** Reads actor/DEHACKED text resources out of an archive buffer. */
 export function actorSourcesFromArchive(buffer, { prefix = '', filter = null } = {}) {
   const zip = zipEntries(buffer);
-  if (!zip) return { sources: [], dehacked: [] };
-  const sources = [], dehacked = [];
+  if (!zip) return { sources: [], dehacked: [], sndinfo: [] };
+  const sources = [], dehacked = [], sndinfo = [];
   let budget = 0;
   for (const entry of zip.entries) {
     if (!isScript(entry.name)) continue;
@@ -71,10 +72,43 @@ export function actorSourcesFromArchive(buffer, { prefix = '', filter = null } =
     if (/dehacked|\.(deh|bex)$/i.test(entry.name)) dehacked.push({ name: `${prefix}${entry.name}`, text });
     else sources.push({ name: `${prefix}${entry.name}`, text });
   }
-  return { sources, dehacked };
+  // SNDINFO is additive and carries the logical-name table, not actor definitions,
+  // so it is read separately even though `isScript` also matches its file name.
+  for (const entry of zip.entries) {
+    if (!SNDINFO_NAME.test(entry.name) || entry.size > 2 * 1024 * 1024) continue;
+    if (filter && !filter(entry.name)) continue;
+    const data = zipEntryData(zip, entry);
+    if (!looksTextual(data)) continue;
+    sndinfo.push(data.toString('latin1'));
+  }
+  return { sources, dehacked, sndinfo };
 }
 
 /** Reads actor/DEHACKED text lumps out of a merged WAD. */
+export const SNDINFO_NAME = /(^|\/)sndinfo(\.[a-z]{2,3})?(\.txt)?$/i;
+
+/** SNDINFO text from any container, so logical sound names resolve to lumps. */
+export function sndInfoFromWad(wad) {
+  const texts = [];
+  const bytes = new Uint8Array(wad.buffer);
+  for (const lump of wad.lumps || []) {
+    if (!/^SNDINFO$/i.test(lump.name) || lump.size > 2 * 1024 * 1024) continue;
+    let text = '';
+    for (let index = 0; index < lump.size; index++) text += String.fromCharCode(bytes[lump.start + index]);
+    texts.push(text);
+  }
+  return texts;
+}
+
+export function sndInfoFromArchive(entries) {
+  const texts = [];
+  for (const [name, file] of entries) {
+    if (!SNDINFO_NAME.test(name) || !file?.data || file.data.length > 2 * 1024 * 1024) continue;
+    texts.push(Buffer.from(file.data).toString('latin1'));
+  }
+  return texts;
+}
+
 export function actorSourcesFromWad(wad, { prefix = '' } = {}) {
   const sources = [], dehacked = [];
   let budget = 0;
@@ -112,11 +146,20 @@ export function loadGzdoomActors(projectsDir) {
   };
   walk(resolve(projectsDir), 0);
   const found = candidates[0];
-  if (!found) return { sources: [], dehacked: [], available: false };
+  if (!found) return { sources: [], dehacked: [], sndinfo: [], available: false };
   const stamp = statSync(found);
   const cached = gzdoomCache.get(found);
   if (cached && cached.mtime === stamp.mtimeMs && cached.size === stamp.size) return cached.result;
-  const result = { ...actorSourcesFromArchive(readFileSync(found), { prefix: 'gzdoom.pk3:' }), available: true, path: found };
+  const buffer = readFileSync(found);
+  const result = { ...actorSourcesFromArchive(buffer, { prefix: 'gzdoom.pk3:' }), available: true, path: found };
+  // Vanilla monster and weapon sound names (`grunt/sight`, `weapons/pistol`) are
+  // defined in the per-game filter files, not in the shared sndinfo.txt.
+  const zip = zipEntries(buffer);
+  for (const entry of zip?.entries || []) {
+    if (!/^filter\/game-[a-z]+\/sndinfo\.txt$/i.test(entry.name)) continue;
+    const data = zipEntryData(zip, entry);
+    if (data) result.sndinfo.push(data.toString('latin1'));
+  }
   gzdoomCache.set(found, { mtime: stamp.mtimeMs, size: stamp.size, result });
   return result;
 }

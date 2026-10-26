@@ -1036,9 +1036,8 @@ Rebinding swaps occupied keys rather than creating ambiguous duplicates.
 Settings persist per project title in this browser's local storage and are
 separate from authored project defaults. Fullscreen depends on browser
 permission; embedded-browser restrictions produce an explicit message.
-Music volume applies to imported package WAV/OGG/MP3 tracks; original Doom
-MUS/MIDI synthesis is still missing and is explicitly identified in the sound
-menu/import report.
+Music volume applies to every imported track: Doom MUS/MIDI is synthesised in the
+browser (see Level music) and package WAV/OGG/MP3 plays through the same graph.
 
 New game selects retained single-player skill placement flags, with reduced
 incoming damage on skill 1 and doubled positive ammo grants on skills 1/5.
@@ -1056,7 +1055,9 @@ as playable audio. OpenDLE imports every music lump as a `music` asset (bounded:
   map, program changes, note pairing) and MUS (140 Hz ticks, controller/program
   events, percussion on channel 15), returning one normalised score of timed
   notes with General MIDI families and a loop length. SMPTE-timed MIDI and
-  arbitrary SysEx are rejected rather than guessed.
+  arbitrary SysEx are rejected rather than guessed. A tempo map keeps one mark per
+  distinct tick, so a file that changes tempo twice on tick 0 (six of Freedoom's
+  35 tracks do) still parses instead of throwing mid-song.
 - `public/music-player.js` schedules those notes on the Web Audio graph with a
   small per-family oscillator patch (attack/decay/sustain/release plus one
   harmonic) and filtered-noise percussion. It schedules a 1.5 s lookahead window,
@@ -1081,6 +1082,26 @@ needed), a requested track that is not embedded, a score that failed to parse, o
 a music volume of 0. Silent music is therefore diagnosable without a console. Importing
 soundtracks is not sample-accurate OPL emulation: instruments are approximations,
 and pitch bends, vibrato and tracker effects are not emulated.
+
+### Sound names and SNDINFO
+
+DECORATE and ZScript states never name a sound file. They name a logical sound
+(`grunt/sight`, `weapons/pistol`), and SNDINFO maps that onto a lump — sometimes
+through a `$random` group of several. `shared/sndinfo.js` parses the format
+(`$alias`, `name lump`, `$random` groups, `$playersound`, `$playersounddup`
+chains; other commands are ignored) and the importer compiles the tables from the
+game's own SNDINFO files, the base IWAD's `SNDINFO` lump and gzdoom.pk3's shared
+and per-game filter tables into `project.soundAliases`. Later definitions replace
+earlier ones outright, so a mod that redefines `grunt/sight` does not keep the
+vanilla random group.
+
+The table is a game-wide shared value (one copy per campaign, like the actor
+table). A small built-in vanilla table ships with the engine, so a project
+imported before SNDINFO support — or one whose game has no SNDINFO at all — still
+resolves the standard monster and weapon sounds without being reimported. The
+audio player resolves names case-insensitively, expands groups to the first member
+that actually exists in the project, and reports an unknown name once instead of on
+every encounter.
 
 ### Frame performance and stall fixes
 

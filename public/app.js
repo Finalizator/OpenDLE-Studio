@@ -50,6 +50,7 @@ let saveIdentityVersion = -1, saveIdentityPromise = null, previewSaveIdentity = 
 let lookDrag = null, draggedLook = false;
 let wadImport = null;
 let packageSource = null, packageInspection = null, packageBusy = false, packageController = null;
+let engineVersion = '';
 let sceneMode = '2d', sceneEditor = null, sceneProject = null, sceneLoading = false, scenePose = null;
 const camera = { x: 0, y: 0, zoom: 1 };
 const keys = new Set(), pressed = new Set();
@@ -649,6 +650,18 @@ $('engine-tweaks-reset').addEventListener('click', guard(() => {
   if (runtime) { Object.assign(runtime.settings, tweaks); runtime.settingsRevision++; }
   renderEngineTweaks(); $('engine-tweaks-status').textContent = 'Engine tweaks reset.';
 }));
+/** Reads the engine version once and caches it for the About tab and log headers. */
+function loadEngineVersion() {
+  if (engineVersion) { $('engine-version').textContent = `OpenDLE: Studio version: ${engineVersion}`; return Promise.resolve(engineVersion); }
+  return api('/api/health').then(info => {
+    engineVersion = String(info.version || '');
+    $('engine-version').textContent = `OpenDLE: Studio version: ${engineVersion}`;
+    return engineVersion;
+  }).catch(error => {
+    $('engine-version').textContent = `Version unavailable: ${error.message}`;
+    throw error;
+  });
+}
 function showTab(tab) {
   if (tab !== 'hud') hudEditor.stopPreview();
   if (tab === 'assets') {
@@ -668,6 +681,7 @@ function showTab(tab) {
   document.querySelectorAll('[data-tab]').forEach(element => element.classList.toggle('active', element.dataset.tab === tab));
   if (tab === 'about') {
     $('engine-version').textContent = 'Loading OpenDLE: Studio version...';
+    void loadEngineVersion().catch(error => status(`Could not read engine version: ${error.message}`, true));
     const cacheStatus = $('import-cache-status');
     const renderCache = async () => {
       try {
@@ -681,12 +695,6 @@ function showTab(tab) {
     $('import-cache-clear').onclick = guard(async () => {
       await api('/api/import-cache', { method: 'DELETE' });
       $('import-cache-status').textContent = 'Decompiled import cache cleared. The next import of each game will convert again.';
-    });
-    api('/api/health').then(info => {
-      $('engine-version').textContent = `OpenDLE: Studio version: ${info.version}`;
-    }).catch(error => {
-      $('engine-version').textContent = `Version unavailable: ${error.message}`;
-      status(`Could not read engine version: ${error.message}`, true);
     });
   }
   mapNeedsDraw = true;
@@ -1458,7 +1466,7 @@ function hitTest(point) {
 canvas.addEventListener('contextmenu', event => event.preventDefault());
 canvas.addEventListener('pointerdown', guard(event => {
   if (!project) return;
-  canvas.setPointerCapture(event.pointerId);
+  capturePointer(canvas, event.pointerId);
   const point = worldPoint(event);
   if (event.button === 2 || event.button === 1) {
     drag = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, x: camera.x, y: camera.y }; return;
@@ -1718,7 +1726,7 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       mode: gameMode ? 'game' : 'level',
       levels: snapshot.game?.levels?.length,
       url: location.href,
-      app: `OpenDLE: Studio ${$('engine-version')?.textContent?.replace(/^.*version:\s*/, '') || ''}`.trim(),
+      app: engineVersion ? `OpenDLE: Studio ${engineVersion}` : 'OpenDLE: Studio',
     });
     playtestLog.info('playtest', `${gameMode ? 'Game' : 'Level'} preview ready`, {
       level: snapshot.game?.active, backend: preview.rendererStatus?.backend,
@@ -1817,6 +1825,12 @@ $('preview').addEventListener('click', () => {
   if (draggedLook) { draggedLook = false; return; }
   captureMouse();
 });
+// Pointer capture is an enhancement (it keeps drag-look working outside the canvas)
+// and the browser throws InvalidStateError when the pointer is already gone, so a
+// failed capture must never escape as an uncaught error.
+function capturePointer(element, pointerId) {
+  try { element.setPointerCapture(pointerId); } catch { /* capture is best effort */ }
+}
 $('preview').addEventListener('pointerdown', event => {
   if (runtime?.bindingKey) {
     try { bindKey(runtime, `Mouse${event.button}`); } catch (error) { mouseStatus(error.message, true); }
@@ -1829,12 +1843,12 @@ $('preview').addEventListener('pointerdown', event => {
   }
   if (runtime.scriptedInput && event.button === 0) {
     if (!keys.has('Mouse0')) pressed.add('Mouse0');
-    keys.add('Mouse0'); $('preview').focus(); $('preview').setPointerCapture(event.pointerId); return;
+    keys.add('Mouse0'); $('preview').focus(); capturePointer($('preview'), event.pointerId); return;
   }
   if (event.button !== (runtime.scriptedInput ? 2 : 0) || document.pointerLockElement === $('preview')) return;
   $('preview').focus(); draggedLook = false;
   lookDrag = { id: event.pointerId, x: event.clientX, y: event.clientY };
-  $('preview').setPointerCapture(event.pointerId);
+  capturePointer($('preview'), event.pointerId);
 });
 $('preview').addEventListener('pointermove', event => {
   if (!runtime || runtime.hudState.cursor || !lookDrag || event.pointerId !== lookDrag.id || document.pointerLockElement === $('preview')) return;
@@ -2451,6 +2465,8 @@ async function start() {
   $('ai-state').textContent = session.deepseekConfigured ? session.model : 'Not configured';
   $('ask-ai').disabled = !session.deepseekConfigured;
   await reloadProject(true);
+  // The version is part of every playtest log header, so read it before any play.
+  await loadEngineVersion().catch(() => {});
   $('editor-shell').hidden = false; $('editor-shell').inert = false;
   fitMap();
 }

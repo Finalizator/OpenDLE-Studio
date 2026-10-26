@@ -39,10 +39,12 @@ function tempoConverter(tempoEvents, division) {
   const map = [...tempoEvents].sort((a, b) => a.tick - b.tick);
   if (!map.length || map[0].tick !== 0) map.unshift({ tick: 0, tempo: 500000 });
   const marks = [{ tick: 0, seconds: 0, tempo: map[0].tempo }];
-  for (let index = 1; index < map.length; index++) {
-    const previous = marks[index - 1], event = map[index];
-    const seconds = previous.seconds + ((event.tick - previous.tick) * previous.tempo) / (division * 1e6);
-    if (event.tick === previous.tick) { marks[index - 1] = { ...previous, tempo: event.tempo }; continue; }
+  for (const event of map.slice(1)) {
+    // A second tempo change on the same tick replaces the previous one instead of
+    // adding a mark; indexing marks by loop counter would then read a hole.
+    const last = marks[marks.length - 1];
+    if (event.tick === last.tick) { last.tempo = event.tempo; continue; }
+    const seconds = last.seconds + ((event.tick - last.tick) * last.tempo) / (division * 1e6);
     marks.push({ tick: event.tick, seconds, tempo: event.tempo });
   }
   return tick => {

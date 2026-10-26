@@ -127,7 +127,8 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
     }
     const viewport = hudViewport(current.hud, stage.clientWidth, stage.clientHeight);
     drag = { id, x: event.clientX, y: event.clientY, element: structuredClone(element), resize, sx: viewport.sx, sy: viewport.sy, pointerId: event.pointerId };
-    stage.setPointerCapture(event.pointerId);
+    // Best effort: a drag that cannot capture still works inside the stage.
+    try { stage.setPointerCapture(event.pointerId); } catch { /* pointer already released */ }
   }
   host.addEventListener('pointermove', safe(event => {
     if (!drag || drag.pointerId !== event.pointerId) return;

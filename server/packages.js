@@ -5,7 +5,7 @@ import zlib from 'node:zlib';
 import yauzl from 'yauzl';
 import { PNG } from 'pngjs';
 import { readWad, importWadMap } from '../shared/wad.js';
-import { actorSourcesFromArchive, actorSourcesFromWad, loadGzdoomActors } from './actor-sources.js';
+import { actorSourcesFromArchive, actorSourcesFromWad, loadGzdoomActors, sndInfoFromWad } from './actor-sources.js';
 import { acsLibrariesFromFiles, acsLibrariesFromWad } from '../shared/acs-libraries.js';
 import { validateProject } from '../shared/project.js';
 import { decodePatch, decodeFlat } from '../shared/doom-assets.js';
@@ -188,7 +188,7 @@ export function inspectPackage(files) {
   if (rejected.length) warnings.push(`${rejected.length} binary Hexen maps cannot be imported yet; image assets can still be imported.`);
   if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry and line specials import natively, and each map\'s ACS module runs with the package\'s LOADACS libraries; advanced rendering (portals, 3D floors, slopes) is still incomplete. Full GZDoom fidelity remains the target, not current capability.');
   if ([...files.keys()].some(name => /^models\//.test(name))) warnings.push('Native model definitions are not imported yet.');
-  if ([...files.keys()].some(name => /(^|\/)sndinfo(?:\.txt)?$/.test(name))) warnings.push('Sound files are imported by filename; custom SNDINFO aliases, random groups and channel rules are not translated yet. Edit playSound names in Engine sheets to bind custom effects.');
+  if ([...files.keys()].some(name => /(^|\/)sndinfo(?:\.txt)?$/.test(name))) warnings.push('SNDINFO aliases and $random groups are imported so actor sound names resolve to lumps; per-sound volume, rolloff, limit and channel rules are not translated.');
   const images = [...files.keys()].filter(name => imageKind(name));
   if (!images.length) warnings.push('No images found in supported textures/flats/sprites/graphics/patches/hires namespaces. Brightmaps and other engine-specific namespaces are not imported.');
   const formats = images.filter(name => ['.jpg', '.jpeg', '.webp', '.dds', '.tga', '.pcx'].includes(extname(name)));
@@ -453,6 +453,10 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   const fromBase = actorSourcesFromWad(combined, { prefix: 'base:' });
   actorSources.push(...fromBase.sources);
   dehackedSources.push(...fromBase.dehacked);
+  // SNDINFO maps DECORATE sound names onto lumps, so it travels with the actors.
+  const sndInfoSources = [...files].filter(([name]) => /(^|\/)sndinfo(\.[a-z]{2,3})?(\.txt)?$/i.test(name))
+    .map(([, file]) => (file.data ? Buffer.from(file.data).toString('latin1') : null)).filter(Boolean);
+  sndInfoSources.push(...sndInfoFromWad(combined));
   // ACS libraries: compiled modules in acs/, selected by LOADACS. They carry
   // scripts and strings the maps call into.
   const packageLibraries = acsLibrariesFromFiles(files);
@@ -464,12 +468,13 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     if (gzdoom.available) {
       actorSources.push(...gzdoom.sources);
       dehackedSources.push(...gzdoom.dehacked);
+      sndInfoSources.push(...(gzdoom.sndinfo || []));
     }
   }
   const result = importWadMap(combined, selected.marker,
     { encodeImage: context?.encodeImage || encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources,
       episodeInfo: context?.episodeInfo, actorSources, dehacked: dehackedSources, languageSources,
-      acsLibraries, loadacs: loadacsLists });
+      sndInfoSources, acsLibraries, loadacs: loadacsLists });
   let musicBytes = 0;
   for (const [path, file] of files) if (path.startsWith('music/')) {
     const format = extname(path).slice(1);

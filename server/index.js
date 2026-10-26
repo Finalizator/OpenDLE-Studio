@@ -114,7 +114,9 @@ export function createApp({
   // monsters and weapons run their real state machines.
   function actorContext() {
     const gzdoom = loadGzdoomActors(projectsDir);
-    return gzdoom.available ? { actorSources: gzdoom.sources, dehacked: gzdoom.dehacked } : {};
+    return gzdoom.available
+      ? { actorSources: gzdoom.sources, dehacked: gzdoom.dehacked, sndInfoSources: gzdoom.sndinfo }
+      : {};
   }
   app.post('/api/import/local-wad', (req, res) => {
     const bytes = localWad(req.body.name), options = { fullGame: fullGameImport(req.body.scope), title: req.body.name.replace(/\.wad$/i, '') };

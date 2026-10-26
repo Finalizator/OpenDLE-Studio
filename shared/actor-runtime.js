@@ -526,8 +526,10 @@ function enemyShot(state, entity, damage, diceSides, spread = 0) {
 /** Plays a sound through the runtime's sound list, resolving Doom aliases. */
 export function saySound(state, name, entity, volume = 127) {
   if (!name) return;
-  const key = String(name).toLowerCase();
-  state.sounds.push({ name: key, volume: Math.min(1, Math.max(0, volume / 127)), position: entity ? { x: entity.x, y: entity.y } : undefined });
+  // The name is kept verbatim: it may be a logical alias (`grunt/sight`) or a lump
+  // name (`DSPOSIT1`), and the audio player resolves both case-insensitively.
+  state.sounds.push({ name: String(name), volume: Math.min(1, Math.max(0, volume / 127)),
+    position: entity ? { x: entity.x, y: entity.y } : undefined });
 }
 
 /** Spawns a full actor entity (a Lost Soul, a projectile with states, ...). */

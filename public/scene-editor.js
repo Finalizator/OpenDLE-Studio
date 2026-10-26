@@ -518,7 +518,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   listen(canvas, 'contextmenu', event => event.preventDefault());
   listen(canvas, 'pointerdown', event => {
     if (event.button !== 0 && event.button !== 2) return;
-    canvas.focus(); canvas.setPointerCapture(event.pointerId); cast(event);
+    canvas.focus();
+    try { canvas.setPointerCapture(event.pointerId); } catch { /* capture is best effort */ }
+    cast(event);
     if (event.button === 2) { action = { kind: 'fly', x: event.clientX, y: event.clientY }; return; }
     const tool = callbacks.tool();
     if (tool !== 'select') {

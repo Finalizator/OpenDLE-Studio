@@ -135,6 +135,26 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     }
     assert(JSON.stringify(source).length <= 24 * 1024 * 1024, 'UDMF import provenance exceeds 24 MiB');
   }
+  if (project.soundAliases !== undefined) {
+    const table = project.soundAliases;
+    object(table, 'Sound aliases');
+    object(table.aliases || {}, 'Sound alias map');
+    assert(Object.keys(table.aliases || {}).length <= 20000, 'Sound alias limit exceeded');
+    for (const [name, lump] of Object.entries(table.aliases || {})) {
+      assert(/^[a-z0-9_/*#-]{1,80}$/.test(name), 'Sound alias names must be plain identifiers');
+      // The target is usually a lump name but may be another logical name (a
+      // `$playersounddup` chain) or an engine sound like `*usefail`.
+      assert(typeof lump === 'string' && /^\*?[A-Za-z0-9_/*#-]{1,64}$/.test(lump), 'Sound aliases must point at a lump name');
+    }
+    object(table.random || {}, 'Sound alias groups');
+    assert(Object.keys(table.random || {}).length <= 2000, 'Sound alias group limit exceeded');
+    for (const [name, members] of Object.entries(table.random || {})) {
+      assert(/^[a-z0-9_/*#-]{1,80}$/.test(name), 'Sound group names must be plain identifiers');
+      array(members, 'Sound alias group', 32);
+      assert(members.every(member => typeof member === 'string' && /^[a-z0-9_/*#-]{1,80}$/.test(member)),
+        'Sound groups must list plain names');
+    }
+  }
   if (project.mapScripts !== undefined) {
     const scripts = project.mapScripts;
     object(scripts, 'Map scripts');

@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
 import { parseMusic, parseMidi, parseMus, defaultLevelMusic, resolveLevelMusic, resolveMusicName } from '../shared/music.js';
 import { encodeMusic } from '../shared/sound.js';
+import { readWad } from '../shared/wad.js';
 import { applyLevelMusic } from '../shared/game-levels.js';
 import { instrumentPatch, noteFrequency } from '../public/music-player.js';
 
@@ -194,4 +196,43 @@ test('the audio player starts level music through the scheduler, not as a sound 
   assert.ok(created.oscillators > 0, 'music notes were scheduled');
   // Only the percussion voice uses a buffer source; melody notes are oscillators.
   assert.ok(created.sounds <= 1, `music must not be decoded as a sound effect (${created.sounds} buffer sources)`);
+});
+
+test('music tolerates two tempo changes on the same tick', () => {
+  // Real Freedoom tracks carry a duplicate tempo event at tick 0. The old tempo
+  // map indexed marks by loop counter, so the replaced entry left a hole and the
+  // next event crashed with "reading 'seconds'". Six of 35 tracks hit it.
+  const header = [0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1, 0x00, 0x60]; // 96 ticks/quarter
+  const track = midiTrack([
+    [0, 0xff, 0x51, 0x03, 0x07, 0xa1, 0x20], // 500000 us
+    [0, 0xff, 0x51, 0x03, 0x06, 0x1a, 0x80], // 400000 us, same tick
+    [0, 0x90, 60, 100],
+    [96, 0x80, 60, 0],
+    [10, 0xff, 0x51, 0x03, 0x07, 0xa1, 0x20], // a later change used to crash here
+    [0, 0xff, 0x2f, 0x00],
+  ]);
+  const score = parseMusic(bytes(header, track), 'D_DUPE');
+  assert.equal(score.notes.length, 1);
+  // The note lasts one quarter at the 400000 tempo that won the same-tick tie.
+  assert.ok(Math.abs(score.notes[0].duration - 0.4) < 0.0001, `duration ${score.notes[0].duration}`);
+  assert.ok(score.seconds >= 0.4 && Number.isFinite(score.seconds));
+  // A single tempo on the same tick keeps producing exactly the same score.
+  const simple = parseMusic(bytes([0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1, 0x00, 0x60], midiTrack([
+    [0, 0xff, 0x51, 0x03, 0x06, 0x1a, 0x80],
+    [0, 0x90, 60, 100], [96, 0x80, 60, 0], [0, 0xff, 0x2f, 0x00],
+  ])), 'D_SIMPLE');
+  assert.equal(simple.notes[0].duration, score.notes[0].duration);
+});
+
+test('every bundled Freedoom track parses', { skip: !existsSync(new URL('../Projects/freedoom2.wad', import.meta.url)) }, () => {
+  const buffer = readFileSync(new URL('../Projects/freedoom2.wad', import.meta.url));
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength), { allowNoMaps: true });
+  const tracks = wad.lumps.filter(lump => /^D_[A-Z0-9_]+$/.test(lump.name));
+  assert.ok(tracks.length >= 30, `found ${tracks.length} tracks`);
+  const failed = [];
+  for (const lump of tracks) {
+    try { parseMusic(new Uint8Array(wad.buffer, lump.start, lump.size), lump.name); }
+    catch (error) { failed.push(`${lump.name}: ${error.message}`); }
+  }
+  assert.deepEqual(failed, []);
 });

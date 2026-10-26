@@ -3,7 +3,7 @@ import { resolveString } from './language.js';
 
 // `actors` describes the game as a whole (monster and weapon state machines),
 // so it is stored once instead of being duplicated into every level.
-const sharedKeys = new Set(['version', 'title', 'assets', 'game', 'actors', 'strings']);
+const sharedKeys = new Set(['version', 'title', 'assets', 'game', 'actors', 'strings', 'soundAliases']);
 
 /**
  * Point a level's environment at its music asset. MAPINFO `music` wins; classic

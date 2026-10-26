@@ -13,6 +13,7 @@ import { parseGameEpisodes } from './game-episodes.js';
 import { resolveLevelMusic } from './music.js';
 import { importActors } from './actors.js';
 import { buildStringTable, resolveString } from './language.js';
+import { parseSndInfo, soundTable, VANILLA_SOUNDS } from './sndinfo.js';
 import { describeMapScripts } from './map-scripts.js';
 import { acsLibrariesFromWad, selectAcsLibraries } from './acs-libraries.js';
 import { unsupportedSpecials } from './line-specials.js';
@@ -58,7 +59,7 @@ export function readWad(buffer, { allowNoMaps = false } = {}) {
   return { buffer, lumps, maps: [...new Set(maps)] };
 }
 
-export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], acsLibraries = [], loadacs = [], actors = true, options = {} } = {}) {
+export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], sndInfoSources = [], acsLibraries = [], loadacs = [], actors = true, options = {} } = {}) {
   const start = wad.lumps.findLastIndex(lump => lump.name === mapName);
   if (start < 0) throw new Error('Map not found');
   const mapLumps = [];
@@ -274,6 +275,17 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   if (languageTexts.length) {
     project.strings = buildStringTable(languageTexts);
     if (!Object.keys(project.strings).length) delete project.strings;
+  }
+  // Sound names in DECORATE/ZScript states are logical (`grunt/sight`), so the
+  // SNDINFO table is compiled once into the project and resolves at playback.
+  const sndInfoTexts = [...sndInfoSources].map(source => typeof source === 'string' ? source : source.text);
+  for (const lump of wad.lumps) {
+    if (!/^SNDINFO$/i.test(lump.name) || lump.size > 2 * 1024 * 1024) continue;
+    sndInfoTexts.push(new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)));
+  }
+  if (sndInfoTexts.length) {
+    project.soundAliases = soundTable(VANILLA_SOUNDS, ...sndInfoTexts.map(parseSndInfo));
+    if (!Object.keys(project.soundAliases.aliases).length) delete project.soundAliases;
   }
   if (mapScriptInfo) {
     project.mapScripts = mapScriptInfo.mapScripts;
