@@ -1,6 +1,6 @@
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
 
-export const ENGINE_TWEAK_KEYS = ['jumping', 'bunnyhop', 'bunnyhopGain', 'fov', 'renderResolution', 'resolution', 'brightness', 'muted'];
+export const ENGINE_TWEAK_KEYS = ['jumping', 'bunnyhop', 'bunnyhopGain', 'fov', 'renderResolution', 'resolution', 'brightness', 'masterVolume', 'muted'];
 export function engineTweaks(stored = {}) {
   if (!stored || typeof stored !== 'object' || Array.isArray(stored)) throw new Error('Engine tweaks must be an object');
   for (const key of Object.keys(stored)) if (!ENGINE_TWEAK_KEYS.includes(key)) throw new Error(`Unknown engine tweak ${key}`);

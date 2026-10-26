@@ -651,9 +651,9 @@ function renderEngineTweaks() {
   const tweaks = readEngineTweaks();
   $('engine-jumping').checked = tweaks.jumping;
   const fields = $('engine-setting-fields'); fields.replaceChildren();
-  for (const [key, label] of [['renderResolution', 'Render resolution'], ['fov', 'Field of view'], ['resolution', 'Render scale'], ['brightness', 'Brightness'],
-    ['muted', 'Mute preview audio'], ['bunnyhop', 'Simulated bunnyhop (speed gain while chaining jumps)'],
-    ['bunnyhopGain', 'Bunnyhop speed gain per chained jump']]) {
+  for (const [key, label] of [['masterVolume', 'Overall sound level (0 = silent, 1 = full)'], ['muted', 'Mute preview audio'],
+    ['renderResolution', 'Render resolution'], ['fov', 'Field of view'], ['resolution', 'Render scale'], ['brightness', 'Brightness'],
+    ['bunnyhop', 'Simulated bunnyhop (speed gain while chaining jumps)'], ['bunnyhopGain', 'Bunnyhop speed gain per chained jump']]) {
     const wrapper = make('label', label), spec = GAME_SETTINGS[key];
     if (spec.options) {
       const select = document.createElement('select');

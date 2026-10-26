@@ -64,8 +64,12 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
         hasMusicAssets: project.assets.some(asset => asset.kind === 'music'), error: musicError, volume: musicVolume };
     },
     update(state) {
-      master.gain.value = state.settings?.muted ? 0 : state.settings?.volume ?? 1;
-      musicVolume = state.settings?.musicVolume ?? .5;
+      // The overall sound level is an engine tweak: it scales every effect and the
+      // soundtrack on top of their own volumes, and it is remembered per browser.
+      const level = Number(state.settings?.masterVolume ?? 1);
+      const overall = Number.isFinite(level) ? Math.min(Math.max(level, 0), 1) : 1;
+      master.gain.value = state.settings?.muted ? 0 : (state.settings?.volume ?? 1) * overall;
+      musicVolume = (state.settings?.musicVolume ?? .5) * overall;
       musicGain.gain.value = state.settings?.muted ? 0 : musicVolume;
       // ACS `SetMusic` asks the level to change track; the request wins over the
       // level's default for the rest of the session.

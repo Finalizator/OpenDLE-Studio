@@ -1090,6 +1090,13 @@ stretching. The legacy `resolution` scale multiplies the result (0.5–1.5×, so
 buffer smaller than the panel is upscaled with `image-rendering: pixelated`.
 The editor preview follows the same policy, so imported models and artwork are
 inspected at the resolution the game runs at.
+**Overall sound level** (`masterVolume`) scales every sound effect and the
+soundtrack on top of the project's own effect and music volumes: the Web Audio
+player multiplies both gains, `muted` still wins, and 0 is silent. It is stored
+with the other engine tweaks in `localStorage`, so it survives a reload or a new
+session, and it overrides the imported project's saved volume when either preview
+starts.
+
 The editor's **Engine tweaks / Enable jumping** is enabled by default, independently
 of the imported WAD or PK3. Space requests a normal grounded physics jump; E uses
 doors and switches. Disable jumping for classic no-jump movement. Jumping can

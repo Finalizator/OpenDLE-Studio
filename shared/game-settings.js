@@ -3,6 +3,8 @@ import { RENDER_RESOLUTION_VALUES } from './render-resolution.js';
 export const GAME_SETTINGS = {
   volume: { value: .8, min: 0, max: 1, step: .1 },
   musicVolume: { value: .5, min: 0, max: 1, step: .1 },
+  // Master level for every sound and the soundtrack; see engine tweaks.
+  masterVolume: { value: 1, min: 0, max: 1, step: .05 },
   muted: { value: false },
   sensitivity: { value: 1, min: .1, max: 5, step: .1 },
   invertY: { value: false },
