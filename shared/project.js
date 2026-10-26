@@ -618,6 +618,8 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         numberOrExpression(action.x, 'Teleport X');
         numberOrExpression(action.y, 'Teleport Y');
         if (action.z !== undefined) numberOrExpression(action.z, 'Teleport height', -32768, 32767);
+        // Imported Doom teleport lines carry the landing angle.
+        if (action.angle !== undefined) numberOrExpression(action.angle, 'Teleport angle', -3600, 3600);
       }
       if (action.type === 'removeEntity') {
         assert(targetEntities(action.entityId).every(entity => entity.type !== 'player'), 'Cannot remove the player');

@@ -307,14 +307,18 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       warnings.push(`ACS instructions the native interpreter does not implement: ${mapScriptInfo.unsupportedOpcodes.join(', ')}. Scripts that reach them stop and report instead of hanging.`);
     }
   }
-  const missingSpecials = unsupportedSpecials([...new Set([
-    ...project.map.walls.map(wall => wall.special || 0),
-    ...(mapScriptInfo?.specials || []),
-  ])]);
+  // UDMF and Hexen lines carry Hexen numbers the line-special table runs directly;
+  // binary Doom lines use Doom's own numbering and become engine rules below, so
+  // the two are reported against their own tables.
+  const scriptedSpecials = new Set(mapScriptInfo?.specials || []);
+  for (const wall of project.map.walls) if (wall.specialFormat === 'zdoom' && wall.special) scriptedSpecials.add(wall.special);
+  const missingSpecials = unsupportedSpecials([...scriptedSpecials]);
   if (missingSpecials.length) {
     warnings.push(`Line specials kept as data but not performed by the native runtime: ${missingSpecials.join(', ')}.`);
   }
   installEngineScripts(project, { includeHUD: false });
+  // Classic Doom numbers are translated into rules, so their report comes from the
+  // translator itself (it knows which ones it could not perform).
   installWorldScripts(project, warnings);
   const generatedSounds = project.assets.filter(asset => asset.kind === 'sound' && asset.generated).length;
   if (generatedSounds) warnings.push(`${generatedSounds} missing standard combat sounds use generated OpenDLE fallback effects, editable as sound assets.`);

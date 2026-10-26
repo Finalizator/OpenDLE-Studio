@@ -276,6 +276,12 @@ provider credits or network access are required for tests.
   at import and in the Scripts tab instead of silently doing nothing. Teleport
   destination things (editor number 14) and UDMF thing IDs (`id` → TID) are
   imported so scripts can address things.
+
+  Binary Doom maps are a different language: their lines carry Doom's own
+  numbers, where 19 lowers a floor and Hexen's 19 stops a thing. The importer
+  names them from Doom's table (`shared/doom-specials.js`), so a report never
+  claims a Hexen meaning for a Doom number, and it only calls a special missing
+  when the translator that owns that numbering really cannot perform it.
 - **Event sheet:** scene-wide and object-attached ordered rules, multiple AND
   or OR conditions, optional NOT on non-triggers, nested sub-events,
   comments, active/collapsible groups, ordered actions, enabled/once flags
@@ -673,7 +679,16 @@ remain native engine primitives.
   sector-height actions. **E** uses the nearest wall within64 map units;
   manual colored doors accept the matching card or skull key. Supported classic
   door, lift and floor specials become `moveSector` actions with editable
-  floor/ceiling, target height, speed, wait and stay/return/cycle mode. Optional
+  floor/ceiling, target height, speed, wait and stay/return/cycle mode.
+  Teleports (`39`, `97`), blazing key doors (`99`, `133`-`137`), crush ceilings
+  (`6`, `25`, `44`, `49`, `72`, `73`, `77`, `141`), stairs (`7`, `8`, `100`,
+  `127`) and the raise-to-neighbour / raise-by-value floors (`14`, `20`, `22`,
+  `40`, `68`, `140`) are translated too; a teleport's landing position and
+  facing come from the tagged sector's destination marker and are baked into the
+  rule because that geometry never moves. Monster-only teleports (`125`, `126`),
+  texture scrolling (`48`, `85`), donuts and Boom's generalized numbers still
+  report by name, since they need thing-crossing, surface UV animation or a Boom
+  interpreter rather than a rule. Optional
   `returnHeight` sets a distinct upper endpoint for perpetual platforms instead
   of returning to their initial height. Closing
   doors reverse on occupants; raising floors stop rather than crush. Platforms

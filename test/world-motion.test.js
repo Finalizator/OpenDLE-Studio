@@ -7,7 +7,8 @@ import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createPhysics } from '../shared/physics.js';
-import { moveSector, installWorldScripts } from '../shared/world-motion.js';
+import { moveSector, installWorldScripts, classicSpecialSupported } from '../shared/world-motion.js';
+import { specialName, unsupportedSpecials } from '../shared/line-specials.js';
 import { sectorAt } from '../shared/sectors.js';
 import { canSeePlayer } from '../shared/combat.js';
 import { clipFrame, spriteAsset, spriteView, setSpriteState, installSpriteAnimations } from '../shared/sprite-animation.js';
@@ -307,4 +308,59 @@ test('surface animations and sprite-state references are portable and validated'
   ]) {
     const next = structuredClone(p); mutate(next); assert.throws(() => validateProject(next));
   }
+});
+
+test('classic Doom specials keep Doom numbering and the newly performed ones run', () => {
+  const project = createProject();
+  project.events = [];
+  // A tagged room with a tag-19 lowering floor, a tag-97 teleport with a landing
+  // marker, and a tag-25 crushing ceiling: Doom numbers, not Hexen ones.
+  assert.equal(specialName(19, 'classic'), 'W1 Floor Lower to Lowest');
+  assert.equal(specialName(19), 'Thing_Stop', 'the Hexen table keeps its own meaning');
+  assert.equal(classicSpecialSupported(19), true);
+  assert.equal(classicSpecialSupported(48), false, 'Boom scrolling is not performed');
+  assert.deepEqual(unsupportedSpecials([19, 48], { format: 'classic' }), ['48 S1 Scroll Texture Right']);
+  assert.deepEqual(unsupportedSpecials([19], { format: 'zdoom' }), ['19 Thing_Stop'],
+    'the same number is judged against the map format it came from');
+});
+
+test('classic Doom specials 97, 25 and 133 become engine rules with baked targets', () => {
+  const p = corridor();
+  p.events = p.events.filter(e => !e.id.startsWith('world_special_'));
+  p.map.walls[5].special = 97; p.map.walls[5].tag = 2;   // WR Teleport into tag 2
+  p.map.walls[3].special = 25; p.map.walls[3].tag = 1;   // W1 Ceiling Crush and Raise
+  p.map.walls[1].special = 133;  // S1 Blazing Door Blue Key on the corridor door (opens the sector behind it)
+  p.map.entities.push({ id: 'landing', type: 'decoration', name: 'Teleport destination', x: 120, y: 40, angle: 90, doomType: 14 });
+  const warnings = [];
+  installWorldScripts(p, warnings);
+  assert.deepEqual(warnings.filter(w => /not yet translated/.test(w)), [], 'these specials are performed');
+  validateProject(p);
+
+  const teleport = p.events.find(event => event.actions.some(action => action.type === 'teleport'));
+  assert.deepEqual(teleport.actions[0], { type: 'teleport', x: 120, y: 40, z: 24, angle: 90 },
+    'the landing marker position and angle are resolved at import');
+  assert.equal(teleport.condition.mode, 'cross');
+  assert.equal(teleport.once, false, 'WR teleport lines stay active');
+
+  const crush = p.events.filter(event => event.actions.some(action =>
+    action.type === 'moveSector' && action.surface === 'ceilingHeight' && action.returnMode === 'cycle'));
+  assert.ok(crush.length, 'a crush-and-raise ceiling cycles');
+
+  const door = p.events.filter(event => /Blazing Door Blue Key/.test(event.name));
+  assert.equal(door.length, 3, 'the door, its keyed action and the locked message');
+});
+
+test('a blazing key door opens after the key is taken', t => {
+  const p = corridor();
+  p.events = p.events.filter(e => !e.id.startsWith('world_special_'));
+  p.map.walls[1].special = 133;  // S1 Blazing Door Blue Key on the corridor door
+  installWorldScripts(p, []);
+  const s = physics(t, p);
+  tick(p, s, 1, [], ['KeyE']);
+  assert.match(s.message, /blue key/);
+  s.inventory.keys.add('blueCard');
+  tick(p, s, 1, [], ['KeyE']);
+  assert.ok(s.sectorMotions.has('s1:ceilingHeight'), 'the door starts opening');
+  tick(p, s, 30);
+  assert.ok(s.sectors[1].ceilingHeight > 0, 'the ceiling is moving');
 });

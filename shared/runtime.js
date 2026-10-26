@@ -574,6 +574,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'addVariable': assignVariable(state.variables, action.variable, action.value, true); break;
         case 'teleport':
           player.x = action.x; player.y = action.y;
+          if (action.angle !== undefined) player.angle = action.angle * Math.PI / 180;
           state.physics?.teleport(state.entities.find(entity => entity.type === 'player').id, action.x, action.y, action.z);
           break;
         case 'removeEntity': {

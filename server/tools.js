@@ -14,11 +14,13 @@ import { unsupportedActorActions, usedActors } from '../shared/actor-runtime.js'
 const coordinate = z.number().min(-65536).max(65536);
 /** Linedef specials with their Hexen names and whether the runtime performs them. */
 function wallSpecials(project) {
-  return (project.map.walls || []).filter(wall => wall.special).map(wall => ({
-    wall: wall.id, special: wall.special, name: specialName(wall.special),
-    tag: wall.tag || 0, args: wall.args || null, modes: wall.activationModes || ['use'],
-    supported: !unsupportedSpecials([wall.special]).length,
-  }));
+  return (project.map.walls || []).filter(wall => wall.special).map(wall => {
+    // Binary Doom lines use Doom's numbering; UDMF/Hexen lines use Hexen's.
+    const format = wall.specialFormat === 'zdoom' ? 'zdoom' : 'classic';
+    return { wall: wall.id, special: wall.special, name: specialName(wall.special, format), format,
+      tag: wall.tag || 0, args: wall.args || null, modes: wall.activationModes || ['use'],
+      supported: !unsupportedSpecials([wall.special], { format }).length };
+  });
 }
 
 function scriptSpecials(project) {
@@ -209,7 +211,11 @@ export function applyTool(project, name, args, context = {}) {
     case 'script_specials': {
       const linedefs = wallSpecials(next), fromScripts = scriptSpecials(next);
       return { report: { linedefs, fromScripts: fromScripts.map(special => ({ special, name: specialName(special) })),
-        unsupported: unsupportedSpecials([...linedefs.map(entry => entry.special), ...fromScripts]),
+        // Scripts call Hexen numbers; the linedefs keep their own map format.
+        unsupported: [...new Set([
+          ...unsupportedSpecials([...new Set(linedefs.filter(entry => entry.format === 'classic').map(entry => entry.special))], { format: 'classic' }),
+          ...unsupportedSpecials([...new Set([...linedefs.filter(entry => entry.format === 'zdoom').map(entry => entry.special), ...fromScripts])]),
+        ])],
         hasModule: Boolean(scriptSummary(next)) }, changed: false };
     }
     case 'playtest_log_list': {

@@ -9,7 +9,8 @@
  * manipulation, level exits, and the ACS entry points.
  */
 
-import { moveSector } from './world-motion.js';
+import { moveSector, classicSpecialSupported } from './world-motion.js';
+import { doomSpecialName } from './doom-specials.js';
 import { floorAt, soundEvent } from './combat.js';
 import { sectorAt } from './sectors.js';
 
@@ -74,8 +75,19 @@ const SPECIAL_NAMES = [
 /** Blocking modes for Line_SetBlocking. */
 const BLOCK_NOTHING = 0, BLOCK_CREATURES = 1, BLOCK_EVERYTHING = 2, BLOCK_RAILING = 3, BLOCK_PLAYERS = 4;
 
-export function specialName(special) {
+/**
+ * A special's name in the numbering of the map it came from. UDMF and Hexen maps
+ * use GZDoom's table; binary Doom maps use Doom's own, where the same number means
+ * something else entirely.
+ */
+export function specialName(special, format = 'zdoom') {
+  if (format === 'classic') return doomSpecialName(special) || 'Boom/ZDoom extension';
   return SPECIAL_NAMES[special] || `special ${special}`;
+}
+
+/** `19 W1 Floor Lower to Lowest` for reports, with the format's own numbering. */
+export function specialLabel(special, format = 'zdoom') {
+  return `${special} ${specialName(special, format)}`;
 }
 
 /** Specials that are defined as "do nothing" in GZDoom's own table. */
@@ -583,11 +595,12 @@ function hasLockKey(project, state, lock) {
  * Which of a map's specials this runtime cannot perform, named for the user.
  * Both linedef triggers and `LSPEC` calls inside scripts are reported.
  */
-export function unsupportedSpecials(specials) {
+export function unsupportedSpecials(specials, { format = 'zdoom' } = {}) {
+  const performed = format === 'classic' ? classicSpecialSupported : special => SUPPORTED_SPECIALS.has(special);
   const missing = new Set();
   for (const special of specials) {
-    if (!special || SUPPORTED_SPECIALS.has(special)) continue;
-    missing.add(`${special} ${specialName(special)}`);
+    if (!special || performed(special)) continue;
+    missing.add(specialLabel(special, format));
   }
   return [...missing];
 }
