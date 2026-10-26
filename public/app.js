@@ -1,4 +1,4 @@
-import { createProject, validateProject, addRoom, newId, removeEntity, eventConditions, ENTITY_TYPES } from '/shared/project.js';
+import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, ENTITY_TYPES } from '/shared/project.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
 import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
@@ -75,7 +75,22 @@ async function api(path, options = {}) {
   }
   return readServiceResponse(response, path);
 }
+// A 60-70 MB imported campaign can never fit in localStorage: serializing it
+// costs seconds per edit and always ends in a quota error. Above this size the
+// draft backup is skipped deliberately; Save and Export remain authoritative.
+function draftTooLarge() {
+  return (project?.assets?.length || 0) > 300 || (project?.game?.levels?.length || 0) > 4;
+}
+let draftSkipNoted = false;
 function persistDraft() {
+  if (draftTooLarge()) {
+    if (!draftSkipNoted) {
+      draftSkipNoted = true;
+      try { localStorage.removeItem('opendle-draft'); localStorage.removeItem('opendle-draft-metadata'); } catch { /* ignore */ }
+      status('Browser draft backup is off for large projects (it cannot fit in browser storage). Use Save or Export project to keep your edits.');
+    }
+    return;
+  }
   try {
     localStorage.setItem('opendle-draft', JSON.stringify(project));
     localStorage.setItem('opendle-draft-metadata', JSON.stringify({ baseRevision: revision }));
@@ -116,10 +131,19 @@ function render() {
   renderInspector();
   renderEvents();
   renderEnvironment();
-  renderAssets();
-  hudEditor.render();
+  renderAssetsIfChanged();
+  // The HUD designer rebuilds its whole stage; only do that when it is visible.
+  if (!$('hud-panel').hidden) hudEditor.render();
   $('map-stats').textContent = `${project.map.vertices.length} vertices / ${project.map.walls.length} walls / ${project.map.entities.length} objects / ${project.map.sectors?.length || 0} sectors`;
   mapNeedsDraw = true;
+  // Editing geometry in 3D must stay interactive: update the existing scene in
+  // place instead of disposing the renderer and reloading every texture.
+  if (sceneMode === '3d' && sceneEditor && !sceneLoading) {
+    let synced = false;
+    try { synced = sceneEditor.update(project); }
+    catch (error) { status(`3D update failed, reloading the scene: ${error.message}`, true); }
+    if (synced) { sceneProject = project; return; }
+  }
   refreshScene();
 }
 async function refreshScene() {
@@ -138,6 +162,8 @@ async function refreshScene() {
         renderInspector(); sceneEditor?.select(selection);
       },
       edit, error: message => status(message, true),
+      live: (fn, message) => liveApply(fn, message),
+      liveFinish: (message, options) => liveFinish(message, options),
       grid: () => Number($('grid').value), tool: () => $('tool').value,
       surface: () => $('sector-surface').value,
       script: openScript,
@@ -194,22 +220,85 @@ $('show-ceilings').addEventListener('change', () => sceneEditor?.ceilings($('sho
 $('sector-surface').addEventListener('change', () => {
   if (selection?.kind === 'sector') { selection.surface = $('sector-surface').value; sceneEditor?.select(selection); }
 });
+function historyLimit(candidate) {
+  return candidate.game ? 3 : (candidate.assets?.length || 0) ? 10 : 40;
+}
+/**
+ * Dragging geometry must be live: the scene editor applies the move on every
+ * pointer move instead of on release. A drag is one undo step, so the project
+ * is snapshotted once when the drag starts and the intermediate states are
+ * replaced as the pointer moves.
+ */
+let liveEditState = null;
+function liveBegin() {
+  if (liveEditState) return;
+  liveEditState = { baseline: project, changed: false, wasDirty: dirty };
+  history.push(project);
+  future = [];
+  const limit = historyLimit(project);
+  while (history.length > limit) history.shift();
+}
+function liveApply(fn, message) {
+  liveBegin();
+  const next = cloneProjectForEdit(project);
+  try {
+    fn(next);
+    validateProject(next, { fast: true });
+  } catch (error) { status(error.message, true); return; }
+  project = next; dirty = true; editVersion++; liveEditState.changed = true;
+  renderLive(message);
+}
+function liveFinish(message, { revert = false } = {}) {
+  const active = liveEditState; liveEditState = null;
+  if (!active) { if (message) status(message); return; }
+  if (revert || !active.changed) {
+    if (active.changed) { project = active.baseline; dirty = active.wasDirty; editVersion++; }
+    history.pop();
+    render();
+    status(revert ? 'Edit cancelled' : 'No change');
+    return;
+  }
+  persistDraft();
+  render();
+  status(message || 'Edit applied');
+}
+// Panels, the asset browser and the HUD designer are skipped while dragging; the
+// 3D view and the scene stats are what has to keep up with the pointer.
+function renderLive(message) {
+  mapSectors = sectorGeometry(project);
+  $('dirty').textContent = 'Unsaved';
+  $('undo').disabled = history.length === 0;
+  $('map-stats').textContent = `${project.map.vertices.length} vertices / ${project.map.walls.length} walls / ${project.map.entities.length} objects / ${project.map.sectors?.length || 0} sectors`;
+  mapNeedsDraw = true;
+  if (message) status(message);
+  if (sceneMode === '3d' && sceneEditor && !sceneLoading) {
+    try { sceneEditor.update(project); }
+    catch (error) { status(`3D update failed, reloading the scene: ${error.message}`, true); }
+    return;
+  }
+  render();
+}
 function commit(next, message = 'Project updated') {
-  validateProject(next);
-  history.push(structuredClone(project));
-  const maxHistory = project.game || next.game ? 3 : (project.assets?.length || next.assets?.length) ? 10 : 40;
+  validateProject(next, { fast: true });
+  // The previous project is never mutated in place (see cloneProjectForEdit), so the
+  // old reference is already a valid snapshot; cloning it again cost a second
+  // full copy of large campaigns on every edit.
+  history.push(project);
+  const maxHistory = Math.max(historyLimit(project), historyLimit(next));
   if (history.length > maxHistory) history.shift();
   future = [];
   project = next;
   dirty = true;
   editVersion++;
   clearDraft();
-  status(message);
+  // The draft backup can report its own notice (large projects skip it), so it
+  // runs before the edit message instead of replacing it.
   persistDraft();
+  status(message);
   render();
 }
-function edit(fn, message) {
-  const next = structuredClone(project);
+function edit(fn, message, { deepGame = false } = {}) {
+  const next = cloneProjectForEdit(project, { deepGame });
   try {
     fn(next);
     commit(next, message);
@@ -217,6 +306,9 @@ function edit(fn, message) {
     render();
     throw error;
   }
+}
+function editGame(fn, message) {
+  return edit(fn, message, { deepGame: true });
 }
 function replace(next, message) {
   validateProject(next);
@@ -228,13 +320,13 @@ function replace(next, message) {
 }
 $('game-level').addEventListener('change', guard(() => {
   const id = $('game-level').value;
-  edit(next => selectGameLevel(next, id), `Editing ${id}; other level edits are retained.`);
+  editGame(next => selectGameLevel(next, id), `Editing ${id}; other level edits are retained.`);
   selection = null; scriptScope = '$all'; render(); fitMap();
 }));
 for (const [id, key] of [['game-next-level', 'next'], ['game-secret-level', 'secretNext'], ['game-entry-level', 'entry']])
   $(id).addEventListener('change', guard(() => {
     const value = $(id).value;
-    edit(next => {
+    editGame(next => {
       if (key === 'entry') next.game.entry = value;
       else next.game.levels.find(level => level.id === next.game.active)[key] = value || null;
     }, 'Campaign routing updated.');
@@ -528,6 +620,9 @@ function showTab(tab) {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
   for (const name of ['map', 'events', 'environment', 'hud', 'tweaks', 'about']) $(name + '-panel').hidden = tab !== name;
+  // The designer is only refreshed while its tab is visible, so opening the tab
+  // has to build it once.
+  if (tab === 'hud') hudEditor.render();
   if (tab === 'tweaks') {
     try { renderEngineTweaks(); }
     catch (error) { $('engine-tweaks-status').textContent = error.message; status(error.message, true); }
@@ -740,8 +835,24 @@ const actionLabels = [['showMessage', 'System: show message'], ['setVariable', '
   ['applyImpulse', 'Physics: apply impulse'], ['applyForce', 'Physics: apply force'], ['setVelocity', 'Physics: set velocity'],
   ['playAnimation', 'Model: play animation'], ['stopAnimation', 'Model: stop animation'],
   ...ENGINE_ACTIONS.map(command => [command.type, command.label])];
+let eventsRendered = '';
+function eventsSignature() {
+  return JSON.stringify([scriptScope, project.playerControl, project.events, project.eventSheets, project.eventGroups,
+    Object.keys(project.variables), assetListSignature(),
+    project.map.entities.map(entity => [entity.id, entity.name, entity.type]),
+    project.map.walls.map(wall => [wall.id, wall.special || 0]),
+    (project.map.sectors || []).map(sector => sector.id),
+    project.spriteClips, project.hud?.elements?.map(element => [element.id, element.name]),
+    project.hud?.animations?.map(clip => [clip.id, clip.name]),
+    [...collapsedEvents], [...collapsedGroups]]);
+}
 function renderEvents() {
   const parent = $('event-list');
+  // A large imported game carries hundreds of event rules; rebuilding every
+  // card for a geometry drag is the slowest part of an edit.
+  const signature = eventsSignature();
+  if (signature === eventsRendered && parent.childElementCount) return;
+  eventsRendered = signature;
   parent.replaceChildren();
   const owner = project.map.entities.find(entity => entity.id === scriptScope);
   const currentSheet = project.eventSheets?.find(sheet => scriptScope === `$sheet:${sheet.id}`);
@@ -1006,8 +1117,22 @@ function editEventGroup(group) {
   dialog.addEventListener('close', () => dialog.remove(), { once: true });
   document.body.append(dialog); dialog.showModal();
 }
+// Rebuilding a panel is the expensive part of an edit (hundreds of nodes, asset
+// pickers with thousands of options), so panels rebuild only when the data they
+// show actually changed.
+const panelSignatures = new Map();
+function panelUnchanged(name, signature, element) {
+  if (panelSignatures.get(name) === signature && element.childElementCount) return true;
+  panelSignatures.set(name, signature);
+  return false;
+}
+function assetListSignature() {
+  return (project.assets || []).map(asset => `${asset.id}:${asset.kind}:${asset.name}:${asset.format || ''}` +
+    `:${asset.meshes || 0}:${asset.animations?.length || 0}:${asset.generated ? 1 : 0}`).join('|');
+}
 function renderEnvironment() {
   const parent = $('environment-form');
+  if (panelUnchanged('environment', JSON.stringify([project.environment, project.variables, project.shaders, assetListSignature()]), parent)) return;
   parent.replaceChildren();
   parent.append(make('h2', 'Renderer and GLSL effects'), make('p',
     'WebGPU is preferred when available; WebGL2 is the explicit fallback. Browsers do not expose native Vulkan. The preview reports its actual API. GLSL effects run on both backends using the portable effect function below.', 'muted'));
@@ -1099,6 +1224,16 @@ function assetSelect(value, fn, kinds) {
   return select([['', 'None / fallback'], ...(project.assets || []).filter(asset => kinds.includes(asset.kind)).map(asset => [asset.id, asset.name])],
     value || '', value => fn(value || null));
 }
+let assetsRendered = '';
+function assetsSignature() {
+  return `${$('asset-filter').value}\0${$('asset-search').value}\0${assetListSignature()}\0${JSON.stringify(project.spriteClips || [])}`;
+}
+function renderAssetsIfChanged() {
+  // Re-rendering thousands of tiles (with <audio> data URIs) on every geometry
+  // drag is what made editing feel slow; rebuild only when the list changed.
+  if (assetsSignature() === assetsRendered && $('asset-list').childElementCount) return;
+  renderAssets();
+}
 function renderAssets() {
   const parent = $('asset-list');
   parent.replaceChildren();
@@ -1176,6 +1311,7 @@ function renderAssets() {
     });
     animationList.append(details);
   }
+  assetsRendered = assetsSignature();
 }
 
 function resizeMap() {
@@ -1231,7 +1367,8 @@ function drawMap() {
   ctx.stroke();
   let display = project;
   if (drag?.kind === 'move') {
-    display = structuredClone(project);
+    // Display-only overlay during a 2D drag: only the map changes.
+    display = { ...project, map: structuredClone(project.map) };
     const collection = drag.selection.kind === 'entity' ? display.map.entities : display.map.vertices;
     const item = collection.find(item => item.id === drag.selection.id);
     item.x += drag.end.x - drag.start.x; item.y += drag.end.y - drag.start.y;
@@ -1766,12 +1903,14 @@ $('save').addEventListener('click', guard(saveProject));
 $('reload').addEventListener('click', guard(() => reloadProject()));
 $('undo').addEventListener('click', () => {
   if (!history.length) return;
-  future.push(structuredClone(project)); project = history.pop(); dirty = true; editVersion++; clearDraft();
+  // Projects are never mutated in place (see cloneProjectForEdit), so the current
+  // value is already a safe snapshot and needs no copy.
+  future.push(project); project = history.pop(); dirty = true; editVersion++; clearDraft();
   persistDraft(); render(); status('Undone');
 });
 $('redo').addEventListener('click', () => {
   if (!future.length) return;
-  history.push(structuredClone(project)); project = future.pop(); dirty = true; editVersion++; clearDraft();
+  history.push(project); project = future.pop(); dirty = true; editVersion++; clearDraft();
   persistDraft(); render(); status('Redone');
 });
 $('new').addEventListener('click', guard(() => {

@@ -42,7 +42,75 @@ export function resolveEntityId(event, id) {
   return id === '$self' ? event.ownerId : id;
 }
 
-export function validateProject(project, { gameLevelIds } = {}) {
+// Interactive edits re-validate the same thousands of embedded payloads (PNG
+// data URIs, sounds, models) on every change. In `fast` mode each asset object
+// is only screened once and then remembered by identity; structural checks and
+// cumulative budgets still run every time. Asset objects are treated as
+// immutable while editing, so a replaced payload is a new object and gets
+// screened again, and save/import/export/MCP always validate fully.
+const verifiedAssets = new WeakMap();
+function assetPayload(asset, cacheable) {
+  const cached = cacheable ? verifiedAssets.get(asset) : undefined;
+  if (cached) return cached;
+  const result = measureAssetPayload(asset);
+  if (cacheable) verifiedAssets.set(asset, result);
+  return result;
+}
+function measureAssetPayload(asset) {
+  if (asset.kind === 'music') {
+    assert(['midi', 'mus'].includes(asset.format), 'Invalid music format');
+    assert(typeof asset.src === 'string' && /^data:audio\/(midi|x-midi|x-mus);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Music must be embedded MIDI or Doom MUS');
+    assert(asset.src.length <= 2 * 1024 * 1024, 'Embedded music budget exceeded (2 MiB per track, 32 MiB total)');
+    return { bucket: 'music', bytes: asset.src.length };
+  }
+  if (asset.kind === 'sound') {
+    assert(typeof asset.src === 'string' && /^data:audio\/(wav|ogg|mpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Sounds must be embedded WAV/OGG/MP3');
+    assert(asset.src.length <= 12 * 1024 * 1024, 'Embedded sound budget exceeded (12 MiB each, 64 MiB total)');
+    return { bucket: 'sound', bytes: asset.src.length };
+  }
+  if (asset.kind === 'font') {
+    assert(typeof asset.src === 'string' && /^data:font\/(woff2?|ttf|otf);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Fonts must be embedded WOFF/WOFF2/TTF/OTF');
+    assert(asset.src.length <= 6 * 1024 * 1024, 'Embedded font budget exceeded');
+    return { bucket: 'image', bytes: asset.src.length };
+  }
+  if (asset.kind === 'model') {
+    assert(['glb', 'gltf'].includes(asset.format), 'Invalid model format');
+    assert(typeof asset.src === 'string' && /^data:model\/gltf(-binary|\+json);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Models must be embedded GLB/glTF');
+    assert(asset.src.length <= 23 * 1024 * 1024, 'Embedded model budget exceeded');
+    const parsed = readModel(decodeDataURI(asset.src), asset.format);
+    validateModelDocument(parsed.json, parsed.binary?.length);
+    array(asset.animations, 'Animation clip names', 256);
+    assert(asset.animations.every(name => typeof name === 'string' && name.length <= 200), 'Invalid clip name');
+    assert(JSON.stringify(asset.animations) === JSON.stringify((parsed.json.animations || []).map(clip => clip.name)), 'Model clip metadata does not match its source');
+    return { bucket: 'image', bytes: asset.src.length };
+  }
+  assert(typeof asset.src === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Assets must be embedded PNG images');
+  assert(asset.src.length <= 6 * 1024 * 1024, 'Embedded image budget exceeded (6 MiB per image, 48 MiB total)');
+  return { bucket: 'image', bytes: asset.src.length };
+}
+/**
+ * Copies a project for an in-place edit. A large imported campaign carries a
+ * `game` block of compiled level data (~44 MB for a 32-level game) plus tens of
+ * megabytes of embedded artwork, and copying both on every edit took seconds.
+ * Level data and asset objects are never mutated in place, so they are shared
+ * between snapshots; `deepGame` is for the edits that do rewrite campaign data
+ * (switching levels, campaign routing).
+ */
+export function cloneProjectForEdit(project, { deepGame = false } = {}) {
+  if (!project.game) return structuredClone(project);
+  const next = structuredClone({ ...project, game: null, assets: [] });
+  next.game = deepGame ? structuredClone(project.game) : project.game;
+  next.assets = [...(project.assets || [])];
+  return next;
+}
+
+/**
+ * `fast` skips re-validating dormant campaign levels and the multi-megabyte
+ * game size check. Interactive edits only touch the active level, so a full
+ * re-validation of 32 imported maps would add seconds to every drag; the full
+ * check still runs on save, import, export and MCP changes.
+ */
+export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   object(project, 'Project');
   assert(project.version === VERSION, `Unsupported project version; expected ${VERSION}`);
   text(project.title, 'Title', 100);
@@ -93,53 +161,35 @@ export function validateProject(project, { gameLevelIds } = {}) {
     unique(asset, 'Asset');
     text(asset.name, 'Asset name', 100);
     assert(['texture', 'flat', 'sky', 'sprite', 'weapon', 'model', 'font', 'sound', 'music'].includes(asset.kind), 'Invalid asset kind');
-    if (asset.kind === 'music') {
-      assert(['midi', 'mus'].includes(asset.format), 'Invalid music format');
-      assert(typeof asset.src === 'string' && /^data:audio\/(midi|x-midi|x-mus);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Music must be embedded MIDI or Doom MUS');
-      musicBytes += asset.src.length;
-      assert(asset.src.length <= 2 * 1024 * 1024 && musicBytes <= 32 * 1024 * 1024, 'Embedded music budget exceeded (2 MiB per track, 32 MiB total)');
+    const payload = assetPayload(asset, fast);
+    if (payload.bucket === 'music') {
+      musicBytes += payload.bytes;
+      assert(musicBytes <= 32 * 1024 * 1024, 'Embedded music budget exceeded (2 MiB per track, 32 MiB total)');
       assert(assets.filter(candidate => candidate.kind === 'music' && candidate.name === asset.name).length === 1, 'Music names must be unique');
       assetIds.add(asset.id); continue;
     }
-    if (asset.kind === 'sound') {
-      assert(typeof asset.src === 'string' && /^data:audio\/(wav|ogg|mpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Sounds must be embedded WAV/OGG/MP3');
-      soundBytes += asset.src.length;
-      assert(asset.src.length <= 12 * 1024 * 1024 && soundBytes <= 64 * 1024 * 1024, 'Embedded sound budget exceeded (12 MiB each, 64 MiB total)');
+    if (payload.bucket === 'sound') {
+      soundBytes += payload.bytes;
+      assert(soundBytes <= 64 * 1024 * 1024, 'Embedded sound budget exceeded (12 MiB each, 64 MiB total)');
       assert(assets.filter(candidate => candidate.kind === 'sound' && candidate.name === asset.name).length === 1, 'Sound names must be unique');
       assetIds.add(asset.id); continue;
     }
-    if (asset.kind === 'font') {
-      assert(typeof asset.src === 'string' && /^data:font\/(woff2?|ttf|otf);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Fonts must be embedded WOFF/WOFF2/TTF/OTF');
-      assetBytes += asset.src.length;
-      assert(asset.src.length <= 6 * 1024 * 1024 && assetBytes <= 48 * 1024 * 1024, 'Embedded font budget exceeded');
-      assetIds.add(asset.id); continue;
+    assetBytes += payload.bytes;
+    assert(assetBytes <= 48 * 1024 * 1024, asset.kind === 'model' ? 'Embedded model budget exceeded' : asset.kind === 'font'
+      ? 'Embedded font budget exceeded' : 'Embedded image budget exceeded (6 MiB per image, 48 MiB total)');
+    if (asset.kind !== 'model' && asset.kind !== 'font') {
+      number(asset.width, 'Image width', 1, 2048);
+      number(asset.height, 'Image height', 1, 2048);
+      assert(Number.isInteger(asset.width) && Number.isInteger(asset.height), 'Image dimensions must be integers');
+      for (const key of ['offsetX', 'offsetY']) if (asset[key] !== undefined) number(asset[key], key);
     }
-    if (asset.kind === 'model') {
-      assert(['glb', 'gltf'].includes(asset.format), 'Invalid model format');
-      assert(typeof asset.src === 'string' && /^data:model\/gltf(-binary|\+json);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Models must be embedded GLB/glTF');
-      assetBytes += asset.src.length;
-      assert(asset.src.length <= 23 * 1024 * 1024 && assetBytes <= 48 * 1024 * 1024, 'Embedded model budget exceeded');
-      const parsed = readModel(decodeDataURI(asset.src), asset.format);
-      validateModelDocument(parsed.json, parsed.binary?.length);
-      array(asset.animations, 'Animation clip names', 256);
-      assert(asset.animations.every(name => typeof name === 'string' && name.length <= 200), 'Invalid clip name');
-      assert(JSON.stringify(asset.animations) === JSON.stringify((parsed.json.animations || []).map(clip => clip.name)), 'Model clip metadata does not match its source');
-      assetIds.add(asset.id);
-      continue;
-    }
-    number(asset.width, 'Image width', 1, 2048);
-    number(asset.height, 'Image height', 1, 2048);
-    assert(Number.isInteger(asset.width) && Number.isInteger(asset.height), 'Image dimensions must be integers');
-    assert(typeof asset.src === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Assets must be embedded PNG images');
-    assetBytes += asset.src.length;
-    assert(asset.src.length <= 6 * 1024 * 1024 && assetBytes <= 48 * 1024 * 1024, 'Embedded image budget exceeded (6 MiB per image, 48 MiB total)');
-    for (const key of ['offsetX', 'offsetY']) if (asset[key] !== undefined) number(asset[key], key);
     assetIds.add(asset.id);
   }
+  const assetById = new Map(assets.map(asset => [asset.id, asset]));
   const assetRef = (id, label) => {
     if (id !== undefined && id !== null) {
       assert(assetIds.has(id), `${label} references an unknown asset`);
-      if (label !== 'Model') assert(!['model', 'font', 'sound', 'music'].includes(assets.find(asset => asset.id === id).kind), `${label} requires an image`);
+      if (label !== 'Model') assert(!['model', 'font', 'sound', 'music'].includes(assetById.get(id)?.kind), `${label} requires an image`);
     }
   };
   for (const asset of assets) if (asset.rotations !== undefined) {
@@ -171,7 +221,7 @@ export function validateProject(project, { gameLevelIds } = {}) {
   }
   const modelRef = id => {
     assetRef(id, 'Model');
-    if (id !== undefined && id !== null) assert(assets.find(asset => asset.id === id).kind === 'model', 'Object model must reference a model asset');
+    if (id !== undefined && id !== null) assert(assetById.get(id)?.kind === 'model', 'Object model must reference a model asset');
   };
   const sectors = project.map.sectors || [];
   array(sectors, 'Sectors', 20000);
@@ -575,12 +625,12 @@ export function validateProject(project, { gameLevelIds } = {}) {
     for (const level of game.levels) {
       for (const key of ['next', 'secretNext'])
         assert(level[key] === null || levelIds.has(level[key]), `Level ${level.id} has an unknown ${key} destination`);
-      if (level.id === game.active) continue;
+      if (level.id === game.active || fast) continue;
       const retained = new Set(level.assetIds);
       validateProject({ version: project.version, title: project.title,
         assets: assets.filter(asset => retained.has(asset.id)), ...level.data }, { gameLevelIds: levelIds });
     }
-    assert(JSON.stringify(game).length <= 128 * 1024 * 1024, 'Game level data exceeds 128 MiB');
+    if (!fast) assert(JSON.stringify(game).length <= 128 * 1024 * 1024, 'Game level data exceeds 128 MiB');
   }
   return project;
 }

@@ -1,8 +1,8 @@
 import * as THREE from '/vendor/three/three.module.js';
 import { createPreview } from './render.js';
-import { createRuntime } from '/shared/runtime.js';
+import { createRuntime, runtimeEntities } from '/shared/runtime.js';
 import { sectorAt, sectorGeometry } from '/shared/sectors.js';
-import { transformSelection } from '/shared/scene-edit.js';
+import { dragSelection } from '/shared/scene-edit.js';
 import {
   applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, requireModelAsset, resolveWallSide, sectorTarget, snapValue,
@@ -18,11 +18,11 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   state.animations.clear();
   const view = await createPreview(canvas, project, state, { editor: true });
   const { scene, camera, renderer } = view;
-  const sectors = sectorGeometry(project);
-  const sectorById = new Map(sectors.map(sector => [sector.id, sector]));
-  const wallById = new Map(project.map.walls.map(wall => [wall.id, wall]));
-  const vertexById = new Map(project.map.vertices.map(vertex => [vertex.id, vertex]));
-  const entityById = new Map(project.map.entities.map(entity => [entity.id, entity]));
+  let sectors = sectorGeometry(project);
+  let sectorById = new Map(sectors.map(sector => [sector.id, sector]));
+  let wallById = new Map(project.map.walls.map(wall => [wall.id, wall]));
+  let vertexById = new Map(project.map.vertices.map(vertex => [vertex.id, vertex]));
+  let entityById = new Map(project.map.entities.map(entity => [entity.id, entity]));
   const ray = new THREE.Raycaster(), pointer = new THREE.Vector2();
   const handles = new THREE.Group(), helperGroup = new THREE.Group(), vertexGroup = new THREE.Group();
   scene.add(handles, helperGroup, vertexGroup);
@@ -60,28 +60,52 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   });
 
   let selected = null, action = null, speed = pose?.speed || 320, yaw = pose?.yaw ?? 0, pitch = pose?.pitch ?? -.65;
-  let mode = 'move', showCeilings = false, ceilingTimer = 0, previewOffset = 0, previewKey = null, previewHandleY = 0;
-  const vertexHeights = new Map();
-  for (const wall of project.map.walls) for (const side of [wall.right, wall.left]) {
-    const floor = sectorById.get(side?.sectorId)?.floorHeight;
-    if (floor === undefined) continue;
-    for (const id of [wall.a, wall.b]) vertexHeights.set(id, Math.min(vertexHeights.get(id) ?? Infinity, floor));
+  let mode = 'move', showCeilings = false, ceilingTimer = 0;
+  let vertexHeights = new Map();
+  let pickables = [],
+    surfaceMeshes = new Map(),
+    ceilingSurfaces = [];
+  function collectVertexHeights() {
+    const heights = new Map();
+    for (const wall of project.map.walls) for (const side of [wall.right, wall.left]) {
+      const floor = sectorById.get(side?.sectorId)?.floorHeight;
+      if (floor === undefined) continue;
+      for (const id of [wall.a, wall.b]) heights.set(id, Math.min(heights.get(id) ?? Infinity, floor));
+    }
+    return heights;
   }
-
-  const pickables = [], surfaceMeshes = new Map(), ceilingSurfaces = [];
-  for (const child of scene.children) {
-    if (child === handles || child === helperGroup || child === vertexGroup || child === roomOutline) continue;
-    child.traverse(object => {
-      const selection = object.userData.selection;
-      if (!selection) return;
-      pickables.push(object);
-      if (selection.kind !== 'sector') return;
-      const key = `${selection.id}/${selection.surface || 'floorHeight'}`;
-      if (!surfaceMeshes.has(key)) surfaceMeshes.set(key, []);
-      surfaceMeshes.get(key).push(object);
-      if (selection.surface === 'ceilingHeight') ceilingSurfaces.push({ mesh: object, y: sectorById.get(selection.id)?.ceilingHeight ?? 0 });
-    });
+  function collectSceneHandles() {
+    pickables = []; surfaceMeshes = new Map(); ceilingSurfaces = [];
+    for (const child of scene.children) {
+      if (child === handles || child === helperGroup || child === vertexGroup || child === roomOutline) continue;
+      child.traverse(object => {
+        const selection = object.userData.selection;
+        if (!selection) return;
+        pickables.push(object);
+        if (selection.kind !== 'sector') return;
+        const key = `${selection.id}/${selection.surface || 'floorHeight'}`;
+        if (!surfaceMeshes.has(key)) surfaceMeshes.set(key, []);
+        surfaceMeshes.get(key).push(object);
+        if (selection.surface === 'ceilingHeight') ceilingSurfaces.push({ mesh: object, y: sectorById.get(selection.id)?.ceilingHeight ?? 0 });
+      });
+    }
   }
+  /**
+   * After a live edit the derived lookups (sector geometry, vertices, walls,
+   * objects) must follow the new project. Keeping the originals is what made the
+   * selection outline and gizmo snap back to the pre-drag position.
+   */
+  function refreshProjectData() {
+    sectors = sectorGeometry(project);
+    sectorById = new Map(sectors.map(sector => [sector.id, sector]));
+    wallById = new Map(project.map.walls.map(wall => [wall.id, wall]));
+    vertexById = new Map(project.map.vertices.map(vertex => [vertex.id, vertex]));
+    entityById = new Map(project.map.entities.map(entity => [entity.id, entity]));
+    vertexHeights = collectVertexHeights();
+    collectSceneHandles();
+  }
+  vertexHeights = collectVertexHeights();
+  collectSceneHandles();
 
   const frustum = new THREE.Frustum(), projectionView = new THREE.Matrix4(), bounds = new THREE.Box3();
   const boundsSphere = new THREE.Sphere(), boundsCenter = new THREE.Vector3(), boundsSize = new THREE.Vector3();
@@ -221,27 +245,28 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       if (vertex) marker.position.set(vertex.x, (vertexHeights.get(vertex.id) || 0) + 4, vertex.y);
     });
   }
-  function select(selection) {
-    selected = selection; clearHandles(); updateVertexMarkers();
+  function select(selection, { rebuildHandles = true } = {}) {
+    selected = selection;
+    updateVertexMarkers();
     selectionOutline.visible = false; outlineShift.set(0, 0, 0);
     canvas.dataset.sceneSelection = '';
-    if (!selected) return;
+    if (!selected) { clearHandles(); return; }
     const { kind, id } = selected;
     let position;
     if (kind === 'entity') {
       const entity = entityById.get(id);
-      if (!entity) return;
+      if (!entity) { clearHandles(); return; }
       position = new THREE.Vector3(entity.x, (sectorAt(sectors, entity.x, entity.y)?.floorHeight || 0) + (entity.elevation || 0), entity.y);
     } else if (kind === 'vertex') {
-      const vertex = vertexById.get(id); if (!vertex) return;
+      const vertex = vertexById.get(id); if (!vertex) { clearHandles(); return; }
       position = new THREE.Vector3(vertex.x, (vertexHeights.get(id) || 0) + 4, vertex.y);
     } else if (kind === 'wall') {
       const wall = wallById.get(id), a = vertexById.get(wall?.a), b = vertexById.get(wall?.b);
-      if (!a || !b) return;
+      if (!a || !b) { clearHandles(); return; }
       position = new THREE.Vector3((a.x + b.x) / 2, 32, (a.y + b.y) / 2);
     } else {
       const sector = sectorById.get(id);
-      if (!sector || !Number.isFinite(sector.bounds.minX)) return;
+      if (!sector || !Number.isFinite(sector.bounds.minX)) { clearHandles(); return; }
       position = new THREE.Vector3((sector.bounds.minX + sector.bounds.maxX) / 2,
         sector[selected.surface || 'floorHeight'], (sector.bounds.minY + sector.bounds.maxY) / 2);
     }
@@ -249,18 +274,70 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     hasOutline = !bounds.isEmpty();
     if (hasOutline) { bounds.getCenter(outlineCenter); bounds.getSize(outlineSize); }
     handles.position.copy(position);
-    const axes = kind === 'sector' ? ['z'] : kind === 'vertex' || kind === 'wall' ? ['x', 'y'] : ['x', 'y', 'z'];
-    for (const axis of axes) {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(axis === 'x' ? AXIS_LENGTH : 6, axis === 'z' ? AXIS_LENGTH : 6, axis === 'y' ? AXIS_LENGTH : 6),
-        new THREE.MeshBasicMaterial({ color: axis === 'x' ? '#ef7777' : axis === 'y' ? '#7baaff' : '#85da85', depthTest: false }));
-      mesh.position.set(axis === 'x' ? AXIS_LENGTH / 2 : 0, axis === 'z' ? AXIS_LENGTH / 2 : 0, axis === 'y' ? AXIS_LENGTH / 2 : 0);
-      mesh.userData.axis = axis; mesh.renderOrder = 200; handles.add(mesh);
+    const axes = axesFor(kind);
+    // Live drags re-select on every frame; rebuilding three geometries and
+    // materials each time is pointless when the axes did not change.
+    if (rebuildHandles || handles.children.filter(child => child.userData.axis).map(child => child.userData.axis).join() !== axes.join()) {
+      clearHandles();
+      for (const axis of axes) {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(axis === 'x' ? AXIS_LENGTH : 6, axis === 'z' ? AXIS_LENGTH : 6, axis === 'y' ? AXIS_LENGTH : 6),
+          new THREE.MeshBasicMaterial({ color: axis === 'x' ? '#ef7777' : axis === 'y' ? '#7baaff' : '#85da85', depthTest: false }));
+        mesh.position.set(axis === 'x' ? AXIS_LENGTH / 2 : 0, axis === 'z' ? AXIS_LENGTH / 2 : 0, axis === 'y' ? AXIS_LENGTH / 2 : 0);
+        mesh.userData.axis = axis; mesh.renderOrder = 200; handles.add(mesh);
+      }
+      // The three bars meet at an empty corner, so the middle of the gizmo used to
+      // be a dead spot. This invisible sphere makes the whole gizmo grabbable.
+      const core = new THREE.Mesh(new THREE.SphereGeometry(9, 8, 6),
+        new THREE.MeshBasicMaterial({ colorWrite: false, depthTest: false, depthWrite: false }));
+      core.userData.axis = null; core.renderOrder = 201; handles.add(core);
     }
     canvas.dataset.sceneSelection = `${kind}:${id}${selected.surface ? `:${selected.surface}` : ''}`;
   }
   function applyEdit(fn, message) {
     try { callbacks.edit(fn, message); } catch (error) { callbacks.error(error.message); cancel(); }
   }
+
+  function screenOf(point) {
+    const rect = canvas.getBoundingClientRect(), projected = point.clone().project(camera);
+    return `${Math.round((projected.x * .5 + .5) * rect.width)},${Math.round((-.5 * projected.y + .5) * rect.height)}`;
+  }
+  const axesFor = kind => kind === 'sector' ? ['z'] : kind === 'vertex' || kind === 'wall' ? ['x', 'y'] : ['x', 'y', 'z'];
+  const axisLabel = axis => axis === 'x' ? 'X' : axis === 'y' ? 'Z' : 'Y';
+  /**
+   * The axis a press should drag. The bars are thin, and the point where they
+   * meet has no geometry at all, so a press near the gizmo centre grabs the
+   * closest axis instead of doing nothing.
+   */
+  function axisAt(event) {
+    const hit = hits(handles)[0];
+    if (hit) return hit.object.userData.axis || nearestAxis(event);
+    if (!handles.visible) return null;
+    const rect = canvas.getBoundingClientRect();
+    const [sx, sy] = screenOf(handles.position).split(',').map(Number);
+    const distance = Math.hypot(event.clientX - rect.left - sx, event.clientY - rect.top - sy);
+    return distance <= 12 ? nearestAxis(event) : null;
+  }
+  /** Which axis bar the pointer is closest to, for grabbing the gizmo centre. */
+  function nearestAxis(event) {
+    const rect = canvas.getBoundingClientRect();
+    const origin = handles.position.clone().project(camera);
+    const ox = (origin.x * .5 + .5) * rect.width, oy = (-origin.y * .5 + .5) * rect.height;
+    const px = event.clientX - rect.left, py = event.clientY - rect.top;
+    let best = null;
+    for (const axis of axesFor(selected?.kind)) {
+      const tip = handles.position.clone().addScaledVector(AXIS_VECTORS[axis], AXIS_LENGTH * handles.scale.x).project(camera);
+      const dx = (tip.x * .5 + .5) * rect.width - ox, dy = (-tip.y * .5 + .5) * rect.height - oy;
+      const length = Math.hypot(dx, dy) || 1;
+      const distance = Math.abs(dx * (py - oy) - dy * (px - ox)) / length;
+      if (!best || distance < best.distance) best = { axis, distance };
+    }
+    return best?.axis || 'z';
+  }
+  const formatDistance = delta => {
+    const parts = [['x', delta.x], ['z', delta.y], ['y', delta.z]]
+      .filter(([, value]) => Math.abs(value) >= .01).map(([name, value]) => `${name} ${Math.round(value)}`);
+    return parts.length ? parts.join(', ') : '0';
+  };
 
   function axisDistance(start, axis, fromX, fromY, toX, toY) {
     const rect = canvas.getBoundingClientRect();
@@ -272,19 +349,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
 
   // Vertical editing moves whole sector surfaces. Per-vertex (sloped floor/ceiling) heights are
   // intentionally not supported yet: the project model stores one height per sector.
-  function previewSurface(selection, height) {
-    const key = `${selection.id}/${selection.surface || 'floorHeight'}`;
-    if (previewKey && previewKey !== key) clearSurfacePreview();
-    previewKey = key;
-    const surface = sectorById.get(selection.id);
-    previewOffset = height - (surface?.[selection.surface || 'floorHeight'] ?? height);
-    for (const mesh of surfaceMeshes.get(key) || []) mesh.position.y = previewOffset;
-    handles.position.y = previewHandleY + previewOffset;
-  }
-  function clearSurfacePreview() {
-    if (previewKey) for (const mesh of surfaceMeshes.get(previewKey) || []) mesh.position.y = 0;
-    if (previewKey && previewOffset) handles.position.y = previewHandleY;
-    previewKey = null; previewOffset = 0;
+  function liveDrag(selection, baseline, mode, delta, message) {
+    callbacks.live(next => dragSelection(next, baseline, selection, mode, delta, callbacks.grid()), message);
   }
 
   function surfaceTargetFor(selection, point) {
@@ -462,10 +528,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       else { action = { kind: 'room', start: point.clone(), end: point.clone() }; roomOutline.visible = true; }
       return;
     }
-    const handle = hits(handles)[0];
-    if (handle && selected) {
+    const axis = selected ? axisAt(event) : null;
+    if (axis) {
       if (mode !== 'move' && selected.kind !== 'entity') { callbacks.error('Select an object to rotate or scale; geometry uses Move'); return; }
-      action = { kind: 'transform', axis: handle.object.userData.axis, selection: { ...selected }, x: event.clientX, y: event.clientY, start: handles.position.clone(), end: handles.position.clone() };
+      action = { kind: 'transform', axis, selection: { ...selected }, x: event.clientX, y: event.clientY,
+        start: handles.position.clone(), end: handles.position.clone(), baseline: project, moved: false, amount: 0 };
+      canvas.dataset.transform = `transform:${axis}`;
       return;
     }
     const hit = hits(vertexGroup)[0] || worldHit();
@@ -475,8 +543,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       callbacks.select(selection);
       if (mode === 'move') {
         action = { kind: 'surface', selection, axis: 'z', start: hit.point.clone(), x: event.clientX, y: event.clientY,
-          startHeight: sectorById.get(selection.id)?.[selection.surface] ?? hit.point.y, moved: false, endHeight: null };
-        previewHandleY = handles.position.y;
+          startHeight: sectorById.get(selection.id)?.[selection.surface] ?? hit.point.y, moved: false, endHeight: null, baseline: project };
       }
       return;
     }
@@ -501,60 +568,50 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const distance = axisDistance(action.start, 'z', action.x, action.y, event.clientX, event.clientY);
       const height = snapValue(action.startHeight + distance, callbacks.grid());
       action.endHeight = height;
-      previewSurface(action.selection, height);
-      showReadout(`${action.selection.surface === 'ceilingHeight' ? 'Ceiling' : 'Floor'} ${action.startHeight} → ${height}`);
+      const name = action.selection.surface === 'ceilingHeight' ? 'Ceiling' : 'Floor';
+      showReadout(`${name} ${action.startHeight} → ${height}`);
       canvas.dataset.surfaceHeight = String(height);
+      // Apply as the pointer moves: the world is rebuilt incrementally, so the
+      // geometry follows the cursor instead of snapping when the button is released.
+      liveDrag(action.selection, action.baseline, 'move', { x: 0, y: 0, z: height - action.startHeight }, `3D ${name.toLowerCase()} height ${height}`);
       return;
     }
     const dragDelta = event.clientX - action.x - (event.clientY - action.y);
     action.amount = dragDelta; action.moved = event.clientX !== action.x || event.clientY !== action.y;
+    if (!action.moved) return;
+    let delta;
     if (mode === 'move') {
       const distance = axisDistance(action.start, action.axis, action.x, action.y, event.clientX, event.clientY);
       action.end.copy(action.start).addScaledVector(AXIS_VECTORS[action.axis], distance);
+      delta = { x: action.end.x - action.start.x, y: action.end.z - action.start.z, z: action.end.y - action.start.y };
+      liveDrag(action.selection, action.baseline, 'move', delta, `3D move ${axisLabel(action.axis)} ${formatDistance(delta)}`);
       handles.position.copy(action.end);
-      outlineShift.copy(action.end).sub(action.start);
-      const entity = state.entities.find(entity => action.selection.kind === 'entity' && entity.id === action.selection.id);
-      if (entity) {
-        const original = project.map.entities.find(entity => entity.id === action.selection.id);
-        entity.x = original.x + action.end.x - action.start.x; entity.y = original.y + action.end.z - action.start.z;
-        entity.z = action.end.y;
-      }
+    } else if (mode === 'rotate') {
+      liveDrag(action.selection, action.baseline, 'rotate', { angle: dragDelta * .5 }, `3D rotate ${Math.round(dragDelta * .5)}deg`);
     } else {
-      const entity = state.entities.find(entity => action.selection.kind === 'entity' && entity.id === action.selection.id);
-      if (entity) {
-        const original = project.map.entities.find(entity => entity.id === action.selection.id);
-        if (mode === 'rotate') entity.angle = original.angle + dragDelta * .5;
-        else {
-          const key = original.modelAsset ? 'modelScale' : 'spriteScale';
-          entity[key] = Math.max(original.modelAsset ? .001 : .05, Math.min(original.modelAsset ? 4096 : 16,
-            (original[key] ?? (original.modelAsset ? 32 : 1)) * Math.exp(dragDelta * .01)));
-        }
-      }
+      liveDrag(action.selection, action.baseline, 'scale', { scale: Math.exp(dragDelta * .01) }, `3D scale ${Math.round(Math.exp(dragDelta * .01) * 100)}%`);
     }
   });
   listen(canvas, 'pointerup', () => {
     const completed = action; action = null; keys.clear(); roomOutline.visible = false;
+    canvas.dataset.transform = '';
     if (!completed || completed.kind === 'fly') return;
     if (completed.kind === 'room') { callbacks.room(completed.start, completed.end); return; }
     if (completed.kind === 'surface') {
-      clearSurfacePreview(); hideReadout();
+      hideReadout();
       canvas.dataset.surfaceHeight = '';
-      if (!completed.moved) { select(callbacks.selection()); return; }
+      if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
       const name = completed.selection.surface === 'ceilingHeight' ? 'ceiling' : 'floor';
-      applyEdit(next => transformSelection(next, completed.selection, 'move',
-        { x: 0, y: 0, z: completed.endHeight - completed.startHeight }, callbacks.grid()), `3D ${name} height ${completed.endHeight}`);
+      callbacks.liveFinish(`3D ${name} height ${completed.endHeight}`);
       return;
     }
-    if (!completed.moved) { select(callbacks.selection()); return; }
-    const delta = completed.end.clone().sub(completed.start);
-    applyEdit(next => transformSelection(next, completed.selection, mode, {
-      x: delta.x, y: delta.z, z: delta.y, angle: completed.amount * .5, scale: Math.exp(completed.amount * .01),
-    }, callbacks.grid()), `3D ${mode}`);
+    if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
+    callbacks.liveFinish(`3D ${mode}`);
   });
   function cancel() {
     action = null; keys.clear(); roomOutline.visible = false;
-    clearSurfacePreview(); hideReadout();
-    state.entities = structuredClone(project.map.entities);
+    hideReadout(); canvas.dataset.surfaceHeight = '';
+    callbacks.liveFinish(null, { revert: true });
     select(callbacks.selection());
   }
   listen(canvas, 'pointercancel', cancel);
@@ -585,6 +642,19 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
 
   return {
     select, fit,
+    /**
+     * Apply an edited project without rebuilding the renderer. Returns false when
+     * the change introduces artwork that is not decoded yet, so the caller falls
+     * back to a full reload for that rare case.
+     */
+    update(next) {
+      if (!view.setProject || !view.setProject(next)) return false;
+      project = next;
+      state.entities = runtimeEntities(next);
+      refreshProjectData();
+      select(callbacks.selection(), { rebuildHandles: false });
+      return true;
+    },
     mode(value) { mode = value; },
     pose() { return { position: camera.position.clone(), yaw, pitch, speed }; },
     frame(dt) {
@@ -618,6 +688,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.outline = selectionOutline.visible ? 'visible' : 'hidden';
       canvas.dataset.handles = handles.visible ? 'visible' : 'hidden';
       canvas.dataset.vertexMarkers = String(markers);
+      // Screen positions of the gizmo and the selection box, so a drag can be
+      // followed (and regression-tested) from the outside.
+      canvas.dataset.handlesAt = handles.visible ? screenOf(handles.position) : '';
+      canvas.dataset.outlineAt = selectionOutline.visible ? screenOf(selectionOutline.position) : '';
     },
     ceilings(visible) { showCeilings = Boolean(visible); updateCeilings(0, true); },
     dispose() {

@@ -38,8 +38,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(project.environment.sky);
   const camera = new THREE.PerspectiveCamera(70, 800 / 450, 1, 40000);
-  const geometry = editor ? sectorGeometry(project) : state.sectors;
-  const textures = new Map(), assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
+  let geometry = editor ? sectorGeometry(project) : state.sectors;
+  const textures = new Map();
+  let assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
   function imageTexture(id) {
     if (!id) return null;
     const result = textures.get(id);
@@ -157,12 +158,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       for (let i = 0; i < 16; i++) { const light = new THREE.PointLight('#ffffff', 0); scene.add(light); pointLights.push(light); }
     }
     let worldGroup = null;
-    const worldParts = [];
-    function worldPart(sectorIds, build) {
-      const entry = { sectorIds, build, group: null };
-      worldParts.push(entry);
-      rebuildPart(entry);
-    }
+    let worldParts = [], worldPartKeys = new Map();
     function rebuildPart(entry) {
       if (entry.group) {
         scene.remove(entry.group);
@@ -170,6 +166,31 @@ export async function createPreview(canvas, project, state, { editor = false } =
       }
       entry.group = new THREE.Group(); scene.add(entry.group);
       worldGroup = entry.group; entry.build(); worldGroup = null;
+    }
+    // Editing moves one wall or one sector at a time; rebuilding every wall in the
+    // map for each pointer move is what made live dragging stutter. Parts carry a
+    // signature of everything they are drawn from, so only parts that really
+    // changed are rebuilt.
+    function worldPart(key, sectorIds, signature, build) {
+      const previous = worldPartKeys.get(key);
+      let entry = previous;
+      if (previous && previous.signature === signature) {
+        previous.sectorIds = sectorIds; previous.build = build;
+      } else {
+        if (previous) disposePart(previous);
+        entry = { key, sectorIds, signature, build, group: null };
+        worldPartKeys.set(key, entry);
+        rebuildPart(entry);
+        rebuiltParts++;
+      }
+      if (!worldParts.includes(entry)) worldParts.push(entry);
+      return entry;
+    }
+    function disposePart(entry) {
+      if (!entry.group) return;
+      scene.remove(entry.group);
+      entry.group.traverse(object => { if (object.geometry) { geometries.delete(object.geometry); object.geometry.dispose(); } });
+      entry.group = null;
     }
     function mesh(buffer, material, destination = worldGroup || scene) {
       geometries.add(buffer); materials.add(material);
@@ -213,11 +234,39 @@ export async function createPreview(canvas, project, state, { editor = false } =
         if (editor && ceiling) surface.visible = false;
       }
     }
-    for (const sector of geometry) worldPart([sector.id], () => {
-      if (sector.ceilingHeight <= sector.floorHeight) return;
-      plane(sector, sector.floorHeight, sector.floorAsset, false);
-      if (!sector.sky) plane(sector, sector.ceilingHeight, sector.ceilingAsset, true);
-    });
+    let wallLines = [];
+    function sectorSignature(sector) {
+      return `${sector.floorHeight}/${sector.ceilingHeight}/${sector.floorAsset || ''}/${sector.ceilingAsset || ''}` +
+        `/${sector.light}/${sector.sky ? 1 : 0}/${JSON.stringify(sector.rings)}`;
+    }
+    function wallSignature(wall, sectors) {
+      const side = value => value ? `${value.sectorId}/${value.upper || ''}/${value.middle || ''}/${value.lower || ''}` +
+        `/${value.offsetX || 0}/${value.offsetY || 0}` : '-';
+      const area = id => {
+        const sector = id && sectors.get(id);
+        return sector ? `${sector.floorHeight}/${sector.ceilingHeight}/${sector.light}/${sector.sky ? 1 : 0}` : '-';
+      };
+      return `${wall.start.x},${wall.start.y}/${wall.end.x},${wall.end.y}/${wall.height}/${wall.assetId || ''}` +
+        `/${wall.color || ''}/${wall.solid ? 1 : 0}/${wall.flags || 0}/${side(wall.right)}/${side(wall.left)}` +
+        `/${area(wall.right?.sectorId)}/${area(wall.left?.sectorId)}`;
+    }
+    let rebuiltParts = 0;
+    // Materials bake the environment colours and the GLSL effect, so a change to
+    // either has to rebuild every part even though the map itself did not move.
+    let worldInputs = JSON.stringify([project.environment, project.shaders || []]);
+    function buildStaticWorld() {
+    const seen = new Set();
+    rebuiltParts = 0;
+    worldParts = [];
+    const sectorMap = new Map(geometry.map(sector => [sector.id, sector]));
+    for (const sector of geometry) {
+      seen.add(`sector:${sector.id}`);
+      worldPart(`sector:${sector.id}`, [sector.id], sectorSignature(sector), () => {
+        if (sector.ceilingHeight <= sector.floorHeight) return;
+        plane(sector, sector.floorHeight, sector.floorAsset, false);
+        if (!sector.sky) plane(sector, sector.ceilingHeight, sector.ceilingAsset, true);
+      });
+    }
     function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false) {
       if (top <= bottom) return;
       const length = Math.hypot(b.x - a.x, b.y - a.y), asset = assetMap.get(assetId);
@@ -232,9 +281,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const surface = mesh(buffer, material(assetId, light, wall.color, masked, !editor));
       surface.userData.selection = { kind: 'wall', id: wall.id };
     }
-    const sectorMap = new Map(geometry.map(sector => [sector.id, sector]));
-    const wallLines = wallSegments(project);
-    for (const wall of wallLines) worldPart([wall.right?.sectorId, wall.left?.sectorId], () => {
+    wallLines = wallSegments(project);
+    for (const wall of wallLines) {
+    seen.add(`wall:${wall.id}`);
+    worldPart(`wall:${wall.id}`, [wall.right?.sectorId, wall.left?.sectorId],
+      wallSignature(wall, sectorMap), () => {
       if (!wall.right && !wall.left) {
         if (wall.solid) {
           wallQuad(wall, wall.start, wall.end, 0, wall.height, wall.assetId, null, 255, wall.height);
@@ -265,10 +316,20 @@ export async function createPreview(canvas, project, state, { editor = false } =
         }
       }
     });
+    }
     if (!geometry.length) {
       const fallback = { rings: [[{ x: -20000, y: -20000 }, { x: 20000, y: -20000 }, { x: 20000, y: 20000 }, { x: -20000, y: 20000 }]], light: 255 };
-      plane(fallback, 0, null, false);
+      seen.add('fallback');
+      worldPart('fallback', [], 'fallback', () => plane(fallback, 0, null, false));
     }
+    // Parts for walls or sectors that no longer exist must not linger in the scene.
+    for (const [key, entry] of worldPartKeys) {
+      if (seen.has(key)) continue;
+      disposePart(entry);
+      worldPartKeys.delete(key);
+    }
+    }
+    buildStaticWorld();
     // Three compiles a shader program the first time a material is drawn. Doors and
     // lifts reveal surfaces (the upper/lower/middle textures of the neighbouring
     // sector) that only exist once they move, so those materials get built and the
@@ -411,9 +472,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
     const triangulate = (outer, holes) => THREE.ShapeUtils.triangulateShape(outer.map(point => new THREE.Vector2(point.x, point.y)),
       holes.map(ring => ring.map(point => new THREE.Vector2(point.x, point.y))));
     if (!editor) { physics = createPhysics(project, state, RAPIER, triangulate); state.physics = physics; }
-    const sectorIndex = createSectorIndex(geometry);
-    const spriteIndex = createSpriteIndex(project);
-    const sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
+    let sectorIndex = createSectorIndex(geometry);
+    let spriteIndex = createSpriteIndex(project);
+    let sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
     let worldRevision = state.worldRevision, appliedResolution = '';
     // Everything below is scratch state reused by every frame: precomputed lookups,
     // pooled objects and cached DOM/style writes keep the loop allocation-light.
@@ -720,7 +781,39 @@ export async function createPreview(canvas, project, state, { editor = false } =
     if (backgroundScene.children.length) await renderer.compileAsync(backgroundScene, backgroundScene.userData.skybox ? camera : backgroundCamera);
     if (overlayScene.children.length) await renderer.compileAsync(overlayScene, overlayCamera);
     if (shaderCompileError) throw new Error(`GPU shader compilation failed: ${shaderCompileError}`);
-    return { render, dispose, scene, camera, renderer, rendererStatus, perf: () => frameStats.summary() };
+    // Live editor updates: rebuild the world in place, keeping the GPU device,
+    // decoded textures and compiled programs. Recreating the preview instead
+    // costs seconds per edit (context + texture upload + shader compile).
+    function setProject(next) {
+      if (!editor) return false;
+      const required = new Set();
+      for (const sector of next.map.sectors || []) { required.add(sector.floorAsset); required.add(sector.ceilingAsset); }
+      for (const wall of next.map.walls || []) for (const side of [wall.right, wall.left]) if (side) {
+        required.add(side.upper); required.add(side.middle); required.add(side.lower);
+      }
+      required.add(next.environment?.skyAsset);
+      for (const id of required) if (id && !textures.has(id)) return false; // new artwork needs a full reload
+      project = next;
+      assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
+      geometry = sectorGeometry(project);
+      const nextInputs = JSON.stringify([project.environment, project.shaders || []]);
+      if (nextInputs !== worldInputs) {
+        worldInputs = nextInputs;
+        for (const entry of worldPartKeys.values()) entry.signature = null;
+      }
+      // buildStaticWorld keeps every part whose signature still matches, so a
+      // single edited wall or sector costs one rebuild instead of the whole map.
+      buildStaticWorld();
+      canvas.dataset.worldParts = `${rebuiltParts}/${worldParts.length}`;
+      sectorIndex = createSectorIndex(geometry);
+      spriteIndex = createSpriteIndex(project);
+      sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
+      scene.background = new THREE.Color(project.environment.sky);
+      const known = new Set([...sprites.keys(), ...models.keys()]);
+      for (const entity of project.map.entities) if (!known.has(entity.id)) addEntity(entity);
+      return true;
+    }
+    return { render, dispose, scene, camera, renderer, rendererStatus, setProject, perf: () => frameStats.summary() };
   } catch (error) {
     dispose();
     throw new Error(`Preview could not load: ${error.message}`);

@@ -39,15 +39,26 @@ export function castRay(x, y, dx, dy, walls) {
   return nearest;
 }
 
+export function skillBitFor(settings = {}) {
+  const difficulty = gameSettings(settings).difficulty;
+  return difficulty <= 2 ? 1 : difficulty === 3 ? 2 : 4;
+}
+
+/** Live object state for a project: skill-filtered copies with per-instance variables. */
+export function runtimeEntities(project, settings = {}) {
+  const skillBit = skillBitFor(settings);
+  return structuredClone(project.map.entities).filter(entity => !entity.skillMask || (entity.skillMask & skillBit))
+    .map(entity => ({ ...entity, variables: { ...(entity.variables || {}) } }));
+}
+
 export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false, progress } = {}) {
   const spawn = project.map.entities.find(entity => entity.type === 'player');
   const userSettings = gameSettings(settings);
-  const skillBit = userSettings.difficulty <= 2 ? 1 : userSettings.difficulty === 3 ? 2 : 4;
+  const skillBit = skillBitFor(settings);
   const inventory = progress ? structuredClone(progress.inventory) : initialInventory();
   if (progress) inventory.keys.clear();
   const playerStats = progress ? structuredClone(progress.playerStats) : initialPlayerStats();
-  const entities = structuredClone(project.map.entities).filter(entity => !entity.skillMask || (entity.skillMask & skillBit))
-    .map(entity => ({ ...entity, variables: { ...(entity.variables || {}) } }));
+  const entities = runtimeEntities(project, settings);
   return {
     settings: userSettings, settingsRevision: 0, gameScreen: screen, gameMode,
     hasGame: screen === 'playing', bindingKey: null,

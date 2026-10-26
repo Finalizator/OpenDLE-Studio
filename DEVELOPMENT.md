@@ -159,10 +159,12 @@ provider credits or network access are required for tests.
   Both views edit the same project and share undo/redo and save/export.
   Drag textures or flats from the Asset Browser straight onto wall sides and
   floor/ceiling surfaces, drag sprite or model assets onto objects to assign
-  them, and drag objects from the object list onto the floor. Floors and
-  ceilings can be raised and lowered in 3D with a live numeric readout (undone
-  through the normal edit path), so imported geometry is movable vertically as
-  well as horizontally; per-vertex slopes are not implemented. Ceilings are
+  them, and drag objects from the object list onto the floor. Transform handles
+  and floors/ceilings follow the pointer while you drag: geometry, the selection
+  box and the gizmo update every frame, and the whole drag is a single undo step.
+  Floors and ceilings can be raised and lowered in 3D with a live numeric readout
+  (undone through the normal edit path), so imported geometry is movable
+  vertically as well as horizontally; per-vertex slopes are not implemented. Ceilings are
   visible from below, off-screen selection helpers are culled, and vertex
   markers only appear for the selected vertex or the endpoints of the selected
   wall.
