@@ -264,15 +264,17 @@ function boxUvRect(faceName, size, uvOffset, mirror) {
     face.from[0] + face.size[0] + uvOffset[0], face.from[1] + face.size[1] + uvOffset[1]];
 }
 
-// glTF UVs start in the bottom-left corner, Blockbench in the top-left, and a face
-// can be rotated in 90 degree steps inside the atlas.
+// Blockbench measures UVs from the top-left corner of the atlas and glTF does the
+// same, so the rectangles are used as authored - flipping V here mirrored every
+// face onto a neighbouring tile (and its transparent padding). A face can also be
+// rotated in 90 degree steps inside the atlas.
 function faceUvCorners(rect, rotation, uvWidth, uvHeight) {
   const [u1, v1, u2, v2] = rect;
   const corners = [
-    [u1 / uvWidth, 1 - v1 / uvHeight],
-    [u2 / uvWidth, 1 - v1 / uvHeight],
-    [u1 / uvWidth, 1 - v2 / uvHeight],
-    [u2 / uvWidth, 1 - v2 / uvHeight],
+    [u1 / uvWidth, v1 / uvHeight],
+    [u2 / uvWidth, v1 / uvHeight],
+    [u1 / uvWidth, v2 / uvHeight],
+    [u2 / uvWidth, v2 / uvHeight],
   ];
   let remaining = Math.round((Number(rotation) || 0) / 90) * 90;
   while (remaining >= 90) {
@@ -550,7 +552,11 @@ export function bbmodelToGltf(model, { scale = 1 / BBMODEL_UNITS_PER_METRE, samp
     scenes: [{ name: typeof model.name === 'string' && model.name ? model.name.slice(0, 200) : 'Blockbench model', nodes: rootNodes }],
     nodes, meshes, accessors: accessorList, bufferViews, buffers: [{ byteLength: binary.length }],
   };
-  if (materials.length) Object.assign(json, { materials, textures, images, samplers: [{ magFilter: 9728, minFilter: 9984, wrapS: 33071, wrapT: 33071 }] });
+  if (materials.length) {
+    // Pixel art: nearest filtering without mipmaps, because mipmapped sampling mixes
+    // the transparent atlas padding into the image and punches holes in alpha-tested faces.
+    Object.assign(json, { materials, textures, images, samplers: [{ magFilter: 9728, minFilter: 9728, wrapS: 33071, wrapT: 33071 }] });
+  }
   if (animations.length) json.animations = animations;
   return { json, binary, warnings };
 

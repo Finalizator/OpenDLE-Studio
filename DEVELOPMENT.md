@@ -1460,7 +1460,13 @@ running game: use **Play world** for HUD, sound and gameplay.
    (`shared/bbmodel.js`), so the renderer keeps a single glTF path. Blockbench
    cubes, `inflate`/`stretch`, per-face atlas UVs (including face rotation and box
    UV layouts), groups and pivots, element rotation, `rescale`, embedded textures
-   and animation clips are kept. Animations are baked at the animation's snapping
+   and animation clips are kept. Atlas rectangles are used exactly as authored:
+   Blockbench and glTF both measure V downwards from the top-left pixel, so a face
+   samples the tile it covers instead of its mirror image (`1 - v` was applied for
+   Blockbench's flipped-Y preview and landed every face on a neighbouring tile).
+   Textures sample with nearest filtering and no mipmaps, because mipmapped
+   sampling mixes the transparent atlas padding into the image and punches holes
+   in alpha-tested faces. Animations are baked at the animation's snapping
    rate into glTF clips, so Molang expressions such as
    `math.sin(query.anim_time * 120) * 18` (degrees) and Bezier/Catmull-Rom
    keyframes play in the engine; a script this converter cannot evaluate is

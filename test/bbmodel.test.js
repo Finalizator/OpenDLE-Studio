@@ -84,7 +84,9 @@ test('Blockbench cube geometry keeps per-face atlas UVs, outward winding and a 1
   assert.equal(indices.length, 36);
   // Faces follow Blockbench's east, west, up, down, south, north order.
   assert.deepEqual(positions.slice(0, 12), [1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0]);
-  assert.deepEqual(uvs.slice(0, 8), [0, 1, 1, 1, 0, 0, 1, 0]);
+  // The east face starts at the top of the atlas and ends at its bottom, because
+  // Blockbench and glTF both measure V downwards from the top-left pixel.
+  assert.deepEqual(uvs.slice(0, 8), [0, 0, 1, 0, 0, 1, 1, 1]);
   const faceNormals = FACES.map((_, face) => normals.slice(face * 12, face * 12 + 3));
   assert.deepEqual(faceNormals, [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]);
   const corner = index => positions.slice(index * 3, index * 3 + 3);
@@ -103,11 +105,11 @@ test('Blockbench maps atlas rectangles into glTF UV space and rotates faces', ()
   model.elements[0].faces.east.uv = [4, 8, 12, 16];
   const plain = bbmodelToGltf(model);
   const plainUvs = accessorValues(plain.json, plain.binary, plain.json.meshes[0].primitives[0].attributes.TEXCOORD_0).slice(0, 8);
-  assert.deepEqual(rounded(plainUvs), [0.25, 0.5, 0.75, 0.5, 0.25, 0, 0.75, 0]);
+  assert.deepEqual(rounded(plainUvs), [0.25, 0.5, 0.75, 0.5, 0.25, 1, 0.75, 1]);
   model.elements[0].faces.east.rotation = 90;
   const rotated = bbmodelToGltf(model);
   const rotatedUvs = accessorValues(rotated.json, rotated.binary, rotated.json.meshes[0].primitives[0].attributes.TEXCOORD_0).slice(0, 8);
-  assert.deepEqual(rounded(rotatedUvs), [0.25, 0, 0.25, 0.5, 0.75, 0, 0.75, 0.5]);
+  assert.deepEqual(rounded(rotatedUvs), [0.25, 1, 0.25, 0.5, 0.75, 1, 0.75, 0.5]);
 });
 
 test('Blockbench box UV cubes derive their rectangles from the cube size', () => {
@@ -116,7 +118,46 @@ test('Blockbench box UV cubes derive their rectangles from the cube size', () =>
   const { json, binary } = bbmodelToGltf(model);
   const uvs = accessorValues(json, binary, json.meshes[0].primitives[0].attributes.TEXCOORD_0).slice(0, 8);
   // East covers u: offset + 0..depth, v: offset + depth..depth + height.
-  assert.deepEqual(rounded(uvs), [2 / 16, 1 - 5 / 16, 4 / 16, 1 - 5 / 16, 2 / 16, 1 - 13 / 16, 4 / 16, 1 - 13 / 16]);
+  assert.deepEqual(rounded(uvs), [2 / 16, 5 / 16, 4 / 16, 5 / 16, 2 / 16, 13 / 16, 4 / 16, 13 / 16]);
+});
+
+test('Blockbench atlas rows keep their place: a face samples the texture it covers', () => {
+  // Top half red, bottom half blue. glTF and Blockbench both put v=0 at the top
+  // row, so a face covering the top half must sample red - the exact bug that
+  // mirrored artwork onto neighbouring tiles and their transparent padding.
+  const atlas = new PNG({ width: 16, height: 16 });
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    const offset = (y * 16 + x) * 4;
+    atlas.data[offset] = y < 8 ? 255 : 0;
+    atlas.data[offset + 1] = 0;
+    atlas.data[offset + 2] = y < 8 ? 0 : 255;
+    atlas.data[offset + 3] = 255;
+  }
+  const model = bbmodel({ textures: [{ ...TEXTURE, source: `data:image/png;base64,${PNG.sync.write(atlas).toString('base64')}` }] });
+  model.elements[0].faces.east.uv = [0, 0, 16, 8];
+  model.elements[0].faces.east.texture = 0;
+  model.elements[0].faces.west.texture = null;
+  model.elements[0].faces.up.texture = null;
+  model.elements[0].faces.down.texture = null;
+  model.elements[0].faces.south.texture = null;
+  model.elements[0].faces.north.texture = null;
+  const { json, binary } = bbmodelToGltf(model);
+  const primitive = json.meshes[0].primitives[0];
+  const positions = accessorValues(json, binary, primitive.attributes.POSITION);
+  const uvs = accessorValues(json, binary, primitive.attributes.TEXCOORD_0);
+  const sample = vertex => {
+    const u = uvs[vertex * 2], v = uvs[vertex * 2 + 1];
+    const x = Math.min(15, Math.floor(u * 16)), y = Math.min(15, Math.floor(v * 16));
+    return [atlas.data[(y * 16 + x) * 4], atlas.data[(y * 16 + x) * 4 + 2]];
+  };
+  // East face vertices: 0 and 1 sit on the cube top, 2 and 3 on its bottom.
+  assert.deepEqual(sample(0), [255, 0]);
+  assert.deepEqual(sample(1), [255, 0]);
+  assert.deepEqual(sample(2), [0, 255]);
+  assert.deepEqual(sample(3), [0, 255]);
+  assert.ok(positions[1 * 3 + 1] > positions[2 * 3 + 1]);
+  assert.deepEqual(json.samplers[0], { magFilter: 9728, minFilter: 9728, wrapS: 33071, wrapT: 33071 });
+  assert.equal(json.materials[0].alphaMode, 'MASK');
 });
 
 test('Blockbench groups become glTF nodes with Blockbench pivots and ZYX rotations', () => {
