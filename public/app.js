@@ -26,6 +26,7 @@ import { createPlaytestLogger } from './playtest-log.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
+import { upgradePickupReach } from '/shared/doom-hud.js';
 import { installIntermission } from '/shared/intermission.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
@@ -1560,6 +1561,9 @@ async function reloadProject(initial = false) {
       project = recovery.draft; dirty = true;
     } else { project = recovery.project; dirty = recovery.dirty; }
   }
+  // Drafts and older imports can still carry the narrow pickup reach that made an
+  // item on a ledge impossible to take.
+  if (upgradePickupReach(project)) { dirty = true; status('Pickup reach widened so items on ledges can be collected; save to keep it.'); }
   history = []; future = []; selection = null; scriptScope = '$all'; editVersion++; clearDraft();
   render(); fitMap();
   status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'

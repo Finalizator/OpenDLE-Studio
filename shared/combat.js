@@ -19,10 +19,18 @@ export function soundEvent(state, name, volume = 1, position) {
 export function floorAt(state, position) {
   return position.z ?? (sectorAt(state.sectors, position.x, position.y)?.floorHeight ?? 0) + (position.elevation || 0);
 }
-export function playerReachesEntity(state, entity, distance, height, below) {
+/**
+ * Whether the player can reach an item: inside the box around it, inside the
+ * vertical window, and (unless `overSteps`) not separated from it by a wall. A
+ * shelf or a ledge is a solid wall around a raised floor, so reaching up onto one
+ * skips the trace — otherwise a chainsaw sitting on a ledge could never be taken.
+ */
+export function playerReachesEntity(state, entity, distance, height, below, { overSteps = false, stepHeight = 24 } = {}) {
   const dx = entity.x - state.player.x, dy = entity.y - state.player.y;
   const playerFloor = floorAt(state, state.player), itemFloor = floorAt(state, entity);
-  if (Math.abs(dx) >= distance || Math.abs(dy) >= distance || itemFloor - playerFloor > height || itemFloor - playerFloor < -below) return false;
+  const rise = itemFloor - playerFloor;
+  if (Math.abs(dx) >= distance || Math.abs(dy) >= distance || rise > height || rise < -below) return false;
+  if (overSteps && rise > stepHeight) return true;
   const range = Math.hypot(dx, dy);
   const origin = { x: state.player.x, y: state.player.y, z: Math.max(playerFloor, itemFloor) + 1 };
   return geometryDistance(state, origin, { x: dx / (range || 1), y: dy / (range || 1), z: 0 }, range + .01, true) >= range;

@@ -183,8 +183,11 @@ test('pickup scripts preserve full health/ammo pickups, isolate per-instance nee
 test('pickup reach uses axis overlap and vertical limits, rejects walls, and remains editable and validated', () => {
   for (const [dx, dy, z, blocked, collects] of [
     [35, 35, 32, false, true], [36, 0, 0, false, false], [0, 36, 0, false, false],
-    [30, 0, 56, false, true], [30, 0, 57, false, false], [30, 0, -8, false, true],
-    [30, 0, -9, false, false], [30, 0, 0, true, false],
+    [30, 0, 112, false, true], [30, 0, 113, false, false], [30, 0, -32, false, true],
+    [30, 0, -33, false, false],
+    // A wall still stops a same-level pickup, but reaching up onto a ledge does not
+    // trace through it: that is what made a chainsaw on a shelf untakeable.
+    [30, 0, 0, true, false], [30, 0, 40, true, true],
   ]) {
     const p = pickupProject([2014]), s = createRuntime(p), item = s.entities.find(e => e.type === 'pickup');
     item.x = s.player.x + dx; item.y = s.player.y + dy; item.z = z; s.player.z = 0;
@@ -199,6 +202,23 @@ test('pickup reach uses axis overlap and vertical limits, rejects walls, and rem
     assert.throws(() => validateProject(p));
   }
 });
+test('an older import has its pickup reach widened without touching edited rules', async () => {
+  const { upgradePickupReach } = await import('../shared/doom-hud.js');
+  const project = pickupProject([2014, 2011]);
+  const reaches = project.events.flatMap(event => event.conditions || []).filter(c => c.type === 'playerReachesEntity');
+  assert.equal(reaches.length, 2);
+  // Rewind the generated rules to what an import made before ledges were reachable.
+  for (const reach of reaches) {
+    reach.distance = 36; reach.height = 56; reach.below = 8; delete reach.reachOverSteps;
+  }
+  const edited = reaches[1];
+  edited.distance = 40;   // someone widened this one by hand
+  assert.equal(upgradePickupReach(project), 1, 'only the untouched generated values are upgraded');
+  assert.deepEqual([reaches[0].distance, reaches[0].height, reaches[0].below, reaches[0].reachOverSteps], [36, 112, 32, 'yes']);
+  assert.deepEqual([edited.distance, edited.height, edited.reachOverSteps], [40, 56, undefined]);
+  assert.equal(upgradePickupReach(project), 0, 'running it again changes nothing');
+});
+
 test('Doom pickup and selection rules fire shotgun shells instead of pistol bullets with a shared refire gate', () => {
   const project = pickupProject([2001]), state = createRuntime(project);
   step(project, state);

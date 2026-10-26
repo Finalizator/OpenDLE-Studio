@@ -325,7 +325,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       if (condition.type === 'playerReachesEntity') {
         const entity = findTarget(condition.entityId);
-        return entity && playerReachesEntity(state, entity, condition.distance, condition.height, condition.below);
+        return entity && playerReachesEntity(state, entity, condition.distance, condition.height, condition.below,
+          // The rule editor stores a yes/no choice, hand-written rules may use a boolean.
+          { overSteps: condition.reachOverSteps === true || condition.reachOverSteps === 'yes' });
       }
       if (condition.type === 'enemyAlert') return state.time < (state.timers.get(`${resolveEntityId(event, condition.entityId)}:alert`) || 0);
       if (condition.type === 'enemyHearsPlayer') {

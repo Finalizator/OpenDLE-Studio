@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname } from 'node:path';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
+import { upgradePickupReach } from '../shared/doom-hud.js';
 
 export class ProjectStore {
   constructor(file) {
@@ -17,6 +18,9 @@ export class ProjectStore {
         this.revision = saved.revision;
       }
     }
+    // Older imports reach only 36 units and 56 up, which cannot take an item from a
+    // ledge; this is idempotent and the next save keeps it.
+    upgradePickupReach(this.project);
     validateProject(this.project);
   }
   snapshot() {

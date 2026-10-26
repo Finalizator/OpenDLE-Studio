@@ -169,6 +169,27 @@ function installFaceRules(hud, face, atlas, id, rule) {
   }
 }
 
+/**
+ * Gives an already-imported project the wider pickup reach. Projects imported
+ * before pickups could reach onto a ledge carry the old fixed box (36/56/8) in
+ * their generated rules, which makes a chainsaw on a shelf impossible to take
+ * without standing on it. Only the untouched generated values are upgraded, so a
+ * rule someone edited by hand is left alone.
+ */
+export function upgradePickupReach(project) {
+  let upgraded = 0;
+  for (const event of project.events || []) {
+    for (const condition of event.conditions || []) {
+      if (condition.type !== 'playerReachesEntity') continue;
+      if (condition.reachOverSteps !== undefined) continue;
+      if (condition.distance !== 36 || condition.height !== 56 || condition.below !== 8) continue;
+      condition.height = 112; condition.below = 32; condition.reachOverSteps = 'yes';
+      upgraded++;
+    }
+  }
+  return upgraded;
+}
+
 export function installDoomInventoryScripts(project) {
   const sheet = name => project.eventSheets.find(sheet => sheet.name === name).id;
   const groups = new Map();
@@ -219,7 +240,10 @@ export function installDoomInventoryScripts(project) {
     if (!present.has(type)) continue;
     const parentId = `wad_inventory_${sequence}`;
     rule('Pickups', `Doom pickup ${type} / proximity`, { type: 'entityDoomType', entityId: '$self', doomType: type }, [],
-      [{ type: 'playerReachesEntity', entityId: '$self', distance: 36, height: 56, below: 8 }, { type: 'playerStat', stat: 'health', operator: '>', value: 0 }],
+      // A pickup may be on a shelf or a ledge; `reachOverSteps` lets the player take
+      // it from the floor below instead of having to stand on it.
+      [{ type: 'playerReachesEntity', entityId: '$self', distance: 36, height: 112, below: 32, reachOverSteps: 'yes' },
+        { type: 'playerStat', stat: 'health', operator: '>', value: 0 }],
       { forEachType: 'pickup' });
     rule('Pickups', `Doom pickup ${type} / collect`, needs[0] || { type: 'always' },
       [...actions, { type: 'playSound', sound: 'DSITEMUP', volume: .7 }, { type: 'removeEntity', entityId: '$self' }], needs.slice(1),

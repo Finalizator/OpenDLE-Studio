@@ -635,6 +635,16 @@ remain native engine primitives.
   player yaw/pitch, nearest live enemies and map wall/floor/ceiling occlusion;
   each enemy currently uses a 20-radius, 56-high hit cylinder. It ignores
   model meshes and non-enemy rigid-body prop occlusion.
+- **Pickup reach:** a pickup is collected when the player overlaps it: 36 units per
+  axis (Doom's own touch radius), up to 112 units above the player's floor and 32
+  below, and — for anything raised more than a step — without tracing a line
+  through the wall around a shelf or ledge. That last part matters: a chainsaw on
+  a ledge is enclosed by solid walls, so the previous "nearest 36 units and no wall
+  in between" rule could never take it from the floor below. Projects imported
+  before this carry the old values in their generated rules; `upgradePickupReach`
+  widens only the untouched generated numbers (36/56/8) when a project is loaded,
+  leaving hand-edited rules alone, and the reach stays editable in Engine →
+  Pickups (`playerReachesEntity`, with `reachOverSteps`).
 - **Pickups / World:** fresh starter projects organize the original
   object-owned score pickup and welcome event into these sheets. Legacy
   opt-in leaves authored sheet associations intact.
