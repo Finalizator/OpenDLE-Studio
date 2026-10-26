@@ -1205,6 +1205,30 @@ map is a uniform update, not a recompile. `fit` stretches the view over the
 surface. A camera whose render throws reports through
 `canvas.dataset.cameraTextureError` once instead of failing the frame.
 
+### Sky changes
+
+ACS `ChangeSky(sky1, sky2)` names the sky a level should show. `shared/sky.js`
+records the request on the runtime state (`skyRequest`, saved with the game) and
+resolves a name to an image asset by name, case-insensitively; any sky, texture
+or image asset qualifies, as in GZDoom, where a wall texture is a legal sky.
+
+`public/render.js` builds the sky through `buildSky` instead of inline setup, so a
+request is applied on the next frame: when a panorama is already on screen it
+swaps the sampler image (and re-sets the material up, which reuses the cached
+pipeline), and it only rebuilds the sky when nothing was drawn at all — a solid
+colour, or a six-face skybox that the named texture replaces. The projection
+stays the project's own sky mode, so a Doom sky keeps its Doom mapping. The
+second name only concerns sectors flagged `sky2`, which this engine does not
+model; it is recorded for diagnostics rather than drawn. A name with no matching
+image reports through `canvas.dataset.skyError` once instead of failing the
+frame, and the applied name is visible in `canvas.dataset.sky`.
+
+Classic `SKYn` textures are imported whether or not the current map uses them, so
+a script can switch to any of them; every sky image also travels with each level
+in a full-game import rather than only the one the map starts with. Edits to the
+sky in the editor now show up without reloading the preview, because the same
+builder runs when the environment changes.
+
 ### Sound names and SNDINFO
 
 DECORATE and ZScript states never name a sound file. They name a logical sound

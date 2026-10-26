@@ -13,6 +13,7 @@ import { createAcsVm, createProgram, startScript, startScriptsOfKind, tickAcs, t
 import { executeSpecial, specialName, unsupportedSpecials } from './line-specials.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 import { bindCameraTexture } from './cameratextures.js';
+import { requestSky } from './sky.js';
 import { addAmmo } from './player-state.js';
 import { soundEvent, floorAt, launchProjectile } from './combat.js';
 import { sectorAt } from './sectors.js';
@@ -211,7 +212,7 @@ export function createMapScripts(project, state, callbacks = {}) {
     clearLineSpecial: line => clearLineSpecial(line),
     lineRowOffset: line => line?.right?.offsetY || 0,
     setMusic: (name, order) => { if (name) state.musicRequest = { name, order }; },
-    changeSky: (first) => { if (first) state.skyRequest = first; },
+    changeSky: (first, second) => requestSky(state, first, second),
     setGravity: value => { state.gravity = Number.isFinite(value) ? value : state.gravity; },
     setAirControl: value => { state.airControl = Number.isFinite(value) ? value : state.airControl; },
     sectorDamage: (tag, amount) => { for (const sector of sectorsTagged(tag)) damageInSector(sector, amount); },

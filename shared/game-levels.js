@@ -40,7 +40,8 @@ export function gameLevelAssetIds(project) {
   for (const mapping of project.materialAnimations || []) {
     references.add(mapping.assetId);
   }
-  return project.assets.filter(asset => ['sound', 'music'].includes(asset.kind) || references.has(asset.id)).map(asset => asset.id);
+  // Skies travel with every level: a script can ChangeSky to one no map thing names.
+  return project.assets.filter(asset => ['sound', 'music', 'sky'].includes(asset.kind) || references.has(asset.id)).map(asset => asset.id);
 }
 
 export function selectGameLevel(project, id) {

@@ -356,6 +356,9 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     const mapNumber = Number(mapName.match(/\d+$/)?.[0] || 1);
     const skyName = mapName.startsWith('MAP') ? `SKY${mapNumber <= 11 ? 1 : mapNumber <= 20 ? 2 : 3}` : `SKY${mapName[1]}`;
     if (assets.has(skyName)) { project.environment.skyAsset = assets.get(skyName, 'sky'); project.environment.skyMode = 'doom'; }
+    // A script can ChangeSky to another classic sky mid-level, so all of them are
+    // imported as editable image assets, not only the one this map starts with.
+    for (const name of assets.skyTextures()) assets.get(name, 'sky');
     for (const prefix of ['PUNG', 'PISG', 'SHTG', 'SHT2', 'CHGG', 'MISG', 'PLSG', 'BFGG', 'SAWG']) assets.sprite(prefix, 'weapon');
     project.environment.weaponAsset = assets.assets.find(asset => asset.name.startsWith('PISG'))?.id || null;
     project.assets = assets.assets;

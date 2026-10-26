@@ -180,6 +180,29 @@ test('scripts print, delay and terminate at tic granularity', () => {
   assert.equal(vm.active.length, 0);
 });
 
+test('ChangeSky hands both sky names to the host in source order', () => {
+  const asm = emitter();
+  asm.pushBytes(0).pushBytes(1).ins('CHANGESKY').ins('TERMINATE');
+  const parsed = parseBehavior(behavior({ code: asm.code, scripts: [{ number: 1, type: 1, args: 0, address: 8 }],
+    strings: ['SKY1', 'SKY2'] }));
+  const calls = [];
+  const vm = createAcsVm(parsed, { changeSky: (first, second) => calls.push([first, second]) });
+  startScript(vm, 1);
+  tickAcs(vm);
+  assert.deepEqual(calls, [['SKY1', 'SKY2']]);
+});
+
+test('a ChangeSky in a map script reaches the runtime as a live sky change', () => {
+  const asm = emitter();
+  asm.pushBytes(0).pushBytes(1).ins('CHANGESKY').ins('TERMINATE');
+  const described = describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }], strings: ['SKY2', 'SKY4'] }));
+  const project = room(0, [], { withScripts: described.mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.deepEqual(state.skyRequest, { name: 'SKY2', alt: 'SKY4' });
+});
+
 test('arithmetic, map variables and loops follow ACS integer semantics', () => {
   // mapvar0 = 0; for (i = 0; i < 5; i++) mapvar0 += i;
   const asm = emitter();

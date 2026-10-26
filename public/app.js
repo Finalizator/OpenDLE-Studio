@@ -1748,6 +1748,7 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       viewSize: runtime.settings.viewSize,
       hudElements: (snapshot.hud?.elements || []).length,
       statusBarElements: (snapshot.hud?.elements || []).filter(element => element.statusbar).length,
+      sky: (snapshot.assets || []).find(asset => asset.id === snapshot.environment?.skyAsset)?.name || null,
       url: location.href,
       app: engineVersion ? `OpenDLE: Studio ${engineVersion}` : 'OpenDLE: Studio',
     });

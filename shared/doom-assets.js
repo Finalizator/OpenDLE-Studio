@@ -333,7 +333,17 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     translations.set(cacheKey, id);
     return id;
   }
-  return { get, sprite, spriteFrame, atlas, font, materialSequences, translate, cameraTexture, palette: colors, assets, warnings, has: name => lumpMap.has(name) || definitions.has(name) ||
+  // Classic Doom switches sky by episode; ChangeSky can name any of them, so the
+  // importer registers every SKYn texture the game defines, not only the current one.
+  function skyTextures() {
+    const names = new Set([...definitions.keys(), ...lumpMap.keys()]);
+    for (const key of images.keys()) {
+      const match = /^(?:sky|texture)_(.+)$/.exec(key);
+      if (match && /^SKY\w*$/i.test(match[1])) names.add(match[1]);
+    }
+    return [...names].filter(name => /^SKY\w*$/i.test(name)).sort();
+  }
+  return { get, sprite, spriteFrame, atlas, font, materialSequences, translate, cameraTexture, skyTextures, palette: colors, assets, warnings, has: name => lumpMap.has(name) || definitions.has(name) ||
     ['sprite', 'weapon', 'texture', 'flat'].some(kind => images.has(`${kind}_${name}`)) };
 }
 

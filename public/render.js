@@ -13,6 +13,7 @@ import { createPhysics } from '/shared/physics.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { gameView } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
+import { skyAssetFor, skyRequestName } from '/shared/sky.js';
 import { createSpriteIndex } from '/shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 
@@ -370,33 +371,87 @@ export async function createPreview(canvas, project, state, { editor = false } =
     if (!editor) for (const surface of surfaceMaterials(geometry, wallLines, project.environment)) {
       warmMaterial(surface.assetId, surface.level, surface.color, surface.masked);
     }
-    const skyAsset = assetMap.get(project.environment.skyAsset);
-    if (project.environment.skybox) {
-      const faces = ['px', 'nx', 'py', 'ny', 'pz', 'nz'].map(face => {
-        const result = new THREE.MeshBasicMaterial({ map: imageTexture(project.environment.skybox[face]), side: THREE.BackSide, depthWrite: false });
-        materials.add(result); return result;
-      });
-      const box = new THREE.BoxGeometry(20000, 20000, 20000);
-      const sky = new THREE.Mesh(box, faces); geometries.add(box); backgroundScene.add(sky);
-      backgroundScene.userData.skybox = sky;
-    } else if (skyAsset) {
-      const heading = uniform(0), pitch = uniform(0), aspect = uniform(800 / 450);
-      const fieldOfView = uniform(Math.tan(35 * Math.PI / 180));
-      const p = uv().mul(2).sub(1).mul(fieldOfView);
-      const forward = vec3(cos(pitch).mul(cos(heading)), sin(pitch), cos(pitch).mul(sin(heading)));
-      const right = vec3(sin(heading).negate(), 0, cos(heading));
-      const ray = normalize(forward.add(right.mul(p.x).mul(aspect)).add(cross(right, forward).mul(p.y)));
-      const doom = project.environment.skyMode === 'doom';
-      const u = atan(ray.z, ray.x).div(6.2831853).mul(doom ? 4 : 1);
-      const elevation = atan(ray.y, length(ray.xz));
-      const v = doom ? clamp(tan(clamp(elevation, -1.4, 1.4)).mul(.65).add(.5), .001, .999) : elevation.div(Math.PI).add(.5);
-      const backgroundMaterial = new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
-      backgroundMaterial.vertexNode = vec4(positionGeometry.xy, 0, 1);
-      backgroundMaterial.fragmentNode = texture(imageTexture(skyAsset.id), vec2(u, v));
-      backgroundMaterial.userData.panoramaUniforms = { heading, pitch, aspect, fieldOfView };
-      mesh(new THREE.PlaneGeometry(2, 2), backgroundMaterial, backgroundScene);
-      backgroundScene.userData.panorama = backgroundMaterial;
+    // The sky is rebuilt from the environment rather than set up inline, because a
+    // script can change it while the level runs (ACS ChangeSky).
+    let appliedSky = null, failedSky = null;
+    function clearSky() {
+      for (const child of [...backgroundScene.children]) {
+        backgroundScene.remove(child);
+        const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
+        for (const childMaterial of childMaterials) if (childMaterial) { materials.delete(childMaterial); childMaterial.dispose(); }
+        if (child.geometry) { geometries.delete(child.geometry); child.geometry.dispose(); }
+      }
+      delete backgroundScene.userData.skybox;
+      delete backgroundScene.userData.panorama;
+      delete backgroundScene.userData.skyTexture;
+      delete backgroundScene.userData.skyAssetId;
     }
+    function buildSky(environment, assetId = environment.skyAsset) {
+      clearSky();
+      const skyAsset = assetMap.get(assetId);
+      if (environment.skybox && assetId === environment.skyAsset) {
+        const faces = ['px', 'nx', 'py', 'ny', 'pz', 'nz'].map(face => {
+          const result = new THREE.MeshBasicMaterial({ map: imageTexture(environment.skybox[face]), side: THREE.BackSide, depthWrite: false });
+          materials.add(result); return result;
+        });
+        const box = new THREE.BoxGeometry(20000, 20000, 20000);
+        const sky = new THREE.Mesh(box, faces); geometries.add(box); backgroundScene.add(sky);
+        backgroundScene.userData.skybox = sky;
+        appliedSky = null;
+      } else if (skyAsset && textures.has(skyAsset.id)) {
+        const heading = uniform(0), pitch = uniform(0), aspect = uniform(800 / 450);
+        const fieldOfView = uniform(Math.tan(35 * Math.PI / 180));
+        const p = uv().mul(2).sub(1).mul(fieldOfView);
+        const forward = vec3(cos(pitch).mul(cos(heading)), sin(pitch), cos(pitch).mul(sin(heading)));
+        const right = vec3(sin(heading).negate(), 0, cos(heading));
+        const ray = normalize(forward.add(right.mul(p.x).mul(aspect)).add(cross(right, forward).mul(p.y)));
+        const doom = environment.skyMode === 'doom';
+        const u = atan(ray.z, ray.x).div(6.2831853).mul(doom ? 4 : 1);
+        const elevation = atan(ray.y, length(ray.xz));
+        const v = doom ? clamp(tan(clamp(elevation, -1.4, 1.4)).mul(.65).add(.5), .001, .999) : elevation.div(Math.PI).add(.5);
+        const backgroundMaterial = new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
+        backgroundMaterial.vertexNode = vec4(positionGeometry.xy, 0, 1);
+        // Keeping the sampler node lets ChangeSky swap the image without a rebuild.
+        const skyTexture = texture(textures.get(skyAsset.id), vec2(u, v));
+        backgroundMaterial.fragmentNode = skyTexture;
+        backgroundMaterial.userData.panoramaUniforms = { heading, pitch, aspect, fieldOfView };
+        mesh(new THREE.PlaneGeometry(2, 2), backgroundMaterial, backgroundScene);
+        backgroundScene.userData.panorama = backgroundMaterial;
+        backgroundScene.userData.skyTexture = skyTexture;
+        backgroundScene.userData.skyAssetId = skyAsset.id;
+        appliedSky = skyAsset.name.toUpperCase();
+      } else {
+        appliedSky = null;
+      }
+      failedSky = null;
+    }
+    /** Applies a ChangeSky request: an image swap normally, a rebuild when no sky is drawn. */
+    function applySky(state) {
+      if (editor || !state) return;
+      const name = skyRequestName(state.skyRequest);
+      if (!name || name.toUpperCase() === appliedSky) return;
+      const asset = skyAssetFor(project, name);
+      if (!asset || !textures.has(asset.id)) {
+        if (failedSky !== name.toUpperCase()) {
+          failedSky = name.toUpperCase();
+          canvas.dataset.skyError = `ChangeSky: this project has no sky image named ${name.toUpperCase()}`;
+        }
+        return;
+      }
+      const skyTexture = backgroundScene.userData.skyTexture;
+      if (skyTexture) {
+        skyTexture.value = textures.get(asset.id);
+        // A node graph keeps the sampler it was built with, so the material is
+        // re-set up to read the new image; the pipeline itself is cached.
+        backgroundScene.userData.panorama.needsUpdate = true;
+        backgroundScene.userData.skyAssetId = asset.id;
+        appliedSky = asset.name.toUpperCase();
+        failedSky = null;
+      } else buildSky(project.environment, asset.id);
+      canvas.dataset.sky = appliedSky;
+      delete canvas.dataset.skyError;
+    }
+    buildSky(project.environment);
     const sprites = new Map(), spriteList = [];
     let spriteTemplate = null;
     // Sprites and models are created on demand so runtime spawns appear without a
@@ -816,6 +871,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         effectList.splice(index, 1);
       }
       renderCameraTextures(state);
+      applySky(state);
       renderer.autoClear = true;
       renderer.setClearColor(clearColor(project.environment.sky));
       if (backgroundScene.userData.skybox) {
@@ -873,6 +929,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       if (nextInputs !== worldInputs) {
         worldInputs = nextInputs;
         for (const entry of worldPartKeys.values()) entry.signature = null;
+        // Environment edits (sky image, skybox, mode) show up without a reload.
+        buildSky(project.environment);
       }
       // buildStaticWorld keeps every part whose signature still matches, so a
       // single edited wall or sector costs one rebuild instead of the whole map.
