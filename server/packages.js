@@ -463,6 +463,9 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   const sndInfoSources = [...files].filter(([name]) => /(^|\/)sndinfo(\.[a-z]{2,3})?(\.txt)?$/i.test(name))
     .map(([, file]) => (file.data ? Buffer.from(file.data).toString('latin1') : null)).filter(Boolean);
   sndInfoSources.push(...sndInfoFromWad(combined));
+  // Actor translations can be named entries in a TRANSLATION/TRNSLATE text lump.
+  const translationSources = [...files].filter(([name]) => /(^|\/)(trnslate|translation)(\.[a-z]{2,3})?(\.txt)?$/i.test(name))
+    .map(([, file]) => (file.data ? Buffer.from(file.data).toString('latin1') : null)).filter(Boolean);
   // ACS libraries: compiled modules in acs/, selected by LOADACS. They carry
   // scripts and strings the maps call into.
   const packageLibraries = acsLibrariesFromFiles(files);
@@ -480,7 +483,7 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   const result = importWadMap(combined, selected.marker,
     { encodeImage: context?.encodeImage || encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources,
       episodeInfo: context?.episodeInfo, actorSources, dehacked: dehackedSources, languageSources,
-      sndInfoSources, acsLibraries, loadacs: loadacsLists, deferActionGaps: deferActionGaps ?? fullGame });
+      sndInfoSources, acsLibraries, loadacs: loadacsLists, translationSources, deferActionGaps: deferActionGaps ?? fullGame });
   let musicBytes = 0;
   for (const [path, file] of files) if (path.startsWith('music/')) {
     const format = extname(path).slice(1);

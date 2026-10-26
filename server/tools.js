@@ -43,6 +43,7 @@ export const toolDefinitions = [
       flags: z.record(z.boolean()).optional(),
       sounds: z.record(z.string().max(80)).optional(),
       labels: z.record(z.array(z.union([z.string().max(120), z.number()]))).optional(),
+      translation: z.array(z.string().max(120)).max(8).nullable().optional(),
     } },
   { name: 'actor_reset', description: 'Restore the project actor table to what the import produced, discarding actor edits.', shape: {} },
   { name: 'actor_unsupported', description: 'Report the actor action functions the active level\'s actors and weapons call that this runtime cannot execute. Each entry names the function, how many state frames call it and which actors use it, so an imported mod behaviour gap can be diagnosed instead of guessed. Read this before claiming a mod\'s weapon or monster behaviour is complete.', shape: {} },
@@ -258,6 +259,13 @@ export function applyTool(project, name, args, context = {}) {
         }
       }
       if (input.sounds) Object.assign(actor.sounds, input.sounds);
+      if (input.translation !== undefined) {
+        // Specs are baked into sprite assets at import, so this edits the data the
+        // next import (or a reimport) repaints from.
+        if (input.translation === null || !input.translation.length) delete actor.translation;
+        else actor.translation = input.translation;
+        actor.edited = true;
+      }
       if (input.labels) {
         // Replacing a label rebuilds the frame list in declaration order so
         // `goto`/`A_Jump` indexes stay consistent.

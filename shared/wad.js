@@ -11,13 +11,14 @@ import { importSBarInfo } from './sbarinfo.js';
 import { assembleGameLevels, parseLevelRoutes } from './game-levels.js';
 import { parseGameEpisodes } from './game-episodes.js';
 import { resolveLevelMusic } from './music.js';
-import { importActors } from './actors.js';
-import { unsupportedActorActions, mergeActorActionGaps, describeActorActionGaps } from './actor-runtime.js';
+import { importActors, actorIndex } from './actors.js';
+import { unsupportedActorActions, mergeActorActionGaps, describeActorActionGaps, installActorProjectileSprites } from './actor-runtime.js';
 import { buildStringTable, resolveString } from './language.js';
 import { parseSndInfo, soundTable, VANILLA_SOUNDS } from './sndinfo.js';
 import { describeMapScripts } from './map-scripts.js';
 import { acsLibrariesFromWad, selectAcsLibraries } from './acs-libraries.js';
 import { unsupportedSpecials } from './line-specials.js';
+import { translationSpecs, parseTranslationTable } from './translation.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
 
@@ -49,6 +50,84 @@ export function importWadGame(wad, entry, options = {}) {
   return result;
 }
 
+/**
+ * Repaints the sprites of actors that declare a DECORATE/ZScript translation.
+ * Sprites are baked with the palette, so the recolour happens here; the runtime
+ * and the editor only see additional editable image assets and clips.
+ */
+/** Short stable suffix so translated assets can be shared and recognised. */
+function translationSuffix(specs) {
+  const hash = [...specs.join(',')].reduce((value, character) => (value * 31 + character.charCodeAt(0)) >>> 0, 7);
+  return `tr${hash.toString(36).slice(0, 6)}`;
+}
+
+export function applyActorTranslations(project, assets, table, warnings) {
+  const index = actorIndex(project.actors || []);
+  const clipCache = new Map(), unresolved = new Set(), resolved = new Map();
+  let placed = 0, clips = 0;
+  const specsOf = actor => {
+    if (resolved.has(actor.name)) return resolved.get(actor.name);
+    let specs = translationSpecs(actor.translation);
+    if (!specs.length && typeof actor.translation === 'number') {
+      // A numeric translation indexes the game's table, one-based.
+      specs = table.ordered[actor.translation - 1]?.specs || [];
+    }
+    if (!specs.length) specs = table.named.get(String(actor.translation).toLowerCase()) || [];
+    if (!specs.length && !unresolved.has(actor.name)) {
+      unresolved.add(actor.name);
+      warnings.push(`Actor ${actor.name} uses translation ${JSON.stringify(actor.translation)}, which this game does not define; its sprites keep the original colours.`);
+    }
+    resolved.set(actor.name, specs);
+    return specs;
+  };
+  const translateFrames = (frames, suffix, specs) => frames.map(assetId => assets.translate(assetId, suffix, specs) || assetId);
+
+  // Placed things get their own clips, because the same sprite prefix may be used
+  // by an untranslated actor.
+  for (const entity of project.map.entities) {
+    const actor = (entity.doomType !== undefined && index.byDoomed.get(entity.doomType)) ||
+      (entity.actorName && index.byName.get(String(entity.actorName).toLowerCase())) || null;
+    if (!actor?.translation) continue;
+    const specs = specsOf(actor);
+    if (!specs.length) continue;
+    const suffix = translationSuffix(specs), spriteStates = {};
+    for (const [state, clipId] of Object.entries(entity.spriteStates || {})) {
+      const clip = project.spriteClips.find(candidate => candidate.id === clipId);
+      if (!clip) continue;
+      const key = `${clipId}\u0000${suffix}`;
+      if (!clipCache.has(key)) {
+        const id = `${clipId}_${suffix}`;
+        if (!project.spriteClips.some(candidate => candidate.id === id)) {
+          project.spriteClips.push({ ...clip, id, name: `${clip.name} / translated`.slice(0, 100),
+            frames: translateFrames(clip.frames, suffix, specs) });
+        }
+        clipCache.set(key, id);
+      }
+      spriteStates[state] = clipCache.get(key);
+    }
+    if (Object.keys(spriteStates).length) entity.spriteStates = spriteStates;
+    if (entity.spriteAsset) entity.spriteAsset = assets.translate(entity.spriteAsset, suffix, specs) || entity.spriteAsset;
+    placed++;
+  }
+
+  // Spawned actors (projectiles, effects) never appear as things, so their clips
+  // are translated in place: the clip already belongs to that one actor.
+  for (const actor of project.actors || []) {
+    if (!actor?.translation) continue;
+    const specs = specsOf(actor);
+    if (!specs.length) continue;
+    const suffix = translationSuffix(specs);
+    for (const kind of ['fly', 'impact']) {
+      const clip = project.spriteClips.find(candidate => candidate.id === `clip_actor_${actor.id}_${kind}`);
+      if (!clip) continue;
+      clip.frames = translateFrames(clip.frames, suffix, specs);
+      clips++;
+    }
+  }
+  if (placed) warnings.push(`${placed} placed actor(s) have DECORATE/ZScript translations applied as translated sprite assets; edit them in the asset and sprite panels.`);
+  if (clips) warnings.push(`${clips} spawned-actor animation(s) use translated sprites for actors that never appear as map things.`);
+}
+
 export function readWad(buffer, { allowNoMaps = false } = {}) {
   if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 12) throw new Error('WAD header is truncated');
   if (buffer.byteLength > 128 * 1024 * 1024) throw new Error('WAD exceeds the 128 MiB import limit');
@@ -69,7 +148,7 @@ export function readWad(buffer, { allowNoMaps = false } = {}) {
   return { buffer, lumps, maps: [...new Set(maps)] };
 }
 
-export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], sndInfoSources = [], acsLibraries = [], loadacs = [], actors = true, deferActionGaps = false, options = {} } = {}) {
+export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], sndInfoSources = [], acsLibraries = [], loadacs = [], translationSources = [], actors = true, deferActionGaps = false, options = {} } = {}) {
   const start = wad.lumps.findLastIndex(lump => lump.name === mapName);
   if (start < 0) throw new Error('Map not found');
   const mapLumps = [];
@@ -340,6 +419,17 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   }
   installDoomInventoryScripts(project);
   if (assets) installSpriteAnimations(project, assets);
+  if (assets && project.actors?.length) installActorProjectileSprites(project);
+  if (assets) {
+    // Actor translations repaint sprites, so they run after the animation clips
+    // exist and can point at translated frames.
+    const table = parseTranslationTable([
+      ...translationSources.map(source => (typeof source === 'string' ? source : source.text)),
+      ...wad.lumps.filter(lump => ['TRANSLATION', 'TRNSLATE'].includes(lump.name) && lump.size <= 1024 * 1024)
+        .map(lump => new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size))),
+    ]);
+    applyActorTranslations(project, assets, table, warnings);
+  }
   const definitions = wad.lumps.filter(lump => lump.name === 'MENUDEF').map(lump => ({
     ...hudSource(lump), resolve: resolveHUD,
   }));

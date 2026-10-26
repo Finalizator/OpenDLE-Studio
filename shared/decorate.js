@@ -422,9 +422,17 @@ export function resolveActorInheritance(definitions) {
     byName.set(definition.name, definition);
   }
   const resolving = new Set(), resolved = new Map();
+  // DECORATE and ZScript class names are case-insensitive, and mods mix casing
+  // (`ACTOR FURFireBall` parented by `FURFireball2`), so lookup ignores case.
+  const folded = new Map();
+  for (const name of byName.keys()) {
+    const key = name.toLowerCase();
+    if (!folded.has(key)) folded.set(key, name);
+  }
   function resolve(name) {
     if (resolved.has(name)) return resolved.get(name);
-    const definition = byName.get(name);
+    const definition = byName.get(name) || byName.get(folded.get(String(name || '').toLowerCase()));
+    if (definition && !byName.has(name)) name = definition.name;
     if (!definition) return null;
     if (resolving.has(name)) { warnings.push(`Circular actor inheritance at ${name}`); return null; }
     resolving.add(name);

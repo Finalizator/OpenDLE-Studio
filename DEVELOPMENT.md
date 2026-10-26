@@ -1127,6 +1127,27 @@ a music volume of 0. Silent music is therefore diagnosable without a console. Im
 soundtracks is not sample-accurate OPL emulation: instruments are approximations,
 and pitch bends, vibrato and tracker effects are not emulated.
 
+### Actor translations
+
+A DECORATE/ZScript `Translation` repaints an actor's sprites by remapping palette
+colours (`128:151=80:111`), collapsing a range onto one colour (`208:223=1`) or
+mapping direct RGB. Sprites are decoded with the game's palette at import, so
+`shared/translation.js` turns the specs into a colour lookup and the importer bakes
+translated copies of the affected frames as ordinary editable image assets. A
+placed actor gets its own translated clips, because the same sprite prefix may
+also be used by an untranslated actor; an actor that only ever spawns (a
+projectile or effect) has its own `clip_actor_*` clips repainted in place.
+Translations whose text this parser cannot model are reported by spec instead of
+being guessed, and a numeric or named translation is resolved through the game's
+`TRANSLATION`/`TRNSLATE` table (the number indexes it, one-based) or reported as
+undefined. Actors are repainted only when their sprites were imported, which
+today means placed things and weapons: a spawned-only actor whose sprites are not
+in the project has nothing to repaint yet.
+
+DECORATE and ZScript class names are case-insensitive, so parent lookup folds
+case; `ACTOR FURFireBall` is a valid parent for `FURFireball2`, and without the
+fold the child lost every inherited flag and state.
+
 ### Sound names and SNDINFO
 
 DECORATE and ZScript states never name a sound file. They name a logical sound

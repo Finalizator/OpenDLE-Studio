@@ -497,3 +497,18 @@ test('the Actors panel notes the action functions the runtime cannot run', () =>
     assert.equal(nodes.gaps.textContent, '');
   } finally { delete globalThis.document; }
 });
+
+test('actor parents resolve regardless of case, so inherited stats and states survive', () => {
+  const text = [
+    'ACTOR FURFireBall', '{', ' Speed 10', ' Health 20', ' Projectile', ' States', ' {', ' Spawn:',
+    '  FBAL A 3', '  Loop', ' }', '}',
+    'ACTOR FURFireball2 : FURFireball', '{', ' Translation "168:185=208:223"', ' States', ' {', ' Spawn:',
+    '  FBAL A 3', '  Loop', ' }', '}',
+  ].join('\n');
+  const resolved = resolveActorInheritance(parseDecorate(text).actors);
+  const child = resolved.actors.get('FURFireball2');
+  assert.ok(child, 'the child actor exists');
+  assert.equal(child.parent, 'FURFireball');
+  assert.equal(child.flags.Projectile, true, 'a differently cased parent still contributes its flags');
+  assert.deepEqual([...child.labels.keys()], ['Spawn'], 'and its state labels');
+});

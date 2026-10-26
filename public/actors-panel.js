@@ -162,6 +162,22 @@ export function createActorsPanel({ list, summary, gaps: gapNote, search, filter
       label.append(input);
       fields.append(label);
     }
+    // Translation specs repaint the actor's sprites, so they belong with the actor
+    // that owns them. Imported sprites are re-baked on the next import.
+    const translationLabel = document.createElement('label');
+    translationLabel.textContent = 'Translation';
+    const translationInput = document.createElement('input');
+    translationInput.type = 'text';
+    translationInput.placeholder = '128:151=80:111, 208:223=1';
+    translationInput.value = [].concat(actor.translation ?? []).filter(entry => typeof entry === 'string').join(', ');
+    translationInput.addEventListener('change', () => edit(next => {
+      const target = next.actors.find(candidate => candidate.name === actor.name);
+      const specs = translationInput.value.split(',').map(entry => entry.trim()).filter(Boolean);
+      if (specs.length) target.translation = specs; else delete target.translation;
+      target.edited = true;
+    }, `${actor.name} translation`));
+    translationLabel.append(translationInput);
+    fields.append(translationLabel);
     states.replaceChildren();
     const label = document.createElement('label');
     label.textContent = 'State machine';

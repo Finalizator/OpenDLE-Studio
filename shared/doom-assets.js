@@ -1,6 +1,8 @@
 import { doomSound, encodeMusic } from './sound.js';
 import { decodeFON2 } from './doom-font.js';
 const decoder = new TextDecoder('ascii');
+import { translationLookup, applyTranslation } from './translation.js';
+
 export function doomName(bytes) {
   return decoder.decode(bytes).replace(/\0.*$/, '').toUpperCase();
 }
@@ -288,7 +290,32 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     const result = { name: key, type: 'bitmap', assetId, ...layout };
     fonts.set(key, result); fonts.set(name, result); return result;
   }
-  return { get, sprite, spriteFrame, atlas, font, materialSequences, assets, warnings, has: name => lumpMap.has(name) || definitions.has(name) ||
+  /**
+   * A translated copy of a sprite asset. Translations are baked here because the
+   * palette and the decoded pixels only exist during import; the renderer then
+   * just picks the translated frames for a translated actor.
+   */
+  const translations = new Map();
+  function translate(assetId, key, specs) {
+    const cacheKey = `${assetId}\u0000${key}`;
+    if (translations.has(cacheKey)) return translations.get(cacheKey);
+    const original = assets.find(asset => asset.id === assetId);
+    if (!original) { translations.set(cacheKey, null); return null; }
+    const { lookup, unsupported } = translationLookup(specs, colors);
+    if (unsupported.length) warnings.add(`Translation ${unsupported.join(', ')} uses unsupported syntax; those colours are unchanged.`);
+    if (!lookup.size) { translations.set(cacheKey, null); return null; }
+    const decoded = original.kind === 'flat' ? decodeFlat(data(lumpMap.get(original.name)), colors) : patch(original.name);
+    const pixels = applyTranslation(decoded.pixels, lookup);
+    totalPixels += decoded.width * decoded.height;
+    check(totalPixels <= 32 * 1024 * 1024 && assets.length < 3000, 'WAD asset budget exceeded');
+    const id = `asset_t${assets.length}_${original.kind}`;
+    assets.push({ id, name: original.name.slice(0, 100), kind: original.kind, width: decoded.width, height: decoded.height,
+      offsetX: decoded.offsetX ?? original.offsetX, offsetY: decoded.offsetY ?? original.offsetY,
+      src: encodeImage({ ...decoded, pixels }) });
+    translations.set(cacheKey, id);
+    return id;
+  }
+  return { get, sprite, spriteFrame, atlas, font, materialSequences, translate, palette: colors, assets, warnings, has: name => lumpMap.has(name) || definitions.has(name) ||
     ['sprite', 'weapon', 'texture', 'flat'].some(kind => images.has(`${kind}_${name}`)) };
 }
 
