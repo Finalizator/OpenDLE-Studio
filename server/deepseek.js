@@ -58,9 +58,9 @@ export async function proposeChanges({ project, prompt, apiKey, model = 'deepsee
           }
         }
         const applied = applyTool(draft, call.function.name, args);
-        draft = applied.project;
+        if (applied.project) draft = applied.project;
         if (applied.changed) changes.push(call.function.name);
-        result = call.function.name === 'project_get' ? summarize(draft) : { ok: true };
+        result = applied.report ?? (call.function.name === 'project_get' ? summarize(draft) : { ok: true });
       } catch (error) {
         result = { error: error.message };
       }

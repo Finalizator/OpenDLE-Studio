@@ -57,11 +57,15 @@ DeepSeek is optional; configure it using [.env.example](./.env.example).
 Our goal is full, one-way GZDoom game import into native, editable OpenDLE
 projects—with room to build beyond the original engine.
 
+Playtest failures are written to `logs/playtest/` as they happen, one file per
+session, and can be read from the Logs tab or by the assistant over MCP.
+
 **This is an early engine, not complete GZDoom compatibility.** Imported weapons,
 enemies and pickups run their own DECORATE/ZScript state machines, map line
 specials execute natively, and each map's compiled ACS module (`BEHAVIOR`) runs
-at Doom's 35 Hz inside the engine. Arbitrary ZScript code, ACS libraries loaded
-through `LOADACS`, portals, slopes and 3D floors remain unsupported. Custom
+at Doom's 35 Hz inside the engine, together with the game's `LOADACS` script
+libraries. Arbitrary ZScript code, portals, slopes and 3D floors remain
+unsupported. Custom
 SBARINFO HUDs and MENUDEF menus have editable, partial translation—not yet full
 GZDoom interface compatibility. No commercial game data is included; supply
 content you have permission to use.

@@ -16,6 +16,8 @@ import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, in
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
 import { createPortableBuild } from './export-build.js';
 import { loadGzdoomActors } from './actor-sources.js';
+import { createPlaytestLogStore, DEFAULT_LOG_DIRECTORY } from './playtest-logs.js';
+import { isLogId, normalizeLogEntry, LOG_LIMITS } from '../shared/playtest-log.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function equal(a, b) {
@@ -33,6 +35,7 @@ export function createApp({
   openBrowser = openLocalBrowser,
   versionFile = resolve(root, 'version.ini'),
   importCache,
+  playtestLogs = createPlaytestLogStore({ directory: resolve(root, DEFAULT_LOG_DIRECTORY) }),
 } = {}) {
   readEngineVersion(versionFile);
   const app = express();
@@ -181,6 +184,35 @@ export function createApp({
       'Content-Disposition': `attachment; filename="${built.filename}"`,
       'Content-Length': String(built.bytes.length) }).send(built.bytes);
   });
+  // Playtest logs: the browser posts batches of failures during play and the
+  // service appends them to a file, so nothing is lost when the tab closes.
+  let logBudget = { minute: Math.floor(Date.now() / 60000), used: 0 };
+  const withinLogBudget = count => {
+    const minute = Math.floor(Date.now() / 60000);
+    if (minute !== logBudget.minute) logBudget = { minute, used: 0 };
+    logBudget.used += count;
+    return logBudget.used <= LOG_LIMITS.requestsPerMinute;
+  };
+  app.post('/api/playtest/logs', (req, res) => {
+    const session = req.body?.session;
+    if (!isLogId(session)) return res.status(400).json({ error: 'Playtest session id is invalid' });
+    if (!Array.isArray(req.body?.entries)) return res.status(400).json({ error: 'Playtest log entries must be an array' });
+    if (req.body.entries.length > LOG_LIMITS.entriesPerRequest) {
+      return res.status(413).json({ error: `At most ${LOG_LIMITS.entriesPerRequest} playtest log entries per request` });
+    }
+    if (!withinLogBudget(req.body.entries.length)) {
+      return res.status(429).json({ error: 'Too many playtest log entries in one minute' });
+    }
+    const entries = req.body.entries.map(entry => normalizeLogEntry(entry, { session }));
+    const header = req.body.header && typeof req.body.header === 'object' ? normalizeLogEntry(req.body.header, { session }) : undefined;
+    res.json(playtestLogs.append(session, entries, { header }));
+  });
+  app.get('/api/playtest/logs', (req, res) => res.json(playtestLogs.list()));
+  app.get('/api/playtest/logs/:session', (req, res) => {
+    if (!isLogId(req.params.session)) return res.status(400).json({ error: 'Playtest session id is invalid' });
+    res.json(playtestLogs.read(req.params.session));
+  });
+  app.delete('/api/playtest/logs', (req, res) => res.json(playtestLogs.clear()));
   app.get('/api/project', (req, res) => res.json(store.snapshot()));  app.put('/api/project', (req, res) => res.json(store.update(req.body.project, req.body.revision)));
   let aiBusy = false;
   app.post('/api/ai', async (req, res) => {
@@ -204,9 +236,11 @@ export function createApp({
       server.registerTool(tool.name, { description: tool.description, inputSchema: tool.shape }, async args => {
         try {
           const snapshot = store.snapshot();
-          const result = applyTool(snapshot.project, tool.name, args);
+          const result = applyTool(snapshot.project, tool.name, args, { playtestLogs });
           const saved = result.changed ? store.update(result.project, snapshot.revision) : snapshot;
-          return { content: [{ type: 'text', text: JSON.stringify(saved) }] };
+          // Read-only tools answer with their own payload instead of the whole
+          // project, which would drown the answer in megabytes of map data.
+          return { content: [{ type: 'text', text: JSON.stringify(result.report ?? saved) }] };
         } catch (error) {
           return { isError: true, content: [{ type: 'text', text: error.message }] };
         }

@@ -139,8 +139,21 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     const scripts = project.mapScripts;
     object(scripts, 'Map scripts');
     assert(['old', 'enhanced', 'little'].includes(scripts.format), 'Unknown ACS module format');
-    text(scripts.data, 'ACS module data', 8 * 1024 * 1024);
-    assert(/^[A-Za-z0-9+/=]+$/.test(scripts.data), 'ACS module data must be base64');
+    if (scripts.data !== undefined) {
+      text(scripts.data, 'ACS module data', 8 * 1024 * 1024);
+      assert(/^[A-Za-z0-9+/=]+$/.test(scripts.data), 'ACS module data must be base64');
+    }
+    if (scripts.libraries !== undefined) {
+      array(scripts.libraries, 'ACS libraries', 32);
+      for (const library of scripts.libraries) {
+        object(library, 'ACS library');
+        text(library.name, 'ACS library name', 64);
+        assert(/^[^/\\]+$/.test(library.name), 'ACS library name must be a plain name');
+        text(library.data, 'ACS library data', 4 * 1024 * 1024);
+        assert(/^[A-Za-z0-9+/=]+$/.test(library.data), 'ACS library data must be base64');
+      }
+    }
+    assert(scripts.data !== undefined || scripts.libraries?.length, 'Map scripts need a module or a library');
   }
   const { vertices, walls, entities } = project.map;
   array(vertices, 'Vertices', 20000);

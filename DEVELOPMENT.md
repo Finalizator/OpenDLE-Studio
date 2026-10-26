@@ -190,6 +190,24 @@ provider credits or network access are required for tests.
   editor numbers), `Misc`, `Ammo`, `Weapon`, `[CODEPTR]`/`Pointer` and the
   classic fullbright frame usage. ACS map scripts run natively (below) and ZScript code beyond
   defaults/state blocks are still not executed.
+- **Playtest logs:** playing a map writes its failures to `logs/playtest/`, one
+  newline-delimited JSON file per play session, because an error in a playtest is
+  gone the moment the tab closes. The browser logger (`public/playtest-log.js`)
+  captures uncaught errors and rejected promises, editor operations that throw, ACS
+  scripts that stop, line specials the runtime does not perform, action functions
+  with no engine equivalent, and audio/renderer failures; the service
+  (`server/playtest-logs.js`) appends them with an `index.json` cache for the panel.
+  Records carry the level, project, renderer, difficulty and play-time so a single
+  line is readable on its own, and a repeating failure is stored once with a repeat
+  count instead of once per frame. Bounds are enforced on both sides — 400 records
+  per request, 240 records per minute, 20,000 records and 4 MiB per session file,
+  the 60 most recent sessions — and a session that reaches its limit records that
+  fact instead of silently dropping the rest. When the service is unreachable (or
+  the game runs as an exported build with no service) records are kept in browser
+  storage and retried on the next page load. The Logs tab lists sessions with their
+  error and warning counts and shows each record with its details; the
+  `playtest_log_list` and `playtest_log_read` MCP tools expose the same data to the
+  assistant, so a failure can be diagnosed from the log instead of guessed at.
 - **Map scripts (ACS):** a level's compiled `BEHAVIOR` module is parsed and
   executed by a real ACS interpreter, not translated by hand: the script
   directory (`SPTR`/`SNAM`/`SFLG`/`SVCT`), string table (`STRL`/`STRE`, including
@@ -198,7 +216,8 @@ provider credits or network access are required for tests.
   stack/arithmetic/logic/variables (script, map, world and global, scalar and
   array), control flow (`goto`/`if`/`case`/`call`/`restart`), `delay`,
   `tagwait`, `scriptwait`, prints and HUD messages, `LSPEC` line-special calls,
-  actor queries and mutation, inventory, sounds, music, and `ACS_Execute`,
+  actor queries and mutation, `GetPlayerInput` (Doom button bits), inventory,
+  sounds, music, and `ACS_Execute`,
   `ACS_Suspend`, `ACS_Terminate`, `ACS_ExecuteWithResult` and the always/named
   variants. OPEN and ENTER scripts start when the level does; scripts tick at
   35 Hz with per-tic `Delay` and `TagWait` semantics, resuming suspended scripts
@@ -209,6 +228,19 @@ provider credits or network access are required for tests.
   tools) shows the script directory and a disassembly of each script, because
   the map ships bytecode rather than source. Unsupported instructions stop the
   script with a named report instead of hanging.
+- **ACS libraries (`LOADACS`):** a game's `acs/*.o` modules are loaded in the
+  order its `LOADACS` list names them and run alongside the map's own module.
+  Each module keeps its own script numbers, string table, functions and map
+  variables, so a library's `print(s:"text")` prints the library's string and not
+  the map's: `TAGSTRING` interns a module's string into the shared pool with a
+  tag, exactly as GZDoom does. Library scripts are addressable as `12`,
+  `"name"` or `"library:12"`, their `OPEN`/`ENTER`/`RESPAWN` scripts start with
+  the level (Furdoom's double jump lives in `acs/DoubleJump.o`), and a `LOAD`
+  chunk's `#include`d function is resolved by name through `FNAM` into the module
+  that really defines it, including cross-module calls. Libraries whose `LOADACS`
+  dependency is missing behave like GZDoom's: the dependency is reported at import
+  and the affected call stops with a named error. `LOADACS` text is also read from
+  WAD `LOADACS` lumps with `A_START`/`A_END` modules.
 - **Line specials:** Hexen/ZDoom specials on UDMF and Hexen-format lines execute
   through the same table ACS uses (`Door_*`, `Floor_*`, `Ceiling_*`, platforms,
   stairs, `Generic_Door`/`Generic_Lift`, `Teleport`, `Thing_Spawn`/`Projectile`/

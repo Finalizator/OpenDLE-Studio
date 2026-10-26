@@ -8,7 +8,7 @@
  * re-importing the map's source.
  */
 
-import { parseBehavior, describeBehavior, disassemble } from '../shared/acs.js';
+import { createProgram, describeBehavior, disassemble } from '../shared/acs.js';
 import { specialName, SUPPORTED_SPECIALS } from '../shared/line-specials.js';
 
 const KINDS = {
@@ -21,13 +21,22 @@ const KINDS = {
   closed: 'Triggered from a line or another script',
 };
 
-function byteDecoder(project) {
-  if (!project?.mapScripts?.data) return null;
+function decodeBase64(text) {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+/** The level's own module plus its LOADACS libraries, in load order. */
+function programDecoder(project) {
+  const scripts = project?.mapScripts;
+  if (!scripts || (!scripts.data && !scripts.libraries?.length)) return null;
   try {
-    const binary = atob(project.mapScripts.data);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-    return parseBehavior(bytes);
+    const entries = [];
+    if (scripts.data) entries.push({ name: 'BEHAVIOR', bytes: decodeBase64(scripts.data) });
+    for (const library of scripts.libraries || []) entries.push({ name: library.name, bytes: decodeBase64(library.data) });
+    return createProgram(entries);
   } catch { return null; }
 }
 
@@ -39,13 +48,13 @@ function element(tag, className, text) {
 }
 
 export function createScriptsPanel(nodes, { project, focus }) {
-  let behavior = null, selected = null, search = '';
+  let program = null, selected = null, search = '';
 
   function render() {
     const current = project();
-    behavior = byteDecoder(current);
+    program = programDecoder(current);
     const summary = nodes.summary;
-    if (!behavior) {
+    if (!program) {
       summary.textContent = current?.mapScripts
         ? 'This level ships an ACS module that could not be read; see the import warnings.'
         : 'This level has no ACS scripts. Doom-format line types run as visual rules in the event sheet; Hexen/UDMF line specials run natively.';
@@ -54,10 +63,12 @@ export function createScriptsPanel(nodes, { project, focus }) {
       nodes.specials.replaceChildren();
       return;
     }
-    const stats = describeBehavior(behavior);
+    const stats = describeBehavior(program);
     const kinds = Object.entries(stats.kinds).map(([kind, count]) => `${count} ${kind}`).join(', ');
+    const modules = stats.modules.map(module => module.name).join(', ');
     summary.textContent = `${stats.scripts} script(s) in an ACS ${stats.format === 'old' ? '1.0 (Hexen)' : '1.x ZDoom'} `
-      + `module (${kinds || 'none'}), ${stats.strings} string(s), ${stats.functions} function(s). Scripts run at 35 Hz.`;
+      + `program (${kinds || 'none'}), ${stats.strings} string(s), ${stats.functions} function(s) across `
+      + `${stats.modules.length} module(s): ${modules}. Scripts run at 35 Hz.`;
     renderList();
     renderSpecials(current);
     if (selected) show(selected);
@@ -65,45 +76,55 @@ export function createScriptsPanel(nodes, { project, focus }) {
 
   function renderList() {
     const needle = search.trim().toLowerCase();
-    const scripts = behavior.scripts.filter(script => !needle ||
-      String(script.name ?? script.number).toLowerCase().includes(needle) || script.type.includes(needle));
+    const scripts = program.scripts.filter(script => !needle ||
+      String(script.name ?? script.number).toLowerCase().includes(needle) || script.type.includes(needle) ||
+      String(script.moduleName).toLowerCase().includes(needle));
     nodes.list.replaceChildren();
     if (!scripts.length) { nodes.list.append(element('p', 'muted', 'No script matches this search.')); return; }
+    let group = null;
     for (const script of scripts) {
+      if (script.moduleName !== group) {
+        group = script.moduleName;
+        nodes.list.append(element('p', 'script-group', script.moduleIndex ? `library ${group}` : 'this map'));
+      }
       const row = element('button', 'script-row');
       row.type = 'button';
-      row.classList.toggle('selected', selected === script.number);
+      row.classList.toggle('selected', selected === keyOf(script));
       row.append(element('strong', '', script.name || `script ${script.number}`),
         element('small', '', `${script.number < 0 ? 'named' : `#${script.number}`} · ${script.type}`
           + `${script.argCount ? ` · ${script.argCount} arg(s)` : ''}`));
       row.title = KINDS[script.type] || 'Triggered from a line or another script';
-      row.addEventListener('click', () => { selected = script.number; renderList(); show(script.number); });
+      row.addEventListener('click', () => { selected = keyOf(script); renderList(); show(keyOf(script)); });
       nodes.list.append(row);
     }
   }
 
+  // Script numbers repeat across modules, so a selection is module-qualified.
+  const keyOf = script => (script.moduleIndex
+    ? `${script.moduleName}:${script.name ?? script.number}` : String(script.number));
+
   function show(selector) {
-    const script = behavior.scripts.find(entry => entry.number === selector || entry.name === selector);
+    const script = program.scripts.find(entry => keyOf(entry) === selector || entry.name === selector);
     if (!script) { nodes.detail.replaceChildren(); return; }
     nodes.detail.replaceChildren();
     const heading = element('h2', '', script.name || `Script ${script.number}`);
     nodes.detail.append(heading);
     nodes.detail.append(element('p', 'muted', `${KINDS[script.type] || 'Triggered from a line or another script'}`
-      + `${script.argCount ? `, ${script.argCount} argument(s)` : ''}. Disassembled from the compiled BEHAVIOR lump.`));
+      + `${script.argCount ? `, ${script.argCount} argument(s)` : ''}. Disassembled from `
+      + `${script.moduleIndex ? `library ${script.moduleName}` : 'the map\'s BEHAVIOR lump'}.`));
     const listing = element('ol', 'script-listing');
-    for (const line of disassemble(behavior, selector === script.number ? (script.name ?? script.number) : selector)) {
+    for (const line of disassemble(program, selector)) {
       const item = element('li', '', line);
       item.dataset.op = line.split(/\s+/)[1] || '';
       listing.append(item);
     }
     nodes.detail.append(listing);
-    const source = behavior.strings.length
-      ? element('details', 'script-strings')
-      : null;
+    const module = program.modules[script.moduleIndex]?.module;
+    const source = module?.strings.length ? element('details', 'script-strings') : null;
     if (source) {
-      source.append(element('summary', '', `String table (${behavior.strings.length})`));
+      source.append(element('summary', '', `String table (${module.strings.length})`));
       const list = element('ul');
-      behavior.strings.forEach((text, index) => list.append(element('li', '', `${index}: ${text}`)));
+      module.strings.forEach((text, index) => list.append(element('li', '', `${index}: ${text}`)));
       source.append(list);
       nodes.detail.append(source);
     }
@@ -132,7 +153,7 @@ export function createScriptsPanel(nodes, { project, focus }) {
     nodes.specials.append(table);
   }
 
-  nodes.search?.addEventListener('input', () => { search = nodes.search.value; if (behavior) renderList(); });
+  nodes.search?.addEventListener('input', () => { search = nodes.search.value; if (program) renderList(); });
   nodes.jump?.addEventListener('click', () => focus?.(selected));
   return { render, select: value => { selected = value; render(); } };
 }

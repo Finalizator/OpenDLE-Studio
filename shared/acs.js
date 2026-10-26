@@ -155,7 +155,8 @@ export function parseBehavior(input) {
     } else format = 'old';
   } else throw new Error('BEHAVIOR uses an unknown ACS version');
 
-  const behavior = { format, bytes, view, dataSize, strings: [], scripts: [], functions: [], jumps: [], mapVars: new Map() };
+  const behavior = { format, bytes, view, dataSize, name: 'BEHAVIOR', strings: [], scripts: [],
+    functions: [], functionNames: [], requiredLibraries: [], imports: [], jumps: [], mapVars: new Map() };
   if (format === 'old') {
     readOldDirectory(behavior, directory);
     readOldStrings(behavior);
@@ -166,6 +167,8 @@ export function parseBehavior(input) {
   readScriptDirectory(behavior, chunks);
   readStrings(behavior, chunks);
   readFunctions(behavior, chunks);
+  behavior.functionNames = readFunctionNames(behavior, chunks);
+  behavior.requiredLibraries = readRequiredLibraries(behavior, chunks);
   const jump = chunks.get('JUMP');
   if (jump) for (let index = 0; index + 4 <= jump.length; index += 4) behavior.jumps.push(behavior.view.getInt32(jump.start + index, true));
   for (const mini of chunks.all.filter(chunk => chunk.id === 'MINI')) {
@@ -295,6 +298,37 @@ function readStringTable(behavior, bytes, view, start) {
   }
 }
 
+/** Function names, so a module can import a function from a library by name. */
+/** FNAM layout: a count, then offsets relative to the chunk, then the names. */
+function readFunctionNames(behavior, chunks) {
+  const chunk = chunks.get('FNAM');
+  if (!chunk) return [];
+  const count = behavior.view.getInt32(chunk.start, true);
+  if (count < 0 || count > 100000) return [];
+  const names = [];
+  for (let index = 0; index < count; index++) {
+    const offset = behavior.view.getInt32(chunk.start + 4 + index * 4, true);
+    if (offset <= 0 || chunk.start + offset >= behavior.bytes.length) { names.push(''); continue; }
+    names.push(text(behavior.bytes, chunk.start + offset, 1024));
+  }
+  return names;
+}
+
+/** `#include`d libraries this module calls functions from, in import order. */
+function readRequiredLibraries(behavior, chunks) {
+  const chunk = chunks.get('LOAD');
+  if (!chunk) return [];
+  const names = [];
+  let current = '';
+  for (let index = 0; index < chunk.length; index++) {
+    const code = behavior.bytes[chunk.start + index];
+    if (code) { current += String.fromCharCode(code); continue; }
+    if (current) { names.push(current); current = ''; }
+  }
+  if (current) names.push(current);
+  return names;
+}
+
 function readFunctions(behavior, chunks) {
   const chunk = chunks.get('FUNC');
   if (!chunk) return;
@@ -375,21 +409,93 @@ export function instructionAt(behavior, offset) {
 }
 
 /**
+ * A program is everything ACS can run on one level: the map's own BEHAVIOR
+ * module first, then every `LOADACS` library in load order. GZDoom gives each
+ * module its own script numbers, string table, functions and map variables, so
+ * scripts are tracked with the module they came from.
+ */
+export function createProgram(entries = []) {
+  const modules = entries.filter(Boolean).map((entry, index) => ({
+    index,
+    name: entry.name || (index === 0 ? 'BEHAVIOR' : `library${index}`),
+    module: entry.module || parseBehavior(entry.bytes),
+  }));
+  for (const { name, module } of modules) module.name = name;
+  const program = { modules, scripts: [], primary: modules[0]?.module ?? null };
+  resolveFunctionImports(program);
+  for (const { index, name, module } of modules) {
+    for (const script of module.scripts) program.scripts.push({ ...script, moduleIndex: index, moduleName: name });
+  }
+  return program;
+}
+
+/**
+ * A `#include`d library can declare a function it does not define, and libraries
+ * imported by LOAD are searched in order for the real body — the same resolution
+ * GZDoom performs when it loads a module.
+ */
+function resolveFunctionImports(program) {
+  for (const { module } of program.modules) {
+    module.imports = (module.requiredLibraries || []).map(name =>
+      program.modules.find(candidate => candidate.name.toLowerCase() === name.toLowerCase())?.module ?? null);
+    module.functions.forEach((fn, index) => {
+      if (fn.address !== 0 || fn.importNum) return;
+      const name = module.functionNames[index];
+      if (!name) return;
+      module.imports.forEach((library, importIndex) => {
+        if (!library || fn.importNum) return;
+        const target = library.functionNames.indexOf(name);
+        if (target < 0) return;
+        const real = library.functions[target];
+        if (!real || real.address === 0 || real.importNum) return;
+        fn.address = target;
+        fn.importNum = importIndex + 1;
+        fn.localCount = real.localCount;
+        fn.returns = real.returns;
+        fn.argCount = real.argCount;
+      });
+    });
+  }
+}
+
+/** Follows an imported function to the module that really defines it. */
+function resolveFunction(module, index) {
+  let owner = module, fn = module.functions[index];
+  const seen = new Set();
+  while (fn?.importNum) {
+    const key = `${owner.name}:${index}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    owner = owner.imports[fn.importNum - 1];
+    if (!owner) return null;
+    index = fn.address;
+    fn = owner.functions[index];
+  }
+  // A declared-but-undefined function keeps address 0; running it would execute
+  // the module header, so it is reported as missing instead.
+  return fn && fn.address ? { module: owner, fn } : null;
+}
+
+const asProgram = value => value?.modules ? value : createProgram([value?.bytes ? { name: value.name, module: value } : null]);
+
+/**
  * Disassembles a script, so the editor and MCP tools can show what a map's
  * scripts do without shipping a compiler.
  */
-export function disassemble(behavior, selector, limit = 4000) {
-  const script = findScript(behavior, selector);
+export function disassemble(program, selector, limit = 4000) {
+  const container = asProgram(program);
+  const script = findScript(container, selector);
   if (!script) throw new Error(`Unknown ACS script ${selector}`);
+  const module = container.modules[script.moduleIndex].module;
   const lines = [];
   let offset = script.address;
   const seen = new Set();
-  while (offset !== null && offset >= 0 && offset < behavior.dataSize && lines.length < limit) {
+  while (offset !== null && offset >= 0 && offset < module.dataSize && lines.length < limit) {
     if (seen.has(offset)) { lines.push(`${hexOffset(offset)}  ... loop`); break; }
     seen.add(offset);
-    const instruction = instructionAt(behavior, offset);
+    const instruction = instructionAt(module, offset);
     if (!instruction) break;
-    lines.push(`${hexOffset(offset)}  ${formatInstruction(behavior, instruction)}`);
+    lines.push(`${hexOffset(offset)}  ${formatInstruction(module, instruction)}`);
     if (!instruction.end) break;
     if (instruction.name === 'TERMINATE' || instruction.name === 'RETURNVOID' || instruction.name === 'RETURNVAL') break;
     offset = instruction.end;
@@ -411,10 +517,50 @@ function formatInstruction(behavior, instruction) {
   return parts.length ? `${instruction.name} ${parts.join(', ')}` : instruction.name;
 }
 
-export function findScript(behavior, selector) {
-  if (!behavior) return null;
-  if (typeof selector === 'string') return behavior.scripts.find(script => script.name === selector) || null;
-  return behavior.scripts.find(script => script.number === selector) || null;
+/**
+ * Scripts are searched in load order: the map's own module first, then libraries.
+ * A selector can be a number, a script name, or `library:number` to address a
+ * library script whose number also exists in the map.
+ */
+export function findScript(program, selector) {
+  if (!program) return null;
+  const scripts = program.scripts;
+  if (!scripts) return null;
+  if (typeof selector === 'string') {
+    const qualified = /^([^:]+):(-?\d+|[A-Za-z_]\w*)$/.exec(selector);
+    if (qualified) {
+      const library = qualified[1].toLowerCase(), target = qualified[2];
+      return scripts.find(script => String(script.moduleName).toLowerCase() === library &&
+        (/^-?\d+$/.test(target) ? script.number === Number(target) : script.name === target)) || null;
+    }
+    if (!/^-?\d+$/.test(selector)) return scripts.find(script => script.name === selector) || null;
+    selector = Number(selector);
+  }
+  return scripts.find(script => script.number === selector) || null;
+}
+
+/** Doom button bits, as `GetPlayerInput(0, INPUT_BUTTONS)` reports them. */
+export const BT = { ATTACK: 1 << 0, USE: 1 << 1, JUMP: 1 << 2, CROUCH: 1 << 3, TURN180: 1 << 4,
+  ALTATTACK: 1 << 5, RELOAD: 1 << 6, ZOOM: 1 << 7, SPEED: 1 << 8, STRAFE: 1 << 9, MOVERIGHT: 1 << 10,
+  MOVELEFT: 1 << 11, BACK: 1 << 12, FORWARD: 1 << 13, RIGHT: 1 << 14, LEFT: 1 << 15, LOOKUP: 1 << 16,
+  LOOKDOWN: 1 << 17, MOVEUP: 1 << 18, MOVEDOWN: 1 << 19 };
+
+/** Tag that marks a string interned into the shared pool by `TAGSTRING`. */
+const POOL_TAG = 0x40000000;
+
+/** Resolves a string operand: pool-tagged values first, then the active module. */
+function vmString(vm, index) {
+  if (!Number.isFinite(index)) return '';
+  if ((index >>> 0) >= POOL_TAG) return vm.pool[index & 0xffff] ?? '';
+  return lookupString(vm.module, index & 0xffff);
+}
+
+function internString(vm, text) {
+  const existing = vm.poolIndex.get(text);
+  if (existing !== undefined) return POOL_TAG | existing;
+  const index = vm.pool.push(text) - 1;
+  vm.poolIndex.set(text, index);
+  return POOL_TAG | index;
 }
 
 /** String table lookup, tolerating the tagged indexes ACS uses for libraries. */
@@ -428,11 +574,13 @@ export function lookupString(behavior, index) {
  * Static pass over every script: reports the opcodes this runtime cannot run, so
  * an import can warn up front instead of failing the first time a script waits.
  */
-export function scanBehavior(behavior) {
+export function scanBehavior(program) {
+  const container = asProgram(program);
   const unsupported = new Set();
   let instructions = 0;
   let functions = 0;
-  for (const script of behavior.scripts) {
+  for (const script of container.scripts) {
+    const behavior = container.modules[script.moduleIndex].module;
     let offset = script.address;
     const seen = new Set();
     while (offset >= 0 && offset < behavior.dataSize && !seen.has(offset)) {
@@ -459,16 +607,22 @@ const STACK_LIMIT = 4096;
 const VARIABLE_SCOPES = { SCRIPT: 'script', MAP: 'map', WORLD: 'world', GLOBAL: 'global' };
 const VARIABLE_KINDS = ['ASSIGN', 'ADD', 'SUB', 'MUL', 'DIV', 'MOD', 'INC', 'DEC', 'AND', 'EOR', 'OR', 'LS', 'RS'];
 
+/** Map variables and arrays are module-local, exactly as in GZMod's FBehavior. */
+const moduleMapVars = (vm, index = vm.moduleIndex) => vm.mapVars[index] ||= new Int32Array(128);
+
 function variableFor(vm, script, scope) {
   if (scope === 'script') return { get: index => script.locals[index] | 0, set: (index, value) => { script.locals[index] = value | 0; } };
-  if (scope === 'map') return { get: index => vm.mapVars[index] | 0, set: (index, value) => { vm.mapVars[index] = value | 0; } };
+  if (scope === 'map') {
+    const store = moduleMapVars(vm);
+    return { get: index => store[index] | 0, set: (index, value) => { store[index] = value | 0; } };
+  }
   if (scope === 'world') return { get: index => vm.worldVars[index] | 0, set: (index, value) => { vm.worldVars[index] = value | 0; } };
   return { get: index => vm.globalVars[index] | 0, set: (index, value) => { vm.globalVars[index] = value | 0; } };
 }
 
 function arrayFor(vm, script, scope) {
   const bag = scope === 'script' ? vm.scriptArrays
-    : scope === 'map' ? vm.mapArrays
+    : scope === 'map' ? (vm.mapArrays[vm.moduleIndex] ||= new Map())
       : scope === 'world' ? vm.worldArrays : vm.globalArrays;
   return {
     get: (id, index) => bag.get(id)?.get(index) | 0,
@@ -629,8 +783,8 @@ function defineStack() {
   define(P.PUSHNUMBER, 'w', (vm, script, [value]) => push(vm, script, value));
   define(P.PUSHBYTE, 'b', (vm, script, [value]) => push(vm, script, value));
   define(P.PUSHBYTES, null, (vm, script) => {
-    const count = vm.behavior.bytes[vm.pc++];
-    for (let index = 0; index < count; index++) push(vm, script, vm.behavior.bytes[vm.pc++]);
+    const count = vm.module.bytes[vm.pc++];
+    for (let index = 0; index < count; index++) push(vm, script, vm.module.bytes[vm.pc++]);
   });
   for (const count of [2, 3, 4, 5]) {
     define(P[`PUSH${count}BYTES`], 'b'.repeat(count), (vm, script, values) => values.forEach(value => push(vm, script, value)));
@@ -647,20 +801,20 @@ function defineStack() {
 
 function defineFlow() {
   define(P.GOTO, 'w', (vm, script, [target]) => { vm.pc = target; });
-  define(P.GOTOSTACK, '', (vm, script) => { vm.pc = vm.behavior.jumps[pop(vm, script)] ?? vm.pc; });
+  define(P.GOTOSTACK, '', (vm, script) => { vm.pc = vm.module.jumps[pop(vm, script)] ?? vm.pc; });
   define(P.IFGOTO, 'w', (vm, script, [target]) => { if (pop(vm, script)) vm.pc = target; });
   define(P.IFNOTGOTO, 'w', (vm, script, [target]) => { if (!pop(vm, script)) vm.pc = target; });
   define(P.CASEGOTO, 'ww', (vm, script, [value, target]) => { if (peek(vm, script, 1) === value) { pop(vm, script); vm.pc = target; } });
   define(P.CASEGOTOSORTED, null, (vm, script) => {
     let at = (vm.pc + 3) & ~3;
-    const count = vm.behavior.view.getInt32(at, true);
+    const count = vm.module.view.getInt32(at, true);
     at += 4;
     const needle = peek(vm, script, 1);
     let low = 0, high = count - 1, found = null;
     while (low <= high) {
       const middle = (low + high) >> 1;
-      const value = vm.behavior.view.getInt32(at + middle * 8, true);
-      if (value === needle) { found = vm.behavior.view.getInt32(at + middle * 8 + 4, true); break; }
+      const value = vm.module.view.getInt32(at + middle * 8, true);
+      if (value === needle) { found = vm.module.view.getInt32(at + middle * 8 + 4, true); break; }
       if (value < needle) low = middle + 1; else high = middle - 1;
     }
     if (found === null) vm.pc = at + count * 8;
@@ -685,7 +839,7 @@ function defineFlow() {
   define(P.SCRIPTWAIT, '', (vm, script) => { script.stateData = pop(vm, script); waitForScript(vm, script); });
   define(P.SCRIPTWAITDIRECT, 'w', (vm, script, [number]) => { script.stateData = number; waitForScript(vm, script); });
   define(P.SCRIPTWAITNAMED, '', (vm, script) => {
-    const named = findScript(vm.behavior, lookupString(vm.behavior, pop(vm, script)));
+    const named = findScript(vm.program, vmString(vm, pop(vm, script)));
     script.stateData = named ? named.number : -1;
     waitForScript(vm, script);
   });
@@ -697,8 +851,13 @@ function waitForScript(vm, script) {
 }
 
 function callFunction(vm, script, index, discard) {
-  const fn = vm.behavior.functions[index];
-  if (!fn) { fail(vm, `call to missing function ${index}`); return; }
+  const name = vm.module.functionNames?.[index];
+  const resolved = resolveFunction(vm.module, index);
+  if (!resolved) {
+    fail(vm, `call to function ${name ? `"${name}"` : index}, which no loaded module defines`);
+    return;
+  }
+  const { module, fn } = resolved;
   if (script.sp + fn.localCount + 64 > STACK_LIMIT) { fail(vm, 'out of stack space'); return; }
   // A function's arguments live at the bottom of its own locals.
   const args = script.stack.slice(script.sp - fn.argCount, script.sp);
@@ -706,8 +865,14 @@ function callFunction(vm, script, index, discard) {
   for (let position = 0; position < fn.argCount; position++) script.locals[position] = args[position] | 0;
   script.stack.length = script.sp - fn.argCount;
   script.sp -= fn.argCount;
-  script.calls.push({ pc: vm.pc, locals: script.locals, arrays: script.scriptArrays, discard });
+  script.calls.push({ pc: vm.pc, locals: script.locals, arrays: script.scriptArrays, discard,
+    module: vm.module, moduleIndex: vm.moduleIndex });
   script.scriptArrays = new Map();
+  // The callee runs with its own module active, so its map variables and strings
+  // are the library's even when the caller lives in the map.
+  vm.module = module;
+  vm.moduleIndex = vm.program.modules.findIndex(entry => entry.module === module);
+  if (vm.moduleIndex < 0) vm.moduleIndex = 0;
   vm.pc = fn.address;
 }
 
@@ -716,6 +881,7 @@ function returnFromFunction(vm, script, value) {
   if (!frame) { script.state = 'terminated'; return; }
   script.locals = frame.locals instanceof Int32Array ? frame.locals : new Int32Array(0);
   script.scriptArrays = frame.arrays;
+  if (frame.module) { vm.module = frame.module; vm.moduleIndex = frame.moduleIndex ?? vm.moduleIndex; }
   vm.pc = frame.pc;
   script.stack.length = script.sp;
   if (!frame.discard) push(vm, script, value);
@@ -725,7 +891,7 @@ function definePrinting() {
   define(P.BEGINPRINT, '', (vm, script) => { script.print = ''; });
   for (const code of [P.PRINTSTRING, P.PRINTLOCALIZED]) {
     define(code, '', (vm, script) => {
-      const value = lookupString(vm.behavior, pop(vm, script));
+      const value = vmString(vm, pop(vm, script));
       script.print = (script.print || '') + value;
     });
   }
@@ -843,7 +1009,7 @@ function defineQueries() {
   });
   define(P.THINGCOUNTDIRECT, 'ww', (vm, script, [type, tid]) => push(vm, script, vm.host.thingCount({ type, tid })));
   define(P.THINGCOUNTNAME, '', (vm, script) => {
-    const tid = pop(vm, script), name = lookupString(vm.behavior, pop(vm, script));
+    const tid = pop(vm, script), name = vmString(vm, pop(vm, script));
     push(vm, script, vm.host.thingCount({ name, tid }));
   });
   define(P.THINGCOUNTSECTOR, '', (vm, script) => {
@@ -851,7 +1017,7 @@ function defineQueries() {
     push(vm, script, vm.host.thingCount({ type, tid, tag }));
   });
   define(P.THINGCOUNTNAMESECTOR, '', (vm, script) => {
-    const tag = pop(vm, script), tid = pop(vm, script), name = lookupString(vm.behavior, pop(vm, script));
+    const tag = pop(vm, script), tid = pop(vm, script), name = vmString(vm, pop(vm, script));
     push(vm, script, vm.host.thingCount({ name, tid, tag }));
   });
   define(P.PLAYERCOUNT, '', (vm, script) => push(vm, script, 1));
@@ -876,12 +1042,18 @@ function defineQueries() {
   define(P.GETSCREENHEIGHT, '', (vm, script) => push(vm, script, 200));
   define(P.GETCVAR, '', (vm, script) => { pop(vm, script); push(vm, script, 0); });
   define(P.GETLEVELINFO, '', (vm, script) => { setTop(vm, script, 1, vm.host.levelInfo(peek(vm, script, 1))); });
-  define(P.STRLEN, '', (vm, script) => { setTop(vm, script, 1, lookupString(vm.behavior, peek(vm, script, 1)).length); });
+  define(P.STRLEN, '', (vm, script) => { setTop(vm, script, 1, vmString(vm, peek(vm, script, 1)).length); });
   define(P.GETLINEROWOFFSET, '', (vm, script) => push(vm, script, script.line ? vm.host.lineRowOffset(script.line) : 0));
   define(P.PLAYERINGAME, '', (vm, script) => { setTop(vm, script, 1, peek(vm, script, 1) === 1 ? 1 : 0); });
   define(P.PLAYERISBOT, '', (vm, script) => push(vm, script, 0));
   define(P.PLAYERCLASS, '', (vm, script) => push(vm, script, 0));
   define(P.GETPLAYERINFO, '', (vm, script) => { pop(vm, script); push(vm, script, 0); });
+  // GetPlayerInput(player, input): buttons, view deltas and movement, so scripts
+  // can react to jump/crouch/attack state.
+  define(P.GETPLAYERINPUT, '', (vm, script) => {
+    const input = pop(vm, script);
+    setTop(vm, script, 1, vm.host.playerInput(peek(vm, script, 1), input));
+  });
   define(P.CHECKPLAYERCAMERA, '', (vm, script) => { pop(vm, script); push(vm, script, 0); });
   define(P.GETAMMOCAPACITY, '', (vm, script) => { pop(vm, script); push(vm, script, 0); });
   const keyCodes = {
@@ -903,17 +1075,17 @@ function randomBetween(vm, min, max) {
 function defineWorld() {
   define(P.CHANGEFLOOR, '', (vm, script) => {
     const flat = pop(vm, script), tag = pop(vm, script);
-    vm.host.changeFlat(tag, lookupString(vm.behavior, flat), false);
+    vm.host.changeFlat(tag, vmString(vm, flat), false);
   });
-  define(P.CHANGEFLOORDIRECT, 'ww', (vm, script, [tag, flat]) => vm.host.changeFlat(tag, lookupString(vm.behavior, flat), false));
+  define(P.CHANGEFLOORDIRECT, 'ww', (vm, script, [tag, flat]) => vm.host.changeFlat(tag, vmString(vm, flat), false));
   define(P.CHANGECEILING, '', (vm, script) => {
     const flat = pop(vm, script), tag = pop(vm, script);
-    vm.host.changeFlat(tag, lookupString(vm.behavior, flat), true);
+    vm.host.changeFlat(tag, vmString(vm, flat), true);
   });
-  define(P.CHANGECEILINGDIRECT, 'ww', (vm, script, [tag, flat]) => vm.host.changeFlat(tag, lookupString(vm.behavior, flat), true));
+  define(P.CHANGECEILINGDIRECT, 'ww', (vm, script, [tag, flat]) => vm.host.changeFlat(tag, vmString(vm, flat), true));
   define(P.SETLINETEXTURE, '', (vm, script) => {
     const texture = pop(vm, script), part = pop(vm, script), side = pop(vm, script), line = pop(vm, script);
-    vm.host.setLineTexture(line, side, part, lookupString(vm.behavior, texture));
+    vm.host.setLineTexture(line, side, part, vmString(vm, texture));
   });
   define(P.SETLINEBLOCKING, '', (vm, script) => {
     const tag = pop(vm, script), mode = pop(vm, script);
@@ -936,21 +1108,21 @@ function defineWorld() {
   define(P.SETMUSIC, '', (vm, script) => {
     const order = pop(vm, script), name = pop(vm, script);
     pop(vm, script);
-    vm.host.setMusic(lookupString(vm.behavior, name), order);
+    vm.host.setMusic(vmString(vm, name), order);
   });
-  define(P.SETMUSICDIRECT, 'www', (vm, script, [name, order]) => vm.host.setMusic(lookupString(vm.behavior, name), order));
+  define(P.SETMUSICDIRECT, 'www', (vm, script, [name, order]) => vm.host.setMusic(vmString(vm, name), order));
   define(P.LOCALSETMUSIC, '', (vm, script) => {
     const order = pop(vm, script), name = pop(vm, script);
     pop(vm, script);
-    vm.host.setMusic(lookupString(vm.behavior, name), order);
+    vm.host.setMusic(vmString(vm, name), order);
   });
-  define(P.LOCALSETMUSICDIRECT, 'www', (vm, script, [name, order]) => vm.host.setMusic(lookupString(vm.behavior, name), order));
+  define(P.LOCALSETMUSICDIRECT, 'www', (vm, script, [name, order]) => vm.host.setMusic(vmString(vm, name), order));
   define(P.MUSICCHANGE, '', (vm, script) => {
     const order = pop(vm, script), name = pop(vm, script);
-    vm.host.setMusic(lookupString(vm.behavior, name), order);
+    vm.host.setMusic(vmString(vm, name), order);
   });
   define(P.CHANGESKY, '', (vm, script) => {
-    const second = lookupString(vm.behavior, pop(vm, script)), first = lookupString(vm.behavior, pop(vm, script));
+    const second = vmString(vm, pop(vm, script)), first = vmString(vm, pop(vm, script));
     vm.host.changeSky(first, second);
   });
   define(P.SETGRAVITY, '', (vm, script) => vm.host.setGravity(pop(vm, script) / 65536));
@@ -971,23 +1143,23 @@ function defineWorld() {
   });
   define(P.SECTORSOUND, '', (vm, script) => {
     const volume = pop(vm, script), sound = pop(vm, script);
-    vm.host.sectorSound(lookupString(vm.behavior, sound), volume);
+    vm.host.sectorSound(vmString(vm, sound), volume);
   });
   define(P.AMBIENTSOUND, '', (vm, script) => {
     const volume = pop(vm, script), sound = pop(vm, script);
-    vm.host.sectorSound(lookupString(vm.behavior, sound), volume);
+    vm.host.sectorSound(vmString(vm, sound), volume);
   });
   define(P.LOCALAMBIENTSOUND, '', (vm, script) => {
     const volume = pop(vm, script), sound = pop(vm, script);
-    vm.host.sectorSound(lookupString(vm.behavior, sound), volume);
+    vm.host.sectorSound(vmString(vm, sound), volume);
   });
   define(P.ACTIVATORSOUND, '', (vm, script) => {
     const volume = pop(vm, script), sound = pop(vm, script);
-    vm.host.thingSound(0, lookupString(vm.behavior, sound), volume, script.activator);
+    vm.host.thingSound(0, vmString(vm, sound), volume, script.activator);
   });
   define(P.THINGSOUND, '', (vm, script) => {
     const volume = pop(vm, script), sound = pop(vm, script), tid = pop(vm, script);
-    vm.host.thingSound(tid, lookupString(vm.behavior, sound), volume);
+    vm.host.thingSound(tid, vmString(vm, sound), volume);
   });
   define(P.SOUNDSEQUENCE, '', (vm, script) => { pop(vm, script); });
   define(P.REPLACETEXTURES, '', (vm, script) => { pop(vm, script); pop(vm, script); pop(vm, script); });
@@ -999,7 +1171,7 @@ function defineWorld() {
   define(P.PLAYMOVIE, '', (vm, script) => { pop(vm, script); push(vm, script, -1); });
   define(P.CHANGELEVEL, '', (vm, script) => {
     const position = pop(vm, script), flags = pop(vm, script), skill = pop(vm, script), map = pop(vm, script);
-    vm.host.changeLevel(lookupString(vm.behavior, map), skill, flags, position);
+    vm.host.changeLevel(vmString(vm, map), skill, flags, position);
   });
   define(P.WRITETOINI, '', (vm, script) => { pop(vm, script); pop(vm, script); });
   define(P.GETFROMINI, '', (vm, script) => { pop(vm, script); push(vm, script, 0); });
@@ -1012,14 +1184,14 @@ function defineActors() {
     push(vm, script, vm.host.spawn({ type, x, y, z, tid, angle }));
   });
   define(P.SPAWNDIRECT, 'wwwwww', (vm, script, [type, x, y, z, tid, angle]) => {
-    push(vm, script, vm.host.spawn({ type: lookupString(vm.behavior, type), x, y, z, tid, angle }));
+    push(vm, script, vm.host.spawn({ type: vmString(vm, type), x, y, z, tid, angle }));
   });
   define(P.SPAWNSPOT, '', (vm, script) => {
     const type = pop(vm, script), spot = pop(vm, script), tid = pop(vm, script), angle = pop(vm, script);
     push(vm, script, vm.host.spawnSpot({ type, spot, tid, angle }));
   });
   define(P.SPAWNSPOTDIRECT, 'wwww', (vm, script, [type, spot, tid, angle]) => {
-    push(vm, script, vm.host.spawnSpot({ type: lookupString(vm.behavior, type), spot, tid, angle }));
+    push(vm, script, vm.host.spawnSpot({ type: vmString(vm, type), spot, tid, angle }));
   });
   define(P.SPAWNSPOTFACING, '', (vm, script) => {
     const type = pop(vm, script), spot = pop(vm, script), tid = pop(vm, script);
@@ -1028,7 +1200,7 @@ function defineActors() {
   define(P.SPAWNPROJECTILE, '', (vm, script) => {
     const tid = pop(vm, script), type = pop(vm, script), angle = pop(vm, script), speed = pop(vm, script), vspeed = pop(vm, script);
     const newTid = pop(vm, script), gravity = pop(vm, script);
-    vm.host.projectile({ tid, type: lookupString(vm.behavior, type), angle, speed, vspeed, newTid, gravity });
+    vm.host.projectile({ tid, type: vmString(vm, type), angle, speed, vspeed, newTid, gravity });
   });
   define(P.THING_PROJECTILE2, '', (vm, script) => {
     const tid = pop(vm, script), type = pop(vm, script), angle = pop(vm, script), speed = pop(vm, script), vspeed = pop(vm, script);
@@ -1050,48 +1222,57 @@ function defineActors() {
     pop(vm, script); pop(vm, script);
   });
   define(P.SETACTORPITCH, '', (vm, script) => { pop(vm, script); pop(vm, script); });
-  define(P.SETACTORPROPERTY, '', (vm, script) => { pop(vm, script); pop(vm, script); pop(vm, script); });
-  define(P.GETACTORPROPERTY, '', (vm, script) => { pop(vm, script); push(vm, script, 0); });
+  // SetActorProperty(tid, property, value) / GetActorProperty(tid, property):
+  // mods poll these every tic, so the properties the engine really tracks are
+  // answered from live state instead of a constant zero.
+  define(P.SETACTORPROPERTY, '', (vm, script) => {
+    const value = pop(vm, script), property = pop(vm, script), tid = pop(vm, script);
+    vm.host.setActorProperty(tid, property, value, script.activator);
+  });
+  define(P.GETACTORPROPERTY, '', (vm, script) => {
+    const property = pop(vm, script), tid = pop(vm, script);
+    push(vm, script, vm.host.getActorProperty(tid, property, script.activator));
+  });
   define(P.THINGDAMAGE2, '', (vm, script) => {
     const tid = pop(vm, script), amount = pop(vm, script), type = pop(vm, script);
-    push(vm, script, vm.host.damageThing(tid, amount, lookupString(vm.behavior, type), script.activator));
+    push(vm, script, vm.host.damageThing(tid, amount, vmString(vm, type), script.activator));
   });
   define(P.CLEARINVENTORY, '', (vm, script) => vm.host.clearInventory(script.activator));
   define(P.GIVEINVENTORY, '', (vm, script) => {
     const amount = pop(vm, script), name = pop(vm, script);
-    vm.host.giveInventory(lookupString(vm.behavior, name), amount, script.activator);
+    vm.host.giveInventory(vmString(vm, name), amount, script.activator);
   });
   define(P.GIVEINVENTORYDIRECT, 'ww', (vm, script, [name, amount]) =>
-    vm.host.giveInventory(lookupString(vm.behavior, name), amount, script.activator));
+    vm.host.giveInventory(vmString(vm, name), amount, script.activator));
   define(P.TAKEINVENTORY, '', (vm, script) => {
     const amount = pop(vm, script), name = pop(vm, script);
-    vm.host.takeInventory(lookupString(vm.behavior, name), amount, script.activator);
+    vm.host.takeInventory(vmString(vm, name), amount, script.activator);
   });
   define(P.TAKEINVENTORYDIRECT, 'ww', (vm, script, [name, amount]) =>
-    vm.host.takeInventory(lookupString(vm.behavior, name), amount, script.activator));
+    vm.host.takeInventory(vmString(vm, name), amount, script.activator));
   define(P.CHECKINVENTORY, '', (vm, script) => {
-    setTop(vm, script, 1, vm.host.checkInventory(lookupString(vm.behavior, peek(vm, script, 1)), script.activator));
+    setTop(vm, script, 1, vm.host.checkInventory(vmString(vm, peek(vm, script, 1)), script.activator));
   });
   define(P.CHECKINVENTORYDIRECT, 'w', (vm, script, [name]) =>
-    push(vm, script, vm.host.checkInventory(lookupString(vm.behavior, name), script.activator)));
+    push(vm, script, vm.host.checkInventory(vmString(vm, name), script.activator)));
   define(P.CLEARACTORINVENTORY, '', (vm, script) => { pop(vm, script); vm.host.clearInventory(script.activator); });
   define(P.GIVEACTORINVENTORY, '', (vm, script) => {
     const tid = pop(vm, script), amount = pop(vm, script), name = pop(vm, script);
-    vm.host.giveInventory(lookupString(vm.behavior, name), amount, script.activator, tid);
+    vm.host.giveInventory(vmString(vm, name), amount, script.activator, tid);
   });
   define(P.TAKEACTORINVENTORY, '', (vm, script) => {
     const tid = pop(vm, script), amount = pop(vm, script), name = pop(vm, script);
-    vm.host.takeInventory(lookupString(vm.behavior, name), amount, script.activator, tid);
+    vm.host.takeInventory(vmString(vm, name), amount, script.activator, tid);
   });
   define(P.CHECKACTORINVENTORY, '', (vm, script) => {
     const tid = pop(vm, script), name = pop(vm, script);
-    setTop(vm, script, 1, vm.host.checkInventory(lookupString(vm.behavior, name), script.activator, tid));
+    setTop(vm, script, 1, vm.host.checkInventory(vmString(vm, name), script.activator, tid));
   });
   define(P.CHECKWEAPON, '', (vm, script) => {
-    setTop(vm, script, 1, vm.host.checkWeapon(lookupString(vm.behavior, peek(vm, script, 1))));
+    setTop(vm, script, 1, vm.host.checkWeapon(vmString(vm, peek(vm, script, 1))));
   });
-  define(P.SETWEAPON, '', (vm, script) => { setTop(vm, script, 1, vm.host.setWeapon(lookupString(vm.behavior, peek(vm, script, 1)))); });
-  define(P.USEINVENTORY, '', (vm, script) => { setTop(vm, script, 1, vm.host.useInventory(lookupString(vm.behavior, peek(vm, script, 1)))); });
+  define(P.SETWEAPON, '', (vm, script) => { setTop(vm, script, 1, vm.host.setWeapon(vmString(vm, peek(vm, script, 1)))); });
+  define(P.USEINVENTORY, '', (vm, script) => { setTop(vm, script, 1, vm.host.useInventory(vmString(vm, peek(vm, script, 1)))); });
   define(P.SETMARINEWEAPON, '', (vm, script) => { pop(vm, script); pop(vm, script); });
   define(P.SETMARINESPRITE, '', (vm, script) => { pop(vm, script); pop(vm, script); });
   define(P.CHECKACTORCEILINGTEXTURE, '', (vm, script) => { pop(vm, script); setTop(vm, script, 1, 0); });
@@ -1099,10 +1280,15 @@ function defineActors() {
 }
 
 function defineConversions() {
-  define(P.TAGSTRING, '', () => {});
+  // ACC emits this after pushing a string constant so that a library's own string
+  // table is used rather than the map's: the value is interned into the shared
+  // pool and tagged, which is what GZMod's TAGSTRING p-code does.
+  define(P.TAGSTRING, '', (vm, script) => {
+    setTop(vm, script, 1, internString(vm, lookupString(vm.module, peek(vm, script, 1))));
+  });
   for (const code of [P.CALLFUNC, P.PUSHFUNCTION, P.CALLSTACK, P.SAVESTRING,
     P.STRCPYTOMAPCHRANGE, P.STRCPYTOSCRIPTCHRANGE, P.STRCPYTOWORLDCHRANGE, P.STRCPYTOGLOBALCHRANGE,
-    P.MORPHACTOR, P.UNMORPHACTOR, P.GETPLAYERINPUT, P.CLASSIFYACTOR, P.SETACTORSTATE, P.SETMUGSHOTSTATE,
+    P.MORPHACTOR, P.UNMORPHACTOR, P.CLASSIFYACTOR, P.SETACTORSTATE, P.SETMUGSHOTSTATE,
     P.SETCAMERATOTEXTURE, P.GRABINPUT, P.SETMOUSEPOINTER, P.MOVEMOUSEPOINTER, P.SETAMMOCAPACITY,
     P.STARTTRANSLATION, P.TRANSLATIONRANGE1, P.TRANSLATIONRANGE2, P.TRANSLATIONRANGE3,
     P.TRANSLATIONRANGE4, P.TRANSLATIONRANGE5, P.ENDTRANSLATION, P.USEACTORINVENTORY]) {
@@ -1146,6 +1332,8 @@ const HOST_DEFAULTS = {
   spawnSpot: () => 0,
   projectile: () => {},
   getActor: () => 0,
+  getActorProperty: () => 0,
+  setActorProperty: () => {},
   setActorPosition: () => false,
   damageThing: () => 0,
   giveInventory: () => {},
@@ -1160,6 +1348,7 @@ const HOST_DEFAULTS = {
   sectorBusy: () => false,
   getSectorZ: () => 0,
   getSectorLight: () => -1,
+  playerInput: () => 0,
 };
 
 /**
@@ -1169,15 +1358,20 @@ const HOST_DEFAULTS = {
  * `Delay` parks a script, `TagWait` waits for the tagged sectors to stop moving,
  * and `ACS_Execute` on a suspended script resumes it instead of starting a copy.
  */
-export function createAcsVm(behavior, host = {}) {
+export function createAcsVm(program, host = {}) {
+  const container = asProgram(program);
   const vm = {
-    behavior,
+    program: container,
+    module: container.primary,
+    moduleIndex: 0,
     host: { ...HOST_DEFAULTS, ...host },
     active: [],
-    mapVars: new Int32Array(128),
+    mapVars: [],
     worldVars: new Int32Array(256),
     globalVars: new Int32Array(64),
-    mapArrays: new Map(),
+    mapArrays: [],
+    pool: [],
+    poolIndex: new Map(),
     worldArrays: new Map(),
     globalArrays: new Map(),
     scriptArrays: new Map(),
@@ -1195,7 +1389,10 @@ export function createAcsVm(behavior, host = {}) {
       return ((vm.seed >>> 0) % 100000) / 100000;
     },
   };
-  for (const [index, value] of behavior.mapVars) vm.mapVars[index] = value;
+  container.modules.forEach(({ index, module }) => {
+    const store = moduleMapVars(vm, index);
+    for (const [slot, value] of module.mapVars) store[slot] = value;
+  });
   return vm;
 }
 
@@ -1204,13 +1401,18 @@ export function createAcsVm(behavior, host = {}) {
  * which silently ignores a second `ACS_Execute` of a live script unless it was
  * started with `ACS_ExecuteAlways`).
  */
-export function startScript(vm, selector, { args = [], activator = null, line = null, backSide = false, always = false, wantResult = false } = {}) {
-  const entry = findScript(vm.behavior, selector);
+export function startScript(vm, selector, options = {}) {
+  const entry = findScript(vm.program, selector);
   if (!entry) {
     vm.errors.push(`Unknown ACS script ${selector}`);
-    return wantResult ? 0 : false;
+    return options.wantResult ? 0 : false;
   }
-  const existing = vm.active.find(script => script.number === entry.number && script.state !== 'terminated');
+  return startEntry(vm, entry, options);
+}
+
+function startEntry(vm, entry, { args = [], activator = null, line = null, backSide = false, always = false, wantResult = false } = {}) {
+  const existing = vm.active.find(script => script.number === entry.number &&
+    script.moduleIndex === entry.moduleIndex && script.state !== 'terminated');
   if (existing && !always) {
     // GZDoom treats a second execute of a live script as a no-op, except that a
     // suspended script resumes where it stopped.
@@ -1220,6 +1422,7 @@ export function startScript(vm, selector, { args = [], activator = null, line = 
   if (vm.active.length > 64) return false;
   const script = {
     number: entry.number, name: entry.name, entry, kind: entry.type,
+    moduleIndex: entry.moduleIndex, moduleName: entry.moduleName,
     locals: new Int32Array(Math.max(entry.varCount || 20, entry.argCount)),
     stack: [], sp: 0, calls: [], scriptArrays: new Map(),
     pc: entry.address, state: 'running', delay: 0, stateData: 0, result: 1,
@@ -1232,10 +1435,9 @@ export function startScript(vm, selector, { args = [], activator = null, line = 
     // Running for a result happens inline, so the caller's program counter and
     // script must be restored afterwards: starting scripts from inside a script
     // is the normal way ACS chains map behaviour.
-    const callerPc = vm.pc, callerScript = vm.script;
+    const caller = { pc: vm.pc, script: vm.script, module: vm.module, moduleIndex: vm.moduleIndex };
     runScript(vm, script);
-    vm.pc = callerPc;
-    vm.script = callerScript;
+    Object.assign(vm, caller);
     return script.result | 0;
   }
   return true;
@@ -1243,11 +1445,13 @@ export function startScript(vm, selector, { args = [], activator = null, line = 
 
 function runScript(vm, script) {
   vm.script = script;
+  vm.moduleIndex = script.moduleIndex ?? 0;
+  vm.module = vm.program.modules[vm.moduleIndex]?.module ?? vm.program.primary;
   vm.pc = script.pc;
   let executed = 0;
   while (script.state === 'running') {
     if (++executed > 500000) { fail(vm, 'runaway script terminated'); break; }
-    const decoded = decode(vm.behavior, vm.pc);
+    const decoded = decode(vm.module, vm.pc);
     if (!decoded) { script.state = 'terminated'; break; }
     const definition = OPS.get(decoded.code);
     if (!definition) {
@@ -1259,7 +1463,7 @@ function runScript(vm, script) {
     vm.pc = decoded.cursor;
     if (definition.spec === null) definition.run(vm, script);
     else {
-      const { values, end } = operands(vm.behavior, decoded.cursor, definition.spec);
+      const { values, end } = operands(vm.module, decoded.cursor, definition.spec);
       vm.pc = end;
       definition.run(vm, script, values);
     }
@@ -1298,19 +1502,21 @@ export function tickAcs(vm) {
 /** Runs every script of a type, as the level does for OPEN and ENTER scripts. */
 export function startScriptsOfKind(vm, kind, activator = null) {
   let started = 0;
-  for (const entry of vm.behavior.scripts) {
+  // Libraries carry their own OPEN/ENTER scripts (Furdoom's double jump is an
+  // ENTER script in acs/DoubleJump.o), so every module is started, in load order.
+  for (const entry of vm.program.scripts) {
     if (entry.type !== kind) continue;
-    if (startScript(vm, entry.name ?? entry.number, { activator })) started++;
+    if (startEntry(vm, entry, { activator })) started++;
   }
   return started;
 }
 
 export function terminateScript(vm, selector) {
-  const entry = findScript(vm.behavior, selector);
+  const entry = findScript(vm.program, selector);
   if (!entry) return 0;
   let count = 0;
   for (const script of vm.active) {
-    if (script.number !== entry.number) continue;
+    if (script.number !== entry.number || script.moduleIndex !== entry.moduleIndex) continue;
     script.state = 'terminated';
     count++;
   }
@@ -1318,11 +1524,11 @@ export function terminateScript(vm, selector) {
 }
 
 export function suspendScript(vm, selector) {
-  const entry = findScript(vm.behavior, selector);
+  const entry = findScript(vm.program, selector);
   if (!entry) return 0;
   let count = 0;
   for (const script of vm.active) {
-    if (script.number !== entry.number || script.state === 'terminated') continue;
+    if (script.number !== entry.number || script.moduleIndex !== entry.moduleIndex || script.state === 'terminated') continue;
     script.state = 'suspended';
     count++;
   }
@@ -1330,17 +1536,30 @@ export function suspendScript(vm, selector) {
 }
 
 /** Human-readable summary used by the importer, the editor and MCP tools. */
-export function describeBehavior(behavior) {
-  if (!behavior) return null;
+export function describeBehavior(program) {
+  if (!program) return null;
+  const container = asProgram(program);
+  const modules = container.modules.map(({ name, module }) => ({
+    name, format: module.format, scripts: module.scripts.length, functions: module.functions.length,
+    strings: module.strings.length, mapVars: module.mapVars.size,
+  }));
   const kinds = {};
-  for (const script of behavior.scripts) kinds[script.type] = (kinds[script.type] || 0) + 1;
+  for (const script of container.scripts) kinds[script.type] = (kinds[script.type] || 0) + 1;
+  const format = modules[0]?.format ?? 'little';
   return {
-    format: behavior.format,
-    scripts: behavior.scripts.length,
+    modules,
+    ...describeTotals(container, modules, kinds, format),
+  };
+}
+
+function describeTotals(container, modules, kinds, format) {
+  return {
+    format,
+    scripts: container.scripts.length,
     kinds,
-    functions: behavior.functions.length,
-    strings: behavior.strings.length,
-    mapVars: behavior.mapVars.size,
+    functions: modules.reduce((total, module) => total + module.functions, 0),
+    strings: modules.reduce((total, module) => total + module.strings, 0),
+    mapVars: modules.reduce((total, module) => total + module.mapVars, 0),
   };
 }
 

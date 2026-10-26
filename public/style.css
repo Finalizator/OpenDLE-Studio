@@ -275,6 +275,8 @@ dialog::backdrop { background: #111c; }
 .script-row { display: grid; gap: 1px; text-align: left; background: #1d2228; border: 1px solid #2f3740;
   color: #d8dde3; padding: 4px 8px; font: inherit; border-radius: 3px; cursor: pointer; }
 .script-row small { color: #8d99a6; font-size: 11px; }
+.script-group { margin: 8px 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #8d99a6; }
+.script-group:first-child { margin-top: 0; }
 .script-row:hover { border-color: #4d5b6a; }
 .script-row.selected { border-color: #ffd34d; background: #2a2f36; }
 .script-detail { min-width: 0; }
@@ -293,3 +295,35 @@ dialog::backdrop { background: #111c; }
 .script-special small { color: #8d99a6; font-size: 11px; }
 .script-special.unsupported { border-color: #7a4a2a; }
 .script-special.unsupported strong { color: #ffb27a; }
+
+/* Playtest logs: what failed while a map was played, straight from the log folder. */
+.logs-layout { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 12px; align-items: start; margin-top: 10px; }
+@media (max-width: 900px) { .logs-layout { grid-template-columns: 1fr; } }
+.log-list { display: grid; gap: 2px; max-height: 60vh; overflow: auto; padding-right: 4px; border-right: 1px solid #2f3740; }
+.log-session { display: grid; gap: 2px; text-align: left; background: #1d2228; border: 1px solid #2f3740;
+  color: #d8dde3; padding: 6px 8px; font: inherit; border-radius: 3px; cursor: pointer; }
+.log-session small { color: #8d99a6; font-size: 11px; }
+.log-session:hover { border-color: #4d5b6a; }
+.log-session.selected { border-color: #ffd34d; background: #2a2f36; }
+.log-counts { display: flex; gap: 6px; flex-wrap: wrap; }
+.log-badge { font-size: 10px; padding: 1px 6px; border-radius: 9px; border: 1px solid #3a444e; color: #9fb4c8; }
+.log-badge.error { border-color: #7d2f2f; color: #ff9b9b; }
+.log-badge.warning { border-color: #7a5a2a; color: #ffd08a; }
+.log-detail { min-width: 0; }
+.log-detail-head { display: grid; gap: 2px; margin-bottom: 8px; }
+.log-detail-head h2 { margin: 0; font-size: 15px; }
+.log-detail-head small { color: #8d99a6; font-size: 11px; }
+.log-filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.log-entries { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; max-height: 56vh; overflow: auto; }
+.log-entry { display: grid; gap: 2px; padding: 6px 8px; border: 1px solid #2f3740; border-left-width: 3px;
+  border-radius: 3px; background: #1a1e23; }
+.log-entry.error { border-left-color: #d9534f; }
+.log-entry.warning { border-left-color: #d9a441; }
+.log-entry.info { border-left-color: #3f6f9f; }
+.log-entry small { color: #8d99a6; font-size: 11px; }
+.log-severity { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #8d99a6; }
+.log-severity.error { color: #ff9b9b; }
+.log-severity.warning { color: #ffd08a; }
+.log-details summary { cursor: pointer; color: #8d99a6; font-size: 11px; }
+.log-details pre { margin: 4px 0 0; padding: 6px 8px; background: #14181d; border: 1px solid #2f3740; border-radius: 3px;
+  font-size: 11px; max-height: 30vh; overflow: auto; white-space: pre-wrap; }

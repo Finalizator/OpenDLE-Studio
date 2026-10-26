@@ -6,6 +6,7 @@ import yauzl from 'yauzl';
 import { PNG } from 'pngjs';
 import { readWad, importWadMap } from '../shared/wad.js';
 import { actorSourcesFromArchive, actorSourcesFromWad, loadGzdoomActors } from './actor-sources.js';
+import { acsLibrariesFromFiles, acsLibrariesFromWad } from '../shared/acs-libraries.js';
 import { validateProject } from '../shared/project.js';
 import { decodePatch, decodeFlat } from '../shared/doom-assets.js';
 import { encodeImage, cachedImageEncoder } from './import.js';
@@ -177,14 +178,15 @@ export function inspectPackage(files) {
   // tables and DEHACKED patches are imported now, so only the remaining kinds are
   // reported as unread.
   const interpreterSupport = /(^|\/)(zscript|decorate|mapinfo|zmapinfo|gameinfo|language|dehacked)$|^(zscript|decorate)([./]|$)|\.(zc|zs|zsc|dec|deh|bex)$|(^|\/)language(\.[a-z]{2,3})?(\.txt)?$|(^|\/)mapinfo\//i;
-  const unsupported = [...files.keys()].filter(name => /(^|\/)(gldefs|sndinfo|animdefs|sbarinfo|modeldef|loadacs|cvarinfo|textures)([./]|$)|^acs\/|^filter\//i.test(name) &&
+  // LOADACS and acs/*.o are read now, so they are not "uninterpreted".
+  const unsupported = [...files.keys()].filter(name => /(^|\/)(gldefs|sndinfo|animdefs|sbarinfo|modeldef|cvarinfo|textures)([./]|$)|^filter\//i.test(name) &&
     !imageKind(name) && !/^sbarinfo(?:\.txt)?$/i.test(name) && !interpreterSupport.test(name));
-  if (unsupported.length) warnings.push(`${unsupported.length} definition files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Scripted HUDs, texture definitions, animations and filter classes need separate runtime support; actor stats, states, MAPINFO editor numbers, LANGUAGE strings, DEHACKED patches and per-map ACS scripts are imported.`);
+  if (unsupported.length) warnings.push(`${unsupported.length} definition files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Scripted HUDs, texture definitions, animations and filter classes need separate runtime support; actor stats, states, MAPINFO editor numbers, LANGUAGE strings, DEHACKED patches, per-map ACS scripts and LOADACS libraries are imported.`);
   const actorFiles = [...files.keys()].filter(name => /(^|\/)(zscript|decorate)(\.(txt|zc|zs|zsc))?$|\.(zc|zs|zsc|dec)$/i.test(name));
   if (actorFiles.length) warnings.push(`${actorFiles.length} DECORATE/ZScript file(s) are imported as editable actor data (stats, flags, sounds, state machines). ZScript code beyond defaults and state blocks is not executed; map scripts call these actors through ACS_* actions.`);
   const maps = mapsIn(files), rejected = maps.filter(map => !map.supported);
   if (rejected.length) warnings.push(`${rejected.length} binary Hexen maps cannot be imported yet; image assets can still be imported.`);
-  if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry and line specials import natively and each map\'s ACS module executes; advanced rendering (portals, 3D floors, slopes) and ACS libraries are still incomplete. Full GZDoom fidelity remains the target, not current capability.');
+  if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry and line specials import natively, and each map\'s ACS module runs with the package\'s LOADACS libraries; advanced rendering (portals, 3D floors, slopes) is still incomplete. Full GZDoom fidelity remains the target, not current capability.');
   if ([...files.keys()].some(name => /^models\//.test(name))) warnings.push('Native model definitions are not imported yet.');
   if ([...files.keys()].some(name => /(^|\/)sndinfo(?:\.txt)?$/.test(name))) warnings.push('Sound files are imported by filename; custom SNDINFO aliases, random groups and channel rules are not translated yet. Edit playSound names in Engine sheets to bind custom effects.');
   const images = [...files.keys()].filter(name => imageKind(name));
@@ -451,6 +453,12 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   const fromBase = actorSourcesFromWad(combined, { prefix: 'base:' });
   actorSources.push(...fromBase.sources);
   dehackedSources.push(...fromBase.dehacked);
+  // ACS libraries: compiled modules in acs/, selected by LOADACS. They carry
+  // scripts and strings the maps call into.
+  const packageLibraries = acsLibrariesFromFiles(files);
+  const baseLibraries = acsLibrariesFromWad(combined);
+  const loadacsLists = [...packageLibraries.lists, ...baseLibraries.lists];
+  const acsLibraries = [...packageLibraries.libraries, ...baseLibraries.libraries];
   if (projectRoot) {
     const gzdoom = loadGzdoomActors(projectRoot);
     if (gzdoom.available) {
@@ -460,7 +468,8 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   }
   const result = importWadMap(combined, selected.marker,
     { encodeImage: context?.encodeImage || encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources,
-      episodeInfo: context?.episodeInfo, actorSources, dehacked: dehackedSources, languageSources });
+      episodeInfo: context?.episodeInfo, actorSources, dehacked: dehackedSources, languageSources,
+      acsLibraries, loadacs: loadacsLists });
   let musicBytes = 0;
   for (const [path, file] of files) if (path.startsWith('music/')) {
     const format = extname(path).slice(1);

@@ -7,7 +7,7 @@ import { parseHUDCSS } from '../shared/hud-style.js';
 import { PLAYER_STATS, WEAPONS, KEYS, AMMO_TYPES } from '../shared/player-state.js';
 import { installGameMenu, attachMenuElement } from '../shared/game-menu.js';
 import { selectGameLevel } from '../shared/game-levels.js';
-import { scriptListing, scriptSummary, collectSpecials, behaviorFor } from '../shared/map-scripts.js';
+import { scriptListing, scriptSummary, collectSpecials, programFor } from '../shared/map-scripts.js';
 import { unsupportedSpecials, specialName } from '../shared/line-specials.js';
 
 const coordinate = z.number().min(-65536).max(65536);
@@ -21,8 +21,8 @@ function wallSpecials(project) {
 }
 
 function scriptSpecials(project) {
-  const behavior = behaviorFor(project);
-  return behavior ? collectSpecials(behavior) : [];
+  const program = programFor(project);
+  return program ? collectSpecials(program) : [];
 }
 
 export const toolDefinitions = [
@@ -45,6 +45,8 @@ export const toolDefinitions = [
   { name: 'script_list', description: 'List the ACS map scripts running in the active level: number or name, trigger kind (open/enter/line), argument count, string table size and what the level uses line specials for. Read this before editing or debugging imported map logic.', shape: {} },
   { name: 'script_get', description: 'Read one ACS map script as a disassembly listing (p-code, operands, resolved string indexes) so map logic can be inspected without the original source. Use script_list for the available selectors.', shape: { script: z.string().min(1).max(80) } },
   { name: 'script_specials', description: 'Report every linedef special the active level uses, whether the native runtime performs it, and which of those are only reachable from scripts.', shape: {} },
+  { name: 'playtest_log_list', description: 'List saved playtest error logs: one entry per play session with its start time, level, error and warning counts, and file size. Read the logs before guessing why a map misbehaved; playtest_log_read returns the records.', shape: {} },
+  { name: 'playtest_log_read', description: 'Read one playtest log by session id from playtest_log_list. Returns the normalised error records (severity, category, message, details, repeat counts) with a summary, newest failures included.', shape: { session: z.string().min(1).max(64), limit: z.number().int().min(1).max(2000).optional() } },
   { name: 'variables_set', description: 'Replace global or object-local initial variables with a complete record of numbers, text or booleans. Omit entityId for globals. Existing script/expression references are validated; types stay fixed during Play.',
     shape: { entityId: z.string().optional(), variables: z.record(z.union([z.number().finite(), z.string().max(4096), z.boolean()])) } },
   { name: 'shaders_set', description: 'Replace portable GLSL effect definitions [{id,name,language:"glsl",source,uniforms:{name:number}}] and optionally select shaderId (null disables). Source defines vec4 effect(vec4 color, vec2 uv, float time); numeric uniform declarations are supplied by the engine. This portable GLSL subset is compiled for WebGPU/WebGL; unsupported syntax and broken references are rejected. Shader visual actions setShaderUniform(uniform,value) and setShaderEnabled(enabled:yes|no) remain editable.',
@@ -146,7 +148,7 @@ toolDefinitions.find(tool => tool.name === 'hud_set_layout').description +=
 toolDefinitions.find(tool => tool.name === 'events_add_rule').description +=
   ' setting("volume") and other typed setting expressions read live user settings. setGameScreen("return") follows the actual menu navigation history; use it instead of hard-coded back destinations for imported submenus.';
 
-export function applyTool(project, name, args) {
+export function applyTool(project, name, args, context = {}) {
   const definition = toolDefinitions.find(tool => tool.name === name);
   if (!definition) throw new Error(`Unknown tool: ${name}`);
   const input = z.object(definition.shape).strict().parse(args);
@@ -196,19 +198,25 @@ export function applyTool(project, name, args) {
     case 'project_set_title': next.title = input.title; break;
     case 'script_list': {
       const summary = scriptSummary(next);
-      if (!summary) return { scripts: [], note: 'This level has no ACS module (BEHAVIOR lump).', changed: false };
-      return { ...summary, lineSpecials: wallSpecials(next), changed: false };
+      if (!summary) return { report: { scripts: [], note: 'This level has no ACS module (BEHAVIOR lump).' }, changed: false };
+      return { report: { ...summary, lineSpecials: wallSpecials(next) }, changed: false };
     }
     case 'script_get': {
-      const selector = /^-?\d+$/.test(input.script) ? Number(input.script) : input.script;
-      return { script: input.script, listing: scriptListing(next, selector), changed: false };
+      return { report: { script: input.script, listing: scriptListing(next, input.script) }, changed: false };
     }
     case 'script_specials': {
-      const summary = scriptSummary(next);
       const linedefs = wallSpecials(next), fromScripts = scriptSpecials(next);
-      return { linedefs, fromScripts: fromScripts.map(special => ({ special, name: specialName(special) })),
+      return { report: { linedefs, fromScripts: fromScripts.map(special => ({ special, name: specialName(special) })),
         unsupported: unsupportedSpecials([...linedefs.map(entry => entry.special), ...fromScripts]),
-        hasModule: Boolean(summary), changed: false };
+        hasModule: Boolean(scriptSummary(next)) }, changed: false };
+    }
+    case 'playtest_log_list': {
+      if (!context.playtestLogs) throw new Error('Playtest logs are not available in this session');
+      return { report: context.playtestLogs.list(), changed: false };
+    }
+    case 'playtest_log_read': {
+      if (!context.playtestLogs) throw new Error('Playtest logs are not available in this session');
+      return { report: context.playtestLogs.read(input.session, { limit: input.limit ?? 200 }), changed: false };
     }
     case 'actor_list': return { actors: (next.actors || []).map(actor => ({
       name: actor.name, doomedNum: actor.doomedNum, health: actor.health, speed: actor.speed,

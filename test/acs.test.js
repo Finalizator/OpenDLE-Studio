@@ -6,7 +6,10 @@ import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { parseBehavior, describeBehavior, disassemble, scanBehavior, createAcsVm, startScript, tickAcs,
   terminateScript, suspendScript, instructionAt, PCODE_NAMES } from '../shared/acs.js';
-import { describeMapScripts, createMapScripts, scriptSummary, decodeBase64 } from '../shared/map-scripts.js';
+import { describeMapScripts, createMapScripts, scriptSummary, decodeBase64, programFor, collectSpecials }
+  from '../shared/map-scripts.js';
+import { loadacsNames, acsLibrariesFromWad, selectAcsLibraries } from '../shared/acs-libraries.js';
+import { createProgram, findScript } from '../shared/acs.js';
 import { executeSpecial, specialName, unsupportedSpecials } from '../shared/line-specials.js';
 import { importWadMap, readWad } from '../shared/wad.js';
 
@@ -93,7 +96,14 @@ function emitter() {
     at,
     byte: value => { code.push(value & 0xff); return api; },
     word: value => { code.push(...wordBytes(value)); return api; },
-    ins: (name, ...operands) => { code.push(P[name]); for (const operand of operands) code.push(...wordBytes(operand)); return api; },
+    ins: (name, ...operands) => {
+      // ACC encodes opcodes >= 240 as an escape byte plus the offset, exactly as
+      // the interpreter decodes them.
+      if (P[name] >= 240) code.push(0xf0, P[name] - 240);
+      else code.push(P[name]);
+      for (const operand of operands) code.push(...wordBytes(operand));
+      return api;
+    },
     push: value => { code.push(P.PUSHNUMBER); code.push(...wordBytes(value)); return api; },
     pushBytes: (...values) => {
       code.push(values.length === 1 ? P.PUSHBYTE : P[`PUSH${values.length}BYTES`]);
@@ -188,7 +198,7 @@ test('arithmetic, map variables and loops follow ACS integer semantics', () => {
   const vm = createAcsVm(parsed);
   startScript(vm, 1);
   tickAcs(vm);
-  assert.equal(vm.mapVars[0], 10, 'sum of 0..4');
+  assert.equal(vm.mapVars[0][0], 10, 'sum of 0..4');
 });
 
 test('line specials travel from scripts into the world', () => {
@@ -424,10 +434,127 @@ test('the scripts panel renders the module, its scripts and their disassembly', 
   const panel = createScriptsPanel(nodes, { project: () => project });
   panel.render();
   assert.match(nodes.summary.textContent, /1 script\(s\)/);
-  assert.equal(nodes.list.children.length, 1);
-  nodes.list.children[0].listeners.get('click')();
+  const rows = nodes.list.children.filter(node => node.className.includes('script-row'));
+  assert.equal(rows.length, 1);
+  assert.ok(nodes.list.children.some(node => node.className.includes('script-group')), 'module heading rendered');
+  rows[0].listeners.get('click')();
   const listing = nodes.detail.children.find(node => node.tagName === 'OL');
   assert.ok(listing, 'disassembly rendered');
   assert.ok(listing.children.some(item => item.textContent.includes('BEGINPRINT')));
   delete globalThis.document;
+});
+
+/* ------------------------------------------------------------------ */
+/* LOADACS libraries                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A library is just another module: the map module is load index 0 and each
+ * LOADACS entry gets the next index. Its scripts, strings and map variables are
+ * its own, which is what `TAGSTRING` exists for.
+ */
+test('libraries share the program but keep their own scripts, strings and map variables', () => {
+  const mapAsm = emitter();
+  mapAsm.ins('BEGINPRINT').pushBytes(0).ins('TAGSTRING').ins('PRINTSTRING').ins('ENDPRINT')
+    .ins('TERMINATE');
+  const mapModule = behavior({ code: mapAsm.code, scripts: [{ number: 1, type: 1, args: 0, address: 8 }],
+    strings: ['map text'], mapVars: [11] });
+
+  const libAsm = emitter();
+  libAsm.ins('BEGINPRINT').pushBytes(0).ins('TAGSTRING').ins('PRINTSTRING').ins('ENDPRINT')
+    .ins('TERMINATE');
+  const libModule = behavior({ code: libAsm.code, scripts: [{ number: 7, type: 4, args: 0, address: 8 }],
+    strings: ['library text'], mapVars: [22] });
+
+  const program = createProgram([{ name: 'BEHAVIOR', bytes: mapModule }, { name: 'testlib', bytes: libModule }]);
+  assert.equal(program.modules.length, 2);
+  assert.equal(program.scripts.length, 2);
+  assert.equal(findScript(program, 7).moduleName, 'testlib');
+  assert.equal(findScript(program, '7').moduleIndex, 1);
+
+  const printed = [];
+  const vm = createAcsVm(program, { print: text => printed.push(text) });
+  startScript(vm, 1);
+  tickAcs(vm);
+  startScript(vm, 'testlib:7');
+  tickAcs(vm);
+  assert.deepEqual(printed, ['map text', 'library text'], 'each module resolves its own string 0');
+  assert.equal(vm.mapVars[0][0], 11);
+  assert.equal(vm.mapVars[1][0], 22, 'map variables are module-local');
+});
+
+test('library OPEN and ENTER scripts start with the level', () => {
+  const libAsm = emitter();
+  libAsm.ins('BEGINPRINT').pushBytes(0).ins('TAGSTRING').ins('PRINTSTRING').ins('ENDPRINT').ins('TERMINATE');
+  const library = behavior({ code: libAsm.code, scripts: [{ number: 1, type: 4, args: 0, address: 8 }],
+    strings: ['double jump ready'] });
+  const project = room(0, [], { withScripts: describeMapScripts(null, [{ name: 'DoubleJump', bytes: library }]).mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.message, 'double jump ready');
+});
+
+test('LOADACS text selects libraries in order and reports missing ones', () => {
+  assert.deepEqual(loadacsNames('// comment\nDoubleJump\nTHEACS // trailing\n\nhealthbar'),
+    ['DoubleJump', 'THEACS', 'healthbar']);
+  const libraries = [
+    { name: 'THEACS', bytes: new Uint8Array([1]) },
+    { name: 'healthbar', bytes: new Uint8Array([2]) },
+  ];
+  const chosen = selectAcsLibraries(['healthbar\nTHEACS\nMissing'], libraries);
+  assert.deepEqual(chosen.libraries.map(library => library.name), ['healthbar', 'THEACS']);
+  assert.deepEqual(chosen.missing, ['Missing']);
+});
+
+test('a WAD exposes libraries through A_START/A_END and LOADACS', () => {
+  const wad = {
+    buffer: new ArrayBuffer(64),
+    lumps: [
+      { name: 'LOADACS', start: 0, size: 0 },
+      { name: 'A_START', start: 0, size: 0 },
+      { name: 'MYLIB', start: 0, size: 4 },
+      { name: 'A_END', start: 0, size: 0 },
+      { name: 'NOTLIB', start: 4, size: 4 },
+    ],
+  };
+  new Uint8Array(wad.buffer).set([0x41, 0x43, 0x53, 0x00, 0x01, 0x02, 0x03, 0x04]);
+  const found = acsLibrariesFromWad(wad);
+  assert.deepEqual(found.libraries.map(library => library.name), ['MYLIB']);
+  assert.equal(found.lists.length, 1);
+});
+
+test('imported packages load their LOADACS libraries', { skip: !existsSync(new URL('../Projects/Furdoom/furdoom_v0.1.1.pk3', import.meta.url)) }, async () => {
+  const { readPackageArchive, importPackage } = await import('../server/packages.js');
+  const archive = await readPackageArchive(readFileSync(new URL('../Projects/Furdoom/furdoom_v0.1.1.pk3', import.meta.url)));
+  const result = importPackage(archive, { map: 'maps/furdm05.wad#FURDM05', fullGame: false,
+    baseBytes: readFileSync(new URL('../Projects/Furdoom/freedoom2.wad', import.meta.url)) });
+  const libraries = result.project.mapScripts?.libraries ?? [];
+  assert.ok(libraries.length >= 5, `libraries imported: ${libraries.map(library => library.name).join(', ')}`);
+  assert.ok(libraries.some(library => library.name.toLowerCase() === 'doublejump'));
+  const program = programFor(result.project);
+  assert.ok(program.modules.length === libraries.length + 1);
+  assert.ok(program.scripts.some(script => script.moduleIndex > 0 && script.name === 'DoubleJump'));
+  const state = createRuntime(result.project);
+  stepRuntime(result.project, state, 1 / 35, new Set());
+  const started = state.scriptState.active.length;
+  assert.ok(started >= 1, `library ENTER scripts started: ${started}`);
+  // Furdoom's healthbar library calls `furgetsourceport` from ENGINECH, which its
+  // own LOADACS list does not load. GZDoom reports the same missing library, so
+  // the honest result is a named error rather than a crash.
+  assert.ok(state.scripts.errors.every(message => /furgetsourceport|ENGINECH/.test(message)),
+    `unexpected script errors: ${state.scripts.errors.slice(0, 3).join(' | ')}`);
+});
+
+test('scripts read and write the actor properties the engine tracks', () => {
+  const asm = emitter();
+  // print GetActorProperty(5, APROP_Health) for a tagged monster
+  asm.ins('BEGINPRINT').ins('PUSH2BYTES').byte(5).byte(0).ins('GETACTORPROPERTY').ins('PRINTNUMBER')
+    .ins('ENDPRINT').ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] })).mapScripts });
+  project.map.entities.push({ id: 'imp', type: 'enemy', name: 'Imp', x: 100, y: 100, angle: 0, health: 42, tid: 5 });
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.message.trim(), '42', `printed monster health: ${JSON.stringify(state.message)}`);
 });

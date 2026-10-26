@@ -8,8 +8,8 @@
  * implementations instead of engine-specific stubs.
  */
 
-import { createAcsVm, startScript, startScriptsOfKind, tickAcs, terminateScript, suspendScript, parseBehavior,
-  describeBehavior, disassemble, scanBehavior, instructionAt } from './acs.js';
+import { createAcsVm, createProgram, startScript, startScriptsOfKind, tickAcs, terminateScript, suspendScript,
+  parseBehavior, describeBehavior, disassemble, scanBehavior, instructionAt } from './acs.js';
 import { executeSpecial, specialName, unsupportedSpecials } from './line-specials.js';
 import { addAmmo } from './player-state.js';
 import { soundEvent, floorAt, launchProjectile } from './combat.js';
@@ -49,48 +49,80 @@ export function decodeBase64(text) {
   return new Uint8Array(Buffer.from(text, 'base64'));
 }
 
-// Parsing is pure, so the module is cached by content: campaign levels share a
+// Parsing is pure, so programs are cached by content: campaign levels share a
 // project object that the editor replaces on every edit.
-const behaviorCache = new Map();
+const programCache = new Map();
 
-export function behaviorFor(project) {
-  const data = project?.mapScripts?.data;
-  if (!data) return null;
-  const cached = behaviorCache.get(data);
+/**
+ * The level's ACS program: its own BEHAVIOR module (load index 0) plus every
+ * `LOADACS` library in the order the game loads them.
+ */
+export function programFor(project) {
+  const scripts = project?.mapScripts;
+  if (!scripts || (!scripts.data && !scripts.libraries?.length)) return null;
+  const libraries = scripts.libraries || [];
+  const key = [scripts.data || '', ...libraries.map(library => `${library.name}\u0000${library.data}`)].join('\u0001');
+  const cached = programCache.get(key);
   if (cached) return cached;
-  const behavior = parseBehavior(decodeBase64(data));
-  if (behaviorCache.size > 64) behaviorCache.clear();
-  behaviorCache.set(data, behavior);
-  return behavior;
+  const entries = [];
+  if (scripts.data) entries.push({ name: 'BEHAVIOR', bytes: decodeBase64(scripts.data) });
+  for (const library of libraries) entries.push({ name: library.name, bytes: decodeBase64(library.data) });
+  const program = createProgram(entries);
+  if (programCache.size > 16) programCache.clear();
+  programCache.set(key, program);
+  return program;
+}
+
+/** Kept for callers that only need the map's own module. */
+export function behaviorFor(project) {
+  return programFor(project)?.primary ?? null;
 }
 
 /**
- * Builds the importer's view of a BEHAVIOR lump: the encoded module plus a
+ * Builds the importer's view of a level's ACS: the encoded modules plus a
  * summary the editor, MCP tools and validation can use without decoding.
  */
-export function describeMapScripts(bytes) {
-  const behavior = parseBehavior(bytes);
-  const scan = scanBehavior(behavior);
-  const specials = collectSpecials(behavior);
+export function describeMapScripts(bytes, libraries = []) {
+  const entries = [];
+  if (bytes) entries.push({ name: 'BEHAVIOR', bytes });
+  for (const library of libraries) entries.push({ name: library.name, bytes: library.bytes });
+  const program = createProgram(entries);
+  const scan = scanBehavior(program);
+  const specials = collectSpecials(program);
+  const loaded = new Set(program.modules.map(entry => entry.name.toLowerCase()));
+  const missingImports = [];
+  for (const { name, module } of program.modules) {
+    for (const required of module.requiredLibraries || []) {
+      if (!loaded.has(required.toLowerCase())) missingImports.push(`${name} needs ${required}`);
+    }
+  }
   return {
-    mapScripts: { format: behavior.format, data: encodeBase64(bytes) },
-    summary: describeBehavior(behavior),
-    behavior,
+    mapScripts: {
+      format: program.primary?.format ?? 'little',
+      ...(bytes ? { data: encodeBase64(bytes) } : {}),
+      ...(libraries.length ? { libraries: libraries.map(library => ({ name: library.name, data: encodeBase64(library.bytes) })) } : {}),
+    },
+    summary: describeBehavior(program),
+    program,
     unsupportedOpcodes: scan.unsupported,
+    missingLibraries: missingImports,
     specials,
     unsupported: unsupportedSpecials(specials),
   };
 }
 
-/** Every line special a module calls through `LSPEC`, for import warnings. */
-export function collectSpecials(behavior) {
+/** Every line special a program calls through `LSPEC`, for import warnings. */
+export function collectSpecials(program) {
+  const container = program?.modules ? program : programFor(program);
+  if (!container) return [];
   const specials = new Set();
-  for (const script of behavior.scripts) {
+  for (const script of container.scripts) {
+    const module = container.modules[script.moduleIndex].module;
     let offset = script.address;
     const seen = new Set();
-    while (offset !== null && offset >= 0 && offset < behavior.dataSize && !seen.has(offset)) {
+    while (offset !== null && offset >= 0 && offset < module.dataSize && !seen.has(offset)) {
       seen.add(offset);
-      const instruction = instructionAt(behavior, offset);
+      const instruction = instructionAt(module, offset);
       if (!instruction) break;
       const name = instruction.name;
       if (/^LSPEC[1-5]/.test(name) && instruction.operands.length && instruction.operands[0]) specials.add(instruction.operands[0]);
@@ -103,19 +135,19 @@ export function collectSpecials(behavior) {
 
 /** Formats one script's disassembly for the editor and MCP tools. */
 export function scriptListing(project, selector) {
-  const behavior = behaviorFor(project);
-  if (!behavior) throw new Error('This level has no ACS scripts');
-  return disassemble(behavior, selector);
+  const program = programFor(project);
+  if (!program) throw new Error('This level has no ACS scripts');
+  return disassemble(program, selector);
 }
 
 export function scriptSummary(project) {
-  const behavior = behaviorFor(project);
-  if (!behavior) return null;
+  const program = programFor(project);
+  if (!program) return null;
   return {
-    ...describeBehavior(behavior),
-    scripts: behavior.scripts.map(script => ({ number: script.number, name: script.name ?? null,
-      type: script.type, args: script.argCount })),
-    strings: behavior.strings.slice(0, 64),
+    ...describeBehavior(program),
+    scripts: program.scripts.map(script => ({ number: script.number, name: script.name ?? null,
+      type: script.type, args: script.argCount, library: script.moduleIndex ? script.moduleName : null })),
+    strings: (program.primary?.strings ?? []).slice(0, 64),
   };
 }
 
@@ -127,13 +159,13 @@ export function scriptSummary(project) {
  * system already running.
  */
 export function createMapScripts(project, state, callbacks = {}) {
-  const behavior = behaviorFor(project);
+  const program = programFor(project);
   const unsupportedSpecialsSeen = new Set();
 
   const api = {
-    behavior,
+    program,
     vm: null,
-    active: Boolean(behavior),
+    active: Boolean(program),
     errors: [],
     unsupportedSpecials: unsupportedSpecialsSeen,
     opened: false,
@@ -198,6 +230,8 @@ export function createMapScripts(project, state, callbacks = {}) {
     projectile: options => launchFromThing(options),
     getActor: (tid, kind, activator) => getActorValue(tid, kind, activator),
     setActorPosition: (tid, x, y, z, fog) => setActorPosition(tid, x, y, z, fog),
+    getActorProperty: (tid, property, activator) => actorProperty(tid, property, activator),
+    setActorProperty: (tid, property, value, activator) => setActorProperty(tid, property, value, activator),
     damageThing: (tid, amount, type, activator) => {
       const victims = tid ? state.entities.filter(entity => entity.tid === tid) : [];
       let hits = 0;
@@ -226,9 +260,22 @@ export function createMapScripts(project, state, callbacks = {}) {
       return Math.round((ceiling ? sector.ceilingHeight : sector.floorHeight) * 65536);
     },
     getSectorLight: tag => sectorsTagged(tag)[0]?.light ?? -1,
+    // GetPlayerInput: 0/1 are the previous and current buttons, 2-4 the view
+    // deltas and 5-7 the movement, all in ACS fixed point.
+    playerInput: (playernum, input) => {
+      if (playernum > 0 && playernum !== 1) return 0;
+      const buttons = state.buttons || 0;
+      if (input === 0) return state.prevButtons || 0;
+      if (input === 1 || input === 9) return buttons;
+      if (input === 2) return Math.round((state.player.pitch || 0) * 65536);
+      if (input === 3) return Math.round((state.player.angle || 0) * 65536) & 0xffff;
+      if (input === 4) return 0;
+      if (input === 5 || input === 13) return (state.settings?.alwaysRun ? 50 : 25) * 65536;
+      return 0;
+    },
   };
 
-  if (behavior) api.vm = createAcsVm(behavior, host);
+  if (program) api.vm = createAcsVm(program, host);
 
   function message(text) {
     if (!text) return;
@@ -338,6 +385,47 @@ export function createMapScripts(project, state, callbacks = {}) {
     state.playerStats.health = Math.max(0, state.playerStats.health - amount);
     state.feedback.health = state.playerStats.health;
     state.feedback.damage = { amount, time: state.time };
+  }
+
+  // APROP_* indexes from ACC's zdefs.acs, limited to what the engine tracks.
+  const APROP = { health: 0, speed: 1, damage: 2, alpha: 3, ambush: 10, gravity: 15, spawnHealth: 17,
+    scaleX: 29, scaleY: 30, dormant: 31, mass: 32, height: 35, radius: 36 };
+
+  function actorProperty(tid, property, activator) {
+    const entity = tid ? state.entities.find(candidate => candidate.tid === tid)
+      : state.entities.find(candidate => candidate.type === 'player');
+    if (!entity) return 0;
+    const actor = project.__actorIndex?.byId?.get(entity.actor) || null;
+    const player = entity.type === 'player';
+    switch (property) {
+      case APROP.health: return player ? state.playerStats.health : entity.health ?? actor?.health ?? 0;
+      case APROP.speed: return Math.round((actor?.speed ?? 0) * 65536);
+      case APROP.damage: return actor?.damage ?? 0;
+      case APROP.alpha: return entity.alpha === undefined ? 65536 : Math.round(entity.alpha * 65536);
+      case APROP.ambush: return entity.ambush ? 1 : 0;
+      case APROP.spawnHealth: return actor?.health ?? entity.health ?? 0;
+      case APROP.dormant: return entity.dormant ? 1 : 0;
+      case APROP.mass: return actor?.mass ?? 0;
+      case APROP.height: return actor?.height ?? 0;
+      case APROP.radius: return actor?.radius ?? 0;
+      case APROP.gravity: return Math.round((entity.gravity ?? 1) * 65536);
+      default: return 0;
+    }
+  }
+
+  function setActorProperty(tid, property, value, activator) {
+    if (!tid && property === APROP.health) {
+      state.playerStats.health = Math.max(0, value);
+      state.feedback.health = state.playerStats.health;
+      return;
+    }
+    for (const entity of tid ? state.entities.filter(candidate => candidate.tid === tid) : []) {
+      if (property === APROP.health) entity.health = value;
+      else if (property === APROP.ambush) entity.ambush = Boolean(value);
+      else if (property === APROP.dormant) entity.dormant = Boolean(value);
+      else if (property === APROP.alpha) entity.alpha = Math.max(0, Math.min(1, value / 65536));
+      else if (property === APROP.gravity) entity.gravity = value / 65536;
+    }
   }
 
   function damageEntity(entity, amount) {
@@ -518,12 +606,14 @@ export function createMapScripts(project, state, callbacks = {}) {
   function capture() {
     if (!api.vm) return null;
     return {
-      mapVars: Array.from(api.vm.mapVars),
+      mapVars: api.vm.mapVars.map(store => Array.from(store || [])),
       worldVars: Array.from(api.vm.worldVars),
       globalVars: Array.from(api.vm.globalVars),
+      pool: api.vm.pool.slice(0, 256),
       opened: api.opened,
       active: api.vm.active.map(script => ({
-        number: script.number, name: script.name ?? null, pc: script.pc, state: script.state === 'running' ? 'running' : script.state,
+        number: script.number, name: script.name ?? null, moduleIndex: script.moduleIndex ?? 0,
+        pc: script.pc, state: script.state === 'running' ? 'running' : script.state,
         delay: script.delay, stateData: script.stateData, result: script.result,
         locals: Array.from(script.locals), sp: script.sp, stack: script.stack.slice(0, script.sp),
       })),
@@ -532,13 +622,18 @@ export function createMapScripts(project, state, callbacks = {}) {
 
   function restore(saved) {
     if (!api.vm || !saved) return;
-    saved.mapVars?.forEach((value, index) => { api.vm.mapVars[index] = value; });
+    saved.mapVars?.forEach((store, index) => {
+      const target = api.vm.mapVars[index] ||= new Int32Array(128);
+      (store || []).forEach((value, slot) => { target[slot] = value; });
+    });
+    for (const text of saved.pool || []) api.vm.pool.push(text);
     saved.worldVars?.forEach((value, index) => { api.vm.worldVars[index] = value; });
     saved.globalVars?.forEach((value, index) => { api.vm.globalVars[index] = value; });
     api.opened = Boolean(saved.opened);
     api.vm.active = (saved.active || []).map(entry => {
       const script = {
         number: entry.number, name: entry.name ?? undefined, entry: { ...findEntry(entry) },
+        moduleIndex: entry.moduleIndex ?? 0, moduleName: api.vm.program.modules[entry.moduleIndex ?? 0]?.name,
         locals: new Int32Array(entry.locals || []), stack: (entry.stack || []).slice(), sp: entry.sp || 0,
         calls: [], scriptArrays: new Map(), pc: entry.pc, state: entry.state, delay: entry.delay || 0,
         stateData: entry.stateData || 0, result: entry.result ?? 1, activator: 'player', line: null,
@@ -549,8 +644,9 @@ export function createMapScripts(project, state, callbacks = {}) {
   }
 
   function findEntry(entry) {
-    return api.behavior?.scripts.find(script => script.number === entry.number) || { number: entry.number,
-      type: 'closed', argCount: 0, address: entry.pc, varCount: 20 };
+    return api.program?.scripts.find(script => script.number === entry.number &&
+      (script.moduleIndex ?? 0) === (entry.moduleIndex ?? 0)) ||
+      { number: entry.number, type: 'closed', argCount: 0, address: entry.pc, varCount: 20, moduleIndex: 0 };
   }
 
   return api;

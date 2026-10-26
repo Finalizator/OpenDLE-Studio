@@ -143,3 +143,7 @@ export function gzdoomAvailable(projectsDir) {
 }
 
 export { existsSync };
+
+// ACS library discovery lives in shared/ so the map importer and the editor can
+// use it without depending on the server.
+export { loadacsNames, acsLibrariesFromFiles, acsLibrariesFromWad, selectAcsLibraries } from '../shared/acs-libraries.js';

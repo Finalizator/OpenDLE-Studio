@@ -31,6 +31,7 @@
       <button data-tab="environment">Environment</button>
       <button data-tab="actors">Actors</button>
       <button data-tab="scripts">Scripts</button>
+      <button data-tab="logs">Logs</button>
       <button data-tab="tweaks">Engine tweaks</button>
       <button data-tab="hud">HUD</button>
       <button data-tab="assets">Assets</button>
@@ -149,6 +150,17 @@
         <h2>Linedef specials</h2>
         <div id="script-specials"></div>
       </section>
+      <section id="logs-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1>Playtest logs</h1><p>Every error and warning from playing a map, saved to the log folder as it happens.</p></div></div>
+        <p id="log-directory" class="muted" role="status"></p>
+        <p id="log-totals" class="muted" role="status"></p>
+        <div class="button-row"><button id="log-refresh">Refresh</button><button id="log-clear">Delete all logs</button></div>
+        <div class="logs-layout">
+          <div id="log-list" class="log-list" role="list"></div>
+          <div id="log-detail" class="log-detail" role="region" aria-label="Playtest log records"></div>
+        </div>
+        <p class="muted">Records are appended while you play: uncaught errors, rejected promises, stopped ACS scripts, action functions without an engine equivalent, renderer and audio failures, and editor operations that failed. A recurring failure is stored once with a repeat count rather than once per frame. The folder keeps the 60 most recent sessions and caps each file, so logging can never fill the disk.</p>
+      </section>
       <section id="tweaks-panel" class="panel" hidden>
         <div class="panel-heading"><div><h1>Engine tweaks</h1><p>OpenDLE preview overrides, independent of imported game menus.</p></div></div>
         <div class="prose">
@@ -195,6 +207,7 @@
         <strong id="project-name">Project</strong>
         <details open><summary>Layouts</summary><button data-tab="map" class="tree-link">Layout 1</button></details>
         <details><summary>Game logic</summary><button data-tab="scripts" class="tree-link">Map scripts (ACS)</button></details>
+        <details><summary>Diagnostics</summary><button data-tab="logs" class="tree-link">Playtest logs</button></details>
         <details open><summary>HUD overlays</summary><button data-tab="hud" class="tree-link">Game HUD / designer</button></details>
         <details><summary>Event sheets</summary><button id="scene-script" class="tree-link">Event sheet 1</button><div id="object-scripts"></div></details>
         <details open><summary>Engine</summary><div id="engine-sheets"></div><button id="install-engine" class="tree-link">Install editable FPS starter</button></details>

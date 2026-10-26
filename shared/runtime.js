@@ -9,6 +9,7 @@ import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeed
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { createMapScripts } from './map-scripts.js';
+import { BT } from './acs.js';
 import { clipFrame, setSpriteState } from './sprite-animation.js';
 import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
 import { createLevelStatistics, updateLevelStatistics, recordRemovedEntity, beginIntermission, continueIntermission } from './intermission.js';
@@ -151,6 +152,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.time += dt;
   state.impacts = state.impacts.filter(effect => !clipFrame(project, effect.clipId, state.time - effect.start)?.finished);
   state.input.forward = 0; state.input.strafe = 0; state.input.jump = false;
+  state.prevButtons = state.buttons || 0;
+  state.buttons = hud.cursor ? 0 : buttonsFor(keys);
   if (state.playerStats.health < state.feedback.health) recordDamage(state, state.feedback.health - state.playerStats.health);
   state.feedback.attackTime = !hud.cursor && keys.has('Mouse0') ? state.feedback.attackTime + dt : 0;
   advanceHUD(project, hud, dt);
@@ -649,6 +652,28 @@ function stepWeapon(project, state, dt, trigger) {
 }
 
 /** Converts a weapon state's action into the existing hit-scan/projectile path. */
+/** Maps the runtime's key set onto Doom's button bits, which ACS can query. */
+export function buttonsFor(keys) {
+  const held = name => keys.has(name);
+  let mask = 0;
+  if (held('Mouse0')) mask |= BT.ATTACK;
+  if (held('Mouse2')) mask |= BT.ALTATTACK;
+  if (held('KeyE')) mask |= BT.USE;
+  if (held('Space')) mask |= BT.JUMP;
+  if (held('ControlLeft') || held('KeyC')) mask |= BT.CROUCH;
+  if (held('KeyR')) mask |= BT.RELOAD;
+  if (held('ShiftLeft') || held('ShiftRight')) mask |= BT.SPEED;
+  if (held('KeyW')) mask |= BT.FORWARD;
+  if (held('KeyS')) mask |= BT.BACK;
+  if (held('KeyA')) mask |= BT.MOVELEFT;
+  if (held('KeyD')) mask |= BT.MOVERIGHT;
+  if (held('ArrowLeft')) mask |= BT.TURNLEFT === undefined ? BT.LEFT : BT.TURNLEFT;
+  if (held('ArrowRight')) mask |= BT.TURNRIGHT === undefined ? BT.RIGHT : BT.TURNRIGHT;
+  if (held('ArrowUp')) mask |= BT.LOOKUP;
+  if (held('ArrowDown')) mask |= BT.LOOKDOWN;
+  return mask;
+}
+
 /** A sector's `damage` (Sector_SetDamage) hurts whatever stands in it, once a second. */
 function applySectorDamage(state, dt) {
   if (!state.sectors.some(sector => sector.damage)) { state.damageAcc = 0; return; }

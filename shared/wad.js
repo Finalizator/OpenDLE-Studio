@@ -14,6 +14,7 @@ import { resolveLevelMusic } from './music.js';
 import { importActors } from './actors.js';
 import { buildStringTable, resolveString } from './language.js';
 import { describeMapScripts } from './map-scripts.js';
+import { acsLibrariesFromWad, selectAcsLibraries } from './acs-libraries.js';
 import { unsupportedSpecials } from './line-specials.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
@@ -57,7 +58,7 @@ export function readWad(buffer, { allowNoMaps = false } = {}) {
   return { buffer, lumps, maps: [...new Set(maps)] };
 }
 
-export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], actors = true, options = {} } = {}) {
+export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], acsLibraries = [], loadacs = [], actors = true, options = {} } = {}) {
   const start = wad.lumps.findLastIndex(lump => lump.name === mapName);
   if (start < 0) throw new Error('Map not found');
   const mapLumps = [];
@@ -94,16 +95,30 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   };
   const { vertices, lines, sides, sectors, things } = data;
   const assets = encodeImage ? createDoomAssets(wad, encodeImage, images, fontResources) : null;
-  // ACS: the compiled BEHAVIOR lump is executed natively at Doom's 35 Hz.
+  // ACS: the compiled BEHAVIOR lump is executed natively at Doom's 35 Hz, together
+  // with every LOADACS library the game ships.
   const behaviorLump = mapLumps.find(lump => lump.name === 'BEHAVIOR');
   const scriptWarnings = [];
   let mapScriptInfo = null;
-  if (behaviorLump) {
-    if (behaviorLump.size > 4 * 1024 * 1024) throw new Error('BEHAVIOR lump exceeds the 4 MiB script limit');
+  const local = acsLibrariesFromWad(wad);
+  const selection = selectAcsLibraries([...loadacs, ...local.lists], [...acsLibraries, ...local.libraries]);
+  const libraries = selection.libraries;
+  if (behaviorLump || libraries.length) {
+    if (behaviorLump && behaviorLump.size > 4 * 1024 * 1024) throw new Error('BEHAVIOR lump exceeds the 4 MiB script limit');
     try {
-      mapScriptInfo = describeMapScripts(new Uint8Array(wad.buffer, behaviorLump.start, behaviorLump.size));
+      mapScriptInfo = describeMapScripts(behaviorLump
+        ? new Uint8Array(wad.buffer, behaviorLump.start, behaviorLump.size) : null, libraries);
     } catch (error) {
       scriptWarnings.push(`This map's ACS module could not be read (${error.message}); its lines are imported without script execution.`);
+    }
+    if (selection.missing.length) {
+      scriptWarnings.push(`LOADACS lists ACS librar${selection.missing.length === 1 ? 'y' : 'ies'} that this package does not contain: ${selection.missing.join(', ')}.`);
+    }
+    if (libraries.length) {
+      scriptWarnings.push(`ACS libraries loaded in LOADACS order: ${libraries.map(library => library.name).join(', ')}. Their scripts, strings and map variables are separate from the map's own module.`);
+    }
+    if (mapScriptInfo?.missingLibraries?.length) {
+      scriptWarnings.push(`ACS libraries with an unmet dependency: ${mapScriptInfo.missingLibraries.join('; ')}. Calls into the missing library stop with a named error, as in GZDoom.`);
     }
   }
 
@@ -264,7 +279,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     project.mapScripts = mapScriptInfo.mapScripts;
     const kinds = mapScriptInfo.summary.kinds;
     const named = (kinds.closed || 0) + (kinds.open || 0) + (kinds.enter || 0);
-    warnings.push(`ACS: ${mapScriptInfo.summary.scripts} script(s) (${kinds.open || 0} open, ${kinds.enter || 0} enter, ${kinds.closed || 0} line-triggered) run natively at 35 Hz with ${mapScriptInfo.summary.strings} string(s); ${named} named or numbered entries are listed in the Scripts tab.`);
+    const moduleNames = mapScriptInfo.summary.modules.map(module => module.name);
+    warnings.push(`ACS: ${mapScriptInfo.summary.scripts} script(s) (${kinds.open || 0} open, ${kinds.enter || 0} enter, ${kinds.closed || 0} line-triggered) run natively at 35 Hz with ${mapScriptInfo.summary.strings} string(s) across ${moduleNames.length} module(s) (${moduleNames.join(', ')}); ${named} named or numbered entries are listed in the Scripts tab.`);
     if (mapScriptInfo.unsupportedOpcodes.length) {
       warnings.push(`ACS instructions the native interpreter does not implement: ${mapScriptInfo.unsupportedOpcodes.join(', ')}. Scripts that reach them stop and report instead of hanging.`);
     }

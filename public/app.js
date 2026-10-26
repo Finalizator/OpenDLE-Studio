@@ -21,6 +21,8 @@ import { encodeSound } from '/shared/sound.js';
 import { importedGameplayGaps } from './gameplay-readiness.js';
 import { createActorsPanel } from './actors-panel.js';
 import { createScriptsPanel } from './scripts-panel.js';
+import { createPlaytestLogger } from './playtest-log.js';
+import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { installIntermission } from '/shared/intermission.js';
@@ -57,6 +59,15 @@ const actorsPanel = createActorsPanel({
   list: $('actor-list'), summary: $('actors-summary'), search: $('actor-search'), filter: $('actor-filter'),
   form: $('actor-form'), title: $('actor-title'), fields: $('actor-fields'), states: $('actor-states'),
 }, { actors: () => project.actors || [], edit });
+const playtestLogPanel = createPlaytestLogPanel({
+  directory: $('log-directory'), totals: $('log-totals'), list: $('log-list'), detail: $('log-detail'),
+  refresh: $('log-refresh'), clear: $('log-clear'),
+}, {
+  list: () => api('/api/playtest/logs'),
+  read: session => api(`/api/playtest/logs/${encodeURIComponent(session)}`),
+  clear: () => api('/api/playtest/logs', { method: 'DELETE' }),
+  status: message => status(message, true),
+});
 const scriptsPanel = createScriptsPanel({
   list: $('script-list'), detail: $('script-detail'), summary: $('scripts-summary'),
   specials: $('script-specials'), search: $('script-search'),
@@ -65,13 +76,25 @@ const hudEditor = createHUDEditor($('hud-editor'), {
   project: () => project, edit, script: openHUDScript, error: message => status(message, true),
 });
 
+// Playtest failures are written to a log folder as they happen, because they are
+// invisible once the tab closes. Every error path in this file funnels through
+// status() or guard(), so wiring those two covers the editor; the runtime's own
+// collectors are drained in the frame loop.
+const playtestLog = createPlaytestLogger({
+  send: ({ session, header, entries }, { keepalive } = {}) => api('/api/playtest/logs', {
+    method: 'POST', body: JSON.stringify({ session, header, entries }), ...(keepalive ? { keepalive: true } : {}),
+  }),
+});
+playtestLog.attach(window);
 function status(message, error = false) {
   $('status').textContent = message;
   $('status').classList.toggle('error', error);
+  if (error) playtestLog.error('editor', message);
 }
 function guard(fn) {
   return async (...args) => {
-    try { await fn(...args); } catch (error) { status(error.message, true); }
+    try { await fn(...args); }
+    catch (error) { playtestLog.error('editor', error.message, { stack: error.stack }); status(error.message, true); }
   };
 }
 async function api(path, options = {}) {
@@ -631,12 +654,13 @@ function showTab(tab) {
   if (tab === 'assets') {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
-  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'tweaks', 'about']) $(name + '-panel').hidden = tab !== name;
+  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'about']) $(name + '-panel').hidden = tab !== name;
   // The designer is only refreshed while its tab is visible, so opening the tab
   // has to build it once.
   if (tab === 'hud') hudEditor.render();
   if (tab === 'actors') actorsPanel.render();
   if (tab === 'scripts') scriptsPanel.render();
+  if (tab === 'logs') playtestLogPanel.render();
   if (tab === 'tweaks') {
     try { renderEngineTweaks(); }
     catch (error) { $('engine-tweaks-status').textContent = error.message; status(error.message, true); }
@@ -1521,8 +1545,44 @@ async function reloadProject(initial = false) {
   status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'
     : recovery?.warning || 'Server project loaded', Boolean(recovery?.warning));
 }
+/**
+ * Drains what the runtime collected while playing: stopped ACS scripts, action
+ * functions with no equivalent, and anything the renderer flagged. Indexes are kept
+ * on the runtime so each failure is logged once, not once per frame.
+ */
+const reportedScriptErrors = new WeakMap();
+function reportPlaytestFailures(session) {
+  const failures = session.scripts?.errors;
+  if (Array.isArray(failures)) {
+    // Kept off the runtime object: its own field list is saved with the game and
+    // rejects anything it does not recognise.
+    const reported = reportedScriptErrors.get(session) || 0;
+    for (const message of failures.slice(reported)) playtestLog.error('acs', message);
+    reportedScriptErrors.set(session, failures.length);
+  }
+  if (session.actorUnsupported?.size) {
+    for (const name of session.actorUnsupported) {
+      playtestLog.once(`actor:${name}`, { severity: 'warning', category: 'actor',
+        message: `Action function ${name} has no engine equivalent; actor states that call it skip that step.`,
+        details: { name } });
+    }
+  }
+  for (const special of session.scripts?.unsupportedSpecials || []) {
+    playtestLog.once(`special:${special}`, { severity: 'warning', category: 'acs',
+      message: `Line special ${special} was triggered but this runtime does not perform it.`,
+      details: { special } });
+  }
+}
 function stopPreview() {
   previewGeneration++;
+  if (runtime) {
+    reportPlaytestFailures(runtime);
+    playtestLog.info('playtest', 'Preview stopped', {
+      playSeconds: Math.round(runtime.time), health: runtime.playerStats.health,
+      screen: runtime.gameScreen,
+    });
+  }
+  playtestLog.flush().catch(() => {});
   audioPlayer?.dispose(); audioPlayer = null;
   lookDrag = null; draggedLook = false;
   if (document.pointerLockElement === $('preview')) document.exitPointerLock();
@@ -1650,6 +1710,20 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       error: message => mouseStatus(message, true),
     });
     $('preview-title').textContent = `${snapshot.title}${snapshot.game ? ` / ${snapshot.game.active}` : ''}`;
+    playtestLog.setContext({
+      project: snapshot.title,
+      level: snapshot.game ? `${snapshot.game.active} — ${(snapshot.game.levels || []).find(level => level.id === snapshot.game.active)?.name || ''}` : snapshot.title,
+      difficulty: `difficulty ${runtime.settings.difficulty}`,
+      renderer: preview.rendererStatus?.backend,
+      mode: gameMode ? 'game' : 'level',
+      levels: snapshot.game?.levels?.length,
+      url: location.href,
+      app: `OpenDLE: Studio ${$('engine-version')?.textContent?.replace(/^.*version:\s*/, '') || ''}`.trim(),
+    });
+    playtestLog.info('playtest', `${gameMode ? 'Game' : 'Level'} preview ready`, {
+      level: snapshot.game?.active, backend: preview.rendererStatus?.backend,
+      levels: snapshot.game?.levels?.length,
+    });
     $('play-level-label').hidden = !snapshot.game;
     $('play-level').replaceChildren(...(snapshot.game?.levels || []).map(level =>
       new Option(`${level.id} — ${level.name}`, level.id, false, level.id === snapshot.game.active)));
@@ -1865,6 +1939,7 @@ function frame(now) {
       }
       audioPlayer?.update(runtime);
       previewRenderer.render(runtime, runtime.gameScreen === 'playing' ? dt : 0);
+      reportPlaytestFailures(runtime);
       syncHUDCursor(); hudView?.update(runtime);
       if (!musicReported && audioPlayer?.musicInfo) {
         const music = audioPlayer.musicInfo();

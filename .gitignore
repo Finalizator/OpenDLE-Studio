@@ -13,6 +13,9 @@ node_modules/
 /Ancestors/
 /data/
 
+# Playtest logs: kept locally, never published
+/logs/
+
 # Generated output and test artifacts
 coverage/
 /dist/
