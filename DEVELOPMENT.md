@@ -617,8 +617,10 @@ remain native engine primitives.
   short-range traces; pistol/chaingun trace bullets; shotguns fire 7/20 pellets.
   Launcher/plasma/BFG spawn visible, swept-collision projectiles. Super shotgun
   requires two shells; BFG requires 40 cells. Rocket/BFG impacts apply
-  distance-based, wall-occluded splash, including self-damage. BFG splash is an
-  approximation, **not Doom's BFG spray**. Costs, damage dice, pellets, spread,
+  distance-based, wall-occluded splash, including self-damage. On this scripted
+  path the BFG splash is an approximation; when the project has an actor table the
+  imported weapon runs its own states and the real spray happens (see *Missiles
+  and their own states*). Costs, damage dice, pellets, spread,
   range, projectile speed/radius, sound and timing are separate editable actions.
   Number keys 1-9 select owned weapons; switching cannot bypass refire time.
 - **Combat:** editable for-each enemy death/removal and player-death message.
@@ -1204,6 +1206,55 @@ because a pass may not sample the surface it draws into, and swapping a material
 map is a uniform update, not a recompile. `fit` stretches the view over the
 surface. A camera whose render throws reports through
 `canvas.dataset.cameraTextureError` once instead of failing the frame.
+
+### Missiles and their own states
+
+An imported projectile used to be a moving sprite with a damage number: its
+`Spawn` and `Death` states were copied into flight and impact clips, and nothing
+in them ran. Doom runs those states on the missile itself, and that is where a
+missile's behaviour lives, so `projectileTic` in `shared/actor-runtime.js` now
+keeps a state machine on each live projectile (`actorState`, saved with the game)
+and `stepProjectiles` advances it at 35 Hz beside the flight update. Frame actions
+run with the projectile as `self`, which is what makes the rest of this work:
+
+- **Trails.** A missile whose states call `A_SpawnItemEx` (the steam spitter, the
+  fart gun, modded plasma) leaves its particles. Decorative actors named that way
+  become animated effects with the velocity and offsets the state passed; an actor
+  that is `COUNTKILL` or a lost soul still spawns as a real fightable thing.
+  Effects drift while their clip plays and are dropped when it ends. Their clips
+  are built when the runtime starts, because the renderer reads the clip list once
+  and a missile's first trail must already have artwork.
+- **`A_Tracer`.** A homing missile turns 16.875 degrees toward the thing it was
+  fired at, at most once every four of its own tics, and slews its climb by an
+  eighth of a unit per tic, ported from GZDoom's `A_Tracer2`. It also leaves the
+  smoke the vanilla tracer does (`BulletPuff` plus `RevenantTracerSmoke`).
+  `A_Tracer2(angle)` runs the homing step directly.
+- **`A_BFGSpray`.** On the BFG ball's `Death` state it sweeps 40 rays over a
+  90 degree cone (1024 units, args: spray class, rays, damage rolls, spread,
+  distance, vertical range, fixed damage) from whoever fired, and each target a
+  ray reaches takes that many rolls of 1..8 damage plus the spray actor at its
+  feet. Several rays can strike one target, as in GZDoom.
+- **`A_Explode`.** A rocket or barrel explodes from its own `Death` state instead
+  of an invented splash radius, so a projectile that does not call it does not
+  explode. Monster projectiles therefore no longer carry a fake splash of their
+  own damage.
+- **`A_FireCustomMissile` / `A_FireProjectile`.** The class the mod names is
+  spawned with that actor's damage, speed, artwork and states — no placeholder —
+  honouring `angle`, `useammo` (a `false` third argument spends nothing),
+  `spawnofs_xy` (fired from beside the player), `spawnheight`, `pitch` and
+  `SXF`-style `+SEEKERMISSILE` lock-on. A weapon that names a class the project
+  does not contain fires nothing and reports the name in the playtest log instead
+  of faking a shot.
+
+Two limits worth stating: a missile's `RenderStyle Add` and `Alpha` are still not
+applied to its sprite (an imported plasma ball is drawn opaque), and the spray
+runs where the ball lands rather than sixteen tics into its death animation.
+
+Import side, one bug made all of this look smaller than it was: a frame line that
+put a flag before its action (`STEA A 2 Bright A_SpawnItemEx(...)`, which is how
+vanilla and every mod write them) lost both the flag and the action. The ZScript
+state parser now peels flags on either side of the call; Furdoom's projectile
+states went from no actions to their real `A_SpawnItemEx` and `A_Tracer` calls.
 
 ### Sky changes
 

@@ -166,16 +166,51 @@ export function moveEnemy(state, entity, speed, dt) {
 }
 export function launchProjectile(state, action, owner) {
   if (state.projectiles.length >= 256) throw new Error('Projectile limit exceeded');
-  const origin = owner || state.player, z = floorAt(state, origin) + (owner ? 32 : 40);
-  const angle = owner ? Math.atan2(state.player.y - owner.y, state.player.x - owner.x) : state.player.angle;
-  const pitch = owner ? Math.atan2(floorAt(state, state.player) + 32 - z, Math.hypot(state.player.x - owner.x, state.player.y - owner.y)) : state.player.pitch;
-  state.projectiles.push({ id: ++state.projectileSequence, ownerId: owner?.id || '$player', x: origin.x, y: origin.y, z,
-    dx: Math.cos(angle) * Math.cos(pitch), dy: Math.sin(angle) * Math.cos(pitch), dz: Math.sin(pitch),
-    age: 0, ...action });
+  const { angleOffset = 0, spawnOffset = 0, spawnHeight = 0, pitchOffset = 0, seeker = false, ...shot } = action;
+  const origin = owner || state.player;
+  // A weapon can fire from beside the player instead of through the middle, and a
+  // mod can raise or lower the spawn point (A_FireCustomMissile's spawnofs/spawnheight).
+  const facing = owner ? Math.atan2(state.player.y - owner.y, state.player.x - owner.x) : state.player.angle;
+  const side = facing - Math.PI / 2;
+  const x = origin.x + Math.cos(side) * spawnOffset, y = origin.y + Math.sin(side) * spawnOffset;
+  const z = floorAt(state, origin) + (owner ? 32 : 40) + spawnHeight;
+  const aim = owner ? facing : state.player.angle;
+  const angle = angleOffset ? aim + angleOffset * Math.PI / 180 : aim;
+  const pitch = owner
+    ? Math.atan2(floorAt(state, state.player) + 32 - z, Math.hypot(state.player.x - x, state.player.y - y))
+    : Math.max(-1.4, Math.min(1.4, state.player.pitch + pitchOffset * Math.PI / 180));
+  const projectile = { id: ++state.projectileSequence, ownerId: owner?.id || '$player', x, y, z,
+    dx: Math.cos(angle) * Math.cos(pitch), dy: Math.sin(angle) * Math.cos(pitch), dz: Math.sin(pitch), age: 0, ...shot };
+  // A seeking missile locks onto the nearest enemy the player is looking at.
+  if (seeker && !owner) projectile.tracerId = lockOn(state)?.id || null;
+  state.projectiles.push(projectile);
   state.lastShot = owner ? state.lastShot : { time: state.time, hits: [] };
   if (!owner) state.playerNoise = { time: state.time, x: origin.x, y: origin.y };
+  return projectile;
 }
-export function advanceProjectiles(state, dt) {
+
+/** The enemy a homing shot should follow: nearest to the aim line, in front. */
+function lockOn(state) {
+  const player = state.player, eye = floorAt(state, player) + 48;
+  let best = null, bestDistance = 1024;
+  for (const entity of state.entities) {
+    if (entity.type !== 'enemy' || (entity.health ?? 0) <= 0) continue;
+    const distance = Math.hypot(entity.x - player.x, entity.y - player.y);
+    if (distance >= bestDistance) continue;
+    const off = Math.abs(Math.atan2(Math.sin(Math.atan2(entity.y - player.y, entity.x - player.x) - player.angle),
+      Math.cos(Math.atan2(entity.y - player.y, entity.x - player.x) - player.angle)));
+    if (off > 20 * Math.PI / 180) continue;
+    if (geometryDistance(state, { x: player.x, y: player.y, z: eye },
+      { x: (entity.x - player.x) / (distance || 1), y: (entity.y - player.y) / (distance || 1), z: 0 }, distance) < distance) continue;
+    best = entity; bestDistance = distance;
+  }
+  return best;
+}
+/**
+ * Moves every projectile. `onDeath` runs where a shot lands: the actor runtime
+ * passes its Death-state handler so a missile explodes from its own definition.
+ */
+export function advanceProjectiles(state, dt, onDeath) {
   const survivors = [];
   for (const projectile of state.projectiles) {
     const travel = projectile.speed * dt;
@@ -214,6 +249,9 @@ export function advanceProjectiles(state, dt) {
         if (state.impacts.length >= 256) state.impacts.shift();
         state.impacts.push({ id: `impact_${projectile.id}`, x: projectile.x, y: projectile.y, z: projectile.z, clipId: projectile.impactClipId, start: state.time });
       }
+      // The missile's own Death states carry its explosion (A_Explode) and the BFG
+      // spray, so they run where the shot lands.
+      if (projectile.actorId) onDeath?.(projectile);
     } else if (projectile.age < 8) survivors.push(projectile);
   }
   state.projectiles = survivors;

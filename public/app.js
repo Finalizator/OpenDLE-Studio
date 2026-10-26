@@ -1593,6 +1593,15 @@ function reportPlaytestFailures(session) {
         details: { name, actors } });
     }
   }
+  if (session.missileGaps?.size) {
+    // A weapon that names a projectile class the project does not contain fires
+    // nothing, so the log names the class instead of leaving a silent dud.
+    for (const name of session.missileGaps) {
+      playtestLog.once(`missile:${name}`, { severity: 'warning', category: 'actor',
+        message: `A weapon fired ${name}, which is not in this project's actor table, so the shot was skipped.`,
+        details: { missile: name } });
+    }
+  }
   for (const special of session.scripts?.unsupportedSpecials || []) {
     playtestLog.once(`special:${special}`, { severity: 'warning', category: 'acs',
       message: `Line special ${special} was triggered but this runtime does not perform it.`,

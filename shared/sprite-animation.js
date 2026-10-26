@@ -156,6 +156,40 @@ function spriteAssetNames(project) {
   return names;
 }
 
+const effectClipCache = new WeakMap();
+
+/**
+ * A one-shot clip of an actor's `Spawn` frames, for decorative actors a missile
+ * spawns as it flies (trail particles, spray puffs). Unlike a projectile's clip it
+ * stops at the end, so the renderer can drop the effect when it finishes.
+ */
+export function actorEffectClip(project, actor) {
+  let cached = effectClipCache.get(project);
+  if (!cached) effectClipCache.set(project, cached = new Map());
+  if (cached.has(actor.id)) return cached.get(actor.id);
+  const names = spriteAssetNames(project);
+  const assets = [];
+  let duration = 0;
+  const run = actorFrameRun(actor, 'Spawn');
+  const frames = run.length ? run : actorFrameRun(actor, 'See');
+  for (const frame of frames) {
+    const sprite = String(frame.sprite || '').toUpperCase();
+    const id = names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`);
+    if (!id) continue;
+    assets.push(id);
+    if (frame.duration > 0 && !duration) duration = frame.duration;
+  }
+  let clipId = null;
+  if (assets.length) {
+    clipId = `clip_actor_${actor.id}_effect`;
+    if (!(project.spriteClips || []).some(clip => clip.id === clipId))
+      (project.spriteClips ||= []).push({ id: clipId, name: `${actor.name} / effect`.slice(0, 100),
+        frames: assets, seconds: Math.min(60, Math.max(.001, (duration || 1) / 35)), loop: false });
+  }
+  cached.set(actor.id, clipId);
+  return clipId;
+}
+
 /**
  * The flying and impact sprite clips an imported projectile animates through: a
  * Doom missile draws its `Spawn` states while it travels and its `Death` states

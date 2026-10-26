@@ -12,7 +12,7 @@ import { assembleGameLevels, parseLevelRoutes } from './game-levels.js';
 import { parseGameEpisodes } from './game-episodes.js';
 import { resolveLevelMusic } from './music.js';
 import { importActors, actorIndex } from './actors.js';
-import { unsupportedActorActions, mergeActorActionGaps, describeActorActionGaps, installActorProjectileSprites, usedActors } from './actor-runtime.js';
+import { unsupportedActorActions, mergeActorActionGaps, describeActorActionGaps, installActorProjectileSprites, usedActors, missileEffectActors } from './actor-runtime.js';
 import { buildStringTable, resolveString } from './language.js';
 import { parseSndInfo, soundTable, VANILLA_SOUNDS } from './sndinfo.js';
 import { describeMapScripts } from './map-scripts.js';
@@ -84,6 +84,9 @@ export function importActorSprites(project, assets, warnings) {
     const flags = actor.flags || {};
     if (flags.MISSILE || flags.PROJECTILE) want(actor);
   }
+  // A missile's states spawn their trail and spray actors by name, so those frames
+  // are needed even when nothing in the level places the missile.
+  for (const actor of missileEffectActors(project)) want(actor);
   let imported = 0;
   const missing = new Set();
   for (const [prefix, letters] of wanted) {

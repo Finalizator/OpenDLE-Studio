@@ -188,13 +188,30 @@ function parseStates(body) {
       const parts = rest.split(';').map(part => part.trim()).filter(Boolean);
       line = '';
       for (let partIndex = 0; partIndex < parts.length; partIndex++) {
-        const part = parts[partIndex];
+        // A frame line writes its flags space separated from the action that
+        // follows them (`STEA A 2 Bright A_SpawnItemEx(...)`), so peel those off
+        // before looking for a call; treating the part as one token lost both.
+        let part = parts[partIndex];
+        for (;;) {
+          const leading = /^(bright|fast|slow|nodelay|canraise)\s+/i.exec(part);
+          if (!leading) break;
+          entry.flags.push(leading[1].toLowerCase());
+          part = part.slice(leading[0].length).trim();
+        }
+        // Some sources write the flags after the call (`A_Look Bright`).
+        for (;;) {
+          const trailing = /(?:^|\s)(bright|fast|slow|nodelay|canraise)$/i.exec(part);
+          if (!trailing) break;
+          entry.flags.push(trailing[1].toLowerCase());
+          part = part.slice(0, trailing.index).trim();
+        }
         const flagWord = /^(bright|fast|slow|nodelay|canraise)$/i.exec(part);
         if (flagWord) { entry.flags.push(flagWord[1].toLowerCase()); continue; }
+        if (!part) continue;
         const nextFrame = /^([A-Za-z0-9_#-]{1,5})\s+([A-Za-z#-]+)\s+(-?[0-9.]+)([\s\S]*)$/.exec(part);
         // Another frame on the same line: keep it and everything after it for
         // the next pass through the frame parser.
-        if (nextFrame) { line = parts.slice(partIndex).join('; '); break; }
+        if (nextFrame) { line = [part, ...parts.slice(partIndex + 1)].join('; '); break; }
         const keyword = /^(loop|stop|wait|fail)$/i.exec(part);
         if (keyword) { if (current) current.frames.push({ type: 'keyword', keyword: keyword[1].toLowerCase(), target: null }); continue; }
         const goto = /^goto\s+([\w.#+-]+)$/i.exec(part);

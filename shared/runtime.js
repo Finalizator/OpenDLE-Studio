@@ -4,7 +4,7 @@ import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
-import { stepActors, beginWeapon, weaponTic, initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound } from './actor-runtime.js';
+import { stepActors, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound } from './actor-runtime.js';
 import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum } from './player-state.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
@@ -153,7 +153,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     state.hudState.clicked.clear(); return;
   }
   state.time += dt;
-  state.impacts = state.impacts.filter(effect => !clipFrame(project, effect.clipId, state.time - effect.start)?.finished);
+  state.impacts = state.impacts.filter(effect => {
+    // Trail particles drift while their animation plays.
+    if (effect.vx || effect.vy || effect.vz) {
+      effect.x += (effect.vx || 0) * dt; effect.y += (effect.vy || 0) * dt; effect.z += (effect.vz || 0) * dt;
+    }
+    return !clipFrame(project, effect.clipId, state.time - effect.start)?.finished;
+  });
   state.input.forward = 0; state.input.strafe = 0; state.input.jump = false;
   state.prevButtons = state.buttons || 0;
   state.buttons = hud.cursor ? 0 : buttonsFor(keys);
@@ -230,7 +236,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     applyWeaponAttack(project, state);
     tickMorphs(project, state);
   }
-  advanceProjectiles(state, dt);
+  stepProjectiles(project, state, dt);
+  advanceProjectiles(state, dt, projectile => runProjectileDeath(project, state, projectile));
   applySectorDamage(state, dt);
   activateWallTriggers(state);
   updateLevelStatistics(state);
@@ -714,12 +721,22 @@ function applyWeaponAttack(project, state) {
       saySound(state, attack.hitSound, null, 127);
     return;
   }
-  // A missile's flight and explosion artwork come from the actor definition, so a
-  // mod's custom projectile looks like the mod drew it.
+  // A missile's flight, explosion and trail all come from the actor definition, so
+  // a mod's custom projectile behaves and looks like the mod wrote it.
   const missile = attack.missile ? missileProjectile(project, attack.missile) : null;
+  if (!missile && attack.missile) {
+    // A_FireCustomMissile named a class this project does not contain: report it
+    // rather than launching a placeholder the mod never asked for.
+    state.missileGaps ||= new Set();
+    if (state.missileGaps.size < 40) state.missileGaps.add(attack.missile);
+    return;
+  }
   launchProjectile(state, { speed: attack.speed, damage: attack.damage, diceSides: attack.diceSides,
     radius: attack.radius, color: '#66bbff', sound: null,
-    clipId: missile?.clipId || null, impactClipId: missile?.impactClipId || null });
+    clipId: missile?.clipId || null, impactClipId: missile?.impactClipId || null,
+    actorId: missile?.actorId || attack.actorId || null, actorName: missile?.name || attack.missile || null,
+    angleOffset: attack.angle || 0, spawnOffset: attack.spawnofs || 0, spawnHeight: attack.spawnheight || 0,
+    pitchOffset: attack.pitch || 0, seeker: attack.seeker === true });
 }
 
 function fireHitscan(state, action) {

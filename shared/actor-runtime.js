@@ -1,7 +1,7 @@
 import { sectorAt } from './sectors.js';
-import { damagePlayer, floorAt, canSeePlayer, randomDamage, enemyHitscan, moveEnemy } from './combat.js';
+import { damagePlayer, floorAt, canSeePlayer, randomDamage, enemyHitscan, moveEnemy, geometryDistance, entityDistance } from './combat.js';
 import { actorIndex, actorForThing } from './actors.js';
-import { actorProjectileClips, setSpriteState } from './sprite-animation.js';
+import { actorProjectileClips, actorEffectClip, setSpriteState } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 
 /**
@@ -191,6 +191,65 @@ const numArg = (ctx, index, fallback = 0) => {
 };
 const projectilesByName = project => projectActorIndex(project);
 
+const clampUnit = value => Math.max(-1, Math.min(1, value));
+const wrapRadians = angle => Math.atan2(Math.sin(angle), Math.cos(angle));
+
+/** Who a spray or explosion counts as the shooter: a missile's owner, else the player. */
+function sprayOrigin(state, entity) {
+  if (entity?.type === 'player') return entity;
+  if (entity?.ownerId === '$player') return state.player;
+  if (entity?.ownerId) {
+    const owner = state.entities.find(candidate => candidate.id === entity.ownerId);
+    if (owner) return owner;
+  }
+  return state.player;
+}
+
+/** The thing a seeking missile is locked onto. */
+function tracerTarget(state, entity) {
+  if (entity?.tracerId === '$player' || (!entity?.tracerId && entity?.type !== 'player')) return state.player;
+  return state.entities.find(candidate => candidate.id === entity?.tracerId) || null;
+}
+
+/**
+ * One homing step, ported from GZDoom's A_Tracer2: turn the missile's angle toward
+ * its target by at most `turn` degrees and slew its climb by an eighth of a unit per
+ * tic, so a revenant tracer curves in instead of snapping onto the target.
+ */
+function tracerStep(ctx, turn) {
+  const { state, entity } = ctx;
+  if (!entity || !(entity.speed > 0)) return;
+  const target = tracerTarget(state, entity);
+  if (!target) return;
+  const alive = target === state.player ? state.playerStats.health > 0 : (target.health ?? 0) > 0;
+  if (!alive) return;
+  const perTic = entity.speed / TIC_RATE;
+  const current = Math.atan2(entity.dy, entity.dx);
+  const exact = Math.atan2(target.y - entity.y, target.x - entity.x);
+  const off = wrapRadians(exact - current);
+  const step = turn * Math.PI / 180;
+  let heading = current;
+  if (off < 0) {
+    heading = current - step;
+    if (wrapRadians(exact - heading) > 0) heading = exact;
+  } else if (off > 0) {
+    heading = current + step;
+    if (wrapRadians(exact - heading) < 0) heading = exact;
+  }
+  const horizontal = Math.max(1, Math.hypot(target.x - entity.x, target.y - entity.y));
+  const height = target.height ?? 56;
+  const aimZ = floorAt(state, target) + (height >= 56 ? 40 : height * 2 / 3);
+  const slope = (aimZ - entity.z) / Math.max(1, horizontal / Math.max(.001, perTic));
+  let climb = entity.dz * perTic;
+  climb += slope < climb ? -0.125 : 0.125;
+  const pitch = Math.atan2(climb, perTic);
+  const ring = Math.cos(pitch);
+  entity.dx = Math.cos(heading) * ring;
+  entity.dy = Math.sin(heading) * ring;
+  entity.dz = clampUnit(Math.sin(pitch));
+  entity.angle = heading * 180 / Math.PI;
+}
+
 /**
  * A missile actor as the projectile runtime needs it. Actor `speed` is map units
  * per 35 Hz tic, so it is converted to the per-second value the projectile step
@@ -202,8 +261,159 @@ export function missileProjectile(project, name) {
     index.byId.get(`actor_${String(name || '').toLowerCase().replace(/[^a-z0-9_]/g, '_')}`);
   if (!actor) return null;
   const clips = actorProjectileClips(project, actor);
-  return { name: actor.name, speed: (actor.speed || 10) * TIC_RATE, damage: actor.damage ?? 0,
-    radius: actor.radius || 0, clipId: clips.fly, impactClipId: clips.impact };
+  return { name: actor.name, actorId: actor.id, speed: (actor.speed || 10) * TIC_RATE, damage: actor.damage ?? 0,
+    radius: actor.radius || 0, clipId: clips.fly, impactClipId: clips.impact,
+    seeker: actor.flags?.SEEKERMISSILE === true };
+}
+
+/**
+ * Spawns a decorative actor a missile's own states create: a trail particle, a
+ * spray puff or an explosion burst. It animates through the actor's Spawn frames
+ * and is dropped when that clip ends; it never blocks, collides or takes damage.
+ */
+export function spawnEffect(project, state, actorName, { x, y, z, vx = 0, vy = 0, vz = 0 } = {}) {
+  const actor = projectActorIndex(project).byName.get(String(actorName || '').toLowerCase());
+  if (!actor) return null;
+  const clipId = actorEffectClip(project, actor);
+  if (!clipId) return null;
+  state.impacts ||= [];
+  // The save format refuses more than 256 effects, so trails never grow past it.
+  if (state.impacts.length >= 256) state.impacts.shift();
+  state.spawnSequence = (state.spawnSequence || 0) + 1;
+  const effect = { id: `effect_${state.spawnSequence}`, clipId, x, y, z, start: state.time };
+  if (vx || vy || vz) { effect.vx = vx * TIC_RATE; effect.vy = vy * TIC_RATE; effect.vz = vz * TIC_RATE; }
+  state.impacts.push(effect);
+  return effect;
+}
+
+/** The projectile's actor record, for the flight state machine and its actions. */
+export function projectileActor(project, projectile) {
+  if (!projectile.actorId) return null;
+  return projectActorIndex(project).byId.get(projectile.actorId) || null;
+}
+
+/**
+ * Actions that steer a monster, not a missile. A stray one in a projectile's
+ * states would move or wake the wrong thing, so missile machines skip them.
+ */
+const PROJECTILE_UNSAFE = new Set(['A_Look', 'A_LookEx', 'A_Chase', 'A_Wander', 'A_ClearTarget',
+  'A_FaceTarget', 'A_GiveInventory', 'A_GiveToTarget', 'A_JumpIfInTargetInventory']);
+
+function runProjectileActions(project, state, projectile, actor, actions) {
+  for (const action of actions || []) {
+    if (PROJECTILE_UNSAFE.has(action.name)) continue;
+    const handler = ACTIONS[action.name];
+    if (!handler) {
+      state.actorUnsupported ||= new Set();
+      if (state.actorUnsupported.size < 200) state.actorUnsupported.add(action.name);
+      continue;
+    }
+    try {
+      handler({ project, state, entity: projectile, actor, action, args: action.args || [], named: action.named || {} });
+    } catch { /* a malformed action must not stop the missile */ }
+  }
+}
+
+/**
+ * Advances a missile's own state machine: this is where a plasma rifle's trail
+ * particles, a revenant tracer's homing and a BFG ball's spray come from. Doom
+ * runs these states on the projectile itself, with the projectile as `self`.
+ */
+export function projectileTic(project, state, projectile) {
+  const actor = projectileActor(project, projectile);
+  const frames = actor?.states?.frames;
+  if (!frames?.length) return;
+  const machine = projectile.actorState ||= { index: null, tics: 0, entered: false, initialised: true,
+    target: null, threshold: 0, reactionTime: 0, moveDir: -1, flags: new Map(), inventory: new Map() };
+  if (machine.index === null) {
+    if (machine.stopped) return;
+    const start = labelIndex(actor, 'Spawn');
+    if (start === null) return;
+    machine.index = start;
+  }
+  const frame = frames[machine.index];
+  if (!frame) { machine.index = null; return; }
+  if (frame.kind === 'frame') {
+    if (machine.tics <= 0) machine.tics = Math.max(0, frame.duration);
+    if (!machine.entered) {
+      machine.entered = true;
+      runProjectileActions(project, state, projectile, actor, frame.actions);
+    }
+    if (frame.duration < 0) return;
+    machine.tics--;
+    if (machine.tics > 0) return;
+    machine.entered = false;
+    machine.index++;
+    return;
+  }
+  machine.entered = false;
+  if (frame.kind === 'stop') { machine.index = null; machine.stopped = true; return; }
+  if (frame.kind === 'goto' || frame.kind === 'loop') {
+    const resolved = labelIndex(actor, frame.kind === 'loop' ? frame.label : frame.target);
+    machine.index = resolved === null ? null : resolved;
+    return;
+  }
+  if (frame.kind === 'wait') return;
+  machine.index++;
+}
+
+/**
+ * Steps every live missile's own states, converting frame time into 35 Hz tics so
+ * trail particles spawn and homing turns at Doom's pace.
+ */
+export function stepProjectiles(project, state, dt) {
+  if (!project.actors?.length || !state.projectiles?.length) return;
+  state.projectileClock = (state.projectileClock || 0) + dt * TIC_RATE;
+  const whole = Math.floor(state.projectileClock + 1e-6);
+  const tics = Math.min(whole, MAX_TICS_PER_STEP);
+  state.projectileClock -= whole;
+  for (let tic = 0; tic < tics; tic++) {
+    for (const projectile of state.projectiles) if (projectile.actorId) projectileTic(project, state, projectile);
+  }
+}
+
+/**
+ * Runs a missile's Death states when it hits. Doom's BFG ball sprays from its
+ * Death state and the rocket explodes from its own, so this is where those
+ * effects happen instead of being hardcoded per weapon.
+ */
+export function runProjectileDeath(project, state, projectile) {
+  const actor = projectileActor(project, projectile);
+  if (!actor) return false;
+  const label = labelIndex(actor, 'Death') ?? labelIndex(actor, 'Crash');
+  if (label === null) return false;
+  const frames = actor?.states?.frames || [];
+  const actions = [];
+  for (let index = label; index < frames.length && frames[index].kind === 'frame'; index++) {
+    actions.push(...(frames[index].actions || []));
+  }
+  runProjectileActions(project, state, projectile, actor, actions);
+  return true;
+}
+
+/**
+ * Actors a missile's states spawn by name: trail particles, puffs and bursts. The
+ * missile itself may never be placed in a map, so these are collected directly
+ * from the actor table rather than only from the level's used actors.
+ */
+export function missileEffectActors(project) {
+  const index = projectActorIndex(project);
+  const found = new Map();
+  for (const actor of project.actors || []) {
+    const flags = actor.flags || {};
+    if (!(flags.MISSILE || flags.PROJECTILE)) continue;
+    for (const frame of actor.states?.frames || []) {
+      for (const action of frame.actions || []) {
+        for (const value of action?.args || []) {
+          if (typeof value !== 'string') continue;
+          const name = value.trim().replace(/^"+|"+$/g, '').toLowerCase();
+          const named = name ? index.byName.get(name) : null;
+          if (named && !found.has(named.name)) found.set(named.name, named);
+        }
+      }
+    }
+  }
+  return [...found.values()];
 }
 
 /**
@@ -219,6 +429,23 @@ export function installActorProjectileSprites(project) {
       : flags.MISSILE || flags.PROJECTILE;
     if (missile) actorProjectileClips(project, actor);
   }
+  // Trail particles, spray puffs and explosion bursts are spawned while playing,
+  // but the renderer reads the clip list once, so their clips are built now.
+  const index = projectActorIndex(project);
+  const candidates = [...usedActors(project), ...missileEffectActors(project)];
+  for (const actor of candidates) {
+    for (const frame of actor.states?.frames || []) {
+      for (const action of frame.actions || []) {
+        for (const value of action?.args || []) {
+          if (typeof value !== 'string') continue;
+          const name = value.trim().replace(/^"+|"+$/g, '').toLowerCase();
+          const named = name ? index.byName.get(name) : null;
+          if (named && !named.flags?.MISSILE) actorEffectClip(project, named);
+        }
+      }
+    }
+  }
+  for (const actor of missileEffectActors(project)) if (!actor.flags?.MISSILE) actorEffectClip(project, actor);
 }
 
 /** Spawns a projectile actor owned by an enemy, aimed at the player. */
@@ -235,11 +462,14 @@ export function spawnActorProjectile(project, state, owner, projectileName, { sp
   const horizontal = Math.hypot(state.player.x - owner.x, state.player.y - owner.y);
   const pitch = Math.atan2(targetZ - originZ, Math.max(1, horizontal));
   state.projectiles.push({
-    id: ++state.projectileSequence, ownerId: owner.id, actorId: actor?.id || null,
+    id: ++state.projectileSequence, ownerId: owner.id, actorId: actor?.id || null, actorName: actor?.name || null,
     x: owner.x, y: owner.y, z: originZ,
     dx: Math.cos(radians) * Math.cos(pitch), dy: Math.sin(radians) * Math.cos(pitch), dz: Math.sin(pitch),
-    speed: missileSpeed * TIC_RATE, damage: damageValue, diceSides: 8, radius: actor?.flags?.MISSILE && damageValue ? damageValue : 0,
+    // Explosions come from the missile's own Death states (A_Explode), not from a
+    // radius invented here, so a mod's projectile behaves like its definition.
+    speed: missileSpeed * TIC_RATE, damage: damageValue, diceSides: 8, radius: 0,
     age: 0, color: '#ff8833', clipId: clips.fly, impactClipId: clips.impact,
+    tracerId: actor?.flags?.SEEKERMISSILE === true ? '$player' : null,
   });
   return actor;
 }
@@ -396,7 +626,48 @@ export const ACTIONS = {
     spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'RevenantTracer');
     saySound(ctx.state, 'DSPISTOL', ctx.entity, 60);
   },
-  A_Tracer() { /* Tracer homing is approximated by the projectile's own flight. */ },
+  // Homing, from the missile's own state: GZDoom turns 16.875 degrees every fourth
+  // tic and leaves a smoke puff behind the tracer.
+  A_Tracer(ctx) {
+    if (Math.round((ctx.state.time || 0) * TIC_RATE) & 3) return;
+    const { project, state, entity } = ctx;
+    spawnEffect(project, state, 'BulletPuff', { x: entity.x, y: entity.y, z: entity.z });
+    spawnEffect(project, state, 'RevenantTracerSmoke', { x: entity.x, y: entity.y, z: entity.z, vz: 1 });
+    tracerStep(ctx, 16.875);
+  },
+  A_Tracer2(ctx) { tracerStep(ctx, numArg(ctx, 0, 19.6875)); },
+  // A_BFGSpray(spraytype, rays, damagecount, spread, distance, vrange, damage):
+  // the BFG ball's Death state sweeps a deadly cone of rays across what it sees.
+  A_BFGSpray(ctx) {
+    const { project, state, entity } = ctx;
+    const spray = String(arg(ctx, 0) || 'BFGExtra').replace(/^"|"$/g, '');
+    const rays = Math.max(1, Math.min(256, Math.floor(numArg(ctx, 1, 40) || 40)));
+    const rolls = Math.max(1, Math.floor(numArg(ctx, 2, 15) || 15));
+    const spread = Math.max(1, numArg(ctx, 3, 90) || 90) * Math.PI / 180;
+    const range = numArg(ctx, 4, 0) > 0 ? numArg(ctx, 4) : 1024;
+    const fixedDamage = numArg(ctx, 6, 0);
+    const origin = sprayOrigin(state, entity);
+    const eye = { x: origin.x, y: origin.y, z: (origin.z ?? floorAt(state, origin)) + (origin === state.player ? 48 : 32) };
+    const base = Math.atan2(entity?.dy ?? Math.sin((entity?.angle || 0) * Math.PI / 180),
+      entity?.dx ?? Math.cos((entity?.angle || 0) * Math.PI / 180));
+    for (let ray = 0; ray < rays; ray++) {
+      const angle = base - spread / 2 + spread / rays * ray;
+      const direction = { x: Math.cos(angle), y: Math.sin(angle), z: 0 };
+      let nearest = geometryDistance(state, eye, direction, range);
+      let target = null;
+      for (const candidate of state.entities) {
+        if (candidate.type !== 'enemy' || (candidate.health ?? 0) <= 0) continue;
+        const hit = entityDistance(state, eye, direction, candidate, nearest);
+        if (hit !== null) { nearest = hit; target = candidate; }
+      }
+      if (!target) continue;
+      let damage = fixedDamage;
+      if (!damage) for (let roll = 0; roll < rolls; roll++) damage += randomDamage(state, 1, 8);
+      target.health = Math.max(0, (target.health ?? 0) - damage);
+      spawnEffect(project, state, spray, { x: target.x, y: target.y,
+        z: floorAt(state, target) + (target.height ?? 56) / 4 });
+    }
+  },
   A_FatAttack1(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'FatShot'); saySound(ctx.state, 'DSFIRSHT', ctx.entity); },
   A_FatAttack2(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'FatShot'); },
   A_FatAttack3(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'FatShot'); },
@@ -438,9 +709,12 @@ export const ACTIONS = {
       candidate.actorId === entity.actorId)) return;
     state.bossDefeated = true;
   },
+  // A_Explode(damage, distance, flags, alertMonsters, fulldamagedistance): Doom's
+  // own defaults are 128 damage over a 128-unit radius. A missile's Death state is
+  // where this now runs, so a rocket's blast comes from its definition.
   A_Explode(ctx) {
     const { state, entity } = ctx;
-    const radius = numArg(ctx, 0, 128), damage = numArg(ctx, 1, 128);
+    const damage = numArg(ctx, 0, 128), radius = numArg(ctx, 1, 128);
     if (Math.hypot(state.player.x - entity.x, state.player.y - entity.y) < radius) damagePlayer(state, Math.max(0, Math.round(damage * (1 - Math.hypot(state.player.x - entity.x, state.player.y - entity.y) / radius))));
     for (const other of state.entities) {
       if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
@@ -534,12 +808,35 @@ export const ACTIONS = {
     const { state, entity } = ctx;
     spawnActorProjectile(ctx.project, state, entity, String(arg(ctx, 0) || ''), { speed: numArg(ctx, 1, 0), damage: null });
   },
+  // A_SpawnItemEx(class, xofs, yofs, zofs, xvel, yvel, zvel, angle, flags, chance):
+  // monsters that spawn reinforcements stay real things; decoration (trail
+  // particles, puffs, sparks) becomes an effect that animates and disappears.
   A_SpawnItemEx(ctx) {
-    const { state, entity } = ctx;
-    const index = projectilesByName(ctx.project);
-    const target = index.byName.get(String(arg(ctx, 0) || '').toLowerCase());
-    if (!target) return;
-    spawnProjectileEntity(ctx.project, state, entity, target);
+    const { project, state, entity } = ctx;
+    const name = String(arg(ctx, 0) || '').replace(/^"|"$/g, '');
+    const spawned = projectilesByName(project).byName.get(name.toLowerCase());
+    if (!spawned) return;
+    const chance = numArg(ctx, 9, 0);
+    if (chance > 0 && randomDamage(state, 1, 256) <= chance) return;
+    if (spawned.flags?.COUNTKILL === true || spawned.name.toLowerCase() === 'lostsoul') {
+      spawnProjectileEntity(project, state, entity, spawned);
+      return;
+    }
+    // Offsets and velocity are relative to the spawner's facing; the angle rotates
+    // the horizontal velocity, which is how trail particles are spread out.
+    const facing = (entity?.angle ?? 0) * Math.PI / 180;
+    const side = facing - Math.PI / 2;
+    const ox = numArg(ctx, 1, 0), oy = numArg(ctx, 2, 0);
+    const vx = numArg(ctx, 4, 0), vy = numArg(ctx, 5, 0), vz = numArg(ctx, 6, 0);
+    const spin = numArg(ctx, 7, 0) * Math.PI / 180;
+    const speed = Math.hypot(vx, vy);
+    const direction = spin || (speed ? Math.atan2(vy, vx) : facing);
+    spawnEffect(project, state, spawned.name, {
+      x: entity.x + Math.cos(facing) * oy + Math.cos(side) * ox,
+      y: entity.y + Math.sin(facing) * oy + Math.sin(side) * ox,
+      z: (entity.z ?? floorAt(state, entity)) + numArg(ctx, 3, 0),
+      vx: Math.cos(direction) * speed, vy: Math.sin(direction) * speed, vz,
+    });
   },
   A_SpawnItem(ctx) {
     ACTIONS.A_SpawnItemEx(ctx);
@@ -611,7 +908,7 @@ function spawnProjectileEntity(project, state, owner, actor) {
   if (state.entities.length >= 900) return null;
   const angle = Math.atan2(state.player.y - owner.y, state.player.x - owner.x);
   const entity = {
-    id: `spawned_${++state.spawnSequence}`, type: 'enemy', name: actor.name, actorId: actor.id, actorName: actor.name,
+    id: `spawned_${state.spawnSequence = (state.spawnSequence || 0) + 1}`, type: 'enemy', name: actor.name, actorId: actor.id, actorName: actor.name,
     x: owner.x, y: owner.y, z: floorAt(state, owner), angle: angle * 180 / Math.PI,
     health: actor.health || 20, elevation: 0, spawnedFrom: owner.id,
   };
@@ -754,7 +1051,7 @@ export function weaponTic(project, state, attackHeld) {
  */
 export const WEAPON_ACTION_NAMES = new Set(['A_WeaponReady', 'A_ReFire', 'A_CheckReload', 'A_GunFlash',
   'A_Light0', 'A_Light1', 'A_Light2', 'A_Raise', 'A_Lower', 'A_FireBullets', 'A_FireCustomMissile',
-  'A_FireMissile', 'A_FirePlasma', 'A_FireBFG', 'A_FireCGun', 'A_FireShotgun', 'A_FireShotgun2',
+  'A_FireProjectile', 'A_FireMissile', 'A_FirePlasma', 'A_FireBFG', 'A_FireCGun', 'A_FireShotgun', 'A_FireShotgun2',
   'A_Punch', 'A_Saw', 'A_FirePistol', 'A_PlaySound', 'A_StartSound', 'A_BFGsound', 'A_OpenShotgun2',
   'A_LoadShotgun2', 'A_CloseShotgun2']);
 
@@ -875,6 +1172,7 @@ function runWeaponAction(ctx, action) {
     case 'A_Lower': state.weaponRaised = true; return;
     case 'A_FireBullets':
     case 'A_FireCustomMissile':
+    case 'A_FireProjectile':
     case 'A_FireMissile':
     case 'A_FirePlasma':
     case 'A_FireBFG':
@@ -884,7 +1182,7 @@ function runWeaponAction(ctx, action) {
     case 'A_Punch':
     case 'A_Saw':
     case 'A_FirePistol':
-      fireWeapon(ctx, action.name);
+      fireWeapon({ ...ctx, args, named: action.named || {} }, action.name);
       return;
     case 'A_PlaySound':
     case 'A_StartSound':
@@ -929,8 +1227,12 @@ const FIRE_SOUNDS = {
 
 function fireWeapon(ctx, actionName) {
   const { state, actor } = ctx;
+  // A_FireCustomMissile/A_FireProjectile take `useammo` as their third argument, so
+  // a rocket-level hitbox fired with `false` must not spend a rocket.
+  const custom = actionName === 'A_FireCustomMissile' || actionName === 'A_FireProjectile';
+  const spendAmmo = !custom || !(arg(ctx, 2, true) === false || numArg(ctx, 2, 1) === 0);
   const { type, use } = weaponAmmo(actor);
-  if (type) {
+  if (type && spendAmmo) {
     const cost = use || 1;
     if ((state.playerStats[type] || 0) < cost) { state.weaponTriggerHeld = false; return; }
     state.playerStats[type] -= cost;
@@ -941,7 +1243,8 @@ function fireWeapon(ctx, actionName) {
     const amount = Number(resolved?.damage);
     state.weaponAttack = { kind: 'missile', missile: resolved?.name || name,
       damage: Number.isFinite(amount) && amount > 0 ? amount : damage, diceSides: 8,
-      speed: resolved?.speed || 700, radius };
+      speed: resolved?.speed || 700, radius, actorId: resolved?.actorId || null,
+      seeker: resolved?.seeker === true };
   };
   switch (actionName) {
     case 'A_FireBullets': {
@@ -956,10 +1259,26 @@ function fireWeapon(ctx, actionName) {
     case 'A_FirePistol': state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 0, range: 2048 }; break;
     case 'A_Punch': state.weaponAttack = { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64 }; break;
     case 'A_Saw': state.weaponAttack = { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64, hitSound: 'weapons/sawhit' }; break;
-    case 'A_FireMissile': missile('Rocket', 20, 128); break;
+    // The actor's own Death state carries the explosion (the rocket's A_Explode, the
+    // BFG ball's A_BFGSpray), so no radius is invented here. The fallbacks keep a
+    // project without an actor table playable.
+    case 'A_FireMissile': missile('Rocket', 20, 128); if (state.weaponAttack?.actorId) state.weaponAttack.radius = 0; break;
     case 'A_FirePlasma': missile('PlasmaBall', 5, 0); break;
-    case 'A_FireBFG': missile('BFGBall', 100, 256); break;
-    case 'A_FireCustomMissile': missile(String(arg(ctx, 0) || 'PlayerMissile'), 20, 64); break;
+    case 'A_FireBFG': missile('BFGBall', 100, 256); if (state.weaponAttack?.actorId) state.weaponAttack.radius = 0; break;
+    case 'A_FireCustomMissile':
+    case 'A_FireProjectile': {
+      const className = String(arg(ctx, 0) || '').replace(/^"|"$/g, '');
+      const resolved = missileProjectile(ctx.project, className);
+      // No placeholder: a weapon that names a class the project does not contain
+      // does not fire, and the shot is reported rather than faked.
+      if (!resolved) { state.missileGaps ||= new Set(); if (state.missileGaps.size < 40) state.missileGaps.add(className); return; }
+      state.weaponAttack = { kind: 'missile', missile: resolved.name, actorId: resolved.actorId,
+        damage: resolved.damage > 0 ? resolved.damage : 1, diceSides: 8, speed: resolved.speed,
+        radius: 0, seeker: resolved.seeker,
+        angle: numArg(ctx, 1, 0), spawnofs: numArg(ctx, 3, 0), spawnheight: numArg(ctx, 4, 0),
+        pitch: numArg(ctx, 6, 0) };
+      return;
+    }
     default: state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 0, range: 2048 };
   }
 }
