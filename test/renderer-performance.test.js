@@ -144,7 +144,8 @@ test('frame statistics track a rolling maximum and stall count without allocatin
   const stats = createFrameStats({ window: 4, stallMs: 20 });
   for (const value of [10, 300, 12, 11]) stats.push(value);
   assert.deepEqual({ ...stats.summary(), mean: Math.round(stats.summary().mean * 100) / 100 },
-    { frames: 4, window: 4, last: 11, max: 300, mean: 83.25, stalls: 1, stallMs: 20 });
+    { frames: 4, window: 4, last: 11, max: 300, mean: 83.25, stalls: 1, stallMs: 20,
+      sessionFrames: 4, sessionStalls: 1, worst: 300 });
   stats.push(13);
   assert.equal(stats.max, 300, 'the stall is still inside the window');
   stats.push(14);
@@ -154,7 +155,8 @@ test('frame statistics track a rolling maximum and stall count without allocatin
   assert.equal(stats.max, 40); assert.equal(stats.stalls, 1);
   assert.equal(stats.summary().last, 40);
   stats.reset();
-  assert.deepEqual({ ...stats.summary() }, { frames: 0, window: 4, last: 0, max: 0, mean: 0, stalls: 0, stallMs: 20 });
+  assert.deepEqual({ ...stats.summary() },
+    { frames: 0, window: 4, last: 0, max: 0, mean: 0, stalls: 0, stallMs: 20, sessionFrames: 0, sessionStalls: 0, worst: 0 });
   for (const value of [Number.NaN, -5, Infinity]) stats.push(value);
   assert.equal(stats.max, 0, 'invalid samples are ignored');
 });

@@ -225,7 +225,12 @@ provider credits or network access are required for tests.
   (`server/playtest-logs.js`) appends them with an `index.json` cache for the panel.
   Records carry the level, project, renderer, difficulty and play-time so a single
   line is readable on its own, and a repeating failure is stored once with a repeat
-  count instead of once per frame. Bounds are enforced on both sides — 400 records
+  count instead of once per frame. Frame stalls are logged too: `shared/perf.js`
+  keeps session-wide stall and worst-frame totals beside its rolling window, and the
+  app writes a `performance` warning naming the stalled frame with the entities,
+  projectiles and effects that were live at the time; the stop record summarises
+  frames, stalls and the worst frame. A stutter therefore leaves evidence in the
+  same file as every other playtest failure. Bounds are enforced on both sides — 400 records
   per request, 240 records per minute, 20,000 records and 4 MiB per session file,
   the 60 most recent sessions — and a session that reaches its limit records that
   fact instead of silently dropping the rest. When the service is unreachable (or
@@ -1109,8 +1114,12 @@ as playable audio. OpenDLE imports every music lump as a `music` asset (bounded:
   small per-family oscillator patch (attack/decay/sustain/release plus one
   harmonic) and filtered-noise percussion. It schedules a 1.5 s lookahead window,
   loops the score, caps concurrent voices, and never spins when a note lies
-  outside the window; a stalled tab resets instead of replaying thousands of
-  past notes.
+  outside the window. A stalled tab used to make the scheduler catch up by playing
+  every overdue note at the current time, which is audible as one loud chord when
+  the game resumes; lateness beyond 0.25 s now drops the backlog and re-anchors the
+  timeline to the audio clock (and notes more than 0.05 s late are skipped), so a
+  freeze costs a moment of silence instead of a bang. The scheduler counts both
+  events for diagnostics.
 - Track choice: `MAPINFO` `music = "D_XXX"` wins, then the classic Doom II table
   (MAP01 `D_RUNNIN` ... MAP32 `D_ULTIMA`) or the level's own `D_E<e>M<m>` lump
   with a fallback to `D_E<e>M2`. A level whose track is missing is silent rather

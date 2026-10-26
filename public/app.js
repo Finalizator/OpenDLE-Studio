@@ -1608,13 +1608,32 @@ function reportPlaytestFailures(session) {
       details: { special } });
   }
 }
+/**
+ * A frame that took far longer than it should is what a player experiences as a
+ * stutter (and as the music stopping). The renderer keeps session-wide counters, so
+ * the log names the stall and what was on screen instead of leaving it unexplained.
+ */
+let reportedStalls = 0;
+function reportFrameStalls(session) {
+  const perf = previewRenderer?.perf?.();
+  if (!perf || perf.sessionStalls <= reportedStalls) return;
+  reportedStalls = perf.sessionStalls;
+  if (reportedStalls > 20) return;
+  playtestLog.warn('performance', `Frame stalled for ${Math.round(perf.worst)} ms`, {
+    ms: Math.round(perf.worst), stalls: perf.sessionStalls, frames: perf.sessionFrames,
+    entities: session.entities?.length ?? 0, projectiles: session.projectiles?.length ?? 0,
+    effects: session.impacts?.length ?? 0, level: previewProject?.game?.active ?? null,
+  });
+}
 function stopPreview() {
   previewGeneration++;
   if (runtime) {
     reportPlaytestFailures(runtime);
+    const perf = previewRenderer?.perf?.();
     playtestLog.info('playtest', 'Preview stopped', {
       playSeconds: Math.round(runtime.time), health: runtime.playerStats.health,
       screen: runtime.gameScreen,
+      ...(perf ? { frames: perf.sessionFrames, stalls: perf.sessionStalls, worstFrameMs: Math.round(perf.worst) } : {}),
     });
   }
   playtestLog.flush().catch(() => {});
@@ -1745,6 +1764,7 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       error: message => mouseStatus(message, true),
     });
     $('preview-title').textContent = `${snapshot.title}${snapshot.game ? ` / ${snapshot.game.active}` : ''}`;
+    reportedStalls = 0;
     playtestLog.setContext({
       project: snapshot.title,
       level: snapshot.game ? `${snapshot.game.active} — ${(snapshot.game.levels || []).find(level => level.id === snapshot.game.active)?.name || ''}` : snapshot.title,
@@ -1987,6 +2007,7 @@ function frame(now) {
       audioPlayer?.update(runtime);
       previewRenderer.render(runtime, runtime.gameScreen === 'playing' ? dt : 0);
       reportPlaytestFailures(runtime);
+      reportFrameStalls(runtime);
       syncHUDCursor(); hudView?.update(runtime);
       if (!musicReported && audioPlayer?.musicInfo) {
         const music = audioPlayer.musicInfo();

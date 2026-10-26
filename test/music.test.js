@@ -158,6 +158,40 @@ test('the scheduler starts voices for notes inside its lookahead window and stop
   assert.equal(scheduler.start(score), false, 'a disposed scheduler refuses new scores');
 });
 
+test('a stalled tab drops the music backlog instead of bursting every late note at once', async t => {
+  const { createMusicScheduler } = await import('../public/music-player.js');
+  const started = [];
+  const node = (extra = {}) => ({ connect() {}, disconnect() {}, start(when) { started.push(when); }, stop() {}, ...extra });
+  const context = {
+    currentTime: 0, sampleRate: 8000,
+    createGain: () => node({ gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {}, value: 1 } }),
+    createOscillator: () => node({ type: 'sine', frequency: { value: 0 }, detune: { value: 0 }, onended: null }),
+    createBufferSource: () => node({ buffer: null }),
+    createBuffer: () => ({ getChannelData: () => new Float32Array(8) }),
+    createBiquadFilter: () => node({ type: 'bandpass', frequency: { value: 0 }, Q: { value: 1 } }),
+  };
+  // Sixty notes, ten a second, so a stalled second is sixty notes of backlog.
+  const notes = Array.from({ length: 60 }, (_, index) => ({
+    time: index / 10, note: 60 + (index % 12), duration: .09, velocity: .5, family: 'piano', drum: false,
+  }));
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const scheduler = createMusicScheduler(context, { destination: node() });
+  t.after(() => scheduler.dispose());
+  assert.equal(scheduler.start({ seconds: 60, notes }), true);
+  const before = started.length;
+  assert.ok(before > 0, 'the first window was scheduled');
+  // The main thread freezes for seconds: no scheduling pass happens, then one does.
+  context.currentTime = 4;
+  t.mock.timers.tick(750);
+  const afterStall = started.slice(before);
+  // Two voices per note (body plus harmonic), so count the notes, not the voices.
+  const notesAfterStall = new Set(afterStall.map(when => when.toFixed(2)));
+  assert.ok(notesAfterStall.size <= 16, `only the window after the stall is scheduled (${notesAfterStall.size} notes)`);
+  assert.ok(afterStall.every(when => when >= context.currentTime - .05),
+    'no note is started in the past, so they cannot all sound at once');
+  assert.equal(scheduler.stalls, 1, 'the stall was detected and the timeline re-anchored');
+});
+
 test('the scheduler ignores empty scores instead of creating a timer', async t => {
   const { createMusicScheduler } = await import('../public/music-player.js');
   const context = { currentTime: 0, sampleRate: 8000, createGain: () => ({ connect() {}, gain: {} }) };

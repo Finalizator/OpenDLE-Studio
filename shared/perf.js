@@ -4,6 +4,9 @@ export function createFrameStats({ window = 120, stallMs = 50 } = {}) {
   const size = Math.max(1, Math.floor(window));
   const samples = new Float64Array(size);
   let count = 0, cursor = 0, max = 0, total = 0, stalls = 0;
+  // Session totals: the rolling window forgets, but a playtest report needs to know
+  // that two frames stalled five minutes apart.
+  let sessionStalls = 0, worst = 0, sessionFrames = 0;
   function recomputeMax() {
     max = 0;
     for (let index = 0; index < count; index++) if (samples[index] > max) max = samples[index];
@@ -20,17 +23,23 @@ export function createFrameStats({ window = 120, stallMs = 50 } = {}) {
     samples[cursor] = value;
     cursor = (cursor + 1) % size;
     total += value;
-    if (value > stallMs) stalls++;
+    if (value > stallMs) { stalls++; sessionStalls++; }
+    if (value > worst) worst = value;
+    sessionFrames++;
     if (droppedMax) recomputeMax();
     if (value > max) max = value;
     return value;
   }
-  function reset() { samples.fill(0); count = 0; cursor = 0; max = 0; total = 0; stalls = 0; }
+  function reset() {
+    samples.fill(0); count = 0; cursor = 0; max = 0; total = 0; stalls = 0;
+    sessionStalls = 0; worst = 0; sessionFrames = 0;
+  }
   function summary() {
     return {
       frames: count, window: size,
       last: count ? samples[(cursor - 1 + size) % size] : 0,
       max, mean: count ? total / count : 0, stalls, stallMs,
+      sessionFrames, sessionStalls, worst,
     };
   }
   return { push, reset, summary, get max() { return max; }, get stalls() { return stalls; }, get frames() { return count; } };

@@ -4,6 +4,12 @@
 
 const VOICE_BUDGET = 64;
 const LOOKAHEAD_SECONDS = 1.5;
+// A frozen tab, a shader compile or a long GC leaves notes in the past. Playing
+// them all "now" is the burst that sounds like one loud chord; past this much
+// lateness the backlog is dropped and the timeline re-anchors to the audio clock.
+const STALL_SECONDS = .25;
+// Anything only a little late is still played, but never this far behind.
+const LATE_GRACE_SECONDS = .05;
 
 const families = {
   piano: { type: 'triangle', attack: .004, decay: .35, sustain: .25, release: .25, gain: .22, detune: 0, harmonic: 2, harmonicGain: .12 },
@@ -46,6 +52,9 @@ export function musicBytes(asset) {
  */
 export function createMusicScheduler(context, { destination, onError = () => {}, lookahead = LOOKAHEAD_SECONDS } = {}) {
   let timer = null, voices = 0, disposed = false, current = null, startedAt = 0, loop = 0, index = 0;
+  // Diagnostics: how often a stall forced the timeline to re-anchor, and how many
+  // notes were dropped rather than burst.
+  let stalls = 0, skipped = 0;
   // Created on first percussion hit so a context without buffer support (or a
   // silent track) never pays for it.
   let noise = null;
@@ -100,18 +109,29 @@ export function createMusicScheduler(context, { destination, onError = () => {},
     voices++;
     oscillator.onended = () => { voices = Math.max(0, voices - 1); harmonic = null; };
   }
+  /** When the next un-played note should sound, or null when the score is done. */
+  function pendingTime() {
+    const note = current?.score.notes[index];
+    if (!note) return null;
+    return startedAt + loop * current.score.seconds + note.time;
+  }
   function scheduleWindow() {
     if (disposed || !current) return;
     const score = current.score, now = context.currentTime, horizon = now + lookahead;
     // A stalled tab or a long pause would otherwise try to catch up on thousands
     // of past notes at once.
     if (startedAt + loop * score.seconds + score.seconds < now) { startedAt = now + .05; loop = 0; index = 0; }
+    // Re-anchor after a stall: the missed notes are dropped instead of fired
+    // together, so the music resumes in step instead of stuttering a chord.
+    const pending = pendingTime();
+    if (pending !== null && now - pending > STALL_SECONDS) { startedAt += now - pending; stalls++; }
     for (let guard = 0; guard < 1000; guard++) {
       const loopStart = startedAt + loop * score.seconds;
       if (loopStart > horizon) break;
       while (index < score.notes.length) {
         const note = score.notes[index], when = loopStart + note.time;
         if (when > horizon) break;
+        if (when < now - LATE_GRACE_SECONDS) { index++; skipped++; continue; }
         if (voices < VOICE_BUDGET) {
           try { playNote(note, Math.max(now, when)); }
           catch (error) { onError(error); }
@@ -125,13 +145,15 @@ export function createMusicScheduler(context, { destination, onError = () => {},
   return {
     get playing() { return Boolean(current); },
     get loop() { return loop; },
+    get stalls() { return stalls; },
+    get skipped() { return skipped; },
     start(scoreData) {
       if (disposed) return false;
       this.stop();
       if (!scoreData?.notes?.length || !(scoreData.seconds > 0)) return false;
       current = { score: scoreData };
       startedAt = context.currentTime + .05;
-      loop = 0; index = 0;
+      loop = 0; index = 0; stalls = 0; skipped = 0;
       scheduleWindow();
       timer = setInterval(scheduleWindow, Math.max(50, lookahead * 500));
       return true;

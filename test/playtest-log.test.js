@@ -363,3 +363,16 @@ test('the logs panel lists sessions, shows records and filters them', async () =
     assert.equal(filtered.children.length, 1, 'the Errors filter narrows the list');
   } finally { delete globalThis.document; }
 });
+
+test('frame stats keep session-wide stall totals past the rolling window', async () => {
+  const { createFrameStats } = await import('../shared/perf.js');
+  const stats = createFrameStats({ window: 4, stallMs: 50 });
+  [10, 400, 10, 10, 10, 10, 10, 10, 300].forEach(ms => stats.push(ms));
+  const summary = stats.summary();
+  assert.equal(summary.sessionStalls, 2, 'both stalls are remembered');
+  assert.equal(summary.stalls, 1, 'the rolling window only still holds the last one');
+  assert.equal(summary.worst, 400);
+  assert.equal(summary.sessionFrames, 9);
+  stats.reset();
+  assert.equal(stats.summary().sessionStalls, 0);
+});
