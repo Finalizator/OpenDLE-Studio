@@ -9,6 +9,8 @@ import {
   moveEntityToFloor, requireImageAsset, requireModelAsset, resolveWallSide, sectorTarget, snapValue,
   wallPartAt, wallTarget,
 } from './editor-drop.js';
+import { overlayVolumes } from '/shared/areas.js';
+import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
 
 const SELECT_COLOR = '#ffd34d', DROP_COLOR = '#7fe6ff';
 const AXIS_VECTORS = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 0, 1), z: new THREE.Vector3(0, 1, 0) };
@@ -51,6 +53,57 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   dropMarker.renderOrder = 206; dropMarker.visible = false; dropMarker.frustumCulled = false;
   helperGroup.add(dropMarker);
 
+  // Interaction areas and colliders are wireframes over the world: they show what a
+  // "player entered area" event and the physics body actually cover.
+  const overlayGroup = new THREE.Group();
+  overlayGroup.renderOrder = 204; overlayGroup.frustumCulled = false;
+  helperGroup.add(overlayGroup);
+  const overlayColours = { area: '#ffb45c', areaSelected: '#ffe6a8', physicsFixed: '#8fa6ff', physicsDynamic: '#7fe6a0',
+    physicsKinematic: '#d6b3ff', sensor: '#79d7ff', player: '#ffd34d' };
+  const overlayMaterials = new Map();
+  function overlayMaterial(colour) {
+    let material = overlayMaterials.get(colour);
+    if (!material) {
+      material = own(new THREE.LineBasicMaterial({ color: colour, depthTest: true, transparent: true, opacity: .9 }));
+      overlayMaterials.set(colour, material);
+    }
+    return material;
+  }
+  let showAreas = false, showPhysics = false, overlaySignature = '';
+  function rebuildOverlays() {
+    for (const child of [...overlayGroup.children]) {
+      overlayGroup.remove(child);
+      if (child.userData.temporary && child.geometry) child.geometry.dispose();
+    }
+    if (!showAreas && !showPhysics) { overlaySignature = ''; canvas.dataset.overlayShapes = '0'; return; }
+    const plans = overlayVolumes(project.map.entities, { areas: showAreas, physics: showPhysics, player: showPhysics },
+      entity => sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0, selected?.kind === 'entity' ? selected.id : null);
+    for (const plan of plans) {
+      const colour = plan.kind === 'area' ? (plan.selected ? overlayColours.areaSelected : overlayColours.area)
+        : plan.kind === 'player' ? overlayColours.player
+        : plan.sensor ? overlayColours.sensor : overlayColours[`physics${plan.body[0].toUpperCase()}${plan.body.slice(1)}`] || overlayColours.physicsFixed;
+      const size = [plan.half.width * 2, plan.half.height * 2, plan.half.depth * 2];
+      let geometry;
+      if (plan.shape === 'box') geometry = new THREE.BoxGeometry(size[0], size[1], size[2]);
+      else if (plan.shape === 'sphere') geometry = new THREE.SphereGeometry(plan.radius, 12, 8);
+      else geometry = new THREE.CapsuleGeometry(plan.radius, Math.max(.01, size[1] - plan.radius * 2), 4, 10);
+      const lines = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), overlayMaterial(colour));
+      geometry.dispose();
+      lines.userData.temporary = true;
+      // Map space is (x, y) with z up; the scene draws it as (x, height, y).
+      lines.position.set(plan.center.x, plan.center.z, plan.center.y);
+      lines.renderOrder = 204; lines.frustumCulled = false;
+      overlayGroup.add(lines);
+    }
+    canvas.dataset.overlayShapes = String(plans.length);
+  }
+  function overlayKey() {
+    if (!showAreas && !showPhysics) return '';
+    const selectedId = selected?.kind === 'entity' ? selected.id : '';
+    return `${showAreas}/${showPhysics}/${selectedId}/` + project.map.entities.map(entity =>
+      `${entity.id}:${entity.x},${entity.y},${entity.elevation || 0}:${entity.area ? `${entity.area.shape}/${entity.area.width}/${entity.area.height}/${entity.area.depth}/${entity.area.radius}` : ''}:${entity.physics && entity.physics.body !== 'none' ? `${entity.physics.body}/${entity.physics.shape}/${entity.physics.width}/${entity.physics.height}/${entity.physics.depth}/${entity.physics.radius}` : ''}`
+    ).join('|');
+  }
   const vertexGeometry = own(new THREE.SphereGeometry(4, 8, 6));
   const vertexMaterial = own(new THREE.MeshBasicMaterial({ color: '#ffe89a', depthTest: false }));
   const vertexMarkers = [0, 1].map(() => {
@@ -254,6 +307,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   }
   function select(selection, { rebuildHandles = true } = {}) {
     selected = selection;
+    // The highlighted volume follows the selection, including when nothing is selected.
+    if (showAreas || showPhysics) rebuildOverlays();
     updateVertexMarkers();
     selectionOutline.visible = false; outlineShift.set(0, 0, 0);
     canvas.dataset.sceneSelection = '';
@@ -411,18 +466,22 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (!tile) return null;
     const control = target.closest('button, audio, input');
     if (control && control !== tile) return null;
+    if (tile.dataset.sceneId) {
+      const scene = (project.scenes || []).find(item => item.id === tile.dataset.sceneId);
+      return scene ? { scene, label: `${scene.name} (scene)` } : null;
+    }
     const asset = assetFromTile(tile);
     return asset ? { asset, label: `${asset.name} (${asset.kind})` } : null;
   }
 
-  const external = { pointerId: null, assetId: null, entityId: null, label: '', startX: 0, startY: 0, active: false, suppressClick: false };
+  const external = { pointerId: null, assetId: null, entityId: null, sceneId: null, label: '', startX: 0, startY: 0, active: false, suppressClick: false };
   function endExternalDrag() {
     const active = external.active;
     ghost.hidden = true; ghost.textContent = '';
     canvas.classList.remove('scene-drop-target');
     document.body.classList.remove('scene-dragging');
     clearDropPreview(); hideReadout();
-    external.pointerId = null; external.assetId = null; external.entityId = null;
+    external.pointerId = null; external.assetId = null; external.entityId = null; external.sceneId = null;
     external.active = false; external.label = '';
     if (active) {
       external.suppressClick = true;
@@ -446,6 +505,17 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   }
   function planDrop(pick) {
     const selection = pick?.selection || null;
+    if (external.sceneId) {
+      const scene = (project.scenes || []).find(item => item.id === external.sceneId);
+      if (!scene) return { error: 'That scene is no longer part of this project' };
+      if (sceneIsEmpty(scene)) return { error: `Scene ${scene.name} has no objects` };
+      const point = floorPointAt(pick?.point || emptyDropPoint());
+      const placed = instantiateScene(scene, { x: point.x, y: point.y });
+      return { label: `Place ${scene.name} (${placed.entities.length} objects) at ${point.x}, ${point.y}`,
+        highlight: selection, point: pick?.point || new THREE.Vector3(point.x, point.floor, point.y),
+        apply: next => { next.map.entities.push(...placed.entities); next.events.push(...placed.events); },
+        select: placed.entities.length ? { kind: 'entity', id: placed.entities[0].id } : null };
+    }
     if (external.assetId) {
       const asset = (project.assets || []).find(item => item.id === external.assetId);
       if (!asset) return { error: 'That asset is no longer part of this project' };
@@ -491,7 +561,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (!overViewport(event)) return;
     const asset = external.assetId && (project.assets || []).find(item => item.id === external.assetId);
     const pick = pickAt(event);
-    if (!pick && asset?.kind !== 'model') { showReadout('Aim at a wall, floor, ceiling or object in the 3D view', 'warn'); return; }
+    // Models and scenes are placed on empty space; other assets need a surface to land on.
+    if (!pick && asset?.kind !== 'model' && !external.sceneId) { showReadout('Aim at a wall, floor, ceiling or object in the 3D view', 'warn'); return; }
     const plan = planDrop(pick);
     if (plan.error) { showReadout(plan.error, 'error'); return; }
     showReadout(plan.label);
@@ -506,6 +577,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     external.pointerId = event.pointerId;
     external.assetId = source.asset?.id || null;
     external.entityId = source.entity?.id || null;
+    external.sceneId = source.scene?.id || null;
     external.label = source.label;
     external.startX = event.clientX; external.startY = event.clientY;
   });
@@ -685,6 +757,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       state.entities = runtimeEntities(next);
       refreshProjectData();
       select(callbacks.selection(), { rebuildHandles: false });
+      rebuildOverlays();
       return true;
     },
     mode(value) { mode = value; },
@@ -728,6 +801,16 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.outlineAt = selectionOutline.visible ? screenOf(selectionOutline.position) : '';
     },
     ceilings(visible) { showCeilings = Boolean(visible); updateCeilings(0, true); },
+    /** Where a scene placed from the asset browser should land: the view target. */
+    sceneTarget() {
+      const point = emptyDropPoint();
+      const grid = callbacks.grid();
+      return { x: Math.round(snapValue(point.x, grid)), y: Math.round(snapValue(point.z, grid)) };
+    },
+    /** Wireframe interaction areas for "player entered area" events. */
+    areas(visible) { showAreas = Boolean(visible); rebuildOverlays(); },
+    /** Wireframe rigid-body colliders, so physics volumes are visible while editing. */
+    physicsOverlay(visible) { showPhysics = Boolean(visible); rebuildOverlays(); },
     dispose() {
       endExternalDrag();
       listeners.forEach(remove => remove()); clearHandles(); resources.forEach(resource => resource.dispose()); view.dispose();

@@ -6,6 +6,8 @@ import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
 import { WEAPONS } from './player-state.js';
 import { isExpression, validateExpression, validateVariables, scalar, expressionContext } from './expressions.js';
 import { validateShaders } from './shaders.js';
+import { AREA_SHAPES } from './areas.js';
+import { MAX_SCENES, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
 
 export const VERSION = 1;
@@ -82,6 +84,10 @@ function measureAssetPayload(asset) {
     array(asset.animations, 'Animation clip names', 256);
     assert(asset.animations.every(name => typeof name === 'string' && name.length <= 200), 'Invalid clip name');
     assert(JSON.stringify(asset.animations) === JSON.stringify((parsed.json.animations || []).map(clip => clip.name)), 'Model clip metadata does not match its source');
+    if (asset.preview !== undefined) {
+      assert(typeof asset.preview === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.preview), 'Model preview must be an embedded PNG');
+      assert(asset.preview.length <= 96 * 1024, 'Model preview is too large');
+    }
     return { bucket: 'image', bytes: asset.src.length };
   }
   assert(typeof asset.src === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Assets must be embedded PNG images');
@@ -110,6 +116,75 @@ export function cloneProjectForEdit(project, { deepGame = false } = {}) {
  * re-validation of 32 imported maps would add seconds to every drag; the full
  * check still runs on save, import, export and MCP changes.
  */
+/** Shared object rules, used by map objects and by the objects inside a scene. */
+export function validateEntity(entity, { assetRef, clipRef, modelRef }) {
+  assert(ENTITY_TYPES.includes(entity.type), 'Unknown entity type');
+  number(entity.x, 'Entity X');
+  number(entity.y, 'Entity Y');
+  number(entity.angle, 'Entity angle', -3600, 3600);
+  if (entity.health !== undefined) number(entity.health, 'Object health', 0, 1000000);
+  if (entity.ambush !== undefined) assert(typeof entity.ambush === 'boolean', 'Object ambush must be boolean');
+  if (entity.skillMask !== undefined) {
+    number(entity.skillMask, 'Object skill mask', 1, 7);
+    assert(Number.isInteger(entity.skillMask), 'Object skill mask must be an integer');
+  }
+  if (entity.tid !== undefined) {
+    number(entity.tid, 'Object TID', 0, 65535);
+    assert(Number.isInteger(entity.tid), 'Object TID must be an integer');
+  }
+  if (entity.doomType !== undefined) {
+    number(entity.doomType, 'Doom thing type', 0, 65535);
+    assert(Number.isInteger(entity.doomType), 'Doom thing type must be an integer');
+  }
+  text(entity.name, 'Entity name', 100);
+  if (entity.variables !== undefined) validateVariables(entity.variables);
+  assetRef(entity.spriteAsset, 'Sprite');
+  if (entity.spriteStates !== undefined) {
+    object(entity.spriteStates, 'Sprite state mappings');
+    for (const [name, id] of Object.entries(entity.spriteStates)) {
+      assert(['stand', 'walk', 'attack', 'pain', 'death'].includes(name), 'Unknown sprite state'); clipRef(id);
+    }
+  }
+  if (entity.spriteScale !== undefined) number(entity.spriteScale, 'Sprite scale', .05, 16);
+  if (entity.elevation !== undefined) number(entity.elevation, 'Elevation', -32768, 32767);
+  modelRef(entity.modelAsset);
+  assert(entity.type !== 'player' || !entity.modelAsset, 'Assign world models to non-player objects');
+  if (entity.modelScale !== undefined) number(entity.modelScale, 'Model scale', .001, 4096);
+  if (entity.animation !== undefined) {
+    object(entity.animation, 'Animation');
+    const model = assets.find(asset => asset.id === entity.modelAsset);
+    assert(model?.animations.includes(entity.animation.clip), 'Animation references an unknown clip');
+    number(entity.animation.speed, 'Animation speed', .01, 10);
+    assert(typeof entity.animation.loop === 'boolean' && typeof entity.animation.autoPlay === 'boolean', 'Animation flags must be boolean');
+  }
+  if (entity.physics !== undefined) {
+    const config = entity.physics;
+    object(config, 'Physics');
+    assert(entity.type !== 'player', 'Player uses the built-in Rapier capsule controller');
+    assert(['none', 'fixed', 'dynamic', 'kinematic'].includes(config.body), 'Invalid rigid-body type');
+    if (config.body !== 'none') {
+      assert(['box', 'ball', 'capsule'].includes(config.shape), 'Invalid collider shape');
+      for (const key of ['width', 'height', 'depth', 'radius']) number(config[key], `Collider ${key}`, .1, 4096);
+      if (config.shape === 'capsule') assert(config.height >= config.radius * 2, 'Capsule height must be at least twice its radius');
+      if (config.shape === 'ball') assert(config.height === config.radius * 2, 'Ball height must be twice its radius');
+      number(config.mass, 'Body mass (kg)', .01, 100000);
+      number(config.friction, 'Friction', 0, 10); number(config.restitution, 'Restitution', 0, 1);
+      assert(typeof config.sensor === 'boolean' && typeof config.lockRotation === 'boolean', 'Physics flags must be boolean');
+    }
+  }
+  if (entity.light !== undefined) {
+    object(entity.light, 'Object light');
+    assert(colorPattern.test(entity.light.color), 'Light color must be #rrggbb');
+    number(entity.light.intensity, 'Light intensity', 0, 10);
+    number(entity.light.radius, 'Light radius', 1, 8192);
+  }
+  if (entity.area !== undefined) {
+    object(entity.area, 'Interaction area');
+    assert(AREA_SHAPES.includes(entity.area.shape), 'Invalid interaction area shape');
+    for (const key of ['width', 'height', 'depth', 'radius']) number(entity.area[key], `Interaction area ${key}`, 1, 65536);
+  }
+}
+
 export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   object(project, 'Project');
   assert(project.version === VERSION, `Unsupported project version; expected ${VERSION}`);
@@ -310,70 +385,54 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   }
   for (const entity of entities) {
     unique(entity, 'Entity');
-    assert(ENTITY_TYPES.includes(entity.type), 'Unknown entity type');
-    number(entity.x, 'Entity X');
-    number(entity.y, 'Entity Y');
-    number(entity.angle, 'Entity angle', -3600, 3600);
-    if (entity.health !== undefined) number(entity.health, 'Object health', 0, 1000000);
-    if (entity.ambush !== undefined) assert(typeof entity.ambush === 'boolean', 'Object ambush must be boolean');
-    if (entity.skillMask !== undefined) {
-      number(entity.skillMask, 'Object skill mask', 1, 7);
-      assert(Number.isInteger(entity.skillMask), 'Object skill mask must be an integer');
-    }
-    if (entity.tid !== undefined) {
-      number(entity.tid, 'Object TID', 0, 65535);
-      assert(Number.isInteger(entity.tid), 'Object TID must be an integer');
-    }
-    if (entity.doomType !== undefined) {
-      number(entity.doomType, 'Doom thing type', 0, 65535);
-      assert(Number.isInteger(entity.doomType), 'Doom thing type must be an integer');
-    }
-    text(entity.name, 'Entity name', 100);
-    if (entity.variables !== undefined) validateVariables(entity.variables);
-    assetRef(entity.spriteAsset, 'Sprite');
-    if (entity.spriteStates !== undefined) {
-      object(entity.spriteStates, 'Sprite state mappings');
-      for (const [name, id] of Object.entries(entity.spriteStates)) {
-        assert(['stand', 'walk', 'attack', 'pain', 'death'].includes(name), 'Unknown sprite state'); clipRef(id);
-      }
-    }
-    if (entity.spriteScale !== undefined) number(entity.spriteScale, 'Sprite scale', .05, 16);
-    if (entity.elevation !== undefined) number(entity.elevation, 'Elevation', -32768, 32767);
-    modelRef(entity.modelAsset);
-    assert(entity.type !== 'player' || !entity.modelAsset, 'Assign world models to non-player objects');
-    if (entity.modelScale !== undefined) number(entity.modelScale, 'Model scale', .001, 4096);
-    if (entity.animation !== undefined) {
-      object(entity.animation, 'Animation');
-      const model = assets.find(asset => asset.id === entity.modelAsset);
-      assert(model?.animations.includes(entity.animation.clip), 'Animation references an unknown clip');
-      number(entity.animation.speed, 'Animation speed', .01, 10);
-      assert(typeof entity.animation.loop === 'boolean' && typeof entity.animation.autoPlay === 'boolean', 'Animation flags must be boolean');
-    }
-    if (entity.physics !== undefined) {
-      const config = entity.physics;
-      object(config, 'Physics');
-      assert(entity.type !== 'player', 'Player uses the built-in Rapier capsule controller');
-      assert(['none', 'fixed', 'dynamic', 'kinematic'].includes(config.body), 'Invalid rigid-body type');
-      if (config.body !== 'none') {
-        assert(['box', 'ball', 'capsule'].includes(config.shape), 'Invalid collider shape');
-        for (const key of ['width', 'height', 'depth', 'radius']) number(config[key], `Collider ${key}`, .1, 4096);
-        if (config.shape === 'capsule') assert(config.height >= config.radius * 2, 'Capsule height must be at least twice its radius');
-        if (config.shape === 'ball') assert(config.height === config.radius * 2, 'Ball height must be twice its radius');
-        number(config.mass, 'Body mass (kg)', .01, 100000);
-        number(config.friction, 'Friction', 0, 10); number(config.restitution, 'Restitution', 0, 1);
-        assert(typeof config.sensor === 'boolean' && typeof config.lockRotation === 'boolean', 'Physics flags must be boolean');
-      }
-    }
-    if (entity.light !== undefined) {
-      object(entity.light, 'Object light');
-      assert(colorPattern.test(entity.light.color), 'Light color must be #rrggbb');
-      number(entity.light.intensity, 'Light intensity', 0, 10);
-      number(entity.light.radius, 'Light radius', 1, 8192);
-    }
+    validateEntity(entity, { assetRef, clipRef, modelRef });
   }
   assert(entities.filter(entity => entity.type === 'light' && entity.light).length <= 16, 'At most 16 dynamic point lights are supported');
   assert(entities.filter(entity => entity.physics && entity.physics.body !== 'none').length <= 256, 'At most 256 object rigid bodies are supported');
   assert(entities.filter(entity => entity.type === 'player').length === 1, 'A map must have exactly one player');
+  // Scenes hold reusable objects and the events that script them; the objects keep
+  // the same rules as map objects, but their identifiers live in the scene.
+  if (project.scenes !== undefined) {
+    array(project.scenes, 'Scenes', MAX_SCENES);
+    const sceneIds = new Set();
+    for (const scene of project.scenes) {
+      object(scene, 'Scene');
+      identifier(scene.id, 'Scene ID');
+      assert(!sceneIds.has(scene.id), `Duplicate scene ID: ${scene.id}`);
+      sceneIds.add(scene.id);
+      text(scene.name, 'Scene name', 100);
+      array(scene.entities, 'Scene objects', MAX_SCENE_ENTITIES);
+      const sceneEntityIds = new Set();
+      for (const entity of scene.entities) {
+        object(entity, 'Scene object');
+        identifier(entity.id, 'Scene object ID');
+        assert(!sceneEntityIds.has(entity.id), `Duplicate ID in scene ${scene.name}: ${entity.id}`);
+        sceneEntityIds.add(entity.id);
+        assert(entity.type !== 'player', 'A scene cannot contain the player object');
+        validateEntity(entity, { assetRef, clipRef, modelRef });
+      }
+      if (scene.events !== undefined) {
+        array(scene.events, 'Scene events', MAX_SCENE_EVENTS);
+        const eventIds = new Set();
+        for (const event of scene.events) {
+          object(event, 'Scene event');
+          identifier(event.id, 'Scene event ID');
+          assert(!eventIds.has(event.id), `Duplicate event ID in scene ${scene.name}: ${event.id}`);
+          eventIds.add(event.id);
+          assert(typeof event.enabled === 'boolean' && typeof event.once === 'boolean', 'Scene event enabled/once must be boolean');
+          if (event.ownerId !== undefined) assert(sceneEntityIds.has(event.ownerId), 'Scene event owner references an unknown scene object');
+          for (const list of [event.conditions, event.actions]) {
+            array(list || [], 'Scene event commands', 64);
+            for (const command of list || []) {
+              object(command, 'Scene event command');
+              assert(engineCommand(command.type), `Unknown scene event command: ${command.type}`);
+            }
+          }
+          if (event.condition !== undefined) assert(CONDITIONS.includes(event.condition?.type), `Unknown scene event condition: ${event.condition?.type}`);
+        }
+      }
+    }
+  }
   object(project.environment, 'Environment');
   const shaderErrors = validateShaders(project);
   assert(shaderErrors.length === 0, shaderErrors.join('; '));

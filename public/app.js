@@ -28,6 +28,9 @@ import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { upgradePickupReach } from '/shared/doom-hud.js';
+import { suggestedArea } from '/shared/areas.js';
+import { captureScene, instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
+import { captureModelPreview } from './model-thumbnail.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
 import { installIntermission } from '/shared/intermission.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
@@ -243,6 +246,7 @@ async function refreshScene() {
     editor.settings(readEngineTweaks());
     sceneEditor = editor; sceneProject = snapshot;
     sceneEditor.select(selection); sceneEditor.mode($('transform-mode').value); sceneEditor.ceilings($('show-ceilings').checked);
+    sceneEditor.areas($('show-areas').checked); sceneEditor.physicsOverlay($('show-physics').checked);
     status('3D scene ready. Right-drag + WASD/QE flies. Select and drag a colored axis to edit.');
   } catch (error) { status(`3D editor failed: ${error.message}`, true); }
   finally {
@@ -253,7 +257,7 @@ async function refreshScene() {
 function setSceneMode(mode) {
   sceneMode = mode;
   $('map').hidden = mode !== '2d'; $('scene-3d').hidden = mode !== '3d';
-  for (const field of ['transform-field', 'ceiling-field', 'surface-field']) $(field).hidden = mode !== '3d';
+  for (const field of ['transform-field', 'ceiling-field', 'surface-field', 'area-field', 'physics-field']) $(field).hidden = mode !== '3d';
   $('view-2d').setAttribute('aria-pressed', String(mode === '2d'));
   $('view-3d').setAttribute('aria-pressed', String(mode === '3d'));
   $('scene-hint').textContent = mode === '3d'
@@ -269,6 +273,8 @@ $('view-2d').addEventListener('click', () => setSceneMode('2d'));
 $('view-3d').addEventListener('click', () => setSceneMode('3d'));
 $('transform-mode').addEventListener('change', () => sceneEditor?.mode($('transform-mode').value));
 $('show-ceilings').addEventListener('change', () => sceneEditor?.ceilings($('show-ceilings').checked));
+$('show-areas').addEventListener('change', () => sceneEditor?.areas($('show-areas').checked));
+$('show-physics').addEventListener('change', () => sceneEditor?.physicsOverlay($('show-physics').checked));
 $('sector-surface').addEventListener('change', () => {
   if (selection?.kind === 'sector') { selection.surface = $('sector-surface').value; sceneEditor?.select(selection); }
 });
@@ -601,6 +607,24 @@ function renderInspector() {
           parent.append(checkbox('Sensor / trigger (no blocking)', physics.sensor, value => changePhysics('sensor', value)),
             checkbox('Lock body rotation', physics.lockRotation, value => changePhysics('lockRotation', value)),
             make('p', 'Colliders use primitive shapes, not the model mesh. Positions are map units; 64 units = 1 metre.', 'muted'));
+        }
+        const area = item.area;
+        const changeArea = (key, value) => {
+          const config = { ...suggestedArea(item), ...area, [key]: value };
+          if (config.shape === 'sphere') config.height = config.radius * 2;
+          update('area', config);
+        };
+        parent.append(make('h2', 'Interaction area'));
+        field(parent, 'Shape', select([['', 'None'], ['box', 'Box'], ['sphere', 'Sphere'], ['capsule', 'Capsule']], area?.shape || '', value => {
+          if (!value) { edit(next => { delete next.map.entities.find(entity => entity.id === item.id).area; }, 'Interaction area removed'); return; }
+          const next = { ...suggestedArea(item), ...area, shape: value };
+          if (value === 'sphere') next.height = next.radius * 2;
+          update('area', next);
+        }));
+        if (area?.shape) {
+          const keys = area.shape === 'box' ? ['width', 'height', 'depth'] : area.shape === 'sphere' ? ['radius'] : ['radius', 'height'];
+          for (const key of keys) field(parent, `${key[0].toUpperCase()}${key.slice(1)}`, input(area[key], 'number', value => changeArea(key, value)));
+          parent.append(make('p', 'Volume above the floor, using the collider shapes. A Player: inside this object interaction area condition is true while the player stands in it; Player: entered this object interaction area fires once per entry.', 'muted'));
         }
       } else {
         parent.append(make('p', project.playerControl === 'events'
@@ -1304,6 +1328,21 @@ function assetSelect(value, fn, kinds) {
     value || '', value => fn(value || null));
 }
 let assetsRendered = '';
+// Thumbnails for models imported before previews existed: captured once per session.
+const modelPreviews = new Map(), modelPreviewPending = new Set();
+function scheduleModelPreview(asset) {
+  if (modelPreviewPending.has(asset.id) || modelPreviews.has(asset.id)) return;
+  modelPreviewPending.add(asset.id);
+  captureModelPreview(asset).then(preview => {
+    modelPreviewPending.delete(asset.id);
+    if (!preview) return;
+    modelPreviews.set(asset.id, preview);
+    if ($('asset-list').childElementCount) renderAssets();
+  }).catch(() => modelPreviewPending.delete(asset.id));
+}
+function modelPreview(asset) {
+  return asset.preview || modelPreviews.get(asset.id) || null;
+}
 function assetsSignature() {
   return `${$('asset-filter').value}\0${$('asset-search').value}\0${assetListSignature()}\0${JSON.stringify(project.spriteClips || [])}`;
 }
@@ -1318,13 +1357,26 @@ function renderAssets() {
   parent.replaceChildren();
   const filter = $('asset-filter').value, search = $('asset-search').value.toLowerCase();
   $('asset-folders').replaceChildren(...[...$('asset-filter').options].map(option => {
-    const count = (project.assets || []).filter(asset => option.value === 'all' || asset.kind === option.value).length;
+    const count = option.value === 'scene' ? (project.scenes || []).length
+      : (project.assets || []).filter(asset => option.value === 'all' || asset.kind === option.value).length;
     const folder = button(`${option.textContent} (${count})`, () => { $('asset-filter').value = option.value; renderAssets(); }, 'asset-folder');
     folder.dataset.filter = option.value;
     folder.classList.toggle('selected', option.value === filter);
     return folder;
   }));
-  const assets = (project.assets || []).filter(asset => (filter === 'all' || asset.kind === filter) && asset.name.toLowerCase().includes(search));
+  const assets = filter === 'scene' ? [] : (project.assets || []).filter(asset => (filter === 'all' || asset.kind === filter) && asset.name.toLowerCase().includes(search));
+  if (filter === 'scene') {
+    for (const scene of project.scenes || []) {
+      const tile = make('div', undefined, 'asset-tile');
+      tile.dataset.sceneId = scene.id;
+      tile.append(make('strong', 'Scene'), make('strong', scene.name),
+        make('small', `${scene.entities.length} objects / ${(scene.events || []).length} events`),
+        button('Place at view', () => placeScene(scene.id)),
+        button('Delete', () => edit(next => { next.scenes = next.scenes.filter(item => item.id !== scene.id); }, `Scene ${scene.name} deleted`)));
+      parent.append(tile);
+    }
+    if (!(project.scenes || []).length) parent.append(make('p', 'No scenes yet. Select an object or a sector, then capture it as a scene.', 'muted'));
+  }
   for (const asset of assets) {
     const tile = make('div', undefined, 'asset-tile'), image = make('img');
     if (asset.kind === 'music') {
@@ -1341,7 +1393,10 @@ function renderAssets() {
     } else if (asset.kind === 'font') {
       tile.append(make('strong', 'Aa'), make('strong', asset.name), make('small', 'Embedded web font / assign in HUD'));
     } else if (asset.kind === 'model') {
-      tile.append(make('strong', '3D'), make('strong', asset.name), make('small', `${asset.format} / ${asset.meshes} meshes / ${asset.skins} skins / ${asset.animations.length} clips`));
+      const preview = modelPreview(asset);
+      if (preview) { image.src = preview; image.alt = asset.name; image.loading = 'lazy'; tile.append(image); }
+      else { tile.append(make('strong', '3D')); scheduleModelPreview(asset); }
+      tile.append(make('strong', asset.name), make('small', `${asset.format} / ${asset.meshes} meshes / ${asset.skins} skins / ${asset.animations.length} clips`));
       tile.append(button('Assign to selected object', () => {
         if (selection?.kind !== 'entity') throw new Error('Select an object in the layout first');
         edit(next => {
@@ -2437,7 +2492,9 @@ async function importModelFiles(files) {
   const assets = [], warnings = [];
   for (const file of sources) {
     const result = await bundleModel(file, files, newId('asset'));
-    assets.push(result.asset); warnings.push(...result.warnings);
+    // The library shows a snapshot of the model; capturing can fail on odd drivers.
+    const preview = await captureModelPreview(result.asset).catch(() => null);
+    assets.push(preview ? { ...result.asset, preview } : result.asset); warnings.push(...result.warnings);
   }
   if (version !== editVersion) throw new Error('Project changed during model import. Retry.');
   $('asset-filter').value = 'model'; renderAssets();
@@ -2451,6 +2508,53 @@ $('model-directory').addEventListener('change', guard(async event => {
   const files = [...event.target.files]; event.target.value = '';
   await importModelFiles(files);
 }));
+// Scenes: capture a selection as a reusable group, then place copies of it.
+function uniqueSceneName(base) {
+  const names = new Set((project.scenes || []).map(scene => scene.name));
+  if (!names.has(base)) return base;
+  for (let index = 2; ; index++) if (!names.has(`${base} ${index}`)) return `${base} ${index}`;
+}
+function sceneTargetPoint() {
+  if (sceneMode === '3d' && sceneEditor) return sceneEditor.sceneTarget();
+  return { x: Math.round(camera.x), y: Math.round(camera.y) };
+}
+function placeScene(sceneId) {
+  const scene = (project.scenes || []).find(item => item.id === sceneId);
+  if (!scene) throw new Error('That scene no longer exists');
+  if (sceneIsEmpty(scene)) throw new Error(`Scene ${scene.name} has no objects`);
+  const target = sceneTargetPoint();
+  const placed = instantiateScene(scene, { x: target.x, y: target.y });
+  edit(next => { next.map.entities.push(...placed.entities); next.events.push(...placed.events); },
+    `Placed ${scene.name} (${placed.entities.length} objects) at ${target.x}, ${target.y}`);
+  selection = placed.entities.length ? { kind: 'entity', id: placed.entities[0].id } : selection;
+  render();
+}
+function captureSceneFromSelection(scope) {
+  const player = project.map.entities.find(entity => entity.type === 'player');
+  let ids, name;
+  if (scope === 'object') {
+    if (selection?.kind !== 'entity') throw new Error('Select an object in the layout or 3D view first');
+    if (selection.id === player?.id) throw new Error('The player object cannot be captured into a scene');
+    const entity = project.map.entities.find(item => item.id === selection.id);
+    if (!entity) throw new Error('That object no longer exists');
+    ids = [entity.id];
+    name = entity.name;
+  } else {
+    const sectorId = selection?.kind === 'sector' ? selection.id
+      : selection?.kind === 'entity' ? sectorAt(mapSectors, project.map.entities.find(item => item.id === selection.id)?.x, project.map.entities.find(item => item.id === selection.id)?.y)?.id
+        : sectorAt(mapSectors, camera.x, camera.y)?.id;
+    if (!sectorId) throw new Error('Select a sector, or an object inside one, to capture its objects');
+    ids = project.map.entities.filter(entity => entity.type !== 'player' && sectorAt(mapSectors, entity.x, entity.y)?.id === sectorId).map(entity => entity.id);
+    if (!ids.length) throw new Error(`Sector ${sectorId} has no objects to capture`);
+    name = `${sectorId} props`;
+  }
+  const scene = captureScene(project, ids, { name: uniqueSceneName(name) });
+  edit(next => { next.scenes ||= []; next.scenes.push(scene); },
+    `Scene ${scene.name} captured (${scene.entities.length} objects, ${scene.events.length} events). Place copies from the Scenes filter.`);
+  $('asset-filter').value = 'scene'; renderAssets();
+}
+$('scene-from-object').addEventListener('click', guard(() => captureSceneFromSelection('object')));
+$('scene-from-sector').addEventListener('click', guard(() => captureSceneFromSelection('sector')));
 async function importImageFiles(files, kind) {
   if (files.length > 64) throw new Error('Import at most 64 images at a time');
   const version = editVersion;

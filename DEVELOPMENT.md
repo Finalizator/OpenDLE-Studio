@@ -522,6 +522,11 @@ marker. Physics bodies stay at their authored positions while editing.
   toggle it for the complete enclosed scene. Ceiling height handles work even
   while ceilings are hidden. Escape, blur or cancelled gestures discard an
   uncommitted transform. Each completed drag is one undoable edit.
+- **Show areas** draws every object's interaction area as an amber wireframe
+  box, sphere or capsule, and **Show physics** draws physics colliders in cyan,
+  with the player capsule in yellow as the volume events have to catch. Both are view-only overlays: they are
+  drawn in a separate group, stay visible through geometry, are never exported
+  and never affect selection or the playtest.
 
 This retains the sector map's editing model: planar walls, horizontal floors
 and ceilings, object yaw and uniform visual scaling. It is not a general
@@ -1551,6 +1556,60 @@ brighter than their textures). The classic world shaders keep their own
 palette-faithful sector light, so tuning this rig never changes how imported
 wall, flat and sprite art looks. There is no mesh-derived collision,
 ragdoll, physics joints, animation blending UI or model/rig authoring editor yet.
+
+### Interaction areas and reusable scenes
+
+An **interaction area** is an optional volume around any object that engine
+events can test, so "player walked into this room" needs no geometry work and no
+hidden trigger object. Properties → **Interaction area** picks the shape and
+size: **Box** (width/depth/height), **Sphere** (radius) and **Capsule** (radius /
+height). The volume is centered horizontally on the object and spans the
+object's floor plus elevation plus half its height, matching how Rapier bodies
+are created, so the overlay and the physics shape agree. `DEFAULT_AREA` and
+`AREA_SHAPES` in `shared/areas.js` define the defaults; a new area defaults to a
+96×96×96 box.
+
+Two engine conditions test it: **Player: inside this object interaction area**
+asks whether the player is inside right now, and **Player: entered this object
+interaction area** fires once on the tick the player crosses in, so an
+unconditional rule opens a door or starts music exactly once.
+Containment expands the area horizontally by the player's radius and compares
+vertical spans against the player's 56-unit height, which is why standing on the
+floor of a room counts as inside even though the capsule's center is above it.
+`areaEntries` in the runtime tracks who is already inside; it is session state,
+so it is excluded from save files. Using either condition on an object without
+an area raises a clear error instead of silently never firing.
+
+**Scenes** generalize "one object" into a group. Select an object, a wall or a
+room, then **Capture scene** in the Assets panel's Scenes folder: the objects and
+the events that own them are copied into `project.scenes` as a reusable
+definition, centered on the selection's centroid so placing it lands where it was
+captured. **Place at view** (or dragging the scene tile into the 3D view) copies
+that definition into the map at the drop point, rotated to face the view. A scene
+instance is a plain copy with fresh ids — there is no live link back to the
+definition, which keeps every placed instance fully editable with the existing
+inspector, event editor and undo; re-placing is how you propagate a change.
+Objects and events inside a scene cannot include the player. Captured events
+keep their actions but drop their HUD `sheetId`, because a scene can be placed
+in any level. Limits are 64 scenes, 128 objects and 256 events per scene.
+
+### Model thumbnails
+
+The asset library shows a snapshot of each model instead of a "3D" placeholder.
+Importing a model rasterizes it once with `public/model-thumbnail.js`: it reads
+the same embedded GLB the renderer uses, bakes node transforms, decodes the
+embedded textures, and draws the triangles into a 128×128 canvas with a z-buffer,
+nearest sampling, alpha cutout at 128 and a single Lambert shade, from a
+three-quarter view that fits the model's bounding box, on a transparent
+background. Only canvas 2D is used, so no WebGL context is created and importing
+never disturbs the 3D view. The result is stored as `asset.preview`, a PNG data
+URI validated against a 96 KiB cap.
+
+Models imported before this existed, or captured when the browser refused to
+decode a texture, are rendered lazily the first time their tile is displayed and
+kept in a per-session cache (`modelPreviews` in `public/app.js`) rather than
+written to the project. A failed capture leaves the plain "3D" placeholder and
+never blocks the import.
 
 ### Object-attached visual scripts
 

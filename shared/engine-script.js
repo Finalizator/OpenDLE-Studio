@@ -25,6 +25,8 @@ export const ENGINE_CONDITIONS = [
   { type: 'playerReachesEntity', label: 'Player: overlaps pickup reach', target: true,
     fields: [numeric('distance', 36, 0, 65536), numeric('height', 112, 0, 65536), numeric('below', 32, 0, 65536),
       choice('reachOverSteps', 'yes', ['yes', 'no'])] },
+  { type: 'playerInArea', label: 'Player: inside this object interaction area', target: true, fields: [] },
+  { type: 'playerEnteredArea', label: 'Player: entered this object interaction area', target: true, fields: [] },
   { type: 'entityDamaged', label: 'Object: health decreased', target: true, fields: [] },
   { type: 'entityAlive', label: 'Object: is alive (health above zero)', target: true, fields: [] },
   { type: 'distanceBetween', label: 'Objects: compare distance between two objects', target: true, fields: [

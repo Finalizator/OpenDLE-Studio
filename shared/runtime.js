@@ -6,6 +6,7 @@ import { isExpression, evaluateExpression, expressionContext, scalar } from './e
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
 import { stepActors, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound } from './actor-runtime.js';
 import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum } from './player-state.js';
+import { areaContains, areaEntered, areaVolume, PLAYER_CYLINDER } from './areas.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { createMapScripts } from './map-scripts.js';
@@ -322,6 +323,18 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (condition.type === 'objectVariableCompare') {
         const target = findTarget(condition.entityId);
         return target && compare(target.variables[condition.variable], condition.operator, condition.value);
+      }
+      if (condition.type === 'playerInArea' || condition.type === 'playerEnteredArea') {
+        const entity = findTarget(condition.entityId);
+        if (!entity) return false;
+        const volume = areaVolume(entity, sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0);
+        if (!volume) {
+          throw new Error(`Event "${event.name || event.id}" tests an interaction area on ${entity.name}, which has none`);
+        }
+        const floor = sectorAt(state.sectors, state.player.x, state.player.y)?.floorHeight ?? 0;
+        const inside = areaContains(volume, { x: state.player.x, y: state.player.y, z: (state.player.z ?? floor) + PLAYER_CYLINDER.halfHeight });
+        if (condition.type === 'playerInArea') return inside;
+        return areaEntered(state.areaEntries ||= new Set(), event.id, inside);
       }
       if (condition.type === 'playerReachesEntity') {
         const entity = findTarget(condition.entityId);
