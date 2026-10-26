@@ -1,6 +1,6 @@
 import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, randomDamage, enemyHitscan, moveEnemy, geometryDistance, entityDistance } from './combat.js';
-import { actorIndex, actorForThing } from './actors.js';
+import { actorIndex, actorForThing, NATIVE_EFFECT_ACTORS } from './actors.js';
 import { actorProjectileClips, actorEffectClip, setSpriteState } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 
@@ -446,6 +446,12 @@ export function installActorProjectileSprites(project) {
     }
   }
   for (const actor of missileEffectActors(project)) if (!actor.flags?.MISSILE) actorEffectClip(project, actor);
+  // The native actions spawn these by name (A_Tracer's smoke, A_BFGSpray's puffs),
+  // so a game whose actors never name them still draws the effects.
+  for (const name of NATIVE_EFFECT_ACTORS) {
+    const actor = index.byName.get(name.toLowerCase());
+    if (actor) actorEffectClip(project, actor);
+  }
 }
 
 /** Spawns a projectile actor owned by an enemy, aimed at the player. */
@@ -1037,6 +1043,7 @@ export function weaponTic(project, state, attackHeld) {
     runtime.entered = true;
     for (const action of frame.actions) runWeaponAction(context, action);
   }
+  if (runtime.jumped) { runtime.jumped = false; return; }
   if (frame.duration < 0) return;
   runtime.tics++;
   if (runtime.tics < frame.duration) return;
@@ -1148,10 +1155,18 @@ function runWeaponAction(ctx, action) {
   const { state, actor, runtime } = ctx;
   const args = action.args || [];
   switch (action.name) {
-    case 'A_WeaponReady':
+    case 'A_WeaponReady': {
       runtime.ready = true;
       state.weaponReady = true;
+      // GZDoom consumes the attack button here: a held trigger starts the weapon's
+      // own Fire sequence, which is why A_ReFire (not this) decides refiring.
+      if (!state.weaponTriggerHeld || state.hudState?.cursor) return;
+      const fire = labelIndex(actor, 'Fire');
+      if (fire === null) return;
+      runtime.index = fire; runtime.tics = 0; runtime.entered = false; runtime.jumped = true;
+      runtime.ready = false; state.weaponReady = false;
       return;
+    }
     case 'A_ReFire':
       // Doom re-enters Fire while the trigger is held, otherwise returns to Ready.
       if (state.weaponTriggerHeld) { teleportWeapon(runtime, actor, 'Fire'); return; }
@@ -1202,7 +1217,9 @@ function runWeaponAction(ctx, action) {
 function teleportWeapon(runtime, actor, label) {
   const target = labelIndex(actor, label);
   if (target === null) return;
-  runtime.index = target; runtime.tics = 0; runtime.entered = false;
+  // A jump inside a frame's action replaces the rest of that state's advance, so
+  // the frame loop must not also step past the state it just entered.
+  runtime.index = target; runtime.tics = 0; runtime.entered = false; runtime.jumped = true;
 }
 
 function weaponHasAmmo(state, actor) {

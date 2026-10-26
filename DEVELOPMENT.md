@@ -612,15 +612,16 @@ remain native engine primitives.
   compare project variables. Damage absorbs `floor(damage / armorDivisor)`
   armor points, limited by remaining armor; the rest reduces health.
   Divisor 3 represents green armor, 2 blue armor. Pickup rules can change it.
-- **Weapons:** nine firing rules check selected/owned weapon, held left mouse,
+- **Weapons (starter projects only):** nine firing rules check selected/owned weapon, held left mouse,
   positive health, sufficient ammo and a shared refire timer. Fist/chainsaw use
   short-range traces; pistol/chaingun trace bullets; shotguns fire 7/20 pellets.
   Launcher/plasma/BFG spawn visible, swept-collision projectiles. Super shotgun
   requires two shells; BFG requires 40 cells. Rocket/BFG impacts apply
   distance-based, wall-occluded splash, including self-damage. On this scripted
-  path the BFG splash is an approximation; when the project has an actor table the
-  imported weapon runs its own states and the real spray happens (see *Missiles
-  and their own states*). Costs, damage dice, pellets, spread,
+  path the BFG splash is an approximation. Every imported project — including a
+  plain WAD — now has an actor table with the classic weapons in it, so these
+  rules only appear in the untouched starter template; see *Classic weapons for a
+  plain WAD* below. Costs, damage dice, pellets, spread,
   range, projectile speed/radius, sound and timing are separate editable actions.
   Number keys 1-9 select owned weapons; switching cannot bypass refire time.
 - **Combat:** editable for-each enemy death/removal and player-death message.
@@ -1206,6 +1207,34 @@ because a pass may not sample the surface it draws into, and swapping a material
 map is a uniform update, not a recompile. `fit` stretches the view over the
 surface. A camera whose render throws reports through
 `canvas.dataset.cameraTextureError` once instead of failing the frame.
+
+### Classic weapons for a plain WAD
+
+A WAD imported without gzdoom.pk3 had no weapon actors, so the player's guns fell
+back to the scripted firing rules in Engine/Weapons — a fixed table of tic costs
+and damage dice that could never behave like the game. The built-in classic table
+now carries Doom's nine weapons, its nine projectiles and the three decorative
+actors the native actions spawn, all with their real GZDoom frames, durations and
+action functions. `installEngineScripts` already refused to generate scripted
+weapon rules when the project has a weapon actor, so installing them is all that
+was needed: a plain WAD import runs Doom's own Ready/Select/Fire/Flash machines,
+and the projectiles bring their own explosions, spray and homing.
+
+Because those weapons are actors, the trigger has to be consumed where GZDoom
+consumes it — inside `A_WeaponReady`. The engine used to short-cut this by
+re-entering Fire from outside the state machine whenever the trigger was held and
+the weapon was ready; with real Doom states that fired every tic or two and spent
+a whole clip in under a second. `A_WeaponReady` now starts Fire when the trigger
+is held, `A_ReFire` decides refiring (that is what its frame duration means), and
+`weaponTic` stops advancing the tic that a frame action jumped away from, so the
+frame after a jump is not skipped. Measured cadences from the states: pistol 14
+tics per shot, chaingun 4, shotgun 27, super shotgun 55 for two shells, plasma 4,
+rocket 20, BFG 40 for forty cells, fist 22 and chainsaw 8 with no ammo at all.
+
+`classFamily` also recognises the engine's base classes by name (`DoomWeapon`,
+`HereticWeapon`, `DoomPlayer`, `BasicArmor`, …). Previously it only walked the
+class chain, which needs gzdoom.pk3 to define those parents; without it a mod
+whose weapon inherits `DoomWeapon` was not a weapon at all and never fired.
 
 ### Missiles and their own states
 

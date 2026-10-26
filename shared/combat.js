@@ -78,7 +78,9 @@ export function canSeePlayer(state, entity, range, fov = 360) {
 }
 export function canHearPlayer(state, entity) {
   const noise = state.playerNoise;
-  if (!noise || noise.time !== state.time) return false;
+  // A shot is fired inside the actor step, which runs after the event rules that
+  // ask this question, so a noise within the last couple of tics still counts.
+  if (!noise || state.time - noise.time > .06) return false;
   if (entity.ambush && !canSeePlayer(state, entity, 65536)) return false;
   const source = sectorAt(state.sectors, noise.x, noise.y);
   const target = sectorAt(state.sectors, entity.x, entity.y);

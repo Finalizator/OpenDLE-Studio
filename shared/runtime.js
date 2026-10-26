@@ -653,14 +653,11 @@ function stepWeapon(project, state, dt, trigger) {
   const whole = Math.floor(state.weaponClock + 1e-6);
   const tics = Math.min(4, whole);
   state.weaponClock -= whole;
-  for (let tic = 0; tic < tics; tic++) {
-    if (trigger && state.weaponReady) {
-      state.weaponReady = false;
-      state.weaponActor.index = state.weaponActor.actor.states.labels.Fire ?? state.weaponActor.index;
-      state.weaponActor.tics = 0; state.weaponActor.entered = false;
-    }
-    weaponTic(project, state, trigger);
-  }
+  // Refiring is the states' own decision (`A_ReFire` restarts Fire while the
+  // trigger is held; a weapon without it fires once per press, as in Doom). An
+  // external "trigger held and ready means Fire" shortcut re-entered Fire every
+  // tic or two and burned the whole clip in under a second.
+  for (let tic = 0; tic < tics; tic++) weaponTic(project, state, trigger);
 }
 
 /** Converts a weapon state's action into the existing hit-scan/projectile path. */

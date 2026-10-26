@@ -145,8 +145,15 @@ export function compileActorRecord(actor, { knownActors = new Map(), index = 0 }
 
 /** Resolves the DECORATE/ZScript base class family an actor belongs to. */
 export function classFamily(actor, knownActors) {
-  const families = { weapon: 'WEAPON', inventory: 'INVENTORY', ammo: 'AMMO', health: 'HEALTH', armor: 'ARMOR',
-    key: 'KEY', powerup: 'POWERUP', playerpawn: 'PLAYERPAWN' };
+  // The engine's own base classes. They are named here as well as walked, because
+  // a plain WAD import has no gzdoom.pk3 to define them and a mod writing
+  // `class MyGun : DoomWeapon` still has to be a weapon.
+  const families = { weapon: 'WEAPON', customweapon: 'WEAPON', doomweapon: 'WEAPON', hereticweapon: 'WEAPON',
+    hexenweapon: 'WEAPON', strifeweapon: 'WEAPON', powerweapon: 'WEAPON', mageweapon: 'WEAPON',
+    clericweapon: 'WEAPON', fighterweapon: 'WEAPON', inventory: 'INVENTORY', custominventory: 'INVENTORY',
+    ammo: 'AMMO', health: 'HEALTH', armor: 'ARMOR', basicarmor: 'ARMOR', key: 'KEY', powerup: 'POWERUP',
+    playerpawn: 'PLAYERPAWN', doomplayer: 'PLAYERPAWN', hereticplayer: 'PLAYERPAWN',
+    hexenplayer: 'PLAYERPAWN', strifeplayer: 'PLAYERPAWN' };
   let current = actor.parent, depth = 0;
   while (current && depth++ < 24) {
     const name = String(current).toLowerCase();
@@ -317,9 +324,233 @@ function vanillaStates(actor) {
   return { frames, labels };
 }
 
-/** Converts the compact classic table into project actor records. */
+/**
+ * Classic Doom's nine weapons and their real states, used when a game ships no
+ * actor definitions. Without them a plain WAD import had no weapon actors at all
+ * and fell back to the scripted firing rules in Engine/Weapons; with them the
+ * imported weapons run Doom's own Ready/Fire/Flash machines and their native
+ * action functions, exactly like an imported mod weapon.
+ *
+ * Frames are written the way DECORATE writes them (`sprite letters duration
+ * [action]`), with `loop`/`goto`/`stop` lines, and compiled by the same frame
+ * builder the monster table uses.
+ */
+export const CLASSIC_WEAPONS = [
+  { name: 'Fist', slot: 1, selectionOrder: 3700, sprite: 'PUNG', flags: ['WEAPON', 'MELEEWEAPON', 'NOAUTOSWITCHTO'],
+    states: ['Ready: PUNG A 1 A_WeaponReady', 'loop',
+      'Deselect: PUNG A 1 A_Lower', 'loop',
+      'Select: PUNG A 1 A_Raise', 'loop',
+      'Fire: PUNG B 4', 'PUNG C 4 A_Punch', 'PUNG D 5', 'PUNG C 4', 'PUNG B 5 A_ReFire', 'goto Ready'] },
+  { name: 'Chainsaw', slot: 1, selectionOrder: 2200, ammoType: null, ammoUse: 1, sprite: 'SAWG',
+    flags: ['WEAPON', 'MELEEWEAPON', 'NOAUTOSWITCHTO'],
+    states: ['Ready: SAWG CD 4 A_WeaponReady', 'loop',
+      'Deselect: SAWG C 1 A_Lower', 'loop',
+      'Select: SAWG C 1 A_Raise', 'loop',
+      'Fire: SAWG AB 4 A_Saw', 'SAWG B 0 A_ReFire', 'goto Ready'] },
+  { name: 'Pistol', slot: 2, selectionOrder: 1900, ammoType: 'Clip', ammoUse: 1, sprite: 'PISG',
+    flags: ['WEAPON', 'WIMPY_WEAPON'],
+    states: ['Ready: PISG A 1 A_WeaponReady', 'loop',
+      'Deselect: PISG A 1 A_Lower', 'loop',
+      'Select: PISG A 1 A_Raise', 'loop',
+      'Fire: PISG A 4', 'PISG B 6 A_FirePistol', 'PISG C 4', 'PISG B 5 A_ReFire', 'goto Ready',
+      'Flash: PISF A 7 Bright A_Light1', 'goto LightDone'] },
+  { name: 'Shotgun', slot: 3, selectionOrder: 1300, ammoType: 'Shell', ammoUse: 1, sprite: 'SHTG',
+    flags: ['WEAPON'],
+    states: ['Ready: SHTG A 1 A_WeaponReady', 'loop',
+      'Deselect: SHTG A 1 A_Lower', 'loop',
+      'Select: SHTG A 1 A_Raise', 'loop',
+      'Fire: SHTG A 3', 'SHTG A 7 A_FireShotgun', 'SHTG BC 5', 'SHTG D 4', 'SHTG CB 5', 'SHTG A 3',
+      'SHTG A 7 A_ReFire', 'goto Ready',
+      'Flash: SHTF A 4 Bright A_Light1', 'SHTF B 3 Bright A_Light2', 'goto LightDone'] },
+  { name: 'SuperShotgun', slot: 3, selectionOrder: 400, ammoType: 'Shell', ammoUse: 2, sprite: 'SHT2',
+    flags: ['WEAPON'],
+    states: ['Ready: SHT2 A 1 A_WeaponReady', 'loop',
+      'Deselect: SHT2 A 1 A_Lower', 'loop',
+      'Select: SHT2 A 1 A_Raise', 'loop',
+      'Fire: SHT2 A 3', 'SHT2 A 7 A_FireShotgun2', 'SHT2 B 7', 'SHT2 C 7 A_CheckReload',
+      'SHT2 D 7 A_OpenShotgun2', 'SHT2 E 7', 'SHT2 F 7 A_LoadShotgun2', 'SHT2 G 6',
+      'SHT2 H 6 A_CloseShotgun2', 'SHT2 A 5 A_ReFire', 'goto Ready',
+      'Flash: SHT2 I 4 Bright A_Light1', 'SHT2 J 3 Bright A_Light2', 'goto LightDone'] },
+  { name: 'Chaingun', slot: 4, selectionOrder: 700, ammoType: 'Clip', ammoUse: 1, sprite: 'CHGG',
+    flags: ['WEAPON'],
+    states: ['Ready: CHGG A 1 A_WeaponReady', 'loop',
+      'Deselect: CHGG A 1 A_Lower', 'loop',
+      'Select: CHGG A 1 A_Raise', 'loop',
+      'Fire: CHGG AB 4 A_FireCGun', 'CHGG B 0 A_ReFire', 'goto Ready',
+      'Flash: CHGF A 5 Bright A_Light1', 'goto LightDone'] },
+  { name: 'RocketLauncher', slot: 5, selectionOrder: 2500, ammoType: 'RocketAmmo', ammoUse: 1, sprite: 'MISG',
+    flags: ['WEAPON', 'NOAUTOFIRE'],
+    states: ['Ready: MISG A 1 A_WeaponReady', 'loop',
+      'Deselect: MISG A 1 A_Lower', 'loop',
+      'Select: MISG A 1 A_Raise', 'loop',
+      'Fire: MISG B 8 A_GunFlash', 'MISG B 12 A_FireMissile', 'MISG B 0 A_ReFire', 'goto Ready',
+      'Flash: MISF A 3 Bright A_Light1', 'MISF B 4 Bright', 'MISF CD 4 Bright A_Light2', 'goto LightDone'] },
+  { name: 'PlasmaRifle', slot: 6, selectionOrder: 100, ammoType: 'Cell', ammoUse: 1, sprite: 'PLSG',
+    flags: ['WEAPON'],
+    states: ['Ready: PLSG A 1 A_WeaponReady', 'loop',
+      'Deselect: PLSG A 1 A_Lower', 'loop',
+      'Select: PLSG A 1 A_Raise', 'loop',
+      'Fire: PLSG A 3 A_FirePlasma', 'PLSG B 20 A_ReFire', 'goto Ready',
+      'Flash: PLSF A 4 Bright A_Light1', 'goto LightDone'] },
+  { name: 'BFG9000', slot: 7, selectionOrder: 2800, ammoType: 'Cell', ammoUse: 40, sprite: 'BFGG',
+    flags: ['WEAPON', 'NOAUTOFIRE'],
+    states: ['Ready: BFGG A 1 A_WeaponReady', 'loop',
+      'Deselect: BFGG A 1 A_Lower', 'loop',
+      'Select: BFGG A 1 A_Raise', 'loop',
+      'Fire: BFGG A 20 A_BFGsound', 'BFGG B 10 A_GunFlash', 'BFGG B 10 A_FireBFG', 'BFGG B 20 A_ReFire',
+      'goto Ready',
+      'Flash: BFGF A 11 Bright A_Light1', 'BFGF B 6 Bright A_Light2', 'goto LightDone'] },
+];
+
+/** Compiles compact `sprite letters duration action` states, as DECORATE writes them. */
+function classicStates(weapon, { lightDone = false } = {}) {
+  const frames = [], labels = {};
+  const push = (label, entries) => { labels[label] = frames.length; for (const entry of entries) frames.push({ ...entry, label }); };
+  let label = null, entries = [];
+  const flush = () => { if (label) push(label, entries); entries = []; };
+  for (const line of weapon.states) {
+    const colon = /^([A-Za-z]+):\s*(.*)$/.exec(line);
+    if (colon) {
+      flush();
+      label = colon[1];
+      if (!colon[2]) continue;
+      entries.push(...classicFrames(weapon, colon[2]));
+      continue;
+    }
+    if (/^loop$/i.test(line)) { entries.push({ kind: 'loop', target: label, label }); continue; }
+    if (/^stop$/i.test(line)) { entries.push({ kind: 'stop', target: null, label }); continue; }
+    const jump = /^goto\s+(\w+)$/i.exec(line);
+    if (jump) { entries.push({ kind: 'goto', target: jump[1], label }); continue; }
+    entries.push(...classicFrames(weapon, line));
+  }
+  flush();
+  // The base Weapon class carries the state that turns the gun flash off.
+  if (lightDone && !labels.LightDone) {
+    labels.LightDone = frames.length;
+    frames.push({ kind: 'frame', sprite: 'SHTG', letter: 'E', duration: 0, bright: false,
+      actions: [{ name: 'A_Light0', args: [], named: {} }], label: 'LightDone' });
+    frames.push({ kind: 'stop', target: null, label: 'LightDone' });
+  }
+  return { frames, labels };
+}
+
+function classicFrames(weapon, line) {
+  const [sprite, letters, duration, ...rest] = line.trim().split(/\s+/);
+  // `MISL B 8 Bright A_Explode` puts the frame flag before the call.
+  const called = rest.find(token => /^(A_|ACS_)[A-Za-z0-9_]*$/.test(token));
+  const action = called ? { name: called, args: [], named: {} } : null;
+  const bright = rest.some(token => /^bright$/i.test(token));
+  // `SHTG BC 5` is two frames of one tic count, as Doom writes it.
+  return [...(letters || 'A')].map(letter => ({ kind: 'frame', sprite: (sprite || weapon.sprite).toUpperCase(),
+    letter, duration: Number(duration) || 0, bright, actions: action ? [action] : [], label: null }));
+}
+
+/**
+ * Classic Doom's projectiles. Without them a plain WAD import has weapon and
+ * monster states that name a class the project does not contain, so a rocket or
+ * an imp ball either does nothing or does nothing when it lands: the explosion and
+ * the BFG spray live in these actors' own Death states.
+ */
+export const CLASSIC_MISSILES = [
+  { name: 'DoomImpBall', radius: 6, height: 8, speed: 10, damage: 3, sprite: 'BAL1',
+    flags: ['MISSILE', 'RANDOMIZE', 'ZDOOMTRANS'],
+    states: ['Spawn: BAL1 AB 4 Bright', 'loop', 'Death: BAL1 CDE 6 Bright', 'stop'] },
+  { name: 'CacodemonBall', radius: 6, height: 8, speed: 10, damage: 5, sprite: 'BAL2',
+    flags: ['MISSILE', 'RANDOMIZE', 'ZDOOMTRANS'],
+    states: ['Spawn: BAL2 AB 4 Bright', 'loop', 'Death: BAL2 CDE 6 Bright', 'stop'] },
+  { name: 'BaronBall', radius: 6, height: 16, speed: 15, damage: 8, sprite: 'BAL7',
+    flags: ['MISSILE', 'RANDOMIZE', 'ZDOOMTRANS'],
+    states: ['Spawn: BAL7 AB 4 Bright', 'loop', 'Death: BAL7 CDE 6 Bright', 'stop'] },
+  { name: 'ArachnotronPlasma', radius: 13, height: 8, speed: 25, damage: 5, sprite: 'APLS',
+    flags: ['MISSILE', 'RANDOMIZE', 'ZDOOMTRANS'],
+    states: ['Spawn: APLS AB 5 Bright', 'loop', 'Death: APBX ABCDE 5 Bright', 'stop'] },
+  { name: 'FatShot', radius: 6, height: 8, speed: 20, damage: 8, sprite: 'MANF',
+    flags: ['MISSILE', 'RANDOMIZE', 'ZDOOMTRANS'],
+    states: ['Spawn: MANF AB 4 Bright', 'loop', 'Death: MISL B 8 Bright', 'MISL C 6 Bright', 'MISL D 4 Bright', 'stop'] },
+  { name: 'RevenantTracer', radius: 11, height: 8, speed: 10, damage: 10, sprite: 'FATB',
+    flags: ['MISSILE', 'SEEKERMISSILE', 'RANDOMIZE', 'ZDOOMTRANS'],
+    states: ['Spawn: FATB AB 2 Bright A_Tracer', 'loop',
+      'Death: FBXP A 8 Bright', 'FBXP B 6 Bright', 'FBXP C 4 Bright', 'stop'] },
+  { name: 'Rocket', radius: 11, height: 8, speed: 20, damage: 20, sprite: 'MISL',
+    flags: ['MISSILE', 'RANDOMIZE'],
+    states: ['Spawn: MISL A 1 Bright', 'loop',
+      'Death: MISL B 8 Bright A_Explode', 'MISL C 6 Bright', 'MISL D 4 Bright', 'stop'] },
+  { name: 'PlasmaBall', radius: 13, height: 8, speed: 25, damage: 5, sprite: 'PLSS',
+    flags: ['MISSILE', 'RANDOMIZE', 'ZDOOMTRANS'],
+    states: ['Spawn: PLSS AB 6 Bright', 'loop', 'Death: PLSE ABCDE 4 Bright', 'stop'] },
+  { name: 'BFGBall', radius: 13, height: 8, speed: 25, damage: 100, sprite: 'BFS1',
+    flags: ['MISSILE', 'RANDOMIZE', 'ZDOOMTRANS'],
+    states: ['Spawn: BFS1 AB 4 Bright', 'loop',
+      'Death: BFE1 AB 8 Bright', 'BFE1 C 8 Bright A_BFGSpray', 'BFE1 DEF 8 Bright', 'stop'] },
+];
+
+/**
+ * The decorative actors classic actions spawn: the BFG's spray puffs, the bullet
+ * puff a revenant tracer trails and that tracer's smoke.
+ */
+export const CLASSIC_EFFECTS = [
+  { name: 'BFGExtra', sprite: 'BFE2', flags: ['NOBLOCKMAP', 'NOGRAVITY', 'ZDOOMTRANS'],
+    states: ['Spawn: BFE2 ABCD 8 Bright', 'stop'] },
+  { name: 'BulletPuff', sprite: 'PUFF', flags: ['NOBLOCKMAP', 'NOGRAVITY', 'ALLOWPARTICLES', 'RANDOMIZE', 'ZDOOMTRANS'],
+    states: ['Spawn: PUFF A 4 Bright', 'PUFF B 4', 'stop',
+      'Melee: PUFF CD 4', 'stop'] },
+  { name: 'RevenantTracerSmoke', sprite: 'PUFF', flags: ['NOBLOCKMAP', 'NOGRAVITY', 'NOTELEPORT', 'ZDOOMTRANS'],
+    states: ['Spawn: PUFF ABABC 4', 'stop'] },
+];
+
+/** Actors the native action functions spawn by name, so their clips are pre-built. */
+export const NATIVE_EFFECT_ACTORS = ['BFGExtra', 'BulletPuff', 'RevenantTracerSmoke'];
+
+/** A classic missile or decorative actor as a project actor record. */
+function classicActorRecord(entry, index) {
+  const states = classicStates(entry);
+  const flags = Object.fromEntries(entry.flags.map(flag => [flag, true]));
+  if (flags.MISSILE) flags.PROJECTILE = true;
+  return {
+    id: `actor_${entry.name.toLowerCase()}`,
+    name: entry.name, parent: 'Actor', doomedNum: null, replaces: null,
+    health: 1000, speed: entry.speed ?? 0, damage: entry.damage ?? 0, painChance: 0, painChances: {}, damageFactors: {},
+    radius: entry.radius ?? 6, height: entry.height ?? 8, mass: 100, reactionTime: 8, fastSpeed: 0,
+    damageType: null, species: null, renderStyle: null, alpha: null, scale: null, xScale: null, yScale: null,
+    gravity: null, translation: null,
+    flags, sounds: {}, drops: [],
+    weaponAmmoType: null, weaponAmmoUse: 1, weaponSlotNumber: null, weaponSelectionOrder: null,
+    states,
+    spritePrefixes: [...new Set(states.frames.filter(frame => frame.kind === 'frame').map(frame => frame.sprite))],
+    projectile: null, source: 'built-in classic Doom data', language: 'classic',
+    build: 'classic', order: index,
+  };
+}
+
+/** One classic weapon as a project actor record. */
+function classicWeaponRecord(weapon, index) {
+  const states = classicStates(weapon, { lightDone: true });
+  return {
+    id: `actor_${weapon.name.toLowerCase()}`,
+    name: weapon.name, parent: 'Weapon', doomedNum: null, replaces: null,
+    health: 0, speed: 0, damage: 0, painChance: 0, painChances: {}, damageFactors: {},
+    radius: 20, height: 16, mass: 0, reactionTime: 8, fastSpeed: 0, damageType: null, species: null,
+    renderStyle: null, alpha: null, scale: null, xScale: null, yScale: null, gravity: null, translation: null,
+    flags: Object.fromEntries(weapon.flags.map(flag => [flag, true])),
+    sounds: {}, drops: [],
+    weaponAmmoType: weapon.ammoType ?? null,
+    weaponAmmoUse: weapon.ammoUse ?? 1,
+    weaponSlotNumber: weapon.slot,
+    weaponSelectionOrder: weapon.selectionOrder,
+    states,
+    spritePrefixes: [...new Set(states.frames.filter(frame => frame.kind === 'frame').map(frame => frame.sprite))],
+    projectile: null, source: 'built-in classic Doom data', language: 'classic',
+    build: 'classic', order: index,
+  };
+}
+
+/**
+ * Converts the compact classic table into project actor records: the monsters and
+ * the player's weapons. A plain WAD import therefore has weapon actors, which is
+ * what lets the engine run Doom's own weapon states instead of scripted rules.
+ */
 export function buildVanillaActors() {
-  return VANILLA_ACTORS.map((entry, index) => ({
+  const monsters = VANILLA_ACTORS.map((entry, index) => ({
     id: `actor_${entry.name.toLowerCase()}`,
     name: entry.name, parent: 'Actor', doomedNum: entry.doomedNum, replaces: null,
     health: entry.health, speed: entry.speed, damage: 0,
@@ -333,6 +564,10 @@ export function buildVanillaActors() {
     projectile: entry.projectile || null, source: 'built-in classic Doom data', language: 'classic',
     build: 'classic', order: index,
   }));
+  const weapons = CLASSIC_WEAPONS.map((weapon, index) => classicWeaponRecord(weapon, monsters.length + index));
+  const offset = monsters.length + weapons.length;
+  const extras = [...CLASSIC_MISSILES, ...CLASSIC_EFFECTS].map((entry, index) => classicActorRecord(entry, offset + index));
+  return [...monsters, ...weapons, ...extras];
 }
 
 /**

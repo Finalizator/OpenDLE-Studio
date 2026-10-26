@@ -137,7 +137,9 @@ test('Freedoom rear-facing room guards wake on gunfire and chase with the full m
   s.physics.teleport(s.entities.find(e => e.type === 'player').id, 384, -64, -64);
   tick(p, s);
   assert.equal(s.timers.has(`${guard.id}:alert`), false, 'player is behind the guard');
-  tick(p, s, 1, ['Mouse0']);
+  // The pistol's own Fire state has a windup, so hold the trigger long enough for
+  // the shot (4 + 6 tics) to actually happen.
+  tick(p, s, 12, ['Mouse0']);
   assert.ok(s.timers.has(`${guard.id}:alert`), 'gunfire wakes the guard');
   tick(p, s, 175);
   assert.ok(Math.hypot(guard.x - original.x, guard.y - original.y) > 48, 'guard genuinely pursues on the original unfiltered map');
@@ -183,7 +185,10 @@ test('Freedoom actual linedefs retain specials and import editable doors, moving
   assert.equal(p.map.walls.find(w => w.id === 'w165').special, 1);
   assert.ok(p.events.some(e => e.actions.some(a => a.type === 'moveSector' && a.returnMode === 'cycle')));
   assert.ok(p.spriteClips.length > 20);
-  assert.ok(p.events.find(e => e.name === 'rocketLauncher').actions.find(a => a.type === 'launchProjectile').clipId);
+  // The rocket launcher is an imported weapon actor whose Rocket projectile carries
+  // the flight and explosion clips.
+  assert.ok(p.actors.find(actor => actor.name === 'RocketLauncher').flags.WEAPON);
+  assert.ok(p.spriteClips.some(clip => clip.id === 'clip_actor_actor_rocket_fly'));
   const s = physics(t, p), wall = s.walls.find(w => w.id === 'w165');
   const x = (wall.start.x + wall.end.x) / 2, y = (wall.start.y + wall.end.y) / 2;
   const dx = wall.end.x - wall.start.x, dy = wall.end.y - wall.start.y, length = Math.hypot(dx, dy);
@@ -284,8 +289,12 @@ test('missiles advance over time, select flight frames and leave a finite impact
   const { project: p } = importWad(readFileSync(freedoom), 'MAP01'), s = createRuntime(p);
   tick(p, s);
   s.entities = s.entities.filter(e => e.type !== 'enemy');
-  const action = p.events.find(e => e.name === 'plasmaRifle').actions.find(a => a.type === 'launchProjectile');
-  launchProjectile(s, action);
+  // Fire the plasma rifle from its own states: Ready consumes the trigger, then the
+  // Fire state's A_FirePlasma launches the PlasmaBall actor.
+  s.inventory.weapons.add('plasmaRifle'); s.inventory.selectedWeapon = 'plasmaRifle';
+  s.playerStats.cells = 40;
+  for (let i = 0; i < 40 && !s.projectiles.length; i++) tick(p, s, 1, ['Mouse0']);
+  assert.ok(s.projectiles.length, 'the plasma rifle fired');
   const projectile = s.projectiles.at(-1), start = { x: projectile.x, y: projectile.y };
   stepRuntime(p, s, .02, new Set());
   assert.ok(Math.abs(Math.hypot(projectile.x - start.x, projectile.y - start.y) - 17.5) < .001);
@@ -297,7 +306,7 @@ test('missiles advance over time, select flight frames and leave a finite impact
   }
   assert.ok(impact, 'wall impact produces an effect');
   assert.equal(s.projectiles.length, 0);
-  assert.equal(impact.clipId, action.impactClipId);
+  assert.equal(impact.clipId, projectile.impactClipId, 'the impact uses the missile Death frames');
   tick(p, s, 100);
   assert.equal(s.impacts.length, 0, 'finished impact removed');
 });
@@ -312,7 +321,7 @@ test('surface animations and sprite-state references are portable and validated'
     q => { q.materialAnimations[0].clipId = 'missing'; },
     q => { q.materialAnimations[0].assetId = 'missing'; },
     q => { q.map.entities.find(e => e.type === 'enemy').spriteStates.walk = 'missing'; },
-    q => { q.events.find(e => e.name === 'plasmaRifle').actions.find(a => a.type === 'launchProjectile').impactClipId = 'missing'; },
+    q => { q.spriteClips.find(clip => clip.id.endsWith('_fly')).frames[0] = 'missing'; },
   ]) {
     const next = structuredClone(p); mutate(next); assert.throws(() => validateProject(next));
   }
