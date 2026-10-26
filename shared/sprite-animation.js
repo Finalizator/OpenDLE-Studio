@@ -102,6 +102,77 @@ export function spriteView(project, state, entity, viewer = state.player) {
   return { assetId: view.assetId, flip: view.flip };
 }
 
+const clipCache = new WeakMap(), nameCache = new WeakMap();
+
+/** Sprite asset name to asset id, so an actor's state frames can name their images. */
+function spriteAssetNames(project) {
+  let names = nameCache.get(project);
+  if (names) return names;
+  names = new Map();
+  for (const asset of project.assets || []) {
+    if (asset.kind !== 'sprite') continue;
+    const key = String(asset.name).toUpperCase();
+    if (!names.has(key)) names.set(key, asset.id);
+  }
+  nameCache.set(project, names);
+  return names;
+}
+
+/**
+ * The flying and impact sprite clips an imported projectile animates through: a
+ * Doom missile draws its `Spawn` states while it travels and its `Death` states
+ * when it explodes. The clips become project data so the renderer's sprite index
+ * and the level asset list both see them.
+ */
+export function actorProjectileClips(project, actor) {
+  let cached = clipCache.get(project);
+  if (!cached) clipCache.set(project, cached = new Map());
+  if (cached.has(actor.id)) return cached.get(actor.id);
+  const result = { fly: null, impact: null };
+  cached.set(actor.id, result);
+  const frames = actor?.states?.frames;
+  if (!frames?.length) return result;
+  const labels = actor.states.labels || {};
+  const labelIndex = name => {
+    if (name in labels) return labels[name];
+    const key = Object.keys(labels).find(candidate => candidate.toLowerCase() === name.toLowerCase());
+    return key === undefined ? null : labels[key];
+  };
+  const names = spriteAssetNames(project);
+  function sequence(label) {
+    const start = labelIndex(label);
+    if (!Number.isInteger(start) || !frames[start]) return [];
+    const list = [];
+    // The run ends where the state block ends: goto/loop/stop records and the
+    // next label are not part of the animation.
+    for (let index = start; index < frames.length && frames[index].kind === 'frame'; index++) {
+      list.push(frames[index]);
+      if (!(frames[index].duration > 0)) break;
+    }
+    return list;
+  }
+  function clip(kind, label, loop) {
+    const assets = [];
+    let seconds = 0;
+    for (const frame of sequence(label)) {
+      const sprite = String(frame.sprite || '').toUpperCase();
+      const id = names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`);
+      if (!id) continue;
+      assets.push(id);
+      if (frame.duration > 0 && !seconds) seconds = frame.duration;
+    }
+    if (!assets.length) return null;
+    const id = `clip_actor_${actor.id}_${kind}`;
+    if ((project.spriteClips || []).some(clip => clip.id === id)) return id;
+    (project.spriteClips ||= []).push({ id, name: `${actor.name} / ${kind}`.slice(0, 100), frames: assets,
+      seconds: Math.min(60, Math.max(.001, (seconds || 1) / 35)), loop });
+    return id;
+  }
+  result.fly = clip('fly', 'Spawn', true) || clip('fly', 'See', true);
+  result.impact = clip('impact', 'Death', false) || clip('impact', 'Crash', false);
+  return result;
+}
+
 export function installSpriteAnimations(project, assets) {
   project.spriteClips ||= [];
   const used = new Set([...project.assets, ...project.events, ...project.eventSheets, ...project.eventGroups,

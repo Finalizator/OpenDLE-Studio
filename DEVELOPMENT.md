@@ -181,7 +181,20 @@ provider credits or network access are required for tests.
   projectiles and the weapon `Ready`/`Fire`/`Flash` cycle with `A_WeaponReady`,
   `A_ReFire`, `A_FireBullets`/`A_FireShotgun`/`A_FireMissile`/`A_FirePlasma`,
   `A_GunFlash` and `A_Light0-2`. Action functions without an engine equivalent
-  are collected by name and reported instead of silently ignored. The actor
+  are collected by name and reported instead of silently ignored.
+
+  Two details decide whether an imported weapon feels like the original. First,
+  GZDoom's native weapon action functions start their own `CHAN_WEAPON` sound;
+  a DECORATE/ZScript state only names `A_FirePistol`, so the runtime plays the
+  matching SNDINFO name (`weapons/pistol`, `weapons/shotgf`, `weapons/sshotf`,
+  `weapons/chngun`, `weapons/rocklf`, `weapons/plasmaf`, `weapons/bfgf`,
+  `weapons/sawfull`, `*fist`) or the shot would be silent. Second, an actor's
+  `Speed` is map units per 35 Hz tic while the runtime moves things per second,
+  so a missile multiplies by 35 (an imp ball's `Speed 10` is 350 units/s, a
+  rocket's `Speed 20` is 700). Missile artwork comes from the actor too: the
+  `Spawn` frames become the in-flight sprite clip and the `Death` frames the
+  impact clip, so a mod's fireball looks like the mod drew it instead of
+  falling back to a plain sphere. The actor
   table is edited in the Actors tab (stats, flags, sounds, state frames in
   DECORATE syntax) and by the `actor_list`, `actor_get`, `actor_update` and
   `actor_reset` MCP tools. `DoomEdNums` blocks bind editor numbers, and LANGUAGE

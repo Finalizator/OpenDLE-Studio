@@ -1,6 +1,7 @@
 import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, randomDamage, enemyHitscan, moveEnemy } from './combat.js';
 import { actorIndex, actorForThing } from './actors.js';
+import { actorProjectileClips } from './sprite-animation.js';
 
 /**
  * Actor runtime.
@@ -159,11 +160,42 @@ const numArg = (ctx, index, fallback = 0) => {
 };
 const projectilesByName = project => project.__actorIndex ||= actorIndex(project.actors || []);
 
+/**
+ * A missile actor as the projectile runtime needs it. Actor `speed` is map units
+ * per 35 Hz tic, so it is converted to the per-second value the projectile step
+ * and the level's own movement share.
+ */
+export function missileProjectile(project, name) {
+  const index = projectilesByName(project);
+  const actor = index.byName.get(String(name || '').toLowerCase()) ||
+    index.byId.get(`actor_${String(name || '').toLowerCase().replace(/[^a-z0-9_]/g, '_')}`);
+  if (!actor) return null;
+  const clips = actorProjectileClips(project, actor);
+  return { name: actor.name, speed: (actor.speed || 10) * TIC_RATE, damage: actor.damage ?? 0,
+    radius: actor.radius || 0, clipId: clips.fly, impactClipId: clips.impact };
+}
+
+/**
+ * Pre-builds the missile sprite clips. The renderer reads the project's clips
+ * once, so a projectile that only appears mid-fight has to have its artwork
+ * before the sprite index is built.
+ */
+export function installActorProjectileSprites(project) {
+  if (!project.actors?.length) return;
+  for (const actor of project.actors) {
+    const flags = actor.flags || {};
+    const missile = Array.isArray(flags) ? flags.includes('MISSILE') || flags.includes('PROJECTILE')
+      : flags.MISSILE || flags.PROJECTILE;
+    if (missile) actorProjectileClips(project, actor);
+  }
+}
+
 /** Spawns a projectile actor owned by an enemy, aimed at the player. */
 export function spawnActorProjectile(project, state, owner, projectileName, { speed = 0, damage = null, angle = null } = {}) {
   const index = projectilesByName(project);
   const actor = index.byName.get(String(projectileName).toLowerCase()) ||
     index.byId.get(`actor_${String(projectileName).toLowerCase().replace(/[^a-z0-9_]/g, '_')}`);
+  const clips = actor ? actorProjectileClips(project, actor) : { fly: null, impact: null };
   const missileSpeed = speed || actor?.speed || 10;
   const damageValue = damage ?? actor?.damage ?? 0;
   const radians = angle ?? Math.atan2(state.player.y - owner.y, state.player.x - owner.x);
@@ -175,8 +207,8 @@ export function spawnActorProjectile(project, state, owner, projectileName, { sp
     id: ++state.projectileSequence, ownerId: owner.id, actorId: actor?.id || null,
     x: owner.x, y: owner.y, z: originZ,
     dx: Math.cos(radians) * Math.cos(pitch), dy: Math.sin(radians) * Math.cos(pitch), dz: Math.sin(pitch),
-    speed: missileSpeed * 2, damage: damageValue, diceSides: 8, radius: actor?.flags?.MISSILE && damageValue ? damageValue : 0,
-    age: 0, color: '#ff8833',
+    speed: missileSpeed * TIC_RATE, damage: damageValue, diceSides: 8, radius: actor?.flags?.MISSILE && damageValue ? damageValue : 0,
+    age: 0, color: '#ff8833', clipId: clips.fly, impactClipId: clips.impact,
   });
   return actor;
 }
@@ -678,7 +710,6 @@ export function weaponTic(project, state, attackHeld) {
 function runWeaponAction(ctx, action) {
   const { state, actor, runtime } = ctx;
   const args = action.args || [];
-  const number = (index, fallback = 0) => Number(args[index] ?? fallback) || fallback;
   switch (action.name) {
     case 'A_WeaponReady':
       runtime.ready = true;
@@ -713,12 +744,17 @@ function runWeaponAction(ctx, action) {
     case 'A_Punch':
     case 'A_Saw':
     case 'A_FirePistol':
-      fireWeapon(state, actor, action.name, number);
+      fireWeapon(ctx, action.name);
       return;
     case 'A_PlaySound':
     case 'A_StartSound':
       saySound(state, String(args[0] || ''), null, 110);
       return;
+    // The weapon's own mechanics sounds, which Doom's states call directly.
+    case 'A_BFGsound': saySound(state, 'weapons/bfgf', null, 127); return;
+    case 'A_OpenShotgun2': saySound(state, 'weapons/sshoto', null, 127); return;
+    case 'A_LoadShotgun2': saySound(state, 'weapons/sshotl', null, 127); return;
+    case 'A_CloseShotgun2': saySound(state, 'weapons/sshotc', null, 127); return;
     default:
       // Animation-only weapon actions (bobbing, offsets) need no simulation.
       return;
@@ -742,18 +778,36 @@ function weaponHasAmmo(state, actor) {
  * counts come from the arguments the mod wrote, so a modded shotgun behaves
  * like the mod intends.
  */
-function fireWeapon(state, actor, actionName, number) {
+// GZDoom's native weapon action functions start their own CHAN_WEAPON sound. A
+// DECORATE/ZScript weapon only names the action, so the shot is silent unless the
+// sound is played here. Names are logical SNDINFO aliases, not lump names.
+const FIRE_SOUNDS = {
+  A_FirePistol: 'weapons/pistol', A_FireShotgun: 'weapons/shotgf', A_FireShotgun2: 'weapons/sshotf',
+  A_FireCGun: 'weapons/chngun', A_FireMissile: 'weapons/rocklf', A_FirePlasma: 'weapons/plasmaf',
+  A_FireBFG: 'weapons/bfgf', A_Saw: 'weapons/sawfull', A_Punch: '*fist',
+};
+
+function fireWeapon(ctx, actionName) {
+  const { state, actor } = ctx;
   const { type, use } = weaponAmmo(actor);
   if (type) {
     const cost = use || 1;
     if ((state.playerStats[type] || 0) < cost) { state.weaponTriggerHeld = false; return; }
     state.playerStats[type] -= cost;
   }
+  if (FIRE_SOUNDS[actionName]) saySound(state, FIRE_SOUNDS[actionName], null, 127);
+  const missile = (name, damage, radius) => {
+    const resolved = missileProjectile(ctx.project, name);
+    const amount = Number(resolved?.damage);
+    state.weaponAttack = { kind: 'missile', missile: resolved?.name || name,
+      damage: Number.isFinite(amount) && amount > 0 ? amount : damage, diceSides: 8,
+      speed: resolved?.speed || 700, radius };
+  };
   switch (actionName) {
     case 'A_FireBullets': {
-      const spread = number(0, 0), pellets = Math.max(1, Math.min(40, number(2, 1)));
-      const damage = Math.max(1, number(3, 5)), range = number(9, 2048) || 2048;
-      state.weaponAttack = { kind: 'hitscan', damage: [damage, Math.max(1, number(1, 3))], pellets, spread, range };
+      const spread = numArg(ctx, 0, 0), pellets = Math.max(1, Math.min(40, numArg(ctx, 2, 1)));
+      const damage = Math.max(1, numArg(ctx, 3, 5)), range = numArg(ctx, 9, 2048) || 2048;
+      state.weaponAttack = { kind: 'hitscan', damage: [damage, Math.max(1, numArg(ctx, 1, 3))], pellets, spread, range };
       break;
     }
     case 'A_FireShotgun': state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 7, spread: 11.25, range: 2048 }; break;
@@ -761,11 +815,11 @@ function fireWeapon(state, actor, actionName, number) {
     case 'A_FireCGun': state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 5.625, range: 2048 }; break;
     case 'A_FirePistol': state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 0, range: 2048 }; break;
     case 'A_Punch': state.weaponAttack = { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64 }; break;
-    case 'A_Saw': state.weaponAttack = { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64 }; break;
-    case 'A_FireMissile': state.weaponAttack = { kind: 'missile', missile: 'Rocket', damage: 20, diceSides: 8, speed: 700, radius: 128 }; break;
-    case 'A_FirePlasma': state.weaponAttack = { kind: 'missile', missile: 'PlasmaBall', damage: 5, diceSides: 8, speed: 875, radius: 0 }; break;
-    case 'A_FireBFG': state.weaponAttack = { kind: 'missile', missile: 'BFGBall', damage: 100, diceSides: 8, speed: 875, radius: 256 }; break;
-    case 'A_FireCustomMissile': state.weaponAttack = { kind: 'missile', missile: 'PlayerMissile', damage: 20, diceSides: 8, speed: 700, radius: 64 }; break;
+    case 'A_Saw': state.weaponAttack = { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64, hitSound: 'weapons/sawhit' }; break;
+    case 'A_FireMissile': missile('Rocket', 20, 128); break;
+    case 'A_FirePlasma': missile('PlasmaBall', 5, 0); break;
+    case 'A_FireBFG': missile('BFGBall', 100, 256); break;
+    case 'A_FireCustomMissile': missile(String(arg(ctx, 0) || 'PlayerMissile'), 20, 64); break;
     default: state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 0, range: 2048 };
   }
 }

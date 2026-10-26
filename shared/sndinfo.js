@@ -153,7 +153,8 @@ export function soundAliasNames(table) {
 // gzdoom.pk3 still resolves the standard monster and weapon sounds.
 export const VANILLA_SOUNDS = {
   aliases: {
-    'baby/active': 'DSBSPACT', 'baby/attack': 'DSPLASMA', 'baby/death': 'DSBSPDTH', 'baby/pain': 'DSDMPAIN',
+    // `$playersound player <gender> *fist dspunch` from gzdoom.pk3's root SNDINFO.
+    '*fist': 'DSPUNCH', 'baby/active': 'DSBSPACT', 'baby/attack': 'DSPLASMA', 'baby/death': 'DSBSPDTH', 'baby/pain': 'DSDMPAIN',
     'baby/shotx': 'DSFIRXPL', 'baby/sight': 'DSBSPSIT', 'baby/walk': 'DSBSPWLK', 'baron/active': 'DSDMACT',
     'baron/attack': 'DSFIRSHT', 'baron/death': 'DSBRSDTH', 'baron/melee': 'DSCLAW', 'baron/pain': 'DSDMPAIN',
     'baron/shotx': 'DSFIRXPL', 'baron/sight': 'DSBRSSIT', 'brain/cube': 'DSBOSCUB',

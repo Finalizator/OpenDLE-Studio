@@ -509,19 +509,23 @@ export async function createPreview(canvas, project, state, { editor = false } =
     }
     function updateEffect(effect, elapsed) {
       const frame = spriteIndex.frame(effect.clipId, elapsed);
+      // A clip may name artwork this level did not load; the pooled mesh keeps the
+      // effect visible instead of failing the frame.
+      const asset = frame.assetId ? assetMap.get(frame.assetId) : null;
       let entry = effectMeshes.get(effect.id);
       if (!entry) {
-        const object = frame.assetId ? new THREE.Sprite(takeEffectMaterial('sprite', effect))
+        const object = asset ? new THREE.Sprite(takeEffectMaterial('sprite', effect))
           : new THREE.Mesh(effect.radius ? impactGeometry : projectileGeometry, takeEffectMaterial('mesh', effect));
         scene.add(object);
         entry = { id: effect.id, object, frame: undefined, revision: frameRevision };
         effectMeshes.set(effect.id, entry); effectList.push(entry);
       }
       entry.revision = frameRevision;
-      if (frame.assetId && entry.frame !== frame.assetId) {
-        const asset = assetMap.get(frame.assetId);
+      if (asset && entry.object.isSprite && entry.frame !== frame.assetId) {
         entry.object.material.map = imageTexture(frame.assetId);
         entry.object.scale.set(asset.width, asset.height, 1);
+        if (Number.isFinite(asset.offsetX) && Number.isFinite(asset.offsetY))
+          entry.object.center.set(asset.offsetX / asset.width, 1 - asset.offsetY / asset.height);
         entry.object.userData.frame = frame.assetId;
         entry.frame = frame.assetId;
       }

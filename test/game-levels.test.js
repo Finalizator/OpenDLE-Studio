@@ -182,3 +182,15 @@ test('full WAD imports retain every native map, share assets and compile origina
   selectGameLevel(p, 'MAP02'); assert.equal(p.game.active, 'MAP02'); assert.equal(p.game.levels[1].next, null);
   assert.equal(importWad(bytes, 'MAP02', { fullGame: false }).project.game, undefined);
 });
+
+test('a level loads the artwork its sprite clips animate', () => {
+  const p = game();
+  p.assets.push({ id: 'asset_BAL1A0', name: 'BAL1A0', kind: 'sprite', width: 24, height: 24, offsetX: 12, offsetY: 24,
+    src: 'data:image/png;base64,iVBORw0KGgo=' });
+  // Only the clip points at the projectile frame: no entity or wall uses it.
+  p.spriteClips ||= [];
+  p.spriteClips.push({ id: 'clip_actor_actor_doomimpball_fly', name: 'DoomImpBall / fly',
+    frames: ['asset_BAL1A0'], seconds: 4 / 35, loop: true });
+  assert.ok(gameLevelAssetIds(p).includes('asset_BAL1A0'),
+    'projectile artwork is referenced from its clip, so the level has to carry it');
+});

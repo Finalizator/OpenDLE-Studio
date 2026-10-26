@@ -1725,6 +1725,11 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       renderer: preview.rendererStatus?.backend,
       mode: gameMode ? 'game' : 'level',
       levels: snapshot.game?.levels?.length,
+      // A missing status bar is usually a screen-size or import question, so the
+      // log records what the HUD actually contains and what the view shows.
+      viewSize: runtime.settings.viewSize,
+      hudElements: (snapshot.hud?.elements || []).length,
+      statusBarElements: (snapshot.hud?.elements || []).filter(element => element.statusbar).length,
       url: location.href,
       app: engineVersion ? `OpenDLE: Studio ${engineVersion}` : 'OpenDLE: Studio',
     });

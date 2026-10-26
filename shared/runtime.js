@@ -4,7 +4,7 @@ import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
-import { stepActors, beginWeapon, weaponTic, initialiseActorEntities } from './actor-runtime.js';
+import { stepActors, beginWeapon, weaponTic, initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound } from './actor-runtime.js';
 import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum } from './player-state.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
@@ -55,6 +55,8 @@ export function runtimeEntities(project, settings = {}) {
 }
 
 export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false, progress } = {}) {
+  // Missile artwork has to exist before the renderer builds its sprite index.
+  installActorProjectileSprites(project);
   const spawn = project.map.entities.find(entity => entity.type === 'player');
   const userSettings = gameSettings(settings);
   const skillBit = skillBitFor(settings);
@@ -224,7 +226,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   if (project.actors?.length) {
     stepActors(project, state, dt);
     stepWeapon(project, state, dt, !hud.cursor && state.playerStats.health > 0 && keys.has('Mouse0'));
-    applyWeaponAttack(state);
+    applyWeaponAttack(project, state);
   }
   advanceProjectiles(state, dt);
   applySectorDamage(state, dt);
@@ -698,17 +700,23 @@ function activateWallTriggers(state) {
   }
 }
 
-function applyWeaponAttack(state) {
+function applyWeaponAttack(project, state) {
   const attack = state.weaponAttack;
   if (!attack) return;
   state.weaponAttack = null;
   if (attack.kind === 'hitscan') {
     fireHitscan(state, { damage: attack.damage[0], diceSides: attack.damage[1], pellets: attack.pellets,
       spread: attack.spread, range: attack.range });
+    if (attack.hitSound && state.lastShot?.hits.length)
+      saySound(state, attack.hitSound, null, 127);
     return;
   }
+  // A missile's flight and explosion artwork come from the actor definition, so a
+  // mod's custom projectile looks like the mod drew it.
+  const missile = attack.missile ? missileProjectile(project, attack.missile) : null;
   launchProjectile(state, { speed: attack.speed, damage: attack.damage, diceSides: attack.diceSides,
-    radius: attack.radius, color: '#66bbff', sound: null });
+    radius: attack.radius, color: '#66bbff', sound: null,
+    clipId: missile?.clipId || null, impactClipId: missile?.impactClipId || null });
 }
 
 function fireHitscan(state, action) {

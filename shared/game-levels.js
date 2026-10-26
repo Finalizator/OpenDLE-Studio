@@ -34,6 +34,12 @@ export function gameLevelAssetIds(project) {
   const assets = new Map(project.assets.map(asset => [asset.id, asset]));
   // Rotation tables can refer back to their base frame or to other tables.
   for (const id of references) visit(assets.get(id)?.rotations);
+  // Sprite clips belong to the game as a whole, and a projectile's artwork is only
+  // ever referenced from its clip, so the frames travel with every level.
+  for (const clip of project.spriteClips || []) for (const id of clip.frames || []) references.add(id);
+  for (const mapping of project.materialAnimations || []) {
+    references.add(mapping.assetId);
+  }
   return project.assets.filter(asset => ['sound', 'music'].includes(asset.kind) || references.has(asset.id)).map(asset => asset.id);
 }
 

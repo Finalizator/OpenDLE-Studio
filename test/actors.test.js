@@ -6,7 +6,8 @@ import { parseDecorate, resolveActorInheritance, compileActorStates, frameBodyAc
 import { parseZScript, parseActorDefinitions } from '../shared/zscript.js';
 import { parseDehacked, dehackedChanges, mergeDehackedPatches, thingName } from '../shared/dehacked.js';
 import { buildVanillaActors, importActors, applyDehacked, actorIndex, parseEditorNumbers } from '../shared/actors.js';
-import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors } from '../shared/actor-runtime.js';
+import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile } from '../shared/actor-runtime.js';
+import { actorProjectileClips } from '../shared/sprite-animation.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 
 const DECORATE = `
@@ -321,4 +322,92 @@ test('LANGUAGE keyword strings resolve imported level and menu text', async () =
   assert.equal(resolveString(strings, 'MAP01'), 'MAP01', 'literal text passes through');
   assert.equal(isKeyword('$TXT_MAP1'), true);
   assert.equal(isKeyword('Maintenance'), false);
+});
+
+function spriteAsset(name) {
+  return { id: `asset_${name}`, name, kind: 'sprite', width: 24, height: 24, offsetX: 12, offsetY: 24,
+    src: 'data:image/png;base64,iVBORw0KGgo=' };
+}
+
+function projectileProject() {
+  const project = createProject();
+  project.assets = ['BAL1A0', 'BAL1B0', 'BAL1C0', 'BAL1D0', 'BAL1E0'].map(spriteAsset);
+  project.actors = [{
+    id: 'actor_doomimpball', name: 'DoomImpBall', flags: { PROJECTILE: true, MISSILE: true, NOGRAVITY: true },
+    speed: 10, damage: 3, radius: 6, height: 8,
+    states: { labels: { Spawn: 0, Death: 3 }, frames: [
+      { kind: 'frame', sprite: 'BAL1', letter: 'A', duration: 4, actions: [], label: 'Spawn' },
+      { kind: 'frame', sprite: 'BAL1', letter: 'B', duration: 4, actions: [], label: 'Spawn' },
+      { kind: 'loop', label: 'Spawn' },
+      { kind: 'frame', sprite: 'BAL1', letter: 'C', duration: 6, actions: [], label: 'Death' },
+      { kind: 'frame', sprite: 'BAL1', letter: 'D', duration: 6, actions: [], label: 'Death' },
+      { kind: 'frame', sprite: 'BAL1', letter: 'E', duration: 6, actions: [], label: 'Death' },
+      { kind: 'stop', label: 'Death' },
+    ] },
+  }];
+  return project;
+}
+
+test('a projectile actor animates its Spawn states in flight and its Death states on impact', () => {
+  const project = projectileProject();
+  const clips = actorProjectileClips(project, project.actors[0]);
+  assert.equal(clips.fly, 'clip_actor_actor_doomimpball_fly');
+  assert.equal(clips.impact, 'clip_actor_actor_doomimpball_impact');
+  const fly = project.spriteClips.find(clip => clip.id === clips.fly);
+  assert.deepEqual(fly.frames, ['asset_BAL1A0', 'asset_BAL1B0']);
+  assert.equal(fly.loop, true);
+  assert.equal(fly.seconds, 4 / 35, 'frame duration comes from the actor at 35 tics per second');
+  const impact = project.spriteClips.find(clip => clip.id === clips.impact);
+  assert.deepEqual(impact.frames, ['asset_BAL1C0', 'asset_BAL1D0', 'asset_BAL1E0']);
+  assert.equal(impact.loop, false);
+  // Asking twice reuses the stored clip instead of appending duplicates.
+  actorProjectileClips(project, project.actors[0]);
+  assert.equal(project.spriteClips.filter(clip => clip.id === clips.fly).length, 1);
+});
+
+test('enemy missiles travel at the actor speed instead of crawling', () => {
+  const project = projectileProject();
+  const state = createRuntime(project);
+  const owner = { id: 'imp', x: state.player.x + 200, y: state.player.y, height: 56 };
+  spawnActorProjectile(project, state, owner, 'DoomImpBall');
+  const [ball] = state.projectiles;
+  assert.equal(ball.speed, 350, 'Speed 10 is 10 map units per tic, so 350 per second');
+  assert.equal(ball.clipId, 'clip_actor_actor_doomimpball_fly');
+  assert.equal(ball.impactClipId, 'clip_actor_actor_doomimpball_impact');
+});
+
+test('weapon actors play the firing sounds GZDoom\'s action functions start', () => {
+  const project = createProject();
+  project.actors = [{
+    id: 'actor_pistol', name: 'Pistol', flags: { WEAPON: true }, weaponAmmoType: 'Clip', weaponAmmoUse: 1,
+    states: { labels: { Ready: 0, Fire: 2 }, frames: [
+      { kind: 'frame', sprite: 'PISG', letter: 'A', duration: 1, actions: [{ name: 'A_WeaponReady' }], label: 'Ready' },
+      { kind: 'loop', label: 'Ready' },
+      { kind: 'frame', sprite: 'PISG', letter: 'B', duration: 6, actions: [{ name: 'A_FirePistol' }], label: 'Fire' },
+      { kind: 'frame', sprite: 'PISG', letter: 'C', duration: 5, actions: [{ name: 'A_ReFire' }], label: 'Fire' },
+      { kind: 'stop', label: 'Fire' },
+    ] },
+  }];
+  const state = createRuntime(project);
+  state.inventory.weapons.add('pistol');
+  state.inventory.selectedWeapon = 'pistol';
+  state.playerStats.bullets = 20;
+  const heard = new Set();
+  for (let frame = 0; frame < 40; frame++) {
+    stepRuntime(project, state, 1 / 35, new Set(['Mouse0']));
+    for (const sound of state.sounds) heard.add(sound.name);
+  }
+  assert.ok(heard.has('weapons/pistol'), `the pistol has to be audible, heard ${[...heard].join(', ') || 'nothing'}`);
+  assert.ok(state.playerStats.bullets < 20, 'the pistol spends bullets');
+});
+
+test('vanilla weapon sound aliases resolve to real lumps', async () => {
+  const { soundTable, soundCandidates, VANILLA_SOUNDS } = await import('../shared/sndinfo.js');
+  const aliases = soundTable(VANILLA_SOUNDS);
+  const expected = { 'weapons/pistol': 'DSPISTOL', 'weapons/shotgf': 'DSSHOTGN', 'weapons/sshotf': 'DSDSHTGN',
+    'weapons/chngun': 'DSPISTOL', 'weapons/rocklf': 'DSRLAUNC', 'weapons/plasmaf': 'DSPLASMA',
+    'weapons/bfgf': 'DSBFG', 'weapons/sawfull': 'DSSAWFUL', '*fist': 'DSPUNCH' };
+  for (const [name, lump] of Object.entries(expected)) {
+    assert.ok(soundCandidates(name.toUpperCase(), aliases).includes(lump), `${name} must map to ${lump}`);
+  }
 });

@@ -327,6 +327,10 @@ export function importSBarInfo(project, assets, definitions, warnings = []) {
   }
   compile(selected.children || []);
   if (hud.elements.length > MAX_HUD_ELEMENTS) throw new Error(`${definition.name}: SBARINFO exceeds ${MAX_HUD_ELEMENTS} editable HUD elements`);
+  // A non-fullscreen layout *is* the status bar, so it follows the classic
+  // behaviour: Screen size 11 hides it as a whole instead of leaving the artwork
+  // floating over the world view.
+  if (!fullscreen) for (const element of hud.elements) element.statusbar = true;
   project.hud = hud;
   project.eventGroups.push(group);
   project.events.push(...events);

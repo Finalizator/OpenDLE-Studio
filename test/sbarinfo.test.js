@@ -89,6 +89,18 @@ test('SBARINFO inventory, selected weapon, health threshold, not, nested conditi
   assert.equal(shown(key), false); assert.equal(shown(low), false);
   assert.ok(project.events.every(event => !event.id.startsWith('sbar_') || event.sheetId && event.groupId));
 });
+test('a normal SBARINFO layout is the status bar and hides at screen size 11', () => {
+  const { project } = fixture(`height 32;
+statusbar normal {
+  drawimage "CUSTOM", -160, 168;
+  drawnumber 3, INDEXFONT, untranslated, health, 90, 171;
+}`);
+  assert.equal(project.hud.reserveBottom, 32);
+  assert.ok(project.hud.elements.every(element => element.statusbar === true),
+    'the imported bar has to behave like the classic status bar');
+  validateProject(JSON.parse(JSON.stringify(project)));
+});
+
 test('fullscreen offsets, alignment and textured horizontal/vertical bars survive serialization', () => {
   const { project } = fixture(`height 32;
 statusbar fullscreen, fullscreenoffsets {
@@ -98,6 +110,8 @@ statusbar fullscreen, fullscreenoffsets {
 }`);
   assert.equal(project.hud.reserveBottom, 0);
   const [image, background, horizontal, vertical] = project.hud.elements;
+  assert.ok(project.hud.elements.every(element => element.statusbar === undefined),
+    'a fullscreen layout is an overlay, not the reservable status bar');
   assert.deepEqual(hudRect(image, 480, 200), { x: 460, y: 186, width: 20, height: 10 });
   assert.equal(background.assetId, 'EMPTY'); assert.equal(horizontal.fillAssetId, 'FILL');
   assert.equal(horizontal.fillDirection, 'right'); assert.equal(vertical.fillDirection, 'down');
