@@ -6,6 +6,7 @@ import yauzl from 'yauzl';
 import { PNG } from 'pngjs';
 import { readWad, importWadMap } from '../shared/wad.js';
 import { actorSourcesFromArchive, actorSourcesFromWad, loadGzdoomActors, sndInfoFromWad } from './actor-sources.js';
+import { mergeActorActionGaps, describeActorActionGaps } from '../shared/actor-runtime.js';
 import { acsLibrariesFromFiles, acsLibrariesFromWad } from '../shared/acs-libraries.js';
 import { validateProject } from '../shared/project.js';
 import { decodePatch, decodeFlat } from '../shared/doom-assets.js';
@@ -295,7 +296,7 @@ function mergeWads(sources) {
   return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), lumps,
     maps: [...new Set(sources.flatMap(source => source.maps))] };
 }
-export function importPackage(files, { map, paths, baseBytes, fullGame = false, context, projectsDir } = {}) {
+export function importPackage(files, { map, paths, baseBytes, fullGame = false, context, projectsDir, deferActionGaps } = {}) {
   const inspection = context?.inspection || inspectPackage(files), base = context?.base || (baseBytes ? wad(baseBytes) : null);
   const automatic = map === 'auto';
   if (automatic) {
@@ -339,14 +340,19 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
       if (id && !maps.has(id) && base?.maps.includes(id)) maps.set(id, { id: `base:${id}`, marker: id, supported: true });
     check(maps.size <= 128, 'Game exceeds 128 levels');
     const shared = { inspection, base, decode: imageDecoder(files, paletteFrom(base, files)), encodeImage: cachedImageEncoder(), episodeInfo, projectsDir };
+    const gapReports = [];
     function* levels() {
       for (const [id, item] of maps) {
         check(item.supported, `${item.marker}: ${item.format} map is not supported; full-game import was not applied`);
-        yield { id, ...importPackage(files, { map: item.id, baseBytes, context: shared }) };
+        const level = importPackage(files, { map: item.id, baseBytes, context: shared, deferActionGaps: true });
+        gapReports.push(level.actionGaps);
+        yield { id, ...level };
       }
     }
     const result = assembleGameLevels(levels(), entry, inspection.game.title || 'Imported package game', routes);
     result.warnings.push(...episodeInfo.warnings);
+    const gameGaps = mergeActorActionGaps(gapReports);
+    if (gameGaps.length) result.warnings.push(describeActorActionGaps(gameGaps, 'the imported levels'));
     validateProject(result.project);
     return { ...result, entry: { map: entry, path: selected?.path || null,
       reason: inspection.game.entryReason, mapCount: maps.size } };
@@ -474,7 +480,7 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   const result = importWadMap(combined, selected.marker,
     { encodeImage: context?.encodeImage || encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources,
       episodeInfo: context?.episodeInfo, actorSources, dehacked: dehackedSources, languageSources,
-      sndInfoSources, acsLibraries, loadacs: loadacsLists });
+      sndInfoSources, acsLibraries, loadacs: loadacsLists, deferActionGaps: deferActionGaps ?? fullGame });
   let musicBytes = 0;
   for (const [path, file] of files) if (path.startsWith('music/')) {
     const format = extname(path).slice(1);
@@ -487,5 +493,6 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   result.project.title = inspection.game.title?.slice(0, 100) || `${basename(selected.path || selected.marker).slice(0, 80)} - imported PK3`;
   validateProject(result.project);
   return { project: result.project, warnings: [...inspection.warnings, ...aliasWarnings, ...result.warnings],
+    ...(result.actionGaps?.length ? { actionGaps: result.actionGaps } : {}),
     ...(automatic ? { entry: { map: selected.marker, path: selected.path, reason: inspection.game.entryReason, mapCount: inspection.maps.length } } : {}) };
 }

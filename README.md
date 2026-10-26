@@ -64,7 +64,10 @@ session, and can be read from the Logs tab or by the assistant over MCP.
 enemies and pickups run their own DECORATE/ZScript state machines, map line
 specials execute natively, and each map's compiled ACS module (`BEHAVIOR`) runs
 at Doom's 35 Hz inside the engine, together with the game's `LOADACS` script
-libraries. Arbitrary ZScript code, portals, slopes and 3D floors remain
+libraries. Action functions the runtime cannot execute are skipped at the frame
+that calls them and reported instead of failing silently: in the import notes, as
+a note in the Actors tab, in playtest logs and through the `actor_unsupported` MCP
+tool. Arbitrary ZScript code, portals, slopes and 3D floors remain
 unsupported. Custom
 SBARINFO HUDs and MENUDEF menus have editable, partial translation—not yet full
 GZDoom interface compatibility. No commercial game data is included; supply

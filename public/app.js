@@ -1,5 +1,6 @@
 import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, ENTITY_TYPES } from '/shared/project.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
+import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
@@ -56,10 +57,21 @@ const camera = { x: 0, y: 0, zoom: 1 };
 const keys = new Set(), pressed = new Set();
 const canvas = $('map'), ctx = canvas.getContext('2d');
 let drag = null, mapNeedsDraw = true;
+// Scanning every actor state is cheap but not free, so the report is cached until
+// the actor table or the map placements change.
+const actorGapCache = new WeakMap();
+function actorActionGaps() {
+  const actors = project.actors || [], entities = project.map?.entities || [];
+  const cached = actorGapCache.get(actors);
+  if (cached && cached.entities === entities) return cached.gaps;
+  const gaps = unsupportedActorActions(project);
+  actorGapCache.set(actors, { entities, gaps });
+  return gaps;
+}
 const actorsPanel = createActorsPanel({
-  list: $('actor-list'), summary: $('actors-summary'), search: $('actor-search'), filter: $('actor-filter'),
+  list: $('actor-list'), summary: $('actors-summary'), gaps: $('actors-gaps'), search: $('actor-search'), filter: $('actor-filter'),
   form: $('actor-form'), title: $('actor-title'), fields: $('actor-fields'), states: $('actor-states'),
-}, { actors: () => project.actors || [], edit });
+}, { actors: () => project.actors || [], edit, unsupported: actorActionGaps });
 const playtestLogPanel = createPlaytestLogPanel({
   directory: $('log-directory'), totals: $('log-totals'), list: $('log-list'), detail: $('log-detail'),
   refresh: $('log-refresh'), clear: $('log-clear'),
@@ -1569,10 +1581,16 @@ function reportPlaytestFailures(session) {
     reportedScriptErrors.set(session, failures.length);
   }
   if (session.actorUnsupported?.size) {
+    // Which actor uses the function comes from the actor table, so the log entry
+    // points at the states to edit instead of only naming a function.
+    const attribution = new Map((previewProject ? unsupportedActorActions(previewProject) : [])
+      .map(gap => [gap.name, gap.actors]));
     for (const name of session.actorUnsupported) {
+      const actors = attribution.get(name) || [];
       playtestLog.once(`actor:${name}`, { severity: 'warning', category: 'actor',
-        message: `Action function ${name} has no engine equivalent; actor states that call it skip that step.`,
-        details: { name } });
+        message: `Action function ${name} has no engine equivalent; actor states that call it skip that step`
+          + `${actors.length ? ` (used by ${actors.slice(0, 4).join(', ')}${actors.length > 4 ? ', …' : ''})` : ''}.`,
+        details: { name, actors } });
     }
   }
   for (const special of session.scripts?.unsupportedSpecials || []) {

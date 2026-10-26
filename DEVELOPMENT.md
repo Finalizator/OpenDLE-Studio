@@ -194,10 +194,23 @@ provider credits or network access are required for tests.
   rocket's `Speed 20` is 700). Missile artwork comes from the actor too: the
   `Spawn` frames become the in-flight sprite clip and the `Death` frames the
   impact clip, so a mod's fireball looks like the mod drew it instead of
-  falling back to a plain sphere. The actor
+  falling back to a plain sphere.
+
+  Action functions the runtime cannot execute are skipped at the frame that calls
+  them, so they are reported instead of silently doing nothing. The import report
+  names them (once per game rather than once per level), the Actors tab shows a
+  note listing each missing function with the actors that use it, playtest logs
+  record every one that actually ran together with those actors, and the read-only
+  `actor_unsupported` MCP tool returns the full set. The scan covers the
+  actors the level really runs — things placed in the map, the weapon slots and the
+  actors their actions name — rather than every actor gzdoom.pk3 describes, which
+  would otherwise report Heretic and Hexen weapons a Doom level never uses. Weapon
+  states are checked against the weapon state machine rather than the shared action
+  table, because the two paths differ: a weapon calling `A_JumpIf` reports a gap
+  while a monster calling it does not. The actor
   table is edited in the Actors tab (stats, flags, sounds, state frames in
-  DECORATE syntax) and by the `actor_list`, `actor_get`, `actor_update` and
-  `actor_reset` MCP tools. `DoomEdNums` blocks bind editor numbers, and LANGUAGE
+  DECORATE syntax) and by the `actor_list`, `actor_get`, `actor_unsupported`,
+  `actor_update` and `actor_reset` MCP tools. `DoomEdNums` blocks bind editor numbers, and LANGUAGE
   keyword strings (`$TXT_MAP01`, `$GOTSHOTGUN`) resolve through the project
   string table. DEHACKED patches are applied too: `Thing N` (mobjinfo indexes and
   editor numbers), `Misc`, `Ammo`, `Weapon`, `[CODEPTR]`/`Pointer` and the
@@ -879,7 +892,10 @@ Save game / Load game pages are native editable HUD and interface events,
 including original `M_SAVEG` / `M_LOADG` patches and dynamic MENUDEF
 SaveGameMenu / LoadGameMenu rows when provided. Six browser-local slots retain
 the current map, player/inventory, enemies, collected objects, variables,
-timers, moving sectors, animation and physics state. Saving requires an active,
+timers, moving sectors, animation and physics state. Imported actor state travels
+too — each monster's state-machine position and inventory — so a restored fight
+continues instead of resetting. The weapon machine is re-entered at its Ready
+state and the unsupported-action diagnostics are rebuilt rather than saved. Saving requires an active,
 living game, and overwriting an occupied slot requires an in-game confirmation.
 Loading restores the saved map and runtime rather than restarting the level or
 only restoring inventory. Saves use IndexedDB, not localStorage; browser storage

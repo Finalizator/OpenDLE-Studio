@@ -260,3 +260,46 @@ test('IndexedDB supports six slots, overwrite, identity isolation, explicit empt
   globalThis.indexedDB = undefined;
   await assert.rejects(saves.list('id'), /unavailable/);
 });
+
+test('saving mid-fight with an imported actor table survives a reload', async () => {
+  const project = createProject();
+  project.events = [];
+  project.actors = [{
+    id: 'actor_testimp', name: 'TestImp', flags: { MONSTER: true, COUNTKILL: true }, health: 60, speed: 8, radius: 20, height: 56,
+    states: { labels: { Spawn: 0, See: 2 }, frames: [
+      { kind: 'frame', sprite: 'TROO', letter: 'A', duration: 10, actions: [{ name: 'A_Look', args: [] }], label: 'Spawn' },
+      { kind: 'loop', label: 'Spawn' },
+      { kind: 'frame', sprite: 'TROO', letter: 'B', duration: 3, actions: [{ name: 'A_Chase', args: [] }], label: 'See' },
+      { kind: 'loop', label: 'See' },
+    ] },
+  }, {
+    id: 'actor_testgun', name: 'Pistol', flags: { WEAPON: true }, weaponAmmoType: 'Clip', weaponAmmoUse: 1,
+    states: { labels: { Ready: 0, Fire: 2 }, frames: [
+      { kind: 'frame', sprite: 'PISG', letter: 'A', duration: 1, actions: [{ name: 'A_WeaponReady' }], label: 'Ready' },
+      { kind: 'loop', label: 'Ready' },
+      { kind: 'frame', sprite: 'PISG', letter: 'B', duration: 6, actions: [{ name: 'A_FirePistol' }], label: 'Fire' },
+      { kind: 'frame', sprite: 'PISG', letter: 'C', duration: 5, actions: [{ name: 'A_ReFire' }], label: 'Fire' },
+      { kind: 'stop', label: 'Fire' },
+    ] },
+  }];
+  project.map.entities.push({ id: 'imp1', type: 'enemy', x: 96, y: 96, angle: 0, elevation: 0, health: 60,
+    actorId: 'actor_testimp', actorName: 'TestImp' });
+  const state = createRuntime(project);
+  state.inventory.weapons.add('pistol'); state.inventory.selectedWeapon = 'pistol';
+  state.playerStats.bullets = 40;
+  // Run the actor clocks and the weapon machine so their runtime fields exist.
+  for (let frame = 0; frame < 60; frame++) stepRuntime(project, state, 1 / 35, new Set(['Mouse0']));
+  assert.ok(state.actorClock !== undefined && state.weaponSlot === 'pistol');
+  const identity = await gameSaveIdentity(project);
+  const record = captureGameSave(project, state, identity);
+  const text = JSON.stringify(record);
+  assert.equal(text.includes('actorUnsupported'), false, 'diagnostics stay out of the save');
+  assert.equal(text.includes('"weaponActor"'), false, 'the weapon machine is re-entered on load');
+  const { runtime } = restoreGameSave(project, JSON.parse(text), identity);
+  assert.equal(runtime.weaponSlot, 'pistol');
+  assert.ok(runtime.playerStats.bullets < 40, 'ammo spent before the save is kept');
+  // The weapon state machine has to keep working after the load.
+  const before = runtime.playerStats.bullets;
+  for (let frame = 0; frame < 40; frame++) stepRuntime(project, runtime, 1 / 35, new Set(['Mouse0']));
+  assert.ok(runtime.playerStats.bullets < before, 'the restored weapon still fires');
+});

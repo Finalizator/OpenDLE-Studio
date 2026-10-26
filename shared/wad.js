@@ -12,6 +12,7 @@ import { assembleGameLevels, parseLevelRoutes } from './game-levels.js';
 import { parseGameEpisodes } from './game-episodes.js';
 import { resolveLevelMusic } from './music.js';
 import { importActors } from './actors.js';
+import { unsupportedActorActions, mergeActorActionGaps, describeActorActionGaps } from './actor-runtime.js';
 import { buildStringTable, resolveString } from './language.js';
 import { parseSndInfo, soundTable, VANILLA_SOUNDS } from './sndinfo.js';
 import { describeMapScripts } from './map-scripts.js';
@@ -29,12 +30,21 @@ export function importWadGame(wad, entry, options = {}) {
     return new TextDecoder().decode(new Uint8Array(wad.buffer, lump.start, lump.size));
   });
   const episodeInfo = parseGameEpisodes(sources, wad.maps);
+  const gapReports = [];
   function* levels() {
-    for (const id of wad.maps) yield { id, ...importWadMap(wad, id, { ...options, episodeInfo }) };
+    for (const id of wad.maps) {
+      const level = importWadMap(wad, id, { ...options, episodeInfo, deferActionGaps: true });
+      gapReports.push(level.actionGaps);
+      yield { id, ...level };
+    }
   }
   const result = assembleGameLevels(levels(),
     entry, options.title || 'Imported WAD game', parseLevelRoutes(sources));
   result.warnings.push(...episodeInfo.warnings);
+  // Action-function gaps repeat for every level, so a 32-level game reports the
+  // union once instead of 32 near-identical lines.
+  const gameGaps = mergeActorActionGaps(gapReports);
+  if (gameGaps.length) result.warnings.push(describeActorActionGaps(gameGaps, 'the imported levels'));
   validateProject(result.project);
   return result;
 }
@@ -59,7 +69,7 @@ export function readWad(buffer, { allowNoMaps = false } = {}) {
   return { buffer, lumps, maps: [...new Set(maps)] };
 }
 
-export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], sndInfoSources = [], acsLibraries = [], loadacs = [], actors = true, options = {} } = {}) {
+export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], sndInfoSources = [], acsLibraries = [], loadacs = [], actors = true, deferActionGaps = false, options = {} } = {}) {
   const start = wad.lumps.findLastIndex(lump => lump.name === mapName);
   if (start < 0) throw new Error('Map not found');
   const mapLumps = [];
@@ -342,6 +352,11 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   const unsupported = [...new Set(project.map.entities.filter(entity => entity.type === 'pickup' &&
     [2022, 2023, 2024, 2025, 2026, 2045].includes(entity.doomType)).map(entity => entity.doomType))];
   if (unsupported.length) warnings.push(`Power-up effects are not imported for Doom thing types ${unsupported.join(', ')}; these objects remain visible until scripted.`);
+  // Actor action functions this runtime has no implementation for are skipped at
+  // the frame that calls them, so the gap belongs in the import report.
+  const actionGaps = unsupportedActorActions(project);
+  // A game import reports the union once instead of repeating this per level.
+  if (actionGaps.length && !deferActionGaps) warnings.push(describeActorActionGaps(actionGaps));
   validateProject(project, { gameLevelIds: episodeInfo?.levelIds ? new Set(episodeInfo.levelIds) : undefined });
-  return { project, warnings };
+  return { project, warnings, ...(actionGaps.length ? { actionGaps } : {}) };
 }

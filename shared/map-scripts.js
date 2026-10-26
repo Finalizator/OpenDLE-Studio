@@ -14,7 +14,8 @@ import { executeSpecial, specialName, unsupportedSpecials } from './line-special
 import { addAmmo } from './player-state.js';
 import { soundEvent, floorAt, launchProjectile } from './combat.js';
 import { sectorAt } from './sectors.js';
-import { actorIndex, actorForThing } from './actors.js';
+import { actorForThing } from './actors.js';
+import { projectActorIndex } from './actor-runtime.js';
 import { doomThings } from './doom-assets.js';
 
 const TIC_RATE = 35;
@@ -316,7 +317,7 @@ export function createMapScripts(project, state, callbacks = {}) {
       if (tid && entity.tid !== tid) return false;
       if (type && entity.doomType !== type) return false;
       if (name) {
-        const index = project.__actorIndex ||= actorIndex(project.actors || []);
+        const index = projectActorIndex(project);
         const actor = actorForThing(index, entity.doomType);
         if (!actor || actor.name.toLowerCase() !== String(name).toLowerCase()) return false;
       }
@@ -435,7 +436,7 @@ export function createMapScripts(project, state, callbacks = {}) {
   }
 
   function resolveActor(type, name) {
-    const index = project.__actorIndex ||= actorIndex(project.actors || []);
+    const index = projectActorIndex(project);
     if (typeof type === 'string' && type) return index.byName.get(type.toLowerCase()) || null;
     if (typeof name === 'string' && name) return index.byName.get(name.toLowerCase()) || null;
     if (Number.isFinite(Number(type)) && Number(type)) return actorForThing(index, Number(type));

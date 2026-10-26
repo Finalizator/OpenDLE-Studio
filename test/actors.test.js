@@ -6,9 +6,11 @@ import { parseDecorate, resolveActorInheritance, compileActorStates, frameBodyAc
 import { parseZScript, parseActorDefinitions } from '../shared/zscript.js';
 import { parseDehacked, dehackedChanges, mergeDehackedPatches, thingName } from '../shared/dehacked.js';
 import { buildVanillaActors, importActors, applyDehacked, actorIndex, parseEditorNumbers } from '../shared/actors.js';
-import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile } from '../shared/actor-runtime.js';
+import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile,
+  unsupportedActorActions, actionSupported, WEAPON_ACTION_NAMES } from '../shared/actor-runtime.js';
 import { actorProjectileClips } from '../shared/sprite-animation.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
+import { createActorsPanel } from '../public/actors-panel.js';
 
 const DECORATE = `
 actor TestImp replaces DoomImp 9999
@@ -410,4 +412,88 @@ test('vanilla weapon sound aliases resolve to real lumps', async () => {
   for (const [name, lump] of Object.entries(expected)) {
     assert.ok(soundCandidates(name.toUpperCase(), aliases).includes(lump), `${name} must map to ${lump}`);
   }
+});
+
+test('unsupported action functions are reported with the actors that call them', () => {
+  const project = createProject();
+  project.actors = [
+    { id: 'actor_imp', name: 'TestImp', flags: { MONSTER: true }, health: 60, speed: 8, radius: 20, height: 56,
+      states: { labels: { Spawn: 0, See: 1 }, frames: [
+        { kind: 'frame', sprite: 'TROO', letter: 'A', duration: 10, actions: [{ name: 'A_Look', args: [] }], label: 'Spawn' },
+        { kind: 'frame', sprite: 'TROO', letter: 'B', duration: 3, actions: [{ name: 'A_CustomComboAttack', args: [] }], label: 'See' },
+        { kind: 'loop', label: 'See' },
+      ] } },
+    { id: 'actor_pistol', name: 'Pistol', flags: { WEAPON: true }, weaponAmmoType: 'Clip',
+      states: { labels: { Ready: 0, Fire: 1 }, frames: [
+        { kind: 'frame', sprite: 'PISG', letter: 'A', duration: 1, actions: [{ name: 'A_WeaponReady', args: [] }], label: 'Ready' },
+        { kind: 'frame', sprite: 'PISG', letter: 'B', duration: 6, actions: [{ name: 'A_FirePistol', args: [] }, { name: 'A_JumpIf', args: [1, 2] }], label: 'Fire' },
+      ] } },
+    // Never placed in the map and never spawned, so its gaps are not this level's problem.
+    { id: 'actor_heretic', name: 'UnusedWizard', flags: { MONSTER: true },
+      states: { labels: { Spawn: 0 }, frames: [
+        { kind: 'frame', sprite: 'WIZR', letter: 'A', duration: 4, actions: [{ name: 'A_FireGoldWandPL1', args: [] }], label: 'Spawn' },
+      ] } },
+  ];
+  project.map.entities.push({ id: 'imp1', type: 'enemy', x: 64, y: 64, angle: 0, elevation: 0, health: 60, actorId: 'actor_imp' });
+  const gaps = unsupportedActorActions(project);
+  const names = gaps.map(gap => gap.name);
+  assert.deepEqual(names.sort(), ['A_CustomComboAttack', 'A_JumpIf']);
+  const jump = gaps.find(gap => gap.name === 'A_JumpIf');
+  assert.deepEqual(jump.actors, ['Pistol'], 'the weapon path ignores general actions, so the pistol is named');
+  assert.equal(jump.calls, 1);
+  // A monster may jump: the shared action table runs it there, while a weapon may not.
+  assert.equal(actionSupported('A_JumpIf', false), true);
+  assert.equal(actionSupported('A_JumpIf', true), false);
+  assert.equal(actionSupported('A_FirePistol', true), true);
+  assert.equal(actionSupported('A_FirePistol', false), false, 'a monster cannot fire a weapon action');
+  assert.equal(actionSupported('A_CustomComboAttack', false), false);
+});
+
+test('the declared weapon action set matches the weapon state machine', () => {
+  const source = readFileSync(new URL('../shared/actor-runtime.js', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('function runWeaponAction'), source.indexOf('function teleportWeapon'));
+  const implemented = new Set([...body.matchAll(/case '([^']+)'/g)].map(match => match[1]));
+  assert.deepEqual([...WEAPON_ACTION_NAMES].sort(), [...implemented].sort(),
+    'WEAPON_ACTION_NAMES has to list exactly the actions the weapon machine handles');
+});
+
+test('MCP actor tools answer with their own payload, including the action gaps', async () => {
+  const { applyTool } = await import('../server/tools.js');
+  const project = createProject();
+  project.actors = [{ id: 'actor_pistol', name: 'Pistol', flags: { WEAPON: true }, weaponAmmoType: 'Clip',
+    states: { labels: { Ready: 0 }, frames: [
+      { kind: 'frame', sprite: 'PISG', letter: 'A', duration: 1, actions: [{ name: 'A_WeaponReady' }, { name: 'A_JumpIf', args: [1, 2] }], label: 'Ready' },
+    ] } }];
+  project.map.entities.push({ id: 'imp1', type: 'enemy', x: 64, y: 64, angle: 0, elevation: 0, health: 60, doomType: 3001 });
+  const gaps = applyTool(project, 'actor_unsupported', {});
+  assert.equal(gaps.changed, false);
+  assert.equal(gaps.project, undefined, 'read-only tools do not hand back the project');
+  assert.equal(gaps.report.actions[0].name, 'A_JumpIf');
+  assert.equal(gaps.report.total, gaps.report.actions.length);
+  const listed = applyTool(project, 'actor_list', {});
+  assert.equal(listed.project, undefined, 'actor_list answers with its report, not the project');
+  assert.equal(listed.report.actors[0].name, 'Pistol');
+  assert.equal(applyTool(project, 'actor_get', { name: 'pistol' }).report.actor.name, 'Pistol');
+});
+
+test('the Actors panel notes the action functions the runtime cannot run', () => {
+  const node = () => ({ hidden: false, textContent: '', children: [], value: '', dataset: {}, tabIndex: -1,
+    classList: { toggle() {} }, addEventListener() {}, append(...items) { this.children.push(...items); },
+    replaceChildren(...items) { this.children = items; } });
+  const nodes = { list: node(), summary: node(), gaps: node(), search: node(), filter: node(), form: node(),
+    title: node(), fields: node(), states: node() };
+  globalThis.document = { createElement: () => node(), createTextNode: () => node() };
+  try {
+    const actor = { name: 'Pistol', doomedNum: null, health: 0, flags: { WEAPON: true }, states: { labels: {}, frames: [] } };
+    const panel = createActorsPanel(nodes, { actors: () => [actor], edit: () => {},
+      unsupported: () => [{ name: 'A_JumpIf', calls: 4, actors: ['Pistol'] }] });
+    panel.render();
+    assert.equal(nodes.gaps.hidden, false);
+    assert.match(nodes.gaps.textContent, /1 action function used by this level's actors/);
+    assert.match(nodes.gaps.textContent, /A_JumpIf \(Pistol\)/);
+    const clean = createActorsPanel(nodes, { actors: () => [actor], edit: () => {}, unsupported: () => [] });
+    clean.render();
+    assert.equal(nodes.gaps.hidden, true);
+    assert.equal(nodes.gaps.textContent, '');
+  } finally { delete globalThis.document; }
 });

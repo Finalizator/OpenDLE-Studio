@@ -9,6 +9,7 @@ import { installGameMenu, attachMenuElement } from '../shared/game-menu.js';
 import { selectGameLevel } from '../shared/game-levels.js';
 import { scriptListing, scriptSummary, collectSpecials, programFor } from '../shared/map-scripts.js';
 import { unsupportedSpecials, specialName } from '../shared/line-specials.js';
+import { unsupportedActorActions, usedActors } from '../shared/actor-runtime.js';
 
 const coordinate = z.number().min(-65536).max(65536);
 /** Linedef specials with their Hexen names and whether the runtime performs them. */
@@ -42,6 +43,7 @@ export const toolDefinitions = [
       labels: z.record(z.array(z.union([z.string().max(120), z.number()]))).optional(),
     } },
   { name: 'actor_reset', description: 'Restore the project actor table to what the import produced, discarding actor edits.', shape: {} },
+  { name: 'actor_unsupported', description: 'Report the actor action functions the active level\'s actors and weapons call that this runtime cannot execute. Each entry names the function, how many state frames call it and which actors use it, so an imported mod behaviour gap can be diagnosed instead of guessed. Read this before claiming a mod\'s weapon or monster behaviour is complete.', shape: {} },
   { name: 'script_list', description: 'List the ACS map scripts running in the active level: number or name, trigger kind (open/enter/line), argument count, string table size and what the level uses line specials for. Read this before editing or debugging imported map logic.', shape: {} },
   { name: 'script_get', description: 'Read one ACS map script as a disassembly listing (p-code, operands, resolved string indexes) so map logic can be inspected without the original source. Use script_list for the available selectors.', shape: { script: z.string().min(1).max(80) } },
   { name: 'script_specials', description: 'Report every linedef special the active level uses, whether the native runtime performs it, and which of those are only reachable from scripts.', shape: {} },
@@ -218,15 +220,20 @@ export function applyTool(project, name, args, context = {}) {
       if (!context.playtestLogs) throw new Error('Playtest logs are not available in this session');
       return { report: context.playtestLogs.read(input.session, { limit: input.limit ?? 200 }), changed: false };
     }
-    case 'actor_list': return { actors: (next.actors || []).map(actor => ({
+    case 'actor_unsupported': {
+      const actions = unsupportedActorActions(next);
+      return { report: { actions, total: actions.length, usedActors: usedActors(next).length,
+        note: actions.length ? 'These action functions are skipped at the frame that calls them.' : 'Every action function this level needs is implemented.' }, changed: false };
+    }
+    case 'actor_list': return { report: { actors: (next.actors || []).map(actor => ({
       name: actor.name, doomedNum: actor.doomedNum, health: actor.health, speed: actor.speed,
       monster: Boolean(actor.flags?.MONSTER), weapon: Boolean(actor.flags?.WEAPON),
       frames: actor.states.frames.length, labels: Object.keys(actor.states.labels || {}),
-    })), changed: false };
+    })) }, changed: false };
     case 'actor_get': {
       const actor = (next.actors || []).find(candidate => candidate.name.toLowerCase() === input.name.toLowerCase());
       if (!actor) throw new Error(`Unknown actor: ${input.name}`);
-      return { actor, changed: false };
+      return { report: { actor }, changed: false };
     }
     case 'actor_update': {
       const actor = (next.actors || []).find(candidate => candidate.name.toLowerCase() === input.name.toLowerCase());

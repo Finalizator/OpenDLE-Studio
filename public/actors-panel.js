@@ -65,7 +65,7 @@ export function visibleActors(actors, { search = '', filter = 'all' } = {}) {
 const STAT_FIELDS = ['health', 'speed', 'damage', 'painChance', 'radius', 'height', 'mass', 'reactionTime'];
 const SOUND_FIELDS = ['see', 'pain', 'death', 'active', 'attack'];
 
-export function createActorsPanel({ list, summary, search, filter, form, title, fields, states }, { actors, edit }) {
+export function createActorsPanel({ list, summary, gaps: gapNote, search, filter, form, title, fields, states }, { actors, edit, unsupported }) {
   let selected = null;
 
   function render() {
@@ -76,6 +76,7 @@ export function createActorsPanel({ list, summary, search, filter, form, title, 
     summary.textContent = total
       ? `${total} actors: ${monsters} monsters, ${weapons} weapons, ${total - monsters - weapons} props and pickups.`
       : 'This project has no actor table yet; importing a WAD or PK3 fills it.';
+    renderGaps();
     list.replaceChildren(...items.slice(0, 400).map(actor => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -90,6 +91,23 @@ export function createActorsPanel({ list, summary, search, filter, form, title, 
     if (items.length > 400) list.append(Object.assign(document.createElement('p'),
       { className: 'muted', textContent: `Showing the first 400 of ${items.length} matches.` }));
     renderForm();
+  }
+
+  /**
+   * Names the imported actors call that this runtime cannot execute. They are
+   * skipped at the frame that calls them, so the gap belongs where the actors are
+   * edited rather than only in a playtest log.
+   */
+  function renderGaps() {
+    if (!gapNote) return;
+    const missing = unsupported ? unsupported() : [];
+    gapNote.hidden = !missing.length;
+    if (!missing.length) { gapNote.textContent = ''; return; }
+    const listed = missing.slice(0, 6).map(gap => `${gap.name}${gap.actors.length ? ` (${gap.actors.slice(0, 2).join(', ')}${gap.actors.length > 2 ? ', …' : ''})` : ''}`);
+    gapNote.textContent = `${missing.length} action function${missing.length === 1 ? '' : 's'} used by this level's actors have no engine `
+      + `equivalent and ${missing.length === 1 ? 'is' : 'are'} skipped: ${listed.join('; ')}`
+      + `${missing.length > 6 ? `; and ${missing.length - 6} more` : ''}.` +
+      ' Edit the state frames below to use a supported action, or extend the runtime.';
   }
 
   function renderForm() {

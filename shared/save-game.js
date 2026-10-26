@@ -7,11 +7,17 @@ import { KEYS, WEAPONS } from './player-state.js';
 export const GAME_SAVE_VERSION = 1;
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // Presentation and menu-only fields are recreated by the host and are never persisted.
-const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus']);
+// Diagnostics and derived handles stay out of saves: the unsupported-action set is
+// rebuilt as problems occur, and the weapon machine is re-entered on load.
+const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus',
+  'actorUnsupported', 'weaponActor', 'weaponFlash']);
 const legacyDiscarded = new Set(['rendererStatus']);
+// Imported actors run their own tic clocks and weapon machine, so these fields only
+// exist once a game with an actor table has been played.
 const optional = new Set(['lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
   'scriptState', 'scriptWarning', 'damageAcc', 'musicRequest', 'skyRequest', 'gravity', 'airControl', 'scriptLog',
-  'messageCount', 'buttons', 'prevButtons']);
+  'messageCount', 'buttons', 'prevButtons', 'actorClock', 'weaponClock', 'weaponSlot', 'weaponReady',
+  'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack']);
 const fail = message => { throw new Error(`Invalid game save: ${message}`); };
 const plain = value => value !== null && typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);

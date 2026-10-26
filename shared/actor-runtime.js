@@ -37,6 +37,18 @@ export function actorStateOf(entity) {
     moveDir: -1, flags: new Map(), inventory: new Map(), cooldown: 0, firedThisTic: false };
 }
 
+/**
+ * The project's actor index. Cached off to the side and non-enumerable: a runtime
+ * field that holds the actor table again would be serialised with the project,
+ * which is how an imported game grew past the portable size limit.
+ */
+export function projectActorIndex(project) {
+  if (project.__actorIndex) return project.__actorIndex;
+  const index = actorIndex(project.actors || []);
+  Object.defineProperty(project, '__actorIndex', { value: index, writable: true, configurable: true, enumerable: false });
+  return index;
+}
+
 export function createActorRuntime(project) {
   const index = actorIndex(project.actors || []);
   return { index, project, projectiles: new Map() };
@@ -45,7 +57,7 @@ export function createActorRuntime(project) {
 /** Finds the actor record an entity runs. */
 export function actorOf(project, entity) {
   if (!project.actors?.length) return null;
-  const index = project.__actorIndex ||= actorIndex(project.actors);
+  const index = projectActorIndex(project);
   return (entity.actorId && index.byId.get(entity.actorId)) ||
     actorForThing(index, entity.doomType, entity.actorName) || null;
 }
@@ -158,7 +170,7 @@ const numArg = (ctx, index, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
-const projectilesByName = project => project.__actorIndex ||= actorIndex(project.actors || []);
+const projectilesByName = project => projectActorIndex(project);
 
 /**
  * A missile actor as the projectile runtime needs it. Actor `speed` is map units
@@ -612,7 +624,7 @@ export function stepActors(project, state, dt) {
  */
 export function initialiseActorEntities(project, entities) {
   if (!project.actors?.length) return entities;
-  const index = project.__actorIndex ||= actorIndex(project.actors);
+  const index = projectActorIndex(project);
   for (const entity of entities) {
     if (entity.type !== 'enemy' || entity.actorResolved) continue;
     const actor = (entity.doomType !== undefined && index.byDoomed.get(entity.doomType)) ||
@@ -650,7 +662,7 @@ const AMMO_BY_NAME = { bullets: 'bullets', shells: 'shells', rockets: 'rockets',
 
 /** The weapon actor record for a weapon slot, when the project defines one. */
 export function weaponActor(project, slot) {
-  const index = project.__actorIndex ||= actorIndex(project.actors || []);
+  const index = projectActorIndex(project);
   for (const name of WEAPON_ACTOR_BY_SLOT[slot] || []) {
     const actor = index.byName.get(name.toLowerCase());
     if (actor?.flags?.WEAPON) return actor;
@@ -704,6 +716,104 @@ export function weaponTic(project, state, attackHeld) {
   runtime.tics = 0;
   runtime.entered = false;
   runtime.index++;
+}
+
+/**
+ * Weapon-specific action functions. Kept in step with `runWeaponAction` by a test
+ * that reads the switch labels, so the coverage report cannot drift from the code.
+ */
+export const WEAPON_ACTION_NAMES = new Set(['A_WeaponReady', 'A_ReFire', 'A_CheckReload', 'A_GunFlash',
+  'A_Light0', 'A_Light1', 'A_Light2', 'A_Raise', 'A_Lower', 'A_FireBullets', 'A_FireCustomMissile',
+  'A_FireMissile', 'A_FirePlasma', 'A_FireBFG', 'A_FireCGun', 'A_FireShotgun', 'A_FireShotgun2',
+  'A_Punch', 'A_Saw', 'A_FirePistol', 'A_PlaySound', 'A_StartSound', 'A_BFGsound', 'A_OpenShotgun2',
+  'A_LoadShotgun2', 'A_CloseShotgun2']);
+
+/**
+ * Actions a weapon state may call that only change presentation. `runWeaponAction`
+ * ignores them on purpose, so they are not reported as missing gameplay.
+ */
+export const WEAPON_COSMETIC_ACTIONS = new Set(['A_WeaponOffset', 'A_SetPitch', 'A_SetRoll', 'A_ZoomFactor',
+  'A_FadeOut', 'A_SetTranslucent', 'A_SetRenderStyle', 'A_Quake', 'A_Warp', 'A_SetUserVar',
+  'A_SetUserArray', 'A_CheckFloor', 'A_StopSoundEx', 'A_ClearReFire', 'A_Refire']);
+
+/** Whether an action function has an implementation on the path that runs it. */
+export function actionSupported(name, weapon = false) {
+  if (weapon) return WEAPON_ACTION_NAMES.has(name) || WEAPON_COSMETIC_ACTIONS.has(name);
+  return name in ACTIONS;
+}
+
+/**
+ * The actors the active level actually runs: things placed in the map, the weapon
+ * slots, and any actor an action argument names (spawned projectiles rather than
+ * the whole imported table, which also describes games this level never uses).
+ */
+export function usedActors(project) {
+  const index = projectActorIndex(project);
+  const used = new Map();
+  const add = actor => { if (actor && !used.has(actor.name)) used.set(actor.name, actor); };
+  const fromThing = thing => (thing.actorId && index.byId.get(thing.actorId)) ||
+    (thing.actorName && index.byName.get(String(thing.actorName).toLowerCase())) ||
+    (thing.doomType !== undefined && index.byDoomed.get(thing.doomType)) || null;
+  for (const entity of project.map?.entities || []) add(fromThing(entity));
+  for (const slot of Object.keys(WEAPON_ACTOR_BY_SLOT)) add(weaponActor(project, slot));
+  // Two passes are enough to follow "monster spawns a projectile".
+  for (let pass = 0; pass < 2; pass++) {
+    for (const actor of [...used.values()]) {
+      for (const frame of actor.states?.frames || []) {
+        for (const action of frame.actions || []) {
+          for (const value of action?.args || []) {
+            if (typeof value !== 'string') continue;
+            const name = value.trim().replace(/^"+|"+$/g, '').toLowerCase();
+            if (name) add(index.byName.get(name));
+          }
+        }
+      }
+    }
+  }
+  return [...used.values()];
+}
+
+/**
+ * Action functions the level's own actors and weapons call that this runtime
+ * cannot execute, with the actors that use them. Anything here is skipped at the
+ * frame that calls it, so it is a real gameplay gap rather than a cosmetic one.
+ */
+export function unsupportedActorActions(project) {
+  const gaps = new Map();
+  for (const actor of usedActors(project)) {
+    const weapon = Boolean(actor.flags?.WEAPON);
+    for (const frame of actor.states?.frames || []) {
+      for (const action of frame.actions || []) {
+        const name = typeof action === 'string' ? action : action?.name;
+        if (!name || actionSupported(name, weapon)) continue;
+        let gap = gaps.get(name);
+        if (!gap) gaps.set(name, gap = { name, calls: 0, actors: [] });
+        gap.calls++;
+        if (gap.actors.length < 12 && !gap.actors.includes(actor.name)) gap.actors.push(actor.name);
+      }
+    }
+  }
+  return [...gaps.values()].sort((left, right) => right.calls - left.calls || left.name.localeCompare(right.name));
+}
+
+/** Merges per-level gap reports into one game-wide list. */
+export function mergeActorActionGaps(reports) {
+  const merged = new Map();
+  for (const report of reports) for (const gap of report || []) {
+    let entry = merged.get(gap.name);
+    if (!entry) merged.set(gap.name, entry = { name: gap.name, calls: 0, actors: [] });
+    entry.calls += gap.calls;
+    for (const actor of gap.actors) if (entry.actors.length < 12 && !entry.actors.includes(actor)) entry.actors.push(actor);
+  }
+  return [...merged.values()].sort((left, right) => right.calls - left.calls || left.name.localeCompare(right.name));
+}
+
+/** One import-report sentence naming the gaps and where to look them up. */
+export function describeActorActionGaps(gaps, scope = "this level's actors") {
+  const names = gaps.slice(0, 8).map(gap => gap.name).join(', ');
+  const more = gaps.length > 8 ? `, and ${gaps.length - 8} more` : '';
+  return `${gaps.length} action function(s) called by ${scope} have no engine equivalent and are skipped: `
+    + `${names}${more}. The Actors tab lists them with the actors that use them, and MCP actor_unsupported reports the full set.`;
 }
 
 /** Weapon action handling, with Doom's refire/flash semantics. */
