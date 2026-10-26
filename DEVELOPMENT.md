@@ -1513,11 +1513,18 @@ Unknown required extensions fail explicitly; optional unknown extensions warn.
 For `.bbmodel`, Blockbench free-form mesh elements, armatures (they import as
 empties), locators, particle/sound/timeline keyframes and Blockbench plugins are
 reported and skipped rather than silently dropped; each cube becomes its own mesh,
-so very large cube-heavy models cost one draw call per cube. Imported models
-otherwise use native Three.js PBR lighting with a studio environment, sector
-brightness and local point lights; this is not pixel-identical to the Doom
-surface light shader. There is no mesh-derived collision, ragdoll, physics
-joints, animation blending UI or model/rig authoring editor yet.
+so very large cube-heavy models cost one draw call per cube.
+Imported models are shaded as physical surfaces, not with Doom's flat light
+levels. `MODEL_LIGHTING` in `public/render.js` holds the whole model light rig: a
+dim studio environment used only for reflections and a little fill, a hemisphere
+light that lifts shadows predictably, a key light that separates faces, a cool
+rim light, and the floor a dark sector may dim a model to. It is tuned so a lit
+face renders near the texture's own tone instead of washing out to mid grey (the
+old full-strength environment plus a 2.0 hemisphere light rendered models ~2.5x
+brighter than their textures). The classic world shaders keep their own
+palette-faithful sector light, so tuning this rig never changes how imported
+wall, flat and sprite art looks. There is no mesh-derived collision,
+ragdoll, physics joints, animation blending UI or model/rig authoring editor yet.
 
 ### Object-attached visual scripts
 

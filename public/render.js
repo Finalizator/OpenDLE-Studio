@@ -19,6 +19,13 @@ import { createSpriteIndex } from '/shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 
 export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc' };
+// Imported models are shaded as physical surfaces instead of Doom's flat light
+// levels: the environment only adds reflections and a little fill, a hemisphere
+// light lifts the shadows predictably, the key light separates faces and the rim
+// picks them out of the background. Tuned against a dark Blockbench texture (mean
+// sRGB 0.22) so a lit face lands near its authored tone instead of washing out to
+// mid grey. Sector light still tints a model down to `ambientFloor`.
+export const MODEL_LIGHTING = { environment: .18, fill: .9, key: 2.8, rim: .6, ambientFloor: .25 };
 let rapierReady;
 
 export async function createPreview(canvas, project, state, { editor = false } = {}) {
@@ -184,8 +191,16 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const room = new RoomEnvironment(), generator = new THREE.PMREMGenerator(renderer);
       environmentTarget = generator.fromScene(room, .04);
       scene.environment = environmentTarget.texture;
+      scene.environmentIntensity = MODEL_LIGHTING.environment;
       room.dispose(); generator.dispose();
-      scene.add(new THREE.HemisphereLight('#ffffff', '#505968', 2));
+      // Fixed studio-style lights only reach the models; the classic surface shaders
+      // keep their palette-faithful sector light.
+      scene.add(new THREE.HemisphereLight('#e8f0ff', '#454c58', MODEL_LIGHTING.fill));
+      const key = new THREE.DirectionalLight('#fff3e2', MODEL_LIGHTING.key);
+      key.position.set(.55, 1, .35).normalize().multiplyScalar(2048);
+      const rim = new THREE.DirectionalLight('#93b7ff', MODEL_LIGHTING.rim);
+      rim.position.set(-.5, .4, -.8).normalize().multiplyScalar(2048);
+      scene.add(key, key.target, rim, rim.target);
       for (let i = 0; i < 16; i++) { const light = new THREE.PointLight('#ffffff', 0); scene.add(light); pointLights.push(light); }
     }
     let worldGroup = null;
@@ -849,7 +864,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
         entry.root.position.set(entity.x, entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0), entity.y);
         if (entity.rotation) entry.root.quaternion.copy(entity.rotation);
         else entry.root.rotation.set(0, -entity.angle * Math.PI / 180, 0);
-        const shade = Math.max(.03, (sector?.light ?? 255) / 255);
+        // Doom light levels still tint a model, but a dark room must not erase it.
+        const shade = Math.max(MODEL_LIGHTING.ambientFloor, (sector?.light ?? 255) / 255);
         if (entry.shade !== shade) {
           entry.shade = shade;
           for (let tint = 0; tint < entry.tinted.length; tint++) {
