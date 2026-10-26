@@ -2,6 +2,7 @@ import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, randomDamage, enemyHitscan, moveEnemy } from './combat.js';
 import { actorIndex, actorForThing } from './actors.js';
 import { actorProjectileClips, setSpriteState } from './sprite-animation.js';
+import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 
 /**
  * Actor runtime.
@@ -560,6 +561,17 @@ export const ACTIONS = {
     enemyShot(state, entity, numArg(ctx, 0, 2), 8, 0);
     saySound(state, String(arg(ctx, 1) || ''), entity);
   },
+  // Morphing swaps the actor a thing runs; the entity id and physics body stay put.
+  A_Morph(ctx) {
+    const className = arg(ctx, 0);
+    morphEntity(ctx.project, ctx.state, ctx.entity, className && typeof className === 'string'
+      ? className.replace(/^"|"$/g, '') : className, { duration: numArg(ctx, 1, 0), style: numArg(ctx, 2, 0) });
+  },
+  A_UnMorphActor(ctx) {
+    const target = morphTarget(ctx.state, numArg(ctx, 0, 0), ctx.entity.id);
+    unmorphEntity(ctx.project, ctx.state, target || ctx.entity, Boolean(numArg(ctx, 1, 0)));
+  },
+  A_UnMorph(ctx) { unmorphEntity(ctx.project, ctx.state, ctx.entity, true); },
   A_PrintBold(ctx) { if (arg(ctx, 0)) ctx.state.message = String(arg(ctx, 0)); },
   A_Print(ctx) { if (arg(ctx, 0)) ctx.state.message = String(arg(ctx, 0)); },
   A_FadeOut() {},

@@ -1167,6 +1167,44 @@ scripted enemy AI, which an actor-driven monster never runs, so without this an
 imported monster held its spawn frame forever — visible only once the frames
 became faithful.
 
+### Morphs
+
+`A_Morph`, `A_UnMorphActor`, `A_UnMorph` and the ACS `MorphActor`/`UnMorphActor`
+builtins turn a thing into another actor class. `shared/morph.js` keeps the
+entity object, its id and its physics body and swaps what the actor runtime
+drives: the class, the health ceiling (scaled so a wounded imp stays wounded),
+radius and height, and the sprite clips, which are rebuilt from the new actor's
+own states. What was replaced — class, health, bounds and clip bookkeeping — is
+kept on the entity so an unmorph restores it, and a corpse is only restored when
+the call forces it, as GZDoom does. `duration` counts Doom tics, matching the
+action and ACS signatures; 0 morphs until something unmorphs. A player has no
+class state machine here, so a player morph changes what the engine models
+(health and the equipped weapon) and restores both on expiry. Timed morphs tick
+in `stepRuntime` and the state rides along in save games.
+
+The limit is that a morph does not change an actor's DECORATE behaviour beyond
+that: flags, attacks and inventory are those of the original thing's runtime
+entry where the two differ.
+
+### Camera textures
+
+`ANIMDEFS cameratexture NAME W H [fit] [worldpanning]` reserves a drawable
+surface, and `SetCameraToTexture(tid, NAME, fov)` points it at a camera thing.
+`shared/cameratextures.js` parses the declarations (later duplicates replace
+earlier ones) and `bindCameraTexture` resolves a tag and name to
+`state.cameraTextures`, which is saved with the game. The importer turns each
+declaration into an editable texture asset whose pixels are a neutral placeholder,
+so nothing has to know about cameras until a script binds one, and it reports the
+declarations once per import.
+
+`public/render.js` creates two render targets per declared camera (eight at most)
+and renders the bound camera's view into one of them before the main pass,
+pointing the asset's materials at the other; the pair alternates each frame
+because a pass may not sample the surface it draws into, and swapping a material's
+map is a uniform update, not a recompile. `fit` stretches the view over the
+surface. A camera whose render throws reports through
+`canvas.dataset.cameraTextureError` once instead of failing the frame.
+
 ### Sound names and SNDINFO
 
 DECORATE and ZScript states never name a sound file. They name a logical sound

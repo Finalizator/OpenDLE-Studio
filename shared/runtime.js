@@ -9,6 +9,7 @@ import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeed
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { createMapScripts } from './map-scripts.js';
+import { tickMorphs } from './morph.js';
 import { BT } from './acs.js';
 import { clipFrame, setSpriteState } from './sprite-animation.js';
 import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
@@ -227,6 +228,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     stepActors(project, state, dt);
     stepWeapon(project, state, dt, !hud.cursor && state.playerStats.health > 0 && keys.has('Mouse0'));
     applyWeaponAttack(project, state);
+    tickMorphs(project, state);
   }
   advanceProjectiles(state, dt);
   applySectorDamage(state, dt);

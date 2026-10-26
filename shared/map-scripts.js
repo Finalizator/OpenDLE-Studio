@@ -11,6 +11,8 @@
 import { createAcsVm, createProgram, startScript, startScriptsOfKind, tickAcs, terminateScript, suspendScript,
   parseBehavior, describeBehavior, disassemble, scanBehavior, instructionAt } from './acs.js';
 import { executeSpecial, specialName, unsupportedSpecials } from './line-specials.js';
+import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
+import { bindCameraTexture } from './cameratextures.js';
 import { addAmmo } from './player-state.js';
 import { soundEvent, floorAt, launchProjectile } from './combat.js';
 import { sectorAt } from './sectors.js';
@@ -232,6 +234,10 @@ export function createMapScripts(project, state, callbacks = {}) {
     getActor: (tid, kind, activator) => getActorValue(tid, kind, activator),
     setActorPosition: (tid, x, y, z, fog) => setActorPosition(tid, x, y, z, fog),
     getActorProperty: (tid, property, activator) => actorProperty(tid, property, activator),
+    morphActor: (tid, className, duration, style, activator) =>
+      morphEntity(project, state, morphTarget(state, tid, activator), className, { duration, style }),
+    unmorphActor: (tid, force, activator) => unmorphEntity(project, state, morphTarget(state, tid, activator), Boolean(force)),
+    setCameraToTexture: (tid, name, fov) => bindCameraTexture(project, state, tid, name, fov),
     setActorProperty: (tid, property, value, activator) => setActorProperty(tid, property, value, activator),
     damageThing: (tid, amount, type, activator) => {
       const victims = tid ? state.entities.filter(entity => entity.tid === tid) : [];

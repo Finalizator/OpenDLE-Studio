@@ -215,7 +215,6 @@ export function installActorSpriteStates(project) {
     byName.set(actor.name.toLowerCase(), actor);
     if (actor.doomedNum !== null && actor.doomedNum !== undefined) byDoomed.set(actor.doomedNum, actor);
   }
-  const states = { stand: 'Spawn', walk: 'See', attack: 'Missile', pain: 'Pain', death: 'Death' };
   let applied = 0;
   for (const entity of project.map.entities) {
     if (entity.type === 'player') continue;
@@ -223,23 +222,33 @@ export function installActorSpriteStates(project) {
       (entity.actorName && byName.get(String(entity.actorName).toLowerCase())) ||
       (entity.doomType !== undefined && byDoomed.get(entity.doomType)) || null;
     if (!actor?.states?.frames?.length) continue;
-    const mapped = {};
-    for (const [state, label] of Object.entries(states)) {
-      // A melee-only monster has no Missile block; its attack frames live in Melee.
-      const id = actorStateClip(project, actor, state, label) ||
-        (state === 'attack' ? actorStateClip(project, actor, 'attack', 'Melee') : null);
-      if (id) mapped[state] = id;
-    }
-    if (!Object.keys(mapped).length) continue;
-    entity.spriteStates = mapped;
-    const first = actorFrameRun(actor, 'Spawn')[0];
-    if (first) {
-      const names = spriteAssetNames(project);
-      entity.spriteAsset = names.get(`${String(first.sprite).toUpperCase()}${first.letter}0`) || entity.spriteAsset;
-    }
-    applied++;
+    if (applyActorSpriteStates(project, entity, actor)) applied++;
   }
   return applied;
+}
+
+/**
+ * Points one entity at an actor's own state frames. Shared with morphing, where
+ * the actor changes while the entity stays the same object.
+ */
+export function applyActorSpriteStates(project, entity, actor) {
+  if (!actor?.states?.frames?.length) return false;
+  const states = { stand: 'Spawn', walk: 'See', attack: 'Missile', pain: 'Pain', death: 'Death' };
+  const mapped = {};
+  for (const [state, label] of Object.entries(states)) {
+    // A melee-only monster has no Missile block; its attack frames live in Melee.
+    const id = actorStateClip(project, actor, state, label) ||
+      (state === 'attack' ? actorStateClip(project, actor, 'attack', 'Melee') : null);
+    if (id) mapped[state] = id;
+  }
+  if (!Object.keys(mapped).length) return false;
+  entity.spriteStates = mapped;
+  const first = actorFrameRun(actor, 'Spawn')[0];
+  if (first) {
+    const names = spriteAssetNames(project);
+    entity.spriteAsset = names.get(`${String(first.sprite).toUpperCase()}${first.letter}0`) || entity.spriteAsset;
+  }
+  return true;
 }
 
 /** One clip for one actor state, built from that state's own frames. */

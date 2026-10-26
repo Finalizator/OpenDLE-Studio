@@ -19,6 +19,7 @@ import { describeMapScripts } from './map-scripts.js';
 import { acsLibrariesFromWad, selectAcsLibraries } from './acs-libraries.js';
 import { unsupportedSpecials } from './line-specials.js';
 import { translationSpecs, parseTranslationTable } from './translation.js';
+import { parseCameraTextures } from './cameratextures.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
 
@@ -182,7 +183,7 @@ export function readWad(buffer, { allowNoMaps = false } = {}) {
   return { buffer, lumps, maps: [...new Set(maps)] };
 }
 
-export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], sndInfoSources = [], acsLibraries = [], loadacs = [], translationSources = [], actors = true, deferActionGaps = false, options = {} } = {}) {
+export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], sndInfoSources = [], acsLibraries = [], loadacs = [], translationSources = [], animDefsSources = [], actors = true, deferActionGaps = false, options = {} } = {}) {
   const start = wad.lumps.findLastIndex(lump => lump.name === mapName);
   if (start < 0) throw new Error('Map not found');
   const mapLumps = [];
@@ -425,6 +426,24 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   // the two are reported against their own tables.
   const scriptedSpecials = new Set(mapScriptInfo?.specials || []);
   for (const wall of project.map.walls) if (wall.specialFormat === 'zdoom' && wall.special) scriptedSpecials.add(wall.special);
+  // Camera textures: ANIMDEFS reserves a surface no image backs, and a script
+  // points it at a camera thing at run time.
+  const cameraSources = [
+    ...animDefsSources.map(source => (typeof source === 'string' ? source : source.text)),
+    ...wad.lumps.filter(lump => lump.name === 'ANIMDEFS' && lump.size <= 1024 * 1024)
+      .map(lump => new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size))),
+  ];
+  const cameraTextures = parseCameraTextures(cameraSources);
+  if (cameraTextures.length) {
+    if (cameraTextures.length > 32) throw new Error('Level declares more than 32 camera textures');
+    project.cameraTextures = cameraTextures;
+    if (assets) {
+      for (const definition of cameraTextures) {
+        if (!assets.has(definition.name)) assets.cameraTexture(definition.name, definition.width, definition.height);
+      }
+    }
+    warnings.push(`${cameraTextures.length} camera texture(s) declared (${cameraTextures.map(definition => `${definition.name} ${definition.width}x${definition.height}`).join(', ')}); they show a live view once a script binds a camera with SetCameraToTexture.`);
+  }
   const missingSpecials = unsupportedSpecials([...scriptedSpecials]);
   if (missingSpecials.length) {
     warnings.push(`Line specials kept as data but not performed by the native runtime: ${missingSpecials.join(', ')}.`);

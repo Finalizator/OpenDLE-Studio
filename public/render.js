@@ -67,6 +67,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
   let physics = null, environmentTarget = null;
   const models = new Map(), modelList = [], mixers = new Set(), pointLights = [];
   const projectileMeshes = new Map();
+  // Camera-texture render targets, filled with live views each frame.
+  const cameraViews = new Map();
   // Never rendered: it only exists so compileAsync can build every preview pipeline
   // while the level loads instead of the first time a surface becomes visible.
   const warmupScene = new THREE.Scene();
@@ -78,6 +80,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     disposed = true;
     // Projectile meshes share pooled geometries and materials tracked by the sets below.
     projectileMeshes.clear();
+    for (const view of cameraViews.values()) for (const target of view.targets) target.dispose();
     physics?.dispose(); state.physics = null;
     mixers.forEach(mixer => mixer.stopAllAction());
     scene.traverse(object => { if (object.isSkinnedMesh) object.skeleton.dispose(); });
@@ -113,6 +116,27 @@ export async function createPreview(canvas, project, state, { editor = false } =
       texture.wrapS = THREE.RepeatWrapping; texture.wrapT = THREE.RepeatWrapping;
       textures.set(asset.id, texture);
     }));
+    // Camera textures: ANIMDEFS reserves a surface no image backs. Rendering its
+    // live view into a render target and pointing the asset's texture at it makes
+    // every material that names it show the feed. Two targets alternate because a
+    // pass may not sample the surface it is drawing into.
+    for (const definition of project.cameraTextures || []) {
+      if (cameraViews.size >= 8) break;
+      const placeholder = [...assetMap.values()].find(asset => asset.name.toUpperCase() === definition.name.toUpperCase());
+      if (!placeholder || !textures.has(placeholder.id)) continue;
+      const targets = [0, 1].map(() => {
+        const target = new THREE.RenderTarget(definition.width, definition.height, { depthBuffer: true });
+        target.texture.colorSpace = THREE.SRGBColorSpace;
+        target.texture.magFilter = THREE.NearestFilter; target.texture.minFilter = THREE.NearestFilter;
+        target.texture.wrapS = THREE.RepeatWrapping; target.texture.wrapT = THREE.RepeatWrapping;
+        target.texture.generateMipmaps = false;
+        return target;
+      });
+      const view = new THREE.PerspectiveCamera(90, definition.width / definition.height, 4, 32768);
+      cameraViews.set(definition.name, { definition, targets, flip: 0, camera: view, assetId: placeholder.id,
+        sampled: targets[1].texture, materials: null, materialsAt: -1, error: false });
+      textures.set(placeholder.id, targets[1].texture);
+    }
     const manager = new THREE.LoadingManager();
     const resourceErrors = new Set();
     manager.onError = url => resourceErrors.add(url);
@@ -531,6 +555,50 @@ export async function createPreview(canvas, project, state, { editor = false } =
       }
       entry.object.position.set(effect.x, effect.z, effect.y);
     }
+    /** Draws each bound camera's view into its camera texture. */
+    function renderCameraTextures(state) {
+      if (!cameraViews.size || !state.cameraTextures?.size) return;
+      for (const [name, binding] of state.cameraTextures) {
+        const view = cameraViews.get(name);
+        if (!view) continue;
+        const subject = entityIndex.get(binding.cameraId) || state.entities.find(entity => entity.id === binding.cameraId);
+        if (!subject) continue;
+        // Materials are collected once per world build: swapping their map is a
+        // uniform update, so the feed costs no recompile.
+        if (view.materialsAt !== rebuilds || view.materials === null) {
+          view.materials = [...materials].filter(material => material.userData.assetId === view.assetId ||
+            material.map === view.sampled);
+          view.materialsAt = rebuilds;
+        }
+        const write = view.targets[view.flip];
+        const autoClear = renderer.autoClear;
+        try {
+          view.camera.fov = binding.fov || 90;
+          view.camera.aspect = view.definition.width / view.definition.height;
+          view.camera.updateProjectionMatrix();
+          // A camera thing looks along its own angle; eye height matches the player.
+          view.camera.position.set(subject.x, (subject.z ?? subject.elevation ?? 0) + 41, subject.y);
+          view.camera.rotation.set(0, -subject.angle * Math.PI / 180, 0, 'YXZ');
+          // The main pass leaves autoClear off, so the feed clears itself explicitly.
+          renderer.autoClear = true;
+          renderer.setClearColor(clearColor(project.environment.sky));
+          renderer.setRenderTarget(write);
+          renderer.render(scene, view.camera);
+        } catch (error) {
+          if (!view.error) { view.error = true; canvas.dataset.cameraTextureError = `${name}: ${error.message}`; }
+          continue;
+        } finally {
+          renderer.setRenderTarget(null);
+          renderer.autoClear = autoClear;
+        }
+        // The target just drawn is sampled from the next frame's main pass, and
+        // the one it replaces is the surface the next camera pass draws into.
+        view.sampled = write.texture;
+        view.flip ^= 1;
+        for (const material of view.materials) material.map = write.texture;
+      }
+    }
+
     function render(state, dt = 0) {
       const started = clock();
       renderFrame(state, dt);
@@ -747,6 +815,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         effectMeshes.delete(entry.id);
         effectList.splice(index, 1);
       }
+      renderCameraTextures(state);
       renderer.autoClear = true;
       renderer.setClearColor(clearColor(project.environment.sky));
       if (backgroundScene.userData.skybox) {

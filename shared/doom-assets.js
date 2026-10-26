@@ -295,6 +295,23 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
    * palette and the decoded pixels only exist during import; the renderer then
    * just picks the translated frames for a translated actor.
    */
+  /**
+   * Reserves a camera-texture name. Nothing in the WAD backs it: the surface is
+   * filled by the renderer with a live view once a script binds a camera.
+   */
+  function cameraTexture(name, width, height) {
+    const key = `camera_${name}`;
+    if (cache.has(key)) return cache.get(key);
+    const pixels = new Uint8ClampedArray(width * height * 4);
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      pixels[offset] = 12; pixels[offset + 1] = 14; pixels[offset + 2] = 18; pixels[offset + 3] = 255;
+    }
+    const id = /^[a-zA-Z0-9_-]{1,74}$/.test(key) ? `asset_${key}` : `asset_image_${assets.length}`;
+    assets.push({ id, name: name.slice(0, 100), kind: 'texture', width, height, offsetX: 0, offsetY: 0,
+      src: encodeImage({ width, height, pixels }), camera: true });
+    cache.set(key, id);
+    return id;
+  }
   const translations = new Map();
   function translate(assetId, key, specs) {
     const cacheKey = `${assetId}\u0000${key}`;
@@ -316,7 +333,7 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     translations.set(cacheKey, id);
     return id;
   }
-  return { get, sprite, spriteFrame, atlas, font, materialSequences, translate, palette: colors, assets, warnings, has: name => lumpMap.has(name) || definitions.has(name) ||
+  return { get, sprite, spriteFrame, atlas, font, materialSequences, translate, cameraTexture, palette: colors, assets, warnings, has: name => lumpMap.has(name) || definitions.has(name) ||
     ['sprite', 'weapon', 'texture', 'flat'].some(kind => images.has(`${kind}_${name}`)) };
 }
 

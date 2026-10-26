@@ -1286,10 +1286,27 @@ function defineConversions() {
   define(P.TAGSTRING, '', (vm, script) => {
     setTop(vm, script, 1, internString(vm, lookupString(vm.module, peek(vm, script, 1))));
   });
+  // MorphActor(tid, class, duration, style, morphflash, unmorphflash) and
+  // UnMorphActor(tid, force): the flashes are decorative and skipped.
+  define(P.MORPHACTOR, '', (vm, script) => {
+    pop(vm, script); pop(vm, script);
+    const style = pop(vm, script), duration = pop(vm, script), name = pop(vm, script), tid = pop(vm, script);
+    push(vm, script, vm.host.morphActor(tid, vmString(vm, name), duration, style, script.activator) ? 1 : 0);
+  });
+  // SetCameraToTexture(camera_tid, "TEXTURE", fov): the renderer draws that
+  // camera's view into the texture, which ANIMDEFS reserved.
+  define(P.SETCAMERATOTEXTURE, '', (vm, script) => {
+    const fov = pop(vm, script), name = pop(vm, script), tid = pop(vm, script);
+    push(vm, script, vm.host.setCameraToTexture(tid, vmString(vm, name), fov) ? 1 : 0);
+  });
+  define(P.UNMORPHACTOR, '', (vm, script) => {
+    const force = pop(vm, script), tid = pop(vm, script);
+    push(vm, script, vm.host.unmorphActor(tid, force, script.activator) ? 1 : 0);
+  });
   for (const code of [P.CALLFUNC, P.PUSHFUNCTION, P.CALLSTACK, P.SAVESTRING,
     P.STRCPYTOMAPCHRANGE, P.STRCPYTOSCRIPTCHRANGE, P.STRCPYTOWORLDCHRANGE, P.STRCPYTOGLOBALCHRANGE,
-    P.MORPHACTOR, P.UNMORPHACTOR, P.CLASSIFYACTOR, P.SETACTORSTATE, P.SETMUGSHOTSTATE,
-    P.SETCAMERATOTEXTURE, P.GRABINPUT, P.SETMOUSEPOINTER, P.MOVEMOUSEPOINTER, P.SETAMMOCAPACITY,
+    P.CLASSIFYACTOR, P.SETACTORSTATE, P.SETMUGSHOTSTATE,
+    P.GRABINPUT, P.SETMOUSEPOINTER, P.MOVEMOUSEPOINTER, P.SETAMMOCAPACITY,
     P.STARTTRANSLATION, P.TRANSLATIONRANGE1, P.TRANSLATIONRANGE2, P.TRANSLATIONRANGE3,
     P.TRANSLATIONRANGE4, P.TRANSLATIONRANGE5, P.ENDTRANSLATION, P.USEACTORINVENTORY]) {
     if (OPS.has(code)) continue;
@@ -1301,6 +1318,9 @@ export { PCODE_NAMES };
 
 const HOST_DEFAULTS = {
   executeSpecial: () => 0,
+  morphActor: () => false,
+  unmorphActor: () => false,
+  setCameraToTexture: () => false,
   print: () => {},
   hudMessage: () => {},
   thingCount: () => 0,

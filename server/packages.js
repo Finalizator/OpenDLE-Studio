@@ -463,6 +463,9 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   const sndInfoSources = [...files].filter(([name]) => /(^|\/)sndinfo(\.[a-z]{2,3})?(\.txt)?$/i.test(name))
     .map(([, file]) => (file.data ? Buffer.from(file.data).toString('latin1') : null)).filter(Boolean);
   sndInfoSources.push(...sndInfoFromWad(combined));
+  // ANIMDEFS reserves camera textures the renderer fills with a live view.
+  const animDefsSources = [...files].filter(([name]) => /(^|\/)animdefs(\.[a-z]{2,3})?(\.txt)?$/i.test(name))
+    .map(([, file]) => (file.data ? Buffer.from(file.data).toString('latin1') : null)).filter(Boolean);
   // Actor translations can be named entries in a TRANSLATION/TRNSLATE text lump.
   const translationSources = [...files].filter(([name]) => /(^|\/)(trnslate|translation)(\.[a-z]{2,3})?(\.txt)?$/i.test(name))
     .map(([, file]) => (file.data ? Buffer.from(file.data).toString('latin1') : null)).filter(Boolean);
@@ -483,7 +486,7 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   const result = importWadMap(combined, selected.marker,
     { encodeImage: context?.encodeImage || encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources,
       episodeInfo: context?.episodeInfo, actorSources, dehacked: dehackedSources, languageSources,
-      sndInfoSources, acsLibraries, loadacs: loadacsLists, translationSources, deferActionGaps: deferActionGaps ?? fullGame });
+      sndInfoSources, acsLibraries, loadacs: loadacsLists, translationSources, animDefsSources, deferActionGaps: deferActionGaps ?? fullGame });
   let musicBytes = 0;
   for (const [path, file] of files) if (path.startsWith('music/')) {
     const format = extname(path).slice(1);

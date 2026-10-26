@@ -695,6 +695,16 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       }
     }
   }
+  if (project.cameraTextures !== undefined) {
+    array(project.cameraTextures, 'Camera textures', 32);
+    for (const definition of project.cameraTextures) {
+      object(definition, 'Camera texture');
+      assert(typeof definition.name === 'string' && /^[A-Za-z0-9_]{1,8}$/.test(definition.name), 'Invalid camera texture name');
+      number(definition.width, 'Camera texture width', 1, 2048);
+      number(definition.height, 'Camera texture height', 1, 2048);
+      if (definition.fit !== undefined) assert(typeof definition.fit === 'boolean', 'Camera texture fit must be boolean');
+    }
+  }
   if (project.game !== undefined) {
     const game = project.game;
     object(game, 'Game'); assert(game.version === 1, 'Unknown game format');
