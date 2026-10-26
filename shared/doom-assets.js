@@ -309,7 +309,8 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     totalPixels += decoded.width * decoded.height;
     check(totalPixels <= 32 * 1024 * 1024 && assets.length < 3000, 'WAD asset budget exceeded');
     const id = `asset_t${assets.length}_${original.kind}`;
-    assets.push({ id, name: original.name.slice(0, 100), kind: original.kind, width: decoded.width, height: decoded.height,
+    assets.push({ id, name: `${original.name} (translated)`.slice(0, 100), kind: original.kind,
+      width: decoded.width, height: decoded.height,
       offsetX: decoded.offsetX ?? original.offsetX, offsetY: decoded.offsetY ?? original.offsetY,
       src: encodeImage({ ...decoded, pixels }) });
     translations.set(cacheKey, id);

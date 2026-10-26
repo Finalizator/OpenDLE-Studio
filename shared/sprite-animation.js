@@ -104,6 +104,44 @@ export function spriteView(project, state, entity, viewer = state.player) {
 
 const clipCache = new WeakMap(), nameCache = new WeakMap();
 
+/**
+ * The frames of one actor state block, in execution order. The run ends where the
+ * block ends: goto/loop/stop records and the next label are not part of it.
+ */
+export function actorFrameRun(actor, label) {
+  const frames = actor?.states?.frames;
+  if (!frames?.length) return [];
+  const labels = actor.states.labels || {};
+  let start = labels[label];
+  if (!Number.isInteger(start)) {
+    const key = Object.keys(labels).find(candidate => candidate.toLowerCase() === String(label).toLowerCase());
+    start = key === undefined ? null : labels[key];
+  }
+  if (!Number.isInteger(start) || !frames[start]) return [];
+  const label0 = frames[start].label;
+  const run = [];
+  for (let index = start; index < frames.length && frames[index].kind === 'frame'; index++) {
+    // Real state data terminates a block before the next label, but a list that
+    // omits the terminator must not bleed into the following state.
+    if (index > start && label0 && frames[index].label && frames[index].label !== label0) break;
+    run.push(frames[index]);
+    if (!(frames[index].duration > 0)) break;
+  }
+  return run;
+}
+
+/** The sprite and letter of every frame an actor's states draw. */
+export function actorSpriteCells(actor) {
+  const cells = new Map();
+  for (const frame of actor?.states?.frames || []) {
+    if (frame.kind !== 'frame' || !frame.sprite || !frame.letter) continue;
+    const prefix = String(frame.sprite).toUpperCase();
+    if (!cells.has(prefix)) cells.set(prefix, new Set());
+    cells.get(prefix).add(frame.letter);
+  }
+  return cells;
+}
+
 /** Sprite asset name to asset id, so an actor's state frames can name their images. */
 function spriteAssetNames(project) {
   let names = nameCache.get(project);
@@ -140,16 +178,7 @@ export function actorProjectileClips(project, actor) {
   };
   const names = spriteAssetNames(project);
   function sequence(label) {
-    const start = labelIndex(label);
-    if (!Number.isInteger(start) || !frames[start]) return [];
-    const list = [];
-    // The run ends where the state block ends: goto/loop/stop records and the
-    // next label are not part of the animation.
-    for (let index = start; index < frames.length && frames[index].kind === 'frame'; index++) {
-      list.push(frames[index]);
-      if (!(frames[index].duration > 0)) break;
-    }
-    return list;
+    return actorFrameRun(actor, label);
   }
   function clip(kind, label, loop) {
     const assets = [];
@@ -171,6 +200,66 @@ export function actorProjectileClips(project, actor) {
   result.fly = clip('fly', 'Spawn', true) || clip('fly', 'See', true);
   result.impact = clip('impact', 'Death', false) || clip('impact', 'Crash', false);
   return result;
+}
+
+/**
+ * Replaces the classic letter sequences with the actor's own state frames, and
+ * gives a placed actor's clips real frames instead of guesses. Runs after
+ * `installSpriteAnimations`, which still covers things with no actor record.
+ */
+export function installActorSpriteStates(project) {
+  if (!project.actors?.length) return 0;
+  const byId = new Map(), byName = new Map(), byDoomed = new Map();
+  for (const actor of project.actors) {
+    byId.set(actor.id, actor);
+    byName.set(actor.name.toLowerCase(), actor);
+    if (actor.doomedNum !== null && actor.doomedNum !== undefined) byDoomed.set(actor.doomedNum, actor);
+  }
+  const states = { stand: 'Spawn', walk: 'See', attack: 'Missile', pain: 'Pain', death: 'Death' };
+  let applied = 0;
+  for (const entity of project.map.entities) {
+    if (entity.type === 'player') continue;
+    const actor = (entity.actorId && byId.get(entity.actorId)) ||
+      (entity.actorName && byName.get(String(entity.actorName).toLowerCase())) ||
+      (entity.doomType !== undefined && byDoomed.get(entity.doomType)) || null;
+    if (!actor?.states?.frames?.length) continue;
+    const mapped = {};
+    for (const [state, label] of Object.entries(states)) {
+      // A melee-only monster has no Missile block; its attack frames live in Melee.
+      const id = actorStateClip(project, actor, state, label) ||
+        (state === 'attack' ? actorStateClip(project, actor, 'attack', 'Melee') : null);
+      if (id) mapped[state] = id;
+    }
+    if (!Object.keys(mapped).length) continue;
+    entity.spriteStates = mapped;
+    const first = actorFrameRun(actor, 'Spawn')[0];
+    if (first) {
+      const names = spriteAssetNames(project);
+      entity.spriteAsset = names.get(`${String(first.sprite).toUpperCase()}${first.letter}0`) || entity.spriteAsset;
+    }
+    applied++;
+  }
+  return applied;
+}
+
+/** One clip for one actor state, built from that state's own frames. */
+function actorStateClip(project, actor, state, label) {
+  const names = spriteAssetNames(project), frames = [];
+  let seconds = 0;
+  for (const frame of actorFrameRun(actor, label)) {
+    const sprite = String(frame.sprite || '').toUpperCase();
+    const id = names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`);
+    if (!id) continue;
+    frames.push(id);
+    if (frame.duration > 0 && !seconds) seconds = frame.duration;
+  }
+  if (!frames.length) return null;
+  const id = `clip_actor_${actor.id}_${state}`;
+  if (!(project.spriteClips || []).some(clip => clip.id === id)) {
+    (project.spriteClips ||= []).push({ id, name: `${actor.name} / ${state}`.slice(0, 100), frames,
+      seconds: Math.min(60, Math.max(.001, (seconds || 1) / 35)), loop: state === 'stand' || state === 'walk' });
+  }
+  return id;
 }
 
 export function installSpriteAnimations(project, assets) {

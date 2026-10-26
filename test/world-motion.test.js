@@ -158,12 +158,20 @@ test('imported Doom sprite frames select all eight camera-relative views includi
   }
   assert.equal(front.rotations[1].assetId, front.rotations[7].assetId);
   assert.notEqual(front.rotations[1].flip, front.rotations[7].flip);
+  // The walk clip is built from the actor's own See frames, so it advances
+  // through those letters rather than the classic four-letter guess.
   setSpriteState(p, s, guard, 'walk');
-  s.time = 8 / 35 + .001;
-  assert.match(p.assets.find(asset => asset.id === spriteView(p, s, guard).assetId).name, /^POSSB/);
-  setSpriteState(p, s, guard, 'death'); s.time += 10;
+  const walk = p.spriteClips.find(clip => clip.id === guard.spriteStates.walk);
+  assert.equal(clipFrame(p, walk.id, 0).assetId, walk.frames[0]);
+  assert.notEqual(clipFrame(p, walk.id, walk.seconds + .001).assetId, walk.frames[0], 'the walk clip advances');
+  const named = id => p.assets.find(asset => asset.id === id).name;
+  assert.ok(walk.frames.every(id => named(id).startsWith('POSSA') || /^POSSB|^POSSC|^POSSD/.test(named(id))),
+    `walk frames come from the See state: ${walk.frames.map(named)}`);
+  setSpriteState(p, s, guard, 'death');
+  const death = p.spriteClips.find(clip => clip.id === guard.spriteStates.death);
   const corpse = spriteView(p, s, guard, { x: guard.x, y: guard.y - 100 });
-  assert.match(p.assets.find(asset => asset.id === corpse.assetId).name, /^POSSL0$/);
+  assert.equal(clipFrame(p, death.id, 100).assetId, death.frames.at(-1), 'the corpse holds the last death frame');
+  assert.match(named(death.frames.at(-1)), /^POSS/);
   assert.equal(corpse.flip, false);
   validateProject(JSON.parse(JSON.stringify(p)));
   const invalid = structuredClone(p);

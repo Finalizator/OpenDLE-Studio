@@ -8,7 +8,8 @@ import { parseDehacked, dehackedChanges, mergeDehackedPatches, thingName } from 
 import { buildVanillaActors, importActors, applyDehacked, actorIndex, parseEditorNumbers } from '../shared/actors.js';
 import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile,
   unsupportedActorActions, actionSupported, WEAPON_ACTION_NAMES } from '../shared/actor-runtime.js';
-import { actorProjectileClips } from '../shared/sprite-animation.js';
+import { actorProjectileClips, installActorSpriteStates } from '../shared/sprite-animation.js';
+import { importActorSprites } from '../shared/wad.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createActorsPanel } from '../public/actors-panel.js';
 
@@ -511,4 +512,62 @@ test('actor parents resolve regardless of case, so inherited stats and states su
   assert.equal(child.parent, 'FURFireball');
   assert.equal(child.flags.Projectile, true, 'a differently cased parent still contributes its flags');
   assert.deepEqual([...child.labels.keys()], ['Spawn'], 'and its state labels');
+});
+
+function actorSpriteProject() {
+  const project = createProject();
+  project.assets = ['FBALA0', 'FBALB0', 'FBALC0', 'FBALD0', 'FSPRA0', 'FSPRB0'].map(spriteAsset);
+  project.actors = [{
+    id: 'actor_fireball', name: 'Fireball', flags: { PROJECTILE: true, MISSILE: true }, speed: 10, damage: 4,
+    states: { labels: { Spawn: 0, Death: 2 }, frames: [
+      { kind: 'frame', sprite: 'FBAL', letter: 'A', duration: 3, actions: [], label: 'Spawn' },
+      { kind: 'frame', sprite: 'FBAL', letter: 'B', duration: 3, actions: [], label: 'Spawn' },
+      { kind: 'loop', label: 'Spawn' },
+      { kind: 'frame', sprite: 'FBAL', letter: 'C', duration: 6, actions: [], label: 'Death' },
+      { kind: 'frame', sprite: 'FBAL', letter: 'D', duration: 6, actions: [], label: 'Death' },
+      { kind: 'stop', label: 'Death' },
+    ] },
+  }, {
+    id: 'actor_imp', name: 'TestImp', flags: { MONSTER: true }, doomedNum: 9999, health: 60,
+    states: { labels: { Spawn: 0, See: 1, Missile: 3, Death: 5 }, frames: [
+      { kind: 'frame', sprite: 'FSPR', letter: 'A', duration: 10, actions: [], label: 'Spawn' },
+      { kind: 'frame', sprite: 'FSPR', letter: 'B', duration: 4, actions: [], label: 'See' },
+      { kind: 'loop', label: 'See' },
+      { kind: 'frame', sprite: 'FSPR', letter: 'A', duration: 8, actions: [], label: 'Missile' },
+      { kind: 'goto', label: 'Missile' },
+      { kind: 'frame', sprite: 'FSPR', letter: 'B', duration: 6, actions: [], label: 'Death' },
+      { kind: 'stop', label: 'Death' },
+    ] },
+  }];
+  return project;
+}
+
+test('actor state artwork is imported for spawned actors and drives their animation', () => {
+  const project = actorSpriteProject();
+  project.map.entities.push({ id: 'imp1', type: 'enemy', doomType: 9999, x: 0, y: 0, angle: 0, health: 60 });
+  const requested = [];
+  const stub = { spriteFrame: (prefix, letter) => {
+    requested.push(`${prefix}${letter}`);
+    return project.assets.find(asset => asset.name === `${prefix}${letter}0`)?.id || null;
+  } };
+  const warnings = [];
+  importActorSprites(project, stub, warnings);
+  assert.deepEqual([...new Set(requested)].sort(), ['FBALA', 'FBALB', 'FBALC', 'FBALD', 'FSPRA', 'FSPRB'],
+    'the projectile is included even though nothing places it');
+  importActorSprites(project, { spriteFrame: () => null }, warnings);
+  assert.ok(warnings.some(warning => /Actor state artwork missing/.test(warning)));
+
+  const applied = installActorSpriteStates(project);
+  assert.equal(applied, 1);
+  const imp = project.map.entities.find(entity => entity.id === 'imp1');
+  const states = imp.spriteStates;
+  assert.deepEqual(Object.keys(states).sort(), ['attack', 'death', 'stand', 'walk']);
+  const frames = id => project.spriteClips.find(clip => clip.id === id).frames;
+  assert.deepEqual(frames(states.stand), ['asset_FSPRA0'], 'the stand clip is the actor Spawn frame');
+  assert.deepEqual(frames(states.walk), ['asset_FSPRB0']);
+  assert.deepEqual(frames(states.attack), ['asset_FSPRA0']);
+  assert.deepEqual(frames(states.death), ['asset_FSPRB0']);
+  assert.equal(imp.spriteAsset, 'asset_FSPRA0', 'the editor sprite follows the actor');
+  assert.equal(project.spriteClips.find(clip => clip.id === states.walk).loop, true);
+  assert.equal(project.spriteClips.find(clip => clip.id === states.death).loop, false);
 });

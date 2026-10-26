@@ -1,7 +1,7 @@
 import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, randomDamage, enemyHitscan, moveEnemy } from './combat.js';
 import { actorIndex, actorForThing } from './actors.js';
-import { actorProjectileClips } from './sprite-animation.js';
+import { actorProjectileClips, setSpriteState } from './sprite-animation.js';
 
 /**
  * Actor runtime.
@@ -29,6 +29,23 @@ export function labelIndex(actor, label) {
   if (alias && alias in labels) return labels[alias];
   const key = Object.keys(labels).find(candidate => candidate.toLowerCase() === String(label).toLowerCase());
   return key === undefined ? null : labels[key];
+}
+
+// Actor labels that change what the sprite shows.
+const SPRITE_STATE_BY_LABEL = { spawn: 'stand', see: 'walk', missile: 'attack', melee: 'attack',
+  pain: 'pain', death: 'death', xdeath: 'death' };
+
+/**
+ * Keeps the entity's sprite in step with its state machine. Without this an
+ * imported monster holds its spawn frame forever: the sprite rules belong to the
+ * scripted enemy AI, which an actor-driven monster never runs.
+ */
+function syncActorSprite(project, state, entity, actor, runtime) {
+  const frame = actor.states.frames[runtime.index];
+  const name = SPRITE_STATE_BY_LABEL[String(frame?.label || '').toLowerCase()];
+  if (!name || runtime.sprite === name || !entity.spriteStates?.[name]) return;
+  runtime.sprite = name;
+  setSpriteState(project, state, entity, name, name === 'pain');
 }
 
 /** Persistent per-entity actor state, created on first use. */
@@ -114,6 +131,7 @@ export function actorTic(project, state, entity, moveTarget = true) {
     runtime.index++;
     return;
   }
+  syncActorSprite(project, state, entity, actor, runtime);
   // Non-frame records immediately move the machine.
   runtime.entered = false;
   if (frame.kind === 'stop') { runtime.index = null; runtime.stopped = true; return; }

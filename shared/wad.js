@@ -1,7 +1,7 @@
 import { createProject, validateProject } from './project.js';
 import { doomName, createDoomAssets, doomThings } from './doom-assets.js';
 import { installWorldScripts } from './world-motion.js';
-import { installSpriteAnimations } from './sprite-animation.js';
+import { installSpriteAnimations, installActorSpriteStates, actorSpriteCells } from './sprite-animation.js';
 import { installEngineScripts } from './engine-script.js';
 import { importDoomHUD, installDoomInventoryScripts } from './doom-hud.js';
 import { installDefaultHUD } from './hud.js';
@@ -12,7 +12,7 @@ import { assembleGameLevels, parseLevelRoutes } from './game-levels.js';
 import { parseGameEpisodes } from './game-episodes.js';
 import { resolveLevelMusic } from './music.js';
 import { importActors, actorIndex } from './actors.js';
-import { unsupportedActorActions, mergeActorActionGaps, describeActorActionGaps, installActorProjectileSprites } from './actor-runtime.js';
+import { unsupportedActorActions, mergeActorActionGaps, describeActorActionGaps, installActorProjectileSprites, usedActors } from './actor-runtime.js';
 import { buildStringTable, resolveString } from './language.js';
 import { parseSndInfo, soundTable, VANILLA_SOUNDS } from './sndinfo.js';
 import { describeMapScripts } from './map-scripts.js';
@@ -59,6 +59,40 @@ export function importWadGame(wad, entry, options = {}) {
 function translationSuffix(specs) {
   const hash = [...specs.join(',')].reduce((value, character) => (value * 31 + character.charCodeAt(0)) >>> 0, 7);
   return `tr${hash.toString(36).slice(0, 6)}`;
+}
+
+/**
+ * Imports the sprite lumps an actor's states name. The importer used to import
+ * only artwork a map thing, HUD element or weapon referenced, so a spawned-only
+ * actor — a mod's fireball, a summon, a custom monster's projectile — had no
+ * frames to draw at all.
+ */
+export function importActorSprites(project, assets, warnings) {
+  if (!assets?.spriteFrame) return 0;
+  const wanted = new Map();
+  const want = actor => {
+    for (const [prefix, letters] of actorSpriteCells(actor)) {
+      if (!wanted.has(prefix)) wanted.set(prefix, new Set());
+      for (const letter of letters) wanted.get(prefix).add(letter);
+    }
+  };
+  for (const actor of usedActors(project)) want(actor);
+  // Attacks name their projectile in a handler rather than in the actor data, so
+  // every missile actor whose art exists is included too.
+  for (const actor of project.actors || []) {
+    const flags = actor.flags || {};
+    if (flags.MISSILE || flags.PROJECTILE) want(actor);
+  }
+  let imported = 0;
+  const missing = new Set();
+  for (const [prefix, letters] of wanted) {
+    for (const letter of letters) {
+      if (assets.spriteFrame(prefix, letter)) imported++;
+      else if (missing.size < 12) missing.add(`${prefix}${letter}`);
+    }
+  }
+  if (missing.size) warnings.push(`Actor state artwork missing from this game: ${[...missing].join(', ')}; those frames are skipped.`);
+  return imported;
 }
 
 export function applyActorTranslations(project, assets, table, warnings) {
@@ -418,7 +452,14 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     installDefaultHUD(project);
   }
   installDoomInventoryScripts(project);
+  if (assets && project.actors?.length) importActorSprites(project, assets, warnings);
   if (assets) installSpriteAnimations(project, assets);
+  // Actor states are authoritative: a mod's own frame letters replace the classic
+  // letter guesses for every placed thing that has an actor record.
+  if (project.actors?.length) {
+    const repainted = installActorSpriteStates(project);
+    if (repainted) warnings.push(`${repainted} placed actor(s) animate from their own state frames instead of the classic letter tables.`);
+  }
   if (assets && project.actors?.length) installActorProjectileSprites(project);
   if (assets) {
     // Actor translations repaint sprites, so they run after the animation clips

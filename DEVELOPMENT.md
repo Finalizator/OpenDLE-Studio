@@ -1148,6 +1148,25 @@ DECORATE and ZScript class names are case-insensitive, so parent lookup folds
 case; `ACTOR FURFireBall` is a valid parent for `FURFireball2`, and without the
 fold the child lost every inherited flag and state.
 
+### Actor state sprites
+
+Monsters and projectiles used to draw from artwork the importer happened to load
+for a map thing, HUD element or weapon, animated with hardcoded classic letter
+tables. Now the actor's own state frames decide both: the importer loads every
+sprite lump the states of the level's actors name — placed things, the weapon
+slots, actors named in action arguments and every missile actor whose art exists,
+so a mod's fireball or summoned monster has frames at all — and
+`installActorSpriteStates` builds each placed actor's `stand`/`walk`/`attack`/
+`pain`/`death` clips from its `Spawn`/`See`/`Missile`/`Melee`/`Pain`/`Death`
+states. Frames the game does not contain are reported once by name
+(`TNT1A`, `####`) instead of silently collapsing a clip.
+
+The actor runtime then keeps the sprite in step with the state machine. The
+sprite rules that switch a monster between stand, walk and attack belong to the
+scripted enemy AI, which an actor-driven monster never runs, so without this an
+imported monster held its spawn frame forever — visible only once the frames
+became faithful.
+
 ### Sound names and SNDINFO
 
 DECORATE and ZScript states never name a sound file. They name a logical sound
