@@ -328,9 +328,12 @@ provider credits or network access are required for tests.
   (Space jumps), and opt-in fixed, dynamic or kinematic object bodies with
   box/ball/capsule colliders, sensors, mass, friction, restitution and rotation
   locking. Scripts synchronize teleports, rotation and object destruction.
-- **Blockbench exports:** import uncompressed GLB/glTF 2.0 with meshes, UVs,
-  PNG/JPEG/WebP textures, PBR materials, node hierarchy, skins, morph targets
-  and exported animation clips. Instances have independent skeletons/mixers.
+- **Blockbench models:** import `.bbmodel` projects (cubes, groups with pivots,
+  per-face atlas and box UVs, embedded textures, baked animation clips) or
+  uncompressed GLB/glTF 2.0 with meshes, UVs, PNG/JPEG/WebP textures, PBR
+  materials, node hierarchy, skins, morph targets and exported animation clips.
+  Import by file picker, folder or drag & drop onto the asset browser. Instances
+  have independent skeletons/mixers.
 - **Projects:** validated JSON import/export, explicit local-server saves,
   browser draft backups, revision conflict detection and explicit draft restore.
 - **WAD import:** map selection, bounded parsing of little-endian classic Doom
@@ -1443,29 +1446,42 @@ running game: use **Play world** for HUD, sound and gameplay.
 
 ### Physics and Blockbench models
 
-1. In Blockbench, export a generic model as **GLB** (recommended) or **glTF
-   2.0**, not Minecraft JSON. In **Assets & sectors**, click **Import models**.
-   For glTF, select its `.gltf`, `.bin` and texture files together. Resources
-   are embedded for portable offline projects; remote URLs and parent-directory
-   paths are rejected. For nested dependency folders, use **Import model folder**
-   to select the containing export directory, or prefer a single GLB.
-2. Select a non-player object, assign its **3D model** in Properties and adjust
+1. In **Assets & sectors**, click **Import models**. The picker accepts a
+   Blockbench **`.bbmodel`** project directly, a **GLB** (recommended) or a
+   **`.gltf` 2.0** export plus its `.bin` and texture files. Files and whole
+   folders can also be dropped anywhere on the Assets panel: a drop containing a
+   model source is treated as a model import, so its buffers and textures travel
+   with it. **Model folder** reads an export directory recursively. Resources are
+   embedded for portable offline projects; remote URLs and parent-directory
+   paths are rejected.
+2. `.bbmodel` files are converted to an embedded GLB at import time
+   (`shared/bbmodel.js`), so the renderer keeps a single glTF path. Blockbench
+   cubes, `inflate`/`stretch`, per-face atlas UVs (including face rotation and box
+   UV layouts), groups and pivots, element rotation, `rescale`, embedded textures
+   and animation clips are kept. Animations are baked at the animation's snapping
+   rate into glTF clips, so Molang expressions such as
+   `math.sin(query.anim_time * 120) * 18` (degrees) and Bezier/Catmull-Rom
+   keyframes play in the engine; a script this converter cannot evaluate is
+   reported and baked as its first constant. Blockbench units are divided by 16
+   (16 units = one block/metre), matching Blockbench's own glTF export default;
+   RGBA textures import with alpha cutout so pixel-art transparency stays crisp.
+3. Select a non-player object, assign its **3D model** in Properties and adjust
    **Model scale**. glTF uses +Y up; one glTF unit defaults to 32 map units.
    Imported model origins are retained, so put the origin at the feet in
    Blockbench. A model replaces that object's billboard sprite.
-3. Choose an initial animation, playback speed, loop and auto-play, or attach
+4. Choose an initial animation, playback speed, loop and auto-play, or attach
    **Model: play animation / stop animation** actions. Non-looping clips hold
    their final pose and raise **Model: animation finished** on the next event
    tick. Play restarts a clip; stop resets to its authored pose. Disable
    “Once” for reusable key/contact rules; do not put a restarting play action
    on an unconditional every-tick rule.
-4. In Properties, enable **Rapier physics** and choose a body/collider. Model
+5. In Properties, enable **Rapier physics** and choose a body/collider. Model
    geometry is visual: collision uses the separately configured primitive.
    Collider dimensions are map units, centered above the entity's floor-relative
    elevation. A ball's total height is twice its radius. Kinematic/fixed objects
    move via explicit position actions; only dynamic bodies accept forces,
    impulses and velocity. Model rotation follows the full physics quaternion.
-5. Attach **contact / trigger entered**, **exited** or **touching / overlapping**
+6. Attach **contact / trigger entered**, **exited** or **touching / overlapping**
    conditions, selecting two physics objects or an object and **Sector geometry**.
    `$self` addresses the owner; `$world` addresses static sector collision.
    Sensors report the same conditions but never block the capsule.
@@ -1488,12 +1504,14 @@ Model textures are limited to 4096x4096; when models are loaded the preview
 checks a 32-million-pixel budget across all loaded textures.
 Draco, Meshopt and KTX2/Basis compression require decoders and are rejected.
 Unknown required extensions fail explicitly; optional unknown extensions warn.
-This supports what the glTF exporter represents, not native `.bbmodel` editing,
-Minecraft formats, Blockbench plugins, procedural constraints or unexported
-editor behaviors. There is no mesh-derived collision, ragdoll, physics joints,
-animation blending UI or model/rig authoring editor yet. Models use native
-Three.js PBR lighting with a studio environment, sector brightness and local
-point lights; this is not pixel-identical to the Doom surface light shader.
+For `.bbmodel`, Blockbench free-form mesh elements, armatures (they import as
+empties), locators, particle/sound/timeline keyframes and Blockbench plugins are
+reported and skipped rather than silently dropped; each cube becomes its own mesh,
+so very large cube-heavy models cost one draw call per cube. Imported models
+otherwise use native Three.js PBR lighting with a studio environment, sector
+brightness and local point lights; this is not pixel-identical to the Doom
+surface light shader. There is no mesh-derived collision, ragdoll, physics
+joints, animation blending UI or model/rig authoring editor yet.
 
 ### Object-attached visual scripts
 

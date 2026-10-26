@@ -5,6 +5,7 @@ import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
 import { bundleModel } from '/shared/gltf.js';
+import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
 import { createSceneEditor } from './scene-editor.js';
 import { requestMouseLock } from './pointer-lock.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
@@ -1300,6 +1301,7 @@ function renderAssets() {
   $('asset-folders').replaceChildren(...[...$('asset-filter').options].map(option => {
     const count = (project.assets || []).filter(asset => option.value === 'all' || asset.kind === option.value).length;
     const folder = button(`${option.textContent} (${count})`, () => { $('asset-filter').value = option.value; renderAssets(); }, 'asset-folder');
+    folder.dataset.filter = option.value;
     folder.classList.toggle('selected', option.value === filter);
     return folder;
   }));
@@ -2381,8 +2383,7 @@ $('add-sprite-animation').addEventListener('click', guard(() => edit(next => {
   next.spriteClips.push({ id: newId('sprite_clip'), name: 'New sprite animation', frames: [image.id], seconds: .1, loop: true });
 })));
 $('import-sound').addEventListener('click', () => $('sound-file').click());
-$('sound-file').addEventListener('change', guard(async event => {
-  const files = [...event.target.files]; event.target.value = '';
+async function importSoundFiles(files) {
   if (!files.length) return;
   if (files.length > 64) throw new Error('Import at most 64 sounds at once');
   const imported = [];
@@ -2403,13 +2404,16 @@ $('sound-file').addEventListener('change', guard(async event => {
   });
   $('asset-filter').value = 'sound'; renderAssets();
   status(`Imported ${imported.length} sounds. Matching sound names replace existing effects; use playSound actions in visual rules.`);
+}
+$('sound-file').addEventListener('change', guard(async event => {
+  const files = [...event.target.files]; event.target.value = '';
+  await importSoundFiles(files);
 }));
 $('import-model-folder').addEventListener('click', () => $('model-directory').click());
-async function importModels(event) {
-  const files = [...event.target.files], version = editVersion;
-  event.target.value = '';
-  const sources = files.filter(file => /\.(glb|gltf)$/i.test(file.name));
-  if (!sources.length) throw new Error('Select a GLB or glTF export plus any .bin / texture dependencies');
+async function importModelFiles(files) {
+  const version = editVersion;
+  const sources = files.filter(file => /\.(glb|gltf|bbmodel)$/i.test(file.name));
+  if (!sources.length) throw new Error('Select a GLB, glTF or Blockbench .bbmodel export plus any .bin / texture dependencies');
   if (sources.length > 16 || files.length > 300) throw new Error('Import at most 16 models / 300 files at a time');
   const assets = [], warnings = [];
   for (const file of sources) {
@@ -2417,14 +2421,20 @@ async function importModels(event) {
     assets.push(result.asset); warnings.push(...result.warnings);
   }
   if (version !== editVersion) throw new Error('Project changed during model import. Retry.');
+  $('asset-filter').value = 'model'; renderAssets();
   edit(next => { next.assets ||= []; next.assets.push(...assets); }, `${assets.length} models imported. ${warnings.join(' ')}`);
 }
-$('model-file').addEventListener('change', guard(importModels));
-$('model-directory').addEventListener('change', guard(importModels));
-$('image-file').addEventListener('change', guard(async event => {
-  const files = [...event.target.files], version = editVersion, kind = $('image-kind').value;
-  event.target.value = '';
+$('model-file').addEventListener('change', guard(async event => {
+  const files = [...event.target.files]; event.target.value = '';
+  await importModelFiles(files);
+}));
+$('model-directory').addEventListener('change', guard(async event => {
+  const files = [...event.target.files]; event.target.value = '';
+  await importModelFiles(files);
+}));
+async function importImageFiles(files, kind) {
   if (files.length > 64) throw new Error('Import at most 64 images at a time');
+  const version = editVersion;
   const assets = [];
   for (const file of files) {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 6 * 1024 * 1024) throw new Error('Use PNG, JPEG or WebP images no larger than 6 MiB');
@@ -2441,6 +2451,38 @@ $('image-file').addEventListener('change', guard(async event => {
   }
   if (version !== editVersion) throw new Error('Project changed during image import. Retry.');
   edit(next => { next.assets ||= []; next.assets.push(...assets); }, `${assets.length} images imported`);
+}
+$('image-file').addEventListener('change', guard(async event => {
+  const files = [...event.target.files];
+  event.target.value = '';
+  await importImageFiles(files, $('image-kind').value);
+}));
+// Dropping on the asset browser imports without opening a file dialog: model
+// sources (with their .bin/texture dependencies), images into the selected image
+// category, sounds as sound effects. Folders are read recursively.
+async function dropAssets(event) {
+  const files = await readDroppedFiles(event.dataTransfer);
+  const group = groupDroppedFiles(files);
+  const section = event.target.closest?.('.asset-folder')?.dataset.filter;
+  if (group.models.length) return importModelFiles(group.models);
+  if (group.images.length) return importImageFiles(group.images, IMAGE_KINDS.has(section) ? section : $('image-kind').value);
+  if (group.sounds.length) return importSoundFiles(group.sounds);
+  throw new Error('Drop GLB, glTF, .bbmodel, PNG/JPEG/WebP images or WAV/OGG/MP3 sounds');
+}
+const assetDropTarget = $('assets-panel');
+assetDropTarget.addEventListener('dragover', event => {
+  if (![...(event.dataTransfer?.types || [])].includes('Files')) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+  assetDropTarget.classList.add('drop-target');
+});
+assetDropTarget.addEventListener('dragleave', event => {
+  if (!assetDropTarget.contains(event.relatedTarget)) assetDropTarget.classList.remove('drop-target');
+});
+assetDropTarget.addEventListener('drop', guard(async event => {
+  event.preventDefault();
+  assetDropTarget.classList.remove('drop-target');
+  await dropAssets(event);
 }));
 $('add-event').addEventListener('click', () => addScriptEvent());
 $('add-group').addEventListener('click', guard(() => {

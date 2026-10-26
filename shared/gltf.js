@@ -1,3 +1,4 @@
+import { readBBModel, bbmodelToGltf } from './bbmodel.js';
 const decoder = new TextDecoder();
 function check(condition, message) {
   if (!condition) throw new Error(message);
@@ -138,6 +139,7 @@ export function encodeGLB(json, binary) {
 }
 
 export async function bundleModel(file, files, id) {
+  if (/\.bbmodel$/i.test(file.name)) return bundleBlockbench(file, id);
   const format = file.name.toLowerCase().endsWith('.glb') ? 'glb' : 'gltf';
   let bytes = new Uint8Array(await file.arrayBuffer());
   const { json, binary } = readModel(bytes, format);
@@ -172,4 +174,17 @@ export async function bundleModel(file, files, id) {
   else bytes = encodeGLB(json, binary);
   check(bytes.length <= 16 * 1024 * 1024, 'Bundled model exceeds 16 MiB');
   return { asset: { id, name: file.name.slice(0, 100), kind: 'model', format, src: dataURI(bytes, format === 'glb' ? 'model/gltf-binary' : 'model/gltf+json'), ...metadata }, warnings };
+}
+
+// Blockbench projects are converted to a self-contained GLB so the renderer only
+// ever sees the glTF path it already supports.
+async function bundleBlockbench(file, id) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const { json, binary, warnings } = bbmodelToGltf(readBBModel(bytes));
+  validateModelDocument(json, binary.length);
+  const metadata = modelMetadata(json);
+  const glb = encodeGLB(json, binary);
+  check(glb.length <= 16 * 1024 * 1024, 'Bundled model exceeds 16 MiB');
+  if (!metadata.animations.length) warnings.push('This Blockbench model has no animations.');
+  return { asset: { id, name: file.name.slice(0, 100), kind: 'model', format: 'glb', src: dataURI(glb, 'model/gltf-binary'), ...metadata }, warnings };
 }

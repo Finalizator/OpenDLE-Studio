@@ -97,7 +97,7 @@
       <section id="assets-panel" class="panel" hidden>
         <div class="dock-heading">Asset browser <button id="expand-assets" aria-expanded="false">Expand</button></div>
         <div class="asset-browser-body">
-        <div class="panel-heading"><div><h1>Assets & sectors</h1><p>Images, sounds, Blockbench GLB/glTF models, animations and sector surfaces.</p></div><button id="import-sound">Import sounds</button><button id="import-model">Import models</button><button id="import-model-folder">Model folder</button><button id="import-image" class="primary">Import images</button></div>
+        <div class="panel-heading"><div><h1>Assets & sectors</h1><p>Images, sounds, Blockbench .bbmodel and GLB/glTF models, animations and sector surfaces. Drop files or folders here to import.</p></div><button id="import-sound">Import sounds</button><button id="import-model">Import models</button><button id="import-model-folder">Model folder</button><button id="import-image" class="primary">Import images</button></div>
         <div class="asset-toolbar">
           <label>Import as <select id="image-kind"><option value="texture">Wall texture</option><option value="flat">Floor / ceiling</option><option value="sky">Sky panorama / cube face</option><option value="sprite">Object sprite</option><option value="weapon">Weapon overlay</option></select></label>
           <label>Filter <select id="asset-filter"><option value="all">All assets</option><option value="texture">Textures</option><option value="flat">Floors / ceilings</option><option value="sky">Skies</option><option value="sprite">Sprites</option><option value="weapon">Weapons</option><option value="sound">Sounds</option><option value="music">Music</option><option value="model">3D models</option><option value="font">Fonts</option></select></label>
@@ -112,9 +112,9 @@
         </details>
         <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
         <input id="sound-file" type="file" accept=".wav,.ogg,.mp3" multiple hidden>
-        <input id="model-file" type="file" accept=".glb,.gltf,.bin,.png,.jpg,.jpeg,.webp" multiple hidden>
+        <input id="model-file" type="file" accept=".glb,.gltf,.bbmodel,.bin,.png,.jpg,.jpeg,.webp" multiple hidden>
         <input id="model-directory" type="file" webkitdirectory multiple hidden>
-        <details class="asset-help"><summary>Blockbench export help</summary><p class="info">Export uncompressed glTF 2.0 / GLB, not Minecraft JSON. Select the .gltf plus its .bin and textures together, or import the containing folder for nested resources (GLB is simplest). Meshes, materials, hierarchy, skins, morph targets and exported clips are retained. Assign a model in object Properties; configure primitive colliders separately.</p></details>
+        <details class="asset-help"><summary>Model import: Blockbench, glTF and drag &amp; drop</summary><p class="info">Import glTF 2.0 / GLB, or a Blockbench .bbmodel project straight from Blockbench — cubes, groups, embedded textures and animations are converted on import (animations are baked to glTF clips). glTF needs its .bin and textures selected or imported with their folder. <strong>Model folder</strong> reads a whole folder, and dropping files or folders anywhere on this panel imports them (models first, then images, then sounds). Blockbench models import at 1/16 scale: the default model scale of 32 map units per glTF unit then matches Minecraft-like proportions. Free-form mesh elements, particle and sound keyframes are reported, not imported. Assign a model in object Properties; configure primitive colliders separately.</p></details>
         </div>
       </section>
       <section id="actors-panel" class="panel" hidden>
