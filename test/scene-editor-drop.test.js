@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { addRoom, createProject, validateProject } from '../shared/project.js';
 import { sectorGeometry } from '../shared/sectors.js';
 import {
-  applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, describeSurfaceTarget,
+  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, resolveWallSide, sectorTarget, snapValue, wallPartAt, wallTarget,
 } from '../public/editor-drop.js';
+import { entityOrigin, liveProjectPlan, modelWorldBox } from '../shared/entity-visuals.js';
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const MODEL = `data:model/gltf+json;base64,${Buffer.from(JSON.stringify({
@@ -108,6 +109,66 @@ test('object drops set sprites and models with kind validation and floor moves r
   applyEntitySprite(project, entity.id, 'sprite');
   project.assets = project.assets.filter(asset => asset.kind !== 'model');
   validateProject(project);
+});
+
+test('dropping a model on the scene creates a decoration that already carries it', () => {
+  const project = withAssets(createProject());
+  assert.match(addEntityWithModel(project, { x: 128, y: -64, assetId: 'model' }), /Crate placed as a decoration at 128, -64/);
+  const created = project.map.entities.at(-1);
+  assert.equal(created.type, 'decoration');
+  assert.equal(created.modelAsset, 'model');
+  assert.equal(created.name, 'Crate');
+  assert.deepEqual([created.x, created.y, created.elevation, created.angle], [128, -64, 0, 0]);
+  validateProject(project);
+  addEntityWithModel(project, { x: 0, y: 0, assetId: 'model' });
+  assert.equal(project.map.entities.at(-1).name, 'Crate 2');
+  assert.match(addEntityWithModel(project, { x: 0, y: 0, assetId: 'model', type: 'enemy', name: 'Turret' }), /as a enemy/);
+  assert.equal(project.map.entities.at(-1).name, 'Turret');
+  assert.throws(() => addEntityWithModel(project, { x: 0, y: 0, assetId: 'tex' }), /not a 3D model/);
+  assert.throws(() => addEntityWithModel(project, { x: 0, y: 0, assetId: 'model', type: 'player' }), /player object/);
+  assert.throws(() => addEntityWithModel(project, { x: NaN, y: 0, assetId: 'model' }), /Drop the model on the scene/);
+});
+
+test('live updates swap an object between sprite and model instead of keeping the sprite', () => {
+  const entities = [
+    { id: 'a' }, { id: 'b', modelAsset: 'loaded' }, { id: 'c', modelAsset: 'missing' }, { id: 'd', modelAsset: 'loaded' },
+  ];
+  const plan = liveProjectPlan(entities, {
+    hasModel: id => id === 'loaded',
+    drawn: id => (id === 'a' ? 'sprite' : id === 'b' ? 'sprite' : id === 'd' ? 'model' : null),
+  });
+  assert.equal(plan.needsReload, true);
+  assert.deepEqual(plan.swap, ['b']);
+  assert.deepEqual(plan.add, ['b']);
+  const quiet = liveProjectPlan([{ id: 'a' }, { id: 'b', modelAsset: 'loaded' }], {
+    hasModel: () => true, drawn: id => (id === 'a' ? 'sprite' : 'model'),
+  });
+  assert.deepEqual(quiet, { needsReload: false, swap: [], add: [] });
+  assert.deepEqual(liveProjectPlan([{ id: 'b' }], { hasModel: () => true, drawn: () => 'model' }),
+    { needsReload: false, swap: ['b'], add: ['b'] });
+  // Changing the model of an object that already draws one replaces the object.
+  const replaced = liveProjectPlan([{ id: 'e', modelAsset: 'next' }],
+    { hasModel: () => true, drawn: () => 'model', drawnModel: () => 'previous' });
+  assert.deepEqual(replaced, { needsReload: false, swap: ['e'], add: ['e'] });
+  assert.deepEqual(liveProjectPlan([{ id: 'e', modelAsset: 'next' }],
+    { hasModel: () => true, drawn: () => 'model', drawnModel: () => 'next' }),
+    { needsReload: false, swap: [], add: [] });
+});
+
+test('model selection boxes use the model bounds, scale, rotation and floor position', () => {
+  const local = { min: [-1, 0, -2], max: [1, 2, 2] };
+  const flat = modelWorldBox(local, { scale: 32, position: [100, 0, -50], angle: 0 });
+  assert.deepEqual(flat.min, [68, 0, -114]);
+  assert.deepEqual(flat.max, [132, 64, 14]);
+  // Map angles turn the other way, so a quarter turn swaps the horizontal extents.
+  const turned = modelWorldBox(local, { scale: 32, position: [0, 0, 0], angle: 90 });
+  [-64, 0, -32].forEach((value, axis) => assert.ok(Math.abs(turned.min[axis] - value) < 1e-9, `min ${axis} ${turned.min[axis]}`));
+  [64, 64, 32].forEach((value, axis) => assert.ok(Math.abs(turned.max[axis] - value) < 1e-9, `max ${axis} ${turned.max[axis]}`));
+  const quarter = Math.sin(Math.PI / 4);
+  const physics = modelWorldBox(local, { scale: 1, position: [0, 0, 0], quaternion: [0, quarter, 0, quarter] });
+  assert.ok(Math.abs(physics.min[0] + 2) < 1e-9 && Math.abs(physics.max[2] - 1) < 1e-9, JSON.stringify(physics));
+  assert.deepEqual(entityOrigin({ x: 8, y: 16, elevation: 24 }, 64), [8, 88, 16]);
+  assert.deepEqual(entityOrigin({ x: 8, y: 16, z: 5, elevation: 24 }, 64), [8, 5, 16]);
 });
 
 test('axis drag maths projects pointer motion onto a world axis', () => {

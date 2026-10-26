@@ -276,6 +276,33 @@ for (const name of ['biplane1', 'bb-worky-drone', 'type96-anti-aircraft']) {
   });
 }
 
+test('imported Blockbench models load with their textures and materials in three', async () => {
+  // three picks its texture loader and decodes images through browser globals; the
+  // shims stand in for those so the textured GLB is parsed exactly as in the tab.
+  const previous = { self: globalThis.self, createImageBitmap: globalThis.createImageBitmap };
+  globalThis.self = globalThis;
+  globalThis.createImageBitmap = async () => ({ width: 16, height: 16, close() {} });
+  try {
+    const bytes = new Uint8Array(readFileSync(new URL('../Projects/AssetLib/bb-worky-drone.bbmodel', import.meta.url)));
+    const { json, binary } = bbmodelToGltf(readBBModel(bytes));
+    const loaded = await new GLTFLoader().parseAsync(encodeGLB(json, binary).buffer, '');
+    const materials = [];
+    loaded.scene.traverse(object => {
+      if (!object.isMesh) return;
+      materials.push(...(Array.isArray(object.material) ? object.material : [object.material]));
+    });
+    assert.equal(materials.length, 43);
+    assert.equal(materials.every(material => material.map?.image), true);
+    assert.equal(materials.every(material => material.alphaTest === 0.5), true);
+    assert.equal(materials.every(material => material.side === 2), true);
+    assert.deepEqual(loaded.animations.map(clip => clip.name), ['animation.idle', 'animation.wave', 'animation.fly']);
+    assert.ok(loaded.animations.every(clip => clip.tracks.length > 0 && clip.duration > 0));
+  } finally {
+    globalThis.self = previous.self;
+    globalThis.createImageBitmap = previous.createImageBitmap;
+  }
+});
+
 test('bundleModel imports a .bbmodel file into a self contained GLB asset', async () => {
   const source = bbmodel({
     animations: [{

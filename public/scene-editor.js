@@ -1,10 +1,11 @@
 import * as THREE from '/vendor/three/three.module.js';
 import { createPreview } from './render.js';
 import { createRuntime, runtimeEntities } from '/shared/runtime.js';
+import { newId } from '/shared/project.js';
 import { sectorAt, sectorGeometry } from '/shared/sectors.js';
 import { dragSelection } from '/shared/scene-edit.js';
 import {
-  applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, describeSurfaceTarget,
+  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, requireModelAsset, resolveWallSide, sectorTarget, snapValue,
   wallPartAt, wallTarget,
 } from './editor-drop.js';
@@ -197,12 +198,18 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     } else if (selection.kind === 'entity') {
       const entity = entityById.get(selection.id);
       if (entity) {
-        const base = (sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0) + (entity.elevation || 0);
-        const asset = (project.assets || []).find(candidate => candidate.id === entity.spriteAsset);
-        const width = Math.max(24, (asset?.width || 32) * (entity.spriteScale || 1));
-        const height = Math.max(32, (asset?.height || 48) * (entity.spriteScale || 1)) * (entity.modelAsset ? 2 : 1);
-        box.set(new THREE.Vector3(entity.x - width / 2, base, entity.y - width / 2),
-          new THREE.Vector3(entity.x + width / 2, base + height, entity.y + width / 2));
+        // A rendered model knows its own extent; guessing from the sprite gave a
+        // taller box around an object that did not actually draw the model.
+        const rendered = entity.modelAsset ? view.boundsOfEntity?.(entity.id) : null;
+        if (rendered && !rendered.isEmpty()) box.copy(rendered);
+        else {
+          const base = (sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0) + (entity.elevation || 0);
+          const asset = (project.assets || []).find(candidate => candidate.id === entity.spriteAsset);
+          const width = Math.max(24, (asset?.width || 32) * (entity.spriteScale || 1));
+          const height = Math.max(32, (asset?.height || 48) * (entity.spriteScale || 1));
+          box.set(new THREE.Vector3(entity.x - width / 2, base, entity.y - width / 2),
+            new THREE.Vector3(entity.x + width / 2, base + height, entity.y + width / 2));
+        }
       }
     }
     return box;
@@ -293,8 +300,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     }
     canvas.dataset.sceneSelection = `${kind}:${id}${selected.surface ? `:${selected.surface}` : ''}`;
   }
-  function applyEdit(fn, message) {
-    try { callbacks.edit(fn, message); } catch (error) { callbacks.error(error.message); cancel(); }
+  function applyEdit(fn, message, after) {
+    try { callbacks.edit(fn, message); after?.(); } catch (error) { callbacks.error(error.message); cancel(); }
   }
 
   function screenOf(point) {
@@ -366,6 +373,16 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     const x = snapValue(point.x, callbacks.grid()), y = snapValue(point.z, callbacks.grid());
     return { x, y, floor: sectorAt(sectors, x, y)?.floorHeight ?? 0 };
   }
+  // Dropping on empty sky still has to land somewhere: use where the view ray meets
+  // the floor of the sector the camera is in, or a short step ahead when looking up.
+  function emptyDropPoint() {
+    const directionVector = new THREE.Vector3();
+    camera.getWorldDirection(directionVector);
+    const floor = sectorAt(sectors, camera.position.x, camera.position.z)?.floorHeight ?? 0;
+    const travel = directionVector.y < -.05 ? (floor - camera.position.y) / directionVector.y : 256;
+    const point = camera.position.clone().addScaledVector(directionVector, Math.max(64, Math.min(travel, 2048)));
+    return { x: point.x, z: point.z };
+  }
 
   function assetFromTile(tile) {
     const list = tile.closest('#asset-list');
@@ -428,11 +445,11 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     return null;
   }
   function planDrop(pick) {
-    const selection = pick.selection;
+    const selection = pick?.selection || null;
     if (external.assetId) {
       const asset = (project.assets || []).find(item => item.id === external.assetId);
       if (!asset) return { error: 'That asset is no longer part of this project' };
-      if (selection.kind === 'entity') {
+      if (selection?.kind === 'entity') {
         const entity = entityById.get(selection.id);
         if (!entity) return { error: 'That object no longer exists' };
         if (asset.kind === 'model') {
@@ -442,6 +459,17 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         try { requireImageAsset(project, asset.id, 'drop a sprite image instead'); } catch (error) { return { error: error.message }; }
         return { label: `Set sprite ${asset.name} on ${entity.name}`, highlight: selection, apply: next => applyEntitySprite(next, entity.id, asset.id) };
       }
+      // Dropping a model anywhere else places a new decoration that already carries it.
+      if (asset.kind === 'model') {
+        try { requireModelAsset(project, asset.id); } catch (error) { return { error: error.message }; }
+        const point = floorPointAt(pick?.point || emptyDropPoint());
+        const entityId = newId('entity');
+        return { label: `Place ${asset.name} at ${point.x}, ${point.y}`, highlight: selection,
+          point: pick?.point || new THREE.Vector3(point.x, point.floor, point.y),
+          apply: next => addEntityWithModel(next, { id: entityId, x: point.x, y: point.y, assetId: asset.id }),
+          select: { kind: 'entity', id: entityId } };
+      }
+      if (!pick) return { error: 'Drop images on a wall, floor or ceiling' };
       const target = surfaceTargetFor(selection, pick.point);
       if (!target) return { error: 'Drop images on a wall, floor or ceiling' };
       try { requireImageAsset(project, asset.id); } catch (error) { return { error: error.message }; }
@@ -449,6 +477,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         apply: next => applySurfaceAsset(next, target, asset.id) };
     }
     if (external.entityId) {
+      if (!pick) return { error: 'Drop objects on a wall, floor, ceiling or another object' };
       const entity = entityById.get(external.entityId);
       if (!entity) return { error: 'That object no longer exists' };
       const point = floorPointAt(pick.point);
@@ -460,8 +489,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   function updateDropPreview(event) {
     clearDropPreview(); hideReadout();
     if (!overViewport(event)) return;
+    const asset = external.assetId && (project.assets || []).find(item => item.id === external.assetId);
     const pick = pickAt(event);
-    if (!pick) { showReadout('Aim at a wall, floor, ceiling or object in the 3D view', 'warn'); return; }
+    if (!pick && asset?.kind !== 'model') { showReadout('Aim at a wall, floor, ceiling or object in the 3D view', 'warn'); return; }
     const plan = planDrop(pick);
     if (plan.error) { showReadout(plan.error, 'error'); return; }
     showReadout(plan.label);
@@ -497,12 +527,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (external.pointerId === null || event.pointerId !== external.pointerId) return;
     const active = external.active, over = active && overViewport(event);
     let plan = null;
-    if (over) { const pick = pickAt(event); if (pick) plan = planDrop(pick); }
+    if (over) plan = planDrop(pickAt(event));
     endExternalDrag();
     if (!active || !over) return;
     if (!plan) { callbacks.error('Drop targets are walls, floors, ceilings and objects in the 3D view'); return; }
     if (plan.error) { callbacks.error(plan.error); return; }
-    applyEdit(plan.apply, plan.label);
+    applyEdit(plan.apply, plan.label, plan.select ? () => callbacks.select?.(plan.select) : null);
   });
   listen(document, 'pointercancel', () => { if (external.pointerId !== null) endExternalDrag(); });
   // Tiles contain images that browsers would otherwise drag natively, which cancels pointer moves.

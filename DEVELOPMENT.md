@@ -159,7 +159,9 @@ provider credits or network access are required for tests.
   Both views edit the same project and share undo/redo and save/export.
   Drag textures or flats from the Asset Browser straight onto wall sides and
   floor/ceiling surfaces, drag sprite or model assets onto objects to assign
-  them, and drag objects from the object list onto the floor. Transform handles
+  them, and drag objects from the object list onto the floor. Dropping a model
+  onto empty space, a wall or a floor places a new **decoration** object that
+  already carries it, selected and ready to retype in Properties. Transform handles
   and floors/ceilings follow the pointer while you drag: geometry, the selection
   box and the gizmo update every frame, and the whole drag is a single undo step.
   Floors and ceilings can be raised and lowered in 3D with a live numeric readout
@@ -1468,7 +1470,11 @@ running game: use **Play world** for HUD, sound and gameplay.
 3. Select a non-player object, assign its **3D model** in Properties and adjust
    **Model scale**. glTF uses +Y up; one glTF unit defaults to 32 map units.
    Imported model origins are retained, so put the origin at the feet in
-   Blockbench. A model replaces that object's billboard sprite.
+   Blockbench. A model replaces that object's billboard sprite, and the
+   selection box then follows the model's own bounds instead of the sprite's.
+   Models are parsed with the preview, so the first assignment reloads the 3D
+   scene once; later edits apply in place, and swapping one model for another
+   replaces just that object.
 4. Choose an initial animation, playback speed, loop and auto-play, or attach
    **Model: play animation / stop animation** actions. Non-looping clips hold
    their final pose and raise **Model: animation finished** on the next event

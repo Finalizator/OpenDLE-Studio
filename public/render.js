@@ -10,6 +10,7 @@ import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js
 import { RoomEnvironment } from '/vendor/three-addons/environments/RoomEnvironment.js';
 import RAPIER from '/vendor/rapier/rapier.mjs';
 import { createPhysics } from '/shared/physics.js';
+import { liveProjectPlan, modelWorldBox, entityOrigin } from '/shared/entity-visuals.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { gameView } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
@@ -147,6 +148,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
     });
     const modelLoader = new GLTFLoader(manager);
     const modelAssets = new Map();
+    // Model-space bounds per asset, used by the editor to box an object exactly
+    // without waiting for a frame to place its instance.
+    const modelBounds = new Map();
     const modelImages = new Set();
     let modelPixels = 0;
     const usedModels = new Set(project.map.entities.map(entity => entity.modelAsset).filter(Boolean));
@@ -173,6 +177,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
         }
       }
       modelAssets.set(id, loaded);
+      const local = new THREE.Box3().setFromObject(loaded.scene);
+      if (!local.isEmpty()) modelBounds.set(id, local);
     }
     if (usedModels.size) {
       const room = new RoomEnvironment(), generator = new THREE.PMREMGenerator(renderer);
@@ -458,6 +464,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // rebuild; removed entities are hidden instead of disposed (their objects can
     // be reused when an id comes back).
     function addSprite(entity) {
+      if (sprites.has(entity.id)) return;
       const asset = assetMap.get(entity.spriteAsset);
       const map = entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
       const color = asset ? '#ffffff' : entityColors[entity.type] || '#ffffff';
@@ -491,7 +498,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       });
       const mixer = new THREE.AnimationMixer(object); mixers.add(mixer);
       mixer.addEventListener('finished', () => state.animationFinished.add(entity.id));
-      const entry = { id: entity.id, root, object, mixer, clips: loaded.animations, revision: -1, action: null, tinted, shade: -1 };
+      const entry = { id: entity.id, assetId: entity.modelAsset, root, object, mixer, clips: loaded.animations, revision: -1, action: null, tinted, shade: -1 };
       models.set(entity.id, entry); modelList.push(entry);
     }
     // Runtime spawns reuse the loaded model, fall back to the entity sprite, and are
@@ -500,8 +507,56 @@ export async function createPreview(canvas, project, state, { editor = false } =
     function addEntity(entity) {
       if (!entity.modelAsset) { addSprite(entity); return; }
       if (modelAssets.has(entity.modelAsset)) { addModel(entity); return; }
+      // In the editor an unloaded model means the project gained a model after the
+      // preview started: setProject asks for a reload instead of drawing the sprite
+      // again, which hid assigned models completely.
+      if (editor) return;
       if (entity.spriteAsset) { addSprite(entity); return; }
       unrenderable.add(entity.id);
+    }
+    // A model and a sprite are separate objects, so switching between them (or
+    // replacing one) has to drop the previous representation.
+    function forgetEntity(id) {
+      const sprite = sprites.get(id);
+      if (sprite) {
+        scene.remove(sprite);
+        sprites.delete(id);
+        const index = spriteList.findIndex(record => record.id === id);
+        if (index >= 0) spriteList.splice(index, 1);
+      }
+      const model = models.get(id);
+      if (model) {
+        scene.remove(model.root);
+        models.delete(id);
+        mixers.delete(model.mixer);
+        const index = modelList.indexOf(model);
+        if (index >= 0) modelList.splice(index, 1);
+      }
+      unrenderable.delete(id);
+    }
+    // World bounds of what is actually drawn for an object, so the editor's
+    // selection box matches the model instead of guessing from its sprite. The box
+    // is built from the model's own bounds and the object's transform, so it is
+    // right even before the next frame places the instance.
+    function boundsOfEntity(id) {
+      const entity = project.map.entities.find(candidate => candidate.id === id);
+      if (!entity) return null;
+      const local = entity.modelAsset && modelBounds.get(entity.modelAsset);
+      if (local) {
+        const sector = sectorIndex.at(entity.x, entity.y);
+        const box = modelWorldBox({ min: local.min.toArray(), max: local.max.toArray() }, {
+          scale: entity.modelScale ?? 32,
+          position: entityOrigin(entity, sector?.floorHeight || 0),
+          angle: entity.angle || 0,
+          quaternion: entity.rotation ? [entity.rotation.x, entity.rotation.y, entity.rotation.z, entity.rotation.w] : null,
+        });
+        return new THREE.Box3(new THREE.Vector3(...box.min), new THREE.Vector3(...box.max));
+      }
+      const model = models.get(id);
+      if (model) return new THREE.Box3().setFromObject(model.root);
+      const sprite = sprites.get(id);
+      if (sprite) { sprite.updateMatrixWorld(true); return new THREE.Box3().setFromObject(sprite); }
+      return null;
     }
     for (const entity of project.map.entities) if (editor || entity.type !== 'player') addEntity(entity);
     const weaponOverlays = new Map();
@@ -922,6 +977,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
       }
       required.add(next.environment?.skyAsset);
       for (const id of required) if (id && !textures.has(id)) return false; // new artwork needs a full reload
+      // Models are parsed before the first frame, so a newly assigned one needs the
+      // same full reload instead of silently staying a sprite forever.
+      const plan = liveProjectPlan(next.map.entities, {
+        hasModel: id => modelAssets.has(id),
+        drawn: id => (models.has(id) ? 'model' : sprites.has(id) ? 'sprite' : null),
+        drawnModel: id => models.get(id)?.assetId,
+      });
+      if (plan.needsReload) return false;
       project = next;
       assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
       geometry = sectorGeometry(project);
@@ -940,11 +1003,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
       spriteIndex = createSpriteIndex(project);
       sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
       scene.background = new THREE.Color(project.environment.sky);
-      const known = new Set([...sprites.keys(), ...models.keys()]);
-      for (const entity of project.map.entities) if (!known.has(entity.id)) addEntity(entity);
+      // Objects that gained or lost their model swap representation, and new objects
+      // appear without a reload. Runtime spawns are handled by the frame loop.
+      const byId = new Map(project.map.entities.map(entity => [entity.id, entity]));
+      for (const id of plan.swap) forgetEntity(id);
+      for (const id of plan.add) addEntity(byId.get(id));
       return true;
     }
-    return { render, dispose, scene, camera, renderer, rendererStatus, setProject, perf: () => frameStats.summary() };
+    return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity, perf: () => frameStats.summary() };
   } catch (error) {
     dispose();
     throw new Error(`Preview could not load: ${error.message}`);

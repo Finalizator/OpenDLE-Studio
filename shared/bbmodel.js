@@ -380,7 +380,8 @@ export function bbmodelToGltf(model, { scale = 1 / BBMODEL_UNITS_PER_METRE, samp
       materialByTexture.set(key, null);
       return null;
     }
-    images.push({ uri: source, mimeType: /^image\/(?:png|jpeg|webp)/.exec(source.slice(5))[0] });
+    // glTF allows mimeType only for bufferView images, so a data URI carries its own type.
+    images.push({ uri: source });
     textures.push({ source: images.length - 1, sampler: 0 });
     const alpha = pngHasAlpha(source);
     materials.push({

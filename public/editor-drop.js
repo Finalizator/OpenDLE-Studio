@@ -1,4 +1,5 @@
 import { sectorAt } from '../shared/sectors.js';
+import { newId } from '../shared/project.js';
 
 const IMAGE_KINDS = new Set(['texture', 'flat', 'sky', 'sprite', 'weapon']);
 const KIND_LABELS = {
@@ -116,6 +117,29 @@ export function moveEntityToFloor(project, entityId, x, y) {
   entity.y = y;
   entity.elevation = 0;
   return `${entity.name} moved to the floor at ${x}, ${y}`;
+}
+
+function uniqueName(entities, base) {
+  const names = new Set(entities.map(entity => entity.name));
+  if (!names.has(base)) return base;
+  for (let index = 2; ; index++) if (!names.has(`${base} ${index}`)) return `${base} ${index}`;
+}
+
+/**
+ * Dropping a model on the scene places a new object that already carries it. The
+ * type stays editable afterwards, so a decoration is the neutral default.
+ */
+export function addEntityWithModel(project, { id, x, y, elevation = 0, assetId, type = 'decoration', name }) {
+  const asset = requireModelAsset(project, assetId);
+  if (type === 'player') throw new Error('The player object cannot be placed as a model');
+  if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Drop the model on the scene to place it');
+  const base = (name || asset.name.replace(/\.[^.]+$/, '') || 'Decoration').slice(0, 100);
+  const entity = {
+    id: id || newId('entity'), type, name: uniqueName(project.map.entities, base),
+    x: Math.round(x), y: Math.round(y), elevation: Math.round(elevation) || 0, angle: 0, modelAsset: assetId,
+  };
+  project.map.entities.push(entity);
+  return `${asset.name} placed as a ${type} at ${entity.x}, ${entity.y}`;
 }
 
 // Screen-space drag along a world axis, mirroring the axis handle behaviour:
