@@ -137,6 +137,7 @@ export function udmfRecords(document) {
         (bool(p, 'dontpegtop') ? 8 : 0) | (bool(p, 'dontpegbottom') ? 16 : 0) })),
     things: byType('thing').map(p => ({
       x: number(p, 'x'), y: number(p, 'y'), angle: number(p, 'angle', 0, { min: -3600, max: 3600 }),
+      tid: number(p, 'id', 0, { integer: true, min: 0, max: 65535 }),
       elevation: number(p, 'height', 0, { min: -32768, max: 32767 }), type: number(p, 'type', 0, { integer: true, min: 0, max: 65535 }),
       flags: (bool(p, 'skill1') || bool(p, 'skill2') ? 1 : 0) | (bool(p, 'skill3') ? 2 : 0) |
         (bool(p, 'skill4') || bool(p, 'skill5') ? 4 : 0) | (bool(p, 'ambush', false) ? 8 : 0) | (bool(p, 'single') ? 0 : 16),

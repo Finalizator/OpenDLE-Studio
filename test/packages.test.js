@@ -261,7 +261,8 @@ test('PK3 reads stored/Deflate resources, classifies custom map markers and impo
   const inspection = inspectPackage(files);
   assert.equal(inspection.images.length, 4);
   assert.deepEqual(inspection.maps.map(map => [map.marker, map.format, map.supported]), [['ROOMONE', 'Doom', true]]);
-  assert.ok(inspection.warnings.some(warning => /zscript/.test(warning)));
+  assert.ok(inspection.warnings.some(warning => /zscript/i.test(warning)),
+    'actor definitions are imported as data and the limitation is reported');
   const { assets } = importPackage(files, { paths: ['textures/wall.png', 'graphics/extra.png'] });
   assert.deepEqual(assets.map(asset => [asset.kind, asset.width, asset.height]), [['texture', 2, 2], ['sprite', 2, 2]]);
   const project = createProject(); project.assets = assets; validateProject(project);

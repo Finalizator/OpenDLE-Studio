@@ -29,6 +29,8 @@
       <button data-tab="map" class="active">Layout 1</button>
       <button data-tab="events" id="events-tab">Event sheet 1</button>
       <button data-tab="environment">Environment</button>
+      <button data-tab="actors">Actors</button>
+      <button data-tab="scripts">Scripts</button>
       <button data-tab="tweaks">Engine tweaks</button>
       <button data-tab="hud">HUD</button>
       <button data-tab="assets">Assets</button>
@@ -114,6 +116,39 @@
         <details class="asset-help"><summary>Blockbench export help</summary><p class="info">Export uncompressed glTF 2.0 / GLB, not Minecraft JSON. Select the .gltf plus its .bin and textures together, or import the containing folder for nested resources (GLB is simplest). Meshes, materials, hierarchy, skins, morph targets and exported clips are retained. Assign a model in object Properties; configure primitive colliders separately.</p></details>
         </div>
       </section>
+      <section id="actors-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1>Actors</h1><p>Imported monsters, weapons and props as editable data: stats, flags, sounds and state machines.</p></div></div>
+        <p id="actors-summary" class="muted" role="status"></p>
+        <div class="field-grid">
+          <label>Search <input id="actor-search" type="search" placeholder="Name or editor number" /></label>
+          <label>Show <select id="actor-filter">
+            <option value="all">All actors</option>
+            <option value="monster">Monsters</option>
+            <option value="weapon">Weapons</option>
+            <option value="item">Items and pickups</option>
+          </select></label>
+        </div>
+        <div id="actor-list" class="actor-list"></div>
+        <form id="actor-form" hidden>
+          <h2 id="actor-title">Actor</h2>
+          <div id="actor-fields" class="field-grid"></div>
+          <div id="actor-states"></div>
+          <p class="muted">State frames use DECORATE syntax, one frame per line: <code>SPRT A 4 A_Chase</code>. Labels become the Spawn/See/Death entry points the runtime uses.</p>
+        </form>
+      </section>
+      <section id="scripts-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1>Map scripts</h1><p>The level's compiled ACS module: scripts, triggers and linedef specials, disassembled.</p></div></div>
+        <p id="scripts-summary" class="muted" role="status"></p>
+        <div class="field-grid">
+          <label>Search <input id="script-search" type="search" placeholder="Script name, number or trigger" /></label>
+        </div>
+        <div class="scripts-layout">
+          <div id="script-list" class="script-list" role="list"></div>
+          <div id="script-detail" class="script-detail" role="region" aria-label="Script details"></div>
+        </div>
+        <h2>Linedef specials</h2>
+        <div id="script-specials"></div>
+      </section>
       <section id="tweaks-panel" class="panel" hidden>
         <div class="panel-heading"><div><h1>Engine tweaks</h1><p>OpenDLE preview overrides, independent of imported game menus.</p></div></div>
         <div class="prose">
@@ -159,6 +194,7 @@
       <div class="project-tree">
         <strong id="project-name">Project</strong>
         <details open><summary>Layouts</summary><button data-tab="map" class="tree-link">Layout 1</button></details>
+        <details><summary>Game logic</summary><button data-tab="scripts" class="tree-link">Map scripts (ACS)</button></details>
         <details open><summary>HUD overlays</summary><button data-tab="hud" class="tree-link">Game HUD / designer</button></details>
         <details><summary>Event sheets</summary><button id="scene-script" class="tree-link">Event sheet 1</button><div id="object-scripts"></div></details>
         <details open><summary>Engine</summary><div id="engine-sheets"></div><button id="install-engine" class="tree-link">Install editable FPS starter</button></details>

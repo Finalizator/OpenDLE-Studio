@@ -135,6 +135,13 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     }
     assert(JSON.stringify(source).length <= 24 * 1024 * 1024, 'UDMF import provenance exceeds 24 MiB');
   }
+  if (project.mapScripts !== undefined) {
+    const scripts = project.mapScripts;
+    object(scripts, 'Map scripts');
+    assert(['old', 'enhanced', 'little'].includes(scripts.format), 'Unknown ACS module format');
+    text(scripts.data, 'ACS module data', 8 * 1024 * 1024);
+    assert(/^[A-Za-z0-9+/=]+$/.test(scripts.data), 'ACS module data must be base64');
+  }
   const { vertices, walls, entities } = project.map;
   array(vertices, 'Vertices', 20000);
   array(walls, 'Walls', 20000);
@@ -279,6 +286,10 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     if (entity.skillMask !== undefined) {
       number(entity.skillMask, 'Object skill mask', 1, 7);
       assert(Number.isInteger(entity.skillMask), 'Object skill mask must be an integer');
+    }
+    if (entity.tid !== undefined) {
+      number(entity.tid, 'Object TID', 0, 65535);
+      assert(Number.isInteger(entity.tid), 'Object TID must be an integer');
     }
     if (entity.doomType !== undefined) {
       number(entity.doomType, 'Doom thing type', 0, 65535);
@@ -603,6 +614,49 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           numberOrExpression(action.speed, 'Animation speed', .01, 10);
           assert(typeof action.loop === 'boolean', 'Animation loop must be boolean');
         }
+      }
+    }
+  }
+  if (project.strings !== undefined) {
+    object(project.strings, 'Language strings');
+    const keys = Object.keys(project.strings);
+    assert(keys.length <= 20000, 'Too many language strings');
+    for (const [key, value] of Object.entries(project.strings)) {
+      assert(/^[A-Za-z0-9_$.]+$/.test(key) && key.length <= 80, 'Invalid language keyword');
+      assert(typeof value === 'string' && value.length <= 8192, 'Language strings must be bounded text');
+    }
+  }
+  if (project.actors !== undefined) {
+    array(project.actors, 'Actors', 4000);
+    const actorIds = new Set(), actorNames = new Set();
+    for (const actor of project.actors) {
+      object(actor, 'Actor');
+      identifier(actor.id, 'Actor ID');
+      assert(!actorIds.has(actor.id), `Duplicate actor ID: ${actor.id}`);
+      actorIds.add(actor.id);
+      text(actor.name, 'Actor name', 80);
+      assert(!actorNames.has(actor.name.toLowerCase()), `Duplicate actor name: ${actor.name}`);
+      actorNames.add(actor.name.toLowerCase());
+      if (actor.doomedNum !== null && actor.doomedNum !== undefined) number(actor.doomedNum, 'Actor editor number', 0, 65535);
+      for (const key of ['health', 'speed', 'damage', 'painChance', 'radius', 'height', 'mass', 'reactionTime', 'fastSpeed']) {
+        if (actor[key] !== undefined) number(actor[key], `Actor ${key}`, -1, 1e12);
+      }
+      object(actor.flags || {}, 'Actor flags');
+      object(actor.sounds || {}, 'Actor sounds');
+      object(actor.states, 'Actor states');
+      array(actor.states.frames, 'Actor frames', 4000);
+      for (const [label, index] of Object.entries(actor.states.labels || {})) {
+        text(label, 'State label', 60);
+        assert(Number.isInteger(index) && index >= 0 && index <= actor.states.frames.length, `State label ${label} points outside the frame list`);
+      }
+      for (const frame of actor.states.frames) {
+        object(frame, 'Actor frame');
+        assert(['frame', 'goto', 'loop', 'stop', 'wait', 'fail'].includes(frame.kind), 'Invalid actor frame kind');
+        if (frame.kind !== 'frame') continue;
+        if (frame.sprite !== undefined) assert(typeof frame.sprite === 'string' && /^[A-Za-z0-9_#-]{1,8}$/.test(frame.sprite), 'Invalid frame sprite');
+        if (frame.letter !== undefined) assert(typeof frame.letter === 'string' && /^[A-Za-z0-9#]$/.test(frame.letter), 'Invalid frame letter');
+        number(frame.duration, 'Frame duration', -1, 65535);
+        array(frame.actions || [], 'Frame actions', 24);
       }
     }
   }

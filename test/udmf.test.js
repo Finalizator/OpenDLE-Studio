@@ -80,7 +80,7 @@ test('native UDMF import retains fractional geometry, sector heights, side offse
   assert.equal(project.importSource.globals.custom_global, 'preserved');
   assert.equal(project.importSource.blocks.find(block => block.type === 'linedef').properties.arg0, 1);
   assert.ok(warnings.some(warning => warning.includes('sector.rotationfloor')));
-  assert.ok(warnings.some(warning => warning.includes('ACS/dialogue')));
+  assert.ok(warnings.some(warning => warning.includes('ACS module could not be read')));
   assert.ok(warnings.some(warning => warning.includes('lightlevel')));
   const store = new ProjectStore(); store.update(project, 0);
   const saved = store.snapshot().project;

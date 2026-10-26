@@ -7,14 +7,44 @@ import { parseHUDCSS } from '../shared/hud-style.js';
 import { PLAYER_STATS, WEAPONS, KEYS, AMMO_TYPES } from '../shared/player-state.js';
 import { installGameMenu, attachMenuElement } from '../shared/game-menu.js';
 import { selectGameLevel } from '../shared/game-levels.js';
+import { scriptListing, scriptSummary, collectSpecials, behaviorFor } from '../shared/map-scripts.js';
+import { unsupportedSpecials, specialName } from '../shared/line-specials.js';
 
 const coordinate = z.number().min(-65536).max(65536);
+/** Linedef specials with their Hexen names and whether the runtime performs them. */
+function wallSpecials(project) {
+  return (project.map.walls || []).filter(wall => wall.special).map(wall => ({
+    wall: wall.id, special: wall.special, name: specialName(wall.special),
+    tag: wall.tag || 0, args: wall.args || null, modes: wall.activationModes || ['use'],
+    supported: !unsupportedSpecials([wall.special]).length,
+  }));
+}
+
+function scriptSpecials(project) {
+  const behavior = behaviorFor(project);
+  return behavior ? collectSpecials(behavior) : [];
+}
+
 export const toolDefinitions = [
   { name: 'project_get', description: 'Read the complete active OpenDLE project.', shape: {} },
   { name: 'game_level_select', description: 'Select an imported game level for editing by its ID. Preserves the current level edits, shared assets and every other level. Read project_get.game.levels first. Does not run or reset gameplay.', shape: { levelId: z.string().min(1).max(80) } },
   { name: 'game_level_set_routes', description: 'Edit campaign entry or a level normal/secret exit destination. null ends the campaign. References must exist. Does not alter maps or visual scripts.', shape: {
     levelId: z.string(), next: z.string().nullable().optional(), secretNext: z.string().nullable().optional(), entry: z.boolean().optional() } },
   { name: 'game_menu_install', description: 'Install editable title/pause/settings HUDs and interface-phase visual rules on a project without game menus. Imported WAD/PK3 menus are installed by their importer; this explicit tool adds the no-artwork fallback. Does not overwrite existing menus. User settings are browser-local, not authored project variables.', shape: {} },
+  { name: 'actor_list', description: 'List the actor table this project runs (imported DECORATE/ZScript definitions or built-in classic Doom data): names, editor numbers, stats, flags and whether the actor is a monster or weapon. Read this before editing actors.', shape: {} },
+  { name: 'actor_get', description: 'Read one actor by name, including its compiled state frames, labels and action functions, so gameplay can be inspected and edited precisely.', shape: { name: z.string().min(1).max(80) } },
+  { name: 'actor_update', description: 'Edit one imported actor. Changes are validated and transactional: stats (health, speed, damage, painChance, radius, height, mass, reactionTime) and flags can be changed, states can be replaced with a compiled frame list, and sounds/drops can be set. Entity behaviour in Play comes from this data, not from hidden code.',
+    shape: {
+      name: z.string().min(1).max(80),
+      stats: z.record(z.number().finite()).optional(),
+      flags: z.record(z.boolean()).optional(),
+      sounds: z.record(z.string().max(80)).optional(),
+      labels: z.record(z.array(z.union([z.string().max(120), z.number()]))).optional(),
+    } },
+  { name: 'actor_reset', description: 'Restore the project actor table to what the import produced, discarding actor edits.', shape: {} },
+  { name: 'script_list', description: 'List the ACS map scripts running in the active level: number or name, trigger kind (open/enter/line), argument count, string table size and what the level uses line specials for. Read this before editing or debugging imported map logic.', shape: {} },
+  { name: 'script_get', description: 'Read one ACS map script as a disassembly listing (p-code, operands, resolved string indexes) so map logic can be inspected without the original source. Use script_list for the available selectors.', shape: { script: z.string().min(1).max(80) } },
+  { name: 'script_specials', description: 'Report every linedef special the active level uses, whether the native runtime performs it, and which of those are only reachable from scripts.', shape: {} },
   { name: 'variables_set', description: 'Replace global or object-local initial variables with a complete record of numbers, text or booleans. Omit entityId for globals. Existing script/expression references are validated; types stay fixed during Play.',
     shape: { entityId: z.string().optional(), variables: z.record(z.union([z.number().finite(), z.string().max(4096), z.boolean()])) } },
   { name: 'shaders_set', description: 'Replace portable GLSL effect definitions [{id,name,language:"glsl",source,uniforms:{name:number}}] and optionally select shaderId (null disables). Source defines vec4 effect(vec4 color, vec2 uv, float time); numeric uniform declarations are supplied by the engine. This portable GLSL subset is compiled for WebGPU/WebGL; unsupported syntax and broken references are rejected. Shader visual actions setShaderUniform(uniform,value) and setShaderEnabled(enabled:yes|no) remain editable.',
@@ -164,6 +194,73 @@ export function applyTool(project, name, args) {
       break;
     }
     case 'project_set_title': next.title = input.title; break;
+    case 'script_list': {
+      const summary = scriptSummary(next);
+      if (!summary) return { scripts: [], note: 'This level has no ACS module (BEHAVIOR lump).', changed: false };
+      return { ...summary, lineSpecials: wallSpecials(next), changed: false };
+    }
+    case 'script_get': {
+      const selector = /^-?\d+$/.test(input.script) ? Number(input.script) : input.script;
+      return { script: input.script, listing: scriptListing(next, selector), changed: false };
+    }
+    case 'script_specials': {
+      const summary = scriptSummary(next);
+      const linedefs = wallSpecials(next), fromScripts = scriptSpecials(next);
+      return { linedefs, fromScripts: fromScripts.map(special => ({ special, name: specialName(special) })),
+        unsupported: unsupportedSpecials([...linedefs.map(entry => entry.special), ...fromScripts]),
+        hasModule: Boolean(summary), changed: false };
+    }
+    case 'actor_list': return { actors: (next.actors || []).map(actor => ({
+      name: actor.name, doomedNum: actor.doomedNum, health: actor.health, speed: actor.speed,
+      monster: Boolean(actor.flags?.MONSTER), weapon: Boolean(actor.flags?.WEAPON),
+      frames: actor.states.frames.length, labels: Object.keys(actor.states.labels || {}),
+    })), changed: false };
+    case 'actor_get': {
+      const actor = (next.actors || []).find(candidate => candidate.name.toLowerCase() === input.name.toLowerCase());
+      if (!actor) throw new Error(`Unknown actor: ${input.name}`);
+      return { actor, changed: false };
+    }
+    case 'actor_update': {
+      const actor = (next.actors || []).find(candidate => candidate.name.toLowerCase() === input.name.toLowerCase());
+      if (!actor) throw new Error(`Unknown actor: ${input.name}`);
+      if (input.stats) {
+        const allowed = ['health', 'speed', 'damage', 'painChance', 'radius', 'height', 'mass', 'reactionTime', 'fastSpeed'];
+        for (const [key, value] of Object.entries(input.stats)) {
+          if (!allowed.includes(key)) throw new Error(`Actor stat ${key} cannot be edited; use ${allowed.join(', ')}`);
+          actor[key] = value;
+        }
+      }
+      if (input.flags) {
+        for (const [flag, value] of Object.entries(input.flags)) {
+          if (!/^[A-Za-z0-9_.]+$/.test(flag)) throw new Error(`Invalid actor flag: ${flag}`);
+          if (value) actor.flags[flag] = true; else delete actor.flags[flag];
+        }
+      }
+      if (input.sounds) Object.assign(actor.sounds, input.sounds);
+      if (input.labels) {
+        // Replacing a label rebuilds the frame list in declaration order so
+        // `goto`/`A_Jump` indexes stay consistent.
+        const frames = [];
+        const labels = {};
+        for (const [label, entries] of Object.entries(input.labels)) {
+          labels[label] = frames.length;
+          for (const entry of entries) {
+            if (typeof entry === 'number') { frames.push({ kind: 'frame', sprite: 'TNT1', letter: 'A', duration: entry, actions: [], label }); continue; }
+            const match = /^([A-Za-z0-9_]{1,5})\s+([A-Za-z#-]+)\s+(-?\d+)(?:\s+([A-Za-z_]\w*))?$/.exec(entry.trim());
+            if (!match) throw new Error(`Unreadable actor frame: ${entry}`);
+            frames.push({ kind: 'frame', sprite: match[1].toUpperCase(), letter: match[2][0], duration: Number(match[3]),
+              actions: match[4] ? [{ name: match[4], args: [], named: {} }] : [], label });
+          }
+        }
+        actor.states = { frames, labels };
+      }
+      actor.edited = true;
+      break;
+    }
+    case 'actor_reset': {
+      delete next.actors;
+      break;
+    }
     case 'variables_set': {
       if (input.entityId) {
         const entity = next.map.entities.find(entity => entity.id === input.entityId);

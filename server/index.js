@@ -15,6 +15,7 @@ import { readEngineVersion } from './version.js';
 import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, inspectPackage, importPackage } from './packages.js';
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
 import { createPortableBuild } from './export-build.js';
+import { loadGzdoomActors } from './actor-sources.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function equal(a, b) {
@@ -106,11 +107,17 @@ export function createApp({
     const info = statSync(resolve(projectsDir, name), { throwIfNoEntry: false });
     return info?.isFile() ? `${name}:${info.size}:${info.mtimeMs}` : `${name}:missing`;
   };
+  // GZDoom's own actor definitions (from a local gzdoom.pk3) make imported
+  // monsters and weapons run their real state machines.
+  function actorContext() {
+    const gzdoom = loadGzdoomActors(projectsDir);
+    return gzdoom.available ? { actorSources: gzdoom.sources, dehacked: gzdoom.dehacked } : {};
+  }
   app.post('/api/import/local-wad', (req, res) => {
     const bytes = localWad(req.body.name), options = { fullGame: fullGameImport(req.body.scope), title: req.body.name.replace(/\.wad$/i, '') };
     const key = importCacheKey(['wad', createHash('sha256').update(bytes).digest('hex'), req.body.map ?? '', options.fullGame, options.title]);
     const cached = fresh(req.body) ? null : cache?.get(key);
-    const result = cached || importWad(bytes, req.body.map, options);
+    const result = cached || importWad(bytes, req.body.map, { ...options, ...actorContext() });
     if (!cached) cache?.set(key, result);
     res.json({ ...result, cached: cached?.cached || null });
   });
@@ -119,7 +126,7 @@ export function createApp({
     const options = { fullGame: fullGameImport(req.query.scope) };
     const key = importCacheKey(['wad', createHash('sha256').update(req.body).digest('hex'), req.query.map ?? '', options.fullGame, null]);
     const cached = fresh(req.query) ? null : cache?.get(key);
-    const result = cached || importWad(req.body, req.query.map, options);
+    const result = cached || importWad(req.body, req.query.map, { ...options, ...actorContext() });
     if (!cached) cache?.set(key, result);
     res.json({ ...result, cached: cached?.cached || null });
   });
@@ -137,7 +144,7 @@ export function createApp({
     if (cached) return res.json({ ...cached, cached: cached.cached || null });
     const files = await readLocalPackage(projectsDir, req.body.name);
     const result = importPackage(files, { map: req.body.map, paths: req.body.paths,
-      fullGame: options.fullGame,
+      fullGame: options.fullGame, projectsDir,
       baseBytes: req.body.base ? localWadBytes(projectsDir, req.body.base) : undefined });
     cache?.set(key, result);
     res.json({ ...result, cached: null });
@@ -152,7 +159,7 @@ export function createApp({
     const key = importCacheKey(['package-upload', createHash('sha256').update(req.body).digest('hex'), options]);
     const cached = fresh(req.query) ? null : cache?.get(key);
     const result = cached || importPackage(files, { map: req.query.map, paths: options.paths,
-      fullGame: options.fullGame,
+      fullGame: options.fullGame, projectsDir,
       baseBytes: req.query.base ? localWadBytes(projectsDir, req.query.base) : undefined });
     if (!cached) cache?.set(key, result);
     res.json({ ...result, cached: cached?.cached || null });

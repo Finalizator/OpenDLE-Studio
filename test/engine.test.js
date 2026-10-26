@@ -299,7 +299,7 @@ test('classic WAD geometry import preserves coordinates and reports limitations'
   assert.equal(result.project.map.walls.length, 4);
   assert.equal(result.project.map.vertices[0].y, 128);
   assert.equal(result.project.map.entities[0].type, 'player');
-  assert.ok(result.warnings.some(warning => warning.includes('not a Doom-compatible')));
+  assert.ok(result.warnings.some(warning => warning.includes('DECORATE/ZScript state machines')));
 });
 test('WAD parsing rejects truncated headers, directories, out-of-bounds lumps and unsupported maps', () => {
   assert.throws(() => readWad(new ArrayBuffer(3)), /truncated/);

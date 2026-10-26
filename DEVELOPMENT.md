@@ -168,6 +168,56 @@ provider credits or network access are required for tests.
   visible from below, off-screen selection helpers are culled, and vertex
   markers only appear for the selected vertex or the endpoints of the selected
   wall.
+- **Actors (imported game behaviour):** DECORATE and ZScript actor definitions
+  from the imported WAD/PK3 chain are compiled into an editable actor table:
+  health, speed, damage, pain chance, radius/height/mass, reaction time, flags,
+  sounds, drop items and the full state machine (labels, frames, durations,
+  fullbright, action functions). When the game folder contains `gzdoom.pk3`, its
+  own definitions are used, so vanilla monsters and weapons run their real state
+  machines; a plain WAD import falls back to built-in classic Doom actor data.
+  The runtime executes those states at Doom's 35 Hz tic rate: `A_Look`,
+  `A_Chase`, `A_FaceTarget`, the missile/melee branch selection, the classic
+  attack functions, `A_Jump`/`A_JumpIf*`, `A_Pain`/`A_Scream`/`A_NoBlocking`,
+  projectiles and the weapon `Ready`/`Fire`/`Flash` cycle with `A_WeaponReady`,
+  `A_ReFire`, `A_FireBullets`/`A_FireShotgun`/`A_FireMissile`/`A_FirePlasma`,
+  `A_GunFlash` and `A_Light0-2`. Action functions without an engine equivalent
+  are collected by name and reported instead of silently ignored. The actor
+  table is edited in the Actors tab (stats, flags, sounds, state frames in
+  DECORATE syntax) and by the `actor_list`, `actor_get`, `actor_update` and
+  `actor_reset` MCP tools. `DoomEdNums` blocks bind editor numbers, and LANGUAGE
+  keyword strings (`$TXT_MAP01`, `$GOTSHOTGUN`) resolve through the project
+  string table. DEHACKED patches are applied too: `Thing N` (mobjinfo indexes and
+  editor numbers), `Misc`, `Ammo`, `Weapon`, `[CODEPTR]`/`Pointer` and the
+  classic fullbright frame usage. ACS map scripts run natively (below) and ZScript code beyond
+  defaults/state blocks are still not executed.
+- **Map scripts (ACS):** a level's compiled `BEHAVIOR` module is parsed and
+  executed by a real ACS interpreter, not translated by hand: the script
+  directory (`SPTR`/`SNAM`/`SFLG`/`SVCT`), string table (`STRL`/`STRE`, including
+  the encrypted form), functions (`FUNC`/`JUMP`) and initial map variables
+  (`MINI`) are read, and the p-code table GZDoom uses is implemented for
+  stack/arithmetic/logic/variables (script, map, world and global, scalar and
+  array), control flow (`goto`/`if`/`case`/`call`/`restart`), `delay`,
+  `tagwait`, `scriptwait`, prints and HUD messages, `LSPEC` line-special calls,
+  actor queries and mutation, inventory, sounds, music, and `ACS_Execute`,
+  `ACS_Suspend`, `ACS_Terminate`, `ACS_ExecuteWithResult` and the always/named
+  variants. OPEN and ENTER scripts start when the level does; scripts tick at
+  35 Hz with per-tic `Delay` and `TagWait` semantics, resuming suspended scripts
+  on a second execute exactly like GZDoom. Interpreted state (variables plus each
+  script's program counter) is saved and restored with the game, and DECORATE
+  `ACS_Execute*` actions in actor states call into the same interpreter. The
+  Scripts tab (and the `script_list`, `script_get` and `script_specials` MCP
+  tools) shows the script directory and a disassembly of each script, because
+  the map ships bytecode rather than source. Unsupported instructions stop the
+  script with a named report instead of hanging.
+- **Line specials:** Hexen/ZDoom specials on UDMF and Hexen-format lines execute
+  through the same table ACS uses (`Door_*`, `Floor_*`, `Ceiling_*`, platforms,
+  stairs, `Generic_Door`/`Generic_Lift`, `Teleport`, `Thing_Spawn`/`Projectile`/
+  `Damage`/`Remove`/`Activate`, lights, `Sector_SetDamage`, `Player_Set*`,
+  exits, and the `ACS_*` entry points), honouring the line's UDMF activation
+  flags. Specials the runtime does not perform are reported by number and name
+  at import and in the Scripts tab instead of silently doing nothing. Teleport
+  destination things (editor number 14) and UDMF thing IDs (`id` → TID) are
+  imported so scripts can address things.
 - **Event sheet:** scene-wide and object-attached ordered rules, multiple AND
   or OR conditions, optional NOT on non-triggers, nested sub-events,
   comments, active/collapsible groups, ordered actions, enabled/once flags
@@ -1385,9 +1435,11 @@ conversion of their ACS/ZScript/custom actors; compatibility warnings remain.
   GZDoom's complete texture-type/filter/load-order resolution is not reproduced yet.
   Missing base palettes report an error. Map and image imports do not silently
   save over the server project.
-- Binary Hexen maps remain visible but disabled. ZScript, DECORATE, ACS,
-  MAPINFO, GAMEINFO, TEXTURES, GLDEFS and other definitions are
-  **not executed or translated**. Their presence is reported in import notes.
+- Binary Hexen maps remain visible but disabled. ACS sources compiled into a
+  map (`BEHAVIOR`), DECORATE/ZScript actor definitions and DEHACKED patches are
+  compiled into native data and executed. ZScript beyond defaults/state blocks,
+  ACS libraries loaded through `LOADACS`, MAPINFO/GAMEINFO gameplay rules,
+  TEXTURES, GLDEFS and other definitions are **not executed or translated**. Their presence is reported in import notes.
   MENUDEF and SBARINFO have the bounded partial translation described above;
   this does not execute ZScript or custom actors.
   Images imported from a mod do not automatically create its custom actors,
@@ -1434,9 +1486,9 @@ properties use their last assignment, as found in the supplied maps.
   the corresponding original block as read-only provenance. Editing native
   geometry does not rewrite that original snapshot or execute its properties.
 - Unsupported source properties are enumerated in import notes. Slopes,
-  3D floors, surface panning/rotation/scaling, colored lighting, custom actor
-  definitions, trigger/special execution, ACS and dialogue are not implemented
-  by this step. Out-of-range light levels are explicitly reported and clamped
+  3D floors, surface panning/rotation/scaling and colored lighting are not
+  implemented by this step; line specials and each map's ACS module do execute,
+  and dialogue is imported as data but not played. Out-of-range light levels are explicitly reported and clamped
   to 0–255 for the current renderer, with originals preserved. Missing material
   resources still produce visible fallbacks with warnings.
 - The UDMF parser accepts the known `doom`, `zdoom`, `zdoomtranslated`, `hexen`,

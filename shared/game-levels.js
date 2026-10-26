@@ -1,6 +1,9 @@
 import { resolveLevelMusic } from './music.js';
+import { resolveString } from './language.js';
 
-const sharedKeys = new Set(['version', 'title', 'assets', 'game']);
+// `actors` describes the game as a whole (monster and weapon state machines),
+// so it is stored once instead of being duplicated into every level.
+const sharedKeys = new Set(['version', 'title', 'assets', 'game', 'actors', 'strings']);
 
 /**
  * Point a level's environment at its music asset. MAPINFO `music` wins; classic
@@ -74,13 +77,17 @@ function classicNext(id, secret) {
 
 export function assembleGameLevels(entries, entryId, title, routes = new Map()) {
   const assets = [], byId = new Map(), byContent = new Map(), levels = [], warnings = new Set(), ids = new Set();
-  let version;
+  let version, sharedActors = null, sharedStrings = null;
   for (const entry of entries) {
     if (levels.length >= 128) throw new Error('A game must contain 1–128 levels');
     if (ids.has(entry.id)) throw new Error(`Duplicate game level ${entry.id}`);
     ids.add(entry.id);
     const project = entry.project, replacements = new Map(), assetIds = [];
     version = project.version;
+    // The actor table describes the whole game (monster and weapon state
+    // machines), so it is taken from the first level that has one.
+    if (!sharedActors && project.actors?.length) sharedActors = structuredClone(project.actors);
+    if (!sharedStrings && project.strings) sharedStrings = { ...project.strings };
     for (const asset of project.assets) {
       const { id: originalId, ...content } = asset;
       const signature = JSON.stringify(content), existing = byContent.get(signature);
@@ -103,7 +110,11 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
     const route = routes.get(entry.id);
     const data = remap(levelData(project));
     applyLevelMusic(data, entry.id, route?.music, assets);
-    levels.push({ id: entry.id, name: route?.name || entry.name || entry.id, assetIds: [...new Set(assetIds)], data });
+    // MAPINFO names and LANGUAGE keywords (`$TXT_MAP1`) resolve against the
+    // project string table so the level list shows real names.
+    const rawName = route?.name || entry.name || entry.id;
+    levels.push({ id: entry.id, name: resolveString(sharedStrings, rawName, rawName),
+      assetIds: [...new Set(assetIds)], data });
     for (const warning of entry.warnings || []) warnings.add(`${entry.id}: ${warning}`);
   }
   for (let i = 0; i < levels.length; i++) {
@@ -118,8 +129,9 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
   }
   const active = levels.find(level => level.id === entryId);
   if (!active) throw new Error(`Missing game entry level ${entryId}`);
-  const project = { version, title: title.slice(0, 100), assets, ...structuredClone(active.data),
-    game: { version: 1, entry: entryId, active: entryId, levels } };
+  const project = { version, title: title.slice(0, 100), assets,
+    ...(sharedStrings ? { strings: sharedStrings } : {}), ...(sharedActors ? { actors: sharedActors } : {}),
+    ...structuredClone(active.data), game: { version: 1, entry: entryId, active: entryId, levels } };
   if (JSON.stringify(project).length > 128 * 1024 * 1024) throw new Error('Imported game exceeds the 128 MiB portable project limit');
   return { project, warnings: [...warnings] };
 }

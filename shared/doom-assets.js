@@ -293,6 +293,9 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
 }
 
 export const doomThings = {
+  // Teleport destinations are pure markers: invisible in game, but ACS and
+  // `Teleport` line specials aim at them, so they must survive the import.
+  14: ['TNT1', 'decoration'],
   3004: ['POSS', 'enemy'], 9: ['SPOS', 'enemy'], 65: ['CPOS', 'enemy'], 3001: ['TROO', 'enemy'],
   3002: ['SARG', 'enemy'], 58: ['SARG', 'enemy'], 3006: ['SKUL', 'enemy'], 3005: ['HEAD', 'enemy'],
   69: ['BOS2', 'enemy'], 3003: ['BOSS', 'enemy'], 68: ['BSPI', 'enemy'], 71: ['PAIN', 'enemy'],

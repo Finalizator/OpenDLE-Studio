@@ -11,6 +11,10 @@ import { importSBarInfo } from './sbarinfo.js';
 import { assembleGameLevels, parseLevelRoutes } from './game-levels.js';
 import { parseGameEpisodes } from './game-episodes.js';
 import { resolveLevelMusic } from './music.js';
+import { importActors } from './actors.js';
+import { buildStringTable, resolveString } from './language.js';
+import { describeMapScripts } from './map-scripts.js';
+import { unsupportedSpecials } from './line-specials.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
 
@@ -53,7 +57,7 @@ export function readWad(buffer, { allowNoMaps = false } = {}) {
   return { buffer, lumps, maps: [...new Set(maps)] };
 }
 
-export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music } = {}) {
+export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], actors = true, options = {} } = {}) {
   const start = wad.lumps.findLastIndex(lump => lump.name === mapName);
   if (start < 0) throw new Error('Map not found');
   const mapLumps = [];
@@ -90,6 +94,19 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   };
   const { vertices, lines, sides, sectors, things } = data;
   const assets = encodeImage ? createDoomAssets(wad, encodeImage, images, fontResources) : null;
+  // ACS: the compiled BEHAVIOR lump is executed natively at Doom's 35 Hz.
+  const behaviorLump = mapLumps.find(lump => lump.name === 'BEHAVIOR');
+  const scriptWarnings = [];
+  let mapScriptInfo = null;
+  if (behaviorLump) {
+    if (behaviorLump.size > 4 * 1024 * 1024) throw new Error('BEHAVIOR lump exceeds the 4 MiB script limit');
+    try {
+      mapScriptInfo = describeMapScripts(new Uint8Array(wad.buffer, behaviorLump.start, behaviorLump.size));
+    } catch (error) {
+      scriptWarnings.push(`This map's ACS module could not be read (${error.message}); its lines are imported without script execution.`);
+    }
+  }
+
   const material = (name, kind) => assets?.get(name, kind) || null;
   const project = createProject();
   project.title = `${mapName} - imported WAD`;
@@ -144,7 +161,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     const entity = {
       id: `thing${index}`, name: isPlayer ? 'Player start' : `${mapping?.[0] || 'Doom thing'} ${type}`,
       type: isPlayer ? 'player' : mapping?.[1] || 'decoration', doomType: type,
-      x: record.x, y: -record.y, angle: -record.angle, spriteAsset, ...(source ? { elevation: record.elevation } : {}),
+      x: record.x, y: -record.y, angle: -record.angle, spriteAsset,
+      ...(source ? { elevation: record.elevation, ...(record.tid ? { tid: record.tid } : {}) } : {}),
       ...(mapping?.[1] === 'enemy' ? { ambush: Boolean(flags & 8) } : {}),
       ...(!isPlayer ? { skillMask: flags & 7 } : {}),
     };
@@ -153,10 +171,11 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   });
   if (!playerFound) throw new Error('Map has no player-one start');
   const warnings = [
-    'Playable native weapons, enemy combat, sound, HUD, classic door/lift/floor specials and sprite animations use editable Engine rules, not a Doom-compatible simulation yet. Unsupported linedef specials are listed separately.',
-    'Eight-way sprite views, mirrored patches, gunfire wake-up and directional chase are imported. Combat remains an editable approximation, not exact Doom actor/weapon state machines; BFG spray and specialized monster abilities remain to be translated.',
+    'Imported monsters and weapons run their own DECORATE/ZScript state machines (or classic Doom actor data) with their real stats, flags, sounds and action functions; the actor table is editable under Actors and through MCP actor tools. Input, HUD, doors/lifts and campaign flow stay editable Engine rules.',
+    'Eight-way sprite views, mirrored patches, gunfire wake-up and directional chase are imported. Action functions without an engine equivalent are reported by name instead of silently ignored. ACS map scripts run natively; ACS source-level features outside the compiled script module (custom ZScript functions) are not executed.',
     'Single-player skill flags are retained; New Game difficulty selects placement at runtime. Unknown thing types appear as colored placeholders.',
   ];
+  warnings.push(...scriptWarnings);
   if (source) {
     warnings.push(`UDMF ${source.namespace} geometry imported natively. Original global/block properties are retained in importSource as an import snapshot, not live gameplay state. Later visual edits change native map data, not that snapshot.`);
     if (sectors.some(sector => sector.light < 0 || sector.light > 255)) warnings.push('UDMF lightlevel values outside 0-255 are clamped for the current renderer; original values are preserved in importSource.');
@@ -171,7 +190,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       if (!supported[block.type]?.includes(key)) unsupported.add(`${block.type}.${key}`);
     }
     if (unsupported.size) warnings.push(`UDMF properties preserved but not simulated/rendered: ${[...unsupported].sort().join(', ')}. Specials, slopes, 3D floors, per-surface transforms and custom actor behavior require further native compatibility work.`);
-    if (mapLumps.some(lump => ['BEHAVIOR', 'SCRIPTS', 'DIALOGUE'].includes(lump.name))) warnings.push('This UDMF map contains ACS/dialogue lumps; they are not executed by the current native runtime.');
+    if (mapLumps.some(lump => lump.name === 'SCRIPTS')) warnings.push('This UDMF map ships ACS source (SCRIPTS); the compiled BEHAVIOR lump is what runs.');
+    if (mapLumps.some(lump => lump.name === 'DIALOGUE')) warnings.push('This map ships a DIALOGUE lump; NPC conversations are imported as data but not played yet.');
   }
   for (const sector of project.map.sectors) {
     const boundaries = project.map.walls.filter(wall => wall.right?.sectorId !== wall.left?.sectorId &&
@@ -210,6 +230,51 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       project.assets ||= [];
       project.assets.push({ id: `package_sound_${project.assets.length}`, name, kind: 'sound', src });
     }
+  }
+  // Actor definitions: the map's own game may ship DECORATE/ZScript (from a
+  // package) and a DEHACKED lump (nearly every WAD does). They are compiled into
+  // native actor records before the engine starter so generated rules know
+  // whether real state machines exist.
+  const dehackedSources = [...dehacked];
+  for (const lump of wad.lumps) {
+    if (lump.name !== 'DEHACKED' || lump.size > 4 * 1024 * 1024) continue;
+    dehackedSources.push({ name: 'DEHACKED', text: new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)) });
+  }
+  for (const lump of wad.lumps) {
+    if (!['DECORATE', 'ZSCRIPT', 'MAPINFO', 'ZMAPINFO'].includes(lump.name) || lump.size > 4 * 1024 * 1024) continue;
+    actorSources.push({ name: lump.name, text: new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)) });
+  }
+  if (actors) {
+    const actorWarnings = [];
+    project.actors = importActors({ sources: actorSources, dehacked: dehackedSources, warnings: actorWarnings }).actors;
+    warnings.push(...actorWarnings);
+  }
+  // LANGUAGE keyword strings: menus, level names and pickup messages reference
+  // them by keyword, so the table is kept for the editor and the runtime.
+  const languageTexts = [...languageSources].map(source => typeof source === 'string' ? source : source.text);
+  for (const lump of wad.lumps) {
+    if (!/^LANGUAGE/i.test(lump.name) || lump.size > 2 * 1024 * 1024) continue;
+    languageTexts.push(new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)));
+  }
+  if (languageTexts.length) {
+    project.strings = buildStringTable(languageTexts);
+    if (!Object.keys(project.strings).length) delete project.strings;
+  }
+  if (mapScriptInfo) {
+    project.mapScripts = mapScriptInfo.mapScripts;
+    const kinds = mapScriptInfo.summary.kinds;
+    const named = (kinds.closed || 0) + (kinds.open || 0) + (kinds.enter || 0);
+    warnings.push(`ACS: ${mapScriptInfo.summary.scripts} script(s) (${kinds.open || 0} open, ${kinds.enter || 0} enter, ${kinds.closed || 0} line-triggered) run natively at 35 Hz with ${mapScriptInfo.summary.strings} string(s); ${named} named or numbered entries are listed in the Scripts tab.`);
+    if (mapScriptInfo.unsupportedOpcodes.length) {
+      warnings.push(`ACS instructions the native interpreter does not implement: ${mapScriptInfo.unsupportedOpcodes.join(', ')}. Scripts that reach them stop and report instead of hanging.`);
+    }
+  }
+  const missingSpecials = unsupportedSpecials([...new Set([
+    ...project.map.walls.map(wall => wall.special || 0),
+    ...(mapScriptInfo?.specials || []),
+  ])]);
+  if (missingSpecials.length) {
+    warnings.push(`Line specials kept as data but not performed by the native runtime: ${missingSpecials.join(', ')}.`);
   }
   installEngineScripts(project, { includeHUD: false });
   installWorldScripts(project, warnings);

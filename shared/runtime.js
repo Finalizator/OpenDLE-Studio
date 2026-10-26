@@ -4,9 +4,11 @@ import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
+import { stepActors, beginWeapon, weaponTic, initialiseActorEntities } from './actor-runtime.js';
 import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum } from './player-state.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
+import { createMapScripts } from './map-scripts.js';
 import { clipFrame, setSpriteState } from './sprite-animation.js';
 import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
 import { createLevelStatistics, updateLevelStatistics, recordRemovedEntity, beginIntermission, continueIntermission } from './intermission.js';
@@ -58,8 +60,8 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
   const inventory = progress ? structuredClone(progress.inventory) : initialInventory();
   if (progress) inventory.keys.clear();
   const playerStats = progress ? structuredClone(progress.playerStats) : initialPlayerStats();
-  const entities = runtimeEntities(project, settings);
-  return {
+  const entities = initialiseActorEntities(project, runtimeEntities(project, settings));
+  const state = {
     settings: userSettings, settingsRevision: 0, gameScreen: screen, gameMode,
     hasGame: screen === 'playing', bindingKey: null,
     menuRequests: [], interfaceStarted: false,
@@ -105,7 +107,21 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     animations: new Map(project.map.entities.filter(entity => entity.animation?.autoPlay).map(entity => [entity.id, { ...entity.animation, playing: true, revision: 0 }])),
     animationFinished: new Set(),
     physics: null,
+    scripts: null,
+    scriptState: null,
   };
+  state.scripts = createMapScripts(project, state, {
+    finishLevel: exit => beginIntermission(project, state, exit === 'secret'),
+    changeLevel: () => {},
+    onRemove: entity => {
+      recordRemovedEntity(state, entity);
+      state.physics?.remove(entity.id);
+      state.entities = state.entities.filter(item => item.id !== entity.id);
+    },
+    initialiseEntities: entities => initialiseActorEntities(project, entities),
+  });
+  state.scripts?.restore(progress?.scriptState ?? state.scriptState);
+  return state;
 }
 
 export function lookPlayer(state, movementX, movementY) {
@@ -139,7 +155,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.feedback.attackTime = !hud.cursor && keys.has('Mouse0') ? state.feedback.attackTime + dt : 0;
   advanceHUD(project, hud, dt);
   advanceSectors(state, dt);
-  state.worldTriggers.use = !hud.cursor && state.playerStats.health > 0 && pressed.has('KeyE') ? useWall(state) : null;
+  const usedWall = !hud.cursor && state.playerStats.health > 0 && pressed.has('KeyE') ? useWall(state) : null;
+  state.worldTriggers.use = usedWall;
   state.worldTriggers.shoot.clear();
   runRules('beforePhysics');
   if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
@@ -191,11 +208,24 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (canMove(player.x, player.y + dy * speed)) player.y += dy * speed;
   }
   state.worldTriggers.cross = crossedWalls(state, previousPosition);
+  if (usedWall) state.scripts?.activate(state.walls.find(wall => wall.id === usedWall), 'use');
+  for (const id of state.worldTriggers.cross) state.scripts?.activate(state.walls.find(wall => wall.id === id), 'cross');
+  state.scripts?.step(dt);
+  state.scriptState = state.scripts?.capture() ?? null;
   updateLevelStatistics(state);
   state.messageTime = Math.max(0, state.messageTime - dt);
   runRules('afterPhysics');
   if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
+  // Imported actor definitions (DECORATE/ZScript) drive enemy and weapon state
+  // machines; they run at Doom's 35 Hz tic rate next to the frame update.
+  if (project.actors?.length) {
+    stepActors(project, state, dt);
+    stepWeapon(project, state, dt, !hud.cursor && state.playerStats.health > 0 && keys.has('Mouse0'));
+    applyWeaponAttack(state);
+  }
   advanceProjectiles(state, dt);
+  applySectorDamage(state, dt);
+  activateWallTriggers(state);
   updateLevelStatistics(state);
   state.input.mouseX = 0; state.input.mouseY = 0;
   state.animationFinished.clear();
@@ -592,6 +622,68 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     }
     return true;
   }
+}
+
+/**
+ * Drives the imported weapon state machine. Weapons keep their own tic clock so
+ * a mod's fire rates stay exact even when a frame renders faster than 35 Hz.
+ */
+function stepWeapon(project, state, dt, trigger) {
+  const slot = state.inventory.selectedWeapon;
+  if (!state.weaponActor || state.weaponSlot !== slot) {
+    if (!beginWeapon(project, state, slot)) { state.weaponTriggerHeld = false; return; }
+  }
+  state.weaponTriggerHeld = Boolean(trigger);
+  state.weaponClock = (state.weaponClock || 0) + dt * 35;
+  const whole = Math.floor(state.weaponClock + 1e-6);
+  const tics = Math.min(4, whole);
+  state.weaponClock -= whole;
+  for (let tic = 0; tic < tics; tic++) {
+    if (trigger && state.weaponReady) {
+      state.weaponReady = false;
+      state.weaponActor.index = state.weaponActor.actor.states.labels.Fire ?? state.weaponActor.index;
+      state.weaponActor.tics = 0; state.weaponActor.entered = false;
+    }
+    weaponTic(project, state, trigger);
+  }
+}
+
+/** Converts a weapon state's action into the existing hit-scan/projectile path. */
+/** A sector's `damage` (Sector_SetDamage) hurts whatever stands in it, once a second. */
+function applySectorDamage(state, dt) {
+  if (!state.sectors.some(sector => sector.damage)) { state.damageAcc = 0; return; }
+  state.damageAcc = (state.damageAcc || 0) + dt;
+  if (state.damageAcc < 1) return;
+  state.damageAcc -= 1;
+  const sector = sectorAt(state.sectors, state.player.x, state.player.y);
+  if (!sector?.damage) return;
+  state.playerStats.health = Math.max(0, state.playerStats.health - sector.damage);
+  state.feedback.health = state.playerStats.health;
+  state.feedback.damage = { amount: sector.damage, time: state.time };
+}
+
+function activateWallTriggers(state) {
+  if (state.worldTriggers.shoot.size) {
+    for (const id of state.worldTriggers.shoot) state.scripts?.activate(state.walls.find(wall => wall.id === id), 'shoot');
+    state.worldTriggers.shoot.clear();
+  }
+  if (state.scripts?.errors?.length) {
+    const latest = state.scripts.errors[state.scripts.errors.length - 1];
+    if (latest !== state.scriptWarning) { state.scriptWarning = latest; state.message = latest; state.messageTime = 5; }
+  }
+}
+
+function applyWeaponAttack(state) {
+  const attack = state.weaponAttack;
+  if (!attack) return;
+  state.weaponAttack = null;
+  if (attack.kind === 'hitscan') {
+    fireHitscan(state, { damage: attack.damage[0], diceSides: attack.damage[1], pellets: attack.pellets,
+      spread: attack.spread, range: attack.range });
+    return;
+  }
+  launchProjectile(state, { speed: attack.speed, damage: attack.damage, diceSides: attack.diceSides,
+    radius: attack.radius, color: '#66bbff', sound: null });
 }
 
 function fireHitscan(state, action) {

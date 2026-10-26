@@ -5,6 +5,7 @@ import zlib from 'node:zlib';
 import yauzl from 'yauzl';
 import { PNG } from 'pngjs';
 import { readWad, importWadMap } from '../shared/wad.js';
+import { actorSourcesFromArchive, actorSourcesFromWad, loadGzdoomActors } from './actor-sources.js';
 import { validateProject } from '../shared/project.js';
 import { decodePatch, decodeFlat } from '../shared/doom-assets.js';
 import { encodeImage, cachedImageEncoder } from './import.js';
@@ -171,13 +172,19 @@ function mapsIn(files) {
   return maps;
 }
 export function inspectPackage(files) {
-  const warnings = ['PK3 is a ZIP resource container, not an engine. MENUDEF/SBARINFO translation is partial; arbitrary game scripts are not executed.'];
-  const unsupported = [...files.keys()].filter(name => /(^|\/)(zscript|decorate|mapinfo|gameinfo|gldefs|sndinfo|animdefs|sbarinfo|modeldef|loadacs|cvarinfo|language|textures)([./]|$)|^acs\/|^filter\//i.test(name) &&
-    !imageKind(name) && !/^sbarinfo(?:\.txt)?$/i.test(name));
-  if (unsupported.length) warnings.push(`${unsupported.length} script/definition/filter files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Custom actors, scripted HUDs, texture definitions, animations and filters need separate runtime support.`);
+  const warnings = ['PK3 is a ZIP resource container, not an engine. Actor definitions, MAPINFO editor numbers, LANGUAGE keywords and DEHACKED patches are imported as editable data, and each map\'s compiled ACS module (BEHAVIOR) runs natively; ACS libraries loaded through LOADACS and full ZScript code are not executed.'];
+  // DECORATE/ZSCRIPT actor definitions, MAPINFO DoomEdNums, LANGUAGE keyword
+  // tables and DEHACKED patches are imported now, so only the remaining kinds are
+  // reported as unread.
+  const interpreterSupport = /(^|\/)(zscript|decorate|mapinfo|zmapinfo|gameinfo|language|dehacked)$|^(zscript|decorate)([./]|$)|\.(zc|zs|zsc|dec|deh|bex)$|(^|\/)language(\.[a-z]{2,3})?(\.txt)?$|(^|\/)mapinfo\//i;
+  const unsupported = [...files.keys()].filter(name => /(^|\/)(gldefs|sndinfo|animdefs|sbarinfo|modeldef|loadacs|cvarinfo|textures)([./]|$)|^acs\/|^filter\//i.test(name) &&
+    !imageKind(name) && !/^sbarinfo(?:\.txt)?$/i.test(name) && !interpreterSupport.test(name));
+  if (unsupported.length) warnings.push(`${unsupported.length} definition files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Scripted HUDs, texture definitions, animations and filter classes need separate runtime support; actor stats, states, MAPINFO editor numbers, LANGUAGE strings, DEHACKED patches and per-map ACS scripts are imported.`);
+  const actorFiles = [...files.keys()].filter(name => /(^|\/)(zscript|decorate)(\.(txt|zc|zs|zsc))?$|\.(zc|zs|zsc|dec)$/i.test(name));
+  if (actorFiles.length) warnings.push(`${actorFiles.length} DECORATE/ZScript file(s) are imported as editable actor data (stats, flags, sounds, state machines). ZScript code beyond defaults and state blocks is not executed; map scripts call these actors through ACS_* actions.`);
   const maps = mapsIn(files), rejected = maps.filter(map => !map.supported);
   if (rejected.length) warnings.push(`${rejected.length} binary Hexen maps cannot be imported yet; image assets can still be imported.`);
-  if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry imports natively, but script execution, advanced rendering and map-special behavior are still incomplete. Full GZDoom fidelity remains the target, not current capability.');
+  if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry and line specials import natively and each map\'s ACS module executes; advanced rendering (portals, 3D floors, slopes) and ACS libraries are still incomplete. Full GZDoom fidelity remains the target, not current capability.');
   if ([...files.keys()].some(name => /^models\//.test(name))) warnings.push('Native model definitions are not imported yet.');
   if ([...files.keys()].some(name => /(^|\/)sndinfo(?:\.txt)?$/.test(name))) warnings.push('Sound files are imported by filename; custom SNDINFO aliases, random groups and channel rules are not translated yet. Edit playSound names in Engine sheets to bind custom effects.');
   const images = [...files.keys()].filter(name => imageKind(name));
@@ -286,7 +293,7 @@ function mergeWads(sources) {
   return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), lumps,
     maps: [...new Set(sources.flatMap(source => source.maps))] };
 }
-export function importPackage(files, { map, paths, baseBytes, fullGame = false, context } = {}) {
+export function importPackage(files, { map, paths, baseBytes, fullGame = false, context, projectsDir } = {}) {
   const inspection = context?.inspection || inspectPackage(files), base = context?.base || (baseBytes ? wad(baseBytes) : null);
   const automatic = map === 'auto';
   if (automatic) {
@@ -329,7 +336,7 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     for (const route of routes.values()) for (const id of [route.next, route.secretNext])
       if (id && !maps.has(id) && base?.maps.includes(id)) maps.set(id, { id: `base:${id}`, marker: id, supported: true });
     check(maps.size <= 128, 'Game exceeds 128 levels');
-    const shared = { inspection, base, decode: imageDecoder(files, paletteFrom(base, files)), encodeImage: cachedImageEncoder(), episodeInfo };
+    const shared = { inspection, base, decode: imageDecoder(files, paletteFrom(base, files)), encodeImage: cachedImageEncoder(), episodeInfo, projectsDir };
     function* levels() {
       for (const [id, item] of maps) {
         check(item.supported, `${item.marker}: ${item.format} map is not supported; full-game import was not applied`);
@@ -427,9 +434,33 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     check(file.data && file.size <= MiB, `Font ${path} exceeds 1 MiB or was not retained`);
     fontResources.set(basename(path, extname(path)).toUpperCase(), new Uint8Array(file.data));
   }
+  // Everything the package (and a local gzdoom.pk3) defines about actors, so the
+  // imported monsters and weapons run their real state machines.
+  const projectRoot = projectsDir || context?.projectsDir;
+  const actorSources = [], dehackedSources = [], languageSources = [];
+  for (const [name, file] of files) {
+    if (!file.data) continue;
+    if (/(^|\/)(DECORATE|ZSCRIPT)$/i.test(name) || /\.(dec|zc|zs|zsc)$/i.test(name)) {
+      actorSources.push({ name, text: Buffer.from(file.data).toString('latin1') });
+    } else if (/(^|\/)DEHACKED$/i.test(name) || /\.(deh|bex)$/i.test(name)) {
+      dehackedSources.push({ name, text: Buffer.from(file.data).toString('latin1') });
+    } else if (/(^|\/)language(\.[a-z]{2,3})?(\.txt)?$/i.test(name) || /\.(enu|ita|deu|fra|spa)$/i.test(name)) {
+      languageSources.push({ name, text: Buffer.from(file.data).toString('latin1') });
+    }
+  }
+  const fromBase = actorSourcesFromWad(combined, { prefix: 'base:' });
+  actorSources.push(...fromBase.sources);
+  dehackedSources.push(...fromBase.dehacked);
+  if (projectRoot) {
+    const gzdoom = loadGzdoomActors(projectRoot);
+    if (gzdoom.available) {
+      actorSources.push(...gzdoom.sources);
+      dehackedSources.push(...gzdoom.dehacked);
+    }
+  }
   const result = importWadMap(combined, selected.marker,
     { encodeImage: context?.encodeImage || encodeImage, images, sounds, menuDefinitions, hudDefinitions, fontResources,
-      episodeInfo: context?.episodeInfo });
+      episodeInfo: context?.episodeInfo, actorSources, dehacked: dehackedSources, languageSources });
   let musicBytes = 0;
   for (const [path, file] of files) if (path.startsWith('music/')) {
     const format = extname(path).slice(1);

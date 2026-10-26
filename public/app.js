@@ -19,6 +19,8 @@ import { requestWithSession } from './service-session.js';
 import { createAudioPlayer } from './audio.js';
 import { encodeSound } from '/shared/sound.js';
 import { importedGameplayGaps } from './gameplay-readiness.js';
+import { createActorsPanel } from './actors-panel.js';
+import { createScriptsPanel } from './scripts-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { installIntermission } from '/shared/intermission.js';
@@ -51,6 +53,14 @@ const camera = { x: 0, y: 0, zoom: 1 };
 const keys = new Set(), pressed = new Set();
 const canvas = $('map'), ctx = canvas.getContext('2d');
 let drag = null, mapNeedsDraw = true;
+const actorsPanel = createActorsPanel({
+  list: $('actor-list'), summary: $('actors-summary'), search: $('actor-search'), filter: $('actor-filter'),
+  form: $('actor-form'), title: $('actor-title'), fields: $('actor-fields'), states: $('actor-states'),
+}, { actors: () => project.actors || [], edit });
+const scriptsPanel = createScriptsPanel({
+  list: $('script-list'), detail: $('script-detail'), summary: $('scripts-summary'),
+  specials: $('script-specials'), search: $('script-search'),
+}, { project: () => project });
 const hudEditor = createHUDEditor($('hud-editor'), {
   project: () => project, edit, script: openHUDScript, error: message => status(message, true),
 });
@@ -134,6 +144,8 @@ function render() {
   renderAssetsIfChanged();
   // The HUD designer rebuilds its whole stage; only do that when it is visible.
   if (!$('hud-panel').hidden) hudEditor.render();
+  if (!$('actors-panel').hidden) actorsPanel.render();
+  if (!$('scripts-panel').hidden) scriptsPanel.render();
   $('map-stats').textContent = `${project.map.vertices.length} vertices / ${project.map.walls.length} walls / ${project.map.entities.length} objects / ${project.map.sectors?.length || 0} sectors`;
   mapNeedsDraw = true;
   // Editing geometry in 3D must stay interactive: update the existing scene in
@@ -619,10 +631,12 @@ function showTab(tab) {
   if (tab === 'assets') {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
-  for (const name of ['map', 'events', 'environment', 'hud', 'tweaks', 'about']) $(name + '-panel').hidden = tab !== name;
+  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'tweaks', 'about']) $(name + '-panel').hidden = tab !== name;
   // The designer is only refreshed while its tab is visible, so opening the tab
   // has to build it once.
   if (tab === 'hud') hudEditor.render();
+  if (tab === 'actors') actorsPanel.render();
+  if (tab === 'scripts') scriptsPanel.render();
   if (tab === 'tweaks') {
     try { renderEngineTweaks(); }
     catch (error) { $('engine-tweaks-status').textContent = error.message; status(error.message, true); }

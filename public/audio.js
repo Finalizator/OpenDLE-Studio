@@ -40,7 +40,15 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
       master.gain.value = state.settings?.muted ? 0 : state.settings?.volume ?? 1;
       musicVolume = state.settings?.musicVolume ?? .5;
       musicGain.gain.value = state.settings?.muted ? 0 : musicVolume;
-      const requested = project.environment?.musicAsset || project.environment?.music;
+      // ACS `SetMusic` asks the level to change track; the request wins over the
+      // level's default for the rest of the session.
+      if (state.musicRequest?.name && state.musicRequest.name !== musicTrack && state.musicRequest.name !== musicName) {
+        const name = state.musicRequest.name;
+        state.musicRequest = null;
+        musicStarted = false;
+        musicRequested = name;
+      }
+      const requested = musicRequested || project.environment?.musicAsset || project.environment?.music;
       musicRequested ??= requested || null;
       const track = project.assets.find(asset => asset.kind === 'music' &&
         (asset.id === requested || asset.name === requested)) ||

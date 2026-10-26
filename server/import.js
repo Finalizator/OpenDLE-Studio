@@ -15,8 +15,8 @@ export function cachedImageEncoder() {
   };
 }
 
-export function importWad(buffer, mapName, { fullGame = !mapName, title } = {}) {
+export function importWad(buffer, mapName, { fullGame = !mapName, title, actorSources, dehacked } = {}) {
   const array = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
   return (fullGame ? importWadGame : importWadMap)(readWad(array), mapName,
-    { encodeImage: fullGame ? cachedImageEncoder() : encodeImage, title });
+    { encodeImage: fullGame ? cachedImageEncoder() : encodeImage, title, actorSources, dehacked });
 }

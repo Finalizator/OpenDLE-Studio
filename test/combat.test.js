@@ -378,11 +378,20 @@ test('browser audio consumes events, reports decoding errors, caps voices and cl
   await new Promise(resolve => setImmediate(resolve)); assert.equal(sources.length, sourceCount, 'Stop prevents late decoded sounds from starting');
 });
 const freedoom = new URL('../Projects/freedoom2.wad', import.meta.url);
-test('real Freedoom imports PCM effects instead of generated defaults with playable editable archetypes', { skip: !existsSync(freedoom) }, () => {
+test('real Freedoom imports PCM effects and a native actor table instead of generated defaults', { skip: !existsSync(freedoom) }, () => {
   const { project } = importWad(readFileSync(freedoom), 'MAP01');
   const pistol = project.assets.find(asset => asset.kind === 'sound' && asset.name === 'DSPISTOL');
   assert.ok(pistol); assert.equal(pistol.generated, undefined);
+  // Monsters and weapons run their own state machines now, so no duplicated
+  // scripted archetype or weapon rules are generated on top of them.
+  assert.equal(project.events.some(event => event.condition.type === 'enemySeesPlayer'), false);
+  // A plain WAD carries no weapon actors, so the scripted weapon rules stay.
   assert.ok(project.events.some(event => event.name === 'superShotgun'));
-  assert.ok(project.events.some(event => event.condition.type === 'enemySeesPlayer'));
+  const imp = project.actors.find(actor => actor.name === 'DoomImp');
+  assert.ok(imp, 'imported actor table carries the classic monsters');
+  assert.equal(imp.health, 60);
+  assert.ok(imp.states.frames.some(frame => frame.actions?.some(action => action.name === 'A_TroopAttack')),
+    'imp keeps its own missile action');
+  assert.ok(imp.states.labels.See !== undefined && imp.states.labels.Death !== undefined);
   assert.equal(validateProject(JSON.parse(JSON.stringify(project))).assets.length, project.assets.length);
 });

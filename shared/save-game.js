@@ -7,9 +7,10 @@ import { KEYS, WEAPONS } from './player-state.js';
 export const GAME_SAVE_VERSION = 1;
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // Presentation and menu-only fields are recreated by the host and are never persisted.
-const omitted = new Set(['physics', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus']);
+const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus']);
 const legacyDiscarded = new Set(['rendererStatus']);
-const optional = new Set(['lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence']);
+const optional = new Set(['lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
+  'scriptState', 'scriptWarning', 'damageAcc', 'musicRequest', 'skyRequest', 'gravity', 'airControl', 'scriptLog', 'messageCount']);
 const fail = message => { throw new Error(`Invalid game save: ${message}`); };
 const plain = value => value !== null && typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);

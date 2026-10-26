@@ -222,7 +222,12 @@ export function installEngineScripts(project, { organizeStarter = false, include
     ['chainsaw', null, 0, 4, 'DSSAWFUL', trace(2, 10, 1, 0, 64)],
     ['superShotgun', 'shells', 2, 54, 'DSSGT2F', trace(5, 3, 20, 22.5, 2048)],
   ];
-  for (const [weapon, ammo, cost, tics, sound, attack] of weapons) {
+  // When the project carries imported actor definitions, the actor runtime runs
+  // the game's own monster and weapon state machines. Generated rules would fire
+  // a second time on top of them, so only the untouched paths are scripted here.
+  const scriptedWeapons = !project.actors?.some(actor => actor.flags?.WEAPON);
+  const scriptedEnemies = !project.actors?.some(actor => actor.states?.frames?.length && (actor.flags?.MONSTER || actor.flags?.COUNTKILL));
+  for (const [weapon, ammo, cost, tics, sound, attack] of (scriptedWeapons ? weapons : [])) {
     rule('Weapons', weapon, { type: 'keyHeld', key: 'Mouse0' }, [
       ...(ammo ? [{ type: 'addAmmo', ammo, amount: -cost }] : []), attack,
       { type: 'playSound', sound, volume: .7 },
@@ -241,7 +246,8 @@ export function installEngineScripts(project, { organizeStarter = false, include
     68: [500, 64, 5, 8, 'projectile'], 71: [400, 48, 3, 8, 'projectile'], 66: [300, 80, 6, 8, 'projectile'],
     67: [600, 48, 8, 8, 'projectile'], 64: [700, 96, 10, 8, 'hitscan'], 16: [4000, 64, 20, 8, 'projectile'], 7: [3000, 48, 3, 5, 'hitscan'],
   };
-  const present = [...new Set([0, ...project.map.entities.filter(entity => entity.type === 'enemy').map(entity => entity.doomType ?? 0)])];
+  const present = scriptedEnemies
+    ? [...new Set([0, ...project.map.entities.filter(entity => entity.type === 'enemy').map(entity => entity.doomType ?? 0)])] : [];
   for (const [name, condition] of [
     ['hear_weapon', { type: 'enemyHearsPlayer', entityId: '$self' }],
     ['remember_target', { type: 'enemyAlert', entityId: '$self' }],

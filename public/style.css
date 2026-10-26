@@ -256,3 +256,40 @@ dialog::backdrop { background: #111c; }
   .property-help { display: none; }
   .layout-toolbar .muted { display: none; }
 }
+
+/* Actors panel: imported monster/weapon state machines as editable data. */
+.actor-list { display: grid; gap: 2px; max-height: 40vh; overflow: auto; margin: 8px 0 12px; }
+.actor-row { text-align: left; background: #1d2228; border: 1px solid #2f3740; color: #d8dde3;
+  padding: 4px 8px; font: inherit; border-radius: 3px; cursor: pointer; }
+.actor-row:hover { border-color: #4d5b6a; }
+.actor-row.selected { border-color: #ffd34d; background: #2a2f36; }
+#actor-form label { display: grid; gap: 3px; font-size: 12px; }
+#actor-form textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+#actor-states label { display: grid; gap: 6px; }
+
+/* Map scripts panel: the level's compiled ACS module, read as a disassembly. */
+.scripts-layout { display: grid; grid-template-columns: minmax(200px, 260px) 1fr; gap: 12px; align-items: start; }
+@media (max-width: 900px) { .scripts-layout { grid-template-columns: 1fr; } }
+.script-list { display: grid; gap: 2px; max-height: 56vh; overflow: auto;
+  padding-right: 4px; border-right: 1px solid #2f3740; }
+.script-row { display: grid; gap: 1px; text-align: left; background: #1d2228; border: 1px solid #2f3740;
+  color: #d8dde3; padding: 4px 8px; font: inherit; border-radius: 3px; cursor: pointer; }
+.script-row small { color: #8d99a6; font-size: 11px; }
+.script-row:hover { border-color: #4d5b6a; }
+.script-row.selected { border-color: #ffd34d; background: #2a2f36; }
+.script-detail { min-width: 0; }
+.script-detail h2 { margin: 0 0 4px; font-size: 15px; }
+.script-listing { margin: 8px 0; padding: 8px 10px; max-height: 48vh; overflow: auto; list-style: none;
+  background: #14181d; border: 1px solid #2f3740; border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; }
+.script-listing li { white-space: pre; color: #c9d2da; }
+.script-listing li[data-op="TERMINATE"] { color: #ff9b6a; }
+.script-listing li[data-op^="LSPEC"] { color: #8fd6a0; }
+.script-listing li[data-op^="PUSH"] { color: #9fb4c8; }
+.script-strings summary { cursor: pointer; color: #8d99a6; }
+.script-strings ul { max-height: 24vh; overflow: auto; margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+.script-specials { display: grid; gap: 2px; margin-top: 6px; }
+.script-special { display: grid; gap: 1px; padding: 4px 8px; border: 1px solid #2f3740; border-radius: 3px; background: #1d2228; }
+.script-special small { color: #8d99a6; font-size: 11px; }
+.script-special.unsupported { border-color: #7a4a2a; }
+.script-special.unsupported strong { color: #ffb27a; }
