@@ -3,6 +3,7 @@ import { selectGameLevel } from './game-levels.js';
 import { validatePhysicsState } from './physics.js';
 import { gameSettings } from './game-settings.js';
 import { KEYS, WEAPONS } from './player-state.js';
+import { WORLD_UP } from './gravity.js';
 
 export const GAME_SAVE_VERSION = 1;
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
@@ -10,7 +11,7 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // Diagnostics and derived handles stay out of saves: the unsupported-action set is
 // rebuilt as problems occur, and the weapon machine is re-entered on load.
 const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus',
-  'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'areaEntries']);
+  'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'areaEntries', 'surfaces']);
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.
@@ -124,6 +125,8 @@ function matchShape(value, template, path) {
 
 function validateRuntime(project, state, baseline) {
   if (!plain(state)) fail('snapshot must be an object');
+  // Saves made before the player could stand on walls have no gravity axis.
+  if (plain(state.player) && state.player.up === undefined) state.player.up = [...WORLD_UP];
   for (const key of Object.keys(state)) if (omitted.has(key) || !Object.hasOwn(baseline, key) && !optional.has(key)) fail(`unknown runtime field ${key}`);
   for (const [key, value] of Object.entries(baseline)) if (!omitted.has(key)) {
     if (!Object.hasOwn(state, key)) fail(`missing runtime field ${key}`);

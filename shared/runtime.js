@@ -6,7 +6,10 @@ import { isExpression, evaluateExpression, expressionContext, scalar } from './e
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
 import { stepActors, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound } from './actor-runtime.js';
 import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum } from './player-state.js';
-import { areaContains, areaEntered, areaVolume, PLAYER_CYLINDER } from './areas.js';
+import { areaContains, areaEntered, areaVolume } from './areas.js';
+import {
+  PLAYER_CYLINDER, SURFACE_REACH, WORLD_UP, alignUp, dot as dotMap, eyePosition, playerBasis, playerCentre, viewDirection,
+} from './gravity.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { createMapScripts } from './map-scripts.js';
@@ -72,7 +75,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     menuRequests: [], interfaceStarted: false,
     saveSlots: Array(6).fill(''), saveStatus: '', pendingSaveSlot: null,
     newGameLevel: project.game && project.gameMenus?.episodes?.length === 1 ? project.gameMenus.episodes[0].levelId : null,
-    player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0 },
+    player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0, up: [...WORLD_UP] },
     playerStats, inventory, levelTransition: Boolean(progress),
     face: 'idle',
     feedback: { damage: null, weaponPickupTime: -Infinity, attackTime: 0, health: playerStats.health },
@@ -142,6 +145,36 @@ export function lookPlayer(state, movementX, movementY) {
   state.player.pitch = Math.max(-limit, Math.min(limit, state.player.pitch - movementY * .002));
 }
 
+function touchingSurfaces(state) {
+  return state.surfaces || (state.surfaces = state.physics?.probeSurfaces?.(state.player.up) || []);
+}
+
+/**
+ * Turn the player's gravity onto a surface: `world` restores normal gravity, a
+ * classification picks the nearest wall / floor / ceiling contact, and `nearest`
+ * takes whatever the capsule is pressed against. Doing nothing is the right answer
+ * when the surface is not there any more, so events never need a guard.
+ */
+function setPlayerGravity(state, mode, reach = SURFACE_REACH) {
+  const player = state.player;
+  if (mode === 'world') return alignUpAndApply(state, WORLD_UP, 0);
+  const current = player.up || WORLD_UP;
+  const surfaces = (state.physics?.probeSurfaces?.(current, reach) || [])
+    .filter(surface => mode === 'nearest' ? dotMap(surface.normal, current) < .75 : surface.kind === mode);
+  if (!surfaces.length) return false;
+  return alignUpAndApply(state, surfaces[0].normal, surfaces[0].distance);
+}
+
+function alignUpAndApply(state, up, clearance = 0) {
+  const player = state.player;
+  if (!alignUp(player, up)) return false;
+  // Keep the look direction and pitch; the camera rolls onto the new surface and
+  // the body is placed so its feet land where the surface actually is.
+  state.physics?.orientPlayer?.(player.up, clearance);
+  state.surfaces = null;
+  return true;
+}
+
 export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   dt = Math.max(0, Math.min(0.05, dt));
   const player = state.player, hud = state.hudState;
@@ -177,8 +210,22 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   const forward = hud.cursor ? 0 : state.scriptedInput ? state.input.forward : ((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)) * 160;
   const strafe = hud.cursor ? 0 : state.scriptedInput ? state.input.strafe : ((keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0)) * 160;
   const scale = dt / (state.scriptedInput ? 1 : Math.max(1, Math.hypot(forward, strafe) / 160));
-  const dx = (Math.cos(player.angle) * forward - Math.sin(player.angle) * strafe) * scale;
-  const dy = (Math.sin(player.angle) * forward + Math.cos(player.angle) * strafe) * scale;
+  // Movement is laid out in the player's own plane, so it keeps working after an
+  // event turns gravity onto a wall: forward and strafe stay on that surface.
+  const basis = playerBasis(player.up), cosHeading = Math.cos(player.angle), sinHeading = Math.sin(player.angle);
+  const along = [
+    basis.forward[0] * cosHeading + basis.right[0] * sinHeading,
+    basis.forward[1] * cosHeading + basis.right[1] * sinHeading,
+    basis.forward[2] * cosHeading + basis.right[2] * sinHeading,
+  ];
+  const across = [
+    basis.right[0] * cosHeading - basis.forward[0] * sinHeading,
+    basis.right[1] * cosHeading - basis.forward[1] * sinHeading,
+    basis.right[2] * cosHeading - basis.forward[2] * sinHeading,
+  ];
+  const dx = (along[0] * forward + across[0] * strafe) * scale;
+  const dy = (along[1] * forward + across[1] * strafe) * scale;
+  const dz = (along[2] * forward + across[2] * strafe) * scale;
   const runMultiplier = state.settings.alwaysRun !== keys.has('ShiftLeft') ? 2 : 1;
   const currentSector = sectorAt(state.sectors, player.x, player.y);
   const sectors = new Map(state.sectors.map(sector => [sector.id, sector]));
@@ -215,7 +262,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   }
   const speed = runMultiplier * bunnyhop.multiplier;
   state.physics?.syncWorld();
-  if (state.physics) state.physics.step(dt, { x: dt ? dx * speed / dt : 0, y: dt ? dy * speed / dt : 0, jump: jumpHeld });
+  if (state.physics) {
+    state.physics.step(dt, { x: dt ? dx * speed / dt : 0, y: dt ? dy * speed / dt : 0, z: dt ? dz * speed / dt : 0,
+      jump: jumpHeld, up: player.up });
+    // Surfaces the capsule touches, for the wall-walking events and conditions.
+    state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
+  }
   else {
     if (canMove(player.x + dx * speed, player.y)) player.x += dx * speed;
     if (canMove(player.x, player.y + dy * speed)) player.y += dy * speed;
@@ -324,6 +376,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const target = findTarget(condition.entityId);
         return target && compare(target.variables[condition.variable], condition.operator, condition.value);
       }
+      if (condition.type === 'playerTouchingSurface') {
+        return touchingSurfaces(state).some(surface => condition.surface === 'any' || surface.kind === condition.surface);
+      }
+      if (condition.type === 'playerAirborne') {
+        if (!state.physics) return condition.state !== 'airborne';
+        return condition.state === 'airborne' ? !state.physics.grounded : state.physics.grounded;
+      }
       if (condition.type === 'playerInArea' || condition.type === 'playerEnteredArea') {
         const entity = findTarget(condition.entityId);
         if (!entity) return false;
@@ -332,7 +391,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           throw new Error(`Event "${event.name || event.id}" tests an interaction area on ${entity.name}, which has none`);
         }
         const floor = sectorAt(state.sectors, state.player.x, state.player.y)?.floorHeight ?? 0;
-        const inside = areaContains(volume, { x: state.player.x, y: state.player.y, z: (state.player.z ?? floor) + PLAYER_CYLINDER.halfHeight });
+        const centre = playerCentre(state.player);
+        const inside = areaContains(volume, { x: centre[0], y: centre[1], z: centre[2] });
         if (condition.type === 'playerInArea') return inside;
         return areaEntered(state.areaEntries ||= new Set(), event.id, inside);
       }
@@ -546,6 +606,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         case 'jumpPlayer':
           state.input.jump = true; break;
+        case 'setPlayerGravity':
+          setPlayerGravity(state, action.mode, action.reach); break;
         case 'setPlayerStat':
           if (action.stat === 'health') recordDamage(state, state.playerStats.health - action.value);
           state.playerStats[action.stat] = action.value; break;
@@ -753,7 +815,9 @@ function applyWeaponAttack(project, state) {
 
 function fireHitscan(state, action) {
   const player = state.player;
-  const eye = (player.z ?? sectorAt(state.sectors, player.x, player.y)?.floorHeight ?? 0) + 48;
+  // The shot leaves the eye along the view direction, so it still lines up with the
+  // crosshair after gravity has been turned onto a wall.
+  const eye = eyePosition({ ...player, z: player.z ?? sectorAt(state.sectors, player.x, player.y)?.floorHeight ?? 0 });
   const random = () => {
     state.randomSeed = (Math.imul(state.randomSeed, 1664525) + 1013904223) >>> 0;
     return state.randomSeed / 4294967296;
@@ -761,14 +825,15 @@ function fireHitscan(state, action) {
   state.lastShot = { time: state.time, hits: [] };
   for (let pellet = 0; pellet < action.pellets; pellet++) {
     const angle = player.angle + (action.spread ? (random() - .5) * action.spread * Math.PI / 180 : 0);
-    const dx = Math.cos(angle) * Math.cos(player.pitch), dy = Math.sin(angle) * Math.cos(player.pitch), dz = Math.sin(player.pitch);
-    let nearest = geometryDistance(state, { x: player.x, y: player.y, z: eye }, { x: dx, y: dy, z: dz }, action.range);
-    const wallHit = { x: player.x + dx * (nearest + .01), y: player.y + dy * (nearest + .01) };
+    const spread = viewDirection({ ...player, angle });
+    const dx = spread[0], dy = spread[1], dz = spread[2];
+    let nearest = geometryDistance(state, { x: eye[0], y: eye[1], z: eye[2] }, { x: dx, y: dy, z: dz }, action.range);
+    const wallHit = { x: eye[0] + dx * (nearest + .01), y: eye[1] + dy * (nearest + .01) };
     const shotWalls = crossedWalls({ ...state, player: wallHit }, player);
     let target = null;
     for (const entity of state.entities) {
       if (entity.type !== 'enemy' || (entity.health ?? 20) <= 0) continue;
-      const distance = entityDistance(state, { x: player.x, y: player.y, z: eye }, { x: dx, y: dy, z: dz }, entity, nearest);
+      const distance = entityDistance(state, { x: eye[0], y: eye[1], z: eye[2] }, { x: dx, y: dy, z: dz }, entity, nearest);
       if (distance !== null) { nearest = distance; target = entity; }
     }
     const damage = action.damage * (1 + Math.floor(random() * action.diceSides));

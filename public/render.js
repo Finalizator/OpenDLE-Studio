@@ -10,6 +10,7 @@ import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js
 import { RoomEnvironment } from '/vendor/three-addons/environments/RoomEnvironment.js';
 import RAPIER from '/vendor/rapier/rapier.mjs';
 import { createPhysics } from '/shared/physics.js';
+import { eyePosition, upVector, viewDirection } from '/shared/gravity.js';
 import { liveProjectPlan, modelWorldBox, entityOrigin } from '/shared/entity-visuals.js';
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
@@ -631,6 +632,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     const entityIndex = new Map(), activeLights = [];
     const clearColors = new Map(), animatedMaterials = new Map();
     const cameraDirection = new THREE.Vector3();
+    const viewUp = new THREE.Vector3(0, 1, 0), targetUp = new THREE.Vector3(0, 1, 0);
     const frameStats = createFrameStats({ window: 120, stallMs: 50 });
     const writeDataset = createDatasetWriter(canvas);
     const effectMeshes = new Map(), effectList = [];
@@ -839,11 +841,21 @@ export async function createPreview(canvas, project, state, { editor = false } =
         }
         writeDataset('weapon', state.inventory.selectedWeapon);
       }
-      const floor = state.player.z ?? sectorIndex.at(state.player.x, state.player.y)?.floorHeight ?? 0;
-      if (!editor) camera.position.set(state.player.x, floor + 48, state.player.y);
-      const pitch = state.player.pitch;
-      if (!editor) camera.lookAt(state.player.x + Math.cos(pitch) * Math.cos(state.player.angle),
-        floor + 48 + Math.sin(pitch), state.player.y + Math.cos(pitch) * Math.sin(state.player.angle));
+      // The eye and the look direction come from the player's own up axis, so an
+      // event that turns gravity onto a wall also turns the view onto that wall.
+      if (!editor) {
+        const up = upVector(state.player.up);
+        const eye = eyePosition({ ...state.player, z: state.player.z ??
+          sectorIndex.at(state.player.x, state.player.y)?.floorHeight ?? 0 });
+        const direction = viewDirection(state.player);
+        camera.position.set(eye[0], eye[2], eye[1]);
+        // Roll eases in: a gravity change should read as the world turning, not a cut.
+        viewUp.lerp(targetUp.set(up[0], up[2], up[1]), dt > 0 ? 1 - Math.exp(-12 * dt) : 1);
+        if (viewUp.lengthSq() < 1e-8) viewUp.copy(targetUp); else viewUp.normalize();
+        camera.up.copy(viewUp);
+        camera.lookAt(eye[0] + direction[0], eye[2] + direction[2], eye[1] + direction[1]);
+      }
+
       lightRadii.fill(0);
       for (let index = 0; index < lightColors.length; index++) lightColors[index].setRGB(0, 0, 0);
       for (let index = 0; index < lightNodes.length; index++) lightNodes[index].radius.value = 0;

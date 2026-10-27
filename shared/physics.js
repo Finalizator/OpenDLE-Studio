@@ -1,4 +1,7 @@
 import { sectorAt, sectorGeometry, sectorShapes } from './sectors.js';
+import {
+  PLAYER_CYLINDER, SURFACE_REACH, WORLD_UP, dot as dotMap, playerBasis, surfaceKind, upVector,
+} from './gravity.js';
 
 export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
@@ -41,6 +44,8 @@ export function validatePhysicsState(snapshot, expectedIds) {
   }
   if (!Number.isFinite(snapshot.accumulator) || snapshot.accumulator < -1e-9 || snapshot.accumulator > FIXED_STEP * 8 ||
     !Number.isFinite(snapshot.verticalSpeed) || typeof snapshot.grounded !== 'boolean') fail('invalid stepping state');
+  if (snapshot.up !== undefined && (!Array.isArray(snapshot.up) || snapshot.up.length !== 3 ||
+    !snapshot.up.every(Number.isFinite) || Math.abs(Math.hypot(...snapshot.up) - 1) > .001)) fail('invalid player up axis');
   return snapshot;
 }
 
@@ -113,7 +118,42 @@ export function createPhysics(project, state, R, triangulate) {
   syncWorld();
   const active = new Set(), forces = new Map();
   let contacts = new Set(), started = new Set(), ended = new Set(), accumulator = 0, verticalSpeed = 0, grounded = false;
+  // The player's own up axis. Rapier capsules always grow along +Y, so walking on
+  // a wall means rotating the character and moving along its plane, not the world's.
+  let upMap = [...WORLD_UP];
+  // Map space is x/y with z up in map units; Rapier is metres with y up.
+  const toRapier = v => ({ x: v[0], y: v[2], z: v[1] });
+  const toRapierPoint = v => ({ x: v[0] / PHYSICS_SCALE, y: v[2] / PHYSICS_SCALE, z: v[1] / PHYSICS_SCALE });
+  const toMap = v => [v.x, v.z, v.y];
+  const contactRay = new R.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
   function floorAt(entity) { return sectorAt(mesh.sectors, entity.x, entity.y)?.floorHeight || 0; }
+  // Shortest-arc rotation from the capsule's +Y axis to `axis` (Rapier space).
+  function capsuleRotation(axis) {
+    if (axis.y > .999999) return { x: 0, y: 0, z: 0, w: 1 };
+    if (axis.y < -.999999) return { x: 1, y: 0, z: 0, w: 0 };
+    const x = axis.z, z = -axis.x, w = 1 + axis.y, length = Math.hypot(x, z, w);
+    return { x: x / length, y: 0, z: z / length, w: w / length };
+  }
+  // How far a capsule whose axis is `axis` reaches from its centre along `direction`
+  // (both Rapier space), in map units: the rounded cap plus the cylinder projection.
+  function capsuleExtent(axis, direction) {
+    return Math.abs(axis.x * direction.x + axis.y * direction.y + axis.z * direction.z) *
+      (PLAYER_CYLINDER.halfHeight - PLAYER_CYLINDER.radius) + PLAYER_CYLINDER.radius;
+  }
+  // `direction` is in map space; the returned distance is the clearance between the
+  // capsule surface and the hit, so "touching" means a small number rather than a
+  // per-direction threshold.
+  function castSurface(origin, direction, distance) {
+    const playerCollider = colliders.get(playerId), rayDirection = toRapier(direction);
+    contactRay.origin = toRapierPoint(origin);
+    contactRay.dir = rayDirection;
+    const hit = world.castRayAndGetNormal(contactRay, distance / PHYSICS_SCALE, true,
+      R.QueryFilterFlags.EXCLUDE_SENSORS, undefined, playerCollider);
+    if (!hit) return null;
+    const normal = toMap(hit.normal);
+    return { normal, distance: hit.timeOfImpact * PHYSICS_SCALE - capsuleExtent(toRapier(upMap), rayDirection),
+      kind: surfaceKind(normal) };
+  }
   function rotation(entity) {
     const angle = -(entity.angle || 0) * Math.PI / 180;
     return { x: 0, y: Math.sin(angle / 2), z: 0, w: Math.cos(angle / 2) };
@@ -127,7 +167,8 @@ export function createPhysics(project, state, R, triangulate) {
     const bottom = floorAt(entity) + (entity.elevation || 0);
     descriptor.setTranslation(entity.x / PHYSICS_SCALE, (bottom + height / 2 + (player ? .4 : 0)) / PHYSICS_SCALE, entity.y / PHYSICS_SCALE);
     descriptor.setRotation(rotation(entity));
-    if (player) descriptor.lockRotations();
+    // The player capsule is re-oriented onto the surface it stands on, so its
+    // rotation follows the up axis instead of being locked upright.
     if (!player && config.lockRotation) descriptor.lockRotations();
     if (bodyType === 'dynamic') descriptor.setCcdEnabled(true);
     const body = world.createRigidBody(descriptor);
@@ -162,7 +203,10 @@ export function createPhysics(project, state, R, triangulate) {
       const position = body.translation(), q = body.rotation();
       const height = entity.type === 'player' ? 56 : entity.physics.height;
       entity.x = position.x * PHYSICS_SCALE; entity.y = position.z * PHYSICS_SCALE;
-      entity.z = position.y * PHYSICS_SCALE - height / 2;
+      // Feet are half a capsule below the centre along the player's own up axis, so
+      // a player lying on a wall reports the height their body actually occupies.
+      entity.z = position.y * PHYSICS_SCALE - (entity.type === 'player'
+        ? PLAYER_CYLINDER.halfHeight * upMap[2] : height / 2);
       entity.rotation = { x: q.x, y: q.y, z: q.z, w: q.w };
       if (entity.type === 'player') {
         state.player.x = entity.x; state.player.y = entity.y; state.player.z = entity.z;
@@ -170,10 +214,91 @@ export function createPhysics(project, state, R, triangulate) {
     }
   }
   sync();
+  /**
+   * Rotate the player capsule onto a new up axis and slide it so the point it was
+   * resting on stays put: a capsule rotated in place would end 16 units inside the
+   * wall it just stepped onto.
+   */
+  function orientPlayer(up, clearance = 0) {
+    const next = upVector(up), body = bodies.get(playerId), collider = colliders.get(playerId);
+    if (!body) { upMap = next; return false; }
+    const axis = toRapier(next), previous = toRapier(upMap);
+    // Reach of the *old* capsule along the *new* axis: a horizontal capsule only
+    // reaches its radius towards a wall it is about to stand on. `clearance` is the
+    // measured gap to that surface, so the feet land exactly on it.
+    const extent = capsuleExtent(previous, axis) + clearance, position = body.translation();
+    const shift = (PLAYER_CYLINDER.halfHeight - extent) / PHYSICS_SCALE;
+    const target = { x: position.x + axis.x * shift, y: position.y + axis.y * shift, z: position.z + axis.z * shift };
+    const quaternion = capsuleRotation(axis);
+    body.setTranslation(target, true); body.setRotation(quaternion, true);
+    body.setNextKinematicTranslation(target); body.setNextKinematicRotation(quaternion);
+    world.propagateModifiedBodyPositionsToColliders();
+    upMap = next; verticalSpeed = 0;
+    sync();
+    return true;
+  }
+  // Sample points around the capsule: centre, then 8 units out along both axes. One
+  // ray misses ledges and corners, and a wall spike between two rays is inaudible.
+  function contactOrigins(centre, basis) {
+    const origins = [];
+    for (const offset of [[0, 0], [8, 0], [-8, 0], [0, 8], [0, -8]]) {
+      origins.push([centre[0] + basis.forward[0] * offset[0] + basis.right[0] * offset[1],
+        centre[1] + basis.forward[1] * offset[0] + basis.right[1] * offset[1],
+        centre[2] + basis.forward[2] * offset[0] + basis.right[2] * offset[1]]);
+    }
+    return origins;
+  }
+  const GROUND_SNAP = 4;
+  /** True while a surface is under the capsule, measured along the player's up axis. */
+  function standingOnSurface() {
+    const body = bodies.get(playerId);
+    if (!body) return false;
+    const axis = upVector(upMap), position = body.translation();
+    const centre = [position.x * PHYSICS_SCALE, position.z * PHYSICS_SCALE, position.y * PHYSICS_SCALE];
+    const basis = playerBasis(axis);
+    for (const origin of contactOrigins(centre, basis)) {
+      const hit = castSurface(origin, [-axis[0], -axis[1], -axis[2]], PLAYER_CYLINDER.halfHeight + GROUND_SNAP);
+      if (hit && hit.distance <= GROUND_SNAP && dotMap(hit.normal, axis) > .7071) return true;
+    }
+    return false;
+  }
+  /** Surfaces the capsule is touching or nearly touching, nearest contact first. */
+  function probeSurfaces(up = upMap, reach = SURFACE_REACH) {
+    const axis = upVector(up), body = bodies.get(playerId);
+    if (!body || !colliders.get(playerId)) return [];
+    const basis = playerBasis(axis), position = body.translation();
+    const centre = [position.x * PHYSICS_SCALE, position.z * PHYSICS_SCALE, position.y * PHYSICS_SCALE];
+    const found = [], seen = new Set();
+    const record = hit => {
+      if (!hit || hit.distance > reach) return;
+      const key = `${hit.kind}|${hit.normal.map(value => value.toFixed(3)).join(',')}`;
+      if (seen.has(key)) return;
+      seen.add(key); found.push(hit);
+    };
+    // Feet, head and eight sides: a capsule can touch a wall, a floor and a ceiling
+    // at once in a corner, and each classified contact drives a different rule.
+    for (const origin of contactOrigins(centre, basis))
+      record(castSurface(origin, [-axis[0], -axis[1], -axis[2]], PLAYER_CYLINDER.halfHeight + reach));
+    record(castSurface(centre, axis, PLAYER_CYLINDER.halfHeight + reach));
+    const sides = [[1, 0], [-1, 0], [0, 1], [0, -1], [.7071, .7071], [-.7071, .7071], [.7071, -.7071], [-.7071, -.7071]];
+    for (const [forward, right] of sides) {
+      const direction = [
+        basis.forward[0] * forward + basis.right[0] * right,
+        basis.forward[1] * forward + basis.right[1] * right,
+        basis.forward[2] * forward + basis.right[2] * right,
+      ];
+      const length = Math.hypot(...direction) || 1;
+      record(castSurface(centre, [direction[0] / length, direction[1] / length, direction[2] / length],
+        PLAYER_CYLINDER.radius + reach));
+    }
+    return found.sort((a, b) => a.distance - b.distance);
+  }
   const api = {
     world, bodies,
     syncWorld,
     get contacts() { return contacts; }, get started() { return started; }, get ended() { return ended; }, get grounded() { return grounded; },
+    get up() { return [...upMap]; },
+    orientPlayer, probeSurfaces,
     saveState() {
       const vector = value => ({ x: value.x || 0, y: value.y || 0, z: value.z || 0 });
       return {
@@ -184,6 +309,7 @@ export function createPhysics(project, state, R, triangulate) {
         })),
         active: [...active], contacts: [...contacts], started: [...started], ended: [...ended],
         forces: [...forces].map(([id, force]) => [id, { ...force }]), accumulator, verticalSpeed, grounded,
+        up: [...upMap],
       };
     },
     restoreState(snapshot) {
@@ -207,6 +333,7 @@ export function createPhysics(project, state, R, triangulate) {
       contacts = new Set(snapshot.contacts); started = new Set(snapshot.started); ended = new Set(snapshot.ended);
       forces.clear(); for (const [id, force] of snapshot.forces) forces.set(id, { ...force });
       ({ accumulator, verticalSpeed, grounded } = snapshot);
+      upMap = upVector(snapshot.up);
       events.clear();
       world.propagateModifiedBodyPositionsToColliders();
       sync();
@@ -215,6 +342,10 @@ export function createPhysics(project, state, R, triangulate) {
     },
     step(dt, movement) {
       started = new Set(); ended = new Set();
+      if (movement.up && dotMap(upVector(movement.up), upMap) < .999999) orientPlayer(movement.up);
+      const axis = toRapier(upMap);
+      // Movement arrives in map space; gravity and the move both follow the up axis.
+      const velocity = toRapier([movement.x || 0, movement.y || 0, movement.z || 0]);
       accumulator = Math.min(accumulator + dt, FIXED_STEP * 8);
       if (movement.jump && grounded) { verticalSpeed = 5; grounded = false; }
       while (accumulator + 1e-9 >= FIXED_STEP) {
@@ -226,19 +357,24 @@ export function createPhysics(project, state, R, triangulate) {
         forces.clear();
         const body = bodies.get(playerId), collider = colliders.get(playerId);
         verticalSpeed = grounded ? -.5 : Math.max(-50, verticalSpeed - 9.81 * FIXED_STEP);
+        const fall = verticalSpeed * FIXED_STEP;
         controller.computeColliderMovement(collider, {
-          x: movement.x / PHYSICS_SCALE * FIXED_STEP, y: verticalSpeed * FIXED_STEP, z: movement.y / PHYSICS_SCALE * FIXED_STEP,
+          x: velocity.x / PHYSICS_SCALE * FIXED_STEP + axis.x * fall,
+          y: velocity.y / PHYSICS_SCALE * FIXED_STEP + axis.y * fall,
+          z: velocity.z / PHYSICS_SCALE * FIXED_STEP + axis.z * fall,
         }, R.QueryFilterFlags.EXCLUDE_SENSORS, undefined, candidate => candidate.parent()?.handle !== body.handle);
         const corrected = controller.computedMovement(), position = body.translation();
         body.setNextKinematicTranslation({ x: position.x + corrected.x, y: position.y + corrected.y, z: position.z + corrected.z });
-        grounded = controller.computedGrounded();
+        world.step(events);
+        // Rapier's own grounded test follows world +Y, so it only answers for an
+        // upright player; on a wall the contact rays decide instead.
+        grounded = axis.y > .999 ? controller.computedGrounded() || standingOnSurface() : standingOnSurface();
         const characterContacts = new Set();
         for (let i = 0; i < controller.numComputedCollisions(); i++) {
           const collision = controller.computedCollision(i);
           const other = colliderIds.get(collision.collider.handle);
           if (other) characterContacts.add(pairKey(playerId, other));
         }
-        world.step(events);
         events.drainCollisionEvents((a, b, begin) => {
           const left = colliderIds.get(a), right = colliderIds.get(b);
           if (!left || !right || left === right) return;
@@ -260,7 +396,9 @@ export function createPhysics(project, state, R, triangulate) {
       const bottom = z ?? floorAt({ x, y }) + (entity.elevation || 0);
       if (!body) { entity.x = x; entity.y = y; entity.z = bottom; entity.elevation = bottom - floorAt(entity); return; }
       const height = entity.type === 'player' ? 56 : entity.physics.height;
-      const position = { x: x / PHYSICS_SCALE, y: (bottom + height / 2 + .4) / PHYSICS_SCALE, z: y / PHYSICS_SCALE };
+      const position = entity.type === 'player'
+        ? { x: x / PHYSICS_SCALE, y: (bottom + PLAYER_CYLINDER.halfHeight * upMap[2] + .4) / PHYSICS_SCALE, z: y / PHYSICS_SCALE }
+        : { x: x / PHYSICS_SCALE, y: (bottom + height / 2 + .4) / PHYSICS_SCALE, z: y / PHYSICS_SCALE };
       body.setTranslation(position, true);
       if (body.isKinematic()) body.setNextKinematicTranslation(position);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
@@ -270,7 +408,7 @@ export function createPhysics(project, state, R, triangulate) {
     },
     rotate(id, angle) {
       const entity = state.entities.find(entity => entity.id === id), body = bodies.get(id);
-      if (!entity || !body) return;
+      if (!entity || !body || id === playerId) return;
       body.setRotation(rotation({ angle }), true); world.propagateModifiedBodyPositionsToColliders(); sync();
       if (body.isKinematic()) body.setNextKinematicRotation(rotation({ angle }));
     },

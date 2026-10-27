@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { addRoom, newId, validateProject, ENTITY_TYPES } from '../shared/project.js';
-import { ENGINE_ACTIONS, ENGINE_CONDITIONS, installEngineScripts } from '../shared/engine-script.js';
+import { ENGINE_ACTIONS, ENGINE_CONDITIONS, installEngineScripts, installWallWalkDemo } from '../shared/engine-script.js';
 import { eventBranch } from '../shared/events.js';
 import { installDefaultHUD, hudElement } from '../shared/hud.js';
 import { parseHUDCSS } from '../shared/hud-style.js';
@@ -69,6 +69,8 @@ export const toolDefinitions = [
     shape: { css: z.string().max(131072) } },
   { name: 'project_set_title', description: 'Rename the project.', shape: { title: z.string().min(1).max(100) } },
   { name: 'engine_install_starter', description: 'Explicitly opt a legacy project into editable FPS starter sheets (NOT complete Doom compatibility). Preserves existing events. Adds Input/Player/Combat/Weapons/Enemies/Pickups/World/HUD sheets and event-driven controls. Throws if Engine sheets already exist.',
+    shape: {} },
+  { name: 'engine_add_wall_walk_demo', description: 'Add (or reinstall) the "Wall walking (experiment)" event sheet: jump at a wall or ceiling to rotate the player gravity onto it and walk on that surface, touch a floor or hold F to return to normal gravity. Only that sheet\'s rules are replaced; everything else is preserved. Uses the playerTouchingSurface and playerAirborne conditions with the setPlayerGravity action.',
     shape: {} },
   { name: 'event_sheet_add', description: 'Create an editable Engine or Game sub-event sheet. Interface-phase rules run while paused; beforePhysics and afterPhysics rules run only during gameplay.',
     shape: { name: z.string().min(1).max(100), section: z.enum(['engine', 'game']).default('game'),
@@ -304,6 +306,7 @@ export function applyTool(project, name, args, context = {}) {
       else if (input.shaderId !== undefined) next.environment.shaderId = input.shaderId;
       break;
     case 'engine_install_starter': installEngineScripts(next); break;
+    case 'engine_add_wall_walk_demo': installWallWalkDemo(next); break;
     case 'event_sheet_add':
       next.eventSheets ||= [];
       next.eventSheets.push({ id: newId('sheet'), ...input, enabled: true });

@@ -78,6 +78,19 @@ test('JSON round trip preserves collections, nonfinite timers, inventory, script
   assert.ok(result.runtime.inventory.keys.has('blueCard'), 'save is a detached snapshot');
 });
 
+test('a save made before the player gravity axis existed still restores with world-up', () => {
+  const { project, state } = fixture();
+  const record = captureGameSave(project, state, 'id');
+  const legacy = json(record);
+  const player = field(legacy.snapshot, 'player')[1];
+  player.value = player.value.filter(pair => pair[0] !== 'up');
+  resign(legacy);
+  const restored = restoreGameSave(project, legacy, 'id').runtime;
+  assert.deepEqual(restored.player.up, [0, 0, 1]);
+  const current = restoreGameSave(project, record, 'id').runtime;
+  assert.deepEqual(current.player.up, [0, 0, 1]);
+});
+
 test('saving from menus clears transient state, and refuses missing/dead games or intermissions', () => {
   const { project, state } = fixture();
   Object.assign(state, { gameScreen: 'save_confirm', menuRequests: [{ type: 'save', slot: 1 }],

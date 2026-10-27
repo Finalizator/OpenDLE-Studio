@@ -2,10 +2,12 @@
 // the object, so the 3D editor can draw exactly what the event checks, and they use
 // the same shapes and floor-relative placement as Rapier colliders.
 
+import { PLAYER_CYLINDER } from './gravity.js';
+
 export const AREA_SHAPES = ['box', 'sphere', 'capsule'];
 export const DEFAULT_AREA = { shape: 'box', width: 96, height: 96, depth: 96, radius: 48 };
 // The player's capsule, so an area reacts to the body and not to a single point.
-export const PLAYER_CYLINDER = { radius: 12, halfHeight: 28 };
+export { PLAYER_CYLINDER };
 
 export function areaSpec(area) {
   if (!area || typeof area !== 'object') return null;

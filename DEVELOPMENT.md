@@ -1611,6 +1611,67 @@ kept in a per-session cache (`modelPreviews` in `public/app.js`) rather than
 written to the project. A failed capture leaves the plain "3D" placeholder and
 never blocks the import.
 
+### Gravity direction and wall walking
+
+The player has their own up axis (`state.player.up`, world-up by default), so
+events can turn gravity onto a wall or a ceiling and let the player walk on it.
+Three commands drive it:
+
+- **Player: touching a surface** — true while the capsule is in contact with a
+  surface, with a `wall` / `floor` / `ceiling` / `any` choice. Surfaces are
+  classified by their *world* normal, so the real floor still reads as a floor
+  when the player is standing on a wall next to it.
+- **Player: is on the ground / airborne** — the same state Rapier reports, but
+  measured along the player's own up axis, so it stays correct on a wall.
+- **Player: set gravity direction** — `world` restores normal gravity, and
+  `wall` / `floor` / `ceiling` / `nearest` rotate the up axis onto the nearest
+  matching contact within `reach` map units. Nothing happens when that surface
+  is not there, so a rule never needs a "was it really there" guard.
+
+```text
+If  Player: touching a surface = wall
+And Player: is on the ground / airborne = airborne
+Do  Player: set gravity direction = wall
+```
+
+Click **Add wall-walking experiment** in the Engine section of the project tree
+(or call the `engine_add_wall_walk_demo` MCP tool) to install a ready sheet
+built from those rules: jump at a wall or ceiling to start walking on it, touch
+a real floor to fall back to normal gravity, and hold **F** to drop back at any
+time. Removing the `airborne` condition makes it purely touch-driven; a
+corridor then grabs the player on every wall they brush.
+
+What changes underneath:
+
+- `shared/gravity.js` owns the player frame: the heading/strafe basis for an
+  arbitrary up, surface classification, the eye position and the view
+  direction. `alignUp` points the up axis at a new surface while *keeping the
+  world direction the player was facing*, so a gravity change reads as a roll,
+  not a turn (facing straight into the new floor falls back to looking up it).
+- Rapier capsules always grow along +Y, so `shared/physics.js` rotates the
+  player capsule onto the up axis and slides it by the measured gap to the
+  surface, landing its feet exactly where the surface is. Movement and gravity
+  are then applied in the player's plane.
+- Ground contact, wall contact and the ceiling above are found with short ray
+  casts from the capsule (centre, four offsets and eight directions). Each hit
+  is reported as a contact *clearance* — the gap between the capsule surface and
+  the geometry — which is what "touching" and the action's `reach` measure.
+- `public/render.js` puts the camera on the player's up axis, easing the roll
+  over ~0.1 s. The weapon overlay is drawn in the screen-space overlay scene, so
+  it stays upright. Hitscan attacks fire along `viewDirection`, so the crosshair
+  keeps pointing where shots go.
+- The up axis is stored in the physics snapshot and in `state.player`, so
+  saving mid-wall and loading puts the player back on that wall. Saves made
+  before this existed load with world-up.
+
+Limits: Rapier's own autostep and snap-to-ground only understand world +Y, so on
+a wall the player cannot step over ledges or stick to descending slopes as
+smoothly as on the floor. Sectors, interaction areas, Doom line specials and
+pickup reach all still measure height against world-up, and the capsule cannot
+pass through a 56-unit gap sideways once it is lying horizontally. Treat this as
+a scripting primitive for experiments, not as a guarantee that every Doom map
+plays correctly upside down.
+
 ### Object-attached visual scripts
 
 The event editor combines a Construct-style conditions/actions table with

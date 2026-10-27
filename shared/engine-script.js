@@ -25,6 +25,9 @@ export const ENGINE_CONDITIONS = [
   { type: 'playerReachesEntity', label: 'Player: overlaps pickup reach', target: true,
     fields: [numeric('distance', 36, 0, 65536), numeric('height', 112, 0, 65536), numeric('below', 32, 0, 65536),
       choice('reachOverSteps', 'yes', ['yes', 'no'])] },
+  { type: 'playerTouchingSurface', label: 'Player: touching a surface',
+    fields: [choice('surface', 'wall', ['wall', 'floor', 'ceiling', 'any'])] },
+  { type: 'playerAirborne', label: 'Player: is on the ground / airborne', fields: [choice('state', 'airborne', ['airborne', 'grounded'])] },
   { type: 'playerInArea', label: 'Player: inside this object interaction area', target: true, fields: [] },
   { type: 'playerEnteredArea', label: 'Player: entered this object interaction area', target: true, fields: [] },
   { type: 'entityDamaged', label: 'Object: health decreased', target: true, fields: [] },
@@ -133,6 +136,8 @@ export const ENGINE_ACTIONS = [
   { type: 'turnPlayer', label: 'Player: turn (degrees / second)', fields: [numeric('speed', 126, -3600, 3600)] },
   { type: 'mouseLook', label: 'Player: apply mouse movement', fields: [numeric('sensitivity', .002, .00001, .1), choice('vertical', 'enabled', ['enabled', 'disabled'])] },
   { type: 'jumpPlayer', label: 'Player: request jump', fields: [] },
+  { type: 'setPlayerGravity', label: 'Player: set gravity direction (walk on that surface)',
+    fields: [choice('mode', 'world', ['world', 'nearest', 'wall', 'floor', 'ceiling']), numeric('reach', 8, 0, 128)] },
   { type: 'setPlayerStat', label: 'Player: set stat', fields: [stat(), numeric('value', 100, 0, 1000000)] },
   { type: 'addPlayerStat', label: 'Player: add capped stat', fields: [stat(), numeric('value', 10, -1000000, 1000000), numeric('maximum', 100, 0, 1000000)] },
   { type: 'damagePlayer', label: 'Player: damage through armor', fields: [numeric('damage', 10, 0, 1000000),
@@ -151,6 +156,41 @@ export function defaultEngineCommand(type) {
   const command = engineCommand(type);
   return { type, ...Object.fromEntries(command.fields.map(field => [field.name, field.value])) };
 }
+export const WALL_WALK_SHEET = 'Wall walking (experiment)';
+
+/**
+ * A short, fully editable example of gravity scripting: jump at a wall or a ceiling
+ * to walk on it, and touch a floor (or hold F) to drop back to normal gravity.
+ * Reinstalling replaces only this sheet's rules.
+ */
+export function installWallWalkDemo(project) {
+  const used = new Set([...(project.eventSheets || []).map(item => item.id), ...project.events.map(item => item.id)]);
+  const id = name => {
+    let result = name, suffix = 1;
+    while (used.has(result)) result = `${name}_${suffix++}`;
+    used.add(result); return result;
+  };
+  const existing = (project.eventSheets || []).find(sheet => sheet.name === WALL_WALK_SHEET);
+  const sheet = existing || { id: id('engine_wall_walk'), name: WALL_WALK_SHEET, section: 'engine', enabled: true, phase: 'afterPhysics' };
+  if (!existing) project.eventSheets = [...(project.eventSheets || []), sheet];
+  project.events = project.events.filter(event => event.sheetId !== sheet.id);
+  const gravity = mode => ({ type: 'setPlayerGravity', mode, reach: 8 });
+  const rules = [
+    { name: 'demo_hint', condition: { type: 'onStart' }, conditions: [],
+      actions: [{ type: 'showMessage', message: 'Wall walking: jump at a wall or ceiling to walk on it. Hold F to drop back.' }] },
+    { name: 'walk_on_walls', condition: { type: 'playerTouchingSurface', surface: 'wall' },
+      conditions: [{ type: 'playerAirborne', state: 'airborne' }], actions: [gravity('wall')] },
+    { name: 'walk_on_ceilings', condition: { type: 'playerTouchingSurface', surface: 'ceiling' },
+      conditions: [{ type: 'playerAirborne', state: 'airborne' }], actions: [gravity('ceiling')] },
+    { name: 'back_to_world_gravity', condition: { type: 'playerTouchingSurface', surface: 'floor' },
+      conditions: [], actions: [gravity('world')] },
+    { name: 'drop_to_world_gravity', condition: { type: 'keyHeld', key: 'KeyF' }, conditions: [], actions: [gravity('world')] },
+  ];
+  project.events = [...project.events, ...rules.map(rule => ({
+    id: id(`engine_${rule.name}`), sheetId: sheet.id, enabled: true, once: false, conditions: [], ...rule }))];
+  return sheet.id;
+}
+
 export function compareValues(a, operator, b) {
   switch (operator) {
     case '<': return a < b;

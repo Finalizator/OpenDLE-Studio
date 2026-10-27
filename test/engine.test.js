@@ -160,7 +160,7 @@ test('player-owned position and angle actions synchronize camera and object stat
   validateProject(project);
   const state = createRuntime(project);
   stepRuntime(project, state, .016, new Set());
-  assert.deepEqual(state.player, { x: 80, y: 90, angle: Math.PI, pitch: 0 });
+  assert.deepEqual(state.player, { x: 80, y: 90, angle: Math.PI, pitch: 0, up: [0, 0, 1] });
   const object = state.entities.find(entity => entity.type === 'player');
   assert.deepEqual([object.x, object.y, object.angle], [80, 90, 180]);
   assert.equal(state.variables.score, 1);

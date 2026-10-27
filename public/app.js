@@ -12,7 +12,8 @@ import { commandRow, openCommandDialog } from './event-sheet.js';
 import { shaderTemplate } from '/shared/shaders.js';
 import { recoverProject } from './project-recovery.js';
 import { eventBranch, eventDepth, moveEventBranch, removeEventBranch, eventScope } from '/shared/events.js';
-import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, defaultEngineCommand, installEngineScripts } from '/shared/engine-script.js';
+import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, defaultEngineCommand, installEngineScripts,
+  installWallWalkDemo } from '/shared/engine-script.js';
 import { createHUDEditor } from './hud-editor.js';
 import { createHUDView } from './hud-view.js';
 import { WEAPONS } from '/shared/player-state.js';
@@ -2626,6 +2627,12 @@ $('install-engine').addEventListener('click', guard(() => {
     edit(installEngineScripts, 'Editable Engine starter installed; existing rules preserved');
     openScript(`$sheet:${project.eventSheets.find(sheet => sheet.section === 'engine').id}`);
   }
+}));
+$('add-wall-walk').addEventListener('click', guard(() => {
+  let sheetId;
+  edit(next => { sheetId = installWallWalkDemo(next); },
+    'Wall-walking experiment added: jump at a wall or ceiling to walk on it, hold F to drop back to normal gravity');
+  openScript(`$sheet:${sheetId}`);
 }));
 $('add-sheet').addEventListener('click', guard(() => {
   const id = newId('sheet');
