@@ -2215,9 +2215,13 @@ flags are retained; New game selects them (Play level defaults to skill 4
 unless this browser has saved a different difficulty).
 Flats are square palette images of 32, 64, 128 or 256 pixels; a 128x128 or 256x256
 flat used to be rejected as malformed, which broke any modern replacement flat.
-bzip2/LZMA-compressed or encrypted archive entries are refused with an explicit
-message rather than imported, and TEXTURES patch options (`FlipX`, `Rotate`) are
-reported instead of drawn untransformed.
+An archive entry that this reader cannot decompress (bzip2, LZMA) or that is
+encrypted is skipped by name with an import warning instead of failing the whole
+archive, so one unreadable file no longer makes an otherwise importable mod
+unusable. TEXTURES patch options (`FlipX`, `Rotate`) are reported instead of drawn
+untransformed. Sixteen-angle sprite frames are recognised now: GZDoom's rotation
+character runs `0`-`9` then `A`-`G`, and requiring `0`-`8` dropped every such frame,
+which froze the animation of the frames that did parse.
 
 Common monster/pickup/decoration thing types map to imported sprite-frame clips.
 Unknown types remain visible colored placeholders. Recognized lamps import as
@@ -2231,11 +2235,35 @@ complete monster behavior, music, Doom timing/demo fidelity, multiplayer, advanc
 ACS, DECORATE or ZScript. Rapier supplies player gravity/collision; inventory,
 basic pickups, weapons, enemy combat, classic moving sectors and sound playback use editable events, not exact Doom
 semantics. Closed/inverted-height doors remain closed; teleports remain direct
-placement. This is not a Doom-equivalent game conversion. Binary Hexen maps are
-explicitly rejected; UDMF geometry imports natively with preserved source
-properties and explicit warnings for remaining behavior gaps. Standalone WAD import still needs a complete base asset
+placement. This is not a Doom-equivalent game conversion. Classic Doom, Hexen-format
+binary and UDMF geometry all import natively; UDMF keeps its source properties
+and every format reports the remaining behavior gaps explicitly. Standalone WAD import still needs a complete base asset
 set. Package map import can explicitly layer one base IWAD under package
 resources; arbitrary multi-mod load orders are not implemented.
+
+### Hexen-format binary maps
+
+GZDoom decides a binary map's layout by its `BEHAVIOR` lump: a map with scripts is
+Hexen format, where a linedef is a 16 byte record (two vertices, flags, a one byte
+special, five argument bytes and two sider numbers) and a thing is 20 bytes (tag, x,
+y, z, angle, type, flags, special, five args). `shared/wad.js` reads that layout the
+same way GZDoom does (the record sizes alone are ambiguous — 112 bytes is 8 Doom or 7
+Hexen lines — so the BEHAVIOR lump decides, and a map without it is read as classic
+Doom format), and feeds it through the same code path as UDMF: the Hexen special number,
+its arguments and its activation type reach the runtime's special table
+(`shared/line-specials.js`), so doors, lifts, platforms and script calls behave as the
+map defines them rather than being translated into invented rules.
+
+The three bits at `0x1c00` of the flags word are Hexen's activation index, which
+GZDoom expands to `1 << index`: cross, use, monster-cross, impact, push,
+projectile-cross, use-through and any-cross. Those map onto the engine's `cross`,
+`use` and `shoot` triggers. Thing flags keep Hexen's meaning rather than Doom's: bit
+`0x10` is **dormant** (a thing scripts must activate) instead of "not in single
+player", and single/coop/deathmatch presence lives in `0x100`/`0x200`/`0x400`. Things
+keep their tag (`tid`), their spawn height and their skill mask, which Hexen stores in
+the same three low bits Doom uses. Sector records are the classic 26 byte layout in
+both binary formats; sector arguments are not part of it, so scripts read them through
+ACS as they do in GZDoom.
 
 ### What the importer reads from a package
 
@@ -2257,6 +2285,10 @@ grown past the original assumptions:
   projectile gave that monster an attack that spawned nothing. The actor's own
   `Projectile` declaration wins when it resolves, and the built-in name remains the
   fallback for a mod that only overrides the monster's states.
+- **A PAL-less WAD imports what it can.** Nearly every mod-only PWAD ships no PLAYPAL
+  and expects a base IWAD. The geometry, actors, sounds and any PNG resources import,
+  and the palette-indexed artwork that cannot be expanded is named in the warnings
+  instead of refusing the file.
 - **`replaces` takes over the editor number.** An actor that replaces another one
   inherits its editor number when it declares none, and the runtime's doomed-number
   index prefers the replacement, so thing 3004 spawns it.
@@ -2334,11 +2366,11 @@ conversion of their ACS/ZScript/custom actors; compatibility warnings remain.
   GZDoom's complete texture-type/filter/load-order resolution is not reproduced yet.
   Missing base palettes report an error. Map and image imports do not silently
   save over the server project.
-- Binary Hexen maps remain visible but disabled. ACS sources compiled into a
-  map (`BEHAVIOR`), DECORATE/ZScript actor definitions and DEHACKED patches are
-  compiled into native data and executed. ZScript beyond defaults/state blocks,
-  ACS libraries loaded through `LOADACS`, MAPINFO/GAMEINFO gameplay rules,
-  TEXTURES, GLDEFS and other definitions are **not executed or translated**. Their presence is reported in import notes.
+- Binary Hexen-format maps import natively (see "Hexen-format binary maps" below).
+  ACS sources compiled into a map (`BEHAVIOR`), DECORATE/ZScript actor definitions
+  and DEHACKED patches are compiled into native data and executed. ZScript beyond
+  defaults/state blocks, GLDEFS/light definitions and other definition kinds are
+  **not executed or translated**. Their presence is reported in import notes.
   MENUDEF and SBARINFO have the bounded partial translation described above;
   this does not execute ZScript or custom actors.
   Images imported from a mod do not automatically create its custom actors,

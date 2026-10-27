@@ -50,6 +50,17 @@ export function decodePatch(bytes, palette) {
 // 256x256 are all in use (modern flats are routinely 256x256).
 const FLAT_SIZES = new Map([[1024, 32], [4096, 64], [16384, 128], [65536, 256]]);
 
+/** Four letter sprite name, frame letter, rotation, and an optional mirrored pair. */
+const SPRITE_FRAME_NAME = /^[A-Z0-9_]{4}[A-Z][0-9A-G](?:[A-Z][0-9A-G])?$/;
+
+/** GZDoom's rotation character: '0'-'9' then 'A'-'G' for the sixteen view angles. */
+function spriteRotation(character) {
+  const code = String(character ?? '').toUpperCase().charCodeAt(0);
+  if (code >= 48 && code <= 57) return code - 48;
+  if (code >= 65 && code <= 71) return code - 65 + 10;
+  return null;
+}
+
 export function flatSize(bytes) {
   return FLAT_SIZES.get(bytes?.length) || null;
 }
@@ -146,7 +157,7 @@ export function composeTexture(definition, getPatch) {
   return result;
 }
 
-export function createDoomAssets(wad, encodeImage, images = new Map(), fontResources = new Map()) {
+export function createDoomAssets(wad, encodeImage, images = new Map(), fontResources = new Map(), { requirePalette = true } = {}) {
   const lumpMap = new Map(wad.lumps.map(lump => [lump.name, lump]));
   const flats = new Set();
   let inFlats = false;
@@ -157,8 +168,12 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
   }
   const data = lump => new Uint8Array(wad.buffer, lump.start, lump.size);
   const palette = lumpMap.get('PLAYPAL');
-  check(palette && palette.size >= 768, 'No usable PLAYPAL palette. Supply a complete Freedoom IWAD; standalone PWAD assets may need their base IWAD.');
-  const colors = data(palette).subarray(0, 768);
+  check(!requirePalette || palette && palette.size >= 768,
+    'No usable PLAYPAL palette. Supply a complete Freedoom IWAD; standalone PWAD assets may need their base IWAD.');
+  // Without a palette the palette-indexed artwork cannot be expanded, but a mod that
+  // ships only PNG images still imports: the geometry, actors, sounds and images work
+  // and the report names what was skipped.
+  const colors = palette && palette.size >= 768 ? data(palette).subarray(0, 768) : null;
   const names = lumpMap.has('PNAMES') ? patchNames(data(lumpMap.get('PNAMES'))) : [];
   const definitions = new Map();
   for (const table of ['TEXTURE1', 'TEXTURE2']) if (lumpMap.has(table)) {
@@ -192,10 +207,12 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     assets.push({ id: `music_${name}`, name, kind: 'music', format: midi ? 'midi' : 'mus', src });
   }
   let totalPixels = 0;
+  const noPalette = () => warnings.add('This game has no PLAYPAL palette, so its palette-based graphics and flats were skipped; import it over a base IWAD to decode them.');
   function patch(name) {
     const external = images.get(`sprite_${name}`) || images.get(`weapon_${name}`) || images.get(`texture_${name}`);
     if (external) return external();
     check(lumpMap.has(name), `Missing patch ${name}`);
+    if (!colors) { noPalette(); throw new Error('no palette'); }
     if (!patchCache.has(name)) {
       let decoded;
       try { decoded = decodePatch(data(lumpMap.get(name)), colors); }
@@ -216,6 +233,8 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     if (!external && !lumpMap.has(name) && !definitions.has(name)) {
       warnings.add(`Missing ${kind} ${name}; uses a visible fallback.`); return null;
     }
+    // Palette-indexed artwork needs the palette; PNG resources in `images` do not.
+    if (!external && !colors) { noPalette(); return null; }
     let decoded;
     if (external) decoded = external();
     else if (['texture', 'sky'].includes(kind) && definitions.has(name)) decoded = composeTexture(definitions.get(name), patch);
@@ -254,7 +273,10 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     if (!groups) {
       groups = new Map();
       for (const name of spriteNames(kind)) {
-        if (!/^[A-Z0-9_]{4}[A-Z][0-8]([A-Z][0-8])?$/.test(name)) continue;
+        // GZDoom accepts rotation characters 0-9 and A-G (sixteen view angles), and a
+        // second frame/rotation pair for mirrored frames. Requiring 0-8 skipped every
+        // sixteen-angle sprite frame a mod ships.
+        if (!SPRITE_FRAME_NAME.test(name.toUpperCase())) continue;
         const key = name.slice(0, 4).toUpperCase();
         let list = groups.get(key);
         if (!list) groups.set(key, list = []);
@@ -270,9 +292,11 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     for (const name of framesFor(prefix, kind) || []) {
       for (const offset of [4, 6]) {
         if (name[offset] !== letter) continue;
-        const rotation = Number(name[offset + 1]), assetId = get(name, kind);
+        const rotation = spriteRotation(name[offset + 1]), assetId = get(name, kind);
         if (rotation === 0) unrotated = assetId;
-        else rotations[rotation - 1] = { assetId, flip: offset === 6 };
+        // Views 9-16 are a sixteen-angle set; the renderer draws eight, so those frames
+        // are kept as artwork but never used as a view.
+        else if (rotation >= 1 && rotation <= 8) rotations[rotation - 1] = { assetId, flip: offset === 6 };
       }
     }
     if (unrotated) return unrotated;
@@ -394,7 +418,7 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     const cacheKey = `${assetId}\u0000${key}`;
     if (translations.has(cacheKey)) return translations.get(cacheKey);
     const original = assets.find(asset => asset.id === assetId);
-    if (!original) { translations.set(cacheKey, null); return null; }
+    if (!original || !colors) { translations.set(cacheKey, null); return null; }
     const { lookup, unsupported } = translationLookup(specs, colors);
     if (unsupported.length) warnings.add(`Translation ${unsupported.join(', ')} uses unsupported syntax; those colours are unchanged.`);
     if (!lookup.size) { translations.set(cacheKey, null); return null; }

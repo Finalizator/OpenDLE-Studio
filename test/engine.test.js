@@ -1,9 +1,11 @@
 import test from 'node:test';
+import { LIMITS } from '../shared/limits.js';
 import assert from 'node:assert/strict';
 import { createProject, validateProject, addRoom, removeEntity } from '../shared/project.js';
 import { castRay, createRuntime, stepRuntime, lookPlayer, distanceToSegment } from '../shared/runtime.js';
 import { importWadMap, readWad } from '../shared/wad.js';
 import { applyTool } from '../server/tools.js';
+import { encodeImage } from '../server/import.js';
 
 test('starter project is valid and JSON round-trips', () => {
   const project = createProject();
@@ -291,6 +293,20 @@ export function fixtureWad(extraLump) {
   });
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 }
+/** A PWAD from an explicit lump list, so a map can be built with or without a palette. */
+function fixtureWadFrom(lumps) {
+  const directory = 12 + lumps.reduce((sum, [, data]) => sum + data.length, 0);
+  const buffer = Buffer.alloc(directory + lumps.length * 16);
+  buffer.write('PWAD'); buffer.writeUInt32LE(lumps.length, 4); buffer.writeUInt32LE(directory, 8);
+  let offset = 12;
+  lumps.forEach(([name, data], index) => {
+    data.copy(buffer, offset);
+    const entry = directory + index * 16;
+    buffer.writeUInt32LE(offset, entry); buffer.writeUInt32LE(data.length, entry + 4); buffer.write(name, entry + 8, 8);
+    offset += data.length;
+  });
+  return buffer;
+}
 test('classic WAD geometry import preserves coordinates and reports limitations', () => {
   const wad = readWad(fixtureWad());
   assert.deepEqual(wad.maps, ['MAP01']);
@@ -309,15 +325,40 @@ test('WAD parsing rejects truncated headers, directories, out-of-bounds lumps an
   const badLump = fixtureWad(), view = new DataView(badLump), directory = view.getUint32(8, true);
   view.setUint32(directory, 0xffffffff, true);
   assert.throws(() => readWad(badLump), /out of bounds/);
-  assert.throws(() => importWadMap(readWad(fixtureWad('BEHAVIOR')), 'MAP01'), /not supported/);
+  // A BEHAVIOR lump means the Hexen record layout, which this fixture's Doom-size
+  // linedefs do not fit, so the failure names the lump instead of the format.
+  assert.throws(() => importWadMap(readWad(fixtureWad('BEHAVIOR')), 'MAP01'), /Missing or malformed LINEDEFS/);
   assert.throws(() => importWadMap(readWad(fixtureWad('TEXTMAP')), 'MAP01'), /UDMF.*Missing namespace/);
+});
+test('a mod-only WAD without a PLAYPAL palette still imports what it can', () => {
+  // Nearly every mod-only PWAD has no palette: it expects a base IWAD. The geometry,
+  // actors and sounds are usable, so the import proceeds and names the artwork it
+  // could not decode instead of refusing the file.
+  const things = Buffer.alloc(10); things.writeUInt16LE(1, 6); things.writeUInt16LE(7, 8);
+  const vertices = Buffer.alloc(16), lines = Buffer.alloc(56);
+  [[-128, -128], [128, -128], [128, 128], [-128, 128]].forEach(([x, y], index) => {
+    vertices.writeInt16LE(x, index * 4); vertices.writeInt16LE(y, index * 4 + 2);
+    lines.writeUInt16LE(index, index * 14); lines.writeUInt16LE((index + 1) % 4, index * 14 + 2);
+    lines.writeUInt16LE(65535, index * 14 + 12);
+  });
+  const side = Buffer.alloc(30); side.write('WALL', 20);
+  const sector = Buffer.alloc(26); sector.writeInt16LE(128, 2); sector.write('FLOOR', 4); sector.write('CEIL', 12);
+  const bytes = fixtureWadFrom([['MAP01', Buffer.alloc(0)], ['THINGS', things], ['LINEDEFS', lines],
+    ['SIDEDEFS', side], ['VERTEXES', vertices], ['SECTORS', sector],
+    ['F_START', Buffer.alloc(0)], ['FLOOR', Buffer.alloc(4096, 7)], ['F_END', Buffer.alloc(0)]]);
+  const { project, warnings } = importWadMap(readWad(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length)),
+    'MAP01', { encodeImage });
+  validateProject(project);
+  assert.equal(project.map.walls.length, 4, 'the geometry is imported');
+  assert.equal(project.map.entities[0].type, 'player');
+  assert.ok(warnings.some(warning => warning.includes('no PLAYPAL palette')), 'the skipped palette artwork is named');
 });
 test('WAD record limits are checked before allocating record arrays', () => {
   const source = fixtureWad();
-  const oversized = new ArrayBuffer(source.byteLength + 50010);
+  const oversized = new ArrayBuffer(source.byteLength + LIMITS.entities * 10);
   new Uint8Array(oversized).set(new Uint8Array(source));
   const view = new DataView(oversized);
   const directory = view.getUint32(8, true);
-  view.setUint32(directory + 16 + 4, 50010, true);
+  view.setUint32(directory + 16 + 4, (LIMITS.entities + 1) * 10, true);
   assert.throws(() => importWadMap(readWad(oversized), 'MAP01'), /THINGS exceeds/);
 });

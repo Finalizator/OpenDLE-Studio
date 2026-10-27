@@ -218,15 +218,45 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     const text = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(wad.buffer, textMap.start, textMap.size));
     source = parseUDMF(text);
     data = udmfRecords(source);
-  } else if (mapLumps.some(lump => lump.name === 'BEHAVIOR')) throw new Error('Hexen-format binary maps are not supported');
+  }
+  // Exactly GZDoom's rule: a BEHAVIOR lump means the Hexen binary layout, where lines
+  // and things carry argument bytes and 16/20 byte records. A map saved in that layout
+  // without BEHAVIOR is read as Doom format, which is what GZDoom does as well (the
+  // record sizes alone are ambiguous: 112 bytes is 8 Doom or 7 Hexen lines).
+  const hexen = !data && mapLumps.some(lump => lump.name === 'BEHAVIOR');
   function records(lumpName, recordSize) {
     const lump = mapLumps.find(item => item.name === lumpName);
     if (!lump || lump.size % recordSize !== 0) throw new Error(`Missing or malformed ${lumpName}`);
-    const limits = { VERTEXES: 20000, LINEDEFS: 20000, SIDEDEFS: 40000, SECTORS: 20000, THINGS: 5000 };
-    if (lump.size / recordSize > limits[lumpName]) throw new Error(`${lumpName} exceeds editor geometry limits`);
+    const limits = { VERTEXES: LIMITS.vertices, LINEDEFS: LIMITS.walls, SIDEDEFS: LIMITS.sidedefs,
+      SECTORS: LIMITS.sectors, THINGS: LIMITS.entities };
+    if (lump.size / recordSize > limits[lumpName]) throw new Error(`${lumpName} exceeds the import record limit`);
     return Array.from({ length: lump.size / recordSize }, (_, index) => new DataView(wad.buffer, lump.start + index * recordSize, recordSize));
   }
   const lumpText = (view, offset) => doomName(new Uint8Array(view.buffer, view.byteOffset + offset, 8));
+  // Hexen's line activation is a three-bit index into the SPAC bits, stored in the
+  // middle of the flags word; GZDoom turns `1 << index` into its activation mask.
+  const HEXEN_ACTIVATION = [['cross'], ['use'], ['cross'], ['shoot'], ['use'], ['shoot'], ['use'], ['shoot']];
+  if (hexen) data = {
+    vertices: records('VERTEXES', 4).map(view => ({ x: view.getInt16(0, true), y: view.getInt16(2, true) })),
+    // Sectors are the classic 26 byte record in both binary formats.
+    sectors: records('SECTORS', 26).map(view => ({ floorHeight: view.getInt16(0, true), ceilingHeight: view.getInt16(2, true),
+      floor: lumpText(view, 4), ceiling: lumpText(view, 12), light: view.getInt16(20, true),
+      special: view.getUint16(22, true), tag: view.getUint16(24, true) })),
+    sides: records('SIDEDEFS', 30).map(view => ({ sector: view.getUint16(28, true), offsetX: view.getInt16(0, true),
+      offsetY: view.getInt16(2, true), upper: lumpText(view, 4), lower: lumpText(view, 12), middle: lumpText(view, 20) })),
+    lines: records('LINEDEFS', 16).map(view => {
+      const flags = view.getUint16(4, true);
+      return { a: view.getUint16(0, true), b: view.getUint16(2, true), flags,
+        special: view.getUint8(6), args: Array.from({ length: 5 }, (unused, index) => view.getUint8(7 + index)),
+        right: view.getUint16(12, true) === 65535 ? -1 : view.getUint16(12, true),
+        left: view.getUint16(14, true) === 65535 ? -1 : view.getUint16(14, true),
+        tag: view.getUint8(7), activationModes: HEXEN_ACTIVATION[(flags & 0x1c00) >> 10] || [] };
+    }),
+    things: records('THINGS', 20).map(view => ({ tid: view.getInt16(0, true), x: view.getInt16(2, true), y: view.getInt16(4, true),
+      elevation: view.getInt16(6, true), angle: view.getInt16(8, true), type: view.getUint16(10, true),
+      flags: view.getUint16(12, true), special: view.getUint8(14),
+      args: Array.from({ length: 5 }, (unused, index) => view.getUint8(15 + index)) })),
+  };
   if (!data) data = {
     vertices: records('VERTEXES', 4).map(view => ({ x: view.getInt16(0, true), y: view.getInt16(2, true) })),
     sectors: records('SECTORS', 26).map(view => ({ floorHeight: view.getInt16(0, true), ceilingHeight: view.getInt16(2, true),
@@ -242,7 +272,12 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       x: view.getInt16(0, true), y: view.getInt16(2, true), angle: view.getInt16(4, true), elevation: 0 })),
   };
   const { vertices, lines, sides, sectors, things } = data;
-  const assets = encodeImage ? createDoomAssets(wad, encodeImage, images, fontResources) : null;
+  // UDMF and Hexen-format lines both carry a Hexen special number with five args and
+  // their own activation types, which the runtime executes from the special table.
+  const zdoomFormat = Boolean(source) || hexen;
+  // A mod-only WAD has no palette of its own; its geometry, actors and sounds still
+  // import and the artwork it cannot decode is reported instead of failing the import.
+  const assets = encodeImage ? createDoomAssets(wad, encodeImage, images, fontResources, { requirePalette: false }) : null;
   // ACS: the compiled BEHAVIOR lump is executed natively at Doom's 35 Hz, together
   // with every LOADACS library the game ships.
   const behaviorLump = mapLumps.find(lump => lump.name === 'BEHAVIOR');
@@ -276,6 +311,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   const project = createProject();
   project.title = `${mapName} - imported WAD`;
   if (source) project.importSource = { format: 'udmf', mapName, ...source };
+  else if (hexen) project.importSource = { format: 'hexen', mapName };
   project.map.vertices = vertices.map((vertex, index) => ({ id: `v${index}`, x: vertex.x, y: -vertex.y }));
   project.map.sectors = sectors.map((record, index) => {
     const { floor, ceiling } = record;
@@ -306,8 +342,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     const sector = project.map.sectors.find(sector => sector.id === (right || left)?.sectorId);
     return {
       id: `w${index}`, a: `v${a}`, b: `v${b}`, right, left, flags: record.flags,
-      special: record.special || 0, tag: record.tag || 0, ...(source ? { specialFormat: 'zdoom', args: record.args,
-        activationModes: [...new Set(record.activationModes)] } : {}),
+      special: record.special || 0, tag: record.tag || 0, ...(zdoomFormat ? { specialFormat: 'zdoom', args: record.args,
+        ...(record.activationModes?.length ? { activationModes: [...new Set(record.activationModes)] } : {}) } : {}),
       color: '#9aa3ab', height: sector ? Math.max(8, Math.min(4096, sector.ceilingHeight - sector.floorHeight)) : 128,
       solid: !left || !right || Boolean(record.flags & 1),
     };
@@ -318,7 +354,10 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   let playerFound = false, unknownThings = 0, lightCount = 0;
   project.map.entities = things.flatMap((record, index) => {
     const { type, flags } = record;
-    if (type !== 1 && (!(flags & 7) || (flags & 16) || [2, 3, 4, 11].includes(type))) return [];
+    // Bit 0x10 is "not in single player" in a Doom map and "dormant" in a Hexen one,
+    // where the single/coop/deathmatch presence lives in the 0x100..0x400 bits.
+    const multiplayerOnly = hexen ? Boolean(flags & 0x700) && !(flags & 0x100) : Boolean(flags & 16);
+    if (type !== 1 && (!(flags & 7) || multiplayerOnly || [2, 3, 4, 11].includes(type))) return [];
     const isPlayer = type === 1 && !playerFound;
     if (type === 1 && playerFound) return [];
     if (isPlayer) playerFound = true;
@@ -329,7 +368,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       id: `thing${index}`, name: isPlayer ? 'Player start' : `${mapping?.[0] || 'Doom thing'} ${type}`,
       type: isPlayer ? 'player' : mapping?.[1] || 'decoration', doomType: type,
       x: record.x, y: -record.y, angle: -record.angle, spriteAsset,
-      ...(source ? { elevation: record.elevation, ...(record.tid ? { tid: record.tid } : {}) } : {}),
+      ...(zdoomFormat ? { elevation: record.elevation, ...(record.tid ? { tid: record.tid } : {}) } : {}),
+      ...(hexen && flags & 0x10 ? { dormant: true } : {}),
       ...(mapping?.[1] === 'enemy' ? { ambush: Boolean(flags & 8) } : {}),
       ...(!isPlayer ? { skillMask: flags & 7 } : {}),
     };
@@ -359,6 +399,9 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     if (unsupported.size) warnings.push(`UDMF properties preserved but not simulated/rendered: ${[...unsupported].sort().join(', ')}. Specials, slopes, 3D floors, per-surface transforms and custom actor behavior require further native compatibility work.`);
     if (mapLumps.some(lump => lump.name === 'SCRIPTS')) warnings.push('This UDMF map ships ACS source (SCRIPTS); the compiled BEHAVIOR lump is what runs.');
     if (mapLumps.some(lump => lump.name === 'DIALOGUE')) warnings.push('This map ships a DIALOGUE lump; NPC conversations are imported as data but not played yet.');
+  }
+  if (hexen) {
+    warnings.push('Hexen-format map imported natively: linedef specials run from the Hexen/ZDoom special table with their five arguments and activation types, and things keep their tag (tid), spawn height and dormant flag. Sector arguments are not stored in this format; scripts read them through ACS GetSectorSpecial/args.');
   }
   for (const sector of project.map.sectors) {
     const boundaries = project.map.walls.filter(wall => wall.right?.sectorId !== wall.left?.sectorId &&

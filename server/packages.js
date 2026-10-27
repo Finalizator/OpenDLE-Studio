@@ -97,23 +97,35 @@ export async function readPackageArchive(buffer) {
   const zip = await new Promise((resolve, reject) => yauzl.fromBuffer(buffer,
     { lazyEntries: true, strictFileNames: true, validateEntrySizes: true }, (error, zip) => error ? reject(error) : resolve(zip)));
   return new Promise((resolve, reject) => {
-    const files = new Map();
+    const files = new Map(), skipped = [];
     let total = 0, count = 0, finished = false;
     const fail = error => { if (!finished) { finished = true; zip.close(); reject(error); } };
     zip.on('error', fail);
-    zip.on('end', () => { if (!finished) { finished = true; resolve(files); } });
+    zip.on('end', () => {
+      if (finished) return;
+      finished = true;
+      // Entries this reader cannot decompress are skipped by name instead of failing the
+      // whole archive: one LZMA file used to make an otherwise importable mod unusable.
+      if (skipped.length) files.skippedEntries = skipped;
+      resolve(files);
+    });
     zip.on('entry', entry => {
       try {
         const name = safePath(entry.fileName).toLowerCase();
         check(++count <= MAX_FILES, `PK3 exceeds ${MAX_FILES} entries`);
-        check(!(entry.generalPurposeBitFlag & 1), 'Encrypted PK3 entries are not supported');
-        check([0, 8].includes(entry.compressionMethod), 'Only stored/Deflate PK3 entries are supported');
         check(((entry.externalFileAttributes >>> 16) & 0xf000) !== 0xa000, 'PK3 symlinks are not supported');
         total += entry.uncompressedSize;
         check(entry.uncompressedSize <= MAX_BYTES && total <= MAX_EXPANDED, `PK3 expanded data exceeds ${MAX_EXPANDED / MiB} MiB`);
         if (name.endsWith('/')) { zip.readEntry(); return; }
         check(!files.has(name), `Duplicate package path: ${name}`);
         files.set(name, { size: entry.uncompressedSize });
+        // Encrypted entries and compression methods other than stored/Deflate (bzip2,
+        // LZMA, ...) cannot be read here; they are named in the import warnings.
+        const encrypted = Boolean(entry.generalPurposeBitFlag & 1), method = entry.compressionMethod;
+        if (encrypted || ![0, 8].includes(method)) {
+          if (skipped.length < 40) skipped.push(`${name} (${encrypted ? 'encrypted' : `compression method ${method}`})`);
+          zip.readEntry(); return;
+        }
         if (!needed(name, entry.uncompressedSize)) { zip.readEntry(); return; }
         zip.openReadStream(entry, (error, stream) => {
           if (error) { fail(error); return; }
@@ -180,7 +192,7 @@ function mapsIn(files) {
       const lumps = source.lumps.slice(index + 1, end < 0 ? undefined : end);
       const format = lumps.some(lump => lump.name === 'TEXTMAP') ? 'UDMF'
         : lumps.some(lump => lump.name === 'BEHAVIOR') ? 'Hexen' : 'Doom';
-      maps.push({ id: `${path}#${marker}`, name: `${basename(path)} / ${marker}`, marker, path, format, supported: format !== 'Hexen' });
+      maps.push({ id: `${path}#${marker}`, name: `${basename(path)} / ${marker}`, marker, path, format, supported: true });
     }
   }
   return maps;
@@ -227,6 +239,7 @@ function collectWithIncludes(entryNames, files, warnings) {
   return sources;
 }
 export function inspectPackage(files) {
+  const skippedEntries = Array.isArray(files.skippedEntries) ? files.skippedEntries : [];
   const warnings = ['PK3 is a ZIP resource container, not an engine. Actor definitions, MAPINFO editor numbers, LANGUAGE keywords and DEHACKED patches are imported as editable data, and each map\'s compiled ACS module (BEHAVIOR) runs natively; ACS libraries loaded through LOADACS and full ZScript code are not executed.'];
   // DECORATE/ZSCRIPT actor definitions, MAPINFO DoomEdNums, LANGUAGE keyword
   // tables and DEHACKED patches are imported now, so only the remaining kinds are
@@ -239,8 +252,10 @@ export function inspectPackage(files) {
   if (unsupported.length) warnings.push(`${unsupported.length} definition files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Dynamic lights, models and filter classes need separate runtime support; actor stats, states, MAPINFO editor numbers, LANGUAGE strings, DEHACKED patches, TEXTURES definitions, per-map ACS scripts and LOADACS libraries are imported.`);
   const actorFiles = [...files.keys()].filter(name => /(^|\/)(zscript|decorate)(\.(txt|zc|zs|zsc))?$|\.(zc|zs|zsc|dec)$/i.test(name));
   if (actorFiles.length) warnings.push(`${actorFiles.length} DECORATE/ZScript file(s) are imported as editable actor data (stats, flags, sounds, state machines). ZScript code beyond defaults and state blocks is not executed; map scripts call these actors through ACS_* actions.`);
-  const maps = mapsIn(files), rejected = maps.filter(map => !map.supported);
-  if (rejected.length) warnings.push(`${rejected.length} binary Hexen maps cannot be imported yet; image assets can still be imported.`);
+  const maps = mapsIn(files);
+  if (maps.some(map => map.format === 'Hexen')) {
+    warnings.push('Binary Hexen-format maps import natively: linedef specials run from the Hexen/ZDoom table with their five arguments and activation types, and things keep their tag, spawn height and dormant flag.');
+  }
   if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry and line specials import natively, and each map\'s ACS module runs with the package\'s LOADACS libraries; advanced rendering (portals, 3D floors, slopes) is still incomplete. Full GZDoom fidelity remains the target, not current capability.');
   if ([...files.keys()].some(name => /^models\//.test(name))) warnings.push('Native model definitions are not imported yet.');
   if ([...files.keys()].some(name => /(^|\/)sndinfo(?:\.txt)?$/.test(name))) warnings.push('SNDINFO aliases and $random groups are imported so actor sound names resolve to lumps; per-sound volume, rolloff, limit and channel rules are not translated.');
@@ -248,6 +263,11 @@ export function inspectPackage(files) {
   if (!images.length) warnings.push('No images found in supported textures/flats/sprites/graphics/patches/hires namespaces. Brightmaps and other engine-specific namespaces are not imported.');
   const formats = images.filter(name => ['.jpg', '.jpeg', '.webp', '.dds', '.tga', '.pcx'].includes(extname(name)));
   if (formats.length) warnings.push(`${formats.length} images use unsupported JPEG/WebP/DDS/TGA/PCX package formats; selecting these reports an error. PNG and palette-based Doom patches/flats are supported.`);
+  if (skippedEntries.length) {
+    warnings.push(`${skippedEntries.length} archive entr${skippedEntries.length === 1 ? 'y' : 'ies'} could not be read and were skipped `
+      + `(bzip2/LZMA compression and encryption are not supported): ${skippedEntries.slice(0, 10).join(', ')}`
+      + `${skippedEntries.length > 10 ? ', ...' : ''}.`);
+  }
   const game = { ...packageGameInfo(files, maps), standalone: Boolean(files.standalone) };
   return { maps, images, warnings, game };
 }

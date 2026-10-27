@@ -272,23 +272,30 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   if (project.importSource !== undefined) {
     const source = project.importSource;
     object(source, 'Import provenance');
-    assert(source.format === 'udmf', 'Unknown import provenance format');
-    text(source.mapName, 'Source map name', 80); text(source.namespace, 'UDMF namespace', 80);
-    const properties = record => {
-      object(record, 'UDMF source properties');
-      assert(Object.keys(record).length <= 256, 'UDMF source property limit exceeded');
-      for (const [key, value] of Object.entries(record)) {
-        assert(/^[a-z_][a-z0-9_]*$/.test(key) && !['__proto__', 'constructor', 'prototype'].includes(key), 'Invalid UDMF source key');
-        assert(typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value) ||
-          typeof value === 'string' && value.length <= 65536, 'UDMF source values must be bounded scalars');
+    assert(['udmf', 'hexen'].includes(source.format), 'Unknown import provenance format');
+    text(source.mapName, 'Source map name', 80);
+    // A binary Hexen-format map has no UDMF namespace or property blocks: the map data
+    // itself is native, so only the format and the source name are recorded.
+    if (source.format === 'hexen') {
+      assert(Object.keys(source).every(key => ['format', 'mapName'].includes(key)), 'Unknown Hexen provenance field');
+    } else {
+      text(source.namespace, 'UDMF namespace', 80);
+      const properties = record => {
+        object(record, 'UDMF source properties');
+        assert(Object.keys(record).length <= 256, 'UDMF source property limit exceeded');
+        for (const [key, value] of Object.entries(record)) {
+          assert(/^[a-z_][a-z0-9_]*$/.test(key) && !['__proto__', 'constructor', 'prototype'].includes(key), 'Invalid UDMF source key');
+          assert(typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value) ||
+            typeof value === 'string' && value.length <= 65536, 'UDMF source values must be bounded scalars');
+        }
+      };
+      properties(source.globals); array(source.blocks, 'UDMF source blocks', LIMITS.udmfBlocks);
+      for (const block of source.blocks) {
+        object(block, 'UDMF source block'); text(block.type, 'UDMF source block type', 80); properties(block.properties);
       }
-    };
-    properties(source.globals); array(source.blocks, 'UDMF source blocks', LIMITS.udmfBlocks);
-    for (const block of source.blocks) {
-      object(block, 'UDMF source block'); text(block.type, 'UDMF source block type', 80); properties(block.properties);
+      assert(JSON.stringify(source).length <= LIMITS.udmfProvenanceBytes,
+        `UDMF import provenance exceeds ${LIMITS.udmfProvenanceBytes / 1024 / 1024} MiB`);
     }
-    assert(JSON.stringify(source).length <= LIMITS.udmfProvenanceBytes,
-      `UDMF import provenance exceeds ${LIMITS.udmfProvenanceBytes / 1024 / 1024} MiB`);
   }
   if (project.soundAliases !== undefined) {
     const table = project.soundAliases;

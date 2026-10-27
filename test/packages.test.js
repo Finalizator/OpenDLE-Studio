@@ -305,7 +305,7 @@ test('ClearEpisodes in included MAPINFO bounds campaigns while ordinary classic 
   files.delete('mapinfo'); files.delete('metadata/campaign');
   assert.deepEqual(importPackage(files, options).project.game.levels.map(level => level.id), ['MAP02', 'MAP01']);
 });
-test('standalone campaigns retain explicitly routed base destinations and reject unsupported maps without omission', async () => {
+test('standalone campaigns retain explicitly routed base destinations and reject unplayable maps without omission', async () => {
   const files = await readPackageArchive(archive([...entries().filter(([path]) => !path.startsWith('maps/')),
     ['maps/map01.wad', mapWad('MAIN01')],
     ['mapinfo', Buffer.from('ClearEpisodes\nEpisode MAP01 { Name = "Game" }\nMap MAP01 { Next = "MAP02" }')]]));
@@ -318,7 +318,9 @@ test('standalone campaigns retain explicitly routed base destinations and reject
     ['BEHAVIOR', Buffer.alloc(0)], ['LINEDEFS', Buffer.alloc(0)], ['SIDEDEFS', Buffer.alloc(0)],
     ['VERTEXES', Buffer.alloc(0)], ['SECTORS', Buffer.alloc(0)]]);
   files.set('maps/badmap.wad', { data: unsupported, size: unsupported.length });
-  assert.throws(() => importPackage(files, options), /Hexen map is not supported; full-game import was not applied/);
+  // Hexen format is read now, so a Hexen map with no real geometry fails as an
+  // unplayable map (no player start) instead of being rejected as a format.
+  assert.throws(() => importPackage(files, options), /Missing or malformed|exceeds|no player-one start/);
 });
 test('full package imports preserve large cutscene Ogg audio within explicit portable budgets', async () => {
   const bytes = Buffer.alloc(6_248_896); bytes.write('OggS');
@@ -376,7 +378,11 @@ test('classic PK3 map merges base IWAD palette and package PNG resources into ed
   assert.ok(project.hud.elements.some(element => element.name === 'WAD status-bar artwork'));
   assert.ok(project.events.some(event => event.actions.some(action => action.type === 'selectWeapon')));
   assert.ok(warnings.some(warning => /Missing HUD/.test(warning)));
-  assert.throws(() => importPackage(files, { map: 'maps/room.wad#ROOMONE' }), /PLAYPAL/);
+  // Without a base IWAD there is no palette; this package is all PNG art, so it still
+  // imports completely instead of failing on a palette it never needed.
+  const withoutBase = importPackage(files, { map: 'maps/room.wad#ROOMONE' });
+  assert.equal(withoutBase.project.map.walls.length, 4);
+  assert.ok(withoutBase.project.map.walls[0].right.middle, 'package PNG art resolves without a palette');
 });
 test('automatic mod import chooses declared episode entry, title and base requirement without image selections', async () => {
   const files = await readPackageArchive(archive([...entries(),
@@ -421,7 +427,7 @@ test('UDMF package maps resolve long texture paths into valid native image IDs w
   assert.equal(project.importSource.format, 'udmf');
   validateProject(project);
 });
-test('UDMF maps are enabled for native geometry import while binary Hexen maps remain explicitly rejected', async () => {
+test('UDMF and Hexen-format maps both import natively from a package', async () => {
   const files = await readPackageArchive(archive([
     ['maps/custom.wad', wad([['CUSTOM', Buffer.alloc(0)], ['TEXTMAP', Buffer.from('namespace="zdoom";')], ['ENDMAP', Buffer.alloc(0)]])],
     ['maps/hexen.wad', wad([['MAP01', Buffer.alloc(0)], ['THINGS', Buffer.alloc(20)], ['BEHAVIOR', Buffer.alloc(0)]])],
@@ -429,17 +435,29 @@ test('UDMF maps are enabled for native geometry import while binary Hexen maps r
   ]));
   const inspection = inspectPackage(files);
   assert.deepEqual(inspection.maps.map(map => map.format), ['UDMF', 'Hexen']);
-  assert.equal(inspection.maps[0].supported, true); assert.equal(inspection.maps[1].supported, false);
-  assert.throws(() => importPackage(files, { map: inspection.maps[1].id }), /Hexen.*not supported/);
+  assert.equal(inspection.maps[0].supported, true);
+  assert.equal(inspection.maps[1].supported, true, 'a binary Hexen map is importable now');
+  assert.ok(inspection.warnings.some(warning => /Binary Hexen-format maps import natively/.test(warning)));
+  // The fixture has a BEHAVIOR lump but no geometry, so it fails on the record layout
+  // rather than on a format rejection.
+  assert.throws(() => importPackage(files, { map: inspection.maps[1].id }), /Missing or malformed/);
   assert.equal(importPackage(files, { paths: ['textures/wall.png'] }).assets.length, 1);
 });
-test('PK3 validation rejects traversal, duplicate paths, symlinks, encryption, CRC corruption and expansion bombs', async () => {
+test('PK3 validation rejects traversal, duplicate paths, symlinks, CRC corruption and expansion bombs', async () => {
   for (const entry of [
     ['../textures/a.png', png()], ['textures\\a.png', png()],
-    ['textures/a.png', png(), { flags: 1 }], ['textures/a.png', png(), { method: 99 }],
     ['textures/a.png', png(), { attributes: 0xa0000000 }],
     ['textures/a.png', png(), { crc: 0 }], ['textures/a.png', png(), { size: 129 * 1024 * 1024 }],
   ]) await assert.rejects(readPackageArchive(archive([entry])));
+  // Entries this reader cannot decompress are skipped by name rather than failing the
+  // archive: a mod with one LZMA or encrypted file still imports the rest.
+  for (const [entry, label] of [[['textures/a.png', png(), { flags: 1 }], 'encrypted'],
+    [['textures/a.png', png(), { method: 12 }], 'compression method 12']]) {
+    const skipped = await readPackageArchive(archive([entry, ['textures/b.png', png()]]));
+    assert.equal(skipped.get('textures/a.png').data, undefined, `${label} entries carry no data`);
+    assert.ok(skipped.get('textures/b.png').data, 'the readable entry is kept');
+    assert.ok(skipped.skippedEntries.some(name => name.includes(label)));
+  }
   await assert.rejects(readPackageArchive(archive([['textures/A.png', png()], ['textures/a.png', png()]])), /Duplicate/);
   await assert.rejects(readPackageArchive(Buffer.from('not a zip')));
   const files = await readPackageArchive(archive([...entries(), ['textures/nested/wall.png', png()]]));
