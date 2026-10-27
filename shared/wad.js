@@ -279,6 +279,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       floorAsset: material(floor, 'flat'), ceilingAsset: ceiling === 'F_SKY1' ? null : material(ceiling, 'flat'),
       sky: ceiling === 'F_SKY1', light: Math.max(0, Math.min(255, record.light)),
       special: record.special, tag: record.tag,
+      ...(record.textureScale ? { textureScale: record.textureScale } : {}),
     };
   });
   function side(index) {
@@ -290,6 +291,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       sectorId: `sector${sector}`, offsetX: record.offsetX, offsetY: record.offsetY,
       upper: material(record.upper, 'texture'), lower: material(record.lower, 'texture'),
       middle: material(record.middle, 'texture'),
+      ...(record.textureScale ? { textureScale: record.textureScale } : {}),
     };
   }
   project.map.walls = lines.map((record, index) => {

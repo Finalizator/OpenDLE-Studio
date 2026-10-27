@@ -261,9 +261,9 @@
   <dialog id="play-dialog">
     <div class="preview-heading"><strong id="preview-title">Play world</strong><label id="play-level-label" hidden>Level<select id="play-level" aria-label="In-game level selector"></select></label><button id="pause-game">Pause / options</button><button id="hud-cursor">HUD cursor / Tab</button><button id="show-statusbar" hidden title="Screen size 11 hides the classic status bar">Show status bar</button><button id="capture-mouse">Capture mouse</button><button id="preview-fullscreen">Fullscreen</button><button id="system-browser">Open in system browser</button><button id="stop">Stop preview</button></div>
     <p id="mouse-status" role="status"></p>
-    <div id="preview-stage"><canvas id="preview" width="800" height="450" tabindex="0" aria-label="First-person game preview"></canvas><div id="hud-overlay" class="hud-overlay"></div></div>
+    <div id="preview-stage"><canvas id="preview" width="800" height="450" tabindex="0" aria-label="First-person game preview"></canvas><div id="hud-overlay" class="hud-overlay"></div><div id="game-message" aria-live="polite"></div></div>
     <div id="preview-controls" class="preview-controls"></div>
-    <div id="game-message" aria-live="polite"></div><div id="game-variables"></div>
+    <div id="game-variables"></div>
   </dialog>
   <dialog id="import-dialog"><h2>Import WAD game</h2><p>Import all levels and their sectors, textures, sky, sprites, weapons, sounds, HUDs, menus and supported visual gameplay scripts. Choose the starting level below; other levels remain editable and selectable during play. Unsupported maps fail explicitly without replacing your project. Full GZDoom scripted behavior remains incomplete. The current project is replaced; undo is available.</p><label id="local-wad-label" hidden>Local WAD<select id="local-wad-select"></select></label><label>Import scope<select id="wad-scope"><option value="game">Full game — all levels</option><option value="level">Selected level only</option></select></label><label>Starting / selected level<select id="wad-map" aria-label="WAD map"></select></label><p id="import-status" role="status"></p><div class="button-row"><button id="import-map" class="primary">Import game & assets</button><button id="cancel-import">Cancel</button></div></dialog>
   <dialog id="package-dialog">

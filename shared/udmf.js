@@ -1,3 +1,4 @@
+import { MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE } from './project.js';
 const limits = { vertex: 20000, linedef: 20000, sidedef: 40000, sector: 20000, thing: 5000 };
 const unsafe = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -115,6 +116,15 @@ export function udmfRecords(document) {
     return value.toUpperCase();
   }
   const index = (p, key, fallback) => number(p, key, fallback, { integer: true, min: -1 });
+  // UDMF splits texture scale into X and Y; one uniform factor is supported, so the
+  // horizontal value wins and an absent/default pair stays undefined.
+  function scale(p, xKey, yKey) {
+    if (p[xKey] === undefined && p[yKey] === undefined) return undefined;
+    const value = number(p, xKey, 1, { min: MIN_TEXTURE_SCALE, max: MAX_TEXTURE_SCALE });
+    // Y is validated too: a mod that scales non-uniformly still has to be in range.
+    number(p, yKey, 1, { min: MIN_TEXTURE_SCALE, max: MAX_TEXTURE_SCALE });
+    return value === 1 ? undefined : value;
+  }
   return {
     vertices: byType('vertex').map(p => ({ x: number(p, 'x'), y: number(p, 'y') })),
     sectors: byType('sector').map(p => ({
@@ -123,10 +133,12 @@ export function udmfRecords(document) {
       floor: texture(p, 'texturefloor'), ceiling: texture(p, 'textureceiling'),
       light: number(p, 'lightlevel', 160, { integer: true }),
       special: number(p, 'special', 0, { integer: true, min: 0 }), tag: number(p, 'id', 0, { integer: true, min: 0 }),
+      textureScale: scale(p, 'xscale', 'yscale'),
     })),
     sides: byType('sidedef').map(p => ({ sector: index(p, 'sector'),
       offsetX: number(p, 'offsetx', 0), offsetY: number(p, 'offsety', 0),
-      upper: texture(p, 'texturetop'), lower: texture(p, 'texturebottom'), middle: texture(p, 'texturemiddle') })),
+      upper: texture(p, 'texturetop'), lower: texture(p, 'texturebottom'), middle: texture(p, 'texturemiddle'),
+      textureScale: scale(p, 'scalex_mid', 'scaley_mid') })),
     lines: byType('linedef').map(p => ({ a: index(p, 'v1'), b: index(p, 'v2'), right: index(p, 'sidefront', -1), left: index(p, 'sideback', -1),
       special: number(p, 'special', 0, { integer: true, min: 0, max: 65535 }),
       tag: number(p, 'id', 0, { integer: true, min: 0, max: 65535 }),

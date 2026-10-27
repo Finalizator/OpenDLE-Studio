@@ -15,6 +15,10 @@ export const CONDITIONS = ['onStart', 'always', 'keyPressed', 'nearEntity', 'col
 export const ACTIONS = ['showMessage', 'setVariable', 'addVariable', 'teleport', 'removeEntity', 'setEntityPosition', 'rotateEntity', 'applyImpulse', 'applyForce', 'setVelocity', 'playAnimation', 'stopAnimation', ...ENGINE_ACTIONS.map(command => command.type)];
 export const ENTITY_TYPES = ['player', 'enemy', 'pickup', 'light', 'decoration'];
 const colorPattern = /^#[0-9a-f]{6}$/i;
+// Surface texture scaling: one texture tile covers `scale` times its pixel size in map
+// units, so 2 draws the artwork twice as large and 0.5 twice as fine.
+export const MIN_TEXTURE_SCALE = .05;
+export const MAX_TEXTURE_SCALE = 16;
 
 function assert(value, message) {
   if (!value) throw new Error(message);
@@ -358,6 +362,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     if (sector.wallsOnly !== undefined) assert(typeof sector.wallsOnly === 'boolean', 'Sector wallsOnly must be boolean');
     assetRef(sector.floorAsset, 'Floor material');
     assetRef(sector.ceilingAsset, 'Ceiling material');
+    if (sector.textureScale !== undefined) number(sector.textureScale, 'Surface texture scale', MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE);
   }
   const sectorIds = new Set(sectors.map(sector => sector.id));
   for (const wall of walls) {
@@ -375,6 +380,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       assert(sectorIds.has(side.sectorId), 'Wall side references an unknown sector');
       number(side.offsetX, 'Wall X offset');
       number(side.offsetY, 'Wall Y offset');
+      if (side.textureScale !== undefined) number(side.textureScale, 'Wall texture scale', MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE);
       for (const key of ['upper', 'middle', 'lower']) assetRef(side[key], 'Side material');
     }
     if (wall.flags !== undefined) number(wall.flags, 'Wall flags', 0, 65535);
@@ -569,7 +575,14 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         } else if (field.kind === 'value') scalar(command[field.name]);
         else if (field.kind === 'choice') assert(field.options.includes(command[field.name]), `Unsupported ${field.name}`);
         else if (field.kind === 'string') assert(typeof command[field.name] === 'string' && command[field.name].length <= 2000, `${field.name} must be text up to 2000 characters`);
-        else identifier(command[field.name], field.name);
+        else if (field.kind === 'image') {
+          // An empty image means "not chosen yet": the event is still valid, and the
+          // runtime reports which spray needed artwork when it is triggered.
+          if (command[field.name] === '') continue;
+          identifier(command[field.name], field.name);
+          assert((project.assets || []).some(asset => asset.id === command[field.name] &&
+            !['sound', 'music', 'model', 'font'].includes(asset.kind)), `${field.name} must be an imported image asset`);
+        } else identifier(command[field.name], field.name);
       }
       if (definition.target) {
         const targets = targetEntities(command.entityId);

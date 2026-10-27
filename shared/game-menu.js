@@ -363,7 +363,11 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
       if (detail) element('settings', 'image', label, 235, 69, detail.width, detail.height,
         { assetId: detail.id, visibilityBinding: 'setting:lowDetail', visibilityInverted: inverted });
     }
-    const sizeRow = native('settings', 'Screen size', 'M_SCRNSZ', 85, [{ type: 'adjustGameSetting', setting: 'viewSize', amount: 1 }]);
+    // A click on the row itself stops at size 10: size 11 hides the status bar, and one
+    // stray click on a menu row must not do that. The +, - and Left/Right controls still
+    // reach it, which is where GZDoom expects the value to be changed.
+    const sizeRow = native('settings', 'Screen size', 'M_SCRNSZ', 85,
+      [{ type: 'setGameSetting', setting: 'viewSize', value: { expr: 'min(setting("viewSize") + 1, 10)' } }]);
     adjustments.set(sizeRow.id, { key: 'viewSize', step: 1 });
     thermometer('settings', 'viewSize', 'Screen size', 101, 3, 11);
     native('settings', 'Mouse sensitivity', 'M_MSENS', 117,

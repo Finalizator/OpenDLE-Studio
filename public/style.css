@@ -259,7 +259,17 @@ dialog::backdrop { background: #111c; }
 .preview-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 #preview { width: 100%; display: block; background: #333; aspect-ratio: 16/9; touch-action: none; }
 .preview-controls { font-size: 10px; color: var(--muted); padding-top: 10px; }
-#game-message { padding: 10px 0; font-size: 13px; color: #e4d7ad; min-height: 38px; }
+/* The HUD overlay and the game message are absolutely positioned, so the stage must
+   be their containing block. Without this the HUD was laid out against the whole
+   dialog and its status bar was drawn far below the game view — which is what made
+   the HUD look like it had disappeared. */
+#preview-stage { position: relative; }
+/* The game message floats over the view instead of taking layout height: a two-line
+   notice used to shrink the 16:9 canvas, which made the preview smaller than the panel. */
+#game-message { position: absolute; top: 6px; left: 8px; right: 8px; z-index: 20; padding: 6px 8px; margin: 0;
+  font-size: 12px; line-height: 1.35; color: #ffeb9a; background: #000000aa; border-radius: 2px;
+  pointer-events: none; max-height: 3.4em; overflow: hidden; }
+#game-message:empty { display: none; }
 #game-variables { font: 11px monospace; color: #ddd; }
 #import-dialog p { max-width: 460px; }
 #import-dialog select { width: 100%; }

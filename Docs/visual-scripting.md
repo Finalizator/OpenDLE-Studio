@@ -354,6 +354,7 @@ an object (`entityId`); `$self` is available inside object rules.
 | rotate by (degrees, relative) | `rotateEntityBy` | yes | angle |
 | set model tilt (pitch / roll) | `setEntityTilt` | yes | pitch, roll |
 | set view pitch (degrees) | `setPlayerPitch` | — | pitch |
+| spray an image on the wall | `sprayImage` | — | assetId (asset-library image), distance, size, duration |
 | set gravity direction (walk on that surface) | `setPlayerGravity` | — | mode, reach |
 | set stat | `setPlayerStat` | — | stat, value |
 | add capped stat | `addPlayerStat` | — | stat, value, maximum |

@@ -4,6 +4,7 @@ import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
+import { wallQuadUv, flatUv } from '/shared/uv.js';
 import { wallSegments } from '/shared/runtime.js';
 import { GLTFLoader } from '/vendor/three-addons/loaders/GLTFLoader.js';
 import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js';
@@ -273,8 +274,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const indices = THREE.ShapeUtils.triangulateShape(outer, holes).flat();
         const points = [...outer, ...holes.flat()];
         const positions = [], uv = [];
-        const asset = assetMap.get(assetId), tw = asset?.width || 64, th = asset?.height || 64;
-        for (const point of points) { positions.push(point.x, height, point.y); uv.push(point.x / tw, point.y / th); }
+        // Surface texture scale: one tile covers `scale` times the artwork's pixel size
+        // in map units, which is how a floor can use a coarser or finer pixel density.
+        const asset = assetMap.get(assetId), scale = sector.textureScale || 1;
+        const textureWidth = asset?.width || 64, textureHeight = asset?.height || 64;
+        for (const point of points) {
+          positions.push(point.x, height, point.y);
+          uv.push(...flatUv(point.x, point.y, { textureWidth, textureHeight, scale }));
+        }
         const buffer = new THREE.BufferGeometry();
         buffer.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
         buffer.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); buffer.setIndex(indices);
@@ -287,11 +294,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
     let wallLines = [];
     function sectorSignature(sector) {
       return `${sector.floorHeight}/${sector.ceilingHeight}/${sector.floorAsset || ''}/${sector.ceilingAsset || ''}` +
-        `/${sector.light}/${sector.sky ? 1 : 0}/${JSON.stringify(sector.rings)}`;
+        `/${sector.textureScale || 1}/${sector.light}/${sector.sky ? 1 : 0}/${JSON.stringify(sector.rings)}`;
     }
     function wallSignature(wall, sectors) {
       const side = value => value ? `${value.sectorId}/${value.upper || ''}/${value.middle || ''}/${value.lower || ''}` +
-        `/${value.offsetX || 0}/${value.offsetY || 0}` : '-';
+        `/${value.offsetX || 0}/${value.offsetY || 0}/${value.textureScale || 1}` : '-';
       const area = id => {
         const sector = id && sectors.get(id);
         return sector ? `${sector.floorHeight}/${sector.ceilingHeight}/${sector.light}/${sector.sky ? 1 : 0}` : '-';
@@ -320,13 +327,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
     function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false) {
       if (top <= bottom) return;
       const length = Math.hypot(b.x - a.x, b.y - a.y), asset = assetMap.get(assetId);
-      const tw = asset?.width || 64, th = asset?.height || 64;
-      const x = side?.offsetX || 0, y = side?.offsetY || 0;
-      const u0 = x / tw, u1 = (x + length) / tw;
-      const v0 = 1 - (referenceTop - bottom + y) / th, v1 = 1 - (referenceTop - top + y) / th;
+      // Wall texture scale: one tile covers `scale` times its pixel size along the wall
+      // and vertically, so the artwork's pixel density is per surface.
+      const coords = wallQuadUv({ length, bottom, top, referenceTop,
+        offsetX: side?.offsetX || 0, offsetY: side?.offsetY || 0,
+        textureWidth: asset?.width || 64, textureHeight: asset?.height || 64, scale: side?.textureScale || 1 });
       const buffer = new THREE.BufferGeometry();
       buffer.setAttribute('position', new THREE.Float32BufferAttribute([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], 3));
-      buffer.setAttribute('uv', new THREE.Float32BufferAttribute([u0, v0, u1, v0, u1, v1, u0, v1], 2));
+      buffer.setAttribute('uv', new THREE.Float32BufferAttribute(coords, 2));
       buffer.setIndex([0, 1, 2, 0, 2, 3]); buffer.computeBoundingSphere();
       const surface = mesh(buffer, material(assetId, light, wall.color, masked, !editor));
       surface.userData.selection = { kind: 'wall', id: wall.id };
@@ -663,7 +671,41 @@ export async function createPreview(canvas, project, state, { editor = false } =
       }
       return animatedMaterials.get(assetId);
     }
+    // Sprays are wall decals: a textured quad lying against the wall rather than a
+    // billboard, so the artwork keeps its shape as the player walks past it.
+    // Sprites drawn below their sector floor, reported through the preview status once.
+    const buried = [];
+    const decalMaterials = new Map();
+    const decalGeometry = new THREE.PlaneGeometry(1, 1);
+    geometries.add(decalGeometry);
+    function decalMaterial(assetId) {
+      let material = decalMaterials.get(assetId);
+      if (material) return material;
+      material = withEffect(new THREE.MeshBasicNodeMaterial({
+        map: imageTexture(assetId), transparent: true, alphaTest: .1, depthWrite: false,
+        side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+      }));
+      materials.add(material); decalMaterials.set(assetId, material);
+      return material;
+    }
+    function updateDecal(effect) {
+      let entry = effectMeshes.get(effect.id);
+      if (!entry) {
+        const object = new THREE.Mesh(decalGeometry, decalMaterial(effect.decal.assetId));
+        object.scale.set(effect.decal.width, effect.decal.height, 1);
+        // The plane faces +Z, so turning it by -angle lays it flat on a wall running
+        // along `angle` in map space (map y becomes the renderer's z).
+        object.rotation.set(0, -effect.angle, 0);
+        scene.add(object);
+        object.userData.decal = true;
+        entry = { id: effect.id, object, frame: undefined, revision: frameRevision };
+        effectMeshes.set(effect.id, entry); effectList.push(entry);
+      }
+      entry.revision = frameRevision;
+      entry.object.position.set(effect.x, effect.z, effect.y);
+    }
     function updateEffect(effect, elapsed) {
+      if (effect.decal) { updateDecal(effect); return; }
       const frame = spriteIndex.frame(effect.clipId, elapsed);
       // A clip may name artwork this level did not load; the pooled mesh keeps the
       // effect visible instead of failing the frame.
@@ -963,7 +1005,19 @@ export async function createPreview(canvas, project, state, { editor = false } =
           record.frame = assetId; record.flip = flip; record.scale = scale;
         }
         const sector = sectorIndex.at(entity.x, entity.y);
-        sprite.position.set(entity.x, entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0), entity.y);
+        const anchor = entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0);
+        sprite.position.set(entity.x, anchor, entity.y);
+        // Cross-check the drawn feet against the sector floor once per frame: an entity
+        // more than a step under it is drawn buried in the floor, and the playtest log
+        // then names the artwork and the numbers instead of leaving it unexplained.
+        if (sector && !editor && sprite.userData.frame && buried.length < 6) {
+          const drawn = anchor - sprite.center.y * sprite.scale.y;
+          if (drawn < sector.floorHeight - 8) buried.push({ id: entity.id, name: entity.name,
+            asset: assetMap.get(sprite.userData.frame)?.name || sprite.userData.frame,
+            anchor: Math.round(anchor * 10) / 10, floor: sector.floorHeight, sector: sector.id,
+            elevation: entity.elevation, height: sprite.scale.y,
+            below: Math.round((sector.floorHeight - drawn) * 10) / 10 });
+        }
         let red = Math.max(.03, (sector?.light ?? 255) / 255), green = red, blue = red;
         for (let light = 0; light < activeLights.length; light++) {
           const dx = sprite.position.x - lightPositions[light].x;
@@ -995,7 +1049,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const entry = effectList[index];
         if (entry.revision === frameRevision) continue;
         scene.remove(entry.object);
-        effectPools[entry.object.isMesh ? 'mesh' : 'sprite'].push(entry.object.material);
+        // Decal materials belong to their asset and are reused, so they are never pooled.
+        if (!entry.object.userData.decal)
+          effectPools[entry.object.isMesh ? 'mesh' : 'sprite'].push(entry.object.material);
         effectMeshes.delete(entry.id);
         effectList.splice(index, 1);
       }
@@ -1104,7 +1160,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
       for (const id of plan.add) addEntity(byId.get(id));
       return true;
     }
-    return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity, perf: () => ({ ...frameStats.summary(), slowFrame }) };
+    return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity,
+      buriedSprites: () => buried.slice(),
+      perf: () => ({ ...frameStats.summary(), slowFrame }) };
   } catch (error) {
     dispose();
     throw new Error(`Preview could not load: ${error.message}`);

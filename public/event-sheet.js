@@ -134,12 +134,14 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, p
   render(); dialog.showModal(); (stage === 'parameters' ? content.querySelector('input,select') : search)?.focus();
 }
 
-function commandFields(command, { entities, playerId, variables, groups, clips, walls, sectors, spriteClips, hudElements, hudAnimations }) {
+function commandFields(command, { entities, playerId, variables, groups, clips, walls, sectors, spriteClips, images = [], hudElements, hudAnimations }) {
   const definition = engineCommand(command.type);
   if (definition) {
     return [
       ...definition.fields.map(field => ({ ...field, value: field.kind === 'value', numeric: field.kind === 'number',
-        ...(['clipId', 'impactClipId'].includes(field.name) ? { options: [['', 'None / primitive visual'], ...spriteClips] } : {}) })),
+        ...(['clipId', 'impactClipId'].includes(field.name) ? { options: [['', 'None / primitive visual'], ...spriteClips] } : {}),
+        // Image fields list the asset library, so a spray's artwork is chosen by name.
+        ...(field.kind === 'image' ? { options: [['', 'Choose an image asset'], ...images] } : {}) })),
       ...(definition.spriteClip ? [{ name: 'clipId', label: 'Sprite clip', options: spriteClips }] : []),
       ...(definition.wall ? [{ name: 'wallId', label: 'Linedef', options: walls }] : []),
       ...(definition.sector ? [{ name: 'sectorId', label: 'Sector', options: sectors }] : []),

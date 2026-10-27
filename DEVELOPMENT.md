@@ -469,10 +469,10 @@ files join images/models in `project.assets`. No JavaScript is stored in HUDs.
 2. Stop preview, choose **Draw room**, then drag a rectangle of at least 32 units
    on each side. Rooms are independent closed rectangles: this is not a CSG or
    sector-joining editor.
-3. Select a wall to adjust collision, sidedef upper/middle/lower materials and
-   texture offsets. Imported walls use their sector heights; the legacy Height
-   field only controls walls without sidedefs. Drag endpoints to reshape the
-   layout. Rooms are not automatically merged into portals.
+3. Select a wall to adjust collision, sidedef upper/middle/lower materials,
+   texture offsets and **texture scale**. Imported walls use their sector heights;
+   the legacy Height field only controls walls without sidedefs. Drag endpoints to
+   reshape the layout. Rooms are not automatically merged into portals.
 4. Place an object and select it to edit its Properties. Double-click it in the
    layout, right-hand world-layer object list or Project objects list, or click **Edit object script**,
    to open its attached visual script. Add conditions and actions using dropdowns
@@ -564,16 +564,35 @@ rules, disable a whole sheet, and create Game or Engine sheets with **+ Sheet**.
 Each rule can be assigned to a sheet and an object, or run **For each**
 enemy/pickup/decoration with `$self` referring to that instance.
 
+The preview's game view is `#preview-stage`, which is `position: relative` because
+the HUD overlay and the game message are absolutely positioned inside it. Without
+that, `position: absolute; inset: 0` resolved against the whole play dialog: the HUD
+was laid out over the dialog instead of over the canvas, so its status bar was drawn
+far below the game view (which reads as "the HUD disappeared") and menu clicks landed
+on the wrong elements. `test/preview-layout.test.js` guards the markup and both CSS
+files so the stage cannot lose its positioning again.
+
 **Engine scriptlets** are generators that install ready-made rules. They live in
 their own **Engine scriptlets** tab next to Engine tweaks, not in the event-sheet
 tree, so the tree lists sheets and the tab lists things that create them. Each
 scriptlet is an entry in `shared/scriptlets.js` with an installer and a remover;
 the panel is generated from that registry, so adding a generator is one entry and
-no UI work. Wall walking is the first one: it installs the "Wall walking
-(experiment)" sheet, reports how many rules it added, can be reinstalled (which
-replaces only its own sheet) and can be removed, with undo covering both. A
-scriptlet only ever produces ordinary editable events, so anything it installs can
-be inspected, changed or deleted like hand-written rules.
+no UI work. Two scriptlets ship: **Wall walking** installs the "Wall walking
+(experiment)" sheet, and **Spray (Counter-Strike style)** installs the
+"Spray (CS-style)" sheet with one rule: a `keyPressed` condition (`KeyT` by
+default) runs `sprayImage`, which paints a chosen image onto the wall under the
+crosshair, flat against the surface, for the action's duration. Both report how
+many rules they added, can be reinstalled (replacing only their own sheet) and
+removed, with undo covering either. A scriptlet only ever produces ordinary
+editable events, so anything it installs can be inspected, changed or deleted like
+hand-written rules — the spray's artwork and key are edited in the event itself.
+`shared/spray.js` traces the 3D look direction against solid walls, keeps the hit
+inside the sector's floor/ceiling and returns the wall angle and normal, so the
+decal lies on the wall rather than billboarding at the player. Decals live in the
+impact list (they survive saves), fade on their own timer and cap at 64 so a long
+session cannot grow without bound; the artwork is any PNG, WebP or JPEG imported
+into the asset library, chosen from a dropdown of image assets in the action
+(`kind: 'image'` fields list the library and validate that the id is imported).
 
 **Reordering works like Construct.** Drag a rule by its `⋮⋮` grip or its header:
 the line above or below a rule shows where it will land, and dragging onto the
@@ -1982,7 +2001,14 @@ encoder use the generic HUD with an explicit image warning.
 ### Current compatibility limits
 
 WAD import preserves vertex positions (inverting Doom's Y axis), sector heights,
-light levels, sidedef offsets and upper/lower pegging flags. Two-sided walls
+light levels, sidedef offsets, per-surface texture scale and upper/lower pegging
+flags. Texture scale is the pixel-density control: `sector.textureScale` covers the
+floor and ceiling, `side.textureScale` the upper/middle/lower faces of one sidedef,
+and 2 draws the artwork twice as large (one tile spans twice the map units) while
+0.5 doubles the density. UVs are computed in one place (`shared/uv.js`:
+`flatUv`/`wallQuadUv`) so the two cannot drift apart, UDMF `xscale`/`yscale` and
+`sidescalex_mid`/`scaley_mid` import as that single uniform factor, and the surface
+signatures include it so a change rebuilds only the affected sector or wall. Two-sided walls
 render upper/lower spans around sector openings and optional alpha-masked middle
 textures. Floors support concave polygons, holes and disjoint islands.
 Duplicate coincident boundary vertices/edges are normalized for triangulation.

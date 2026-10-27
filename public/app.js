@@ -568,6 +568,9 @@ function renderInspector() {
     field(parent, 'Ceiling height', input(item.ceilingHeight, 'number', value => update('ceilingHeight', value)));
     field(parent, 'Floor material', assetSelect(item.floorAsset, value => update('floorAsset', value), ['flat', 'texture']));
     field(parent, 'Ceiling material', assetSelect(item.ceilingAsset, value => update('ceilingAsset', value), ['flat', 'texture']));
+    // Texture scale is pixels-per-unit: 2 draws the artwork twice as large on the
+    // floor and ceiling, 0.5 twice as fine, with no separate texture needed.
+    field(parent, 'Texture scale (floors/ceilings)', input(item.textureScale ?? 1, 'number', value => update('textureScale', value)));
     field(parent, 'Light level (0-255)', input(item.light, 'number', value => update('light', value)));
     parent.append(checkbox('Sky ceiling', item.sky, value => update('sky', value)),
       make('p', 'Closed or inverted heights are retained for static Doom doors. Movement needs 56 units of clearance; upward steps are limited to 24 units.', 'muted'));
@@ -586,6 +589,7 @@ function renderInspector() {
       }
       field(part, 'X texture offset', input(item[key].offsetX, 'number', value => changeSide('offsetX', value)));
       field(part, 'Y texture offset', input(item[key].offsetY, 'number', value => changeSide('offsetY', value)));
+      field(part, 'Texture scale', input(item[key].textureScale ?? 1, 'number', value => changeSide('textureScale', value)));
       part.append(button('Edit sector', () => { selection = { kind: 'sector', id: item[key].sectorId }; render(); }));
       parent.append(part);
     }
@@ -706,6 +710,14 @@ function renderInspector() {
       }
     }
   }
+}
+/**
+ * Image assets a creator can pick for an action (sprays, decals, artwork): every asset
+ * that is a picture, named so the list reads like the asset library.
+ */
+function imageAssetOptions() {
+  return (project?.assets || []).filter(asset => !['sound', 'music', 'model', 'font'].includes(asset.kind))
+    .map(asset => [asset.id, `${asset.name} (${asset.kind} ${asset.width}x${asset.height})`]);
 }
 function readEngineTweaks() {
   const stored = localStorage.getItem('opendle-engine-tweaks');
@@ -1208,6 +1220,7 @@ function renderEvents() {
         walls: project.map.walls.map(wall => [wall.id, `${wall.id} / special ${wall.special || 0}`]),
         sectors: (project.map.sectors || []).map(sector => [sector.id, sector.id]),
         spriteClips: (project.spriteClips || []).map(clip => [clip.id, clip.name]),
+        images: imageAssetOptions(),
         hudElements: (project.hud?.elements || []).map(element => [element.id, element.name]),
         hudAnimations: (project.hud?.animations || []).map(clip => [clip.id, clip.name]),
         clips: id => {
@@ -1264,6 +1277,7 @@ function addScriptEvent(parentEvent) {
     walls: project.map.walls.map(wall => [wall.id, `${wall.id} / special ${wall.special || 0}`]),
     sectors: (project.map.sectors || []).map(sector => [sector.id, sector.id]),
     spriteClips: (project.spriteClips || []).map(clip => [clip.id, clip.name]),
+    images: imageAssetOptions(),
     hudElements: (project.hud?.elements || []).map(element => [element.id, element.name]),
     hudAnimations: (project.hud?.animations || []).map(clip => [clip.id, clip.name]),
     submit: condition => {
@@ -1806,6 +1820,14 @@ function reportPlaytestFailures(session) {
       message: `Line special ${special} was triggered but this runtime does not perform it.`,
       details: { special } });
   }
+  for (const sprite of previewRenderer?.buriedSprites?.() || []) {
+    // A sprite anchored below its sector floor is drawn buried in it; naming the
+    // artwork and the numbers is what makes the cause visible from a log.
+    playtestLog.once(`buried:${sprite.asset}`, { severity: 'warning', category: 'render',
+      message: `${sprite.name || sprite.id} is drawn ${sprite.below} units into the floor `
+        + `(sprite ${sprite.asset}, ${sprite.height} tall, anchor ${sprite.anchor}, floor ${sprite.floor}).`,
+      details: sprite });
+  }
   if (session.groundCorrections?.first) {
     // An actor below its sector floor is drawn buried in it; the runtime snaps it back
     // up, and the log names which actor and by how much so the cause can be fixed.
@@ -1974,7 +1996,7 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     nextRuntime.gameMode = gameMode;
     nextRuntime.hudState.cursor = nextRuntime.gameScreen !== 'playing';
     if (statusBarHidden(snapshot.hud, nextRuntime.settings)) {
-      nextRuntime.message = 'Status bar hidden (Screen size 11). Use "Show status bar" above the preview, or raise Screen size in Options.';
+      nextRuntime.message = 'Status bar hidden (Screen size 11). Use "Show status bar".';
       nextRuntime.messageTime = 8;
     }
     try { nextRuntime.saveSlots = saveSlotLabels(await gameSaves.list(identity)); }

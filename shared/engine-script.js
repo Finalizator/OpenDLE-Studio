@@ -5,8 +5,12 @@ import { doomWalk } from './sprite-animation.js';
 import { doomThings } from './doom-assets.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 
-export const INPUT_KEYS = ['Tab', 'Enter', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyE', 'KeyF', 'KeyQ',
-  'ShiftLeft', 'ShiftRight', 'ControlLeft', 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Mouse0', 'Mouse2'];
+// Every key a creator can bind to an event, including the letters Doom leaves free, so
+// scriptlets such as the spray can be rebound from the event sheet.
+export const INPUT_KEYS = ['Tab', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Mouse0', 'Mouse2',
+  'ShiftLeft', 'ShiftRight', 'ControlLeft',
+  ...['W', 'A', 'S', 'D', 'E', 'F', 'Q', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 'G', 'H', 'J', 'K', 'L', 'Z', 'X', 'C', 'V', 'B', 'N', 'M'].map(letter => `Key${letter}`),
+  ...Array.from({ length: 9 }, (_, index) => `Digit${index + 1}`)];
 const numeric = (name, value, min, max) => ({ name, value, kind: 'number', min, max });
 const choice = (name, value, options) => ({ name, value, kind: 'choice', options });
 const stat = () => choice('stat', 'health', PLAYER_STATS);
@@ -114,6 +118,11 @@ export const ENGINE_ACTIONS = [
   { type: 'setEntityTilt', label: 'Object: set model tilt (pitch / roll)', target: true, fields: [
     numeric('pitch', 0, -3600, 3600), numeric('roll', 0, -3600, 3600)] },
   { type: 'setPlayerPitch', label: 'Player: set view pitch (degrees)', fields: [numeric('pitch', 0, -85, 85)] },
+  // Sprays paint an imported image onto the wall the player is looking at, so the
+  // artwork is chosen from the asset library and the trigger key from the event.
+  { type: 'sprayImage', label: 'Player: spray an image on the wall', fields: [
+    { name: 'assetId', kind: 'image', value: '' }, numeric('distance', 96, 4, 1024),
+    numeric('size', 40, 4, 512), numeric('duration', 30, 0, 3600)] },
   { type: 'setEntityScale', label: 'Object: set visual scale', target: true, fields: [numeric('scale', 1, .01, 20)] },
   { type: 'setGravityScale', label: 'Physics: set gravity scale', target: true, fields: [numeric('scale', 1, 0, 10)] },
   { type: 'setDamping', label: 'Physics: set linear damping', target: true, fields: [numeric('damping', .1, 0, 100)] },
@@ -166,6 +175,37 @@ export function defaultEngineCommand(type) {
   return { type, ...Object.fromEntries(command.fields.map(field => [field.name, field.value])) };
 }
 export const WALL_WALK_SHEET = 'Wall walking (experiment)';
+export const SPRAY_SHEET = 'Spray (CS-style)';
+
+/** Artwork the spray scriptlet starts with: the smallest imported image. */
+function defaultSprayAsset(project) {
+  const images = (project.assets || []).filter(asset => !['sound', 'music', 'model', 'font'].includes(asset.kind));
+  return images.find(asset => (asset.width || 0) <= 256 && (asset.height || 0) <= 256)?.id || images[0]?.id || '';
+}
+
+/**
+ * Installs the spray scriptlet: pressing a key paints a chosen image onto the wall the
+ * player looks at. The rule is an ordinary editable event, so both the image (an
+ * imported PNG/WebP/JPEG from the asset library) and the key are changed in the event
+ * sheet.
+ */
+export function installSprayScriptlet(project, { key = 'KeyT', assetId } = {}) {
+  const used = new Set([...(project.eventSheets || []).map(item => item.id), ...project.events.map(item => item.id)]);
+  const id = name => {
+    let result = name, suffix = 1;
+    while (used.has(result)) result = `${name}_${suffix++}`;
+    used.add(result); return result;
+  };
+  const existing = (project.eventSheets || []).find(sheet => sheet.name === SPRAY_SHEET);
+  const sheet = existing || { id: id('engine_spray'), name: SPRAY_SHEET, section: 'engine', enabled: true, phase: 'afterPhysics' };
+  if (!existing) project.eventSheets = [...(project.eventSheets || []), sheet];
+  project.events = project.events.filter(event => event.sheetId !== sheet.id);
+  const rule = { id: id('engine_spray_paint'), sheetId: sheet.id, enabled: true, once: false, name: 'spray_paint',
+    condition: { type: 'keyPressed', key }, conditions: [],
+    actions: [{ type: 'sprayImage', assetId: assetId ?? defaultSprayAsset(project), distance: 96, size: 40, duration: 30 }] };
+  project.events = [...project.events, rule];
+  return sheet.id;
+}
 
 /**
  * A short, fully editable example of gravity scripting: jump at a wall or a ceiling

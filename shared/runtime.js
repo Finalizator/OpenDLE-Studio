@@ -13,6 +13,7 @@ import {
 } from './gravity.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
+import { sprayTarget } from './spray.js';
 import { createMapScripts } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { BT } from './acs.js';
@@ -101,6 +102,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     entitySamples: new Map(),
     enemyMoves: new Map(),
     impacts: [],
+    decalCounter: 0,
     worldTriggers: { use: null, cross: new Set(), shoot: new Set() },
     variables: { ...project.variables },
     entities,
@@ -235,6 +237,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (effect.vx || effect.vy || effect.vz) {
       effect.x += (effect.vx || 0) * dt; effect.y += (effect.vy || 0) * dt; effect.z += (effect.vz || 0) * dt;
     }
+    if (effect.until !== undefined) return state.time < effect.until;
     return !clipFrame(project, effect.clipId, state.time - effect.start)?.finished;
   });
   state.input.forward = 0; state.input.strafe = 0; state.input.jump = false;
@@ -649,6 +652,24 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'setPlayerPitch':
           player.pitch = action.pitch * Math.PI / 180;
           break;
+        case 'sprayImage': {
+          // A spray is a wall decal: it lives in the impact list so saves keep it and
+          // the renderer draws it flat on the wall instead of as a billboard.
+          const target = sprayTarget(state, action.distance);
+          if (!target) break;
+          const asset = project.assets.find(item => item.id === action.assetId);
+          if (!asset) throw new Error(`Spray image ${action.assetId || '(none chosen)'} is not in this project`);
+          const size = action.size > 0 ? action.size : 40;
+          const decal = { id: `decal_${state.decalCounter++}`, x: target.x + target.normal[0] * .5,
+            y: target.y + target.normal[1] * .5, z: target.z, clipId: '', start: state.time,
+            angle: target.angle, decal: { assetId: asset.id, width: size, height: size * (asset.height || 1) / (asset.width || 1) } };
+          if (action.duration > 0) decal.until = state.time + action.duration;
+          state.impacts.push(decal);
+          // Oldest sprays fade out first so a long session cannot grow without bound.
+          const decals = state.impacts.filter(effect => effect.decal);
+          if (decals.length > 64) state.impacts.splice(state.impacts.indexOf(decals[0]), 1);
+          break;
+        }
         case 'setEntityScale': {
           const entity = findTarget(action.entityId);
           if (entity) { entity.spriteScale = action.scale; if (entity.modelAsset) entity.modelScale = action.scale; }

@@ -3,7 +3,7 @@
 // events (and, where it needs one, its own engine sheet), so everything a scriptlet
 // produces can be inspected, changed or deleted like hand-written rules.
 
-import { installWallWalkDemo, WALL_WALK_SHEET } from './engine-script.js';
+import { installWallWalkDemo, installSprayScriptlet, WALL_WALK_SHEET, SPRAY_SHEET } from './engine-script.js';
 
 /** Removes the sheet and rules the wall-walking scriptlet installs. */
 export function removeWallWalkDemo(project) {
@@ -28,7 +28,37 @@ const wallWalking = {
   },
 };
 
-export const ENGINE_SCRIPTLETS = [wallWalking];
+/** Removes the sheet and rules the spray scriptlet installs. */
+export function removeSpray(project) {
+  const sheet = (project.eventSheets || []).find(sheet => sheet.name === SPRAY_SHEET);
+  if (!sheet) return false;
+  project.events = project.events.filter(event => event.sheetId !== sheet.id);
+  project.eventSheets = project.eventSheets.filter(item => item.id !== sheet.id);
+  return true;
+}
+
+const spray = {
+  id: 'spray',
+  name: 'Spray (Counter-Strike style)',
+  summary: 'Press a key to paint an imported image onto the wall you are looking at.',
+  detail: 'Adds the "Spray (CS-style)" engine sheet with one editable rule: "Key pressed" sprays the chosen '
+    + 'image onto the wall under the crosshair, where it stays flat against the surface for a while. Pick the '
+    + 'image from the action (any PNG, WebP or JPEG imported into the asset library) and rebind the key in the '
+    + 'event\'s "Key pressed" condition. The spray fades after the action\'s duration and survives saving.',
+  rules: 1,
+  install(project) {
+    if (!(project.assets || []).some(asset => !['sound', 'music', 'model', 'font'].includes(asset.kind)))
+      throw new Error('Import an image (PNG, WebP or JPEG) into the asset library first: the spray needs artwork to paint.');
+    return installSprayScriptlet(project);
+  },
+  remove(project) { return removeSpray(project); },
+  installed(project) {
+    const sheet = (project.eventSheets || []).find(sheet => sheet.name === SPRAY_SHEET);
+    return sheet ? project.events.filter(event => event.sheetId === sheet.id).length : 0;
+  },
+};
+
+export const ENGINE_SCRIPTLETS = [wallWalking, spray];
 
 export function scriptletById(id) {
   const found = ENGINE_SCRIPTLETS.find(scriptlet => scriptlet.id === id);
