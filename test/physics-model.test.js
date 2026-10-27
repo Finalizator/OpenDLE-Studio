@@ -15,6 +15,7 @@ import { importWad } from '../server/import.js';
 import { sectorAt } from '../shared/sectors.js';
 import { proposeChanges } from '../server/deepseek.js';
 import { installEngineScripts } from '../shared/engine-script.js';
+import { modelOrientation } from '../shared/entity-visuals.js';
 
 await R.init();
 const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),
@@ -266,4 +267,25 @@ test('real Freedoom MAP01 has a grounded Rapier spawn and playable static collis
   for (let i = 0; i < 120; i++) stepRuntime(project, state, 1 / 60, new Set(['KeyW']));
   assert.ok(Math.hypot(state.player.x - start.x, state.player.y - start.y) > 10);
   assert.ok(state.player.z > -10000 && Number.isFinite(state.player.z));
+});
+
+test('a model can be tilted or stood on its head without changing its facing', () => {
+  const plain = modelOrientation({ angle: 0 });
+  assert.deepEqual(plain.map(value => Math.round(value) + 0), [0, 0, 0, 1], 'an untilted model is unchanged');
+  const yaw = modelOrientation({ angle: 90 });
+  assert.ok(Math.abs(yaw[1] + Math.SQRT1_2) < 1e-9, 'yaw still turns the model like before');
+  // Pitch 180 about the model's own X flips it upside down.
+  const upsideDown = modelOrientation({ angle: 0, modelTilt: { pitch: 180 } });
+  assert.ok(Math.abs(upsideDown[0] - 1) < 1e-9 && Math.abs(upsideDown[3]) < 1e-9);
+  // Roll 90 lays it on its side, and yaw composes on top of the tilt.
+  const rolled = modelOrientation({ angle: 0, modelTilt: { roll: 90 } });
+  assert.ok(Math.abs(Math.abs(rolled[2]) - Math.SQRT1_2) < 1e-9);
+  const both = modelOrientation({ angle: 90, modelTilt: { pitch: 180 } });
+  assert.notDeepEqual(both, upsideDown, 'yaw and tilt compose');
+  // The renderer and the selection box must both use the composed orientation.
+  const render = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
+  assert.ok(render.includes('entry.root.quaternion.fromArray(modelOrientation(entity))'),
+    'models are drawn with the tilt');
+  assert.ok(render.includes('quaternion: modelOrientation(entity)'),
+    'the selection box follows the tilt');
 });
