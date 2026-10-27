@@ -1,4 +1,5 @@
 import { sectorGeometry } from './sectors.js';
+import { LIMITS } from './limits.js';
 import { decodeDataURI, readModel, validateModelDocument } from './gltf.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand } from './engine-script.js';
 import { validateEventStructure } from './events.js';
@@ -120,7 +121,7 @@ function measureAssetPayload(asset) {
     return { bucket: 'image', bytes: asset.src.length };
   }
   assert(isDataUri(asset.src, ['image/png']), 'Assets must be embedded PNG images');
-  assert(asset.src.length <= 6 * 1024 * 1024, 'Embedded image budget exceeded (6 MiB per image, 48 MiB total)');
+  assert(asset.src.length <= LIMITS.imageBytes, `Embedded image budget exceeded (${LIMITS.imageBytes / 1024 / 1024} MiB per image, ${LIMITS.imageTotalBytes / 1024 / 1024} MiB total)`);
   return { bucket: 'image', bytes: asset.src.length };
 }
 /**
@@ -262,6 +263,7 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef }) {
   }
 }
 
+
 export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   object(project, 'Project');
   assert(project.version === VERSION, `Unsupported project version; expected ${VERSION}`);
@@ -281,17 +283,18 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           typeof value === 'string' && value.length <= 65536, 'UDMF source values must be bounded scalars');
       }
     };
-    properties(source.globals); array(source.blocks, 'UDMF source blocks', 105000);
+    properties(source.globals); array(source.blocks, 'UDMF source blocks', LIMITS.udmfBlocks);
     for (const block of source.blocks) {
       object(block, 'UDMF source block'); text(block.type, 'UDMF source block type', 80); properties(block.properties);
     }
-    assert(JSON.stringify(source).length <= 24 * 1024 * 1024, 'UDMF import provenance exceeds 24 MiB');
+    assert(JSON.stringify(source).length <= LIMITS.udmfProvenanceBytes,
+      `UDMF import provenance exceeds ${LIMITS.udmfProvenanceBytes / 1024 / 1024} MiB`);
   }
   if (project.soundAliases !== undefined) {
     const table = project.soundAliases;
     object(table, 'Sound aliases');
     object(table.aliases || {}, 'Sound alias map');
-    assert(Object.keys(table.aliases || {}).length <= 20000, 'Sound alias limit exceeded');
+    assert(Object.keys(table.aliases || {}).length <= LIMITS.soundAliases, 'Sound alias limit exceeded');
     for (const [name, lump] of Object.entries(table.aliases || {})) {
       assert(/^[a-z0-9_/*#-]{1,80}$/.test(name), 'Sound alias names must be plain identifiers');
       // The target is usually a lump name but may be another logical name (a
@@ -321,16 +324,16 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         object(library, 'ACS library');
         text(library.name, 'ACS library name', 64);
         assert(/^[^/\\]+$/.test(library.name), 'ACS library name must be a plain name');
-        text(library.data, 'ACS library data', 4 * 1024 * 1024);
+        text(library.data, 'ACS library data', LIMITS.scriptBytes);
         assert(/^[A-Za-z0-9+/=]+$/.test(library.data), 'ACS library data must be base64');
       }
     }
     assert(scripts.data !== undefined || scripts.libraries?.length, 'Map scripts need a module or a library');
   }
   const { vertices, walls, entities } = project.map;
-  array(vertices, 'Vertices', 20000);
-  array(walls, 'Walls', 20000);
-  array(entities, 'Entities', 5000);
+  array(vertices, 'Vertices', LIMITS.vertices);
+  array(walls, 'Walls', LIMITS.walls);
+  array(entities, 'Entities', LIMITS.entities);
   assert(vertices.length >= 3 && walls.length >= 3, 'A map needs at least three vertices and walls');
   const ids = new Set();
   const unique = (item, label) => {
@@ -346,7 +349,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   }
   const vertexMap = new Map(vertices.map(vertex => [vertex.id, vertex]));
   const assets = project.assets || [];
-  array(assets, 'Assets', 3000);
+  array(assets, 'Assets', LIMITS.assets);
   const assetIds = new Set();
   let assetBytes = 0, soundBytes = 0, musicBytes = 0;
   // Sound and music names must be unique. Counting them in one pass replaces a
@@ -376,11 +379,11 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       assetIds.add(asset.id); continue;
     }
     assetBytes += payload.bytes;
-    assert(assetBytes <= 48 * 1024 * 1024, asset.kind === 'model' ? 'Embedded model budget exceeded' : asset.kind === 'font'
-      ? 'Embedded font budget exceeded' : 'Embedded image budget exceeded (6 MiB per image, 48 MiB total)');
+    assert(assetBytes <= LIMITS.imageTotalBytes, asset.kind === 'model' ? 'Embedded model budget exceeded' : asset.kind === 'font'
+      ? 'Embedded font budget exceeded' : `Embedded image budget exceeded (${LIMITS.imageBytes / 1024 / 1024} MiB per image, ${LIMITS.imageTotalBytes / 1024 / 1024} MiB total)`);
     if (asset.kind !== 'model' && asset.kind !== 'font') {
-      number(asset.width, 'Image width', 1, 2048);
-      number(asset.height, 'Image height', 1, 2048);
+      number(asset.width, 'Image width', 1, LIMITS.imageSize);
+      number(asset.height, 'Image height', 1, LIMITS.imageSize);
       assert(Number.isInteger(asset.width) && Number.isInteger(asset.height), 'Image dimensions must be integers');
       for (const key of ['offsetX', 'offsetY']) if (asset[key] !== undefined) number(asset[key], key);
     }
@@ -413,7 +416,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   }
   const clipRef = id => assert(spriteClips.some(clip => clip.id === id), 'Command references an unknown sprite clip');
   if (project.materialAnimations !== undefined) {
-    array(project.materialAnimations, 'Material animation mappings', 3000);
+    array(project.materialAnimations, 'Material animation mappings', LIMITS.assets);
     for (const mapping of project.materialAnimations) {
       object(mapping, 'Material animation'); assetRef(mapping.assetId, 'Animated material');
       assert(assetIds.has(mapping.assetId), 'Animated material references an unknown image');
@@ -425,7 +428,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     if (id !== undefined && id !== null) assert(assetById.get(id)?.kind === 'model', 'Object model must reference a model asset');
   };
   const sectors = project.map.sectors || [];
-  array(sectors, 'Sectors', 20000);
+  array(sectors, 'Sectors', LIMITS.sectors);
   for (const sector of sectors) {
     unique(sector, 'Sector');
     number(sector.floorHeight, 'Floor height', -32768, 32767);
@@ -563,7 +566,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     assert(typeof group.enabled === 'boolean', 'Group enabled must be boolean');
     if (group.description !== undefined) assert(typeof group.description === 'string' && group.description.length <= 2000, 'Group description must be text up to 2000 characters');
   }
-  array(project.events, 'Events', 2048);
+  array(project.events, 'Events', LIMITS.events);
   validateEventStructure(project, assert);
   const entityIds = new Set(entities.map(entity => entity.id));
   validateHUD(project.hud, { unique, assets, variables: project.variables, assert });
@@ -809,7 +812,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   if (project.strings !== undefined) {
     object(project.strings, 'Language strings');
     const keys = Object.keys(project.strings);
-    assert(keys.length <= 20000, 'Too many language strings');
+    assert(keys.length <= LIMITS.languageKeys, 'Too many language strings');
     for (const [key, value] of Object.entries(project.strings)) {
       assert(/^[A-Za-z0-9_$.]+$/.test(key) && key.length <= 80, 'Invalid language keyword');
       assert(typeof value === 'string' && value.length <= 8192, 'Language strings must be bounded text');
@@ -861,22 +864,22 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     for (const definition of project.cameraTextures) {
       object(definition, 'Camera texture');
       assert(typeof definition.name === 'string' && /^[A-Za-z0-9_]{1,8}$/.test(definition.name), 'Invalid camera texture name');
-      number(definition.width, 'Camera texture width', 1, 2048);
-      number(definition.height, 'Camera texture height', 1, 2048);
+      number(definition.width, 'Camera texture width', 1, LIMITS.imageSize);
+      number(definition.height, 'Camera texture height', 1, LIMITS.imageSize);
       if (definition.fit !== undefined) assert(typeof definition.fit === 'boolean', 'Camera texture fit must be boolean');
     }
   }
   if (project.game !== undefined) {
     const game = project.game;
     object(game, 'Game'); assert(game.version === 1, 'Unknown game format');
-    array(game.levels, 'Game levels', 128); assert(game.levels.length > 0, 'Game needs levels');
+    array(game.levels, 'Game levels', LIMITS.levels); assert(game.levels.length > 0, 'Game needs levels');
     const levelIds = new Set();
     for (const level of game.levels) {
       object(level, 'Game level'); identifier(level.id, 'Level ID'); text(level.name, 'Level name', 100);
       assert(!levelIds.has(level.id), `Duplicate game level ${level.id}`); levelIds.add(level.id);
       object(level.data, 'Level data');
       assert(!['game', 'version', 'title', 'assets'].some(key => Object.hasOwn(level.data, key)), 'Level data must not nest shared game fields');
-      array(level.assetIds, 'Level assets', 3000);
+      array(level.assetIds, 'Level assets', LIMITS.assets);
       assert(new Set(level.assetIds).size === level.assetIds.length, 'Duplicate level asset references');
       if (level.id !== game.active)
         for (const id of level.assetIds) assert(assetIds.has(id), `Level ${level.id} references unknown asset ${id}`);
@@ -890,7 +893,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       validateProject({ version: project.version, title: project.title,
         assets: assets.filter(asset => retained.has(asset.id)), ...level.data }, { gameLevelIds: levelIds });
     }
-    if (!fast) assert(JSON.stringify(game).length <= 128 * 1024 * 1024, 'Game level data exceeds 128 MiB');
+    if (!fast) assert(JSON.stringify(game).length <= LIMITS.gameBytes, `Game level data exceeds ${LIMITS.gameBytes / 1024 / 1024} MiB`);
   }
   return project;
 }

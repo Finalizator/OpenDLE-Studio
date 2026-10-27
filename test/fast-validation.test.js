@@ -33,9 +33,12 @@ test('fast validation screens artwork that was replaced, and full validation re-
 
 test('fast validation still enforces cumulative artwork budgets', () => {
   const project = withImage();
-  project.assets[0].src = `data:image/png;base64,${'A'.repeat(5 * 1024 * 1024)}`;
+  // One 16 MiB payload, referenced by every copy: the budget is measured on the
+  // summed lengths, so this asserts the total without holding it many times over.
+  const src = `data:image/png;base64,${'A'.repeat(15 * 1024 * 1024)}`;
+  project.assets[0].src = src;
   validateProject(project, { fast: true });
-  for (let index = 0; index < 10; index++) {
+  for (let index = 0; index < 13; index++) {
     project.assets.push({ ...project.assets[0], id: `img_copy_${index}`, name: `Copy ${index}` });
   }
   assert.throws(() => validateProject(project, { fast: true }), /Embedded image budget exceeded/);

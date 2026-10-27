@@ -1,4 +1,5 @@
 import { createProject, validateProject } from './project.js';
+import { LIMITS } from './limits.js';
 import { doomName, createDoomAssets, doomThings } from './doom-assets.js';
 import { installWorldScripts } from './world-motion.js';
 import { installSpriteAnimations, installActorSpriteStates, actorSpriteCells } from './sprite-animation.js';
@@ -28,7 +29,7 @@ export function importWadGame(wad, entry, options = {}) {
   entry ||= wad.maps.includes('MAP01') ? 'MAP01' : wad.maps.includes('E1M1') ? 'E1M1' : wad.maps[0];
   if (!wad.maps.includes(entry)) throw new Error(`Game entry map not found: ${entry}`);
   const sources = wad.lumps.filter(lump => ['MAPINFO', 'ZMAPINFO'].includes(lump.name)).map(lump => {
-    if (lump.size > 1024 * 1024) throw new Error('MAPINFO exceeds 1 MiB');
+    if (lump.size > LIMITS.textBytes) throw new Error(`MAPINFO exceeds ${LIMITS.textBytes / 1024 / 1024} MiB`);
     return new TextDecoder().decode(new Uint8Array(wad.buffer, lump.start, lump.size));
   });
   const episodeInfo = parseGameEpisodes(sources, wad.maps);
@@ -185,7 +186,9 @@ export function mapInfoMusic(wad, mapName) {
 
 export function readWad(buffer, { allowNoMaps = false } = {}) {
   if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 12) throw new Error('WAD header is truncated');
-  if (buffer.byteLength > 128 * 1024 * 1024) throw new Error('WAD exceeds the 128 MiB import limit');
+  if (buffer.byteLength > LIMITS.archiveBytes) {
+    throw new Error(`WAD exceeds the ${LIMITS.archiveBytes / 1024 / 1024} MiB import limit`);
+  }
   const bytes = new Uint8Array(buffer), view = new DataView(buffer);
   if (!['IWAD', 'PWAD'].includes(doomName(bytes.subarray(0, 4)))) throw new Error('Not an IWAD or PWAD file');
   const count = view.getUint32(4, true), directory = view.getUint32(8, true);
@@ -211,7 +214,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   const textMap = mapLumps.find(lump => lump.name === 'TEXTMAP');
   let source, data;
   if (textMap) {
-    if (textMap.size > 16 * 1024 * 1024) throw new Error('UDMF TEXTMAP exceeds 16 MiB');
+    if (textMap.size > LIMITS.udmfTextBytes) throw new Error(`UDMF TEXTMAP exceeds ${LIMITS.udmfTextBytes / 1024 / 1024} MiB`);
     const text = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(wad.buffer, textMap.start, textMap.size));
     source = parseUDMF(text);
     data = udmfRecords(source);
@@ -249,7 +252,9 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   const selection = selectAcsLibraries([...loadacs, ...local.lists], [...acsLibraries, ...local.libraries]);
   const libraries = selection.libraries;
   if (behaviorLump || libraries.length) {
-    if (behaviorLump && behaviorLump.size > 4 * 1024 * 1024) throw new Error('BEHAVIOR lump exceeds the 4 MiB script limit');
+    if (behaviorLump && behaviorLump.size > LIMITS.scriptBytes) {
+      throw new Error(`BEHAVIOR lump exceeds the ${LIMITS.scriptBytes / 1024 / 1024} MiB script limit`);
+    }
     try {
       mapScriptInfo = describeMapScripts(behaviorLump
         ? new Uint8Array(wad.buffer, behaviorLump.start, behaviorLump.size) : null, libraries);

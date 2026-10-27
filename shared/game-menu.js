@@ -1,3 +1,4 @@
+import { LIMITS } from './limits.js';
 import { hudElement, installDefaultHUD, MAX_HUD_ELEMENTS } from './hud.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 import { installIntermission } from './intermission.js';
@@ -45,7 +46,9 @@ export function parseMenuDefinitions(source, label = 'MENUDEF', resolve) {
   const sources = [], active = new Set();
   let budget = 0, tokenCount = 0;
   function tokenize(source, name, depth = 0) {
-    if (typeof source !== 'string' || source.length > 1024 * 1024) throw new Error(`${name}: menu definition exceeds 1 MiB`);
+    if (typeof source !== 'string' || source.length > LIMITS.textBytes) {
+      throw new Error(`${name}: menu definition exceeds ${LIMITS.textBytes / 1024 / 1024} MiB`);
+    }
     if (depth > 16 || active.has(name.toLowerCase())) throw new Error(`${name}: MENUDEF include cycle or depth exceeds 16`);
     budget += source.length;
     if (budget > 2 * 1024 * 1024 || sources.length >= 64) throw new Error(`${name}: MENUDEF include budget exceeded`);

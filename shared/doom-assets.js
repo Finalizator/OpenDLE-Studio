@@ -1,3 +1,4 @@
+import { LIMITS } from './limits.js';
 import { doomSound, encodeMusic } from './sound.js';
 import { decodeFON2 } from './doom-font.js';
 const decoder = new TextDecoder('ascii');
@@ -45,10 +46,20 @@ export function decodePatch(bytes, palette) {
   return result;
 }
 
+// Flats are square palette images; 64x64 is the classic size, and 32x32, 128x128 and
+// 256x256 are all in use (modern flats are routinely 256x256).
+const FLAT_SIZES = new Map([[1024, 32], [4096, 64], [16384, 128], [65536, 256]]);
+
+export function flatSize(bytes) {
+  return FLAT_SIZES.get(bytes?.length) || null;
+}
+
 export function decodeFlat(bytes, palette) {
-  check(bytes.length === 4096 && palette.length >= 768, 'A classic flat must contain exactly 4096 palette indices');
-  const result = image(64, 64);
-  for (let i = 0; i < 4096; i++) pixel(result.pixels, i * 4, palette, bytes[i]);
+  const size = flatSize(bytes);
+  check(size !== null && palette.length >= 768,
+    `A flat must be a square palette image (1024, 4096, 16384 or 65536 bytes); this one has ${bytes?.length ?? 0}`);
+  const result = image(size, size);
+  for (let i = 0; i < bytes.length; i++) pixel(result.pixels, i * 4, palette, bytes[i]);
   return result;
 }
 
@@ -86,7 +97,7 @@ export function composeTexture(definition, getPatch) {
   for (const placement of definition.patches) {
     const patch = getPatch(placement.name);
     work += patch.width * patch.height;
-    check(work <= 32 * 1024 * 1024, 'Texture composition exceeds pixel budget');
+    check(work <= LIMITS.assetPixels, 'Texture composition exceeds pixel budget');
     for (let y = Math.max(0, placement.y); y < Math.min(result.height, placement.y + patch.height); y++) {
       for (let x = Math.max(0, placement.x); x < Math.min(result.width, placement.x + patch.width); x++) {
         const source = ((y - placement.y) * patch.width + x - placement.x) * 4;
@@ -152,7 +163,7 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
       try { decoded = decodePatch(data(lumpMap.get(name)), colors); }
       catch (error) { throw new Error(`Doom patch ${name}: ${error.message}`, { cause: error }); }
       totalPixels += decoded.width * decoded.height;
-      check(totalPixels <= 32 * 1024 * 1024, 'WAD image decoding exceeds pixel budget');
+      check(totalPixels <= LIMITS.assetPixels, 'WAD image decoding exceeds pixel budget');
       patchCache.set(name, decoded);
     }
     return patchCache.get(name);
@@ -171,11 +182,11 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     if (external) decoded = external();
     else if (['texture', 'sky'].includes(kind) && definitions.has(name)) decoded = composeTexture(definitions.get(name), patch);
     else if (flats.has(name)) decoded = decodeFlat(data(lumpMap.get(name)), colors);
-    else if (kind === 'flat' && lumpMap.get(name)?.size === 4096) decoded = decodeFlat(data(lumpMap.get(name)), colors);
+    else if (kind === 'flat' && flatSize(lumpMap.get(name) && data(lumpMap.get(name)))) decoded = decodeFlat(data(lumpMap.get(name)), colors);
     else if (kind === 'flat' && definitions.has(name)) decoded = composeTexture(definitions.get(name), patch);
     else decoded = patch(name);
     totalPixels += decoded.width * decoded.height;
-    check(totalPixels <= 32 * 1024 * 1024 && assets.length < 3000, 'WAD asset budget exceeded');
+    check(totalPixels <= LIMITS.assetPixels && assets.length < LIMITS.assets, 'WAD asset budget exceeded');
     const asset = {
       id: /^[a-zA-Z0-9_-]{1,74}$/.test(key) ? `asset_${key}` : `asset_image_${assets.length}`,
       name: name.slice(0, 100), kind, width: decoded.width, height: decoded.height,
@@ -292,7 +303,7 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
       }
     });
     totalPixels += result.width * result.height;
-    check(totalPixels <= 32 * 1024 * 1024 && assets.length < 3000, 'WAD atlas budget exceeded');
+    check(totalPixels <= LIMITS.assetPixels && assets.length < LIMITS.assets, 'WAD atlas budget exceeded');
     const asset = { id: `asset_${key}`, name, kind: 'sprite', width: result.width, height: result.height,
       offsetX: left, offsetY: top, src: encodeImage(result) };
     assets.push(asset); cache.set(key, asset.id);
@@ -311,7 +322,7 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     const decoded = decodeFON2(fontResources.get(key) || data(lumpMap.get(key)));
     const { pixels, width, height, ...layout } = decoded;
     totalPixels += width * height;
-    check(totalPixels <= 32 * 1024 * 1024 && assets.length < 3000, 'WAD font atlas budget exceeded');
+    check(totalPixels <= LIMITS.assetPixels && assets.length < LIMITS.assets, 'WAD font atlas budget exceeded');
     const assetId = `asset_font_${key}`;
     if (!assets.some(asset => asset.id === assetId)) assets.push({ id: assetId, name: key, kind: 'sprite', width, height,
       src: encodeImage({ pixels, width, height }) });
@@ -352,7 +363,7 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     const decoded = original.kind === 'flat' ? decodeFlat(data(lumpMap.get(original.name)), colors) : patch(original.name);
     const pixels = applyTranslation(decoded.pixels, lookup);
     totalPixels += decoded.width * decoded.height;
-    check(totalPixels <= 32 * 1024 * 1024 && assets.length < 3000, 'WAD asset budget exceeded');
+    check(totalPixels <= LIMITS.assetPixels && assets.length < LIMITS.assets, 'WAD asset budget exceeded');
     const id = `asset_t${assets.length}_${original.kind}`;
     assets.push({ id, name: `${original.name} (translated)`.slice(0, 100), kind: original.kind,
       width: decoded.width, height: decoded.height,

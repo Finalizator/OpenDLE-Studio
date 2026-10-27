@@ -27,6 +27,9 @@ import { importedGameplayGaps } from './gameplay-readiness.js';
 import { createActorsPanel } from './actors-panel.js';
 import { createScriptsPanel } from './scripts-panel.js';
 import { createFrameBudget } from '/shared/perf.js';
+import { LIMITS } from '/shared/limits.js';
+
+const ARCHIVE_LIMIT = LIMITS.archiveBytes;
 import { createPlaytestLogger } from './playtest-log.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
@@ -2692,7 +2695,7 @@ $('project-file').addEventListener('change', guard(async event => {
   const file = event.target.files[0];
   event.target.value = '';
   if (!file) return;
-  if (file.size > 128 * 1024 * 1024) throw new Error('Project exceeds the 128 MiB file limit');
+  if (file.size > ARCHIVE_LIMIT) throw new Error(`Project exceeds the ${ARCHIVE_LIMIT / 1048576} MiB file limit`);
   const next = validateProject(JSON.parse(await file.text()));
   if (!confirm('Open this project? You can undo this change.')) return;
   replace(next, 'Project opened');
@@ -2703,7 +2706,7 @@ $('wad-file').addEventListener('change', guard(async event => {
   const file = event.target.files[0];
   event.target.value = '';
   if (!file) return;
-  if (file.size > 128 * 1024 * 1024) throw new Error('WAD exceeds the 128 MiB file limit');
+  if (file.size > ARCHIVE_LIMIT) throw new Error(`WAD exceeds the ${ARCHIVE_LIMIT / 1048576} MiB file limit`);
   loadedWad = readWad(await file.arrayBuffer());
   $('local-wad-label').hidden = true;
   $('wad-map').replaceChildren(...loadedWad.maps.map(name => { const option = make('option', name); option.value = name; return option; }));
@@ -2897,7 +2900,7 @@ $('package-source').addEventListener('change', guard(async () => {
 $('package-file').addEventListener('change', guard(async event => {
   const file = event.target.files[0]; event.target.value = '';
   if (!file) return;
-  if (file.size > 128 * 1024 * 1024) throw new Error('PK3/IPK3 exceeds the 128 MiB import limit');
+  if (file.size > ARCHIVE_LIMIT) throw new Error(`PK3/IPK3/PK7/PKE exceeds the ${ARCHIVE_LIMIT / 1048576} MiB import limit`);
   packageSource = null;
   await packageBases();
   const buffer = await file.arrayBuffer();

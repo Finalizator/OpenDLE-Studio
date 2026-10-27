@@ -6,6 +6,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ProjectStore } from './store.js';
+import { LIMITS } from '../shared/limits.js';
 import { applyTool, toolDefinitions } from './tools.js';
 import { proposeChanges } from './deepseek.js';
 import { importWad } from './import.js';
@@ -71,7 +72,9 @@ export function createApp({
     if (!equal(req.headers.authorization || '', `Bearer ${token}`)) return res.status(401).json({ error: 'A valid local bearer token is required' });
     next();
   });
-  app.use(express.json({ limit: '128mb' }));
+  // Imports are whole archives (see shared/limits.js); the body limit follows them.
+  const archiveLimit = `${LIMITS.archiveBytes / (1024 * 1024)}mb`;
+  app.use(express.json({ limit: archiveLimit }));
   let browserBusy = false;
   app.post('/api/open-browser', async (req, res) => {
     if (browserBusy) return res.status(429).json({ error: 'A browser launch is already in progress' });
@@ -91,7 +94,9 @@ export function createApp({
     if (typeof name !== 'string' || !/^[a-zA-Z0-9_. -]+\.wad$/i.test(name)) throw new Error('Invalid WAD filename');
     const file = resolve(projectsDir, name);
     const info = statSync(file, { throwIfNoEntry: false });
-    if (!info?.isFile() || info.size > 128 * 1024 * 1024) throw new Error('WAD is missing or exceeds 128 MiB');
+    if (!info?.isFile() || info.size > LIMITS.archiveBytes) {
+      throw new Error(`WAD is missing or exceeds ${LIMITS.archiveBytes / (1024 * 1024)} MiB`);
+    }
     return readFileSync(file);
   }
   app.get('/api/wads/:name/maps', (req, res) => {
@@ -126,7 +131,7 @@ export function createApp({
     if (!cached) cache?.set(key, result);
     res.json({ ...result, cached: cached?.cached || null });
   });
-  app.post('/api/import/wad', express.raw({ type: 'application/octet-stream', limit: '128mb' }), (req, res) => {
+  app.post('/api/import/wad', express.raw({ type: 'application/octet-stream', limit: archiveLimit }), (req, res) => {
     if (!Buffer.isBuffer(req.body)) throw new Error('Expected a binary WAD body');
     const options = { fullGame: fullGameImport(req.query.scope) };
     const key = importCacheKey(['wad', createHash('sha256').update(req.body).digest('hex'), req.query.map ?? '', options.fullGame, null]);
@@ -137,7 +142,7 @@ export function createApp({
   });
   app.get('/api/packages', (req, res) => res.json(packageLibrary(projectsDir)));
   app.post('/api/packages/inspect', async (req, res) => res.json(inspectPackage(await readLocalPackage(projectsDir, req.body.name))));
-  app.post('/api/packages/upload/inspect', express.raw({ type: 'application/octet-stream', limit: '128mb' }), async (req, res) =>
+  app.post('/api/packages/upload/inspect', express.raw({ type: 'application/octet-stream', limit: archiveLimit }), async (req, res) =>
     res.json(inspectPackage(await readPackageArchive(req.body))));
   app.post('/api/import/local-package', async (req, res) => {
     const source = resolve(projectsDir, String(req.body.name || ''));
@@ -154,7 +159,7 @@ export function createApp({
     cache?.set(key, result);
     res.json({ ...result, cached: null });
   });
-  app.post('/api/import/package', express.raw({ type: 'application/octet-stream', limit: '128mb' }), async (req, res) => {
+  app.post('/api/import/package', express.raw({ type: 'application/octet-stream', limit: archiveLimit }), async (req, res) => {
     const files = await readPackageArchive(req.body);
     const inspection = inspectPackage(files);
     const indices = typeof req.query.images === 'string' && req.query.images ? req.query.images.split(',') : [];

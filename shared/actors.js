@@ -621,6 +621,21 @@ export function importActors({ sources = [], dehacked = [], editorNumbers = null
     if (actor.abstract) continue;
     records.push(compileActorRecord(actor, { knownActors: known, index: records.length }));
   }
+  // `replaces ZombieMan` takes over the class it replaces, which includes its editor
+  // number: without this the replacement exists but isn't placed where the original
+  // things are, so a mod's monsters never appear on the map.
+  const vanillaNumbers = new Map(VANILLA_ACTORS.map(entry => [entry.name.toLowerCase(), entry.doomedNum]));
+  const byKnownName = new Map(records.map(actor => [actor.name.toLowerCase(), actor]));
+  let replaced = 0;
+  for (const actor of records) {
+    if (!actor.replaces || actor.doomedNum !== null) continue;
+    const target = byKnownName.get(actor.replaces.toLowerCase());
+    const number = target?.doomedNum ?? vanillaNumbers.get(actor.replaces.toLowerCase());
+    if (number === null || number === undefined) continue;
+    actor.doomedNum = number;
+    replaced++;
+  }
+  if (replaced) warnings.push(`${replaced} replacement actor(s) took over the editor number of the class they replace.`);
   // Editor numbers live in MAPINFO's DoomEdNums blocks, not in the classes.
   const numbers = editorNumbers || parseEditorNumbers(sources);
   if (numbers.size) {
@@ -735,7 +750,11 @@ export function actorIndex(actors) {
   for (const actor of actors) {
     byId.set(actor.id, actor);
     byName.set(actor.name.toLowerCase(), actor);
-    if (actor.doomedNum !== null && actor.doomedNum !== undefined) byDoomed.set(actor.doomedNum, actor);
+    // A replacement can share the replaced class's editor number; it wins the number,
+    // which is what puts it on the map instead of the class it replaces.
+    if (actor.doomedNum !== null && actor.doomedNum !== undefined && (actor.replaces || !byDoomed.has(actor.doomedNum))) {
+      byDoomed.set(actor.doomedNum, actor);
+    }
   }
   for (const actor of actors) if (actor.replaces) byName.set(String(actor.replaces).toLowerCase(), actor);
   return { byId, byName, byDoomed, all: actors };

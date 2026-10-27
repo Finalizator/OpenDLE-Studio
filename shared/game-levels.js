@@ -1,3 +1,4 @@
+import { LIMITS } from './limits.js';
 import { resolveMusicAsset, musicReport } from './music.js';
 import { resolveString } from './language.js';
 
@@ -151,7 +152,9 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
   const project = { version, title: title.slice(0, 100), assets,
     ...(sharedStrings ? { strings: sharedStrings } : {}), ...(sharedActors ? { actors: sharedActors } : {}),
     ...structuredClone(active.data), game: { version: 1, entry: entryId, active: entryId, levels } };
-  if (JSON.stringify(project).length > 128 * 1024 * 1024) throw new Error('Imported game exceeds the 128 MiB portable project limit');
+  if (JSON.stringify(project).length > LIMITS.gameBytes) {
+    throw new Error(`Imported game exceeds the ${LIMITS.gameBytes / 1024 / 1024} MiB portable project limit`);
+  }
   return { project, warnings: [...warnings] };
 }
 
@@ -159,7 +162,7 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
 export function parseLevelRoutes(sources) {
   const routes = new Map();
   for (const source of sources) {
-    if (source.length > 1024 * 1024) throw new Error('MAPINFO exceeds 1 MiB');
+    if (source.length > LIMITS.textBytes) throw new Error(`MAPINFO exceeds ${LIMITS.textBytes / 1024 / 1024} MiB`);
     const clean = source.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, token =>
       token.startsWith('"') ? token : ' ');
     const map = /\bmap\s+("[^"]+"|[a-zA-Z0-9_-]+)\s*(?:"([^"]*)")?\s*\{/gi;

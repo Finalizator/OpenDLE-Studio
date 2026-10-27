@@ -59,8 +59,9 @@ test('UDMF parser rejects malformed, executable, nested, excessive and prototype
     'namespace="zdoom"; vertex{child{}}', 'namespace="zdoom"; __proto__="x";',
     'namespace="zdoom"; vertex{constructor=true;}', 'namespace="zdoom"; x="unterminated'])
     assert.throws(() => parseUDMF(text), /UDMF/);
-  assert.throws(() => parseUDMF(' '.repeat(16 * 1024 * 1024 + 1)), /16 MiB/);
-  assert.throws(() => parseUDMF(`namespace="zdoom";${'thing{}'.repeat(5001)}`), /limits/);
+  assert.throws(() => parseUDMF(' '.repeat(64 * 1024 * 1024 + 1)), /64 MiB/);
+  // The thing budget is a memory guard, not Doom's own limit (see shared/limits.js).
+  assert.throws(() => parseUDMF(`namespace="zdoom";${'thing{}'.repeat(100001)}`), /limits/);
 });
 test('native UDMF import retains fractional geometry, sector heights, side offsets, blocking flags, elevations and source fields', () => {
   const { project, warnings } = importWadMap(map(source, [['BEHAVIOR', Buffer.from([0, 1, 2])]]), 'CUSTOM');

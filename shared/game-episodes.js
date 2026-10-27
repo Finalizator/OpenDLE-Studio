@@ -1,4 +1,5 @@
 // MAPINFO episode declarations populate GZDoom's dynamic EpisodeMenu rows.
+import { LIMITS } from './limits.js';
 export function parseGameEpisodes(definitions, levelIds, { inferClassic = true } = {}) {
   const available = new Set(levelIds), episodes = [], sources = [], warnings = [];
   const active = new Set();
@@ -7,7 +8,9 @@ export function parseGameEpisodes(definitions, levelIds, { inferClassic = true }
   function scan(definition, depth = 0) {
     const { name, source, resolve } = definition;
     if (depth > 16 || active.has(name)) throw new Error(`MAPINFO episode include cycle/depth: ${name}`);
-    if (typeof source !== 'string' || source.length > 1024 * 1024) throw new Error(`MAPINFO ${name} exceeds 1 MiB`);
+    if (typeof source !== 'string' || source.length > LIMITS.textBytes) {
+      throw new Error(`MAPINFO ${name} exceeds ${LIMITS.textBytes / 1024 / 1024} MiB`);
+    }
     budget += source.length;
     if (budget > 2 * 1024 * 1024 || sources.length >= 64) throw new Error('MAPINFO episode source budget exceeded');
     sources.push({ name, source }); active.add(name);

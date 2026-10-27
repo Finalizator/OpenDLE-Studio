@@ -10,6 +10,7 @@ import { ProjectStore } from '../server/store.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { wavSound, encodeSound } from '../shared/sound.js';
 import { selectGameLevel } from '../shared/game-levels.js';
+import { importActors, actorIndex } from '../shared/actors.js';
 
 function archive(entries) {
   const local = [], central = [];
@@ -182,6 +183,83 @@ function directory(t) {
   t.after(() => rmSync(root, { recursive: true }));
   return root;
 }
+test('DECORATE and ZSCRIPT includes are read, so included monsters and weapons exist', async t => {
+  const content = [...entries(),
+    ['DECORATE', Buffer.from('#include "actors/monsters.txt"\n#include "actors/weapons.txt"')],
+    ['actors/monsters.txt', Buffer.from('actor IncludedImp : DoomImp 3005 { Health 90\n States { Spawn: TROO A 10 A_Look\n loop } }')],
+    ['actors/weapons.txt', Buffer.from('#include "actors/weapons2.txt"')],
+    ['actors/weapons2.txt', Buffer.from('actor IncludedShotgun : Shotgun 5101 { AmmoType "Shell" }')]];
+  const { project } = importPackage(await readPackageArchive(archive(content)), { map: 'auto', baseBytes: base() });
+  const names = project.actors.map(actor => actor.name);
+  assert.ok(names.includes('IncludedImp'), 'a monster from an included file is imported');
+  assert.ok(names.includes('IncludedShotgun'), 'and so is a weapon included from two levels deep');
+  const imp = project.actors.find(actor => actor.name === 'IncludedImp');
+  assert.equal(imp.doomedNum, 3005);
+  // A missing include is reported instead of silently dropping the rest.
+  const broken = [...entries(), ['DECORATE', Buffer.from('#include "actors/missing.txt"')]];
+  const { project: partial, warnings } = importPackage(await readPackageArchive(archive(broken)), { map: 'auto', baseBytes: base() });
+  assert.ok(warnings.some(warning => /#include "actors\/missing.txt" was not found/.test(warning)));
+  assert.ok(partial.actors.length > 0, 'the import still succeeds with classic actors');
+});
+test('a replacement actor takes over the editor number of the class it replaces', () => {
+  const sources = [{ name: 'DECORATE', text: 'actor FastZombie : ZombieMan replaces ZombieMan { Speed 12 }' }];
+  const { actors, warnings } = importActors({ sources });
+  const replacement = actors.find(actor => actor.name === 'FastZombie');
+  assert.equal(replacement.doomedNum, 3004, 'thing 3004 spawns the replacement');
+  assert.equal(replacement.replaces, 'ZombieMan');
+  assert.ok(warnings.some(warning => /took over the editor number/.test(warning)));
+  const index = actorIndex(actors);
+  assert.equal(index.byDoomed.get(3004).name, 'FastZombie', 'the replaced class no longer owns the number');
+});
+test('flats of any square palette size decode, including modern 128 and 256 pixel ones', async () => {
+  const { decodeFlat, flatSize } = await import('../shared/doom-assets.js');
+  const palette = new Uint8Array(768).map((value, index) => index % 256);
+  for (const size of [32, 64, 128, 256]) {
+    const image = decodeFlat(new Uint8Array(size * size), palette);
+    assert.deepEqual([image.width, image.height], [size, size]);
+    assert.equal(image.pixels.length, size * size * 4);
+    assert.equal(flatSize(new Uint8Array(size * size)), size);
+  }
+  assert.equal(flatSize(new Uint8Array(1000)), null);
+  assert.throws(() => decodeFlat(new Uint8Array(1000), palette), /square palette image/);
+  // A 128x128 flat used by a map imports as a 128x128 flat, not as garbage or a
+  // missing-texture placeholder.
+  const { importWadMap, readWad } = await import('../shared/wad.js');
+  const { encodeImage } = await import('../server/import.js');
+  const things = Buffer.alloc(10); things.writeUInt16LE(1, 6); things.writeUInt16LE(7, 8);
+  const vertices = Buffer.alloc(16), lines = Buffer.alloc(56);
+  [[-128, -128], [128, -128], [128, 128], [-128, 128]].forEach(([x, y], index) => {
+    vertices.writeInt16LE(x, index * 4); vertices.writeInt16LE(y, index * 4 + 2);
+    lines.writeUInt16LE(index, index * 14); lines.writeUInt16LE((index + 1) % 4, index * 14 + 2);
+    lines.writeUInt16LE(65535, index * 14 + 12);
+  });
+  const side = Buffer.alloc(30); side.write('BIGFLAT', 20);
+  const sector = Buffer.alloc(26); sector.writeInt16LE(128, 2); sector.write('BIGFLAT', 4); sector.write('BIGFLAT', 12);
+  const bytes = wad([['ROOMONE', Buffer.alloc(0)], ['THINGS', things], ['LINEDEFS', lines], ['SIDEDEFS', side],
+    ['VERTEXES', vertices], ['SECTORS', sector], ['PLAYPAL', Buffer.alloc(768, 100)],
+    ['F_START', Buffer.alloc(0)], ['BIGFLAT', Buffer.alloc(16384, 7)], ['F_END', Buffer.alloc(0)]]);
+  const { project } = importWadMap(readWad(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length)), 'ROOMONE', { encodeImage });
+  const flat = project.assets.find(asset => asset.kind === 'flat' && asset.name === 'BIGFLAT');
+  assert.ok(flat, 'the 128x128 flat was imported');
+  assert.deepEqual([flat.width, flat.height], [128, 128]);
+});
+test('pk7 and pke archives are offered, and a folder of only flats or patches is a package', async t => {
+  const root = directory(t);
+  writeFileSync(join(root, 'mod.pk7'), archive(entries()));
+  writeFileSync(join(root, 'addon.pke'), archive(entries()));
+  mkdirSync(join(root, 'PatchPack', 'patches'), { recursive: true });
+  writeFileSync(join(root, 'PatchPack', 'patches', 'wall.png'), png());
+  mkdirSync(join(root, 'FlatPack', 'flats'), { recursive: true });
+  writeFileSync(join(root, 'FlatPack', 'flats', 'stone.png'), png());
+  const library = packageLibrary(root);
+  const names = library.packages.map(entry => `${entry.name}:${entry.type}`);
+  assert.ok(names.includes('mod.pk7:pk3'), 'pk7 archives are listed');
+  assert.ok(names.includes('addon.pke:pk3'), 'pke archives are listed');
+  assert.ok(names.includes('PatchPack:directory'), 'a patches-only folder is a resource package');
+  assert.ok(names.includes('FlatPack:directory'), 'a flats-only folder is a resource package');
+  const files = await readPackageArchive(archive(entries()));
+  assert.ok(files.get('textures/wall.png'), 'the archive still reads');
+});
 test('IPK3 standalone libraries inspect and import all packaged maps without unrelated base levels', async t => {
   const root = directory(t);
   const content = [...entries().filter(([path]) => !path.startsWith('maps/')),
@@ -369,7 +447,7 @@ test('package image validation checks selection, PNG dimensions/CRC, legacy pale
   assert.deepEqual(legacy.map(asset => [asset.width, asset.height, asset.offsetX, asset.offsetY]), [[1, 1, -2, 3], [64, 64, 0, 0]]);
   assert.deepEqual([...PNG.sync.read(Buffer.from(legacy[0].src.split(',')[1], 'base64')).data], [100, 100, 100, 255]);
   assert.throws(() => importPackage(files, { paths: ['graphics/bad.jpg'] }), /Unsupported/);
-  const huge = Buffer.from(bytes); huge.writeUInt32BE(2049, 16);
+  const huge = Buffer.from(bytes); huge.writeUInt32BE(4097, 16);
   const largeFiles = await readPackageArchive(archive([['textures/huge.png', huge]]));
   assert.throws(() => importPackage(largeFiles, { paths: ['textures/huge.png'] }), /dimensions/);
 });

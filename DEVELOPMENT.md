@@ -2169,6 +2169,27 @@ reports why. Present-but-malformed patches fail validation/import rather than
 silently discarding corrupt data. Geometry-only imports without an image
 encoder use the generic HUD with an explicit image warning.
 
+### Import budgets, and what they are not
+
+Every size guard lives in one place, `shared/limits.js`, and none of them is a Doom
+limit: they exist so a malformed or hostile file cannot exhaust memory. The studio
+accepts maps and games far past what the original engine could load, because
+community megawads routinely pass 20 000 linedefs and mod archives are commonly a few
+hundred megabytes:
+
+| budget | value |
+| --- | --- |
+| map records | 200 000 vertices / 200 000 linedefs / 400 000 sidedefs / 100 000 sectors / 100 000 things |
+| UDMF | 800 000 blocks, 64 MiB TEXTMAP, 128 MiB provenance |
+| a game | 512 levels, 512 MiB of level data |
+| an archive | 256 MiB file, 512 MiB expanded, 50 000 entries |
+| assets | 12 000 per project, 96 M decoded pixels per import, 4096x4096 per image, 192 MiB of embedded image data |
+| text and scripts | 8 MiB text lumps (MAPINFO, MENUDEF, SBARINFO, FON2...), 32 MiB BEHAVIOR and ACS libraries |
+| events | 16 384 rules |
+
+The numbers reach the user through the shared module, so a message never quotes a
+budget the code no longer uses.
+
 ### Current compatibility limits
 
 WAD import preserves vertex positions (inverting Doom's Y axis), sector heights,
@@ -2192,6 +2213,12 @@ rendering or playable traversal in every map; MAP01 is browser-tested.
 The first player-one start and single-player thing placement are used. Skill
 flags are retained; New game selects them (Play level defaults to skill 4
 unless this browser has saved a different difficulty).
+Flats are square palette images of 32, 64, 128 or 256 pixels; a 128x128 or 256x256
+flat used to be rejected as malformed, which broke any modern replacement flat.
+TEXTURES/TEXTUREx definitions inside a PK3 are still not composed (only TEXTURE1 /
+TEXTURE2 in a WAD are), and bzip2/LZMA-compressed or encrypted archive entries are
+refused with an explicit message rather than imported.
+
 Common monster/pickup/decoration thing types map to imported sprite-frame clips.
 Unknown types remain visible colored placeholders. Recognized lamps import as
 light objects, with added approximate warm point lights for the first 16;
@@ -2209,6 +2236,29 @@ explicitly rejected; UDMF geometry imports natively with preserved source
 properties and explicit warnings for remaining behavior gaps. Standalone WAD import still needs a complete base asset
 set. Package map import can explicitly layer one base IWAD under package
 resources; arbitrary multi-mod load orders are not implemented.
+
+### What the importer reads from a package
+
+A package is read for the resources a map needs, and the list of what counts has
+grown past the original assumptions:
+
+- **Actor includes are resolved.** The classic layout is a small root `DECORATE` plus
+  `#include "monsters.txt"` in a subfolder. Includes resolve relative to the including
+  file first, then from the archive root, then by a unique path suffix, with a depth
+  limit and cycle detection; anything unresolved is reported by name. Before this only
+  the root file was parsed, so every included monster and weapon silently vanished and
+  its placed things fell back to vanilla artwork.
+- **Script and definition files are kept at any size.** A 1.2 MiB `.zs` or `.dec` used
+  to be filtered out before it was ever read, because the resource filter only kept
+  small files plus `*.txt`.
+- **`replaces` takes over the editor number.** An actor that replaces another one
+  inherits its editor number when it declares none, and the runtime's doomed-number
+  index prefers the replacement, so thing 3004 spawns it.
+- **Archive kinds and layouts**: `.pk3`, `.ipk3`, `.pk7`, `.pke` and `.pkz` are all
+  zip containers and all accepted; WADs inside the archive are read whether they sit at
+  the root or in a subfolder such as `wads/`; and a folder made only of `flats/`,
+  `sounds/`, `patches/`, `fonts/` or `models/` counts as a resource package instead of
+  being ignored.
 
 ### PK3/IPK3 archives and unpacked resource packages
 

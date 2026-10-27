@@ -1,9 +1,14 @@
 import { MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE } from './project.js';
-const limits = { vertex: 20000, linedef: 20000, sidedef: 40000, sector: 20000, thing: 5000 };
+import { LIMITS } from './limits.js';
+// Block budgets, not Doom's own limits: see shared/limits.js.
+const limits = { vertex: LIMITS.vertices, linedef: LIMITS.walls, sidedef: LIMITS.sidedefs,
+  sector: LIMITS.sectors, thing: LIMITS.entities };
 const unsafe = new Set(['__proto__', 'constructor', 'prototype']);
 
 export function parseUDMF(text) {
-  if (typeof text !== 'string' || text.length > 16 * 1024 * 1024) throw new Error('UDMF TEXTMAP exceeds 16 MiB');
+  if (typeof text !== 'string' || text.length > LIMITS.udmfTextBytes) {
+    throw new Error(`UDMF TEXTMAP exceeds ${LIMITS.udmfTextBytes / 1024 / 1024} MiB`);
+  }
   let position = 0, tokens = 0;
   const globals = {}, blocks = [], counts = {};
   const fail = message => { throw new Error(`UDMF at character ${position}: ${message}`); };
@@ -80,7 +85,7 @@ export function parseUDMF(text) {
     if (following.type !== '{') fail('Expected assignment or block');
     const type = token.value;
     counts[type] = (counts[type] || 0) + 1;
-    if (counts[type] > (limits[type] || 1000) || blocks.length >= 105000) fail(`${type} exceeds geometry/block limits`);
+    if (counts[type] > (limits[type] || 1000) || blocks.length >= LIMITS.udmfBlocks) fail(`${type} exceeds geometry/block limits`);
     const properties = {};
     let fields = 0;
     while (true) {

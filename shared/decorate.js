@@ -138,6 +138,9 @@ function parseHead(line, index) {
   let parent = null, replaces = null, doomedNum = null;
   for (; cursor < line.length; cursor++) {
     const token = line[cursor];
+    // A block can open on the declaration line, and nothing inside it belongs to the
+    // header: `actor Foo : Bar { Speed 12 }` used to take 12 as its editor number.
+    if (token.kind === 'punct' && token.value === '{') break;
     if (token.kind === 'punct' && token.value === ':') {
       parent = line[cursor + 1]?.value || null;
       cursor++;

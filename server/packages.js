@@ -14,9 +14,14 @@ import { encodeImage, cachedImageEncoder } from './import.js';
 import { doomSound, encodeSound } from '../shared/sound.js';
 import { assembleGameLevels, parseLevelRoutes } from '../shared/game-levels.js';
 import { parseGameEpisodes } from '../shared/game-episodes.js';
+import { LIMITS } from '../shared/limits.js';
 
 const MiB = 1024 * 1024;
-const MAX_BYTES = 128 * MiB, MAX_FILES = 10000;
+// Archive budgets, not engine restrictions: mods are commonly a few hundred megabytes
+// and an expanded archive exceeds it. See shared/limits.js.
+const MAX_BYTES = LIMITS.archiveBytes, MAX_EXPANDED = LIMITS.archiveExpandedBytes, MAX_FILES = LIMITS.archiveEntries;
+/** Zip-based package extensions GZDoom loads: .pk3/.ipk3 for games, .pk7/.pke/.pkz for mods. */
+const PACKAGE_PATTERN = /\.(?:i?pk3|pk7|pke|pkz)$/i;
 const imageFolders = new Map([['textures', 'texture'], ['flats', 'flat'], ['sprites', 'sprite'],
   ['graphics', 'sprite'], ['patches', 'texture'], ['hires', 'texture']]);
 function check(value, message) { if (!value) throw new Error(message); }
@@ -38,10 +43,13 @@ function inside(root, name) {
   }
   return path;
 }
+// Folders a mod can be made of. A pack of only flats, sounds or patches is still a
+// resource package, and so is a directory that only declares actors or MAPINFO.
+const RESOURCE_FOLDERS = new Set(['maps', 'textures', 'flats', 'sprites', 'graphics', 'patches', 'hires', 'sounds', 'music', 'fonts', 'models', 'voxels']);
 function resourcesDirectory(path) {
   const entries = readdirSync(path, { withFileTypes: true });
-  return entries.some(entry => entry.isDirectory() && ['maps', 'textures', 'sprites', 'graphics'].includes(entry.name.toLowerCase())) ||
-    entries.some(entry => entry.isFile() && /^(gameinfo|mapinfo|zscript|decorate)(\.|$)/i.test(entry.name));
+  return entries.some(entry => entry.isDirectory() && RESOURCE_FOLDERS.has(entry.name.toLowerCase())) ||
+    entries.some(entry => entry.isFile() && /^(gameinfo|mapinfo|zmapinfo|emapinfo|zscript|decorate|menudef|sbarinfo|sndinfo|animdefs|language|keyconf)(\.|$)/i.test(entry.name));
 }
 export function packageLibrary(root) {
   const packages = [], wads = [];
@@ -53,7 +61,7 @@ export function packageLibrary(root) {
       const name = `${prefix}${entry.name}`, path = resolve(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isFile() && /\.wad$/i.test(name)) wads.push(name);
-      else if (entry.isFile() && /\.i?pk3$/i.test(name)) packages.push({ name, type: 'pk3', ...(/\.ipk3$/i.test(name) ? { standalone: true } : {}) });
+      else if (entry.isFile() && PACKAGE_PATTERN.test(name)) packages.push({ name, type: 'pk3', ...(/\.ipk3$/i.test(name) ? { standalone: true } : {}) });
       else if (entry.isDirectory()) {
         if (resourcesDirectory(path)) packages.push({ name, type: 'directory' });
         else walk(path, `${name}/`, depth + 1);
@@ -66,7 +74,7 @@ export function packageLibrary(root) {
 export function localWadBytes(root, name) {
   check(typeof name === 'string' && /\.wad$/i.test(name), 'Invalid WAD filename');
   const path = inside(root, name), info = lstatSync(path);
-  check(info.isFile() && info.size <= MAX_BYTES, 'WAD is missing or exceeds 128 MiB');
+  check(info.isFile() && info.size <= MAX_BYTES, `WAD is missing or exceeds ${MAX_BYTES / MiB} MiB`);
   return readFileSync(path);
 }
 function imageKind(name) {
@@ -75,13 +83,17 @@ function imageKind(name) {
     ? imageFolders.get(folder) : undefined;
 }
 function needed(name, size) {
-  // Includes may have arbitrary names/extensions. Keep small resources within the existing package budget.
-  return name.startsWith('sounds/') || name.startsWith('music/') || Boolean(imageKind(name)) || /\.wad$/i.test(name) || /^playpal(\.lmp)?$/i.test(name) ||
-    /^(?:gameinfo|[z]?mapinfo|menudef|sbarinfo)(?:[./]|$)/i.test(name) || /\.(?:txt|techbase|pk3t)$/i.test(name) || size <= MiB;
+  // Includes may have arbitrary names/extensions. Script sources are kept at any size:
+  // a 1.2 MiB ZScript library is an ordinary file, and dropping it silently removed
+  // every actor it declared.
+  const script = /\.(?:zc|zs|zsc|dec|deh|bex|acs|o|sf|snd|rnd|sp|bex)$/i.test(name) ||
+    /(^|\/)(zscript|decorate|dehacked|language|keyconf|sndinfo|animdefs|menudef|sbarinfo|gl_defs|gldefs|mapinfo|zmapinfo|gameinfo|textures|texture1|texture2|pnames)(\.|$)/i.test(name);
+  return script || name.startsWith('sounds/') || name.startsWith('music/') || Boolean(imageKind(name)) || /\.wad$/i.test(name) ||
+    /^playpal(\.lmp)?$/i.test(name) || /\.(?:txt|techbase|pk3t|zipinfo)$/i.test(name) || size <= MiB;
 }
 export async function readPackageArchive(buffer) {
   check(typeof zlib.crc32 === 'function', 'PK3 archive CRC validation requires Node.js 22.2 or newer');
-  check(Buffer.isBuffer(buffer) && buffer.length <= MAX_BYTES, 'PK3 exceeds the 128 MiB import limit');
+  check(Buffer.isBuffer(buffer) && buffer.length <= MAX_BYTES, `PK3 exceeds the ${MAX_BYTES / MiB} MiB import limit`);
   const zip = await new Promise((resolve, reject) => yauzl.fromBuffer(buffer,
     { lazyEntries: true, strictFileNames: true, validateEntrySizes: true }, (error, zip) => error ? reject(error) : resolve(zip)));
   return new Promise((resolve, reject) => {
@@ -93,12 +105,12 @@ export async function readPackageArchive(buffer) {
     zip.on('entry', entry => {
       try {
         const name = safePath(entry.fileName).toLowerCase();
-        check(++count <= MAX_FILES, 'PK3 exceeds 10000 entries');
+        check(++count <= MAX_FILES, `PK3 exceeds ${MAX_FILES} entries`);
         check(!(entry.generalPurposeBitFlag & 1), 'Encrypted PK3 entries are not supported');
         check([0, 8].includes(entry.compressionMethod), 'Only stored/Deflate PK3 entries are supported');
         check(((entry.externalFileAttributes >>> 16) & 0xf000) !== 0xa000, 'PK3 symlinks are not supported');
         total += entry.uncompressedSize;
-        check(entry.uncompressedSize <= MAX_BYTES && total <= MAX_BYTES, 'PK3 expanded data exceeds 128 MiB');
+        check(entry.uncompressedSize <= MAX_BYTES && total <= MAX_EXPANDED, `PK3 expanded data exceeds ${MAX_EXPANDED / MiB} MiB`);
         if (name.endsWith('/')) { zip.readEntry(); return; }
         check(!files.has(name), `Duplicate package path: ${name}`);
         files.set(name, { size: entry.uncompressedSize });
@@ -128,7 +140,7 @@ export async function readPackageArchive(buffer) {
 export async function readLocalPackage(root, name) {
   const path = inside(root, name), info = lstatSync(path);
   if (info.isFile()) {
-    check(/\.i?pk3$/i.test(name) && info.size <= MAX_BYTES, 'Expected a PK3/IPK3 of at most 128 MiB');
+    check(PACKAGE_PATTERN.test(name) && info.size <= MAX_BYTES, `Expected a PK3/IPK3/PK7/PKE of at most ${MAX_BYTES / MiB} MiB`);
     const files = await readPackageArchive(readFileSync(path));
     files.standalone = /\.ipk3$/i.test(name);
     return files;
@@ -139,14 +151,14 @@ export async function readLocalPackage(root, name) {
   function walk(dir, prefix = '', depth = 0) {
     check(depth <= 16, 'Package exceeds directory depth limit');
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      check(++count <= MAX_FILES, 'Package exceeds 10000 entries');
+      check(++count <= MAX_FILES, `Package exceeds ${MAX_FILES} entries`);
       check(!entry.isSymbolicLink(), 'Package symlinks are not supported');
       const name = safePath(`${prefix}${entry.name}`).toLowerCase(), child = resolve(dir, entry.name);
       if (entry.isDirectory()) { walk(child, `${prefix}${entry.name}/`, depth + 1); continue; }
       check(entry.isFile(), 'Only regular package files are supported');
       const info = lstatSync(child);
       total += info.size;
-      check(total <= MAX_BYTES, 'Package expanded data exceeds 128 MiB');
+      check(total <= MAX_EXPANDED, `Package expanded data exceeds ${MAX_EXPANDED / MiB} MiB`);
       check(!files.has(name), `Duplicate package path: ${name}`);
       files.set(name, { size: info.size, ...(needed(name, info.size) ? { data: readFileSync(child) } : {}) });
     }
@@ -172,6 +184,47 @@ function mapsIn(files) {
     }
   }
   return maps;
+}
+/**
+ * Reads the actor definition files and everything they `#include`.
+ *
+ * The classic layout is a small root DECORATE plus `#include "monsters.txt"` and
+ * friends in subfolders. Only the root was read, so every included monster and weapon
+ * silently disappeared from the import and its placed things fell back to vanilla
+ * artwork. Includes resolve like GZDoom's: relative to the including file first, then
+ * from the archive root, then by a unique path suffix.
+ */
+function collectWithIncludes(entryNames, files, warnings) {
+  const byPath = new Map([...files].map(([name, file]) => [name.toLowerCase(), file]));
+  const collect = (path, target) => {
+    const clean = String(target ?? '').replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    if (!clean) return null;
+    const directory = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
+    const candidates = [`${directory}${clean}`, clean];
+    for (const candidate of candidates) if (byPath.get(candidate)?.data) return candidate;
+    const suffix = `/${clean}`, matches = [...byPath.keys()].filter(name => name.endsWith(suffix) && byPath.get(name).data);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) warnings.push(`${path}: include "${target}" matches ${matches.length} files; the first is used.`);
+    return matches.sort()[0] || null;
+  };
+  const sources = [], visited = new Set();
+  const add = (path, depth, from) => {
+    if (depth > 24) { warnings.push(`${path}: include depth exceeded; deeper includes were skipped.`); return; }
+    const key = path.toLowerCase();
+    if (visited.has(key)) return;
+    const file = byPath.get(key);
+    if (!file?.data) { if (from) warnings.push(`${from}: included file ${path} was not found in the package.`); return; }
+    visited.add(key);
+    const text = Buffer.from(file.data).toString('latin1');
+    sources.push({ name: path, text });
+    for (const include of text.matchAll(/#include\s+(?:"([^"]+)"|<([^>]+)>)/g)) {
+      const resolved = collect(key, include[1] || include[2]);
+      if (resolved) add(resolved, depth + 1, path);
+      else warnings.push(`${path}: #include "${include[1] || include[2]}" was not found in the package.`);
+    }
+  };
+  for (const name of entryNames) add(name, 0, null);
+  return sources;
 }
 export function inspectPackage(files) {
   const warnings = ['PK3 is a ZIP resource container, not an engine. Actor definitions, MAPINFO editor numbers, LANGUAGE keywords and DEHACKED patches are imported as editable data, and each map\'s compiled ACS module (BEHAVIOR) runs natively; ACS libraries loaded through LOADACS and full ZScript code are not executed.'];
@@ -258,7 +311,8 @@ function imageDecoder(files, palette) {
     let decoded;
     if (bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
       const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20);
-      check(width > 0 && height > 0 && width <= 2048 && height <= 2048, `Image dimensions exceed 2048x2048: ${path}`);
+      check(width > 0 && height > 0 && width <= LIMITS.imageSize && height <= LIMITS.imageSize,
+        `Image dimensions exceed ${LIMITS.imageSize}x${LIMITS.imageSize}: ${path}`);
       check(pixels + width * height <= 32 * MiB, 'Package image decoding exceeds pixel budget; select a smaller image batch');
       const png = PNG.sync.read(bytes, { checkCRC: true });
       decoded = { width, height, pixels: png.data, offsetX: 0, offsetY: 0 };
@@ -288,7 +342,7 @@ function mergeWads(sources) {
   const lumps = [], chunks = [];
   for (const source of sources) for (const lump of source.lumps) {
     size += lump.size;
-    check(size <= MAX_BYTES, 'Combined WAD resources exceed 128 MiB');
+    check(size <= MAX_EXPANDED, `Combined WAD resources exceed ${MAX_EXPANDED / MiB} MiB`);
     chunks.push(Buffer.from(source.buffer, lump.start, lump.size));
     lumps.push({ ...lump, start: size - lump.size });
   }
@@ -366,7 +420,7 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
       check(inspection.images.includes(path), `Unknown package image: ${path}`);
       const image = decode(path), src = encodeImage(image);
       bytes += src.length;
-      check(src.length <= 6 * MiB && bytes <= 48 * MiB, 'Package image batch exceeds embedded asset budget');
+      check(src.length <= LIMITS.imageBytes && bytes <= LIMITS.imageTotalBytes, 'Package image batch exceeds embedded asset budget');
       return { id: `package_${createHash('sha256').update(path).update(src).digest('hex').slice(0, 24)}`,
         name: path.length <= 100 ? path : `${path.slice(0, 49)}...${path.slice(-48)}`, kind: imageKind(path),
         width: image.width, height: image.height, offsetX: image.offsetX, offsetY: image.offsetY, src };
@@ -382,12 +436,14 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   check(selected, 'Package map not found');
   check(selected.supported, `${selected.format} maps are not supported; import image assets instead`);
   const sources = base ? [base] : [];
-  for (const [name, file] of files) if (/^[^/]+\.wad$/.test(name)) sources.push(wad(file.data));
+  // WADs shipped inside the archive can sit at the root or in a subfolder (many mods
+  // keep their resources in wads/), and each one may bring assets the map needs.
+  for (const [name, file] of files) if (/\.wad$/i.test(name) && name !== selected.path) sources.push(wad(file.data));
   if (selected.path) sources.push(wad(files.get(selected.path).data));
   const combined = mergeWads(sources);
   const localPalette = files.get('playpal') || files.get('playpal.lmp');
   if (localPalette) {
-    check(combined.buffer.byteLength + localPalette.data.length <= MAX_BYTES, 'Combined WAD resources exceed 128 MiB');
+    check(combined.buffer.byteLength + localPalette.data.length <= MAX_EXPANDED, `Combined WAD resources exceed ${MAX_EXPANDED / MiB} MiB`);
     const bytes = Buffer.concat([Buffer.from(combined.buffer), localPalette.data]);
     combined.lumps.push({ name: 'PLAYPAL', start: combined.buffer.byteLength, size: localPalette.data.length });
     combined.buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -423,7 +479,7 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   const interfaceText = path => {
     const file = files.get(path);
     if (!file) return null;
-    check(file.size <= MiB && file.data, `Interface resource ${path} exceeds 1 MiB or was not retained`);
+    check(file.size <= LIMITS.textBytes && file.data, `Interface resource ${path} exceeds ${LIMITS.textBytes / MiB} MiB or was not retained`);
     return { name: path, source: new TextDecoder('utf-8', { fatal: true }).decode(file.data) };
   };
   const resolveInterface = (name, parent) => {
@@ -439,17 +495,19 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     aliasWarnings.push(`${name}: filtered/nested SBARINFO is not selected automatically; root SBARINFO may include it explicitly.`);
   const fontResources = new Map();
   for (const [path, file] of files) if (/\.fon2$/i.test(path) || !path.includes('/') && file.data?.toString('ascii', 0, 4) === 'FON2') {
-    check(file.data && file.size <= MiB, `Font ${path} exceeds 1 MiB or was not retained`);
+    check(file.data && file.size <= LIMITS.textBytes, `Font ${path} exceeds ${LIMITS.textBytes / MiB} MiB or was not retained`);
     fontResources.set(basename(path, extname(path)).toUpperCase(), new Uint8Array(file.data));
   }
   // Everything the package (and a local gzdoom.pk3) defines about actors, so the
   // imported monsters and weapons run their real state machines.
   const projectRoot = projectsDir || context?.projectsDir;
   const actorSources = [], dehackedSources = [], languageSources = [];
+  const isActorSource = name => /(^|\/)(DECORATE|ZSCRIPT)$/i.test(name) || /\.(dec|zc|zs|zsc)$/i.test(name);
+  actorSources.push(...collectWithIncludes([...files.keys()].filter(isActorSource), files, aliasWarnings));
   for (const [name, file] of files) {
     if (!file.data) continue;
-    if (/(^|\/)(DECORATE|ZSCRIPT)$/i.test(name) || /\.(dec|zc|zs|zsc)$/i.test(name)) {
-      actorSources.push({ name, text: Buffer.from(file.data).toString('latin1') });
+    if (isActorSource(name)) {
+      continue;
     } else if (/(^|\/)DEHACKED$/i.test(name) || /\.(deh|bex)$/i.test(name)) {
       dehackedSources.push({ name, text: Buffer.from(file.data).toString('latin1') });
     } else if (/(^|\/)language(\.[a-z]{2,3})?(\.txt)?$/i.test(name) || /\.(enu|ita|deu|fra|spa)$/i.test(name)) {

@@ -1,3 +1,4 @@
+import { LIMITS } from './limits.js';
 import { validateHUDStyle } from './hud-style.js';
 import { HUD_PLAYER_BINDINGS, playerBinding, initialPlayerStats } from './player-state.js';
 import { GAME_HUD_BINDINGS, GAME_SETTINGS } from './game-settings.js';
@@ -43,7 +44,7 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
       obj(source, 'imported source'); text(source.name, 512, 'source name'); text(source.source, 1024 * 1024, 'source');
       size += source.source.length;
     }
-    assert(size <= 2 * 1024 * 1024, 'HUD imported sources exceed 2 MiB');
+    assert(size <= LIMITS.textBytes, `HUD imported sources exceed ${LIMITS.textBytes / 1024 / 1024} MiB`);
   }
   list(hud.fonts, 64, 'fonts'); list(hud.elements, MAX_HUD_ELEMENTS, 'elements'); list(hud.animations, 128, 'animations');
   if (hud.styles !== undefined) {
