@@ -516,8 +516,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (!source.forEachType) {
         if (!runEvent(source, false, phase)) return;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
+        // Sub-events inherit the owner of the rule that ran them, so "this object" in a
+        // child of an object script still means that object.
         for (const child of tree.children.get(source.id) || []) {
-          visit(child, undefined);
+          visit(child, source.ownerId);
           if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         }
         return;
@@ -529,7 +531,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         if (!runEvent(event, true, phase)) continue;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         for (const child of tree.children.get(source.id) || []) {
-          visit(child, entity.id);
+          visit(child, event.ownerId);
           if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         }
       }
@@ -542,8 +544,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   function runEvent(event, perInstance, phase) {
     const eventKey = perInstance ? `${event.id}:${event.ownerId}` : event.id;
     if (!event.enabled || (event.once && state.fired.has(eventKey))) return;
-    if (event.ownerId && !state.entities.some(entity => entity.id === event.ownerId)) return;
     const lookup = entityLookup(state);
+    if (event.ownerId && !lookup.byId.has(event.ownerId)) return;
     const findTarget = id => lookup.byId.get(resolveEntityId(event, id));
     // The expression context (which builds closures and lookups) is only needed when a
     // command actually contains an expression, so it is built on first use.

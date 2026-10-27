@@ -113,3 +113,41 @@ test('tilt is validated and ignored by projects that do not use it', () => {
   project.map.entities[1].modelTilt = 'yes';
   assert.throws(() => validateProject(project), /Model tilt must be an object/);
 });
+
+test('a sub-event of a for-each rule runs once per instance, not once per object', async () => {
+  const { createProject, validateProject } = await import('../shared/project.js');
+  const { createRuntime, stepRuntime } = await import('../shared/runtime.js');
+  const project = createProject();
+  project.map.entities.push({ id: 'shelf1', name: 'Shelf 1', type: 'decoration', x: 0, y: 0, angle: 0, variables: { hits: 0 } },
+    { id: 'shelf2', name: 'Shelf 2', type: 'decoration', x: 0, y: 0, angle: 0, variables: { hits: 0 } });
+  project.events = [
+    { id: 'each', enabled: true, once: false, forEachType: 'decoration',
+      condition: { type: 'always' }, conditions: [], actions: [] },
+    { id: 'count', parentId: 'each', enabled: true, once: false, forEachType: 'decoration',
+      condition: { type: 'always' }, conditions: [], actions: [{ type: 'addObjectVariable', entityId: '$self', variable: 'hits', value: 1 }] },
+  ];
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.entities.find(entity => entity.id === 'shelf1').variables.hits, 1);
+  assert.equal(state.entities.find(entity => entity.id === 'shelf2').variables.hits, 1);
+});
+
+test('a sub-event of an object rule resolves this object', async () => {
+  const { createProject, validateProject } = await import('../shared/project.js');
+  const { createRuntime, stepRuntime } = await import('../shared/runtime.js');
+  const project = createProject();
+  project.map.entities.push({ id: 'crate', name: 'Crate', type: 'decoration', x: 10, y: 20, angle: 0 });
+  project.events = [
+    { id: 'root', ownerId: 'crate', enabled: true, once: false,
+      condition: { type: 'always' }, conditions: [], actions: [] },
+    { id: 'child', parentId: 'root', ownerId: 'crate', enabled: true, once: false,
+      condition: { type: 'always' }, conditions: [],
+      actions: [{ type: 'setEntityPosition', entityId: '$self', x: 99, y: 77, z: 1 }] },
+  ];
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  const crate = state.entities.find(entity => entity.id === 'crate');
+  assert.deepEqual([crate.x, crate.y], [99, 77], 'the child rule moved the owning object');
+});
