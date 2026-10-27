@@ -40,6 +40,7 @@ import { selectGameLevel } from '/shared/game-levels.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
 import * as gameSaves from './game-saves.js';
+import { installSplitters } from './splitters.js';
 
 const $ = id => document.getElementById(id);
 $('asset-dock').append($('assets-panel'));
@@ -64,6 +65,18 @@ const camera = { x: 0, y: 0, zoom: 1 };
 const keys = new Set(), pressed = new Set();
 const canvas = $('map'), ctx = canvas.getContext('2d');
 let drag = null, mapNeedsDraw = true;
+// Panel edges are draggable and remembered per browser; the 2D map only repaints
+// when it is told its drawing buffer changed size, so every resize redraws it.
+const splitters = installSplitters({
+  onStart: key => {
+    const dock = $('asset-dock');
+    if (key !== 'assets' || !dock.classList.contains('expanded')) return;
+    // Grabbing an expanded asset browser continues from its on-screen height.
+    splitters.set('assets', Math.round(dock.getBoundingClientRect().height), { save: false });
+    setAssetExpanded(false);
+  },
+  onChange: () => { mapNeedsDraw = true; },
+});
 // Scanning every actor state is cheap but not free, so the report is cached until
 // the actor table or the map placements change.
 const actorGapCache = new WeakMap();

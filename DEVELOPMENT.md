@@ -148,8 +148,14 @@ provider credits or network access are required for tests.
   tree and a single world-layer object list on the right, and a persistent
   Asset Browser below the editing surface. Asset categories, search and an
   Expand/Restore button keep materials available while editing. The UI is an original implementation, not copied
-  Construct software, assets or branding. Panels are fixed docks, not freely
-  rearrangeable windows; additional editable layers are not implemented.
+  Construct software, assets or branding. Every panel edge is a draggable
+  separator: drag the gutters beside Properties or the Project tree, or the one
+  above the Asset Browser, or use the arrow keys on a focused separator
+  (Shift for bigger steps). Double-click, Enter or Home restores that panel's
+  default size. Sizes live in `opendle-layout` in this browser's storage and are
+  clamped so the editor keeps a usable width; they are per browser, not per
+  project. Panels dock rather than float: they are not freely rearrangeable
+  windows, and additional editable layers are not implemented.
 - **World editor:** draw rectangular rooms, place objects, move vertices and
   objects with live visual feedback, edit wall colors/heights/collision, edit
   spawn position/angle, zoom, pan, snap to grid, fit to scene and undo/redo.

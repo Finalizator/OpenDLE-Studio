@@ -60,6 +60,8 @@
       <div id="inspector"></div>
       <div class="property-help"><strong>Properties</strong><p>Select an object in the layout or Project bar. Open its visual script to edit attached events.</p></div>
     </aside>
+    <div id="splitter-left" class="splitter splitter-vertical" role="separator" aria-orientation="vertical"
+      aria-label="Resize Properties panel" aria-valuemin="170" aria-valuemax="480" tabindex="0" title="Drag to resize · double-click to reset"></div>
     <section class="workspace">
       <div class="document-content">
       <div id="gameplay-warning" class="info" role="status" hidden><strong>Imported gameplay needs updating</strong><p id="gameplay-warning-text"></p><button id="reimport-gameplay">Reimport WAD with gameplay</button></div>
@@ -204,8 +206,12 @@
         </div>
       </section>
       </div>
+      <div id="splitter-assets" class="splitter splitter-horizontal" role="separator" aria-orientation="horizontal"
+        aria-label="Resize asset browser" aria-valuemin="110" tabindex="0" title="Drag to resize · double-click to reset"></div>
       <section id="asset-dock" aria-label="Asset browser"></section>
     </section>
+    <div id="splitter-right" class="splitter splitter-vertical" role="separator" aria-orientation="vertical"
+      aria-label="Resize Project panel" aria-valuemin="170" aria-valuemax="480" tabindex="0" title="Drag to resize · double-click to reset"></div>
     <aside class="right" aria-label="Project bar">
       <div class="dock-heading">Project <span>OpenDLE: Studio</span></div>
       <input id="project-search" type="search" placeholder="Search project" aria-label="Search project">
