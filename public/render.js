@@ -12,6 +12,7 @@ import RAPIER from '/vendor/rapier/rapier.mjs';
 import { createPhysics } from '/shared/physics.js';
 import { eyePosition, upVector, viewDirection } from '/shared/gravity.js';
 import { restoreCulling, restoreVisibility, revealForWarmup, uncullDrawables } from '/shared/render-warmup.js';
+import { skyView } from '/shared/sky-view.js';
 import { liveProjectPlan, modelOrientation, modelWorldBox, entityOrigin } from '/shared/entity-visuals.js';
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
@@ -1010,9 +1011,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
       } else {
         const panorama = backgroundScene.userData.panorama;
         if (panorama) {
-          const direction = camera.getWorldDirection(cameraDirection);
-          panorama.userData.panoramaUniforms.heading.value = editor ? Math.atan2(direction.z, direction.x) : state.player.angle;
-          panorama.userData.panoramaUniforms.pitch.value = editor ? Math.asin(direction.y) : pitch;
+          const view = skyView({ editor, direction: camera.getWorldDirection(cameraDirection), player: state.player });
+          panorama.userData.panoramaUniforms.heading.value = view.heading;
+          panorama.userData.panoramaUniforms.pitch.value = view.pitch;
           panorama.userData.panoramaUniforms.aspect.value = camera.aspect;
           panorama.userData.panoramaUniforms.fieldOfView.value = Math.tan(camera.fov * Math.PI / 360);
         }
