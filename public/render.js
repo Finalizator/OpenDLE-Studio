@@ -1007,11 +1007,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
           // silently falls back to the default centre is drawn half-sunk in the floor —
           // which is exactly how imported monsters looked.
           sprite.center.set(.5, .5);
+          // An artwork without a vertical offset is bottom-anchored, which is what an
+          // imported image gets: `offsetY || height` keeps that instead of centring it.
+          const artworkOffsetY = asset ? asset.offsetY || asset.height || 40 : 40;
           sprite.userData.shift = spriteAnchor({ width: Math.abs((asset?.width || 24) * scale),
             height: (asset?.height || 40) * scale, offsetX: (asset?.offsetX || 0) * scale,
-            offsetY: (asset?.offsetY ?? (asset?.height || 40)) * scale });
+            offsetY: artworkOffsetY * scale });
           sprite.userData.assetHeight = asset?.height || 40;
-          sprite.userData.offsetY = (asset?.offsetY ?? (asset?.height || 40)) * scale;
+          sprite.userData.offsetY = artworkOffsetY * scale;
           sprite.userData.frame = assetId; sprite.userData.flip = flip;
           record.frame = assetId; record.flip = flip; record.scale = scale;
         }

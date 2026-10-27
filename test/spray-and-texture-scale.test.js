@@ -138,4 +138,9 @@ test('a billboard sits with the artwork anchor on the entity, not centred on it'
   assert.ok(Math.abs(0 + anchor.dy - 55 / 2 - (-5)) < 1e-9, 'the quad bottom is 5 units below the anchor');
   const centred = spriteAnchor({ width: 64, height: 64, offsetX: 32, offsetY: 32 });
   assert.deepEqual(centred, { dx: 0, dy: 0 }, 'a centred artwork is not moved');
+  // An artwork without a vertical offset is bottom-anchored: its bottom stays on the
+  // entity rather than half of it sinking through the floor.
+  const bottomAnchored = spriteAnchor({ width: 32, height: 48, offsetX: 16, offsetY: 48 });
+  assert.equal(bottomAnchored.dy, 24);
+  assert.equal(bottomAnchored.dy - 48 / 2, 0, 'the quad bottom sits on the anchor');
 });
