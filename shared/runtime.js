@@ -13,7 +13,7 @@ import {
 } from './gravity.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
-import { sprayTarget } from './spray.js';
+import { sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { BT } from './acs.js';
@@ -668,9 +668,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           const target = sprayTarget(state, action.distance);
           if (!target) break;
           const size = action.size > 0 ? action.size : 40;
-          const decal = { id: `decal_${state.decalCounter++}`, x: target.x + target.normal[0] * .5,
-            y: target.y + target.normal[1] * .5, z: target.z, clipId: '', start: state.time,
-            angle: target.angle, decal: { assetId: asset.id, width: size, height: size * (asset.height || 1) / (asset.width || 1) } };
+          const height = size * (asset.height || 1) / (asset.width || 1);
+          // Clip to the wall face so the artwork cannot spill past the wall into the
+          // room: only the part of the decal that is on the wall is kept, cropped.
+          const face = clipDecalToFace(target, { width: size, height });
+          if (!face) break;
+          const decal = { id: `decal_${state.decalCounter++}`, x: target.x, y: target.y, z: target.z,
+            clipId: '', start: state.time, angle: target.angle,
+            decal: { assetId: asset.id, corners: face.corners, uv: face.uv } };
           if (action.duration > 0) decal.until = state.time + action.duration;
           state.impacts.push(decal);
           // Oldest sprays fade out first so a long session cannot grow without bound.

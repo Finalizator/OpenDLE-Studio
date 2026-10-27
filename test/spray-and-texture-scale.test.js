@@ -144,3 +144,37 @@ test('a billboard sits with the artwork anchor on the entity, not centred on it'
   assert.equal(bottomAnchored.dy, 24);
   assert.equal(bottomAnchored.dy - 48 / 2, 0, 'the quad bottom sits on the anchor');
 });
+
+test('a spray is clipped to the wall it was painted on', async () => {
+  const { clipDecalToFace } = await import('../shared/spray.js');
+  const wall = { start: { x: 0, y: 0 }, end: { x: 64, y: 0 }, length: 64, along: 32, z: 48,
+    floor: 0, ceiling: 128, normal: [0, -1] };
+  const inside = clipDecalToFace(wall, { width: 40, height: 40 });
+  assert.equal(inside.cropped, false);
+  assert.deepEqual(inside.corners, [[12, -.5, 28], [52, -.5, 28], [52, -.5, 68], [12, -.5, 68]]);
+  assert.deepEqual(inside.uv, [0, 0, 1, 0, 1, 1, 0, 1]);
+
+  // Painted near the end of the wall: the quad stops at the wall and the artwork is
+  // cropped rather than squeezed, which is what stops it hanging in the room.
+  const end = clipDecalToFace({ ...wall, along: 60 }, { width: 40, height: 40 });
+  assert.equal(end.cropped, true);
+  assert.deepEqual(end.corners.map(corner => corner[0]), [40, 64, 64, 40]);
+  assert.deepEqual(end.uv, [0, 0, .6, 0, .6, 1, 0, 1]);
+
+  // Painted low on the wall: cropped by the floor, not through it.
+  const low = clipDecalToFace({ ...wall, z: 8 }, { width: 40, height: 40 });
+  assert.deepEqual(low.corners.map(corner => corner[2]), [0, 0, 28, 28]);
+  // Twelve units of the artwork hang below the floor: the visible part starts 30% up.
+  assert.ok(Math.abs(low.uv[1] - .3) < 1e-9, `the artwork is cropped from below, got ${low.uv[1]}`);
+  assert.ok(Math.abs(low.uv[3] - .3) < 1e-9);
+  assert.equal(low.uv[5], 1, 'the top of the artwork is still shown');
+
+  // A narrow wall keeps the sliver that fits, cropped horizontally.
+  const sliver = clipDecalToFace({ ...wall, end: { x: 4, y: 0 }, length: 4, along: 2 }, { width: 40, height: 40 });
+  assert.deepEqual(sliver.corners.map(corner => corner[0]), [0, 4, 4, 0]);
+  assert.ok(Math.abs((sliver.uv[2] - sliver.uv[0]) - .1) < 1e-9, 'only a tenth of the artwork is shown');
+
+  // Nothing left to show: a face whose floor is above the spray, or no wall at all.
+  assert.equal(clipDecalToFace({ ...wall, floor: 70 }, { width: 40, height: 40 }), null);
+  assert.equal(clipDecalToFace(null, { width: 10, height: 10 }), null);
+});

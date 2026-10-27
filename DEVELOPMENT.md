@@ -587,8 +587,12 @@ removed, with undo covering either. A scriptlet only ever produces ordinary
 editable events, so anything it installs can be inspected, changed or deleted like
 hand-written rules — the spray's artwork and key are edited in the event itself.
 `shared/spray.js` traces the 3D look direction against solid walls, keeps the hit
-inside the sector's floor/ceiling and returns the wall angle and normal, so the
-decal lies on the wall rather than billboarding at the player. An event whose image
+inside the sector's floor/ceiling and returns the wall's own span, so the decal can
+be **clipped to the face it was painted on**: the rectangle is cut at the wall's ends
+and at the floor/ceiling (`clipDecalToFace`) and the texture coordinates are cropped
+to match, so a spray near a doorway shows a partial logo instead of hanging in the
+air. The clipped corners and UVs are stored on the decal, so what is saved is the
+finished quad, and the renderer builds one small geometry per spray. An event whose image
 is missing (or not chosen yet) reports that through the game message and does
 nothing — a misconfigured spray must never take the preview down, which it did when
 the action threw. The image picker is `kind: 'image'`, listed by

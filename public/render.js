@@ -677,8 +677,6 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // Placement numbers for the first enemy sprites, reported through the playtest log.
     const report = [];
     const decalMaterials = new Map();
-    const decalGeometry = new THREE.PlaneGeometry(1, 1);
-    geometries.add(decalGeometry);
     function decalMaterial(assetId) {
       let material = decalMaterials.get(assetId);
       if (material) return material;
@@ -689,21 +687,24 @@ export async function createPreview(canvas, project, state, { editor = false } =
       materials.add(material); decalMaterials.set(assetId, material);
       return material;
     }
+    /** A spray is already clipped to its wall, so its quad is built from the corners. */
     function updateDecal(effect) {
       let entry = effectMeshes.get(effect.id);
       if (!entry) {
-        const object = new THREE.Mesh(decalGeometry, decalMaterial(effect.decal.assetId));
-        object.scale.set(effect.decal.width, effect.decal.height, 1);
-        // The plane faces +Z, so turning it by -angle lays it flat on a wall running
-        // along `angle` in map space (map y becomes the renderer's z).
-        object.rotation.set(0, -effect.angle, 0);
-        scene.add(object);
+        const { corners, uv } = effect.decal;
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(corners.flat(), 3));
+        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+        geometry.setIndex([0, 1, 2, 0, 2, 3]);
+        geometry.computeBoundingSphere();
+        geometries.add(geometry);
+        const object = new THREE.Mesh(geometry, decalMaterial(effect.decal.assetId));
         object.userData.decal = true;
+        scene.add(object);
         entry = { id: effect.id, object, frame: undefined, revision: frameRevision };
         effectMeshes.set(effect.id, entry); effectList.push(entry);
       }
       entry.revision = frameRevision;
-      entry.object.position.set(effect.x, effect.z, effect.y);
     }
     function updateEffect(effect, elapsed) {
       if (effect.decal) { updateDecal(effect); return; }
@@ -1064,9 +1065,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const entry = effectList[index];
         if (entry.revision === frameRevision) continue;
         scene.remove(entry.object);
-        // Decal materials belong to their asset and are reused, so they are never pooled.
-        if (!entry.object.userData.decal)
-          effectPools[entry.object.isMesh ? 'mesh' : 'sprite'].push(entry.object.material);
+        // Decals own a geometry clipped to their wall and reuse an asset material, so
+        // neither is pooled; the geometry is released with the effect.
+        if (entry.object.userData.decal) { geometries.delete(entry.object.geometry); entry.object.geometry.dispose(); }
+        else effectPools[entry.object.isMesh ? 'mesh' : 'sprite'].push(entry.object.material);
         effectMeshes.delete(entry.id);
         effectList.splice(index, 1);
       }
