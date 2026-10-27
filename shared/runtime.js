@@ -131,7 +131,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     initialiseEntities: entities => initialiseActorEntities(project, entities),
   });
   state.scripts?.restore(progress?.scriptState);
-  // ACS VM state is captured on demand (see `scriptStateOf`): snapshotting it after
+  // ACS VM state is captured on demand: snapshotting it after
   // every step allocated a copy of every map/global variable, the string pool and each
   // running script's locals per frame. The accessor keeps `state.scriptState` working
   // for callers and for old saves, which may still carry a snapshot.
@@ -141,11 +141,6 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     set: () => {},
   });
   return state;
-}
-
-/** A snapshot of the ACS VM for a level transition, taken when one is needed. */
-export function scriptStateOf(state) {
-  return state.scripts?.capture() ?? null;
 }
 
 export function lookPlayer(state, movementX, movementY) {

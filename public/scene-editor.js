@@ -251,9 +251,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     } else if (selection.kind === 'entity') {
       const entity = entityById.get(selection.id);
       if (entity) {
-        // A rendered model knows its own extent; guessing from the sprite gave a
-        // taller box around an object that did not actually draw the model.
-        const rendered = entity.modelAsset ? view.boundsOfEntity?.(entity.id) : null;
+        // Anything that is actually drawn knows its own extent — a model from its
+        // geometry, a sprite from its quad, which also carries the artwork's vertical
+        // anchor. Only an object with nothing drawn falls back to a guess.
+        const rendered = view.boundsOfEntity?.(entity.id);
         if (rendered && !rendered.isEmpty()) box.copy(rendered);
         else {
           const base = (sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0) + (entity.elevation || 0);

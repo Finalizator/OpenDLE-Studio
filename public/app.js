@@ -765,7 +765,11 @@ function imageAssetOptions() {
 }
 function readEngineTweaks() {
   const stored = localStorage.getItem('opendle-engine-tweaks');
-  return engineTweaks(stored === null ? {} : JSON.parse(stored));
+  if (stored === null) return engineTweaks();
+  try { return engineTweaks(JSON.parse(stored)); }
+  // A value from an older build (or a hand-edited one) must not break every tab that
+  // reads a tweak: fall back to the defaults and let the next save rewrite it.
+  catch { return engineTweaks(); }
 }
 function saveEngineTweaks(changes) {
   const tweaks = engineTweaks({ ...readEngineTweaks(), ...changes });
@@ -1907,6 +1911,7 @@ async function reloadProject(initial = false) {
  * on the runtime so each failure is logged once, not once per frame.
  */
 const reportedScriptErrors = new WeakMap();
+let actorAttribution = null;
 function reportPlaytestFailures(session) {
   const failures = session.scripts?.errors;
   if (Array.isArray(failures)) {
@@ -1918,9 +1923,14 @@ function reportPlaytestFailures(session) {
   }
   if (session.actorUnsupported?.size) {
     // Which actor uses the function comes from the actor table, so the log entry
-    // points at the states to edit instead of only naming a function.
-    const attribution = new Map((previewProject ? unsupportedActorActions(previewProject) : [])
-      .map(gap => [gap.name, gap.actors]));
+    // points at the states to edit instead of only naming a function. Walking the
+    // whole actor table for it on every frame was a steady cost in any imported game
+    // that uses an unsupported action, so it is computed once per preview.
+    if (!actorAttribution || actorAttribution.project !== previewProject) {
+      actorAttribution = { project: previewProject,
+        map: new Map((previewProject ? unsupportedActorActions(previewProject) : []).map(gap => [gap.name, gap.actors])) };
+    }
+    const attribution = actorAttribution.map;
     for (const name of session.actorUnsupported) {
       const actors = attribution.get(name) || [];
       playtestLog.once(`actor:${name}`, { severity: 'warning', category: 'actor',
@@ -2458,11 +2468,17 @@ $('new').addEventListener('click', guard(() => {
 $('restore').addEventListener('click', guard(() => {
   const draft = localStorage.getItem('opendle-draft');
   if (!draft) throw new Error('There is no local draft in this browser');
-  if (confirm('Restore your last browser draft? You can undo this change.')) replace(JSON.parse(draft), 'Browser draft restored; save to keep it on the server');
+  if (!confirm('Restore your last browser draft? You can undo this change.')) return;
+  let parsed;
+  try { parsed = JSON.parse(draft); }
+  catch (error) { throw new Error(`The browser draft is not valid JSON (${error.message}). Export or clear it before restoring.`); }
+  replace(parsed, 'Browser draft restored; save to keep it on the server');
 }));
 $('export').addEventListener('click', () => {
   const url = URL.createObjectURL(new Blob([JSON.stringify(project, null, project.game ? 0 : 2)], { type: 'application/json' }));
   const link = make('a'); link.href = url; link.download = `${project.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.opendle.json`; link.click();
+  // The blob URL keeps the whole project document alive until it is revoked.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   status('Project exported');
 });

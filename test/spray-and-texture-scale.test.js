@@ -151,7 +151,8 @@ test('a spray is clipped to the wall it was painted on', async () => {
     floor: 0, ceiling: 128, normal: [0, -1] };
   const inside = clipDecalToFace(wall, { width: 40, height: 40 });
   assert.equal(inside.cropped, false);
-  assert.deepEqual(inside.corners, [[12, -.5, 28], [52, -.5, 28], [52, -.5, 68], [12, -.5, 68]]);
+  // (x, height, map y): a vertical quad lying in the wall's plane at y = -0.5.
+  assert.deepEqual(inside.corners, [[12, 28, -.5], [52, 28, -.5], [52, 68, -.5], [12, 68, -.5]]);
   assert.deepEqual(inside.uv, [0, 0, 1, 0, 1, 1, 0, 1]);
 
   // Painted near the end of the wall: the quad stops at the wall and the artwork is
@@ -159,11 +160,14 @@ test('a spray is clipped to the wall it was painted on', async () => {
   const end = clipDecalToFace({ ...wall, along: 60 }, { width: 40, height: 40 });
   assert.equal(end.cropped, true);
   assert.deepEqual(end.corners.map(corner => corner[0]), [40, 64, 64, 40]);
+  // Every corner shares one map y (height is the second component), so the decal is
+  // flat against the wall rather than lying on the floor.
+  assert.deepEqual([...new Set(end.corners.map(corner => corner[2]))], [-.5]);
   assert.deepEqual(end.uv, [0, 0, .6, 0, .6, 1, 0, 1]);
 
   // Painted low on the wall: cropped by the floor, not through it.
   const low = clipDecalToFace({ ...wall, z: 8 }, { width: 40, height: 40 });
-  assert.deepEqual(low.corners.map(corner => corner[2]), [0, 0, 28, 28]);
+  assert.deepEqual(low.corners.map(corner => corner[1]), [0, 0, 28, 28]);
   // Twelve units of the artwork hang below the floor: the visible part starts 30% up.
   assert.ok(Math.abs(low.uv[1] - .3) < 1e-9, `the artwork is cropped from below, got ${low.uv[1]}`);
   assert.ok(Math.abs(low.uv[3] - .3) < 1e-9);

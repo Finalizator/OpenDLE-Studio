@@ -74,10 +74,12 @@ export function clipDecalToFace(target, { width, height }) {
   const v0 = Math.max(floor, bottom), v1 = Math.min(ceiling, top);
   if (u1 - u0 < .5 || v1 - v0 < .5) return null;
   const dx = (end.x - start.x) / length, dy = (end.y - start.y) / length;
+  // Three.js orders positions (x, y, z) where y is height and z is map y, so each
+  // corner is emitted in that order: the decal lies in the wall's vertical plane.
   const at = (alongWall, height_, gap) => [
     start.x + dx * alongWall + normal[0] * gap,
-    start.y + dy * alongWall + normal[1] * gap,
     height_,
+    start.y + dy * alongWall + normal[1] * gap,
   ];
   return {
     normal: [normal[0], normal[1]],
