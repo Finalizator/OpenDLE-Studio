@@ -11,11 +11,15 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // Diagnostics and derived handles stay out of saves: the unsupported-action set is
 // rebuilt as problems occur, and the weapon machine is re-entered on load.
 const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus',
-  'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'areaEntries', 'surfaces', 'intervals']);
+  'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'areaEntries', 'surfaces', 'intervals',
+  // Diagnostics describe the session, not the game; they are rebuilt on load. Leaving
+  // them in the payload made restoring any save written after a decal or a grounded
+  // actor fail with "unknown runtime field".
+  'groundCorrections', 'entityLookup']);
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.
-const optional = new Set(['lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
+const optional = new Set(['decalCounter', 'lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
   'scriptState', 'scriptWarning', 'damageAcc', 'musicRequest', 'skyRequest', 'gravity', 'airControl', 'scriptLog',
   'messageCount', 'buttons', 'prevButtons', 'actorClock', 'weaponClock', 'weaponSlot', 'weaponReady', 'playerMorph', 'cameraTextures',
   'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock']);
@@ -220,6 +224,9 @@ function validateRuntime(project, state, baseline) {
       !['x', 'y', 'z', 'start'].every(key => Number.isFinite(impact[key]))) fail('invalid impact');
   }
   if (state.menuHistory !== undefined && (!Array.isArray(state.menuHistory) || state.menuHistory.length)) fail('invalid menu history');
+  // Decal ids must keep counting up after a load, or a new spray collides with one
+  // already in the impact list.
+  if (state.decalCounter !== undefined && (!Number.isInteger(state.decalCounter) || state.decalCounter < 0)) fail('invalid decal counter');
   if (state.lastShot !== undefined && state.lastShot !== null &&
     (!plain(state.lastShot) || !Number.isFinite(state.lastShot.time) || !Array.isArray(state.lastShot.hits))) fail('invalid last shot');
   if (state.playerNoise !== undefined &&

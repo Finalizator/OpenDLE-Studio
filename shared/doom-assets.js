@@ -184,13 +184,41 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     assets.push(asset); cache.set(key, asset.id);
     return asset.id;
   }
-  const spriteNames = kind => [...new Set([...lumpMap.keys(), ...[...images.keys()]
-    .filter(key => key.startsWith(`${kind}_`)).map(key => key.slice(kind.length + 1))])];
+  // The name list is the whole WAD's lump table (three thousand names in an IWAD), and
+  // every sprite lookup used to rebuild and de-duplicate it — which made importing a
+  // full game quadratic in lumps × sprites. It cannot change while importing.
+  const spriteNameCache = new Map();
+  const spriteNames = kind => {
+    let names = spriteNameCache.get(kind);
+    if (!names) {
+      names = [...new Set([...lumpMap.keys(), ...[...images.keys()]
+        .filter(key => key.startsWith(`${kind}_`)).map(key => key.slice(kind.length + 1))])];
+      spriteNameCache.set(kind, names);
+    }
+    return names;
+  };
+  // Frames grouped by their four-letter sprite name, so a lookup examines a handful of
+  // names instead of every lump in the WAD.
+  const spriteGroups = new Map();
+  const framesFor = (prefix, kind) => {
+    let groups = spriteGroups.get(kind);
+    if (!groups) {
+      groups = new Map();
+      for (const name of spriteNames(kind)) {
+        if (!/^[A-Z0-9_]{4}[A-Z][0-8]([A-Z][0-8])?$/.test(name)) continue;
+        const key = name.slice(0, 4).toUpperCase();
+        let list = groups.get(key);
+        if (!list) groups.set(key, list = []);
+        list.push(name);
+      }
+      spriteGroups.set(kind, groups);
+    }
+    return groups.get(String(prefix).toUpperCase());
+  };
   function spriteFrame(prefix, letter, kind = 'sprite') {
     const rotations = Array(8).fill(null);
     let unrotated;
-    for (const name of spriteNames(kind)) {
-      if (!name.startsWith(prefix) || !/^[A-Z0-9_]{4}[A-Z][0-8]([A-Z][0-8])?$/.test(name)) continue;
+    for (const name of framesFor(prefix, kind) || []) {
       for (const offset of [4, 6]) {
         if (name[offset] !== letter) continue;
         const rotation = Number(name[offset + 1]), assetId = get(name, kind);
@@ -205,10 +233,10 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     return base.assetId;
   }
   function sprite(prefix, kind = 'sprite') {
-    const available = new Set(spriteNames(kind));
-    const preferred = [`${prefix}A0`, `${prefix}A1`].find(name => available.has(name));
-    const fallback = [...available].find(name => new RegExp(`^${prefix}[A-Z][0-8]`).test(name));
-    return preferred || fallback ? spriteFrame(prefix, (preferred || fallback)[4], kind) : null;
+    const names = framesFor(prefix, kind) || [];
+    const preferred = [`${prefix}A0`, `${prefix}A1`].find(name => names.includes(name));
+    const chosen = preferred || names[0];
+    return chosen ? spriteFrame(prefix, chosen[4], kind) : null;
   }
   function materialSequences() {
     const sequences = [

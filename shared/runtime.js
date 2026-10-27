@@ -1,4 +1,4 @@
-import { eventConditions, resolveEntityId } from './project.js';
+import { resolveEntityId } from './project.js';
 import { sectorAt, sectorGeometry } from './sectors.js';
 import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
@@ -119,7 +119,6 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     animationFinished: new Set(),
     physics: null,
     scripts: null,
-    scriptState: null,
   };
   state.scripts = createMapScripts(project, state, {
     finishLevel: exit => beginIntermission(project, state, exit === 'secret'),
@@ -131,8 +130,22 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     },
     initialiseEntities: entities => initialiseActorEntities(project, entities),
   });
-  state.scripts?.restore(progress?.scriptState ?? state.scriptState);
+  state.scripts?.restore(progress?.scriptState);
+  // ACS VM state is captured on demand (see `scriptStateOf`): snapshotting it after
+  // every step allocated a copy of every map/global variable, the string pool and each
+  // running script's locals per frame. The accessor keeps `state.scriptState` working
+  // for callers and for old saves, which may still carry a snapshot.
+  Object.defineProperty(state, 'scriptState', {
+    configurable: true, enumerable: false,
+    get: () => state.scripts?.capture() ?? null,
+    set: () => {},
+  });
   return state;
+}
+
+/** A snapshot of the ACS VM for a level transition, taken when one is needed. */
+export function scriptStateOf(state) {
+  return state.scripts?.capture() ?? null;
 }
 
 export function lookPlayer(state, movementX, movementY) {
@@ -146,6 +159,42 @@ export function lookPlayer(state, movementX, movementY) {
   state.player.angle += movementX * .002;
   const limit = 85 * Math.PI / 180;
   state.player.pitch = Math.max(-limit, Math.min(limit, state.player.pitch - movementY * .002));
+}
+
+/**
+ * Scratch caches for one runtime state.
+ *
+ * They live in a WeakMap instead of on the state object so they can never reach a
+ * save file (which validates every field), and they are dropped with the state.
+ */
+const stateCaches = new WeakMap();
+function cacheFor(state) {
+  let cache = stateCaches.get(state);
+  if (!cache) stateCaches.set(state, cache = {});
+  return cache;
+}
+
+/**
+ * Entity lookups by id and by type for one frame.
+ *
+ * Rules ask for the same object dozens of times per frame (`findTarget`, the target
+ * check, `forEachType` branches); a linear scan each time is the wrong shape. The
+ * cache is keyed on the entities array plus its length and last element, which
+ * covers push (spawn) and filter (removal) without re-scanning.
+ */
+export function entityLookup(state) {
+  const entities = state.entities, cache = cacheFor(state);
+  const last = entities[entities.length - 1];
+  if (cache.entity && cache.entity.list === entities && cache.entity.count === entities.length &&
+    cache.entity.last === last) return cache.entity;
+  const byId = new Map(), byType = new Map();
+  for (const entity of entities) {
+    byId.set(entity.id, entity);
+    let list = byType.get(entity.type);
+    if (!list) byType.set(entity.type, list = []);
+    list.push(entity);
+  }
+  return (cache.entity = { list: entities, count: entities.length, last, byId, byType });
 }
 
 // Probing costs a dozen ray casts and a handful of objects per frame, so it only
@@ -164,6 +213,60 @@ export function projectUsesSurfaces(project) {
 function nextRandom(state) {
   state.randomSeed = (Math.imul(state.randomSeed, 1664525) + 1013904223) >>> 0;
   return state.randomSeed / 4294967296;
+}
+
+/**
+ * The event tree for a project, compiled once per edit.
+ *
+ * Building the parent→children map (and filtering the root rules by sheet phase)
+ * inside `runRules` meant walking every event four times per frame and doing a
+ * `find` over the sheets for each root rule — thousands of map writes per frame for
+ * a structure that only changes when the project is edited. `project.events` is
+ * replaced (never mutated) by every edit, so its identity is the version marker; the
+ * sheets are compared field by field because a sheet toggle can reuse the array.
+ */
+const ruleTreeCache = new WeakMap();
+export function ruleTree(project) {
+  const events = project.events || [], sheets = project.eventSheets || [];
+  const cached = ruleTreeCache.get(events);
+  // `count`/`last` catch a rule appended or removed in place, which tooling and tests
+  // do without replacing the array; field edits need no invalidation because the tree
+  // holds references to the rule objects themselves.
+  if (cached && cached.count === events.length && cached.last === events[events.length - 1] &&
+    cached.sheets === sheets && cached.sheetCount === sheets.length && sheetsUnchanged(cached.sheetState, sheets)) return cached;
+  const children = new Map();
+  for (const event of events) {
+    const list = children.get(event.parentId);
+    if (list) list.push(event); else children.set(event.parentId, [event]);
+  }
+  const sheetState = sheets.map(sheet => [sheet.id, sheet.enabled !== false, sheet.phase || 'afterPhysics']);
+  const phases = new Map(), sheetPhase = new Map();
+  for (const [id, enabled, phase] of sheetState) {
+    sheetPhase.set(id, enabled ? phase : null);
+    if (enabled && !phases.has(phase)) phases.set(phase, []);
+  }
+  for (const event of events) {
+    if (event.parentId) continue;
+    // A rule whose sheet is missing or unknown runs in afterPhysics, as it always has
+    // (object scripts and hand-written events need no sheet); a rule whose sheet is
+    // known but disabled never runs. `??` cannot tell those apart, because a disabled
+    // sheet stores null.
+    const phase = sheetPhase.has(event.sheetId) ? sheetPhase.get(event.sheetId) : 'afterPhysics';
+    if (!phase) continue;
+    if (!phases.has(phase)) phases.set(phase, []);
+    phases.get(phase).push(event);
+  }
+  const tree = { count: events.length, last: events[events.length - 1], sheets, sheetCount: sheets.length, sheetState, children, phases };
+  ruleTreeCache.set(events, tree);
+  return tree;
+}
+
+function sheetsUnchanged(snapshot, sheets) {
+  for (let index = 0; index < sheets.length; index++) {
+    const sheet = sheets[index], saved = snapshot[index];
+    if (saved[0] !== sheet.id || saved[1] !== (sheet.enabled !== false) || saved[2] !== (sheet.phase || 'afterPhysics')) return false;
+  }
+  return true;
 }
 
 function touchingSurfaces(state) {
@@ -220,6 +323,58 @@ export function settleGroundActors(state) {
   }
 }
 
+/** Commands with no expressions in them, so the scan happens once per command. */
+const expressionFree = new WeakSet();
+
+/**
+ * Evaluates one expression field of a command and validates the result against the
+ * field it fills. Kept out of the per-rule closure so the hot loop stays small.
+ */
+function resolveExpression(command, key, value, context, project, event) {
+  try {
+    const result = evaluateExpression(value, context);
+    const field = engineCommand(command.type)?.fields.find(entry => entry.name === key);
+    if (field?.kind === 'number') {
+      if (typeof result !== 'number' || result < field.min || result > field.max ||
+        ['pellets', 'diceSides', 'doomType'].includes(key) && !Number.isInteger(result)) throw new Error(`Invalid numeric result for ${key}`);
+    } else if (field?.kind === 'string' || key === 'message') {
+      if (typeof result !== 'string' || result.length > (key === 'message' ? 500 : 2000)) throw new Error(`Invalid text result for ${key}`);
+    } else if (!field && !['setVariable', 'addVariable'].includes(command.type)) {
+      const physics = ['applyImpulse', 'applyForce', 'setVelocity'].includes(command.type);
+      const min = key === 'distance' ? 1 : key === 'speed' ? .01 : key === 'angle' ? -3600 : !physics && key === 'z' ? -32768 : physics ? -100000 : -65536;
+      const max = key === 'distance' ? 4096 : key === 'speed' ? 10 : key === 'angle' ? 3600 : !physics && key === 'z' ? 32767 : physics ? 100000 : 65536;
+      if (typeof result !== 'number' || result < min || result > max) throw new Error(`Invalid numeric result for ${key}`);
+    }
+    if (command.type === 'setPlayerStat' && command.stat === 'armorDivisor' && result < 1) throw new Error('Armor divisor must be at least 1');
+    if (command.type === 'setHUDProperty' && key === 'value') validateHUDProperty(command.property, result,
+      project.hud.elements.find(element => element.id === command.elementId), (ok, message) => { if (!ok) throw new Error(message); });
+    return result;
+  } catch (error) {
+    throw new Error(`Event "${event.name || event.id}", ${command.type}.${key}: ${error.message}`, { cause: error });
+  }
+}
+
+/**
+ * Collision test for projects with no physics world: the destination must be a sector
+ * tall enough to stand in and reachable without crossing a solid or too-low wall.
+ */
+function fallbackMovement(state) {
+  const sectors = new Map(state.sectors.map(sector => [sector.id, sector]));
+  return (x, y, currentFloor) => {
+    const destination = sectorAt(state.sectors, x, y);
+    if (state.sectors.length && (!destination || destination.ceilingHeight - destination.floorHeight < 56 ||
+      destination.floorHeight - (currentFloor ?? destination.floorHeight) > 24)) return false;
+    return !state.walls.some(wall => {
+      if (distanceToSegment(x, y, wall.start, wall.end) >= 12) return false;
+      if (wall.solid) return true;
+      const front = sectors.get(wall.right?.sectorId), back = sectors.get(wall.left?.sectorId);
+      if (!front || !back) return false;
+      const floor = Math.max(front.floorHeight, back.floorHeight), ceiling = Math.min(front.ceilingHeight, back.ceilingHeight);
+      return ceiling - floor < 56 || floor - (currentFloor ?? floor) > 24;
+    });
+  };
+}
+
 export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   dt = Math.max(0, Math.min(0.05, dt));
   const player = state.player, hud = state.hudState;
@@ -273,21 +428,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   const dy = (along[1] * forward + across[1] * strafe) * scale;
   const dz = (along[2] * forward + across[2] * strafe) * scale;
   const runMultiplier = state.settings.alwaysRun !== keys.has('ShiftLeft') ? 2 : 1;
-  const currentSector = sectorAt(state.sectors, player.x, player.y);
-  const sectors = new Map(state.sectors.map(sector => [sector.id, sector]));
-  const canMove = (x, y) => {
-    const destination = sectorAt(state.sectors, x, y);
-    if (state.sectors.length && (!destination || destination.ceilingHeight - destination.floorHeight < 56 ||
-      destination.floorHeight - (currentSector?.floorHeight ?? destination.floorHeight) > 24)) return false;
-    return !state.walls.some(wall => {
-      if (distanceToSegment(x, y, wall.start, wall.end) >= 12) return false;
-      if (wall.solid) return true;
-      const front = sectors.get(wall.right?.sectorId), back = sectors.get(wall.left?.sectorId);
-      if (!front || !back) return false;
-      const floor = Math.max(front.floorHeight, back.floorHeight), ceiling = Math.min(front.ceilingHeight, back.ceilingHeight);
-      return ceiling - floor < 56 || floor - (currentSector?.floorHeight ?? floor) > 24;
-    });
-  };
+  // Walking without a physics world is the fallback path; its sector map and closures
+  // are only built when that path is actually taken.
+  const canMove = state.physics ? null : (cacheFor(state).canMove ||= fallbackMovement(state));
   const previousPosition = { x: player.x, y: player.y };
   const grounded = state.physics ? state.physics.grounded : true;
   const jumpHeld = state.settings.jumping && !hud.cursor && state.playerStats.health > 0 &&
@@ -315,14 +458,17 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (projectUsesSurfaces(project)) state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
   }
   else {
-    if (canMove(player.x + dx * speed, player.y)) player.x += dx * speed;
-    if (canMove(player.x, player.y + dy * speed)) player.y += dy * speed;
+    const currentFloor = sectorAt(state.sectors, player.x, player.y)?.floorHeight;
+    if (canMove(player.x + dx * speed, player.y, currentFloor)) player.x += dx * speed;
+    if (canMove(player.x, player.y + dy * speed, currentFloor)) player.y += dy * speed;
   }
-  state.worldTriggers.cross = crossedWalls(state, previousPosition);
+  // Nothing can be crossed by a player who has not moved, and walking the whole wall
+  // list every frame is the single most expensive per-frame check on a big map.
+  state.worldTriggers.cross = previousPosition.x === player.x && previousPosition.y === player.y
+    ? state.worldTriggers.cross : crossedWalls(state, previousPosition);
   if (usedWall) state.scripts?.activate(state.walls.find(wall => wall.id === usedWall), 'use');
   for (const id of state.worldTriggers.cross) state.scripts?.activate(state.walls.find(wall => wall.id === id), 'cross');
   state.scripts?.step(dt);
-  state.scriptState = state.scripts?.capture() ?? null;
   updateLevelStatistics(state);
   state.messageTime = Math.max(0, state.messageTime - dt);
   runRules('afterPhysics');
@@ -348,29 +494,53 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   hud.clicked.clear();
   state.started = true;
   function runRules(phase) {
-    const children = new Map();
-    for (const event of project.events) {
-      if (!children.has(event.parentId)) children.set(event.parentId, []);
-      children.get(event.parentId).push(event);
+    const tree = ruleTree(project), roots = tree.phases.get(phase);
+    if (!roots?.length) return;
+    const instances = cacheFor(state).instances ||= new Map();
+    // `forEachType` branches used to spread a fresh copy of the rule for every
+    // matching object every frame. One copy per owner is enough, because a rule never
+    // mutates itself while it runs, so the copies are kept and reused.
+    function instanceFor(source, ownerId) {
+      let byOwner = instances.get(source.id);
+      if (!byOwner) instances.set(source.id, byOwner = new Map());
+      let instance = byOwner.get(ownerId);
+      if (!instance) { instance = { ...source, ownerId }; byOwner.set(ownerId, instance); }
+      return instance;
     }
     function visit(source, ownerId) {
       if (source.groupId && !state.groups.get(source.groupId)) return;
-      const instances = ownerId ? [{ ...source, ownerId }] : source.forEachType
-        ? state.entities.filter(entity => entity.type === source.forEachType).map(entity => ({ ...source, ownerId: entity.id })) : [source];
-      for (const event of instances) {
-        if (!runEvent(event, Boolean(source.forEachType), phase)) continue;
+      if (ownerId) {
+        if (!runEvent(instanceFor(source, ownerId), Boolean(source.forEachType), phase)) return;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
-        for (const child of children.get(source.id) || []) {
-          visit(child, event.ownerId);
+        for (const child of tree.children.get(source.id) || []) {
+          visit(child, ownerId);
+          if (phase !== 'interface' && state.gameScreen !== 'playing') return;
+        }
+        return;
+      }
+      if (!source.forEachType) {
+        if (!runEvent(source, false, phase)) return;
+        if (phase !== 'interface' && state.gameScreen !== 'playing') return;
+        for (const child of tree.children.get(source.id) || []) {
+          visit(child, undefined);
+          if (phase !== 'interface' && state.gameScreen !== 'playing') return;
+        }
+        return;
+      }
+      const matching = entityLookup(state).byType.get(source.forEachType);
+      if (!matching?.length) return;
+      for (const entity of matching) {
+        const event = instanceFor(source, entity.id);
+        if (!runEvent(event, true, phase)) continue;
+        if (phase !== 'interface' && state.gameScreen !== 'playing') return;
+        for (const child of tree.children.get(source.id) || []) {
+          visit(child, entity.id);
           if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         }
       }
     }
-    for (const source of project.events) {
-      if (source.parentId) continue;
-      const sheet = project.eventSheets?.find(sheet => sheet.id === source.sheetId);
-      if (sheet?.enabled === false || (sheet?.phase || 'afterPhysics') !== phase) continue;
-      visit(source);
+    for (const source of roots) {
+      visit(source, undefined);
       if (phase !== 'interface' && state.gameScreen !== 'playing') break;
     }
   }
@@ -378,31 +548,25 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     const eventKey = perInstance ? `${event.id}:${event.ownerId}` : event.id;
     if (!event.enabled || (event.once && state.fired.has(eventKey))) return;
     if (event.ownerId && !state.entities.some(entity => entity.id === event.ownerId)) return;
-    const findTarget = id => state.entities.find(entity => entity.id === resolveEntityId(event, id));
-    const context = expressionContext(project, event, state, dt);
+    const lookup = entityLookup(state);
+    const findTarget = id => lookup.byId.get(resolveEntityId(event, id));
+    // The expression context (which builds closures and lookups) is only needed when a
+    // command actually contains an expression, so it is built on first use.
+    let context = null;
     const resolveCommand = command => {
-      if (!Object.values(command).some(isExpression)) return command;
-      const resolved = { ...command };
-      for (const [key, value] of Object.entries(command)) if (isExpression(value)) {
-        try {
-          const result = evaluateExpression(value, context);
-          const field = engineCommand(command.type)?.fields.find(field => field.name === key);
-          if (field?.kind === 'number') {
-            if (typeof result !== 'number' || result < field.min || result > field.max || ['pellets', 'diceSides', 'doomType'].includes(key) && !Number.isInteger(result)) throw new Error(`Invalid numeric result for ${key}`);
-          } else if (field?.kind === 'string' || key === 'message') {
-            if (typeof result !== 'string' || result.length > (key === 'message' ? 500 : 2000)) throw new Error(`Invalid text result for ${key}`);
-          } else if (!field && !['setVariable', 'addVariable'].includes(command.type)) {
-            const physics = ['applyImpulse', 'applyForce', 'setVelocity'].includes(command.type);
-            const min = key === 'distance' ? 1 : key === 'speed' ? .01 : key === 'angle' ? -3600 : !physics && key === 'z' ? -32768 : physics ? -100000 : -65536;
-            const max = key === 'distance' ? 4096 : key === 'speed' ? 10 : key === 'angle' ? 3600 : !physics && key === 'z' ? 32767 : physics ? 100000 : 65536;
-            if (typeof result !== 'number' || result < min || result > max) throw new Error(`Invalid numeric result for ${key}`);
-          }
-          if (command.type === 'setPlayerStat' && command.stat === 'armorDivisor' && result < 1) throw new Error('Armor divisor must be at least 1');
-          if (command.type === 'setHUDProperty' && key === 'value') validateHUDProperty(command.property, result,
-            project.hud.elements.find(e => e.id === command.elementId), (ok, message) => { if (!ok) throw new Error(message); });
-          resolved[key] = result;
-        } catch (error) { throw new Error(`Event "${event.name || event.id}", ${command.type}.${key}: ${error.message}`, { cause: error }); }
+      if (expressionFree.has(command)) return command;
+      let resolved = command, found = false;
+      for (const key in command) {
+        const value = command[key];
+        if (!isExpression(value)) continue;
+        found = true;
+        if (resolved === command) resolved = { ...command };
+        context ||= expressionContext(project, event, state, dt);
+        resolved[key] = resolveExpression(command, key, value, context, project, event);
       }
+      // Commands are immutable between edits (an edit replaces the project), so a
+      // command that carries no expression is remembered and never scanned again.
+      if (!found) expressionFree.add(command);
       return resolved;
     };
     function assignVariable(record, name, value, add) {
@@ -414,7 +578,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (typeof a !== typeof b || !['number', 'string', 'boolean'].includes(typeof a) || typeof a === 'boolean' && !['=', '!='].includes(operator)) throw new Error(`Event "${event.name || event.id}": incompatible comparison types`);
       return compareValues(a, operator, b);
     }
-    const statChanges = new Map();
+    let statChanges = null;
+    const matchOne = condition => condition.inverted ? !matchCondition(condition) : Boolean(matchCondition(condition));
     function matchCondition(condition) {
       condition = resolveCommand(condition);
       if (condition.type === 'gameScreen') return state.gameScreen === condition.screen;
@@ -514,6 +679,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (condition.type === 'hudAnimationFinished') return hud.finished.has(condition.animationId);
       if (condition.type === 'hudStatChanged') {
         const key = `${eventKey}:${condition.stat}:${condition.direction}`;
+        statChanges ||= new Map();
         if (!statChanges.has(key)) {
           statChanges.set(key, state.playerStats[condition.stat] - (hud.statSamples.get(key) ?? hud.initialStats[condition.stat]));
           hud.statSamples.set(key, state.playerStats[condition.stat]);
@@ -563,8 +729,17 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       const position = entity?.type === 'player' ? player : entity;
       return position && Math.hypot(position.x - player.x, position.y - player.y) <= condition.distance;
     }
-    const matchesCondition = condition => condition.inverted ? !matchCondition(condition) : Boolean(matchCondition(condition));
-    const matches = event.conditionMode === 'or' ? eventConditions(event).some(matchesCondition) : eventConditions(event).every(matchesCondition);
+    // Evaluating the condition list without building it: `eventConditions` allocated a
+    // fresh array for every rule on every frame.
+    let matches;
+    if (event.conditionMode === 'or') {
+      matches = matchOne(event.condition);
+      if (!matches) for (const condition of event.conditions || []) if (matchOne(condition)) { matches = true; break; }
+    } else {
+      matches = matchOne(event.condition);
+      if (matches) for (const condition of event.conditions || []) if (!matchOne(condition)) { matches = false; break; }
+    }
+    if (!matches) return;
     if (!matches) return;
     state.fired.add(eventKey);
     for (const sourceAction of event.actions) {
@@ -674,7 +849,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           const face = clipDecalToFace(target, { width: size, height });
           if (!face) break;
           const decal = { id: `decal_${state.decalCounter++}`, x: target.x, y: target.y, z: target.z,
-            clipId: '', start: state.time, angle: target.angle,
+            clipId: '', start: state.time,
             decal: { assetId: asset.id, corners: face.corners, uv: face.uv } };
           if (action.duration > 0) decal.until = state.time + action.duration;
           state.impacts.push(decal);

@@ -90,9 +90,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
   const backgroundScene = new THREE.Scene(), backgroundCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const overlayScene = new THREE.Scene(), overlayCamera = new THREE.OrthographicCamera(0, 320, 200, 0, -1, 1);
   let disposed = false;
+  const disposers = [];
   function dispose() {
     if (disposed) return;
     disposed = true;
+    for (const release of disposers.splice(0)) { try { release(); } catch { /* already gone */ } }
     // Projectile meshes share pooled geometries and materials tracked by the sets below.
     projectileMeshes.clear();
     for (const view of cameraViews.values()) for (const target of view.targets) target.dispose();
@@ -809,14 +811,32 @@ export async function createPreview(canvas, project, state, { editor = false } =
       if (!appliedWidth || !appliedHeight) return true;
       return Math.abs(width - appliedWidth) > RENDER_SIZE_TOLERANCE || Math.abs(height - appliedHeight) > RENDER_SIZE_TOLERANCE;
     }
-    function applyRenderSize(settings) {
+    // Reading the canvas box every frame forces a synchronous layout right after the HUD
+    // and the message have written to the DOM, which is a large part of the per-frame
+    // cost. A ResizeObserver reports the same numbers without the layout flush.
+    let cssWidth = 0, cssHeight = 0;
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver(entries => {
+        const box = entries[entries.length - 1]?.contentRect;
+        if (box) { cssWidth = box.width; cssHeight = box.height; }
+      });
+      observer.observe(canvas);
+      disposers.push(() => observer.disconnect());
+    }
+    function canvasCssSize() {
+      if (cssWidth && cssHeight) return { width: cssWidth, height: cssHeight };
       const rect = canvas.getBoundingClientRect();
+      cssWidth = rect.width; cssHeight = rect.height;
+      return { width: cssWidth, height: cssHeight };
+    }
+    function applyRenderSize(settings) {
+      const box = canvasCssSize();
       const size = renderBufferSize({
         resolution: settings?.renderResolution,
         scale: settings?.resolution,
         lowDetail: settings?.lowDetail,
-        cssWidth: rect.width || canvas.clientWidth,
-        cssHeight: rect.height || canvas.clientHeight,
+        cssWidth: box.width || canvas.clientWidth,
+        cssHeight: box.height || canvas.clientHeight,
         devicePixelRatio: globalThis.devicePixelRatio || 1,
         maxSize: Math.min(4096, renderer.backend?.device?.limits?.maxTextureDimension2D || 4096),
       });

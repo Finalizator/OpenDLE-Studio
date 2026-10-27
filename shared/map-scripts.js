@@ -18,8 +18,8 @@ import { addAmmo } from './player-state.js';
 import { soundEvent, floorAt, launchProjectile } from './combat.js';
 import { sectorAt } from './sectors.js';
 import { actorForThing } from './actors.js';
-import { projectActorIndex } from './actor-runtime.js';
 import { doomThings } from './doom-assets.js';
+import { projectActorIndex } from './actor-runtime.js';
 
 const TIC_RATE = 35;
 
@@ -403,7 +403,7 @@ export function createMapScripts(project, state, callbacks = {}) {
     const entity = tid ? state.entities.find(candidate => candidate.tid === tid)
       : state.entities.find(candidate => candidate.type === 'player');
     if (!entity) return 0;
-    const actor = project.__actorIndex?.byId?.get(entity.actor) || null;
+    const actor = projectActorIndex(project).byId.get(entity.actor) || null;
     const player = entity.type === 'player';
     switch (property) {
       case APROP.health: return player ? state.playerStats.health : entity.health ?? actor?.health ?? 0;

@@ -55,6 +55,31 @@ export function resolveEntityId(event, id) {
 // immutable while editing, so a replaced payload is a new object and gets
 // screened again, and save/import/export/MCP always validate fully.
 const verifiedAssets = new WeakMap();
+/** Actor tables already validated in fast mode, by identity. */
+const verifiedActorTables = new WeakSet();
+/**
+ * Whether a payload is a base64 data URI of the expected media type.
+ *
+ * The old check ran a `[A-Za-z0-9+/]+` regex over the **whole** data URI, so validating
+ * a project with two thousand embedded images and sounds scanned tens of megabytes on
+ * every edit. A prefix test plus a cheap base64 character check on the tail of the
+ * string is equivalent for anything a browser can decode, and costs nothing.
+ */
+function isDataUri(src, types) {
+  if (typeof src !== 'string') return false;
+  const comma = src.indexOf(',');
+  if (comma < 0) return false;
+  const header = src.slice(0, comma);
+  if (!header.endsWith(';base64')) return false;
+  if (!types.some(type => header === `data:${type};base64`)) return false;
+  const body = src.length - comma - 1;
+  if (!body) return false;
+  // Sampling the last characters catches truncation and padding mistakes without
+  // walking the payload; the browser decodes the actual base64 either way.
+  const tail = src.slice(-4);
+  return /^[A-Za-z0-9+/]*={0,2}$/.test(tail) || tail.length < 4;
+}
+
 function assetPayload(asset, cacheable) {
   const cached = cacheable ? verifiedAssets.get(asset) : undefined;
   if (cached) return cached;
@@ -65,23 +90,23 @@ function assetPayload(asset, cacheable) {
 function measureAssetPayload(asset) {
   if (asset.kind === 'music') {
     assert(['midi', 'mus'].includes(asset.format), 'Invalid music format');
-    assert(typeof asset.src === 'string' && /^data:audio\/(midi|x-midi|x-mus);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Music must be embedded MIDI or Doom MUS');
+    assert(isDataUri(asset.src, ['audio/midi', 'audio/x-midi', 'audio/x-mus']), 'Music must be embedded MIDI or Doom MUS');
     assert(asset.src.length <= 2 * 1024 * 1024, 'Embedded music budget exceeded (2 MiB per track, 32 MiB total)');
     return { bucket: 'music', bytes: asset.src.length };
   }
   if (asset.kind === 'sound') {
-    assert(typeof asset.src === 'string' && /^data:audio\/(wav|ogg|mpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Sounds must be embedded WAV/OGG/MP3');
+    assert(isDataUri(asset.src, ['audio/wav', 'audio/ogg', 'audio/mpeg']), 'Sounds must be embedded WAV/OGG/MP3');
     assert(asset.src.length <= 12 * 1024 * 1024, 'Embedded sound budget exceeded (12 MiB each, 64 MiB total)');
     return { bucket: 'sound', bytes: asset.src.length };
   }
   if (asset.kind === 'font') {
-    assert(typeof asset.src === 'string' && /^data:font\/(woff2?|ttf|otf);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Fonts must be embedded WOFF/WOFF2/TTF/OTF');
+    assert(isDataUri(asset.src, ['font/woff', 'font/woff2', 'font/ttf', 'font/otf']), 'Fonts must be embedded WOFF/WOFF2/TTF/OTF');
     assert(asset.src.length <= 6 * 1024 * 1024, 'Embedded font budget exceeded');
     return { bucket: 'image', bytes: asset.src.length };
   }
   if (asset.kind === 'model') {
     assert(['glb', 'gltf'].includes(asset.format), 'Invalid model format');
-    assert(typeof asset.src === 'string' && /^data:model\/gltf(-binary|\+json);base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Models must be embedded GLB/glTF');
+    assert(isDataUri(asset.src, ['model/gltf-binary', 'model/gltf+json']), 'Models must be embedded GLB/glTF');
     assert(asset.src.length <= 23 * 1024 * 1024, 'Embedded model budget exceeded');
     const parsed = readModel(decodeDataURI(asset.src), asset.format);
     validateModelDocument(parsed.json, parsed.binary?.length);
@@ -89,12 +114,12 @@ function measureAssetPayload(asset) {
     assert(asset.animations.every(name => typeof name === 'string' && name.length <= 200), 'Invalid clip name');
     assert(JSON.stringify(asset.animations) === JSON.stringify((parsed.json.animations || []).map(clip => clip.name)), 'Model clip metadata does not match its source');
     if (asset.preview !== undefined) {
-      assert(typeof asset.preview === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.preview), 'Model preview must be an embedded PNG');
+      assert(isDataUri(asset.preview, ['image/png']), 'Model preview must be an embedded PNG');
       assert(asset.preview.length <= 96 * 1024, 'Model preview is too large');
     }
     return { bucket: 'image', bytes: asset.src.length };
   }
-  assert(typeof asset.src === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(asset.src), 'Assets must be embedded PNG images');
+  assert(isDataUri(asset.src, ['image/png']), 'Assets must be embedded PNG images');
   assert(asset.src.length <= 6 * 1024 * 1024, 'Embedded image budget exceeded (6 MiB per image, 48 MiB total)');
   return { bucket: 'image', bytes: asset.src.length };
 }
@@ -106,11 +131,50 @@ function measureAssetPayload(asset) {
  * between snapshots; `deepGame` is for the edits that do rewrite campaign data
  * (switching levels, campaign routing).
  */
-export function cloneProjectForEdit(project, { deepGame = false } = {}) {
-  if (!project.game) return structuredClone(project);
-  const next = structuredClone({ ...project, game: null, assets: [] });
-  next.game = deepGame ? structuredClone(project.game) : project.game;
-  next.assets = [...(project.assets || [])];
+/**
+ * Deep copy of plain project data (objects, arrays, strings, numbers, buffers, null).
+ *
+ * `structuredClone` is the obvious choice but it is several times slower than a plain
+ * recursive copy for this shape of data — an imported campaign copies 5 MB on every
+ * edit, which was a 200-800 ms pause per click. Anything that is not plain data (a
+ * Map, a typed array, a class instance) is handed to `structuredClone` so semantics are
+ * never lost.
+ */
+export function cloneProjectData(value) {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    const out = new Array(value.length);
+    for (let index = 0; index < value.length; index++) out[index] = cloneProjectData(value[index]);
+    return out;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return structuredClone(value);
+  const out = {};
+  for (const key in value) out[key] = cloneProjectData(value[key]);
+  return out;
+}
+
+/**
+ * Copy of a project for an in-place edit.
+ *
+ * `game` and `assets` are already shared (a campaign's other levels and the embedded
+ * media are not edited from the map). `shareActors` does the same for the actor table,
+ * which is the largest part of an imported project — the actor panel asks for a real
+ * copy, everything else reads it.
+ */
+export function cloneProjectForEdit(project, { deepGame = false, shareActors = false } = {}) {
+  const next = project.game
+    ? cloneProjectData({ ...project, actors: undefined, game: null, assets: [] })
+    : cloneProjectData({ ...project, actors: undefined });
+  // The actor table is copied only when the edit can change it: it is the largest part
+  // of an imported project, and copying it to throw the copy away was most of the
+  // pause between a click and the screen updating.
+  if (project.actors !== undefined) next.actors = shareActors ? project.actors : cloneProjectData(project.actors);
+  else delete next.actors;
+  if (project.game) {
+    next.game = deepGame ? cloneProjectData(project.game) : project.game;
+    next.assets = [...(project.assets || [])];
+  }
   return next;
 }
 
@@ -285,6 +349,15 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   array(assets, 'Assets', 3000);
   const assetIds = new Set();
   let assetBytes = 0, soundBytes = 0, musicBytes = 0;
+  // Sound and music names must be unique. Counting them in one pass replaces a
+  // `filter` over every asset for every asset, which is quadratic on an imported game
+  // (hundreds of sounds x thousands of assets on every validation).
+  const nameCounts = new Map();
+  for (const asset of assets) {
+    if (asset.kind !== 'sound' && asset.kind !== 'music') continue;
+    const key = `${asset.kind}\u0000${asset.name}`;
+    nameCounts.set(key, (nameCounts.get(key) || 0) + 1);
+  }
   for (const asset of assets) {
     unique(asset, 'Asset');
     text(asset.name, 'Asset name', 100);
@@ -293,13 +366,13 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     if (payload.bucket === 'music') {
       musicBytes += payload.bytes;
       assert(musicBytes <= 32 * 1024 * 1024, 'Embedded music budget exceeded (2 MiB per track, 32 MiB total)');
-      assert(assets.filter(candidate => candidate.kind === 'music' && candidate.name === asset.name).length === 1, 'Music names must be unique');
+      assert(nameCounts.get(`music\u0000${asset.name}`) === 1, 'Music names must be unique');
       assetIds.add(asset.id); continue;
     }
     if (payload.bucket === 'sound') {
       soundBytes += payload.bytes;
       assert(soundBytes <= 64 * 1024 * 1024, 'Embedded sound budget exceeded (12 MiB each, 64 MiB total)');
-      assert(assets.filter(candidate => candidate.kind === 'sound' && candidate.name === asset.name).length === 1, 'Sound names must be unique');
+      assert(nameCounts.get(`sound\u0000${asset.name}`) === 1, 'Sound names must be unique');
       assetIds.add(asset.id); continue;
     }
     assetBytes += payload.bytes;
@@ -744,6 +817,12 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   }
   if (project.actors !== undefined) {
     array(project.actors, 'Actors', 4000);
+    // The actor table is the largest part of an imported project (thousands of records
+    // with every frame and action) and only changes when the actor panel edits it. In
+    // fast (interactive) mode it is screened once per table object; save, export,
+    // import and MCP changes still validate it in full.
+    if (!fast || !verifiedActorTables.has(project.actors)) {
+    if (fast) verifiedActorTables.add(project.actors);
     const actorIds = new Set(), actorNames = new Set();
     for (const actor of project.actors) {
       object(actor, 'Actor');
@@ -774,6 +853,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         number(frame.duration, 'Frame duration', -1, 65535);
         array(frame.actions || [], 'Frame actions', 24);
       }
+    }
     }
   }
   if (project.cameraTextures !== undefined) {

@@ -316,3 +316,19 @@ test('saving mid-fight with an imported actor table survives a reload', async ()
   for (let frame = 0; frame < 40; frame++) stepRuntime(project, runtime, 1 / 35, new Set(['Mouse0']));
   assert.ok(runtime.playerStats.bullets < before, 'the restored weapon still fires');
 });
+
+test('a save written after a spray or a grounded actor still restores', () => {
+  // Decal ids must keep counting up across a load, and the ground diagnostic is
+  // session data. Both used to make restore fail with "unknown runtime field".
+  const { project, state } = fixture();
+  state.hasGame = true;
+  stepRuntime(project, state, 1 / 35, new Set());
+  state.decalCounter = 4;
+  state.groundCorrections = { count: 1, first: { name: 'Imp', id: 'thing4', below: 12 } };
+  state.impacts.push({ id: 'decal_3', x: 1, y: 2, z: 3, clipId: '', start: 0,
+    decal: { assetId: 'asset_x', corners: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], uv: [0, 0, 1, 0, 1, 1, 0, 1] } });
+  const restored = restoreGameSave(createProject(), json(captureGameSave(project, state, 'id')), 'id').runtime;
+  assert.equal(restored.decalCounter, 4);
+  assert.equal(restored.impacts.filter(effect => effect.decal).length, 1);
+  assert.equal(restored.groundCorrections, undefined, 'diagnostics are not part of a save');
+});

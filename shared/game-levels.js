@@ -89,6 +89,7 @@ function classicNext(id, secret) {
 export function assembleGameLevels(entries, entryId, title, routes = new Map()) {
   const assets = [], byId = new Map(), byContent = new Map(), levels = [], warnings = new Set(), ids = new Set();
   let version, sharedActors = null, sharedStrings = null;
+  const repeatedWarnings = new Set();
   for (const entry of entries) {
     if (levels.length >= 128) throw new Error('A game must contain 1–128 levels');
     if (ids.has(entry.id)) throw new Error(`Duplicate game level ${entry.id}`);
@@ -126,7 +127,14 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
     const rawName = route?.name || entry.name || entry.id;
     levels.push({ id: entry.id, name: resolveString(sharedStrings, rawName, rawName),
       assetIds: [...new Set(assetIds)], data });
-    for (const warning of entry.warnings || []) warnings.add(`${entry.id}: ${warning}`);
+    // A game-wide notice (menu support, screen-size notes, actor state machines) is
+    // identical for every level; repeating it 32 times buried the real per-level
+    // problems in the import report. Identical text is reported once.
+    for (const warning of entry.warnings || []) {
+      const first = !repeatedWarnings.has(warning);
+      repeatedWarnings.add(warning);
+      warnings.add(first ? `${entry.id}: ${warning}` : warning);
+    }
   }
   for (let i = 0; i < levels.length; i++) {
     const level = levels[i], route = routes.get(level.id);

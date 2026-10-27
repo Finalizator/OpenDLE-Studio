@@ -57,14 +57,20 @@ export function actorStateOf(entity) {
 }
 
 /**
- * The project's actor index. Cached off to the side and non-enumerable: a runtime
- * field that holds the actor table again would be serialised with the project,
- * which is how an imported game grew past the portable size limit.
+ * The project's actor index, cached for the lifetime of the project object.
+ *
+ * It lives in a WeakMap rather than as a hidden property on the project: a hidden
+ * property is still an own property, so `structuredClone` copied the whole index
+ * (maps of every imported actor) on every editor edit — hundreds of milliseconds per
+ * click on an imported game — and `JSON.stringify` would have to walk it too. The
+ * index is rebuilt from `project.actors` on the next lookup after an edit.
  */
+const actorIndexes = new WeakMap();
 export function projectActorIndex(project) {
-  if (project.__actorIndex) return project.__actorIndex;
+  const cached = actorIndexes.get(project);
+  if (cached) return cached;
   const index = actorIndex(project.actors || []);
-  Object.defineProperty(project, '__actorIndex', { value: index, writable: true, configurable: true, enumerable: false });
+  actorIndexes.set(project, index);
   return index;
 }
 

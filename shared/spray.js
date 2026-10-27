@@ -7,8 +7,10 @@ import { sectorAt } from './sectors.js';
  * The trace follows the full 3D look direction, so spraying while looking up or down
  * still lands on the wall under the crosshair, and the hit has to fall inside the
  * sector's floor/ceiling instead of passing over the wall into the room behind.
- * `angle` is the wall's own direction, which is how the decal is turned to lie flat
- * against it; `normal` points back towards the player.
+ * Besides the hit point it returns the wall it hit (`start`/`end`/`length` and the
+ * `along` distance from `start`) plus the face's floor and ceiling, which is what
+ * `clipDecalToFace` needs to keep the artwork on that wall; `normal` points back
+ * towards the player.
  */
 export function sprayTarget(state, distance = 96) {
   const player = state.player;
@@ -31,14 +33,17 @@ export function sprayTarget(state, distance = 96) {
     if (best && along >= best.distance) continue;
     const x = eye[0] + direction[0] * along, y = eye[1] + direction[1] * along;
     const z = eye[2] + direction[2] * along;
-    const sector = sectorAt(state.sectors, x, y) || sectorAt(state.sectors, eye[0], eye[1]);
-    const floor = sector ? sector.floorHeight : -32768;
-    const ceiling = sector ? Math.max(sector.ceilingHeight, floor + 1) : 32767;
-    if (z < floor + 1 || z > ceiling - 1) continue;
     const length = Math.hypot(dx, dy) || 1;
     let nx = -dy / length, ny = dx / length;
     if (nx * direction[0] + ny * direction[1] > 0) { nx = -nx; ny = -ny; }
-    best = { x, y, z, angle: Math.atan2(dy, dx), normal: [nx, ny], distance: along, wallId: wall.id,
+    // Sample just in front of the wall: the hit itself lies on the line between two
+    // sectors, and the decal belongs to the side the player is standing on.
+    const sector = sectorAt(state.sectors, x + nx, y + ny) || sectorAt(state.sectors, x, y)
+      || sectorAt(state.sectors, eye[0], eye[1]);
+    const floor = sector ? sector.floorHeight : -32768;
+    const ceiling = sector ? Math.max(sector.ceilingHeight, floor + 1) : 32767;
+    if (z < floor + 1 || z > ceiling - 1) continue;
+    best = { x, y, z, normal: [nx, ny], distance: along,
       start: { x: ax, y: ay }, end: { x: wall.end.x, y: wall.end.y }, length,
       along: Math.hypot(x - ax, y - ay), floor, ceiling };
   }

@@ -114,7 +114,7 @@ function actorActionGaps() {
 const actorsPanel = createActorsPanel({
   list: $('actor-list'), summary: $('actors-summary'), gaps: $('actors-gaps'), search: $('actor-search'), filter: $('actor-filter'),
   form: $('actor-form'), title: $('actor-title'), fields: $('actor-fields'), states: $('actor-states'),
-}, { actors: () => project.actors || [], edit, unsupported: actorActionGaps });
+}, { actors: () => project.actors || [], edit: editActors, unsupported: actorActionGaps });
 const playtestLogPanel = createPlaytestLogPanel({
   directory: $('log-directory'), totals: $('log-totals'), list: $('log-list'), detail: $('log-detail'),
   refresh: $('log-refresh'), clear: $('log-clear'),
@@ -193,13 +193,23 @@ function clearDraft() {
   $('ai-draft').hidden = true;
   $('ai-project').textContent = '';
 }
+// Rings are recomputed only when the geometry changed: clicking around the layout, or
+// an edit that leaves the walls alone, re-renders without walking every sector.
+let sectorGeometryCache = { project: null, walls: null, sectors: [] };
+function liveSectorGeometry(target) {
+  if (sectorGeometryCache.project === target && sectorGeometryCache.walls === target.map.walls &&
+    sectorGeometryCache.vertices === target.map.vertices) return sectorGeometryCache.sectors;
+  const sectors = sectorGeometry(target);
+  sectorGeometryCache = { project: target, walls: target.map.walls, vertices: target.map.vertices, sectors };
+  return sectors;
+}
 function render() {
   const gaps = importedGameplayGaps(project);
   $('gameplay-warning').hidden = !gaps.length;
   $('gameplay-warning-text').textContent = gaps.length
     ? `This imported project is missing ${gaps.join(', ')}. Restarting the service does not update saved projects. Reimport the WAD to install current gameplay and artwork; export custom edits first. Reimport is undoable and does not save automatically.`
     : '';
-  mapSectors = sectorGeometry(project);
+  mapSectors = liveSectorGeometry(project);
   if (!['$all', '$scene'].includes(scriptScope) && !project.map.entities.some(entity => entity.id === scriptScope) &&
     !project.eventSheets?.some(sheet => scriptScope === `$sheet:${sheet.id}`)) scriptScope = '$all';
   $('title').value = project.title;
@@ -363,7 +373,7 @@ function liveFinish(message, { revert = false } = {}) {
 // Panels, the asset browser and the HUD designer are skipped while dragging; the
 // 3D view and the scene stats are what has to keep up with the pointer.
 function renderLive(message) {
-  mapSectors = sectorGeometry(project);
+  mapSectors = liveSectorGeometry(project);
   $('dirty').textContent = 'Unsaved';
   $('undo').disabled = history.length === 0;
   $('map-stats').textContent = `${project.map.vertices.length} vertices / ${project.map.walls.length} walls / ${project.map.entities.length} objects / ${project.map.sectors?.length || 0} sectors`;
@@ -395,8 +405,8 @@ function commit(next, message = 'Project updated') {
   status(message);
   render();
 }
-function edit(fn, message, { deepGame = false } = {}) {
-  const next = cloneProjectForEdit(project, { deepGame });
+function edit(fn, message, { deepGame = false, cloneActors = false } = {}) {
+  const next = cloneProjectForEdit(project, { deepGame, shareActors: !cloneActors });
   try {
     fn(next);
     commit(next, message);
@@ -407,6 +417,10 @@ function edit(fn, message, { deepGame = false } = {}) {
 }
 function editGame(fn, message) {
   return edit(fn, message, { deepGame: true });
+}
+/** Actor edits change the table itself, so they get a real copy of it. */
+function editActors(fn, message) {
+  return edit(fn, message, { cloneActors: true });
 }
 function replace(next, message) {
   validateProject(next);
@@ -448,14 +462,26 @@ function input(value, type, fn, label) {
   element.addEventListener('change', guard(() => fn(type === 'number' ? Number(element.value) : element.value)));
   return element;
 }
-function select(options, value, fn, label) {
-  const element = make('select');
+// Option lists are cloned from a template instead of being rebuilt node by node: the
+// event sheet creates one Owner select per rule, and cloning a prepared fragment is an
+// order of magnitude cheaper than creating thousands of <option> elements.
+const optionTemplates = new WeakMap();
+function optionTemplate(options) {
+  let template = optionTemplates.get(options);
+  if (template) return template;
+  template = document.createDocumentFragment();
   for (const option of options) {
     const [id, text] = Array.isArray(option) ? option : [option, option];
     const item = make('option', text);
     item.value = id;
-    element.append(item);
+    template.append(item);
   }
+  optionTemplates.set(options, template);
+  return template;
+}
+function select(options, value, fn, label) {
+  const element = make('select');
+  element.append(optionTemplate(options).cloneNode(true));
   element.value = value;
   if (label) element.setAttribute('aria-label', label);
   element.addEventListener('change', guard(() => fn(element.value)));
@@ -489,28 +515,40 @@ function openScript(ownerId = '$all') {
   showTab('events');
   render();
 }
+let entitiesSignature = '';
 function renderEntities() {
-  $('entities').replaceChildren();
-  $('project-objects').replaceChildren();
-  $('object-scripts').replaceChildren();
-  for (const entity of project.map.entities) {
-    const count = project.events.filter(event => event.ownerId === entity.id).length;
-    const tile = button('', () => selectObject(entity), 'object-tile');
-    tile.setAttribute('aria-label', `${entity.name}, ${count} attached events`);
-    tile.append(make('span', entity.type[0].toUpperCase(), 'object-symbol'), make('span', entity.name, 'object-name'), make('small', `${count} events`));
-    const tree = button(entity.name, () => selectObject(entity), 'tree-link');
-    for (const element of [tile, tree]) {
-      element.dataset.objectId = entity.id;
-      element.classList.toggle('selected', selection?.id === entity.id);
-      element.addEventListener('dblclick', () => openScript(entity.id));
+  // One pass over the rules for all owners: counting per object re-read the whole event
+  // list for every entity, which is quadratic on an imported game.
+  const signature = `${identityId(project.map.entities)}\u0000${identityId(project.events)}\u0000${scriptScope}`;
+  if (signature !== entitiesSignature || !$('entities').childElementCount) {
+    entitiesSignature = signature;
+    const counts = new Map();
+    for (const event of project.events) if (event.ownerId) counts.set(event.ownerId, (counts.get(event.ownerId) || 0) + 1);
+    $('entities').replaceChildren();
+    $('project-objects').replaceChildren();
+    $('object-scripts').replaceChildren();
+    for (const entity of project.map.entities) {
+      const count = counts.get(entity.id) || 0;
+      const tile = button('', () => selectObject(entity), 'object-tile');
+      tile.setAttribute('aria-label', `${entity.name}, ${count} attached events`);
+      tile.append(make('span', entity.type[0].toUpperCase(), 'object-symbol'), make('span', entity.name, 'object-name'), make('small', `${count} events`));
+      const tree = button(entity.name, () => selectObject(entity), 'tree-link');
+      for (const element of [tile, tree]) {
+        element.dataset.objectId = entity.id;
+        element.addEventListener('dblclick', () => openScript(entity.id));
+      }
+      $('entities').append(tile);
+      $('project-objects').append(tree);
+      const script = button(`${entity.name} (${count})`, () => openScript(entity.id), 'tree-link');
+      script.dataset.scriptScope = entity.id;
+      $('object-scripts').append(script);
     }
-    $('entities').append(tile);
-    $('project-objects').append(tree);
-    const script = button(`${entity.name} (${count})`, () => openScript(entity.id), 'tree-link');
-    script.classList.toggle('selected', scriptScope === entity.id);
-    $('object-scripts').append(script);
+    $('object-scripts').append(button('+ New object script sheet', () => attachObjectScriptSheet(), 'tree-link'));
   }
-  $('object-scripts').append(button('+ New object script sheet', () => attachObjectScriptSheet(), 'tree-link'));
+  // The highlight follows every click without rebuilding the lists.
+  for (const element of $('entities').children) element.classList.toggle('selected', element.dataset.objectId === selection?.id);
+  for (const element of $('project-objects').children) element.classList.toggle('selected', element.dataset.objectId === selection?.id);
+  for (const element of $('object-scripts').children) element.classList.toggle('selected', element.dataset.scriptScope === scriptScope);
   filterProject();
 }
 function attachObjectScriptSheet() {
@@ -528,9 +566,15 @@ function attachObjectScriptSheet() {
     scriptScope = `$sheet:${id}`;
   }, `Created an editable object script sheet for ${entity.name}.`);
 }
-function filterProject() {  const query = $('project-search').value.trim().toLowerCase();
-  for (const parent of ['project-objects', 'object-scripts', 'engine-sheets', 'game-sheets']) for (const element of $(parent).children) {
-    element.hidden = !element.textContent.toLowerCase().includes(query);
+let projectFilterActive = false;
+function filterProject() {
+  const query = $('project-search').value.trim().toLowerCase();
+  // With no search there is nothing to hide, and reading `textContent` for every object
+  // and sheet on every render is what a filter that matches everything costs.
+  if (!query && !projectFilterActive) return;
+  projectFilterActive = Boolean(query);
+  for (const parent of ['project-objects', 'object-scripts', 'engine-sheets', 'game-sheets']) {
+    for (const element of $(parent).children) element.hidden = query ? !element.textContent.toLowerCase().includes(query) : false;
   }
 }
 function renderInspector() {
@@ -872,12 +916,41 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('keydown', event => { if (event.code === 'Escape' && !$('file-menu').hidden) { closeMenu(); $('menu-toggle').focus(); } });
 
+// Rebuilt once per project, not once per rule: the event sheet asks for the object list
+// for every card (Owner, target and condition fields), and each rebuild allocated a
+// fresh array of pairs for all objects.
+let entityOptionCache = { entities: null, all: [], withoutPlayer: [] };
+function entityOptionLists() {
+  if (entityOptionCache.entities !== project.map.entities) {
+    const all = [], withoutPlayer = [];
+    for (const entity of project.map.entities) {
+      const pair = [entity.id, entity.name];
+      all.push(pair);
+      if (entity.type !== 'player') withoutPlayer.push(pair);
+    }
+    entityOptionCache = { entities: project.map.entities, all, withoutPlayer };
+  }
+  return entityOptionCache;
+}
 function entityOptions(excludePlayer = false, ownerId) {
-  const options = project.map.entities.filter(entity => !excludePlayer || entity.type !== 'player').map(entity => [entity.id, entity.name]);
-  const owner = project.map.entities.find(entity => entity.id === ownerId);
-  if (owner && (!excludePlayer || owner.type !== 'player')) options.unshift(['$self', `This object (${owner.name})`]);
-  else if (ownerId?.startsWith('$type:')) options.unshift(['$self', `Each ${ownerId.slice(6)}`]);
-  return options;
+  const list = entityOptionLists();
+  // A `$self` entry makes the array specific to the owner, so it is built on demand and
+  // only for the few cards that need it.
+  if (ownerId) {
+    const owner = project.map.entities.find(entity => entity.id === ownerId);
+    if (owner && (!excludePlayer || owner.type !== 'player')) return [['$self', `This object (${owner.name})`], ...(excludePlayer ? list.withoutPlayer : list.all)];
+    if (ownerId.startsWith('$type:')) return [['$self', `Each ${ownerId.slice(6)}`], ...(excludePlayer ? list.withoutPlayer : list.all)];
+  }
+  return excludePlayer ? list.withoutPlayer : list.all;
+}
+/** Sheet options for the scope picker and the per-rule Sheet field. */
+let sheetOptionCache = { sheets: null, options: [] };
+function sheetOptions() {
+  if (sheetOptionCache.sheets !== project.eventSheets) {
+    sheetOptionCache = { sheets: project.eventSheets,
+      options: (project.eventSheets || []).map(sheet => [`$sheet:${sheet.id}`, `${sheet.section} / ${sheet.name}`]) };
+  }
+  return sheetOptionCache.options;
 }
 function scriptContext(event) { return event.ownerId || (event.forEachType ? `$type:${event.forEachType}` : undefined); }
 function healthTarget(context) {
@@ -1034,14 +1107,19 @@ const actionLabels = [['showMessage', 'System: show message'], ['setVariable', '
   ...ENGINE_ACTIONS.map(command => [command.type, command.label])];
 let eventsRendered = '';
 function eventsSignature() {
-  return JSON.stringify([scriptScope, project.playerControl, project.events, project.eventSheets, project.eventGroups,
-    Object.keys(project.variables), assetListSignature(),
-    project.map.entities.map(entity => [entity.id, entity.name, entity.type]),
-    project.map.walls.map(wall => [wall.id, wall.special || 0]),
-    (project.map.sectors || []).map(sector => sector.id),
-    project.spriteClips, project.hud?.elements?.map(element => [element.id, element.name]),
-    project.hud?.animations?.map(clip => [clip.id, clip.name]),
-    [...collapsedEvents], [...collapsedGroups]]);
+  // The rules and sheets are compared by *content*, not identity: every edit clones the
+  // project, and rebuilding several hundred rule cards because a wall moved (or the
+  // project was renamed) is what made an imported game feel sluggish. Serialising the
+  // rule list costs a couple of milliseconds; rebuilding the cards costs more than a
+  // second. Everything else is small enough to compare directly.
+  return [scriptScope, project.playerControl, JSON.stringify(project.events),
+    JSON.stringify(project.eventSheets || []), JSON.stringify(project.eventGroups || []),
+    Object.keys(project.variables).length, assetListSignature(),
+    JSON.stringify(project.map.entities.map(entity => [entity.id, entity.name, entity.type])),
+    project.map.walls.length, (project.map.sectors || []).length,
+    JSON.stringify(project.spriteClips || []), JSON.stringify(project.hud?.elements?.map(element => [element.id, element.name]) || []),
+    (project.hud?.animations || []).length,
+    collapsedEvents.size, collapsedGroups.size, [...collapsedEvents].join(','), [...collapsedGroups].join(',')].join('\u0000');
 }
 // Grip element for drag-reordering. The row it sits in carries data-drag-*, so the
 // installer can tell a rule from a condition without knowing the DOM structure.
@@ -1053,6 +1131,32 @@ function grip() {
   return element;
 }
 
+// Per-render lookups for the rule list: sibling order for the Up/Down buttons and the
+// option lists for the Sheet and Group fields. Each used to be a full scan of every
+// rule for every card, which is quadratic on an imported game.
+let ruleRenderCache = null;
+function ruleRenderCacheFor() {
+  if (ruleRenderCache && ruleRenderCache.events === project.events && ruleRenderCache.groups === project.eventGroups &&
+    ruleRenderCache.sheets === project.eventSheets) return ruleRenderCache;
+  const siblings = new Map(), groupLists = new Map(), unfiled = [['', 'Unfiled / scene'],
+    ...(project.eventSheets || []).map(sheet => [sheet.id, `${sheet.section} / ${sheet.name}`])];
+  const lists = new Map();
+  for (const sheet of project.eventSheets || []) lists.set(sheet.id, [['', 'Ungrouped']]);
+  for (const group of project.eventGroups || []) lists.get(group.sheetId)?.push([group.id, group.name]);
+  for (const event of project.events) {
+    const key = `${event.parentId || ''}\u0000${event.sheetId || ''}\u0000${event.groupId || ''}`;
+    let list = siblings.get(key);
+    if (!list) siblings.set(key, list = []);
+    list.push(event);
+  }
+  ruleRenderCache = { events: project.events, groups: project.eventGroups, sheets: project.eventSheets, siblings, lists, unfiled };
+  return ruleRenderCache;
+}
+function siblingRules(event) {
+  return ruleRenderCacheFor().siblings.get(`${event.parentId || ''}\u0000${event.sheetId || ''}\u0000${event.groupId || ''}`) || [event];
+}
+function unfiledSheetOptions() { return ruleRenderCacheFor().unfiled; }
+function groupOptions(sheetId) { return ruleRenderCacheFor().lists.get(sheetId) || [['', 'Ungrouped']]; }
 function renderEvents() {
   const parent = $('event-list');
   // A large imported game carries hundreds of event rules; rebuilding every
@@ -1060,6 +1164,7 @@ function renderEvents() {
   const signature = eventsSignature();
   if (signature === eventsRendered && parent.childElementCount) return;
   eventsRendered = signature;
+  ruleRenderCache = null;
   parent.replaceChildren();
   const owner = project.map.entities.find(entity => entity.id === scriptScope);
   const currentSheet = project.eventSheets?.find(sheet => scriptScope === `$sheet:${sheet.id}`);
@@ -1102,7 +1207,7 @@ function renderEvents() {
       }, 'danger'));
   }
   $('script-scope').replaceChildren(...[['$all', 'All events'], ['$scene', 'Scene only'],
-    ...(project.eventSheets || []).map(sheet => [`$sheet:${sheet.id}`, `${sheet.section} / ${sheet.name}`]), ...entityOptions()].map(([id, name]) => {
+    ...sheetOptions(), ...entityOptions()].map(([id, name]) => {
     const option = make('option', name); option.value = id; return option;
   }));
   $('script-scope').value = scriptScope;
@@ -1125,7 +1230,7 @@ function renderEvents() {
     summary.append(make('span', `${String(index + 1).padStart(2, '0')}  ${eventScope(event) === 'object' ? 'Object' : 'Game'}${event.once ? ' · Once' : ''}${event.enabled ? '' : ' · Disabled'}`));
     meta.append(summary);
     field(meta, 'Rule name', input(event.name || event.id, 'text', value => modify(item => { item.name = value; })));
-    field(meta, 'Sheet', select([['', 'Unfiled / scene'], ...(project.eventSheets || []).map(sheet => [sheet.id, `${sheet.section} / ${sheet.name}`])],
+    field(meta, 'Sheet', select(unfiledSheetOptions(),
       event.sheetId || '', value => edit(next => {
         if (event.parentId) throw new Error('Move the parent event to change a sub-event sheet');
         const ids = eventBranch(next.events, event.id);
@@ -1134,7 +1239,7 @@ function renderEvents() {
           delete item.groupId;
         }
       })));
-    field(meta, 'Group', select([['', 'Ungrouped'], ...(project.eventGroups || []).filter(group => group.sheetId === event.sheetId).map(group => [group.id, group.name])],
+    field(meta, 'Group', select(groupOptions(event.sheetId),
       event.groupId || '', value => edit(next => {
         if (event.parentId) throw new Error('Move the parent event to change its group');
         const ids = eventBranch(next.events, event.id);
@@ -1157,8 +1262,8 @@ function renderEvents() {
       checkbox('Enabled', event.enabled, value => modify(item => { item.enabled = value; })),
       checkbox('Once', event.once, value => modify(item => { item.once = value; })));
     const controls = make('div', undefined, 'event-controls');
+    const siblings = siblingRules(event);
     for (const [label, direction] of [['Up', -1], ['Down', 1]]) {
-      const siblings = project.events.filter(item => item.parentId === event.parentId && item.sheetId === event.sheetId && item.groupId === event.groupId);
       const target = siblings[siblings.indexOf(event) + direction];
       const move = button(label, () => edit(next => moveEventBranch(next, event.id, direction)));
       move.disabled = !target;
@@ -1362,9 +1467,27 @@ function panelUnchanged(name, signature, element) {
   panelSignatures.set(name, signature);
   return false;
 }
+// Comparing a signature against the last render is how the editor avoids rebuilding
+// thousands of DOM nodes for an unrelated edit. Serializing the whole project to do it
+// (the events list alone is hundreds of kilobytes in an imported game) cost more than
+// the render it was guarding, so signatures use object identity instead: every edit
+// clones the project, so a new array or object *is* a change.
+const identityIds = new WeakMap();
+let identityIdCounter = 0;
+function identityId(value) {
+  if (value === null || typeof value !== 'object') return String(value);
+  let id = identityIds.get(value);
+  if (id === undefined) identityIds.set(value, id = ++identityIdCounter);
+  return id;
+}
+let assetSignatureCache = { assets: null, length: -1, signature: '' };
 function assetListSignature() {
-  return (project.assets || []).map(asset => `${asset.id}:${asset.kind}:${asset.name}:${asset.format || ''}` +
+  const assets = project.assets || [];
+  if (assetSignatureCache.assets === assets && assetSignatureCache.length === assets.length) return assetSignatureCache.signature;
+  const signature = assets.map(asset => `${asset.id}:${asset.kind}:${asset.name}:${asset.format || ''}` +
     `:${asset.meshes || 0}:${asset.animations?.length || 0}:${asset.generated ? 1 : 0}`).join('|');
+  assetSignatureCache = { assets, length: assets.length, signature };
+  return signature;
 }
 function renderEnvironment() {
   const parent = $('environment-form');

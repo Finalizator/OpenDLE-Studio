@@ -7,11 +7,30 @@ export function createHUDView(host, project, { editor = false, select, click, er
   if (!hud) return { update() {}, dispose() {} };
   const root = document.createElement('div'); root.className = 'hud-root'; host.append(root);
   const nodes = new Map(), assets = new Map((project.assets || []).map(asset => [asset.id, asset]));
+  // Authored visual properties, rendered to one string per element object. Elements are
+  // replaced wholesale by an edit, so this cache cannot go stale.
+  const visualKeys = new WeakMap();
+  function visualKeyOf(element, hud) {
+    let key = visualKeys.get(element);
+    if (key !== undefined) return key;
+    // `fontSize` and `frame` are writable at runtime (HUD_PROPERTIES), so they are
+    // appended from the live element below instead of being cached here.
+    key = `${element.color}|${element.background}|${element.align}|${element.type}|${hud.pixelated}` +
+      `|${element.fontId}|${element.styleClass}|${element.assetId}|${element.fillAssetId}|${element.imageRepeat}` +
+      `|${element.slice ? JSON.stringify(element.slice) : ''}|${element.sprite ? JSON.stringify(element.sprite) : ''}` +
+      `|${element.fillDirection}`;
+    visualKeys.set(element, key);
+    return key;
+  }
   const fonts = new Map(), faces = [], prefix = `OpenDLE_HUD_${++viewId}_`;
   // Per-frame lookups must not scan arrays: these are constant for the view.
   const menuIds = new Set(project.gameMenus?.elementIds || []);
   const styleByName = new Map((hud.styles || []).map(style => [style.name, style]));
   const fontById = new Map(hud.fonts.map(font => [font.id, font]));
+  // Which HUD elements can take focus. Asking the element list per node per frame made
+  // menu navigation quadratic in the element count (an imported menu has dozens).
+  const interactiveIds = new Set((hud.elements || []).filter(element => element.interactive).map(element => element.id));
+  let entryNativeSelector = null;
   let anySelectorVisible = false;
   let disposed = false;
   let currentState;
@@ -64,9 +83,15 @@ export function createHUDView(host, project, { editor = false, select, click, er
       const parent = rectangles.get(element.parentId) || viewport;
       const rect = hudRect(element, parent.width, parent.height); rectangles.set(element.id, rect);
       const entry = nodes.get(source.id);
-      const layout = `${rect.x}|${rect.y}|${rect.width}|${rect.height}|${element.opacity}|${element.rotation}|${element.scale}|${element.pivotX}|${element.pivotY}|${element.z}`;
-      if (layout !== entry.layout) {
-        entry.layout = layout;
+      // Compare the layout values directly: an imported HUD has hundreds of elements
+      // and building a template string for each of them on every frame was pure
+      // garbage, while the values themselves usually have not changed.
+      if (entry.x !== rect.x || entry.y !== rect.y || entry.width !== rect.width || entry.height !== rect.height ||
+        entry.opacity !== element.opacity || entry.rotation !== element.rotation || entry.scale !== element.scale ||
+        entry.pivotX !== element.pivotX || entry.pivotY !== element.pivotY || entry.z !== element.z) {
+        entry.x = rect.x; entry.y = rect.y; entry.width = rect.width; entry.height = rect.height;
+        entry.opacity = element.opacity; entry.rotation = element.rotation; entry.scale = element.scale;
+        entry.pivotX = element.pivotX; entry.pivotY = element.pivotY; entry.z = element.z;
         node.style.left = `${rect.x}px`; node.style.top = `${rect.y}px`;
         node.style.width = `${rect.width}px`; node.style.height = `${rect.height}px`;
         node.style.opacity = String(element.opacity);
@@ -91,7 +116,10 @@ export function createHUDView(host, project, { editor = false, select, click, er
       if (element.menuSelector && shown) anySelectorVisible = true;
       // Static visual styling only changes when the authored element changes.
       const style = styleByName.get(element.styleClass);
-      const visualKey = `${element.color}|${element.background}|${element.fontSize}|${element.align}|${element.type}|${hud.pixelated}|${element.fontId}|${element.styleClass}|${element.assetId}|${element.fillAssetId}|${element.imageRepeat}|${element.slice && JSON.stringify(element.slice)}|${element.sprite && `${JSON.stringify(element.sprite)}:${Math.floor(element.frame)}`}|${element.fillDirection}`;
+      // The visual key covers authored data plus the animated frame; the authored part
+      // is computed once per element object (an edit clones them) instead of being
+      // rebuilt, JSON included, several hundred times per frame.
+      const visualKey = `${visualKeyOf(source, hud)}\u0000${element.fontSize}\u0000${element.frame === undefined ? '' : Math.floor(element.frame)}`;
       const asset = assets.get(element.assetId);
       if (visualKey !== entry.visualKey) {
         entry.visualKey = visualKey;
@@ -141,6 +169,7 @@ export function createHUDView(host, project, { editor = false, select, click, er
       } else {
         const text = hudText(element, state), font = fontById.get(element.fontId);
         const cache = `${text}\0${element.fontId}\0${element.fontSize}`;
+        entry.text = text;
         if (cache !== entry.lastText) {
           entry.lastText = cache;
           content.replaceChildren();
@@ -168,16 +197,29 @@ export function createHUDView(host, project, { editor = false, select, click, er
           } else { content.style.lineHeight = ''; content.textContent = text; content.removeAttribute('aria-label'); }
         }
       }
-      const label = element.interactive && !menuElement ? (hudText(element, state) || element.name) : element.name;
+      // The visible text was computed above for text elements, so an interactive menu
+      // row is not evaluated twice every frame.
+      const label = element.interactive && !menuElement
+        ? ((entry.text ?? (element.type === 'bar' ? hudText(element, state) : '')) || element.name) : element.name;
       if (entry.label !== label) { entry.label = label; node.setAttribute('aria-label', label); }
     }
     if (!editor && state.gameScreen !== 'playing') {
-      const candidates = [...nodes].filter(([id, entry]) => entry.node.tabIndex === 0 &&
-        entry.node.dataset.menuSelectable !== 'false' && !entry.node.hidden &&
-        project.hud.elements.find(element => element.id === id)?.interactive);
-      if (!candidates.some(([id]) => id === state.hudState.focused)) state.hudState.focused = candidates[0]?.[0] || null;
+      // Keyboard focus order over the menu rows, without rebuilding a candidate array
+      // for every element on every frame.
+      let focused = false, first = null;
+      for (const [id, entry] of nodes) {
+        if (entry.node.tabIndex !== 0 || entry.node.dataset.menuSelectable === 'false' ||
+          entry.node.hidden || !interactiveIds.has(id)) continue;
+        first ??= id;
+        if (id === state.hudState.focused) { focused = true; break; }
+      }
+      if (!focused) state.hudState.focused = first;
     }
-    root.classList.toggle('hud-native-selector', !editor && anySelectorVisible);
+    const nativeSelector = !editor && anySelectorVisible;
+    if (entryNativeSelector !== nativeSelector) {
+      entryNativeSelector = nativeSelector;
+      root.classList.toggle('hud-native-selector', nativeSelector);
+    }
     return { ...viewport, rectangles };
   }
   return { update, nodes, dispose() {
