@@ -195,6 +195,14 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.6 "Segoe UI",
 .command-object::before { content: ""; display: inline-block; width: 7px; height: 7px; background: #38b2d0; margin-right: 5px; }
 .command-description { padding: 5px 8px; overflow-wrap: anywhere; }
 .script-command.inverted .command-description { color: #f0aba4; }
+/* Engine scriptlets: generator cards, in the same spirit as the tweaks panel. */
+.scriptlet-list { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); margin-top: 10px; }
+.scriptlet-card { background: #3a3a3a; border: 1px solid #505050; border-left: 2px solid #7f8fa6; border-radius: 3px; padding: 10px 12px; }
+.scriptlet-card h2 { margin: 0 0 4px; }
+.scriptlet-card p { margin: 4px 0; font-size: 11px; }
+.scriptlet-card button { margin-top: 6px; margin-right: 6px; }
+.scriptlet-state { color: #b9c7a8; font-size: 10px; }
+.scriptlet-state.muted { color: var(--muted); }
 .event-comment { color: #a0a6aa; font-size: 11px; font-style: italic; padding: 5px 4px; margin: 0 12px 0 32px; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; border-radius: 2px; }
 .event-comment::before { content: "//  "; }
 .event-comment:hover { background: #414141; color: #cfd4d8; }

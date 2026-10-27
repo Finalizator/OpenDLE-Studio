@@ -14,8 +14,8 @@ import { recoverProject } from './project-recovery.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
   removeEventBranch, setEventParent, eventScope } from '/shared/events.js';
 import { editInline, installRowDrag } from './row-drag.js';
-import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, defaultEngineCommand, installEngineScripts,
-  installWallWalkDemo } from '/shared/engine-script.js';
+import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, defaultEngineCommand, installEngineScripts } from '/shared/engine-script.js';
+import { ENGINE_SCRIPTLETS, installScriptlet, removeScriptlet } from '/shared/scriptlets.js';
 import { createHUDEditor } from './hud-editor.js';
 import { createHUDView } from './hud-view.js';
 import { WEAPONS } from '/shared/player-state.js';
@@ -220,6 +220,9 @@ function render() {
   renderEvents();
   renderEnvironment();
   renderAssetsIfChanged();
+  // The scriptlet cards report how many rules they have installed, so undo and
+  // redo have to refresh them too, not only opening the tab.
+  if (!$('scriptlets-panel').hidden) renderScriptlets();
   // The HUD designer rebuilds its whole stage; only do that when it is visible.
   if (!$('hud-panel').hidden) hudEditor.render();
   if (!$('actors-panel').hidden) actorsPanel.render();
@@ -765,18 +768,50 @@ function loadEngineVersion() {
     throw error;
   });
 }
+// Engine scriptlets: generators that install editable rules. The panel is built from
+// the shared registry, so adding another generator is one entry there plus nothing here.
+function renderScriptlets() {
+  const list = $('scriptlet-list');
+  list.replaceChildren();
+  for (const scriptlet of ENGINE_SCRIPTLETS) {
+    const installed = scriptlet.installed(project);
+    const card = make('div', undefined, 'scriptlet-card');
+    card.append(make('h2', scriptlet.name),
+      make('p', scriptlet.summary),
+      make('p', scriptlet.detail, 'muted'),
+      make('p', installed ? `Installed: ${installed} rules in their own engine sheet.` : 'Not installed in this project.', installed ? 'scriptlet-state' : 'scriptlet-state muted'));
+    const install = button(installed ? 'Reinstall (replaces its rules)' : 'Add to project', () => {
+      let sheetId;
+      edit(next => { sheetId = installScriptlet(next, scriptlet.id); },
+        `${scriptlet.name} scriptlet ${installed ? 'reinstalled' : 'installed'} — its rules are editable in the event sheets`);
+      renderScriptlets();
+      openScript(`$sheet:${sheetId}`);
+    });
+    card.append(install);
+    if (installed) card.append(button('Remove its rules', () => {
+      if (!confirm(`Remove the ${scriptlet.name} scriptlet and its ${installed} rules? Undo restores them.`)) return;
+      edit(next => removeScriptlet(next, scriptlet.id), `${scriptlet.name} scriptlet removed`);
+      renderScriptlets();
+    }, 'danger'));
+    list.append(card);
+  }
+  if (!ENGINE_SCRIPTLETS.length) list.append(make('p', 'No scriptlets are available in this build.', 'muted'));
+}
+
 function showTab(tab) {
   if (tab !== 'hud') hudEditor.stopPreview();
   if (tab === 'assets') {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
-  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'about']) $(name + '-panel').hidden = tab !== name;
+  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'about'])
+    $(name + '-panel').hidden = tab !== name;
   // The designer is only refreshed while its tab is visible, so opening the tab
   // has to build it once.
   if (tab === 'hud') hudEditor.render();
   if (tab === 'actors') actorsPanel.render();
   if (tab === 'scripts') scriptsPanel.render();
   if (tab === 'logs') playtestLogPanel.render();
+  if (tab === 'scriptlets') renderScriptlets();
   if (tab === 'tweaks') {
     try { renderEngineTweaks(); }
     catch (error) { $('engine-tweaks-status').textContent = error.message; status(error.message, true); }
@@ -2711,12 +2746,6 @@ $('install-engine').addEventListener('click', guard(() => {
     edit(installEngineScripts, 'Editable Engine starter installed; existing rules preserved');
     openScript(`$sheet:${project.eventSheets.find(sheet => sheet.section === 'engine').id}`);
   }
-}));
-$('add-wall-walk').addEventListener('click', guard(() => {
-  let sheetId;
-  edit(next => { sheetId = installWallWalkDemo(next); },
-    'Wall-walking experiment added: jump at a wall or ceiling to walk on it, hold F to drop back to normal gravity');
-  openScript(`$sheet:${sheetId}`);
 }));
 $('add-sheet').addEventListener('click', guard(() => {
   const id = newId('sheet');

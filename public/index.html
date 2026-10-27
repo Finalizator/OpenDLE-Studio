@@ -33,6 +33,7 @@
       <button data-tab="scripts">Scripts</button>
       <button data-tab="logs">Logs</button>
       <button data-tab="tweaks">Engine tweaks</button>
+      <button data-tab="scriptlets">Engine scriptlets</button>
       <button data-tab="hud">HUD</button>
       <button data-tab="assets">Assets</button>
     </nav>
@@ -168,6 +169,13 @@
         </div>
         <p class="muted">Records are appended while you play: uncaught errors, rejected promises, stopped ACS scripts, action functions without an engine equivalent, renderer and audio failures, and editor operations that failed. A recurring failure is stored once with a repeat count rather than once per frame. The folder keeps the 60 most recent sessions and caps each file, so logging can never fill the disk.</p>
       </section>
+      <section id="scriptlets-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1>Engine scriptlets</h1><p>Ready-made rule sets that install as ordinary editable events.</p></div></div>
+        <div class="prose">
+          <p>Each scriptlet adds real events you can inspect, change, disable or delete — it never adds hidden engine behaviour. Generated rules use only the shared condition and action catalogue, so they work in any project, imported or built by hand. Reinstalling replaces that scriptlet's own sheet and leaves your other rules untouched.</p>
+        </div>
+        <div id="scriptlet-list" class="scriptlet-list" role="list"></div>
+      </section>
       <section id="tweaks-panel" class="panel" hidden>
         <div class="panel-heading"><div><h1>Engine tweaks</h1><p>OpenDLE preview overrides, independent of imported game menus.</p></div></div>
         <div class="prose">
@@ -222,7 +230,7 @@
         <details><summary>Diagnostics</summary><button data-tab="logs" class="tree-link">Playtest logs</button></details>
         <details open><summary>HUD overlays</summary><button data-tab="hud" class="tree-link">Game HUD / designer</button></details>
         <details><summary>Event sheets</summary><button id="scene-script" class="tree-link">Event sheet 1</button><div id="object-scripts"></div></details>
-        <details open><summary>Engine</summary><div id="engine-sheets"></div><button id="install-engine" class="tree-link">Install editable FPS starter</button><button id="add-wall-walk" class="tree-link">Add wall-walking experiment</button></details>
+        <details open><summary>Engine</summary><div id="engine-sheets"></div><button id="install-engine" class="tree-link">Install editable FPS starter</button></details>
         <details open><summary>Game event sheets</summary><div id="game-sheets"></div></details>
         <details open><summary>Objects</summary><div id="project-objects"></div></details>
         <button data-tab="assets" class="tree-link">Assets & sectors</button>

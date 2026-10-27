@@ -559,6 +559,17 @@ rules, disable a whole sheet, and create Game or Engine sheets with **+ Sheet**.
 Each rule can be assigned to a sheet and an object, or run **For each**
 enemy/pickup/decoration with `$self` referring to that instance.
 
+**Engine scriptlets** are generators that install ready-made rules. They live in
+their own **Engine scriptlets** tab next to Engine tweaks, not in the event-sheet
+tree, so the tree lists sheets and the tab lists things that create them. Each
+scriptlet is an entry in `shared/scriptlets.js` with an installer and a remover;
+the panel is generated from that registry, so adding a generator is one entry and
+no UI work. Wall walking is the first one: it installs the "Wall walking
+(experiment)" sheet, reports how many rules it added, can be reinstalled (which
+replaces only its own sheet) and can be removed, with undo covering both. A
+scriptlet only ever produces ordinary editable events, so anything it installs can
+be inspected, changed or deleted like hand-written rules.
+
 **Reordering works like Construct.** Drag a rule by its `⋮⋮` grip or its header:
 the line above or below a rule shows where it will land, and dragging onto the
 middle of another rule makes it a sub-event (its own children travel with it).
