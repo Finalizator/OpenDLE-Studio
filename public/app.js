@@ -2016,6 +2016,14 @@ function reportPlaytestFailures(session) {
         `${sprite.asset} anchor ${sprite.anchor} floor ${sprite.floor} bottom ${sprite.drawnBottom}`).join('; ')}.`,
       details: spriteReport });
   }
+  if (spriteReport?.hiddenWithoutArtwork) {
+    // Objects that carry no artwork are invisible in Doom and are not drawn here either;
+    // the log still names them, because a *missing* sprite is an import problem.
+    playtestLog.once('render:without-artwork', { severity: 'info', category: 'render',
+      message: `${spriteReport.hiddenWithoutArtwork} object(s) have no artwork and are not drawn: ${spriteReport.withoutArtwork
+        .map(entry => `${entry.name} (${entry.doomType ?? entry.type})`).join(', ')}.`,
+      details: { count: spriteReport.hiddenWithoutArtwork, objects: spriteReport.withoutArtwork } });
+  }
   if (session.groundCorrections?.first) {
     // An actor below its sector floor is drawn buried in it; the runtime snaps it back
     // up, and the log names which actor and by how much so the cause can be fixed.
@@ -2050,6 +2058,7 @@ function reportSlowFrame() {
     ...slowest, slowFrames: frameBudget.slow, frames: frameBudget.frames, slowMs: frameBudget.slowMs,
     // A step that stalls says nothing on its own: the stages name what it was doing.
     stepStages: runtime?.slowStep ?? null,
+    heapBefore: slowest.heapBefore,
     entities: runtime?.entities?.length ?? 0, level: previewProject?.game?.active ?? null,
     // A huge heap means the pause was a collection, and a hidden page means the browser
     // froze the tab mid-frame and charged the frozen time to this frame.
@@ -2127,6 +2136,7 @@ function stopPreview() {
       frameWorstMs: Math.round(frameBudget.worst), slowFrames: frameBudget.slow,
       slowestFrame: frameBudget.slowest,
       slowStep: runtime.slowStep,
+      stepTotals: runtime.stepTotals,
       ...(longTaskWatch ? { longTasks: longTaskWatch.count, longTaskMs: Math.round(longTaskWatch.total), longTaskWorstMs: Math.round(longTaskWatch.worst) } : {}),
     });
   }
@@ -2234,6 +2244,15 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     if (snapshot.game && !savedGame) selectGameLevel(snapshot, levelId || (gameMode ? snapshot.game.entry : snapshot.game.active));
     const restored = savedGame ? restoreGameSave(snapshot, savedGame, identity) : null;
     installIntermission(snapshot);
+    // A preview only ever plays the active level, and a level change builds a fresh
+    // snapshot from the editor project, so the other levels' data is dead weight here:
+    // on an imported game it is tens of megabytes of duplicated map data that the
+    // browser's collector still has to walk while the level runs.
+    for (const level of snapshot.game?.levels || []) {
+      if (level.id === snapshot.game.active) continue;
+      level.data = {};
+      level.assetIds = [];
+    }
     replacingPreview = true;
     if (runtime) {
       audioPlayer?.dispose(); audioPlayer = null;
@@ -2496,6 +2515,9 @@ let lastFrame = performance.now();
 function frame(now) {
   const dt = (now - lastFrame) / 1000; lastFrame = now;
   const frameStart = performance.now();
+  // The heap a frame starts with: a slow frame that ends with a much smaller one was a
+  // garbage collection, not work this code did.
+  frameParts.heapBefore = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : 0;
   if (runtime) {
     try {
       const onMenu = runtime.gameScreen !== 'playing';

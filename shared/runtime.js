@@ -145,6 +145,18 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     configurable: true, enumerable: false,
     get: () => cacheFor(state).slowStep ? { ...cacheFor(state).slowStep } : null,
   });
+  Object.defineProperty(state, 'stepTotals', {
+    configurable: true, enumerable: false,
+    get: () => {
+      const totals = cacheFor(state).stepTotals;
+      if (!totals) return null;
+      const rounded = {};
+      for (const [name, entry] of Object.entries(totals)) {
+        rounded[name] = { mean: Math.round(entry.total / Math.max(1, entry.steps) * 1000) / 1000, max: Math.round(entry.max) };
+      }
+      return rounded;
+    },
+  });
   return state;
 }
 
@@ -185,9 +197,20 @@ function cacheFor(state) {
 export const SLOW_STEP_MS = 120;
 function recordStep(state, startedAt, parts) {
   const ms = performance.now() - startedAt;
-  const previous = cacheFor(state).slowStep;
-  if (ms >= SLOW_STEP_MS && (!previous || ms > previous.ms)) {
-    cacheFor(state).slowStep = { ms: Math.round(ms), time: Math.round(state.time * 100) / 100,
+  const cache = cacheFor(state), previous = cache.slowStep;
+  // Totals and peaks per stage, so a long session says where the simulation spends its
+  // time instead of only which single frame was the worst.
+  const totals = cache.stepTotals ||= {};
+  for (const name in parts) {
+    const entry = totals[name] ||= { total: 0, max: 0, steps: 0 };
+    entry.total += parts[name]; entry.steps++;
+    if (parts[name] > entry.max) entry.max = parts[name];
+  }
+  // `state.stepReportMs` lowers the threshold for a diagnostic run; the default keeps
+  // only the frames a player would actually notice.
+  const threshold = Number.isFinite(state.stepReportMs) ? state.stepReportMs : SLOW_STEP_MS;
+  if (ms >= threshold && (!previous || ms > previous.ms)) {
+    cache.slowStep = { ms: Math.round(ms), time: Math.round(state.time * 100) / 100,
       ...Object.fromEntries(Object.entries(parts).map(([key, value]) => [key, Math.round(value)])) };
   }
 }
@@ -402,6 +425,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.sounds.length = 0;
   advanceHUD(project, state.hudState, dt, 'interface');
   runRules('interface');
+  stage('interface');
   state.interfaceStarted = true;
   state.hudState.cursor = state.gameScreen !== 'playing' || state.hudState.cursor;
   if (state.gameScreen !== 'playing') {
@@ -422,15 +446,18 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   if (state.playerStats.health < state.feedback.health) recordDamage(state, state.feedback.health - state.playerStats.health);
   state.feedback.attackTime = !hud.cursor && keys.has('Mouse0') ? state.feedback.attackTime + dt : 0;
   advanceHUD(project, hud, dt);
+  stage('hud');
   advanceSectors(state, dt);
+  stage('sectors');
   const usedWall = !hud.cursor && state.playerStats.health > 0 && pressed.has('KeyE') ? useWall(state) : null;
+  stage('use');
   state.worldTriggers.use = usedWall?.use ?? null;
   // The nearest line that actually carries a special, so a plain wall in front of a door
   // does not swallow the press.
   state.worldTriggers.useSpecial = usedWall?.special ?? null;
   state.worldTriggers.shoot.clear();
   runRules('beforePhysics');
-  stage('hud');
+  stage('rules');
   if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
   if (!state.scriptedInput && !hud.cursor) player.angle += ((keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0)) * dt * 2.2;
   const forward = hud.cursor ? 0 : state.scriptedInput ? state.input.forward : ((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)) * 160;
@@ -502,7 +529,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   updateLevelStatistics(state);
   state.messageTime = Math.max(0, state.messageTime - dt);
   runRules('afterPhysics');
-  stage('rules');
+  stage('afterRules');
   if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
   // Imported actor definitions (DECORATE/ZScript) drive enemy and weapon state
   // machines; they run at Doom's 35 Hz tic rate next to the frame update.

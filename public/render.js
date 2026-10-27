@@ -495,6 +495,13 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // be reused when an id comes back).
     function addSprite(entity) {
       if (sprites.has(entity.id)) return;
+      if (!editor && !entity.spriteAsset) {
+        // A grey billboard for an invisible marker is not a placeholder, it is a bug:
+        // the MAP02 start has a teleport destination 68 units in front of the player.
+        unrenderable.add(entity.id);
+        if (withoutArtwork.length < 24) withoutArtwork.push({ id: entity.id, name: entity.name, type: entity.type, doomType: entity.doomType ?? null });
+        return;
+      }
       const asset = assetMap.get(entity.spriteAsset);
       const map = entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
       const color = asset ? '#ffffff' : entityColors[entity.type] || '#ffffff';
@@ -534,6 +541,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // Runtime spawns reuse the loaded model, fall back to the entity sprite, and are
     // otherwise skipped instead of failing the frame.
     const unrenderable = new Set();
+    // Things that carry no artwork. Doom draws nothing for them (TNT1, teleport
+    // destinations, deathmatch starts), so a play preview must not either; the editor
+    // still needs a placholder to select and move them.
+    const withoutArtwork = [];
     function addEntity(entity) {
       if (!entity.modelAsset) { addSprite(entity); return; }
       if (modelAssets.has(entity.modelAsset)) { addModel(entity); return; }
@@ -1200,7 +1211,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity,
       spriteReport: () => ({ player: { x: Math.round(state.player.x), y: Math.round(state.player.y),
         z: Math.round((state.player.z ?? 0) * 10) / 10, pitch: Math.round((state.player.pitch || 0) * 1000) / 1000 },
-      sprites: report.slice() }),
+      sprites: report.slice(), withoutArtwork: withoutArtwork.slice(), hiddenWithoutArtwork: unrenderable.size }),
       perf: () => ({ ...frameStats.summary(), slowFrame }) };
   } catch (error) {
     dispose();

@@ -268,7 +268,7 @@ test('a slow simulation step keeps the stage breakdown that explains it', async 
   const slow = session.slowStep;
   assert.ok(slow, 'a step over the threshold is kept');
   assert.ok(slow.ms >= SLOW_STEP_MS);
-  for (const stage of ['hud', 'physics', 'rules', 'actors', 'projectiles', 'effects']) {
+  for (const stage of ['interface', 'hud', 'sectors', 'use', 'rules', 'physics', 'afterRules', 'actors', 'projectiles', 'effects']) {
     assert.ok(stage in slow, `the step keeps its ${stage} stage`);
   }
   // Never part of a save: the accessor must stay out of JSON and out of key lists.
@@ -298,6 +298,36 @@ test('the preview loop times the whole frame, not only the renderer', () => {
   assert.match(app, /hidden: document\.hidden/);
   assert.match(app, /stepStages: runtime\?\.slowStep \?\? null/);
   assert.match(app, /document\.addEventListener\('visibilitychange'/);
+});
+
+test('a play preview draws nothing for a thing that carries no artwork', () => {
+  const render = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
+  // A grey placeholder billboard is right in the editor and wrong in a running game:
+  // MAP02 puts a teleport destination 68 units in front of the player start, and Doom
+  // draws nothing for it.
+  assert.match(render, /if \(!editor && !entity\.spriteAsset\) \{/);
+  assert.match(render, /unrenderable\.add\(entity\.id\);/);
+  assert.match(render, /withoutArtwork\.push\(\{ id: entity\.id,/);
+  // The log still names them, because missing artwork is an import problem.
+  assert.match(render, /hiddenWithoutArtwork: unrenderable\.size/);
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /playtestLog\.once\('render:without-artwork'/);
+});
+
+test('a preview snapshot drops the levels it can never play', () => {
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  // The other levels' data is most of an imported game and a level change rebuilds a
+  // snapshot from the editor project, so the copy inside a running preview only made
+  // the collector walk tens of megabytes every cycle.
+  assert.match(app, /for \(const level of snapshot\.game\?\.levels \|\| \[\]\) \{/);
+  assert.match(app, /if \(level\.id === snapshot\.game\.active\) continue;/);
+  assert.match(app, /level\.data = \{\};/);
+  // It has to happen after a save from another level has been restored into it.
+  const restore = app.indexOf('restoreGameSave(snapshot, savedGame, identity)');
+  const trim = app.indexOf('level.data = {};');
+  assert.ok(restore > 0 && trim > restore, 'the snapshot is trimmed after the save is restored');
+  // A slow frame reports the heap it started with, so a collection is recognisable.
+  assert.match(app, /frameParts\.heapBefore = performance\.memory/);
 });
 
 test('the render buffer ignores a few pixels of layout wobble', () => {

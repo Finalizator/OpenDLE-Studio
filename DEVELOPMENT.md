@@ -1645,11 +1645,25 @@ charges the frozen wall time to that frame, which otherwise reads exactly like a
 the code).
 
 A frame that stalls inside the simulation only says "step", so `stepRuntime` also times
-its own stages (`hud`, `physics`, `rules`, `actors`, `projectiles`, `effects`) and keeps
-the breakdown of the slowest step, reported as `stepStages` next to the frame. That is
-how a 3417 ms frame in a real playtest was attributed to `step: 3378` rather than to the
-renderer. The stages live in the per-state cache and are exposed through a
-non-enumerable `state.slowStep` accessor, so they never reach a save file.
+its own stages (`interface`, `hud`, `sectors`, `use`, `rules`, `physics`, `afterRules`,
+`actors`, `projectiles`, `effects`) and keeps the breakdown of the slowest step, reported
+as `stepStages` next to the frame. That is how a 3417 ms frame in a real playtest was
+attributed to `step: 3378` rather than to the renderer, and how the next one was narrowed
+to the interface/hud part of the step. The stages live in the per-state cache and are
+exposed through a non-enumerable `state.slowStep` accessor, so they never reach a save
+file; `state.stepTotals` carries the mean and peak of every stage for a whole session,
+and `state.stepReportMs` lowers the reporting threshold for a diagnostic run. A slow frame
+also reports `heapBefore`, the JS heap it started with: the same frames came back with
+every stage at zero milliseconds, which is what a collection or a descheduled tab looks
+like, not work this code did. The engine itself measured 0.4 ms per simulation step on
+Doom II MAP01 over 7200 frames, with no stage above 2 ms, so the remaining pauses are
+outside its arithmetic.
+
+The preview also carries less of the project: a running preview can only ever play the
+active level, and a level change builds a fresh snapshot from the editor project, so the
+other levels' `data` and `assetIds` are dropped from the snapshot. On an imported game
+that is 22.5 MiB of the 44 MiB document, duplicated into a second copy that the
+collector had to walk for every edit of the running level.
 
 The first real report also named the allocation problem behind such pauses.
 `geometryDistance` rebuilt its id-to-sector map on every call and built a two element
@@ -1996,6 +2010,16 @@ pickup reach all still measure height against world-up, and the capsule cannot
 pass through a 56-unit gap sideways once it is lying horizontally. Treat this as
 a scripting primitive for experiments, not as a guarantee that every Doom map
 plays correctly upside down.
+
+### A thing with no artwork is invisible, not grey
+
+Doom draws nothing for a thing that has no sprite: `TNT1`, teleport destinations,
+deathmatch starts. The preview used to draw a placeholder billboard in the decoration
+colour for those, which is what the grey square 68 units in front of the player on MAP02
+was (a teleport destination, thing type 14). A play preview now skips them, and the
+playtest log names them once (`N object(s) have no artwork and are not drawn: ...`),
+because artwork that is *missing* is an import problem worth seeing. The editor still
+draws the placeholder, since the object has to stay selectable.
 
 ### Object-attached visual scripts
 
