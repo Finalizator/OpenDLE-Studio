@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ProjectStore, projectSlug } from '../server/store.js';
@@ -93,6 +93,49 @@ test('an unknown or escaping project id is refused', t => {
   writeFileSync(join(directory, '..', 'escape.json'), JSON.stringify({ project: titled('Escape'), revision: 1 }));
   assert.throws(() => new ProjectStore(file), /points outside the project folder/);
   rmSync(join(directory, '..', 'escape.json'), { force: true });
+});
+
+test('an import is stored in the temporary slot and reopens from it', t => {
+  const directory = withDirectory(t);
+  const file = join(directory, 'project.json');
+  writeFileSync(file, JSON.stringify({ project: titled('Hexabun'), revision: 1 }));
+  const store = new ProjectStore(file);
+  const first = store.adopt(titled('Imported WAD game'), 'Imported WAD game', { temporary: true });
+  assert.equal(first.projectId, 'temporary');
+  assert.equal(first.temporary, true);
+  assert.equal(store.list().projects.find(entry => entry.id === 'temporary').temporary, true);
+  // Importing again replaces that slot instead of piling up a project per import.
+  const second = store.adopt(titled('Imported WAD game'), 'Imported WAD game', { temporary: true });
+  assert.equal(second.revision, 2);
+  assert.equal(store.list().projects.length, 2);
+  const restarted = new ProjectStore(file);
+  assert.equal(restarted.snapshot().temporary, true);
+  assert.equal(restarted.snapshot().project.title, 'Imported WAD game');
+  // The older project is untouched and still openable.
+  restarted.open('hexabun');
+  assert.equal(restarted.snapshot().project.title, 'Hexabun');
+  assert.equal(restarted.snapshot().temporary, false);
+});
+
+test('saving a temporary import promotes it so the next import cannot replace it', t => {
+  const directory = withDirectory(t);
+  const file = join(directory, 'project.json');
+  writeFileSync(file, JSON.stringify({ project: titled('Hexabun'), revision: 1 }));
+  const store = new ProjectStore(file);
+  store.adopt(titled('Imported WAD game'), 'Imported WAD game', { temporary: true });
+  const revision = store.snapshot().revision;
+  const saved = store.update(titled('Imported WAD game'), revision);
+  assert.equal(saved.projectId, 'imported-wad-game');
+  assert.equal(saved.temporary, false);
+  assert.equal(existsSync(join(directory, 'projects', 'temporary.json')), false, 'the temporary copy is removed');
+  assert.equal(store.list().projects.some(entry => entry.id === 'temporary'), false);
+  // A later import is temporary again and leaves the saved project alone.
+  const again = store.adopt(titled('Other game'), 'Other game', { temporary: true });
+  assert.equal(again.projectId, 'temporary');
+  assert.deepEqual(store.list().projects.map(entry => entry.id).sort(),
+    ['hexabun', 'imported-wad-game', 'temporary']);
+  store.open('imported-wad-game');
+  assert.equal(store.snapshot().project.title, 'Imported WAD game');
 });
 
 test('project ids are file safe slugs of the title', () => {

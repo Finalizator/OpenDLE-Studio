@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
@@ -6,6 +6,8 @@ import { upgradePickupReach } from '../shared/doom-hud.js';
 
 /** The list of stored projects and which one the studio reopens on the next start. */
 const INDEX_NAME = 'projects.json';
+/** The one slot an import is stored in until the user saves it. */
+export const TEMPORARY_ID = 'temporary';
 
 /** A file safe id for a project title: lowercase, dashes, no path characters. */
 export function projectSlug(title) {
@@ -119,13 +121,15 @@ export class ProjectStore {
       active: this.index.active,
       projects: [...this.index.projects]
         .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
-        .map(entry => ({ id: entry.id, title: entry.title || entry.id, updatedAt: entry.updatedAt || null })),
+        .map(entry => ({ id: entry.id, title: entry.title || entry.id, updatedAt: entry.updatedAt || null,
+          temporary: Boolean(entry.temporary) })),
     };
   }
 
   snapshot() {
     return { project: structuredClone(this.project), revision: this.revision,
-      projectId: this.index.active, title: this.project.title ?? null };
+      projectId: this.index.active, title: this.project.title ?? null,
+      temporary: Boolean(this.activeEntry()?.temporary) };
   }
 
   open(id) {
@@ -165,15 +169,22 @@ export class ProjectStore {
    * Stores a project as the open one: a document that came from an import, a file or a
    * draft has no file of its own yet, so it gets one instead of overwriting whichever
    * project was open before.
+   *
+   * A `temporary` project is the working copy of an import: it lives in one fixed slot
+   * (`projects/temporary.json`) so importing another game replaces it instead of piling
+   * up entries, and it is reopened on the next start. Saving it promotes it to a real
+   * project under its title, after which a new import cannot overwrite it.
    */
-  adopt(project, title = project?.title) {
+  adopt(project, title = project?.title, { temporary = false } = {}) {
     validateProject(project);
-    const id = projectSlug(title);
+    const id = temporary ? TEMPORARY_ID : projectSlug(title);
     let entry = this.index.projects.find(candidate => candidate.id === id);
     if (!entry) {
-      entry = { id, title: title || project.title || 'Project', file: join('projects', `${id}.json`), updatedAt: null };
+      entry = { id, title: title || project.title || 'Project', file: join('projects', `${id}.json`),
+        updatedAt: null, ...(temporary ? { temporary: true } : {}) };
       this.index.projects.push(entry);
     }
+    if (temporary) entry.temporary = true;
     const revision = (entry.id === this.index.active ? this.revision : 0) + 1;
     entry.title = project.title || title || entry.title;
     entry.updatedAt = new Date().toISOString();
@@ -194,7 +205,10 @@ export class ProjectStore {
     validateProject(project);
     // A studio that has never saved anything stores the first save as a project.
     if (!this.activeEntry()) return this.adopt(project);
-    const entry = this.activeEntry();
+    let entry = this.activeEntry();
+    // Saving a temporary import makes it a real project under its own title, so the next
+    // import replaces the temporary slot instead of this work.
+    if (entry.temporary) entry = this.promote(entry, project);
     entry.title = project.title || entry.title;
     entry.updatedAt = new Date().toISOString();
     this.writeProject(entry, project, this.revision + 1);
@@ -202,5 +216,21 @@ export class ProjectStore {
     this.revision++;
     this.saveIndex();
     return this.snapshot();
+  }
+
+  /** Moves a temporary project into its own entry and removes the temporary slot. */
+  promote(entry, project) {
+    const id = projectSlug(project.title || entry.title);
+    if (id === entry.id) { delete entry.temporary; return entry; }
+    const promoted = { id, title: project.title || entry.title, file: join('projects', `${id}.json`), updatedAt: new Date().toISOString() };
+    const existing = this.index.projects.findIndex(candidate => candidate.id === id);
+    if (existing >= 0) this.index.projects[existing] = promoted;
+    else this.index.projects.push(promoted);
+    this.index.projects = this.index.projects.filter(candidate => candidate.id !== entry.id);
+    // The temporary copy is the same document, so it must not linger next to it.
+    if (this.directory) rmSync(this.fileFor(entry), { force: true });
+    this.documents.delete(entry.id);
+    this.index.active = id;
+    return promoted;
   }
 }

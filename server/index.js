@@ -221,7 +221,8 @@ export function createApp({
   // and adopting both have to be reachable from the client.
   app.get('/api/projects', (req, res) => res.json(store.list()));
   app.post('/api/projects/open', (req, res) => res.json(store.open(String(req.body?.id ?? ''))));
-  app.post('/api/project/adopt', (req, res) => res.json(store.adopt(req.body?.project, req.body?.title)));
+  app.post('/api/project/adopt', (req, res) => res.json(store.adopt(req.body?.project, req.body?.title,
+    { temporary: req.body?.temporary === true })));
   let aiBusy = false;
   app.post('/api/ai', async (req, res) => {
     if (aiBusy) return res.status(429).json({ error: 'An AI request is already running' });

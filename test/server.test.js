@@ -63,6 +63,17 @@ test('stored projects can be adopted, listed and opened over HTTP', async t => {
     body: JSON.stringify({ id: 'imported-wad-game' }) })).json();
   assert.equal(reopened.project.title, 'Imported WAD game');
   assert.equal(store.snapshot().projectId, 'imported-wad-game');
+  // An import is stored in the temporary slot and saving promotes it out of that slot.
+  const temporary = await (await fetch(`${url}/api/project/adopt`, { method: 'POST', headers,
+    body: JSON.stringify({ project: imported, title: imported.title, temporary: true }) })).json();
+  assert.equal(temporary.projectId, 'temporary');
+  assert.equal(temporary.temporary, true);
+  const promoted = await (await fetch(`${url}/api/project`, { method: 'PUT', headers,
+    body: JSON.stringify({ project: imported, revision: temporary.revision }) })).json();
+  assert.equal(promoted.projectId, 'imported-wad-game');
+  assert.equal(promoted.temporary, false);
+  const afterSave = await (await fetch(`${url}/api/projects`, { headers })).json();
+  assert.equal(afterSave.projects.some(entry => entry.id === 'temporary'), false);
 });
 
 test('HTTP editor, auth, host/origin checks, invalid input and revision conflict', async t => {

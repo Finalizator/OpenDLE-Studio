@@ -88,15 +88,22 @@ Opening a saved studio therefore never rewrites anything; the list is written on
 the first save, import or switch.
 
 Anything that replaces the whole document — **Import WAD + assets**, **Quick
-import game**, a package import, **Open project** — is stored as its own project
-and becomes the active one, so the next start opens it instead of whatever was
-saved previously. A document that never had a file of its own (**New project**,
-**Restore local draft**) is stored by the first **Save** under its own title
-instead of overwriting the project that was open, and the same title overwrites
-the same entry. **Menu → Stored project** lists everything and switches between
-them; switching asks before discarding unsaved edits, and the browser draft is
-kept under the project id it came from, so a draft is never restored into a
-different project.
+import game**, a package import, **Open project** — is stored **immediately** in a
+temporary slot (`data/projects/temporary.json`, listed as `temporary`) and becomes
+the active project, so the next start opens it instead of whatever was saved
+previously even if the user never pressed Save. There is only one temporary slot:
+importing another game (or reimporting the same one) replaces it instead of
+piling up an entry per import, and the status badge reads **Temporary** while the
+open project lives there.
+
+**Save** promotes the temporary project into a real one under its title
+(`imported-wad-game`), removes the temporary file and reports the new id, after
+which a later import cannot overwrite it. A document that never had a file of its
+own (**New project**, **Restore local draft**) is stored by the first **Save** the
+same way. **Menu → Stored project** lists everything and switches between them;
+switching asks before discarding unsaved edits, and the browser draft is kept
+under the project id it came from, so a draft is never restored into a different
+project.
 
 Requires Node.js 22 or newer and npm.
 

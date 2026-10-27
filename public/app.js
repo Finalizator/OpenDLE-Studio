@@ -54,6 +54,10 @@ let project, token, revision = 0, dirty = false, selection = null, editVersion =
 // its own yet (a new project, an import that was never stored, a restored draft), which
 // is what decides whether Save updates the open project or stores a new one.
 let projectId = null;
+// A temporary project is the stored copy of an import: it reopens next time but the next
+// import replaces it, so the badge says so instead of "Saved".
+let projectTemporary = false;
+const badgeText = () => dirty ? 'Unsaved' : projectTemporary ? 'Temporary' : 'Saved';
 let history = [], future = [], pendingAI = null, loadedWad = null, runtime = null;
 let scriptScope = '$all';
 const collapsedGroups = new Set(), collapsedEvents = new Set();
@@ -228,7 +232,7 @@ function render() {
       ...(project.game?.levels || []).map(level => new Option(`${level.id} — ${level.name}`, level.id, false, level.id === value)));
   }
   $('project-name').textContent = project.title;
-  $('dirty').textContent = dirty ? 'Unsaved' : 'Saved';
+  $('dirty').textContent = badgeText();
   $('undo').disabled = history.length === 0;
   $('redo').disabled = future.length === 0;
   renderEntities();
@@ -436,6 +440,7 @@ function replace(next, message) {
   // The new document has no stored project until it is adopted (imports, opened files)
   // or saved, which is what keeps Save from overwriting whatever was open before.
   projectId = null;
+  projectTemporary = false;
   fitMap();
 }
 /**
@@ -446,7 +451,9 @@ async function adoptDocument() {
   const version = editVersion, submitted = project.title;
   let result;
   try {
-    result = await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: submitted }) });
+    // Imports and opened files are stored in the temporary slot, which every later
+    // import replaces and which the next start reopens; Save promotes it to a project.
+    result = await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: submitted, temporary: true }) });
   } catch (error) {
     // Opening the project worked; only storing it for the next start failed (an older
     // server, or a read-only data folder). Saving later retries it.
@@ -456,9 +463,10 @@ async function adoptDocument() {
   // An edit while the document was being stored stays unsaved and unbound.
   if (version !== editVersion) return;
   projectId = result.projectId ?? null;
+  projectTemporary = Boolean(result.temporary);
   revision = result.revision;
   dirty = false;
-  $('dirty').textContent = 'Saved';
+  $('dirty').textContent = badgeText();
   await refreshProjects();
 }
 /** Stored projects, newest first, with the open one selected in the file menu. */
@@ -474,7 +482,8 @@ async function refreshProjects() {
   }
   select.disabled = false;
   for (const entry of library.projects) {
-    select.append(new Option(entry.title || entry.id, entry.id, false, entry.id === (projectId ?? library.active)));
+      const label = `${entry.title || entry.id}${entry.temporary ? ' (temporary)' : ''}`;
+    select.append(new Option(label, entry.id, false, entry.id === (projectId ?? library.active)));
   }
 }
 $('game-level').addEventListener('change', guard(() => {
@@ -1933,6 +1942,8 @@ async function saveProject() {
     : await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: project.title }) });
   revision = result.revision;
   projectId = result.projectId ?? projectId;
+  // Saving promotes a temporary import into a real project.
+  projectTemporary = Boolean(result.temporary);
   dirty = editVersion !== submittedVersion;
   if (!dirty) persistDraft();
   render();
@@ -1943,7 +1954,8 @@ async function saveProject() {
 async function reloadProject(initial = false) {
   if (!initial && dirty && !confirm('Discard unsaved edits and load the server project? Your last draft stays in browser storage.')) return;
   const result = await api('/api/project');
-  project = validateProject(result.project); revision = result.revision; projectId = result.projectId ?? null; dirty = false;
+  project = validateProject(result.project); revision = result.revision; projectId = result.projectId ?? null;
+  projectTemporary = Boolean(result.temporary); dirty = false;
   let recovery;
   if (initial) {
     recovery = recoverProject(result, localStorage.getItem('opendle-draft'), localStorage.getItem('opendle-draft-metadata'));
@@ -2621,10 +2633,11 @@ $('projects').addEventListener('change', guard(async () => {
   project = validateProject(result.project);
   revision = result.revision;
   projectId = result.projectId ?? id;
+  projectTemporary = Boolean(result.temporary);
   dirty = false;
   editVersion++;
   history = []; future = []; selection = null; scriptScope = '$all';
-  $('dirty').textContent = 'Saved';
+  $('dirty').textContent = badgeText();
   render(); fitMap();
   status(`Opened stored project "${project.title}"; it reopens next time`);
 }));
