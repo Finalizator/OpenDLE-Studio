@@ -5,8 +5,10 @@ rule that makes a game behave is an editable **event**. Imported games arrive as
 ordinary events, so you can inspect, disable, reorder or rewrite them.
 
 This document is the reference for the event model, both authoring scopes, the
-execution order, and the full condition/action catalogue (generated from the
-engine source so it cannot drift).
+execution order, and the full condition/action catalogue. The catalogue is
+written by hand but kept honest by `test/docs-catalogue.test.js`, which fails if
+`shared/engine-script.js` or `shared/project.js` gains a command this file does
+not list.
 
 - Editor: **Events** panel (`public/index.html`, `public/event-sheet.js`)
 - Model and validation: `shared/events.js`, `shared/project.js`
@@ -244,6 +246,10 @@ an object (`entityId`); `$self` is available inside object rules.
 | compare math / text expressions | `expressionCompare` | — | left, operator, right |
 | compare local variable | `objectVariableCompare` | yes | variable, operator, value |
 | overlaps pickup reach | `playerReachesEntity` | yes | distance, height, below |
+| touching a surface | `playerTouchingSurface` | — | surface |
+| is on the ground / airborne | `playerAirborne` | — | state |
+| inside this object interaction area | `playerInArea` | yes | — |
+| entered this object interaction area | `playerEnteredArea` | yes | — |
 | health decreased | `entityDamaged` | yes | — |
 | is alive (health above zero) | `entityAlive` | yes | — |
 | compare distance between two objects | `distanceBetween` | yes | otherId, operator, distance |
@@ -341,6 +347,7 @@ an object (`entityId`); `$self` is available inside object rules.
 | turn (degrees / second) | `turnPlayer` | — | speed |
 | apply mouse movement | `mouseLook` | — | sensitivity, vertical |
 | request jump | `jumpPlayer` | — | — |
+| set gravity direction (walk on that surface) | `setPlayerGravity` | — | mode, reach |
 | set stat | `setPlayerStat` | — | stat, value |
 | add capped stat | `addPlayerStat` | — | stat, value, maximum |
 | damage through armor | `damagePlayer` | — | damage, direction |
