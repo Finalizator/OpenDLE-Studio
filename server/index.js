@@ -215,7 +215,13 @@ export function createApp({
     res.json(playtestLogs.read(req.params.session));
   });
   app.delete('/api/playtest/logs', (req, res) => res.json(playtestLogs.clear()));
-  app.get('/api/project', (req, res) => res.json(store.snapshot()));  app.put('/api/project', (req, res) => res.json(store.update(req.body.project, req.body.revision)));
+  app.get('/api/project', (req, res) => res.json(store.snapshot()));
+  app.put('/api/project', (req, res) => res.json(store.update(req.body.project, req.body.revision)));
+  // Stored projects: the studio reopens the active one on the next start, so switching
+  // and adopting both have to be reachable from the client.
+  app.get('/api/projects', (req, res) => res.json(store.list()));
+  app.post('/api/projects/open', (req, res) => res.json(store.open(String(req.body?.id ?? ''))));
+  app.post('/api/project/adopt', (req, res) => res.json(store.adopt(req.body?.project, req.body?.title)));
   let aiBusy = false;
   app.post('/api/ai', async (req, res) => {
     if (aiBusy) return res.status(429).json({ error: 'An AI request is already running' });

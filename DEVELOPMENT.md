@@ -70,6 +70,34 @@ fails startup explicitly and produces an explicit error if changed while running
 This is the engine's displayed version, not the saved-project revision or the
 npm package release version in `package.json`.
 
+### Stored projects and reopening the last one
+
+The studio reopens the project that was open when it last ran. Projects are stored
+under `data/`, one file each, with a small list beside them:
+
+| path | contents |
+| --- | --- |
+| `data/projects.json` | stored projects and the `active` one the studio reopens |
+| `data/projects/<id>.json` | one stored project |
+| `data/project.json` | the single project file of an older installation |
+
+The `<id>` is a file-safe slug of the project title (`Imported WAD game` →
+`imported-wad-game`), so an installation that still has the old single
+`data/project.json` keeps it as the first entry rather than moving or losing it.
+Opening a saved studio therefore never rewrites anything; the list is written on
+the first save, import or switch.
+
+Anything that replaces the whole document — **Import WAD + assets**, **Quick
+import game**, a package import, **Open project** — is stored as its own project
+and becomes the active one, so the next start opens it instead of whatever was
+saved previously. A document that never had a file of its own (**New project**,
+**Restore local draft**) is stored by the first **Save** under its own title
+instead of overwriting the project that was open, and the same title overwrites
+the same entry. **Menu → Stored project** lists everything and switches between
+them; switching asks before discarding unsaved edits, and the browser draft is
+kept under the project id it came from, so a draft is never restored into a
+different project.
+
 Requires Node.js 22 or newer and npm.
 
 On Linux/macOS, run the executable [launch.sh](./launch.sh) (choose **Run as

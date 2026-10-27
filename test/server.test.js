@@ -39,6 +39,32 @@ test('store saves atomically, reloads and rejects stale revisions without changi
     assert.equal(store.snapshot().project.title, 'Persistent world');
   } finally { rmSync(directory, { recursive: true }); }
 });
+test('stored projects can be adopted, listed and opened over HTTP', async t => {
+  const { url, store } = await fixture(t);
+  assert.equal((await fetch(`${url}/api/projects`)).status, 401);
+  const empty = await (await fetch(`${url}/api/projects`, { headers })).json();
+  assert.deepEqual(empty, { active: null, projects: [] });
+  // A document that came from an import: it gets its own project and becomes the open one.
+  const imported = createProject(); imported.title = 'Imported WAD game';
+  const adopted = await (await fetch(`${url}/api/project/adopt`, { method: 'POST', headers,
+    body: JSON.stringify({ project: imported, title: imported.title }) })).json();
+  assert.equal(adopted.projectId, 'imported-wad-game');
+  assert.equal(adopted.revision, 1);
+  const listed = await (await fetch(`${url}/api/projects`, { headers })).json();
+  assert.deepEqual(listed.projects.map(entry => entry.id), ['imported-wad-game']);
+  // Saving the open project keeps it as the active one.
+  const saved = await (await fetch(`${url}/api/project`, { method: 'PUT', headers,
+    body: JSON.stringify({ project: imported, revision: adopted.revision }) })).json();
+  assert.equal(saved.projectId, 'imported-wad-game');
+  assert.equal(saved.revision, 2);
+  assert.equal((await fetch(`${url}/api/projects/open`, { method: 'POST', headers,
+    body: JSON.stringify({ id: 'missing' }) })).status, 404);
+  const reopened = await (await fetch(`${url}/api/projects/open`, { method: 'POST', headers,
+    body: JSON.stringify({ id: 'imported-wad-game' }) })).json();
+  assert.equal(reopened.project.title, 'Imported WAD game');
+  assert.equal(store.snapshot().projectId, 'imported-wad-game');
+});
+
 test('HTTP editor, auth, host/origin checks, invalid input and revision conflict', async t => {
   const { url } = await fixture(t);
   const page = await fetch(url);

@@ -50,6 +50,10 @@ const $ = id => document.getElementById(id);
 $('asset-dock').append($('assets-panel'));
 $('assets-panel').hidden = false;
 let project, token, revision = 0, dirty = false, selection = null, editVersion = 0;
+// The stored project this document belongs to. Null means the document has no file of
+// its own yet (a new project, an import that was never stored, a restored draft), which
+// is what decides whether Save updates the open project or stores a new one.
+let projectId = null;
 let history = [], future = [], pendingAI = null, loadedWad = null, runtime = null;
 let scriptScope = '$all';
 const collapsedGroups = new Set(), collapsedEvents = new Set();
@@ -183,7 +187,7 @@ function persistDraft() {
   }
   try {
     localStorage.setItem('opendle-draft', JSON.stringify(project));
-    localStorage.setItem('opendle-draft-metadata', JSON.stringify({ baseRevision: revision }));
+    localStorage.setItem('opendle-draft-metadata', JSON.stringify({ baseRevision: revision, projectId }));
   }
   catch (error) { status(`Edit kept in memory, but browser backup failed: ${error.message}. Save or export now.`, true); }
 }
@@ -429,7 +433,49 @@ function replace(next, message) {
   selection = null;
   scriptScope = '$all';
   commit(next, message);
+  // The new document has no stored project until it is adopted (imports, opened files)
+  // or saved, which is what keeps Save from overwriting whatever was open before.
+  projectId = null;
   fitMap();
+}
+/**
+ * Stores the document that was just opened as the studio's project, so the next start
+ * reopens it instead of whatever was saved before.
+ */
+async function adoptDocument() {
+  const version = editVersion, submitted = project.title;
+  let result;
+  try {
+    result = await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: submitted }) });
+  } catch (error) {
+    // Opening the project worked; only storing it for the next start failed (an older
+    // server, or a read-only data folder). Saving later retries it.
+    status(`Project opened, but it could not be stored for reopening: ${error.message}`, true);
+    return;
+  }
+  // An edit while the document was being stored stays unsaved and unbound.
+  if (version !== editVersion) return;
+  projectId = result.projectId ?? null;
+  revision = result.revision;
+  dirty = false;
+  $('dirty').textContent = 'Saved';
+  await refreshProjects();
+}
+/** Stored projects, newest first, with the open one selected in the file menu. */
+async function refreshProjects() {
+  const select = $('projects');
+  let library;
+  try { library = await api('/api/projects'); } catch { return; }
+  select.textContent = '';
+  if (!library.projects.length) {
+    select.append(new Option('No stored projects yet', ''));
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  for (const entry of library.projects) {
+    select.append(new Option(entry.title || entry.id, entry.id, false, entry.id === (projectId ?? library.active)));
+  }
 }
 $('game-level').addEventListener('change', guard(() => {
   const id = $('game-level').value;
@@ -1880,17 +1926,24 @@ canvas.addEventListener('wheel', event => {
 
 async function saveProject() {
   const submittedVersion = editVersion;
-  const result = await api('/api/project', { method: 'PUT', body: JSON.stringify({ project, revision }) });
+  // A document without a stored project gets its own file, so saving a fresh import no
+  // longer overwrites whichever project happened to be open.
+  const result = projectId
+    ? await api('/api/project', { method: 'PUT', body: JSON.stringify({ project, revision }) })
+    : await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: project.title }) });
   revision = result.revision;
+  projectId = result.projectId ?? projectId;
   dirty = editVersion !== submittedVersion;
   if (!dirty) persistDraft();
   render();
-  status(dirty ? 'Earlier snapshot saved; newer edits are still unsaved' : 'Project saved to local server');
+  await refreshProjects();
+  status(dirty ? 'Earlier snapshot saved; newer edits are still unsaved'
+    : `Project saved to the local server; it reopens next time as "${project.title}"`);
 }
 async function reloadProject(initial = false) {
   if (!initial && dirty && !confirm('Discard unsaved edits and load the server project? Your last draft stays in browser storage.')) return;
   const result = await api('/api/project');
-  project = validateProject(result.project); revision = result.revision; dirty = false;
+  project = validateProject(result.project); revision = result.revision; projectId = result.projectId ?? null; dirty = false;
   let recovery;
   if (initial) {
     recovery = recoverProject(result, localStorage.getItem('opendle-draft'), localStorage.getItem('opendle-draft-metadata'));
@@ -2535,6 +2588,24 @@ $('fit').addEventListener('click', fitMap);
 $('grid').addEventListener('change', () => { mapNeedsDraw = true; });
 $('save').addEventListener('click', guard(saveProject));
 $('reload').addEventListener('click', guard(() => reloadProject()));
+$('projects').addEventListener('change', guard(async () => {
+  const id = $('projects').value;
+  if (!id || id === projectId) return;
+  if (dirty && !confirm('Discard unsaved edits and open this stored project? Your draft stays in browser storage.')) {
+    await refreshProjects();
+    return;
+  }
+  const result = await api('/api/projects/open', { method: 'POST', body: JSON.stringify({ id }) });
+  project = validateProject(result.project);
+  revision = result.revision;
+  projectId = result.projectId ?? id;
+  dirty = false;
+  editVersion++;
+  history = []; future = []; selection = null; scriptScope = '$all';
+  $('dirty').textContent = 'Saved';
+  render(); fitMap();
+  status(`Opened stored project "${project.title}"; it reopens next time`);
+}));
 $('undo').addEventListener('click', () => {
   if (!history.length) return;
   // Projects are never mutated in place (see cloneProjectForEdit), so the current
@@ -2588,7 +2659,9 @@ $('project-file').addEventListener('change', guard(async event => {
   if (!file) return;
   if (file.size > 128 * 1024 * 1024) throw new Error('Project exceeds the 128 MiB file limit');
   const next = validateProject(JSON.parse(await file.text()));
-  if (confirm('Open this project? You can undo this change.')) replace(next, 'Project opened');
+  if (!confirm('Open this project? You can undo this change.')) return;
+  replace(next, 'Project opened');
+  await adoptDocument();
 }));
 $('wad').addEventListener('click', () => $('wad-file').click());
 $('wad-file').addEventListener('change', guard(async event => {
@@ -2655,6 +2728,7 @@ $('import-map').addEventListener('click', async () => {
     const cacheNote = result.cached ? ` Loaded from the decompiled import cache (${Math.round(result.cached.bytes / 1024)} KiB, imported ${new Date(result.cached.importedAt).toLocaleString()}) in place of a full conversion.` : '';
     const summary = `Imported ${result.project.game?.levels.length || 1} level(s), starting at ${map}: ${result.project.assets.length} shared assets.${cacheNote} Use Editing level to edit another map, Play game for the game entry, or the in-game Level selector to play any imported map.`;
     replace(result.project, summary);
+    await adoptDocument();
     $('import-summary').textContent = `${summary} Import notes`;
     $('import-warnings').textContent = result.warnings.join('\n');
     $('import-report').hidden = false;
@@ -2760,6 +2834,7 @@ async function quickImport() {
         const levels = result.project.game?.levels.length || 1;
         const summary = `Imported ${result.project.title}: ${levels} level(s), ${result.project.assets.length} shared assets.${result.cached ? ' Served from the decompiled import cache.' : ''}`;
         replace(result.project, summary);
+        await adoptDocument();
         status(summary);
         dialog.close();
       } catch (error) {
@@ -2831,6 +2906,7 @@ $('package-import').addEventListener('click', async () => {
         ? `Imported ${result.project.title}: ${result.project.game?.levels.length || 1} level(s), entry ${result.entry.map}, ${result.project.assets.length} shared assets.${result.cached ? ' Loaded from the decompiled import cache.' : ''}`
         : `Imported package map: ${result.project.assets.length} images, ${result.project.hud.elements.length} HUD elements.`;
       replace(result.project, summary);
+      await adoptDocument();
     } else {
       const assets = result.assets.map(asset => kind ? { ...asset, kind } : asset);
       const additions = assets.filter(asset => !(project.assets || []).some(existing =>
@@ -3091,6 +3167,7 @@ async function start() {
   $('ai-state').textContent = session.deepseekConfigured ? session.model : 'Not configured';
   $('ask-ai').disabled = !session.deepseekConfigured;
   await reloadProject(true);
+  await refreshProjects();
   // The version is part of every playtest log header, so read it before any play.
   await loadEngineVersion().catch(() => {});
   $('editor-shell').hidden = false; $('editor-shell').inert = false;
