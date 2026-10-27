@@ -57,3 +57,34 @@ export function createDatasetWriter(canvas) {
     return true;
   };
 }
+
+/**
+ * Whole-frame timing for the preview loop.
+ *
+ * `createFrameStats` only sees the renderer's draw call, so a pause in the physics
+ * step, an audio decode, a texture upload or a garbage collection between frames is
+ * invisible. This keeps the worst frame together with what the frame was doing.
+ */
+export function createFrameBudget({ slowMs = 120 } = {}) {
+  let frames = 0, worst = 0, slow = 0, slowest = null;
+  function push(total, parts) {
+    const ms = Number.isFinite(total) && total > 0 ? total : 0;
+    frames++;
+    if (ms > worst) worst = ms;
+    if (ms < slowMs) return null;
+    slow++;
+    if (!slowest || ms > slowest.ms) {
+      slowest = { ms: Math.round(ms), ...(parts || {}) };
+      for (const key of Object.keys(slowest)) if (key !== 'ms') slowest[key] = Math.round(slowest[key]);
+    }
+    return slowest;
+  }
+  function reset() { frames = 0; worst = 0; slow = 0; slowest = null; }
+  return {
+    push, reset, slowMs,
+    get frames() { return frames; },
+    get slow() { return slow; },
+    get worst() { return worst; },
+    get slowest() { return slowest ? { ...slowest } : null; },
+  };
+}

@@ -180,6 +180,8 @@ function validateRuntime(project, state, baseline) {
   stringSet(state.worldTriggers.cross, wallIds, 'crossed walls');
   stringSet(state.worldTriggers.shoot, wallIds, 'shot walls');
   if (state.worldTriggers.use !== null && !wallIds.has(state.worldTriggers.use)) fail('invalid used wall');
+  if (state.worldTriggers.useSpecial !== undefined && state.worldTriggers.useSpecial !== null &&
+    !wallIds.has(state.worldTriggers.useSpecial)) fail('invalid used special wall');
   const numberMap = (map, label) => {
     for (const [key, value] of map) if (typeof key !== 'string' || typeof value !== 'number' || Number.isNaN(value)) fail(`invalid ${label}`);
   };

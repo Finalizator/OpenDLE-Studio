@@ -103,7 +103,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     enemyMoves: new Map(),
     impacts: [],
     decalCounter: 0,
-    worldTriggers: { use: null, cross: new Set(), shoot: new Set() },
+    worldTriggers: { use: null, useSpecial: null, cross: new Set(), shoot: new Set() },
     variables: { ...project.variables },
     entities,
     levelStatistics: createLevelStatistics(entities, project.map.sectors || []),
@@ -398,7 +398,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   advanceHUD(project, hud, dt);
   advanceSectors(state, dt);
   const usedWall = !hud.cursor && state.playerStats.health > 0 && pressed.has('KeyE') ? useWall(state) : null;
-  state.worldTriggers.use = usedWall;
+  state.worldTriggers.use = usedWall?.use ?? null;
+  // The nearest line that actually carries a special, so a plain wall in front of a door
+  // does not swallow the press.
+  state.worldTriggers.useSpecial = usedWall?.special ?? null;
   state.worldTriggers.shoot.clear();
   runRules('beforePhysics');
   if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
@@ -461,7 +464,11 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // list every frame is the single most expensive per-frame check on a big map.
   state.worldTriggers.cross = previousPosition.x === player.x && previousPosition.y === player.y
     ? state.worldTriggers.cross : crossedWalls(state, previousPosition);
-  if (usedWall) state.scripts?.activate(state.walls.find(wall => wall.id === usedWall), 'use');
+  // ACS `Use`/`PlayerUse` sees the same line the visual rules see, which is the one
+  // with the special when the player is not aiming straight at a plain wall.
+  for (const id of new Set([usedWall?.use, usedWall?.special].filter(Boolean))) {
+    state.scripts?.activate(state.walls.find(wall => wall.id === id), 'use');
+  }
   for (const id of state.worldTriggers.cross) state.scripts?.activate(state.walls.find(wall => wall.id === id), 'cross');
   state.scripts?.step(dt);
   updateLevelStatistics(state);
@@ -647,7 +654,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         state.entitySamples.set(key, entity.health);
         return entity.health < old;
       }
-      if (condition.type === 'wallActivated') return condition.mode === 'use' ? state.worldTriggers.use === condition.wallId : state.worldTriggers[condition.mode].has(condition.wallId);
+      if (condition.type === 'wallActivated') {
+        // A use press activates both the nearest wall (for hand-written rules) and the
+        // nearest wall with a special (for the generated door, lift and exit rules).
+        if (condition.mode === 'use') return state.worldTriggers.use === condition.wallId || state.worldTriggers.useSpecial === condition.wallId;
+        return state.worldTriggers[condition.mode].has(condition.wallId);
+      }
       if (condition.type === 'sectorMoving') return state.sectorMotions.has(`${condition.sectorId}:${condition.surface}`);
       if (condition.type === 'enemySeesPlayer') {
         const entity = findTarget(condition.entityId);

@@ -11,18 +11,50 @@ function intersection(a, b, wall) {
   return t > 1e-6 && t <= 1 && u >= 0 && u <= 1 ? t : null;
 }
 
+// Doom's P_UseLines reach: every line whose bounding box touches the player's box
+// grown by 64 units can be activated, not just the line straight ahead.
+const USE_REACH = 64;
+
+function segmentDistance(point, wall) {
+  const dx = wall.end.x - wall.start.x, dy = wall.end.y - wall.start.y;
+  const lengthSq = dx * dx + dy * dy;
+  const t = lengthSq ? Math.max(0, Math.min(1, ((point.x - wall.start.x) * dx + (point.y - wall.start.y) * dy) / lengthSq)) : 0;
+  const x = wall.start.x + dx * t, y = wall.start.y + dy * t;
+  return { distance: Math.hypot(point.x - x, point.y - y), x, y };
+}
+
+/**
+ * The walls the player is using, from one press of the use key.
+ *
+ * Doom's `P_UseLines` walks every line in reach and activates the ones with a special;
+ * a plain wall in front never stops a door behind it from being used, and a door is still
+ * used when the player stands beside it instead of aiming straight at it. Returning both
+ * the nearest wall (`use`, for hand-written rules on any wall) and the nearest wall that
+ * carries a special (`special`, for the generated door/lift/exit rules) keeps both.
+ */
 export function useWall(state) {
-  const a = state.player, b = { x: a.x + Math.cos(a.angle) * 64, y: a.y + Math.sin(a.angle) * 64 };
-  let nearest = 2, selected = null;
+  const a = state.player, facing = { x: Math.cos(a.angle), y: Math.sin(a.angle) };
+  const b = { x: a.x + facing.x * USE_REACH, y: a.y + facing.y * USE_REACH };
+  const floor = floorAt(state, a);
+  let nearest = 2, selected = null, specialT = 2, specialWall = null, reachScore = Infinity, reachWall = null;
   for (const wall of state.walls) {
+    if (wall.special) {
+      const { distance, x, y } = segmentDistance(a, wall);
+      // A line the player faces wins over one behind them, then the nearest wins.
+      const aimed = (x - a.x) * facing.x + (y - a.y) * facing.y > 0 ? 0 : USE_REACH;
+      const score = aimed + distance;
+      if (distance <= USE_REACH && score < reachScore) { reachScore = score; reachWall = wall.id; }
+    }
     const t = intersection(a, b, wall);
-    if (t === null || t >= nearest) continue;
+    if (t === null) continue;
+    if (wall.special && t < specialT) { specialT = t; specialWall = wall.id; }
+    if (t >= nearest) continue;
     const front = state.sectors.find(sector => sector.id === wall.right?.sectorId);
     const back = state.sectors.find(sector => sector.id === wall.left?.sectorId);
-    if (!wall.special && front && back && !wall.solid && Math.min(front.ceilingHeight, back.ceilingHeight) > floorAt(state, a) + 48) continue;
+    if (!wall.special && front && back && !wall.solid && Math.min(front.ceilingHeight, back.ceilingHeight) > floor + 48) continue;
     nearest = t; selected = wall.id;
   }
-  return selected;
+  return { use: selected, special: specialWall ?? reachWall };
 }
 
 export function crossedWalls(state, previous) {

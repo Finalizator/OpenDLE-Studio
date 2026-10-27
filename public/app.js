@@ -26,6 +26,7 @@ import { encodeSound } from '/shared/sound.js';
 import { importedGameplayGaps } from './gameplay-readiness.js';
 import { createActorsPanel } from './actors-panel.js';
 import { createScriptsPanel } from './scripts-panel.js';
+import { createFrameBudget } from '/shared/perf.js';
 import { createPlaytestLogger } from './playtest-log.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
@@ -1978,6 +1979,57 @@ function reportPlaytestFailures(session) {
  * the log names the stall and what was on screen instead of leaving it unexplained.
  */
 let reportedStalls = 0;
+// The renderer times its own draw call only, so a long pause in the simulation,
+// the audio mixer or the HUD never reached the playtest log. The frame budget and
+// the long-task observer below cover the rest of the loop.
+const frameBudget = createFrameBudget({ slowMs: 120 });
+const frameParts = { step: 0, audio: 0, render: 0, hud: 0 };
+let reportedSlowFrames = 0, reportedSlowWorst = 0, slowFrameReports = 0;
+let longTaskWatch = null, reportedLongTasks = 0;
+function reportSlowFrame() {
+  const slowest = frameBudget.slowest;
+  // Only a new worst frame is worth a log line: an ordinary slow frame repeats.
+  if (!slowest || slowest.ms <= reportedSlowWorst || slowFrameReports >= 10) return;
+  reportedSlowWorst = slowest.ms;
+  reportedSlowFrames = frameBudget.slow;
+  slowFrameReports++;
+  playtestLog.warn('performance', `Preview frame took ${slowest.ms} ms`, {
+    ...slowest, slowFrames: frameBudget.slow, frames: frameBudget.frames, slowMs: frameBudget.slowMs,
+    entities: runtime?.entities?.length ?? 0, level: previewProject?.game?.active ?? null,
+  });
+}
+/**
+ * Garbage collection, image decodes, layouts and long synchronous handlers run
+ * between frames, where nothing in the loop can measure them. The browser reports
+ * them as long tasks; attributing them is the only way to name a one-off hitch.
+ */
+function watchLongTasks() {
+  if (longTaskWatch || typeof PerformanceObserver !== 'function') return null;
+  if (!PerformanceObserver.supportedEntryTypes?.includes('longtask')) return null;
+  const watch = { count: 0, total: 0, worst: 0, observer: null };
+  try {
+    watch.observer = new PerformanceObserver(list => {
+      for (const entry of list.getEntries()) {
+        watch.count++; watch.total += entry.duration;
+        if (entry.duration > watch.worst) watch.worst = entry.duration;
+        if (entry.duration < 200 || ++reportedLongTasks > 10) continue;
+        playtestLog.warn('performance', `Long task blocked the preview for ${Math.round(entry.duration)} ms`, {
+          ms: Math.round(entry.duration), tasks: watch.count, worstMs: Math.round(watch.worst),
+          attribution: entry.attribution?.map(item => item.containerType || item.name || 'unknown') || [],
+          level: previewProject?.game?.active ?? null,
+        });
+      }
+    });
+    watch.observer.observe({ entryTypes: ['longtask'] });
+  } catch { return null; }
+  longTaskWatch = watch;
+  return watch;
+}
+function stopLongTasks() {
+  longTaskWatch?.observer?.disconnect();
+  longTaskWatch = null;
+  reportedLongTasks = 0;
+}
 function reportFrameStalls(session) {
   const perf = previewRenderer?.perf?.();
   if (!perf || perf.sessionStalls <= reportedStalls) return;
@@ -2000,8 +2052,13 @@ function stopPreview() {
       playSeconds: Math.round(runtime.time), health: runtime.playerStats.health,
       screen: runtime.gameScreen,
       ...(perf ? { frames: perf.sessionFrames, stalls: perf.sessionStalls, worstFrameMs: Math.round(perf.worst) } : {}),
+      // Whole-frame worst case and the tasks the browser ran between frames.
+      frameWorstMs: Math.round(frameBudget.worst), slowFrames: frameBudget.slow,
+      slowestFrame: frameBudget.slowest,
+      ...(longTaskWatch ? { longTasks: longTaskWatch.count, longTaskMs: Math.round(longTaskWatch.total), longTaskWorstMs: Math.round(longTaskWatch.worst) } : {}),
     });
   }
+  stopLongTasks();
   playtestLog.flush().catch(() => {});
   audioPlayer?.dispose(); audioPlayer = null;
   lookDrag = null; draggedLook = false;
@@ -2155,6 +2212,9 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     });
     $('preview-title').textContent = `${snapshot.title}${snapshot.game ? ` / ${snapshot.game.active}` : ''}`;
     reportedStalls = 0;
+    reportedSlowFrames = 0; reportedSlowWorst = 0; slowFrameReports = 0;
+    frameBudget.reset();
+    watchLongTasks();
     playtestLog.setContext({
       project: snapshot.title,
       level: snapshot.game ? `${snapshot.game.active} — ${(snapshot.game.levels || []).find(level => level.id === snapshot.game.active)?.name || ''}` : snapshot.title,
@@ -2363,6 +2423,7 @@ $('preview').addEventListener('blur', () => { keys.clear(); pressed.clear(); });
 let lastFrame = performance.now();
 function frame(now) {
   const dt = (now - lastFrame) / 1000; lastFrame = now;
+  const frameStart = performance.now();
   if (runtime) {
     try {
       const onMenu = runtime.gameScreen !== 'playing';
@@ -2395,8 +2456,11 @@ function frame(now) {
         beginPreview(mode, settings, true, startRequest?.levelId).catch(error => status(`New game failed: ${error.message}`, true));
         requestAnimationFrame(frame); return;
       }
+      frameParts.step = performance.now() - frameStart;
       audioPlayer?.update(runtime);
+      frameParts.audio = performance.now() - frameStart - frameParts.step;
       previewRenderer.render(runtime, runtime.gameScreen === 'playing' ? dt : 0);
+      frameParts.render = performance.now() - frameStart - frameParts.step - frameParts.audio;
       reportPlaytestFailures(runtime);
       reportFrameStalls(runtime);
       syncHUDCursor(); syncStatusBarButton(); hudView?.update(runtime);
@@ -2433,6 +2497,8 @@ function frame(now) {
       ...(!previewProject.hud && runtime.hud ? [`Health: ${runtime.playerStats.health}`, `Armor: ${runtime.playerStats.armor}`, `Bullets: ${runtime.playerStats.bullets}`] : []),
       ...(!previewProject.hud ? Object.entries(runtime.variables).map(([key, value]) => `${key}: ${value}`) : []),
     ].join('  /  ');
+    frameParts.hud = performance.now() - frameStart - frameParts.step - frameParts.audio - frameParts.render;
+    if (frameBudget.push(performance.now() - frameStart, frameParts)) reportSlowFrame();
   } else if (project && !$('map-panel').hidden) {
     if (sceneMode === '3d') {
       try { sceneEditor?.frame(dt); } catch (error) { status(`3D editor failed: ${error.message}`, true); setSceneMode('2d'); }

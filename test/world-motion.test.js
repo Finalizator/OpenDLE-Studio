@@ -59,7 +59,7 @@ test('E uses a door within64 units; live collision opens and closes with the vis
   assert.equal(s.sectors[1].ceilingHeight, 0, 'door returns closed');
   assert.equal(p.map.sectors[1].ceilingHeight, 0, 'runtime preserves project');
 });
-test('door use respects range, facing, occlusion and required key ownership', t => {
+test('door use respects reach and required key ownership', t => {
   const p = corridor();
   p.events = p.events.filter(e => !e.id.startsWith('world_special_'));
   p.map.walls[1].special = 26;
@@ -68,10 +68,16 @@ test('door use respects range, facing, occlusion and required key ownership', t 
   tick(p, s, 1, [], ['KeyE']);
   assert.equal(s.sectorMotions.size, 0); assert.match(s.message, /blue key/);
   s.inventory.keys.add('blueSkull');
+  // Doom's P_UseLines activates every line in the player's 64 unit use box, so a door
+  // beside or behind the player still opens; only distance stops the press.
   s.player.angle = Math.PI;
-  tick(p, s, 1, [], ['KeyE']); assert.equal(s.sectorMotions.size, 0, 'facing away');
+  tick(p, s, 1, [], ['KeyE']); assert.equal(s.sectorMotions.size, 1, 'reached without aiming at it');
+  s.sectorMotions.clear();
+  s.physics.teleport('player', -180, 0, 0);
+  s.player.x = -180; s.player.y = 0;
+  tick(p, s, 1, [], ['KeyE']); assert.equal(s.sectorMotions.size, 0, 'out of the 64 unit reach');
   s.player.angle = 0;
-  tick(p, s, 1, [], ['KeyE']); assert.equal(s.sectorMotions.size, 1);
+  tick(p, s, 1, [], ['KeyE']); assert.equal(s.sectorMotions.size, 0, 'still out of reach');
 });
 test('closing doors reverse instead of crushing a player in their opening', t => {
   const p = corridor(), s = physics(t, p);

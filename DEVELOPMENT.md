@@ -1602,6 +1602,17 @@ looked at it. `shared/render-warmup.js` forces culling and visibility off for th
 warm-up pass and restores exactly what it changed, so every pipeline exists
 before the first frame.
 
+Everything above measured only what the renderer's `render()` call could see, so a
+pause in the physics step, the audio mixer, the HUD update or the browser itself (garbage
+collection, layout, an image decode) never showed up in a report — `stalls: 0` alongside a
+two second freeze looked like nothing happened. The preview loop now times each section of
+the frame (`step`, `audio`, `render`, `hud`) into a `createFrameBudget` and logs a
+`Preview frame took N ms` entry whenever the worst frame gets worse, carrying the section
+breakdown. A `PerformanceObserver` for `longtask` covers the parts no frame code can see and
+logs `Long task blocked the preview for N ms` with the browser's attribution. Both numbers,
+plus `frameWorstMs`, `slowFrames`, `slowestFrame` and the long-task totals, are in the
+`Preview stopped` entry of every playtest log.
+
 Opt-in counters (`canvas.dataset.perfCounters = 'on'`) expose `frameMs`,
 `frameMaxMs`, `frameStalls`, `worldRebuildMs` and `worldRebuilds`; `preview.perf()`
 returns the same numbers plus `slowFrame`, the breakdown of the worst frame:
@@ -1615,7 +1626,9 @@ every frame.
 
 Remaining known hotspots, in order: HUD DOM updates for very large layouts,
 `syncWorld()` rebuilding a moving-sector trimesh on each world revision, sector
-advance allocations, and JSON `pairKey` collision keys.
+advance allocations, and JSON `pairKey` collision keys. Measured on Doom II MAP01, a
+collider rebuild is not one of them: the static mesh costs 2.7 ms and the dynamic
+moving-sector mesh 0.1 ms, so opening a door cannot be the source of a stutter.
 
 ### Renderer selection and GLSL effects
 
@@ -1707,6 +1720,23 @@ and from then on only that sector's geometry is re-triangulated (about 0.2 ms pe
 frame). Before this, only sectors named by an editable `moveSector` action were
 ever updated, so an imported door opened, animated and stayed solid: the visual
 world moved through `state.worldRevision` while the collider did not.
+
+Using a door follows Doom's `P_UseLines` rather than a thin ray. `useWall` still
+traces 64 units ahead for the nearest wall (hand-written rules attach to any wall),
+but it also reports the nearest line that *carries a special*, picked from every line
+within 64 units of the player, preferring the ones the player faces. A decoration or
+blocking line in front of a door no longer swallows the press, and a door beside the
+player no longer needs a perfect aim. Both ids reach the runtime as
+`state.worldTriggers.use` and `state.worldTriggers.useSpecial`, and the `wallActivated`
+"use" condition matches either, so imported door rules and authored ones keep working.
+
+The player capsule is one unit shorter than the 56 unit player height. Doom only
+refuses a gap *smaller* than the player (`P_CheckPosition` compares with `<`), so a
+niche whose ceiling sits exactly 56 above the floor is walkable there. In the browser
+it was not: the full-height capsule plus the character controller's query offset could
+not enter, which made the MAP01 exit door unreachable — the EXIT sign stands in a
+56 unit niche in front of it, and pressing use opened a door the player could not walk
+through.
 
 ### Physics and Blockbench models
 

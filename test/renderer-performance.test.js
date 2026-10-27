@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createSectorIndex, sectorAt, containsPoint, sectorGeometry, surfaceMaterials } from '../shared/sectors.js';
 import { wallSegments } from '../shared/runtime.js';
 import { createSpriteIndex, spriteIndex, clipFrame, spriteView, spriteAsset, setSpriteState } from '../shared/sprite-animation.js';
-import { createFrameStats, createDatasetWriter } from '../shared/perf.js';
+import { createFrameStats, createDatasetWriter, createFrameBudget } from '../shared/perf.js';
 import { readFileSync } from 'node:fs';
 
 // Reference implementations of the pre-index behaviour, kept here so the indexed
@@ -235,6 +235,40 @@ test('a stalled frame reports which phase was slow, not just how long it took', 
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(app, /slowFrame: perf\.slowFrame \? \{ \.\.\.perf\.slowFrame \} : null/,
     'the playtest log carries the breakdown');
+});
+
+test('the frame budget keeps the worst frame together with what it was doing', () => {
+  const budget = createFrameBudget({ slowMs: 100 });
+  assert.equal(budget.push(16, { step: 4, audio: 1, render: 9, hud: 1 }), null, 'a normal frame is not reported');
+  assert.deepEqual(budget.push(240, { step: 20, audio: 2, render: 200, hud: 4 }),
+    { ms: 240, step: 20, audio: 2, render: 200, hud: 4 });
+  assert.equal(budget.slow, 1);
+  // Only a new worst frame replaces the snapshot.
+  budget.push(120, { step: 5, audio: 1, render: 100, hud: 2 });
+  assert.equal(budget.slowest.render, 200);
+  assert.equal(budget.worst, 240);
+  assert.equal(budget.frames, 3);
+  budget.reset();
+  assert.equal(budget.slowest, null);
+  assert.equal(budget.worst, 0);
+});
+
+test('the preview loop times the whole frame, not only the renderer', () => {
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  // A pause in the physics step, the audio mixer or the HUD is invisible to the
+  // renderer's own counters, so every section of the loop is timed.
+  for (const part of ['step', 'audio', 'render', 'hud']) {
+    assert.match(app, new RegExp(`frameParts\\.${part} = performance\\.now\\(\\)`), `the ${part} section is timed`);
+  }
+  assert.match(app, /if \(frameBudget\.push\(performance\.now\(\) - frameStart, frameParts\)\) reportSlowFrame\(\);/);
+  // Tasks the browser runs between frames (garbage collection, decodes, layout) are
+  // reported by the browser itself.
+  assert.match(app, /new PerformanceObserver\(list =>/);
+  assert.match(app, /watch\.observer\.observe\(\{ entryTypes: \['longtask'\] \}\)/);
+  assert.match(app, /stopLongTasks\(\);/);
+  // Both reach the playtest log, so a report explains the hitch without a profiler.
+  assert.match(app, /slowestFrame: frameBudget\.slowest/);
+  assert.match(app, /longTaskWorstMs: Math\.round\(longTaskWatch\.worst\)/);
 });
 
 test('the render buffer ignores a few pixels of layout wobble', () => {

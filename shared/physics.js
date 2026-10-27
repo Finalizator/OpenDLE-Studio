@@ -97,6 +97,12 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
   return { positions: new Float32Array(positions), indices: new Uint32Array(indices), sectors };
 }
 
+// Doom lets a thing into a gap that exactly matches its height (`P_CheckPosition` only
+// refuses a gap smaller than the height), so the capsule is a hair under the 56 unit
+// player height: the MAP01 exit sign sits in a 56 unit niche in front of the door, and a
+// full-height capsule plus the character controller's query offset could not enter it.
+const PLAYER_CAPSULE_HEIGHT = 55;
+
 export function createPhysics(project, state, R, triangulate) {
   const initialUnbodiedHeights = new Map(state.entities.filter(entity => entity.type !== 'player' &&
     (!entity.physics || entity.physics.body === 'none') && Number.isFinite(entity.z)).map(entity => [entity.id, entity.z]));
@@ -201,7 +207,7 @@ export function createPhysics(project, state, R, triangulate) {
     if (bodyType === 'dynamic') descriptor.setCcdEnabled(true);
     const body = world.createRigidBody(descriptor);
     const shape = player || config.shape === 'capsule'
-      ? R.ColliderDesc.capsule(Math.max(0, height / 2 - radius) / PHYSICS_SCALE, radius / PHYSICS_SCALE)
+      ? R.ColliderDesc.capsule(Math.max(0, (player ? PLAYER_CAPSULE_HEIGHT : height) / 2 - radius) / PHYSICS_SCALE, radius / PHYSICS_SCALE)
       : config.shape === 'ball' ? R.ColliderDesc.ball(radius / PHYSICS_SCALE)
         : R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, height / 2 / PHYSICS_SCALE, config.depth / 2 / PHYSICS_SCALE);
     shape.setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setActiveCollisionTypes(R.ActiveCollisionTypes.ALL);
