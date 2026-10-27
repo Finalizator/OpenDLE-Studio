@@ -178,8 +178,12 @@ function parseAction(line, start, source) {
       const keyToken = current[0];
       if (current[1]?.value === ':' && keyToken.kind === 'word' && current.length > 2) {
         named[keyToken.value] = actionValue(current.slice(2));
-      } else if (current.some(token => token.kind === 'word' || token.kind === 'string')) {
-        const value = current.length === 1 ? actionValue(current) : actionValue(current);
+      } else {
+        // Every argument is kept, including a bare number: `A_Jump(128, "Missile")`
+        // used to lose the 128 because only word/string arguments were stored, which
+        // turned a 50% chance into an unconditional jump and made every imported
+        // monster take its first attack branch every time.
+        const value = actionValue(current);
         if (value !== undefined) args[partIndex] = value;
       }
       partIndex++;

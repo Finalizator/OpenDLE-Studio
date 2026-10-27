@@ -1,5 +1,6 @@
 import { sectorAt } from './sectors.js';
-import { damagePlayer, floorAt, canSeePlayer, randomDamage, enemyHitscan, moveEnemy, geometryDistance, entityDistance } from './combat.js';
+import { damagePlayer, floorAt, canSeePlayer, canSeeTarget, randomDamage, enemyHitscan, moveEnemy, geometryDistance,
+  entityDistance, projectileSource } from './combat.js';
 import { actorIndex, actorForThing, NATIVE_EFFECT_ACTORS } from './actors.js';
 import { actorProjectileClips, actorEffectClip, setSpriteState } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
@@ -456,16 +457,17 @@ export function installActorProjectileSprites(project) {
 
 /** Spawns a projectile actor owned by an enemy, aimed at the player. */
 export function spawnActorProjectile(project, state, owner, projectileName, { speed = 0, damage = null, angle = null } = {}) {
+  const aim = actorTarget(state, owner);
   const index = projectilesByName(project);
   const actor = index.byName.get(String(projectileName).toLowerCase()) ||
     index.byId.get(`actor_${String(projectileName).toLowerCase().replace(/[^a-z0-9_]/g, '_')}`);
   const clips = actor ? actorProjectileClips(project, actor) : { fly: null, impact: null };
   const missileSpeed = speed || actor?.speed || 10;
   const damageValue = damage ?? actor?.damage ?? 0;
-  const radians = angle ?? Math.atan2(state.player.y - owner.y, state.player.x - owner.x);
+  const radians = angle ?? Math.atan2(aim.y - owner.y, aim.x - owner.x);
   const originZ = floorAt(state, owner) + Math.min(32, (owner.height || 56) * .5);
-  const targetZ = floorAt(state, state.player) + 32;
-  const horizontal = Math.hypot(state.player.x - owner.x, state.player.y - owner.y);
+  const targetZ = floorAt(state, aim) + 32;
+  const horizontal = Math.hypot(aim.x - owner.x, aim.y - owner.y);
   const pitch = Math.atan2(targetZ - originZ, Math.max(1, horizontal));
   state.projectiles.push({
     id: ++state.projectileSequence, ownerId: owner.id, actorId: actor?.id || null, actorName: actor?.name || null,
@@ -494,7 +496,96 @@ function hearsPlayer(state, entity) {
 }
 
 const meleeRange = 64;
-const meleeable = (state, entity) => Math.hypot(state.player.x - entity.x, state.player.y - entity.y) <= meleeRange;
+
+/**
+ * What a monster is hunting: the player, or the monster that hurt it. Doom calls
+ * this `target`, and infighting only works because damage assigns it.
+ */
+export function actorTarget(state, entity) {
+  if (entity?.targetId && entity.targetId !== '$player') {
+    const other = state.entities.find(candidate => candidate.id === entity.targetId && (candidate.health ?? 0) > 0);
+    if (other) return other;
+  }
+  return state.player;
+}
+
+/** Sets who a monster hunts; `null` clears it, `$player` means the player. */
+export function setActorTarget(entity, target) {
+  if (!target) delete entity.targetId;
+  else entity.targetId = target === entity || target.type === 'player' ? '$player' : target.id;
+}
+
+const targetPosition = (state, entity) => actorTarget(state, entity) || state.player;
+
+/**
+ * Who an explosion credits: the missile's owner when the blast comes from a
+ * projectile's Death state, otherwise the monster itself.
+ */
+function blastSource(state, entity) {
+  if (entity?.type === 'projectile' && entity.ownerId) return projectileSource(state, entity) || null;
+  return entity?.type === 'enemy' ? entity : null;
+}
+const targetDistance = (state, entity) => {
+  const target = targetPosition(state, entity);
+  return Math.hypot(target.x - entity.x, target.y - entity.y);
+};
+const meleeable = (state, entity) => targetDistance(state, entity) <= meleeRange;
+
+function actorFlag(actor, name) {
+  return Boolean(actor?.flags?.[name]) || Boolean(actor?.flags?.[name.toUpperCase()]);
+}
+
+/**
+ * Applies damage the way Doom does: health, the pain roll, and — when a monster
+ * hurt another monster — a target switch, which is what makes infighting happen.
+ */
+export function hurtActor(project, state, entity, amount, source = null) {
+  if (!entity || entity.type !== 'enemy' || (entity.health ?? 0) <= 0 || !(amount > 0)) return false;
+  const actor = actorOf(project, entity);
+  entity.health = Math.max(0, entity.health - amount);
+  if (source && source !== state.player && source !== entity && !actorFlag(actor, 'NOINFIGHTING')) {
+    // A monster remembers who shot it, so it fights back against its own kind.
+    entity.targetId = source.id;
+  } else if (source === state.player) {
+    entity.targetId = '$player';
+  }
+  if (entity.health <= 0) {
+    // The Death state runs from stepActors; the body stops blocking immediately.
+    entity.solid = false;
+    state.physics?.remove(entity.id);
+    return true;
+  }
+  const chance = Math.max(0, Math.min(256, actor?.painChance ?? 0));
+  if (chance > 0 && randomDamage(state, 1, 256) <= chance) {
+    // Pain interrupts whatever the monster was doing, and clears reaction time so
+    // it can retaliate at once, exactly like P_DamageMobj.
+    if (setActorState(project, entity, 'Pain')) {
+      const runtime = actorStateOf(entity);
+      runtime.reactionTime = 0;
+      saySound(state, actor?.sounds?.pain, entity);
+    }
+  }
+  return true;
+}
+
+/** A monster's hitscan attack: aim at its target, roll damage, let walls stop it. */
+function monsterHitscan(ctx, damage, diceSides, spread = 0) {
+  const { state, entity } = ctx;
+  if (entity.health <= 0) return;
+  const target = targetPosition(state, entity);
+  const origin = { x: entity.x, y: entity.y, z: floorAt(state, entity) + 36 };
+  const aim = Math.atan2(target.y - entity.y, target.x - entity.x);
+  const reach = canSeeTarget(state, entity, target, 2048) ? 2048 : 0;
+  if (!reach) return;
+  const offset = spread ? (randomDamage(state, 1, 256) - randomDamage(state, 1, 256)) * spread / 256 * Math.PI / 180 : 0;
+  const direction = { x: Math.cos(aim + offset), y: Math.sin(aim + offset), z: 0 };
+  const limit = geometryDistance(state, origin, direction, reach);
+  const hits = entityDistance(state, origin, direction, target, limit, 16);
+  if (hits === null) return;
+  const amount = randomDamage(state, damage, diceSides);
+  if (target === state.player) damagePlayer(state, amount);
+  else hurtActor(ctx.project, state, target, amount, entity);
+}
 
 /**
  * The action function table. Only actions with real gameplay meaning are
@@ -516,9 +607,13 @@ export const ACTIONS = {
   A_Look(ctx) {
     const { state, entity, actor } = ctx;
     if (entity.dormant) return;
-    // Doom monsters wake on sight and on hearing gunfire, so a shot behind a
-    // guard still starts the fight.
-    if (!canSeePlayer(state, entity, 2048) && !hearsPlayer(state, entity)) return;
+    // Doom's A_Look only looks for a player, inside a 180 degree cone unless the
+    // actor has LOOKALLAROUND, and wakes on gunfire through P_RecursiveSound. An
+    // AMBUSH monster ignores the sound and only reacts to what it can see.
+    const fov = actorFlag(actor, 'LOOKALLAROUND') ? 360 : 180;
+    const seen = canSeePlayer(state, entity, 2048, fov);
+    if (!seen && (actorFlag(actor, 'AMBUSH') || entity.ambush || !hearsPlayer(state, entity))) return;
+    setActorTarget(entity, state.player);
     saySound(state, actor.sounds?.see, entity);
     setActorState(ctx.project, entity, 'See');
   },
@@ -534,12 +629,13 @@ export const ACTIONS = {
     const runtime = actorStateOf(entity);
     // Doom's chase ticks move the monster, then decide whether it may attack.
     const speed = (entity.actorSpeed || actor.speed || 8) * TIC_RATE * (state.settings?.fastMonsters ? 2 : 1);
-    moveEnemy(state, entity, speed, 1 / TIC_RATE);
+    moveEnemy(state, entity, speed, 1 / TIC_RATE, targetPosition(state, entity));
     if (randomDamage(state, 1, 256) < 4) saySound(state, actor.sounds?.active, entity);
     if (runtime.reactionTime > 0) { runtime.reactionTime--; return; }
     const missileLabel = arg(ctx, 0) || 'Missile';
     const meleeLabel = arg(ctx, 1) || 'Melee';
-    const distance = Math.hypot(state.player.x - entity.x, state.player.y - entity.y);
+    const target = targetPosition(state, entity);
+    const distance = Math.hypot(target.x - entity.x, target.y - entity.y);
     // P_CheckMeleeRange: MELEERANGE - 20 + the monster's radius.
     if (distance <= 64 - 20 + (actor.radius || 20)) {
       if (setActorState(ctx.project, entity, meleeLabel)) {
@@ -547,9 +643,12 @@ export const ACTIONS = {
         return;
       }
     }
-    // P_CheckMissileRange: closer monsters are far more likely to shoot.
-    if (!canSeePlayer(state, entity, 2048)) return;
-    const reach = Math.max(0, distance - 64) - 128;
+    // P_CheckMissileRange: closer monsters are far more likely to shoot, and the
+    // MISSILEMORE flags bias that roll the way Doom does.
+    if (!canSeeTarget(state, entity, target, 2048)) return;
+    let reach = Math.max(0, distance - 64) - 128;
+    if (actorFlag(actor, 'MISSILEMORE')) reach += 100;
+    if (actorFlag(actor, 'MISSILEEVENMORE')) reach += 200;
     if (reach < 200 && randomDamage(state, 1, 256) < reach) return;
     if (setActorState(ctx.project, entity, missileLabel)) runtime.reactionTime = actor.reactionTime || 8;
   },
@@ -561,7 +660,8 @@ export const ACTIONS = {
   A_FaceTarget(ctx) {
     const { state, entity } = ctx;
     if (entity.health <= 0) return;
-    entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;
+    const target = targetPosition(state, entity);
+    entity.angle = Math.atan2(target.y - entity.y, target.x - entity.x) * 180 / Math.PI;
   },
   A_Pain(ctx) {
     saySound(ctx.state, ctx.actor.sounds?.pain, ctx.entity);
@@ -569,32 +669,43 @@ export const ACTIONS = {
   A_Scream(ctx) { saySound(ctx.state, ctx.actor.sounds?.death, ctx.entity); },
   A_XScream(ctx) { saySound(ctx.state, ctx.actor.sounds?.death, ctx.entity); },
   A_ActiveSound(ctx) { saySound(ctx.state, ctx.actor.sounds?.active, ctx.entity); },
+  A_AlertMonsters(ctx) {
+    const { state, entity } = ctx;
+    // Doom floods sound through neighbouring sectors; anything that hears it wakes
+    // up and turns on the player, which is how a shot in a corridor pulls a room.
+    state.playerNoise = { time: state.time, x: entity.x, y: entity.y };
+    for (const other of state.entities) {
+      if (other.type !== 'enemy' || other === entity || (other.health ?? 0) <= 0) continue;
+      if (other.actorId && !hearsPlayer(state, other)) continue;
+      setActorTarget(other, state.player);
+      if (!setActorState(ctx.project, other, 'See')) continue;
+    }
+  },
   A_NoBlocking(ctx) {
     ctx.entity.solid = false;
     ctx.entity.noBlockmap = true;
+    ctx.state.physics?.remove(ctx.entity.id);
   },
-  A_Fall(ctx) { ctx.entity.solid = false; },
+  A_Noblocking(ctx) { ACTIONS.A_NoBlocking(ctx); },
+  A_Fall(ctx) {
+    ctx.entity.solid = false;
+    ctx.state.physics?.remove(ctx.entity.id);
+  },
   A_Stop(ctx) { ctx.entity.vx = 0; ctx.entity.vy = 0; },
   A_PlaySound(ctx) { saySound(ctx.state, String(arg(ctx, 0) || ''), ctx.entity, numArg(ctx, 1, 127)); },
   A_StartSound(ctx) { saySound(ctx.state, String(arg(ctx, 0) || ''), ctx.entity, numArg(ctx, 1, 127)); },
   A_StopSound() {},
   A_PosAttack(ctx) {
-    const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, 2048)) return;
-    for (let pellet = 0; pellet < 1; pellet++) enemyShot(state, entity, 5, 3);
-    saySound(state, 'DSPISTOL', entity, 90);
+    monsterHitscan(ctx, 5, 3);
+    saySound(ctx.state, 'DSPISTOL', ctx.entity, 90);
   },
   A_SPosAttack(ctx) {
-    const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, 2048)) return;
-    for (let pellet = 0; pellet < 3; pellet++) enemyShot(state, entity, 5, 3, 11.25);
-    saySound(state, 'DSSHOTGN', entity, 90);
+    for (let pellet = 0; pellet < 3; pellet++) monsterHitscan(ctx, 5, 3, 11.25);
+    saySound(ctx.state, 'DSSHOTGN', ctx.entity, 90);
   },
   A_CPosAttack(ctx) {
-    const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, 2048)) return;
-    enemyShot(state, entity, 3, 3);
-    saySound(state, 'DSPISTOL', entity, 80);
+    monsterHitscan(ctx, 3, 3);
+    saySound(ctx.state, 'DSPISTOL', ctx.entity, 80);
   },
   A_CPosRefire(ctx) {
     const { state, entity } = ctx;
@@ -602,14 +713,14 @@ export const ACTIONS = {
   },
   A_TroopAttack(ctx) {
     const { state, entity } = ctx;
-    if (meleeable(state, entity)) { enemyShot(state, entity, 3, 8, 0); saySound(state, 'DSCLAW', entity); return; }
+    if (meleeable(state, entity)) { monsterHitscan(ctx, 3, 8); saySound(state, 'DSCLAW', entity); return; }
     spawnActorProjectile(ctx.project, state, entity, 'DoomImpBall');
     saySound(state, 'DSPISTOL', entity, 70);
   },
   A_SargAttack(ctx) {
     const { state, entity } = ctx;
     if (!meleeable(state, entity)) return;
-    enemyShot(state, entity, 4, 8, 0);
+    monsterHitscan(ctx, 4, 8);
     saySound(state, 'DSCLAW', entity);
   },
   A_HeadAttack(ctx) {
@@ -620,7 +731,7 @@ export const ACTIONS = {
   },
   A_BruisAttack(ctx) {
     const { state, entity } = ctx;
-    if (meleeable(state, entity)) { enemyShot(state, entity, 10, 8, 0); saySound(state, 'DSCLAW', entity); return; }
+    if (meleeable(state, entity)) { monsterHitscan(ctx, 10, 8); saySound(state, 'DSCLAW', entity); return; }
     spawnActorProjectile(ctx.project, state, entity, 'BaronBall');
     saySound(state, 'DSPISTOL', entity, 70);
   },
@@ -669,7 +780,7 @@ export const ACTIONS = {
       if (!target) continue;
       let damage = fixedDamage;
       if (!damage) for (let roll = 0; roll < rolls; roll++) damage += randomDamage(state, 1, 8);
-      target.health = Math.max(0, (target.health ?? 0) - damage);
+      hurtActor(project, state, target, damage, sprayOrigin(state, entity));
       spawnEffect(project, state, spray, { x: target.x, y: target.y,
         z: floorAt(state, target) + (target.height ?? 56) / 4 });
     }
@@ -688,7 +799,8 @@ export const ACTIONS = {
   },
   A_SkullAttack(ctx) {
     const { state, entity } = ctx;
-    const angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x);
+    const target = targetPosition(state, entity);
+    const angle = Math.atan2(target.y - entity.y, target.x - entity.x);
     entity.charge = { angle, tics: 20, speed: 20 };
     saySound(state, 'DSSKLATK', entity);
   },
@@ -700,7 +812,7 @@ export const ACTIONS = {
   A_VileAttack(ctx) {
     const { state, entity } = ctx;
     if (!canSeePlayer(state, entity, 2048)) return;
-    enemyShot(state, entity, 20, 8, 0);
+    monsterHitscan(ctx, 20, 8);
     saySound(state, 'DSVILATK', entity);
   },
   A_VileTarget() {},
@@ -719,20 +831,27 @@ export const ACTIONS = {
   // own defaults are 128 damage over a 128-unit radius. A missile's Death state is
   // where this now runs, so a rocket's blast comes from its definition.
   A_Explode(ctx) {
-    const { state, entity } = ctx;
+    const { project, state, entity } = ctx;
     const damage = numArg(ctx, 0, 128), radius = numArg(ctx, 1, 128);
-    if (Math.hypot(state.player.x - entity.x, state.player.y - entity.y) < radius) damagePlayer(state, Math.max(0, Math.round(damage * (1 - Math.hypot(state.player.x - entity.x, state.player.y - entity.y) / radius))));
+    const falloff = distance => Math.max(0, Math.round(damage * (1 - distance / radius)));
+    const playerDistance = Math.hypot(state.player.x - entity.x, state.player.y - entity.y);
+    if (playerDistance < radius) damagePlayer(state, falloff(playerDistance));
     for (const other of state.entities) {
       if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
       const distance = Math.hypot(other.x - entity.x, other.y - entity.y);
-      if (distance < radius) other.health = Math.max(0, other.health - Math.round(damage * (1 - distance / radius)));
+      if (distance < radius) hurtActor(project, state, other, falloff(distance), blastSource(state, entity));
     }
     saySound(state, 'DSBAREXP', entity);
   },
   A_RadiusDamage(ctx) {
-    const { state, entity } = ctx;
+    const { project, state, entity } = ctx;
     const radius = numArg(ctx, 0, 128), damage = numArg(ctx, 1, 0);
     if (Math.hypot(state.player.x - entity.x, state.player.y - entity.y) < radius) damagePlayer(state, damage);
+    for (const other of state.entities) {
+      if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
+      if (Math.hypot(other.x - entity.x, other.y - entity.y) >= radius) continue;
+      hurtActor(project, state, other, damage, blastSource(state, entity));
+    }
   },
   A_Jump(ctx) {
     const { state, entity, actor } = ctx;
@@ -848,21 +967,17 @@ export const ACTIONS = {
     ACTIONS.A_SpawnItemEx(ctx);
   },
   A_CustomBulletAttack(ctx) {
-    const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, 2048)) return;
     const pellets = Math.max(1, Math.min(20, numArg(ctx, 2, 1))), damage = numArg(ctx, 3, 3), spread = numArg(ctx, 0, 0) / 2;
-    for (let pellet = 0; pellet < pellets; pellet++) enemyShot(state, entity, damage, 3, spread);
+    for (let pellet = 0; pellet < pellets; pellet++) monsterHitscan(ctx, damage, 3, spread);
   },
   A_CustomPunch(ctx) {
-    const { state, entity } = ctx;
-    if (!meleeable(state, entity)) return;
-    enemyShot(state, entity, numArg(ctx, 0, 2), 10, 0);
+    if (!meleeable(ctx.state, ctx.entity)) return;
+    monsterHitscan(ctx, numArg(ctx, 0, 2), 10);
   },
   A_CustomMeleeAttack(ctx) {
-    const { state, entity } = ctx;
-    if (!meleeable(state, entity)) return;
-    enemyShot(state, entity, numArg(ctx, 0, 2), 8, 0);
-    saySound(state, String(arg(ctx, 1) || ''), entity);
+    if (!meleeable(ctx.state, ctx.entity)) return;
+    monsterHitscan(ctx, numArg(ctx, 0, 2), 8);
+    saySound(ctx.state, String(arg(ctx, 1) || ''), ctx.entity);
   },
   // Morphing swaps the actor a thing runs; the entity id and physics body stay put.
   A_Morph(ctx) {
@@ -1072,6 +1187,8 @@ export const WEAPON_COSMETIC_ACTIONS = new Set(['A_WeaponOffset', 'A_SetPitch', 
 
 /** Whether an action function has an implementation on the path that runs it. */
 export function actionSupported(name, weapon = false) {
+  // Weapons run their own switch, so a generic action such as A_Jump is still a real
+  // gap there even though monsters execute it from the shared table.
   if (weapon) return WEAPON_ACTION_NAMES.has(name) || WEAPON_COSMETIC_ACTIONS.has(name);
   return name in ACTIONS;
 }

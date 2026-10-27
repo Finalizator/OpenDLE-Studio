@@ -4,7 +4,8 @@ import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
-import { stepActors, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound } from './actor-runtime.js';
+import { stepActors, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, initialiseActorEntities,
+  installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
 import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum } from './player-state.js';
 import { areaContains, areaEntered, areaVolume } from './areas.js';
 import {
@@ -308,7 +309,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     tickMorphs(project, state);
   }
   stepProjectiles(project, state, dt);
-  advanceProjectiles(state, dt, projectile => runProjectileDeath(project, state, projectile));
+  advanceProjectiles(state, dt, projectile => runProjectileDeath(project, state, projectile),
+    (entity, amount, source) => hurtActor(project, state, entity, amount, source));
   applySectorDamage(state, dt);
   activateWallTriggers(state);
   updateLevelStatistics(state);
@@ -703,7 +705,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (target) target.health = action.health;
           break;
         }
-        case 'hitscan': fireHitscan(state, action); break;
+        case 'hitscan': fireHitscan(project, state, action); break;
         case 'startTimer': state.timers.set(`${event.ownerId || '$scene'}:${action.timer}`, state.time + action.seconds); break;
         case 'clearTimer': state.timers.delete(`${event.ownerId || '$scene'}:${action.timer}`); break;
         case 'showPlayerHUD': state.hud = action.visible === 'yes'; break;
@@ -848,7 +850,7 @@ function applyWeaponAttack(project, state) {
   if (!attack) return;
   state.weaponAttack = null;
   if (attack.kind === 'hitscan') {
-    fireHitscan(state, { damage: attack.damage[0], diceSides: attack.damage[1], pellets: attack.pellets,
+    fireHitscan(project, state, { damage: attack.damage[0], diceSides: attack.damage[1], pellets: attack.pellets,
       spread: attack.spread, range: attack.range });
     if (attack.hitSound && state.lastShot?.hits.length)
       saySound(state, attack.hitSound, null, 127);
@@ -872,7 +874,7 @@ function applyWeaponAttack(project, state) {
     pitchOffset: attack.pitch || 0, seeker: attack.seeker === true });
 }
 
-function fireHitscan(state, action) {
+function fireHitscan(project, state, action) {
   const player = state.player;
   // The shot leaves the eye along the view direction, so it still lines up with the
   // crosshair after gravity has been turned onto a wall.
@@ -895,7 +897,7 @@ function fireHitscan(state, action) {
     const damage = action.damage * (1 + Math.floor(random() * action.diceSides));
     if (!target) for (const id of shotWalls) state.worldTriggers.shoot.add(id);
     if (target) {
-      target.health = Math.max(0, (target.health ?? 20) - damage);
+      hurtActor(project, state, target, damage, state.player);
       state.lastShot.hits.push({ id: target.id, damage });
     }
   }

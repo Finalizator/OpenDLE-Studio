@@ -75,14 +75,23 @@ export function geometryDistance(state, origin, direction, range, movement = fal
   }
   return nearest;
 }
-export function canSeePlayer(state, entity, range, fov = 360) {
+/**
+ * Doom's P_CheckSight: within range, inside the field of view, and not hidden
+ * behind solid geometry. `target` is the player or another monster, which is what
+ * lets monsters notice whoever is shooting at them.
+ */
+export function canSeeTarget(state, entity, target, range, fov = 360) {
+  if (!target) return false;
   const origin = { x: entity.x, y: entity.y, z: floorAt(state, entity) + 36 };
-  const dx = state.player.x - origin.x, dy = state.player.y - origin.y, dz = floorAt(state, state.player) + 36 - origin.z;
+  const dx = target.x - origin.x, dy = target.y - origin.y, dz = floorAt(state, target) + 36 - origin.z;
   const distance = Math.hypot(dx, dy, dz);
   const facing = (entity.angle || 0) * Math.PI / 180;
   const delta = Math.atan2(Math.sin(Math.atan2(dy, dx) - facing), Math.cos(Math.atan2(dy, dx) - facing));
   if (Math.hypot(dx, dy) > 64 && Math.abs(delta) > fov * Math.PI / 360) return false;
   return distance <= range && geometryDistance(state, origin, { x: dx / (distance || 1), y: dy / (distance || 1), z: dz / (distance || 1) }, distance + .01) >= distance;
+}
+export function canSeePlayer(state, entity, range, fov = 360) {
+  return canSeeTarget(state, entity, state.player, range, fov);
 }
 export function canHearPlayer(state, entity) {
   const noise = state.playerNoise;
@@ -114,6 +123,12 @@ export function canHearPlayer(state, entity) {
   }
   return state.soundFlood.reached.has(target.id);
 }
+/** The object that fired a missile: the player, or the monster entity. */
+export function projectileSource(state, projectile) {
+  if (!projectile?.ownerId || projectile.ownerId === '$player') return state.player;
+  return state.entities.find(entity => entity.id === projectile.ownerId) || null;
+}
+
 export function enemyAttackChance(state, entity) {
   let distance = Math.max(0, Math.hypot(state.player.x - entity.x, state.player.y - entity.y) - 64);
   if ([3002, 58].includes(entity.doomType)) return distance < 0.001;
@@ -135,10 +150,10 @@ export function enemyHitscan(state, entity, action) {
     if (entityDistance(state, origin, direction, state.player, limit, 16) !== null) damagePlayer(state, damage);
   }
 }
-export function moveEnemy(state, entity, speed, dt) {
+export function moveEnemy(state, entity, speed, dt, target = state.player) {
   if (entity.health <= 0 || speed <= 0 || dt <= 0) return;
-  const angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x);
-  const distance = Math.hypot(state.player.x - entity.x, state.player.y - entity.y);
+  const angle = Math.atan2(target.y - entity.y, target.x - entity.x);
+  const distance = Math.hypot(target.x - entity.x, target.y - entity.y);
   const step = Math.min(speed * dt, Math.max(0, distance - 36));
   if (!step) return;
   const origin = { ...entity, z: floorAt(state, entity) + 28 };
@@ -220,26 +235,34 @@ function lockOn(state) {
  * Moves every projectile. `onDeath` runs where a shot lands: the actor runtime
  * passes its Death-state handler so a missile explodes from its own definition.
  */
-export function advanceProjectiles(state, dt, onDeath) {
+export function advanceProjectiles(state, dt, onDeath, onDamage) {
+  // `onDamage(entity, amount, source)` lets the actor runtime apply pain and
+  // infighting; without it the engine still lowers health.
+  const hurt = (entity, amount, source) => {
+    if (entity === state.player) { damagePlayer(state, amount); return; }
+    if (onDamage) onDamage(entity, amount, source);
+    else entity.health = Math.max(0, (entity.health ?? 20) - amount);
+  };
   const survivors = [];
   for (const projectile of state.projectiles) {
     const travel = projectile.speed * dt;
     let nearest = geometryDistance(state, projectile, { x: projectile.dx, y: projectile.dy, z: projectile.dz }, travel);
     let target = null;
-    const targets = projectile.ownerId === '$player'
+    // A player missile hits monsters; a monster missile hits the player and other
+    // monsters, which is how a stray rocket starts an infight.
+    const fromPlayer = !projectile.ownerId || projectile.ownerId === '$player';
+    const targets = fromPlayer
       ? state.entities.filter(entity => entity.type === 'enemy' && entity.health > 0)
-      : state.playerStats.health > 0 ? [state.player] : [];
+      : [...state.entities.filter(entity => entity.type === 'enemy' && entity.health > 0 && entity.id !== projectile.ownerId),
+        ...(state.playerStats.health > 0 ? [state.player] : [])];
     for (const entity of targets) {
       const distance = entityDistance(state, projectile, { x: projectile.dx, y: projectile.dy, z: projectile.dz }, entity, nearest);
       if (distance !== null) { nearest = distance; target = entity; }
     }
     projectile.x += projectile.dx * nearest; projectile.y += projectile.dy * nearest; projectile.z += projectile.dz * nearest; projectile.age += dt;
     if (target || nearest < travel) {
-      const hit = entity => {
-        const damage = randomDamage(state, projectile.damage, projectile.diceSides);
-        if (entity === state.player) damagePlayer(state, damage);
-        else entity.health = Math.max(0, (entity.health ?? 20) - damage);
-      };
+      const source = projectileSource(state, projectile);
+      const hit = entity => hurt(entity, randomDamage(state, projectile.damage, projectile.diceSides), source);
       if (target) hit(target);
       if (projectile.radius > 0) {
         const victims = [...state.entities.filter(e => e.type === 'enemy' && e.health > 0), ...(state.playerStats.health > 0 ? [state.player] : [])];
@@ -250,8 +273,7 @@ export function advanceProjectiles(state, dt, onDeath) {
           const start = { x: projectile.x - projectile.dx * .1, y: projectile.y - projectile.dy * .1, z: projectile.z - projectile.dz * .1 };
           if (geometryDistance(state, start, direction, distance + .1) < distance) continue;
           const amount = Math.max(0, Math.round(projectile.radius - distance));
-          if (entity === state.player) damagePlayer(state, amount, 'self');
-          else entity.health = Math.max(0, entity.health - amount);
+          hurt(entity, amount, source);
         }
       }
       if (projectile.sound) soundEvent(state, projectile.sound, .7, projectile);

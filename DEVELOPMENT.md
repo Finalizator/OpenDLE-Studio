@@ -1246,6 +1246,47 @@ scripted enemy AI, which an actor-driven monster never runs, so without this an
 imported monster held its spawn frame forever — visible only once the frames
 became faithful.
 
+### Enemy behaviour
+
+Imported monsters run their own state machines, so fidelity comes down to the
+action functions and the decisions around them. `shared/actor-runtime.js` and
+`shared/combat.js` now implement the parts Doom's AI actually depends on:
+
+- **Targets and infighting.** A monster remembers who hurt it (`entity.targetId`),
+  so a stray rocket that clips an imp turns it against the shooter instead of
+  leaving it glued to the player. `A_Chase`, `A_FaceTarget`, melee, hitscan and
+  missile attacks all aim at that target, `A_AlertMonsters` wakes everything in
+  earshot, and `NOINFIGHTING` actors ignore the switch.
+- **Pain.** Damage rolls the actor's `PainChance` (0-256) and enters its `Pain`
+  state, playing the pain sound and clearing `ReactionTime` so the monster can
+  answer at once. A corpse never flinches, and a killing blow removes the body.
+- **Sight.** `A_Look` looks for a player only, inside a 180-degree cone, unless
+  the actor has `LOOKALLAROUND`; `AMBUSH` monsters ignore gunfire and wake only
+  on sight. `canSeeTarget` shared by every check does the range, cone and
+  line-of-sight test, so a box can no longer notice you through a wall.
+- **Chase decisions.** `A_Chase` keeps Doom's ordering — move, then melee range
+  (`64 - 20 + radius`), then the missile-range roll modified by
+  `MISSILEMORE`/`MISSILEEVENMORE` — and a blocked monster turns through the eight
+  compass directions before reversing, which is what makes it round corners.
+- **Same damage rules everywhere.** Player hitscan, monster hitscan, projectiles,
+  explosions, radius damage and the BFG spray all go through `hurtActor`, so
+  infighting, pain and death behave identically whoever caused them.
+
+One parser bug mattered even more than those: `A_Jump(128, "Missile")` lost its
+chance argument because only word/string arguments were stored, so **every**
+imported jump fired unconditionally — half of the 899 jumps in the shipped
+Furdoom actor table (444 of them) had no first argument. Attack choices, pain
+reactions and death variants now branch as authored. Saved projects keep the
+actor tables they imported, so a project imported before this needs **Reimport
+WAD with gameplay** to pick up corrected state machines.
+
+Still approximate, in order of impact: monsters have no collision body of their
+own, so they do not block the player or each other; `A_JumpIf` evaluates numbers
+but not full DECORATE expressions such as `health < 30`; weapons still run only
+their own action switch, so a weapon that branches with `A_Jump` keeps its first
+path; monster dodging, `A_VileChase` corpse raising and nightmare respawning are
+not implemented.
+
 ### Morphs
 
 `A_Morph`, `A_UnMorphActor`, `A_UnMorph` and the ACS `MorphActor`/`UnMorphActor`
