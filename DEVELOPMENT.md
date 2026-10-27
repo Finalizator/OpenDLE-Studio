@@ -1552,6 +1552,48 @@ Per-frame work was also reduced: sorted sprite-clip/asset maps replace linear
 `public/hud-view.js` only writes a style, class, label or DOM attribute when the
 computed value actually changes instead of rewriting every element every frame.
 
+A second pass took the editor and the simulation down further. Measured on the imported
+888-rule project in the browser, before and after:
+
+| step | before | after |
+|---|---|---|
+| editing anything (click to screen) | 2.3-2.9 s | 0.04-0.2 s |
+| clone for an edit | 170-450 ms | 15-40 ms |
+| validate (interactive) | 200-500 ms | 20-60 ms |
+| rule evaluation per frame | 1.18 ms | 0.67 ms |
+| full 32-level import | 19.6 s | 8.1 s |
+
+What was wrong and what changed:
+
+- `structuredClone` was used for every edit. It is several times slower than a plain
+  recursive copy for this shape of data, and it copied the 4.6 MB actor table only for
+  the caller to overwrite it (`cloneProjectForEdit`). Actor edits now ask for a real
+  copy; everything else shares the table, as `game` and `assets` already did.
+- The actor index was a **hidden own property** of the project, so `structuredClone`
+  walked the whole index of every imported actor on each edit. It lives in a WeakMap.
+- The rule list was signed by object identity, so *any* edit (renaming the project,
+  moving a wall) rebuilt ~900 rule cards. The signature compares rule *content* now,
+  which costs a millisecond; the card builder also stopped scanning every rule per card
+  for siblings, sheets and groups, and clones one prepared option list instead of
+  creating tens of thousands of `<option>` nodes.
+- Validating a project ran a `[A-Za-z0-9+/]+` regex over every embedded data URI (tens
+  of megabytes per edit) and a `filter` over all assets per sound. Both are O(1) per
+  asset now, and the actor table is screened once per table object in interactive mode.
+- Importing rebuilt the whole lump-name list for every sprite lookup (quadratic in
+  lumps) and repeated game-wide notices for each of 32 levels (433 report lines, many
+  identical). Lookups are grouped by sprite prefix; identical notices are reported once.
+- The rule tree (parent/child map and the roots per phase) is compiled once per edit
+  instead of four times per frame; commands known to contain no expression are not
+  scanned again; entity lookups use a per-frame id/type index; a for-each rule reuses
+  one instance per object; the ACS VM is no longer snapshotted every frame (it is
+  captured on demand through a `scriptState` accessor); `crossedWalls` does nothing for
+  a stationary player, and the fallback movement map is only built without physics.
+- The HUD compares layout fields directly instead of building a template string per
+  element per frame, caches the authored visual key per element, and no longer scans the
+  element list per node per frame to find the focused menu row (that was quadratic on
+  imported menus). The canvas box comes from a ResizeObserver instead of a per-frame
+  `getBoundingClientRect`, which avoided forcing a layout after the HUD's DOM writes.
+
 `compileAsync` projects a scene exactly like a rendered frame, so on its own it
 only builds pipelines for what the spawn camera can see and skips invisible
 objects; the warm-up scene of 1x1 quads at the origin was usually outside that
