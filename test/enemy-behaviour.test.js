@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createProject, validateProject } from '../shared/project.js';
 import { parseDecorate } from '../shared/decorate.js';
 import { importActors } from '../shared/actors.js';
-import { actorOf, actorStateOf, actorTic, hurtActor, setActorState, actionSupported, unsupportedActorActions } from '../shared/actor-runtime.js';
+import { actorOf, actorStateOf, actorTic, hurtActor, setActorState, actionSupported, unsupportedActorActions, runActions } from '../shared/actor-runtime.js';
 import { canSeeTarget } from '../shared/combat.js';
 import { executeSpecial } from '../shared/line-specials.js';
 import { createRuntime, stepRuntime, settleGroundActors } from '../shared/runtime.js';
@@ -84,6 +84,33 @@ test('a bare number survives action parsing, so A_Jump keeps its chance', () => 
   assert.deepEqual(action.args, [128, 'High', 'Low'], 'the chance argument used to be dropped');
 });
 
+test('a monster fires the projectile class it declares, not the built-in one', () => {
+  const { project, state } = room(project => {
+    // A mod that renamed the imp ball: the built-in name resolves to nothing here.
+    project.actors.push({ ...project.actors[0], id: 'actor_renamedball', name: 'RenamedBall', parent: 'Actor', doomedNum: null,
+      replaces: null, projectile: null, health: 1000, damage: 8, radius: 6, height: 8, speed: 10,
+      states: { frames: [{ kind: 'frame', sprite: 'BAL1', letter: 'A', duration: -1, actions: [] }], labels: {} },
+      spritePrefixes: ['BAL1'], flags: { PROJECTILE: true, MISSILE: true }, sounds: {}, drops: [] });
+    project.actors.find(actor => actor.name === 'Guard').projectile = 'RenamedBall';
+  });
+  const guard = state.entities.find(entity => entity.id === 'guard');
+  guard.angle = 180;
+  const actor = actorOf(project, guard);
+  assert.equal(actor.projectile, 'RenamedBall');
+  runActions(project, state, guard, actor, [{ name: 'A_TroopAttack', args: [] }]);
+  const missile = state.projectiles.find(projectile => projectile.ownerId === 'guard');
+  assert.ok(missile, 'the monster fired something');
+  assert.equal(project.actors.find(item => item.id === missile.actorId)?.name, 'RenamedBall',
+    'the declared class is used, so a renamed projectile is not a silent miss');
+  // A monster that declares nothing still uses the class the action was written for.
+  const plain = room();
+  const plainGuard = plain.state.entities.find(entity => entity.id === 'guard');
+  const plainActor = actorOf(plain.project, plainGuard);
+  plainActor.projectile = null;
+  runActions(plain.project, plain.state, plainGuard, plainActor, [{ name: 'A_TroopAttack', args: [] }]);
+  const fallback = plain.state.projectiles.find(projectile => projectile.ownerId === 'guard');
+  assert.equal(fallback?.actorName, 'DoomImpBall', 'without a declaration the class the action names is used');
+});
 test('imported monsters only see what is in front of them unless LOOKALLAROUND', () => {
   const project = createProject();
   project.events = [];

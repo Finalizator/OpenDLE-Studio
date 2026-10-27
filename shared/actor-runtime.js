@@ -594,6 +594,22 @@ function monsterHitscan(ctx, damage, diceSides, spread = 0) {
 }
 
 /**
+ * The missile a monster actually fires.
+ *
+ * These actions used to spawn a hardcoded class name, so a mod that renamed the
+ * projectile (`Projectile "MyImpBall"`) had monsters that attacked with nothing: the
+ * built-in name did not resolve to any actor. The actor's own declaration wins when it
+ * resolves, and the built-in name stays as the fallback for a mod that only overrides
+ * the monster's states.
+ */
+function actorMissile(ctx, fallback) {
+  const declared = ctx.actor?.projectile;
+  if (!declared) return fallback;
+  const index = projectilesByName(ctx.project);
+  return index.byName.has(String(declared).toLowerCase()) ? declared : fallback;
+}
+
+/**
  * The action function table. Only actions with real gameplay meaning are
  * implemented; everything else is tracked so the importer can report exactly
  * which functions a mod uses that the runtime does not emulate yet.
@@ -720,7 +736,7 @@ export const ACTIONS = {
   A_TroopAttack(ctx) {
     const { state, entity } = ctx;
     if (meleeable(state, entity)) { monsterHitscan(ctx, 3, 8); saySound(state, 'DSCLAW', entity); return; }
-    spawnActorProjectile(ctx.project, state, entity, 'DoomImpBall');
+    spawnActorProjectile(ctx.project, state, entity, actorMissile(ctx, 'DoomImpBall'));
     saySound(state, 'DSPISTOL', entity, 70);
   },
   A_SargAttack(ctx) {
@@ -732,21 +748,21 @@ export const ACTIONS = {
   A_HeadAttack(ctx) {
     const { state, entity } = ctx;
     if (!canSeePlayer(state, entity, 2048)) return;
-    spawnActorProjectile(ctx.project, state, entity, 'CacodemonBall');
+    spawnActorProjectile(ctx.project, state, entity, actorMissile(ctx, 'CacodemonBall'));
     saySound(state, 'DSCACATT', entity);
   },
   A_BruisAttack(ctx) {
     const { state, entity } = ctx;
     if (meleeable(state, entity)) { monsterHitscan(ctx, 10, 8); saySound(state, 'DSCLAW', entity); return; }
-    spawnActorProjectile(ctx.project, state, entity, 'BaronBall');
+    spawnActorProjectile(ctx.project, state, entity, actorMissile(ctx, 'BaronBall'));
     saySound(state, 'DSPISTOL', entity, 70);
   },
   A_BspiAttack(ctx) {
-    spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'ArachnotronPlasma');
+    spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'ArachnotronPlasma'));
     saySound(ctx.state, 'DSPLASMA', ctx.entity, 70);
   },
   A_SkelMissile(ctx) {
-    spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'RevenantTracer');
+    spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'RevenantTracer'));
     saySound(ctx.state, 'DSPISTOL', ctx.entity, 60);
   },
   // Homing, from the missile's own state: GZDoom turns 16.875 degrees every fourth
@@ -791,10 +807,10 @@ export const ACTIONS = {
         z: floorAt(state, target) + (target.height ?? 56) / 4 });
     }
   },
-  A_FatAttack1(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'FatShot'); saySound(ctx.state, 'DSFIRSHT', ctx.entity); },
-  A_FatAttack2(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'FatShot'); },
-  A_FatAttack3(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'FatShot'); },
-  A_CyberAttack(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, 'Rocket'); saySound(ctx.state, 'DSRLAUNC', ctx.entity); },
+  A_FatAttack1(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'FatShot')); saySound(ctx.state, 'DSFIRSHT', ctx.entity); },
+  A_FatAttack2(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'FatShot')); },
+  A_FatAttack3(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'FatShot')); },
+  A_CyberAttack(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'Rocket')); saySound(ctx.state, 'DSRLAUNC', ctx.entity); },
   A_PainAttack(ctx) {
     const { state, entity } = ctx;
     if (state.entities.filter(candidate => candidate.type === 'enemy' && candidate.health > 0).length > 40) return;

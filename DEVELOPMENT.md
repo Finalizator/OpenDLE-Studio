@@ -2251,6 +2251,12 @@ grown past the original assumptions:
 - **Script and definition files are kept at any size.** A 1.2 MiB `.zs` or `.dec` used
   to be filtered out before it was ever read, because the resource filter only kept
   small files plus `*.txt`.
+- **A monster fires the missile it declares.** The native attack actions (`A_TroopAttack`,
+  `A_HeadAttack`, `A_BruisAttack`, `A_BspiAttack`, `A_SkelMissile`, `A_FatAttack*`,
+  `A_CyberAttack`) used to spawn a hardcoded class name, so a mod that renamed its
+  projectile gave that monster an attack that spawned nothing. The actor's own
+  `Projectile` declaration wins when it resolves, and the built-in name remains the
+  fallback for a mod that only overrides the monster's states.
 - **`replaces` takes over the editor number.** An actor that replaces another one
   inherits its editor number when it declares none, and the runtime's doomed-number
   index prefers the replacement, so thing 3004 spawns it.
