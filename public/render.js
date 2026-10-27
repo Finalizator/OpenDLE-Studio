@@ -741,6 +741,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
         rebuild: Math.round(lastRebuildMs), rebuilds,
         programs: renderer.info.programs?.length ?? null,
         textures: renderer.info.memory?.textures ?? null, geometries: renderer.info.memory?.geometries ?? null,
+        // A long pause with little update or draw work inside it is a collector pause,
+        // so the heap size is part of the report (Chromium only, null elsewhere).
+        heapMb: globalThis.performance?.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
       };
       if (canvas.dataset.perfCounters === 'on') {
         writeDataset('frameMs', elapsed.toFixed(2));

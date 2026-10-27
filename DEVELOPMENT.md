@@ -1415,7 +1415,8 @@ Opt-in counters (`canvas.dataset.perfCounters = 'on'`) expose `frameMs`,
 `frameMaxMs`, `frameStalls`, `worldRebuildMs` and `worldRebuilds`; `preview.perf()`
 returns the same numbers plus `slowFrame`, the breakdown of the worst frame:
 `update` and `draw` milliseconds, the last world rebuild, the geometry rebuild
-count, and the pipeline/texture/geometry totals. A playtest log entry for a stall
+count, the pipeline/texture/geometry totals and the JS heap size (Chromium), so a
+pause with little update or draw work inside it reads as a collector pause. A playtest log entry for a stall
 carries that breakdown, so a report says which phase was slow instead of only how
 long it took. The render buffer also ignores changes of eight pixels or less, so a
 scrollbar appearing or a fractional layout cannot reallocate the drawing buffer

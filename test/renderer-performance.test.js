@@ -228,7 +228,7 @@ test('a stalled frame reports which phase was slow, not just how long it took', 
   // The snapshot is taken on the stall itself, so it describes the worst frame and
   // not whichever frame happened to come last.
   assert.match(render, /if \(elapsed >= frameStats\.stallMs\) slowFrame = \{/);
-  for (const field of ['update', 'draw', 'rebuild', 'programs', 'textures', 'geometries']) {
+  for (const field of ['update', 'draw', 'rebuild', 'programs', 'textures', 'geometries', 'heapMb']) {
     assert.ok(render.includes(`${field}:`), `slow frame keeps ${field}`);
   }
   assert.match(render, /perf: \(\) => \(\{ \.\.\.frameStats\.summary\(\), slowFrame \}\)/);
