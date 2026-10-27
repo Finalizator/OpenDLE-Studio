@@ -1,6 +1,24 @@
 import { sectorAt, containsPoint } from './sectors.js';
 import { recordDamage } from './player-state.js';
 
+/**
+ * The id to sector map used by the traces below.
+ *
+ * `geometryDistance` runs once per enemy movement candidate, so on a level with a
+ * hundred monsters it is called hundreds of times per frame. Rebuilding this map per
+ * call allocated thousands of entries and objects per frame, which is what the major
+ * GC pauses in the browser were collecting; the sectors themselves only change height
+ * in place, so the array identity (plus its length) is a safe key.
+ */
+const sectorMaps = new WeakMap();
+function sectorMapOf(state) {
+  const cached = sectorMaps.get(state.sectors);
+  if (cached && cached.length === state.sectors.length) return cached.map;
+  const map = new Map(state.sectors.map(sector => [sector.id, sector]));
+  sectorMaps.set(state.sectors, { length: state.sectors.length, map });
+  return map;
+}
+
 export function damagePlayer(state, amount, direction = 'front') {
   if (state.playerStats.invulnerable > 0 || state.playerStats.health <= 0) return;
   if (state.settings?.difficulty === 1) amount = Math.floor(amount / 2);
@@ -64,7 +82,7 @@ export function entityDistance(state, origin, direction, entity, range, radius =
 // Traces geometry in 3D so open portals do not behave like solid walls.
 export function geometryDistance(state, origin, direction, range, movement = false) {
   let nearest = range;
-  const sectors = new Map(state.sectors.map(sector => [sector.id, sector]));
+  const sectors = sectorMapOf(state);
   for (const wall of state.walls) {
     const sx = wall.end.x - wall.start.x, sy = wall.end.y - wall.start.y;
     const cross = direction.x * sy - direction.y * sx;
@@ -79,10 +97,12 @@ export function geometryDistance(state, origin, direction, range, movement = fal
     nearest = distance;
   }
   if (Math.abs(direction.z || 0) > 1e-9) for (const sector of state.sectors) {
-    for (const height of [sector.floorHeight, ...(sector.sky ? [] : [sector.ceilingHeight])]) {
-      const distance = (height - origin.z) / direction.z;
-      if (distance > 1e-5 && distance < nearest && containsPoint(sector.rings, origin.x + direction.x * distance, origin.y + direction.y * distance)) nearest = distance;
-    }
+    // Two heights per sector, without building a two element array for each of them.
+    let distance = (sector.floorHeight - origin.z) / direction.z;
+    if (distance > 1e-5 && distance < nearest && containsPoint(sector.rings, origin.x + direction.x * distance, origin.y + direction.y * distance)) nearest = distance;
+    if (sector.sky) continue;
+    distance = (sector.ceilingHeight - origin.z) / direction.z;
+    if (distance > 1e-5 && distance < nearest && containsPoint(sector.rings, origin.x + direction.x * distance, origin.y + direction.y * distance)) nearest = distance;
   }
   return nearest;
 }
@@ -114,7 +134,7 @@ export function canHearPlayer(state, entity) {
   const target = sectorAt(state.sectors, entity.x, entity.y);
   if (!source || !target) return !state.sectors.length && canSeePlayer(state, entity, 65536);
   if (state.soundFlood?.noise !== noise || state.soundFlood.revision !== state.worldRevision) {
-    const sectors = new Map(state.sectors.map(sector => [sector.id, sector]));
+    const sectors = sectorMapOf(state);
     const links = new Map();
     for (const wall of state.walls) {
       const a = sectors.get(wall.right?.sectorId), b = sectors.get(wall.left?.sectorId);
@@ -161,44 +181,59 @@ export function enemyHitscan(state, entity, action) {
     if (entityDistance(state, origin, direction, state.player, limit, 16) !== null) damagePlayer(state, damage);
   }
 }
+// The eight directions a monster can step in, in the order Doom tries them.
+const ENEMY_DIRECTIONS = Array.from({ length: 8 }, (unused, index) => ({ x: Math.cos(index * Math.PI / 4), y: Math.sin(index * Math.PI / 4) }));
+const ENEMY_SEARCH = [0, 1, 7, 2, 6, 3, 5, 4];
+
 export function moveEnemy(state, entity, speed, dt, target = state.player) {
   if (entity.health <= 0 || speed <= 0 || dt <= 0) return;
   const angle = Math.atan2(target.y - entity.y, target.x - entity.x);
   const distance = Math.hypot(target.x - entity.x, target.y - entity.y);
   const step = Math.min(speed * dt, Math.max(0, distance - 36));
   if (!step) return;
-  const origin = { ...entity, z: floorAt(state, entity) + 28 };
+  // Every monster is moved every frame, so this stays allocation-free apart from one
+  // small origin object: no candidate arrays, no Sets and no sector scans per wall.
+  const entityFloor = floorAt(state, entity);
+  const origin = { x: entity.x, y: entity.y, z: entityFloor + 28 };
   const previous = state.enemyMoves.get(entity.id);
   const toward = ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
   const reverse = previous ? (previous.direction + 4) % 8 : -1;
-  const candidates = previous?.remaining > 0 ? [previous.direction] : [];
-  const preferred = [toward, (toward + 1) % 8, (toward + 7) % 8, (toward + 2) % 8, (toward + 6) % 8,
-    (toward + 3) % 8, (toward + 5) % 8, (toward + 4) % 8];
-  candidates.push(...preferred.filter(direction => direction !== reverse), reverse);
-  for (const index of new Set(candidates.filter(direction => direction >= 0))) {
-    const direction = { x: Math.cos(index * Math.PI / 4), y: Math.sin(index * Math.PI / 4) };
-    if (geometryDistance(state, origin, direction, step + 16, true) < step + 16) continue;
+  const sectors = sectorMapOf(state);
+  const walkable = index => {
+    const direction = ENEMY_DIRECTIONS[index];
+    if (geometryDistance(state, origin, direction, step + 16, true) < step + 16) return false;
     const x = entity.x + direction.x * step, y = entity.y + direction.y * step;
     const sector = sectorAt(state.sectors, x, y);
-    if (state.sectors.length && (!sector || sector.ceilingHeight - sector.floorHeight < 56 || Math.abs(sector.floorHeight - floorAt(state, entity)) > 24)) continue;
-    if (state.entities.some(other => other !== entity && other.type === 'enemy' && other.health > 0 && Math.hypot(other.x - x, other.y - y) < 32)) continue;
-    if (state.walls.some(wall => {
+    if (state.sectors.length && (!sector || sector.ceilingHeight - sector.floorHeight < 56 || Math.abs(sector.floorHeight - entityFloor) > 24)) return false;
+    for (const other of state.entities) {
+      if (other !== entity && other.type === 'enemy' && other.health > 0 && Math.hypot(other.x - x, other.y - y) < 32) return false;
+    }
+    for (const wall of state.walls) {
       const dx = wall.end.x - wall.start.x, dy = wall.end.y - wall.start.y;
       const t = Math.max(0, Math.min(1, ((x - wall.start.x) * dx + (y - wall.start.y) * dy) / (dx * dx + dy * dy)));
-      if (Math.hypot(x - wall.start.x - t * dx, y - wall.start.y - t * dy) >= 16) return false;
-      const front = state.sectors.find(sector => sector.id === wall.right?.sectorId), back = state.sectors.find(sector => sector.id === wall.left?.sectorId);
+      if (Math.hypot(x - wall.start.x - t * dx, y - wall.start.y - t * dy) >= 16) continue;
+      const front = sectors.get(wall.right?.sectorId), back = sectors.get(wall.left?.sectorId);
       if (!wall.solid && front && back && Math.min(front.ceilingHeight, back.ceilingHeight) - Math.max(front.floorHeight, back.floorHeight) >= 56 &&
-        Math.max(front.floorHeight, back.floorHeight) - floorAt(state, entity) <= 24) return false;
-      if (!wall.solid && !front && !back) return false;
-      return true;
-    })) continue;
+        Math.max(front.floorHeight, back.floorHeight) - entityFloor <= 24) continue;
+      if (!wall.solid && !front && !back) continue;
+      return false;
+    }
     entity.x = x; entity.y = y; entity.angle = index * 45;
     state.enemyMoves.set(entity.id, { direction: index, remaining: previous?.direction === index && previous.remaining > 0
       ? previous.remaining - step : speed * (4 / 35) * randomDamage(state, 1, 16) });
-    entity.z = sector?.floorHeight ?? floorAt(state, entity);
+    entity.z = sector?.floorHeight ?? entityFloor;
     state.physics?.teleport(entity.id, x, y, sector?.floorHeight);
-    return;
+    return true;
+  };
+  // Keep a direction that still has ground to cover, otherwise search from the way the
+  // target lies, and try the opposite of the last direction last.
+  if (previous?.remaining > 0 && previous.direction !== reverse && walkable(previous.direction)) return;
+  for (const offset of ENEMY_SEARCH) {
+    const index = (toward + offset) % 8;
+    if (index === reverse) continue;
+    if (walkable(index)) return;
   }
+  if (reverse >= 0) walkable(reverse);
 }
 export function launchProjectile(state, action, owner) {
   if (state.projectiles.length >= 256) throw new Error('Projectile limit exceeded');

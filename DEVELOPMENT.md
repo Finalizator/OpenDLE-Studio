@@ -1611,7 +1611,29 @@ the frame (`step`, `audio`, `render`, `hud`) into a `createFrameBudget` and logs
 breakdown. A `PerformanceObserver` for `longtask` covers the parts no frame code can see and
 logs `Long task blocked the preview for N ms` with the browser's attribution. Both numbers,
 plus `frameWorstMs`, `slowFrames`, `slowestFrame` and the long-task totals, are in the
-`Preview stopped` entry of every playtest log.
+`Preview stopped` entry of every playtest log, together with the JS heap size and
+whether the page was hidden at the time (a suspended tab freezes the loop mid-frame and
+charges the frozen wall time to that frame, which otherwise reads exactly like a stall in
+the code).
+
+A frame that stalls inside the simulation only says "step", so `stepRuntime` also times
+its own stages (`hud`, `physics`, `rules`, `actors`, `projectiles`, `effects`) and keeps
+the breakdown of the slowest step, reported as `stepStages` next to the frame. That is
+how a 3417 ms frame in a real playtest was attributed to `step: 3378` rather than to the
+renderer. The stages live in the per-state cache and are exposed through a
+non-enumerable `state.slowStep` accessor, so they never reach a save file.
+
+The first real report also named the allocation problem behind such pauses.
+`geometryDistance` rebuilt its id-to-sector map on every call and built a two element
+array per sector for the ceiling pass, and a chasing monster calls it for up to nine
+directions per frame, so a level with a hundred monsters produced hundreds of thousands
+of throwaway objects per frame; `moveEnemy` added candidate arrays, a `Set` and an entity
+spread on top, `runEvent` built a rule/owner key string for every rule of every frame even
+though only one-shot rules need it, and `crossedWalls` allocated two intermediate arrays
+per frame. All of it is gone: the sector map is cached per sector array, the search order
+is a constant table, the rule key is built on demand and only one-shot rules are recorded
+as fired. On Doom II MAP02 that is 86 -> 64 collections and a 159 -> 121 MiB heap over 3600
+steps, and 11% less simulation time.
 
 Opt-in counters (`canvas.dataset.perfCounters = 'on'`) expose `frameMs`,
 `frameMaxMs`, `frameStalls`, `worldRebuildMs` and `worldRebuilds`; `preview.perf()`

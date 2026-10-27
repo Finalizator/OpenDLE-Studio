@@ -140,6 +140,11 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     get: () => state.scripts?.capture() ?? null,
     set: () => {},
   });
+  // The slowest step so far and its stage breakdown, for the frame report.
+  Object.defineProperty(state, 'slowStep', {
+    configurable: true, enumerable: false,
+    get: () => cacheFor(state).slowStep ? { ...cacheFor(state).slowStep } : null,
+  });
   return state;
 }
 
@@ -167,6 +172,24 @@ function cacheFor(state) {
   let cache = stateCaches.get(state);
   if (!cache) stateCaches.set(state, cache = {});
   return cache;
+}
+
+/**
+ * The slowest simulation step and the stage it spent its time in.
+ *
+ * A frame report can only say "step", and a step that stalls for seconds has to be
+ * told apart from the rules, the physics world, the actor state machines or the
+ * projectile/effect updates. The breakdown lives in the per-state cache, so it is never
+ * part of a save; the accessor is non-enumerable so the save writer never sees it.
+ */
+export const SLOW_STEP_MS = 120;
+function recordStep(state, startedAt, parts) {
+  const ms = performance.now() - startedAt;
+  const previous = cacheFor(state).slowStep;
+  if (ms >= SLOW_STEP_MS && (!previous || ms > previous.ms)) {
+    cacheFor(state).slowStep = { ms: Math.round(ms), time: Math.round(state.time * 100) / 100,
+      ...Object.fromEntries(Object.entries(parts).map(([key, value]) => [key, Math.round(value)])) };
+  }
 }
 
 /**
@@ -372,6 +395,9 @@ function fallbackMovement(state) {
 
 export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   dt = Math.max(0, Math.min(0.05, dt));
+  const stepStarted = performance.now(), stepParts = (cacheFor(state).stepParts ||= {});
+  let stepMark = stepStarted;
+  const stage = name => { const now = performance.now(); stepParts[name] = now - stepMark; stepMark = now; };
   const player = state.player, hud = state.hudState;
   state.sounds.length = 0;
   advanceHUD(project, state.hudState, dt, 'interface');
@@ -382,7 +408,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     state.hudState.clicked.clear(); return;
   }
   state.time += dt;
-  state.impacts = state.impacts.filter(effect => {
+  if (state.impacts.length) state.impacts = state.impacts.filter(effect => {
     // Trail particles drift while their animation plays.
     if (effect.vx || effect.vy || effect.vz) {
       effect.x += (effect.vx || 0) * dt; effect.y += (effect.vy || 0) * dt; effect.z += (effect.vz || 0) * dt;
@@ -404,6 +430,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.worldTriggers.useSpecial = usedWall?.special ?? null;
   state.worldTriggers.shoot.clear();
   runRules('beforePhysics');
+  stage('hud');
   if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
   if (!state.scriptedInput && !hud.cursor) player.angle += ((keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0)) * dt * 2.2;
   const forward = hud.cursor ? 0 : state.scriptedInput ? state.input.forward : ((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)) * 160;
@@ -460,6 +487,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (canMove(player.x + dx * speed, player.y, currentFloor)) player.x += dx * speed;
     if (canMove(player.x, player.y + dy * speed, currentFloor)) player.y += dy * speed;
   }
+  stage('physics');
   // Nothing can be crossed by a player who has not moved, and walking the whole wall
   // list every frame is the single most expensive per-frame check on a big map.
   state.worldTriggers.cross = previousPosition.x === player.x && previousPosition.y === player.y
@@ -474,6 +502,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   updateLevelStatistics(state);
   state.messageTime = Math.max(0, state.messageTime - dt);
   runRules('afterPhysics');
+  stage('rules');
   if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
   // Imported actor definitions (DECORATE/ZScript) drive enemy and weapon state
   // machines; they run at Doom's 35 Hz tic rate next to the frame update.
@@ -483,10 +512,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     applyWeaponAttack(project, state);
     tickMorphs(project, state);
   }
+  stage('actors');
   stepProjectiles(project, state, dt);
   settleGroundActors(state);
   advanceProjectiles(state, dt, projectile => runProjectileDeath(project, state, projectile),
     (entity, amount, source) => hurtActor(project, state, entity, amount, source));
+  stage('projectiles');
   applySectorDamage(state, dt);
   activateWallTriggers(state);
   updateLevelStatistics(state);
@@ -495,6 +526,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.feedback.health = state.playerStats.health;
   hud.clicked.clear();
   state.started = true;
+  stage('effects');
+  recordStep(state, stepStarted, stepParts);
   function runRules(phase) {
     const tree = ruleTree(project), roots = tree.phases.get(phase);
     if (!roots?.length) return;
@@ -549,8 +582,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     }
   }
   function runEvent(event, perInstance, phase) {
-    const eventKey = perInstance ? `${event.id}:${event.ownerId}` : event.id;
-    if (!event.enabled || (event.once && state.fired.has(eventKey))) return;
+    // The key is a string per rule and per owner, so building it for every rule of
+    // every frame is one of the largest garbage sources in the simulation. Only the
+    // conditions that sample state and the one-shot bookkeeping need it.
+    let eventKey = null;
+    const keyOf = () => eventKey ??= perInstance ? `${event.id}:${event.ownerId}` : event.id;
+    if (!event.enabled || (event.once && state.fired.has(keyOf()))) return;
     const lookup = entityLookup(state);
     if (event.ownerId && !lookup.byId.has(event.ownerId)) return;
     const findTarget = id => lookup.byId.get(resolveEntityId(event, id));
@@ -650,7 +687,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (condition.type === 'entityDamaged') {
         const entity = findTarget(condition.entityId);
         if (!entity) return false;
-        const key = `${eventKey}:${entity.id}`, old = state.entitySamples.get(key) ?? entity.health;
+        const key = `${keyOf()}:${entity.id}`, old = state.entitySamples.get(key) ?? entity.health;
         state.entitySamples.set(key, entity.health);
         return entity.health < old;
       }
@@ -687,7 +724,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (condition.type === 'levelTransition') return state.levelTransition;
       if (condition.type === 'hudAnimationFinished') return hud.finished.has(condition.animationId);
       if (condition.type === 'hudStatChanged') {
-        const key = `${eventKey}:${condition.stat}:${condition.direction}`;
+        const key = `${keyOf()}:${condition.stat}:${condition.direction}`;
         statChanges ||= new Map();
         if (!statChanges.has(key)) {
           statChanges.set(key, state.playerStats[condition.stat] - (hud.statSamples.get(key) ?? hud.initialStats[condition.stat]));
@@ -749,8 +786,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (matches) for (const condition of event.conditions || []) if (!matchOne(condition)) { matches = false; break; }
     }
     if (!matches) return;
-    if (!matches) return;
-    state.fired.add(eventKey);
+    if (event.once) state.fired.add(keyOf());
     for (const sourceAction of event.actions) {
       const action = resolveCommand(sourceAction);
       switch (action.type) {

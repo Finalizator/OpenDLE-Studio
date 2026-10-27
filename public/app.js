@@ -1995,7 +1995,13 @@ function reportSlowFrame() {
   slowFrameReports++;
   playtestLog.warn('performance', `Preview frame took ${slowest.ms} ms`, {
     ...slowest, slowFrames: frameBudget.slow, frames: frameBudget.frames, slowMs: frameBudget.slowMs,
+    // A step that stalls says nothing on its own: the stages name what it was doing.
+    stepStages: runtime?.slowStep ?? null,
     entities: runtime?.entities?.length ?? 0, level: previewProject?.game?.active ?? null,
+    // A huge heap means the pause was a collection, and a hidden page means the browser
+    // froze the tab mid-frame and charged the frozen time to this frame.
+    heapMb: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : undefined,
+    hidden: document.hidden,
   });
 }
 /**
@@ -2025,6 +2031,18 @@ function watchLongTasks() {
   longTaskWatch = watch;
   return watch;
 }
+/**
+ * A tab the browser suspends or occludes freezes the loop mid-frame and charges the
+ * frozen wall time to that frame, which in a report looks exactly like a stall in the
+ * code. Recording when the page loses visibility is what tells the two apart.
+ */
+document.addEventListener('visibilitychange', () => {
+  if (!runtime) return;
+  playtestLog.info('performance', document.hidden ? 'Preview hidden by the browser' : 'Preview visible again', {
+    hidden: document.hidden, playSeconds: Math.round(runtime.time),
+    frameWorstMs: Math.round(frameBudget.worst), slowFrames: frameBudget.slow,
+  });
+});
 function stopLongTasks() {
   longTaskWatch?.observer?.disconnect();
   longTaskWatch = null;
@@ -2055,6 +2073,7 @@ function stopPreview() {
       // Whole-frame worst case and the tasks the browser ran between frames.
       frameWorstMs: Math.round(frameBudget.worst), slowFrames: frameBudget.slow,
       slowestFrame: frameBudget.slowest,
+      slowStep: runtime.slowStep,
       ...(longTaskWatch ? { longTasks: longTaskWatch.count, longTaskMs: Math.round(longTaskWatch.total), longTaskWorstMs: Math.round(longTaskWatch.worst) } : {}),
     });
   }

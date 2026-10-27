@@ -58,7 +58,11 @@ export function useWall(state) {
 }
 
 export function crossedWalls(state, previous) {
-  return new Set(state.walls.filter(wall => intersection(previous, state.player, wall) !== null).map(wall => wall.id));
+  // One pass and one Set: this runs on every frame the player moves, and the two
+  // intermediate arrays of a filter/map chain were pure garbage.
+  const crossed = new Set();
+  for (const wall of state.walls) if (intersection(previous, state.player, wall) !== null) crossed.add(wall.id);
+  return crossed;
 }
 
 export function moveSector(state, action) {

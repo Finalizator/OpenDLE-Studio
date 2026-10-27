@@ -253,6 +253,29 @@ test('the frame budget keeps the worst frame together with what it was doing', (
   assert.equal(budget.worst, 0);
 });
 
+test('a slow simulation step keeps the stage breakdown that explains it', async () => {
+  const { createProject } = await import('../shared/project.js');
+  const { createRuntime, stepRuntime, SLOW_STEP_MS } = await import('../shared/runtime.js');
+  const project = createProject(), session = createRuntime(project);
+  assert.equal(session.slowStep, null, 'a normal step is not recorded');
+  // Every clock read advances 200 ms, so each stage looks like a stall without
+  // needing a simulation slow enough to reproduce one.
+  const realPerformance = globalThis.performance;
+  let clock = 0;
+  globalThis.performance = { now: () => (clock += 200) };
+  try { stepRuntime(project, session, 1 / 60, new Set()); }
+  finally { globalThis.performance = realPerformance; }
+  const slow = session.slowStep;
+  assert.ok(slow, 'a step over the threshold is kept');
+  assert.ok(slow.ms >= SLOW_STEP_MS);
+  for (const stage of ['hud', 'physics', 'rules', 'actors', 'projectiles', 'effects']) {
+    assert.ok(stage in slow, `the step keeps its ${stage} stage`);
+  }
+  // Never part of a save: the accessor must stay out of JSON and out of key lists.
+  assert.ok(!Object.keys(session).includes('slowStep'));
+  assert.equal(JSON.stringify(session).includes('slowStep'), false);
+});
+
 test('the preview loop times the whole frame, not only the renderer', () => {
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   // A pause in the physics step, the audio mixer or the HUD is invisible to the
@@ -269,6 +292,12 @@ test('the preview loop times the whole frame, not only the renderer', () => {
   // Both reach the playtest log, so a report explains the hitch without a profiler.
   assert.match(app, /slowestFrame: frameBudget\.slowest/);
   assert.match(app, /longTaskWorstMs: Math\.round\(longTaskWatch\.worst\)/);
+  // A pause is a collection when the heap is huge, and a frozen tab when the page is
+  // hidden: both are recorded next to the frame that stalled.
+  assert.match(app, /heapMb: performance\.memory \?/);
+  assert.match(app, /hidden: document\.hidden/);
+  assert.match(app, /stepStages: runtime\?\.slowStep \?\? null/);
+  assert.match(app, /document\.addEventListener\('visibilitychange'/);
 });
 
 test('the render buffer ignores a few pixels of layout wobble', () => {
