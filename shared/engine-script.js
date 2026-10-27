@@ -240,6 +240,14 @@ export function installWallWalkDemo(project) {
   return sheet.id;
 }
 
+/**
+ * Select options for an `image` action field: an explicit empty choice plus the
+ * asset library, so a creator picks artwork by name instead of typing an id.
+ */
+export function imageFieldOptions(images = []) {
+  return [['', 'Choose an image asset'], ...images];
+}
+
 export function compareValues(a, operator, b) {
   switch (operator) {
     case '<': return a < b;

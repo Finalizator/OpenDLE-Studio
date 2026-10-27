@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createProject, validateProject } from '../shared/project.js';
 import { wallQuadUv, flatUv } from '../shared/uv.js';
 import { parseUDMF, udmfRecords } from '../shared/udmf.js';
@@ -98,9 +99,43 @@ test('a spray with nothing in reach or no chosen image reports instead of guessi
   stepRuntime(project, state, 1 / 35, new Set(), new Set(['KeyT']));
   assert.equal(state.impacts.filter(effect => effect.decal).length, 0);
 
-  // A chosen image that the project does not contain is a named error, not silence.
+  // An image the project does not contain explains itself and never stops the game:
+  // a spray is configuration, not a fatal condition.
   project.events.find(event => event.actions[0].type === 'sprayImage').actions[0].assetId = 'asset_missing';
   const next = createRuntime(project);
   next.walls.push({ id: 'wall', solid: true, start: { x: 32, y: -64 }, end: { x: 32, y: 64 } });
-  assert.throws(() => stepRuntime(project, next, 1 / 35, new Set(), new Set(['KeyT'])), /not in this project/);
+  stepRuntime(project, next, 1 / 35, new Set(), new Set(['KeyT']));
+  assert.match(next.message, /is not in this project/);
+  assert.equal(next.impacts.filter(effect => effect.decal).length, 0);
+  // No artwork chosen at all: the event says so instead of failing.
+  project.events.find(event => event.actions[0].type === 'sprayImage').actions[0].assetId = '';
+  const unset = createRuntime(project);
+  unset.walls.push({ id: 'wall', solid: true, start: { x: 32, y: -64 }, end: { x: 32, y: 64 } });
+  stepRuntime(project, unset, 1 / 35, new Set(), new Set(['KeyT']));
+  assert.match(unset.message, /Choose an image asset/);
+});
+
+test('the spray action offers every imported image by name', async () => {
+  const { imageFieldOptions } = await import('../shared/engine-script.js');
+  assert.deepEqual(imageFieldOptions([['asset_spray', 'SPRAY (sprite 32x16)']]),
+    [['', 'Choose an image asset'], ['asset_spray', 'SPRAY (sprite 32x16)']]);
+  // The field must exist and be a choice, or the dialog renders a free-text box.
+  const { ENGINE_ACTIONS } = await import('../shared/engine-script.js');
+  const action = ENGINE_ACTIONS.find(entry => entry.type === 'sprayImage');
+  assert.equal(action.fields.find(field => field.name === 'assetId').kind, 'image');
+  // The dialog has to forward the library it is given: omitting it silently produced
+  // an empty picker.
+  const source = readFileSync(new URL('../public/event-sheet.js', import.meta.url), 'utf8');
+  assert.match(source, /openCommandDialog\(\{[^}]*images = \[\]/);
+  assert.match(source, /commandFields\(draft, \{[^}]*images/);
+});
+
+test('a billboard sits with the artwork anchor on the entity, not centred on it', async () => {
+  const { spriteAnchor } = await import('../shared/sprite-anchor.js');
+  // Doom's POSSA1 is 41x55 with left 18 / top 50: feet 5 units under the anchor.
+  const anchor = spriteAnchor({ width: 41, height: 55, offsetX: 18, offsetY: 50 });
+  assert.equal(anchor.dy, 22.5);
+  assert.ok(Math.abs(0 + anchor.dy - 55 / 2 - (-5)) < 1e-9, 'the quad bottom is 5 units below the anchor');
+  const centred = spriteAnchor({ width: 64, height: 64, offsetX: 32, offsetY: 32 });
+  assert.deepEqual(centred, { dx: 0, dy: 0 }, 'a centred artwork is not moved');
 });

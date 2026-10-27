@@ -588,7 +588,12 @@ editable events, so anything it installs can be inspected, changed or deleted li
 hand-written rules — the spray's artwork and key are edited in the event itself.
 `shared/spray.js` traces the 3D look direction against solid walls, keeps the hit
 inside the sector's floor/ceiling and returns the wall angle and normal, so the
-decal lies on the wall rather than billboarding at the player. Decals live in the
+decal lies on the wall rather than billboarding at the player. An event whose image
+is missing (or not chosen yet) reports that through the game message and does
+nothing — a misconfigured spray must never take the preview down, which it did when
+the action threw. The image picker is `kind: 'image'`, listed by
+`imageFieldOptions`; the dialog has to forward the library into the field list (it
+did not, which showed an empty dropdown), so the field options have their own test. Decals live in the
 impact list (they survive saves), fade on their own timer and cap at 64 so a long
 session cannot grow without bound; the artwork is any PNG, WebP or JPEG imported
 into the asset library, chosen from a dropdown of image assets in the action
@@ -1260,6 +1265,15 @@ misleading "not embedded"), a requested track that is not embedded, or a music
 volume of 0. Silent music is therefore diagnosable without a console. Importing
 soundtracks is not sample-accurate OPL emulation: instruments are approximations,
 and pitch bends, vibrato and tracker effects are not emulated.
+
+**Sprite anchoring** does not depend on `THREE.Sprite.center`: the artwork's own
+left/top offsets are converted into a position shift by `spriteAnchor`
+(`shared/sprite-anchor.js`), with the centre fixed at its default. A material that
+keeps the default centre then cannot draw a monster half-sunk in the floor — which
+is what imported monsters looked like while the editor drew them correctly. The
+first enemy sprites of a session also log their placement numbers (asset, anchor,
+floor, drawn bottom) under a `render` category, so a playtest report of "halfway in
+the ground" is answerable with figures.
 
 ### Actor height
 

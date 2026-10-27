@@ -1820,13 +1820,14 @@ function reportPlaytestFailures(session) {
       message: `Line special ${special} was triggered but this runtime does not perform it.`,
       details: { special } });
   }
-  for (const sprite of previewRenderer?.buriedSprites?.() || []) {
-    // A sprite anchored below its sector floor is drawn buried in it; naming the
-    // artwork and the numbers is what makes the cause visible from a log.
-    playtestLog.once(`buried:${sprite.asset}`, { severity: 'warning', category: 'render',
-      message: `${sprite.name || sprite.id} is drawn ${sprite.below} units into the floor `
-        + `(sprite ${sprite.asset}, ${sprite.height} tall, anchor ${sprite.anchor}, floor ${sprite.floor}).`,
-      details: sprite });
+  const spriteReport = previewRenderer?.spriteReport?.();
+  if (spriteReport?.sprites?.length) {
+    // Enemy sprite placement, with the artwork offsets and the anchor, so a report of
+    // "the monsters are half in the floor" can be answered from the log alone.
+    playtestLog.once('render:sprite-placement', { severity: 'info', category: 'render',
+      message: `Enemy sprite placement: ${spriteReport.sprites.map(sprite =>
+        `${sprite.asset} anchor ${sprite.anchor} floor ${sprite.floor} bottom ${sprite.drawnBottom}`).join('; ')}.`,
+      details: spriteReport });
   }
   if (session.groundCorrections?.first) {
     // An actor below its sector floor is drawn buried in it; the runtime snaps it back
@@ -1996,8 +1997,12 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     nextRuntime.gameMode = gameMode;
     nextRuntime.hudState.cursor = nextRuntime.gameScreen !== 'playing';
     if (statusBarHidden(snapshot.hud, nextRuntime.settings)) {
-      nextRuntime.message = 'Status bar hidden (Screen size 11). Use "Show status bar".';
-      nextRuntime.messageTime = 8;
+      // Our HUD *is* the status bar, so screen size 11 leaves nothing on screen. It was
+      // also one stray click away in the Options menu, so a stored 11 is treated as an
+      // accident: the bar comes back and the player can raise the size again on purpose.
+      changeSetting(nextRuntime, 'viewSize', 10);
+      nextRuntime.message = 'Screen size 11 hides the whole HUD, so it was set back to 10. Raise it in Options if you meant it.';
+      nextRuntime.messageTime = 6;
     }
     try { nextRuntime.saveSlots = saveSlotLabels(await gameSaves.list(identity)); }
     catch (error) { nextRuntime.saveStatus = `Saved games unavailable: ${error.message}`; status(nextRuntime.saveStatus, true); }

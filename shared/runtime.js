@@ -654,11 +654,19 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         case 'sprayImage': {
           // A spray is a wall decal: it lives in the impact list so saves keep it and
-          // the renderer draws it flat on the wall instead of as a billboard.
+          // the renderer draws it flat on the wall instead of as a billboard. An
+          // unconfigured spray must never stop the game: it explains itself once and
+          // does nothing until the event names an image asset.
+          const asset = project.assets.find(item => item.id === action.assetId);
+          if (!asset) {
+            state.message = action.assetId
+              ? `Spray image ${action.assetId} is not in this project's asset library.`
+              : 'Choose an image asset in the spray event.';
+            state.messageTime = 3;
+            break;
+          }
           const target = sprayTarget(state, action.distance);
           if (!target) break;
-          const asset = project.assets.find(item => item.id === action.assetId);
-          if (!asset) throw new Error(`Spray image ${action.assetId || '(none chosen)'} is not in this project`);
           const size = action.size > 0 ? action.size : 40;
           const decal = { id: `decal_${state.decalCounter++}`, x: target.x + target.normal[0] * .5,
             y: target.y + target.normal[1] * .5, z: target.z, clipId: '', start: state.time,

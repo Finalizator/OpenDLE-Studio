@@ -5,6 +5,7 @@ import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv } from '/shared/uv.js';
+import { spriteAnchor } from '/shared/sprite-anchor.js';
 import { wallSegments } from '/shared/runtime.js';
 import { GLTFLoader } from '/vendor/three-addons/loaders/GLTFLoader.js';
 import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js';
@@ -673,8 +674,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
     }
     // Sprays are wall decals: a textured quad lying against the wall rather than a
     // billboard, so the artwork keeps its shape as the player walks past it.
-    // Sprites drawn below their sector floor, reported through the preview status once.
-    const buried = [];
+    // Placement numbers for the first enemy sprites, reported through the playtest log.
+    const report = [];
     const decalMaterials = new Map();
     const decalGeometry = new THREE.PlaneGeometry(1, 1);
     geometries.add(decalGeometry);
@@ -1000,24 +1001,35 @@ export async function createPreview(canvas, project, state, { editor = false } =
           const asset = assetMap.get(assetId);
           if (record.frame !== assetId) sprite.material.map = assetId ? imageTexture(assetId) : null;
           sprite.scale.set((asset?.width || 24) * scale * (flip ? -1 : 1), (asset?.height || 40) * scale, 1);
-          sprite.center.set(asset ? asset.offsetX / asset.width : .5, asset ? 1 - asset.offsetY / asset.height : 0);
+          // The artwork's own left/top offsets place it: the sprite quad is kept centred
+          // on its position and the offsets are applied to that position instead of to
+          // `sprite.center`. Center-based offsets are a shader feature, and a sprite that
+          // silently falls back to the default centre is drawn half-sunk in the floor —
+          // which is exactly how imported monsters looked.
+          sprite.center.set(.5, .5);
+          sprite.userData.shift = spriteAnchor({ width: Math.abs((asset?.width || 24) * scale),
+            height: (asset?.height || 40) * scale, offsetX: (asset?.offsetX || 0) * scale,
+            offsetY: (asset?.offsetY ?? (asset?.height || 40)) * scale });
+          sprite.userData.assetHeight = asset?.height || 40;
+          sprite.userData.offsetY = (asset?.offsetY ?? (asset?.height || 40)) * scale;
           sprite.userData.frame = assetId; sprite.userData.flip = flip;
           record.frame = assetId; record.flip = flip; record.scale = scale;
         }
         const sector = sectorIndex.at(entity.x, entity.y);
         const anchor = entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0);
-        sprite.position.set(entity.x, anchor, entity.y);
-        // Cross-check the drawn feet against the sector floor once per frame: an entity
-        // more than a step under it is drawn buried in the floor, and the playtest log
-        // then names the artwork and the numbers instead of leaving it unexplained.
-        if (sector && !editor && sprite.userData.frame && buried.length < 6) {
-          const drawn = anchor - sprite.center.y * sprite.scale.y;
-          if (drawn < sector.floorHeight - 8) buried.push({ id: entity.id, name: entity.name,
-            asset: assetMap.get(sprite.userData.frame)?.name || sprite.userData.frame,
-            anchor: Math.round(anchor * 10) / 10, floor: sector.floorHeight, sector: sector.id,
-            elevation: entity.elevation, height: sprite.scale.y,
-            below: Math.round((sector.floorHeight - drawn) * 10) / 10 });
-        }
+        const height = sprite.scale.y;
+        const offsetY = sprite.userData.offsetY || 0;
+        const shift = sprite.userData.shift || { dx: 0, dy: 0 };
+        sprite.position.set(entity.x + shift.dx, anchor + shift.dy, entity.y);
+        // Report the first enemy sprites so a log can answer "why is it drawn buried"
+        // with the real numbers instead of a guess.
+        if (sector && !editor && report.length < 4 && entity.type === 'enemy') report.push({
+          name: entity.name, id: entity.id, asset: assetMap.get(assetId)?.name || assetId || '(none)',
+          assetHeight: sprite.userData.assetHeight, offsetY: Math.round(offsetY * 100) / 100,
+          scaleY: height, centreY: sprite.center.y, positionY: Math.round(sprite.position.y * 100) / 100,
+          anchor: Math.round(anchor * 100) / 100, z: entity.z, floor: sector.floorHeight, sector: sector.id,
+          elevation: entity.elevation, drawnBottom: Math.round((sprite.position.y - height / 2) * 100) / 100,
+        });
         let red = Math.max(.03, (sector?.light ?? 255) / 255), green = red, blue = red;
         for (let light = 0; light < activeLights.length; light++) {
           const dx = sprite.position.x - lightPositions[light].x;
@@ -1161,7 +1173,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
       return true;
     }
     return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity,
-      buriedSprites: () => buried.slice(),
+      spriteReport: () => ({ player: { x: Math.round(state.player.x), y: Math.round(state.player.y),
+        z: Math.round((state.player.z ?? 0) * 10) / 10, pitch: Math.round((state.player.pitch || 0) * 1000) / 1000 },
+      sprites: report.slice() }),
       perf: () => ({ ...frameStats.summary(), slowFrame }) };
   } catch (error) {
     dispose();

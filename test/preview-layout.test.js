@@ -26,4 +26,7 @@ test('the preview toolbar keeps a one-click way back from a hidden status bar', 
   assert.match(app, /function syncStatusBarButton\(\)/);
   assert.match(app, /\$\(&#39;show-statusbar&#39;\)|'show-statusbar'\).addEventListener/);
   assert.match(app, /changeSetting\(runtime, 'viewSize', 10\)/);
+  // A stored Screen size 11 is set back to 10 when the preview starts, so the HUD is
+  // never missing before the player has done anything.
+  assert.match(app, /if \(statusBarHidden\(snapshot\.hud, nextRuntime\.settings\)\) \{[\s\S]{0,400}?changeSetting\(nextRuntime, 'viewSize', 10\)/);
 });

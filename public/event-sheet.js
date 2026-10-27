@@ -1,4 +1,4 @@
-import { engineCommand, INPUT_KEYS } from '/shared/engine-script.js';
+import { engineCommand, imageFieldOptions, INPUT_KEYS } from '/shared/engine-script.js';
 import { isExpression, EXPRESSION_HELP } from '/shared/expressions.js';
 
 const triggers = new Set(['onStart', 'keyPressed', 'mouseMoved', 'collisionStarted', 'collisionEnded', 'animationFinished', 'hudClicked', 'hudAnimationFinished', 'hudStatChanged', 'entityDamaged', 'wallActivated']);
@@ -40,7 +40,7 @@ export function commandRow(command, labels, objectName, open, { inverted = false
   return row;
 }
 
-export function openCommandDialog({ kind, labels, command, defaults, entities, playerId, variables, groups, clips, walls = [], sectors = [], spriteClips = [], hudElements = [], hudAnimations = [], submit, remove, move }) {
+export function openCommandDialog({ kind, labels, command, defaults, entities, playerId, variables, groups, clips, walls = [], sectors = [], spriteClips = [], images = [], hudElements = [], hudAnimations = [], submit, remove, move }) {
   const dialog = document.createElement('dialog'); dialog.className = 'command-dialog';
   dialog.setAttribute('aria-label', `${command ? 'Edit' : 'Add'} ${kind}`);
   const heading = document.createElement('h2'), search = document.createElement('input'), content = document.createElement('div');
@@ -79,7 +79,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, p
     } else {
       const label = document.createElement('h3'); label.textContent = labels.find(([type]) => type === draft.type)?.[1] || draft.type;
       content.append(label);
-      for (const field of commandFields(draft, { entities, playerId, variables, groups, clips, walls, sectors, spriteClips, hudElements, hudAnimations })) {
+      for (const field of commandFields(draft, { entities, playerId, variables, groups, clips, walls, sectors, spriteClips, images, hudElements, hudAnimations })) {
         const label = document.createElement('label'); label.textContent = field.label || field.name;
         const valueType = field.value ? isExpression(draft[field.name]) ? 'expression' : typeof draft[field.name] : null;
         if (field.value) {
@@ -134,14 +134,14 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, p
   render(); dialog.showModal(); (stage === 'parameters' ? content.querySelector('input,select') : search)?.focus();
 }
 
-function commandFields(command, { entities, playerId, variables, groups, clips, walls, sectors, spriteClips, images = [], hudElements, hudAnimations }) {
+export function commandFields(command, { entities, playerId, variables, groups, clips, walls, sectors, spriteClips, images = [], hudElements, hudAnimations }) {
   const definition = engineCommand(command.type);
   if (definition) {
     return [
       ...definition.fields.map(field => ({ ...field, value: field.kind === 'value', numeric: field.kind === 'number',
         ...(['clipId', 'impactClipId'].includes(field.name) ? { options: [['', 'None / primitive visual'], ...spriteClips] } : {}),
         // Image fields list the asset library, so a spray's artwork is chosen by name.
-        ...(field.kind === 'image' ? { options: [['', 'Choose an image asset'], ...images] } : {}) })),
+        ...(field.kind === 'image' ? { options: imageFieldOptions(images) } : {}) })),
       ...(definition.spriteClip ? [{ name: 'clipId', label: 'Sprite clip', options: spriteClips }] : []),
       ...(definition.wall ? [{ name: 'wallId', label: 'Linedef', options: walls }] : []),
       ...(definition.sector ? [{ name: 'sectorId', label: 'Sector', options: sectors }] : []),
