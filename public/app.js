@@ -1717,6 +1717,8 @@ function reportFrameStalls(session) {
     ms: Math.round(perf.worst), stalls: perf.sessionStalls, frames: perf.sessionFrames,
     entities: session.entities?.length ?? 0, projectiles: session.projectiles?.length ?? 0,
     effects: session.impacts?.length ?? 0, level: previewProject?.game?.active ?? null,
+    // update vs draw, geometry rebuilds and pipeline/texture counts for the worst frame
+    slowFrame: perf.slowFrame ? { ...perf.slowFrame } : null,
   });
 }
 function stopPreview() {

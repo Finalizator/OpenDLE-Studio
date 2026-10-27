@@ -56,23 +56,32 @@ export function headingDirection(player) {
   return normalise(add(scale(forward, Math.cos(angle)), scale(right, Math.sin(angle))));
 }
 
-/** The full look direction the camera and hitscan attacks use. */
-export function viewDirection(player) {
-  const { up } = playerBasis(player?.up);
+/**
+ * The full look direction the camera and hitscan attacks use. `angle` overrides the
+ * player's heading so a spread shot does not need to clone the player first.
+ */
+export function viewDirection(player, angle = player?.angle) {
+  const { up, forward, right } = playerBasis(player?.up);
   const pitch = Number.isFinite(player?.pitch) ? player.pitch : 0;
-  return normalise(add(scale(headingDirection(player), Math.cos(pitch)), scale(up, Math.sin(pitch))));
+  const heading = Number.isFinite(angle) ? angle : 0;
+  const flat = Math.cos(pitch);
+  return normalise([
+    (forward[0] * Math.cos(heading) + right[0] * Math.sin(heading)) * flat + up[0] * Math.sin(pitch),
+    (forward[1] * Math.cos(heading) + right[1] * Math.sin(heading)) * flat + up[1] * Math.sin(pitch),
+    (forward[2] * Math.cos(heading) + right[2] * Math.sin(heading)) * flat + up[2] * Math.sin(pitch),
+  ]);
 }
 
-/** Capsule centre in map space, from the feet height stored on the player. */
-export function playerCentre(player) {
+/** Capsule centre in map space; `z` overrides the feet height stored on the player. */
+export function playerCentre(player, z = player?.z) {
   const up = upVector(player?.up);
-  const feet = Number.isFinite(player?.z) ? player.z : 0;
+  const feet = Number.isFinite(z) ? z : 0;
   return [player?.x || 0, player?.y || 0, feet + up[2] * PLAYER_CYLINDER.halfHeight];
 }
 
 /** Eye position in map space, `EYE_HEIGHT` above the feet along the up axis. */
-export function eyePosition(player) {
-  return add(playerCentre(player), scale(upVector(player?.up), EYE_ABOVE_CENTRE));
+export function eyePosition(player, z = player?.z) {
+  return add(playerCentre(player, z), scale(upVector(player?.up), EYE_ABOVE_CENTRE));
 }
 
 /**

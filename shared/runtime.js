@@ -145,6 +145,18 @@ export function lookPlayer(state, movementX, movementY) {
   state.player.pitch = Math.max(-limit, Math.min(limit, state.player.pitch - movementY * .002));
 }
 
+// Probing costs a dozen ray casts and a handful of objects per frame, so it only
+// happens when the project has a rule that can read a surface.
+const surfaceProjects = new WeakMap();
+export function projectUsesSurfaces(project) {
+  let used = surfaceProjects.get(project);
+  if (used !== undefined) return used;
+  used = project.events.some(event => [event.condition, ...(event.conditions || [])].some(condition =>
+    condition?.type === 'playerTouchingSurface') || (event.actions || []).some(action => action.type === 'setPlayerGravity'));
+  surfaceProjects.set(project, used);
+  return used;
+}
+
 function touchingSurfaces(state) {
   return state.surfaces || (state.surfaces = state.physics?.probeSurfaces?.(state.player.up) || []);
 }
@@ -266,7 +278,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     state.physics.step(dt, { x: dt ? dx * speed / dt : 0, y: dt ? dy * speed / dt : 0, z: dt ? dz * speed / dt : 0,
       jump: jumpHeld, up: player.up });
     // Surfaces the capsule touches, for the wall-walking events and conditions.
-    state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
+    if (projectUsesSurfaces(project)) state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
   }
   else {
     if (canMove(player.x + dx * speed, player.y)) player.x += dx * speed;
@@ -817,7 +829,7 @@ function fireHitscan(state, action) {
   const player = state.player;
   // The shot leaves the eye along the view direction, so it still lines up with the
   // crosshair after gravity has been turned onto a wall.
-  const eye = eyePosition({ ...player, z: player.z ?? sectorAt(state.sectors, player.x, player.y)?.floorHeight ?? 0 });
+  const eye = eyePosition(player, player.z ?? sectorAt(state.sectors, player.x, player.y)?.floorHeight ?? 0);
   const random = () => {
     state.randomSeed = (Math.imul(state.randomSeed, 1664525) + 1013904223) >>> 0;
     return state.randomSeed / 4294967296;
@@ -825,7 +837,7 @@ function fireHitscan(state, action) {
   state.lastShot = { time: state.time, hits: [] };
   for (let pellet = 0; pellet < action.pellets; pellet++) {
     const angle = player.angle + (action.spread ? (random() - .5) * action.spread * Math.PI / 180 : 0);
-    const spread = viewDirection({ ...player, angle });
+    const spread = viewDirection(player, angle);
     const dx = spread[0], dy = spread[1], dz = spread[2];
     let nearest = geometryDistance(state, { x: eye[0], y: eye[1], z: eye[2] }, { x: dx, y: dy, z: dz }, action.range);
     const wallHit = { x: eye[0] + dx * (nearest + .01), y: eye[1] + dy * (nearest + .01) };

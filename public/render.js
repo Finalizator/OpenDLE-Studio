@@ -11,6 +11,7 @@ import { RoomEnvironment } from '/vendor/three-addons/environments/RoomEnvironme
 import RAPIER from '/vendor/rapier/rapier.mjs';
 import { createPhysics } from '/shared/physics.js';
 import { eyePosition, upVector, viewDirection } from '/shared/gravity.js';
+import { restoreCulling, restoreVisibility, revealForWarmup, uncullDrawables } from '/shared/render-warmup.js';
 import { liveProjectPlan, modelWorldBox, entityOrigin } from '/shared/entity-visuals.js';
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
@@ -634,6 +635,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
     const cameraDirection = new THREE.Vector3();
     const viewUp = new THREE.Vector3(0, 1, 0), targetUp = new THREE.Vector3(0, 1, 0);
     const frameStats = createFrameStats({ window: 120, stallMs: 50 });
+    // What the worst frame was doing, so a playtest log can name the stall instead of
+    // only its length: update work, drawing, a geometry rebuild, pipeline/texture counts.
+    let frameUpdateMs = 0, frameDrawMs = 0, slowFrame = null;
     const writeDataset = createDatasetWriter(canvas);
     const effectMeshes = new Map(), effectList = [];
     const shaderUniformEntries = shaderEffect ? Object.entries(shaderEffect.uniforms) : [];
@@ -732,6 +736,12 @@ export async function createPreview(canvas, project, state, { editor = false } =
       renderFrame(state, dt);
       const elapsed = clock() - started;
       frameStats.push(elapsed);
+      if (elapsed >= frameStats.stallMs) slowFrame = {
+        ms: Math.round(elapsed), update: Math.round(frameUpdateMs), draw: Math.round(frameDrawMs),
+        rebuild: Math.round(lastRebuildMs), rebuilds,
+        programs: renderer.info.programs?.length ?? null,
+        textures: renderer.info.memory?.textures ?? null, geometries: renderer.info.memory?.geometries ?? null,
+      };
       if (canvas.dataset.perfCounters === 'on') {
         writeDataset('frameMs', elapsed.toFixed(2));
         writeDataset('frameMaxMs', frameStats.max.toFixed(2));
@@ -743,6 +753,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // The drawing buffer follows the Engine tweak instead of a fixed 800x450 frame,
     // so the game renders at the panel's real size (or a chosen preset) and only the
     // canvas element is scaled by CSS. The editor preview uses the same policy.
+    // Reallocating the drawing buffer (and its depth/multisample targets) is far more
+    // expensive than drawing a slightly wrong size, so a couple of pixels of wobble —
+    // a scrollbar appearing, a fractional layout — must not trigger it every frame.
+    const RENDER_SIZE_TOLERANCE = 8;
+    let appliedWidth = 0, appliedHeight = 0;
+    function resizeWorthwhile(width, height) {
+      if (!appliedWidth || !appliedHeight) return true;
+      return Math.abs(width - appliedWidth) > RENDER_SIZE_TOLERANCE || Math.abs(height - appliedHeight) > RENDER_SIZE_TOLERANCE;
+    }
     function applyRenderSize(settings) {
       const rect = canvas.getBoundingClientRect();
       const size = renderBufferSize({
@@ -755,8 +774,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
         maxSize: Math.min(4096, renderer.backend?.device?.limits?.maxTextureDimension2D || 4096),
       });
       const key = `${size.width}x${size.height}`;
-      if (appliedResolution !== key) {
+      if (appliedResolution !== key && resizeWorthwhile(size.width, size.height)) {
         appliedResolution = key;
+        appliedWidth = size.width; appliedHeight = size.height;
         renderer.setSize(size.width, size.height, false);
         writeDataset('renderResolution', key);
       }
@@ -765,6 +785,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       return size;
     }
     function renderFrame(state, dt) {
+      const frameStarted = clock();
       if (state.settings) {
         applyRenderSize(state.settings);
         if (!editor) {
@@ -845,8 +866,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // event that turns gravity onto a wall also turns the view onto that wall.
       if (!editor) {
         const up = upVector(state.player.up);
-        const eye = eyePosition({ ...state.player, z: state.player.z ??
-          sectorIndex.at(state.player.x, state.player.y)?.floorHeight ?? 0 });
+        const eye = eyePosition(state.player, state.player.z ??
+          sectorIndex.at(state.player.x, state.player.y)?.floorHeight ?? 0);
         const direction = viewDirection(state.player);
         camera.position.set(eye[0], eye[2], eye[1]);
         // Roll eases in: a gravity change should read as the world turning, not a cut.
@@ -973,6 +994,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
         effectMeshes.delete(entry.id);
         effectList.splice(index, 1);
       }
+      frameUpdateMs = clock() - frameStarted;
+      const drawStarted = clock();
       renderCameraTextures(state);
       applySky(state);
       renderer.autoClear = true;
@@ -1005,13 +1028,31 @@ export async function createPreview(canvas, project, state, { editor = false } =
       writeDataset('animationTime', modelList[0]?.action?.time || 0);
       writeDataset('projectiles', state.projectiles?.length || 0);
       writeDataset('worldRevision', state.worldRevision || 0);
+      frameDrawMs = clock() - drawStarted;
     }
-    await renderer.compileAsync(scene, camera);
-    // Compiling the projectile templates here is what keeps the first shot from
-    // freezing the tab while the GPU driver links a brand new pipeline.
-    await renderer.compileAsync(warmupScene, camera);
-    if (backgroundScene.children.length) await renderer.compileAsync(backgroundScene, backgroundScene.userData.skybox ? camera : backgroundCamera);
-    if (overlayScene.children.length) await renderer.compileAsync(overlayScene, overlayCamera);
+    /**
+     * Compile every pipeline before the first frame. `compileAsync` projects the
+     * scene exactly like rendering does, so on its own it only builds what the spawn
+     * camera can see and skips anything hidden — which left the rest of a big map to
+     * compile the first time the player looked at it, a multi-second freeze mid-game.
+     * Culling and visibility are forced off for the warm-up and restored afterwards.
+     */
+    const warmEverything = async () => {
+      const unculled = uncullDrawables([scene, warmupScene, backgroundScene, overlayScene]);
+      const hidden = revealForWarmup(weaponOverlays.values());
+      try {
+        await renderer.compileAsync(scene, camera);
+        // Compiling the projectile templates here is what keeps the first shot from
+        // freezing the tab while the GPU driver links a brand new pipeline.
+        await renderer.compileAsync(warmupScene, camera);
+        if (backgroundScene.children.length) await renderer.compileAsync(backgroundScene, backgroundScene.userData.skybox ? camera : backgroundCamera);
+        if (overlayScene.children.length) await renderer.compileAsync(overlayScene, overlayCamera);
+      } finally {
+        restoreCulling(unculled);
+        restoreVisibility(hidden);
+      }
+    };
+    await warmEverything();
     if (shaderCompileError) throw new Error(`GPU shader compilation failed: ${shaderCompileError}`);
     // Live editor updates: rebuild the world in place, keeping the GPU device,
     // decoded textures and compiled programs. Recreating the preview instead
@@ -1058,7 +1099,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       for (const id of plan.add) addEntity(byId.get(id));
       return true;
     }
-    return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity, perf: () => frameStats.summary() };
+    return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity, perf: () => ({ ...frameStats.summary(), slowFrame }) };
   } catch (error) {
     dispose();
     throw new Error(`Preview could not load: ${error.message}`);

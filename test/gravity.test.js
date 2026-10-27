@@ -9,6 +9,7 @@ import { createPhysics, validatePhysicsState } from '../shared/physics.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { installWallWalkDemo, WALL_WALK_SHEET } from '../shared/engine-script.js';
+import { projectUsesSurfaces } from '../shared/runtime.js';
 
 await R.init();
 const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),
@@ -161,6 +162,24 @@ test('holding F drops the player back to normal gravity from anywhere', t => {
   assert.deepEqual(state.player.up, [0, 0, 1]);
   tick(120);
   assert.ok(Math.abs(state.player.z) < 1, `fell back to the floor at ${state.player.z}`);
+});
+
+test('surface probing only runs for projects whose events can read a surface', t => {
+  const plain = roomScene(t);
+  plain.tick(5);
+  assert.equal(plain.state.surfaces, undefined, 'a project without surface rules never probes');
+  assert.equal(projectUsesSurfaces(plain.project), false);
+
+  const walking = roomScene(t, p => { installWallWalkDemo(p); });
+  walking.tick(5);
+  assert.ok(Array.isArray(walking.state.surfaces), 'the demo project probes every frame');
+  assert.equal(projectUsesSurfaces(walking.project), true);
+
+  // Gravity actions alone also need the contacts, even without a surface condition.
+  const actionOnly = roomScene(t);
+  actionOnly.project.events.push({ id: 'manual', sheetId: undefined, enabled: true, once: false,
+    condition: { type: 'onStart' }, conditions: [], actions: [{ type: 'setPlayerGravity', mode: 'world', reach: 8 }] });
+  assert.equal(projectUsesSurfaces(actionOnly.project), true);
 });
 
 test('gravity orientation is part of the physics snapshot and is validated', t => {

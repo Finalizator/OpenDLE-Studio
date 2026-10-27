@@ -1403,9 +1403,23 @@ Per-frame work was also reduced: sorted sprite-clip/asset maps replace linear
 `public/hud-view.js` only writes a style, class, label or DOM attribute when the
 computed value actually changes instead of rewriting every element every frame.
 
+`compileAsync` projects a scene exactly like a rendered frame, so on its own it
+only builds pipelines for what the spawn camera can see and skips invisible
+objects; the warm-up scene of 1x1 quads at the origin was usually outside that
+view, which left the rest of the world to compile the first time the player
+looked at it. `shared/render-warmup.js` forces culling and visibility off for the
+warm-up pass and restores exactly what it changed, so every pipeline exists
+before the first frame.
+
 Opt-in counters (`canvas.dataset.perfCounters = 'on'`) expose `frameMs`,
 `frameMaxMs`, `frameStalls`, `worldRebuildMs` and `worldRebuilds`; `preview.perf()`
-returns the same numbers.
+returns the same numbers plus `slowFrame`, the breakdown of the worst frame:
+`update` and `draw` milliseconds, the last world rebuild, the geometry rebuild
+count, and the pipeline/texture/geometry totals. A playtest log entry for a stall
+carries that breakdown, so a report says which phase was slow instead of only how
+long it took. The render buffer also ignores changes of eight pixels or less, so a
+scrollbar appearing or a fractional layout cannot reallocate the drawing buffer
+every frame.
 
 Remaining known hotspots, in order: HUD DOM updates for very large layouts,
 `syncWorld()` rebuilding a moving-sector trimesh on each world revision, sector
@@ -1661,7 +1675,9 @@ What changes underneath:
 - Ground contact, wall contact and the ceiling above are found with short ray
   casts from the capsule (centre, four offsets and eight directions). Each hit
   is reported as a contact *clearance* — the gap between the capsule surface and
-  the geometry — which is what "touching" and the action's `reach` measure.
+  the geometry — which is what "touching" and the action's `reach` measure. The
+  probe only runs when the project has a rule that can read a surface, so other
+  projects pay nothing for it.
 - `public/render.js` puts the camera on the player's up axis, easing the roll
   over ~0.1 s. The weapon overlay is drawn in the screen-space overlay scene, so
   it stays upright. Hitscan attacks fire along `viewDirection`, so the crosshair

@@ -4,6 +4,7 @@ import { createSectorIndex, sectorAt, containsPoint, sectorGeometry, surfaceMate
 import { wallSegments } from '../shared/runtime.js';
 import { createSpriteIndex, spriteIndex, clipFrame, spriteView, spriteAsset, setSpriteState } from '../shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '../shared/perf.js';
+import { readFileSync } from 'node:fs';
 
 // Reference implementations of the pre-index behaviour, kept here so the indexed
 // helpers are compared against the exact semantics they replaced.
@@ -217,4 +218,29 @@ test('surface material index covers the door and lift faces that appear after a 
   assert.ok(keys.has('ROCK/255/#808080/false'));
   assert.equal(surfaces.length, keys.size, 'duplicate surfaces are collapsed');
   assert.deepEqual(surfaceMaterials([], [], {}), []);
+});
+
+test('a stalled frame reports which phase was slow, not just how long it took', () => {
+  const render = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
+  assert.match(render, /let frameUpdateMs = 0, frameDrawMs = 0, slowFrame = null/);
+  assert.match(render, /frameUpdateMs = clock\(\) - frameStarted;/, 'update work is timed separately');
+  assert.match(render, /frameDrawMs = clock\(\) - drawStarted;/, 'drawing is timed separately');
+  // The snapshot is taken on the stall itself, so it describes the worst frame and
+  // not whichever frame happened to come last.
+  assert.match(render, /if \(elapsed >= frameStats\.stallMs\) slowFrame = \{/);
+  for (const field of ['update', 'draw', 'rebuild', 'programs', 'textures', 'geometries']) {
+    assert.ok(render.includes(`${field}:`), `slow frame keeps ${field}`);
+  }
+  assert.match(render, /perf: \(\) => \(\{ \.\.\.frameStats\.summary\(\), slowFrame \}\)/);
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /slowFrame: perf\.slowFrame \? \{ \.\.\.perf\.slowFrame \} : null/,
+    'the playtest log carries the breakdown');
+});
+
+test('the render buffer ignores a few pixels of layout wobble', () => {
+  const render = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
+  assert.match(render, /const RENDER_SIZE_TOLERANCE = 8;/);
+  assert.match(render, /Math\.abs\(width - appliedWidth\) > RENDER_SIZE_TOLERANCE \|\| Math\.abs\(height - appliedHeight\) > RENDER_SIZE_TOLERANCE/);
+  // A real resize must still get through on the first call.
+  assert.match(render, /if \(!appliedWidth \|\| !appliedHeight\) return true;/);
 });
