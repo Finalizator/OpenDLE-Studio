@@ -225,7 +225,10 @@ test('classic WAD menus import their own title, option and skill patches and sur
   assert.ok(p.hud.elements.some(item => item.name === 'save slot 1 border' && item.imageRepeat === 'repeat-x'));
   assert.ok(p.hud.elements.some(item => item.interactive && item.assetId && p.assets.find(a => a.id === item.assetId).name === 'M_NGAME'));
   assert.ok(p.map.entities.some(entity => entity.skillMask));
-  assert.ok(warnings.some(w => /MUS\/MIDI/.test(w)));
+  // The import report says which track the level plays instead of claiming MIDI/MUS
+  // music is unsupported, which is what made a soundtrack look like a missing feature.
+  assert.ok(warnings.some(w => /^Music: D_RUNNIN \(classic MAP01 track\)\.$/.test(w)), 'music report names the track');
+  assert.equal(warnings.some(w => /MUS\/MIDI music is not synthesized/.test(w)), false);
   const help = p.hud.elements.find(item => item.name === 'Imported help artwork');
   assert.equal(help.parentId, frame.id);
   assert.deepEqual([help.x, help.y, help.width, help.height], [0, 0, 320, 200]);

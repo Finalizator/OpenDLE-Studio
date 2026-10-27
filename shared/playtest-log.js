@@ -173,6 +173,13 @@ export function sessionRecord(context = {}, now = Date.now()) {
     ...(clampText(context.difficulty, 60) ? { difficulty: clampText(context.difficulty, 60) } : {}),
     ...(clampText(context.mode, 60) ? { mode: clampText(context.mode, 60) } : {}),
     ...(Number.isFinite(context.levels) ? { levels: context.levels } : {}),
+    // Display and soundtrack state explain a missing status bar or silent level
+    // without a second playtest, so the header records them explicitly.
+    ...(Number.isFinite(context.viewSize) ? { viewSize: context.viewSize } : {}),
+    ...(Number.isFinite(context.hudElements) ? { hudElements: context.hudElements } : {}),
+    ...(Number.isFinite(context.statusBarElements) ? { statusBarElements: context.statusBarElements } : {}),
+    ...(clampText(context.music, 60) ? { music: clampText(context.music, 60) } : {}),
+    ...(clampText(context.sky, 60) ? { sky: clampText(context.sky, 60) } : {}),
     ...(clampText(context.url, 200) ? { url: clampText(context.url, 200) } : {}),
   };
   return normalizeLogEntry({ severity: 'info', category: 'session', message: clampText(context.note, LOG_LIMITS.message)

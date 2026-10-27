@@ -251,7 +251,7 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
   setting('audio', 'musicVolume', 'Music volume', 70);
   setting('audio', 'muted', 'Mute', 95);
   element('audio', 'text', 'Music compatibility', 20, 128, 280, 36,
-    { text: 'Music: embedded WAV / OGG / MP3 only.\nDoom MUS / MIDI playback not translated yet.', fontSize: 7 * sy });
+    { text: 'Music: MIDI and Doom MUS soundtracks are synthesized.\nEmbedded WAV / OGG / MP3 tracks play directly.', fontSize: 7 * sy });
   element('display', 'text', 'Display compatibility', 24, 42, 272, 64,
     { text: 'Browser rendering overrides are in the editor Engine tweaks. Imported renderer-specific controls require translation.', align: 'left' });
   setting('controls', 'sensitivity', 'Mouse sensitivity', 45);

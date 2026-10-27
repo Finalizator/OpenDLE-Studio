@@ -16,8 +16,19 @@ export function soundEvent(state, name, volume = 1, position) {
   if (state.sounds.length >= 64) { state.soundOverflow = (state.soundOverflow || 0) + 1; return; }
   state.sounds.push({ name, volume, ...(position ? { x: position.x, y: position.y } : {}) });
 }
+/** The height a thing occupies: its own `z` when set, otherwise its sector floor. */
 export function floorAt(state, position) {
   return position.z ?? (sectorAt(state.sectors, position.x, position.y)?.floorHeight ?? 0) + (position.elevation || 0);
+}
+/**
+ * Sector floor directly under a position, ignoring the height the thing occupies.
+ *
+ * Spawning uses this: a map spot or spawner keeps its own `z` from whenever it was
+ * moved, and copying that height put the new actor inside the floor.
+ */
+export function sectorFloorAt(state, position) {
+  const sector = sectorAt(state.sectors, position.x, position.y);
+  return sector ? sector.floorHeight : (position.z ?? 0);
 }
 /**
  * Whether the player can reach an item: inside the box around it, inside the

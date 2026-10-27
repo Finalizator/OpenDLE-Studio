@@ -36,7 +36,8 @@ import { captureScene, instantiateScene, sceneIsEmpty } from '/shared/scenes.js'
 import { captureModelPreview } from './model-thumbnail.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
 import { installIntermission } from '/shared/intermission.js';
-import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
+import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen, changeSetting } from '/shared/game-settings.js';
+import { statusBarHidden } from '/shared/game-view.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
 import { selectGameLevel } from '/shared/game-levels.js';
 import { requireLicenseAgreement } from './license-agreement.js';
@@ -1805,6 +1806,15 @@ function reportPlaytestFailures(session) {
       message: `Line special ${special} was triggered but this runtime does not perform it.`,
       details: { special } });
   }
+  if (session.groundCorrections?.first) {
+    // An actor below its sector floor is drawn buried in it; the runtime snaps it back
+    // up, and the log names which actor and by how much so the cause can be fixed.
+    const { name, id, below } = session.groundCorrections.first;
+    playtestLog.once('ground:corrections', { severity: 'warning', category: 'actor',
+      message: `${session.groundCorrections.count} actor(s) started below their sector floor and were moved back up; `
+        + `first was ${name} (${below} units under).`,
+      details: { actor: name, id, below, count: session.groundCorrections.count } });
+  }
 }
 /**
  * A frame that took far longer than it should is what a player experiences as a
@@ -1843,6 +1853,7 @@ function stopPreview() {
   $('play-dialog').close(); runtime = null; previewRenderer?.dispose(); previewRenderer = null; keys.clear(); pressed.clear();
   hudView?.dispose(); hudView = null; previewProject = null; hudCursorActive = false;
   $('hud-cursor').setAttribute('aria-pressed', 'false');
+  $('show-statusbar').hidden = true;
 }
 function mouseStatus(message, error = false) {
   $('mouse-status').textContent = message;
@@ -1873,6 +1884,25 @@ function syncHUDCursor() {
 $('hud-cursor').addEventListener('click', () => {
   if (!runtime || runtime.gameScreen !== 'playing') return;
   runtime.hudState.cursor = !runtime.hudState.cursor; syncHUDCursor(); hudView?.update(runtime);
+});
+/**
+ * Screen size 11 intentionally hides the classic status bar, and any of the imported
+ * Options controls can reach it in one click, so the preview keeps a way back on
+ * screen instead of relying on the player finding that menu again.
+ */
+function syncStatusBarButton() {
+  const button = $('show-statusbar'), hidden = !runtime || !statusBarHidden(previewProject?.hud, runtime.settings);
+  if (button.hidden === hidden) return;
+  button.hidden = hidden;
+}
+$('show-statusbar').addEventListener('click', () => {
+  if (!runtime) return;
+  changeSetting(runtime, 'viewSize', 10);
+  settingsRevision = -1;
+  runtime.message = 'Status bar shown again (Screen size 10).';
+  runtime.messageTime = 4;
+  syncStatusBarButton(); hudView?.update(runtime);
+  mouseStatus('Status bar shown again. Screen size is 10.');
 });
 $('capture-mouse').addEventListener('click', captureMouse);
 $('system-browser').addEventListener('click', guard(async () => {
@@ -1943,8 +1973,8 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing' });
     nextRuntime.gameMode = gameMode;
     nextRuntime.hudState.cursor = nextRuntime.gameScreen !== 'playing';
-    if (nextRuntime.settings.viewSize === 11 && (snapshot.hud?.elements || []).some(element => element.statusbar)) {
-      nextRuntime.message = 'Status bar hidden (Screen size 11). Raise Screen size in Options to show it again.';
+    if (statusBarHidden(snapshot.hud, nextRuntime.settings)) {
+      nextRuntime.message = 'Status bar hidden (Screen size 11). Use "Show status bar" above the preview, or raise Screen size in Options.';
       nextRuntime.messageTime = 8;
     }
     try { nextRuntime.saveSlots = saveSlotLabels(await gameSaves.list(identity)); }
@@ -1969,6 +1999,7 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       project: snapshot.title,
       level: snapshot.game ? `${snapshot.game.active} — ${(snapshot.game.levels || []).find(level => level.id === snapshot.game.active)?.name || ''}` : snapshot.title,
       difficulty: `difficulty ${runtime.settings.difficulty}`,
+      music: runtime.environment?.music || project.environment?.music || 'none',
       renderer: preview.rendererStatus?.backend,
       mode: gameMode ? 'game' : 'level',
       levels: snapshot.game?.levels?.length,
@@ -2208,17 +2239,19 @@ function frame(now) {
       previewRenderer.render(runtime, runtime.gameScreen === 'playing' ? dt : 0);
       reportPlaytestFailures(runtime);
       reportFrameStalls(runtime);
-      syncHUDCursor(); hudView?.update(runtime);
+      syncHUDCursor(); syncStatusBarButton(); hudView?.update(runtime);
       if (!musicReported && audioPlayer?.musicInfo) {
         const music = audioPlayer.musicInfo();
         if (music.playing || (music.hasMusicAssets && music.requested) || !music.hasMusicAssets) {
           musicReported = true;
           if (music.playing) {
             status(`Music: ${music.track}${music.volume === 0 ? ' — music volume is 0, raise it in Options' : ''}`, music.volume === 0);
+          } else if (music.error) {
+            // A track that is present but cannot be decoded must not be reported as
+            // missing: the reason the import produced no playback is in the error.
+            status(`Music ${music.requested || ''} could not be played: ${music.error}`, true);
           } else if (music.requested && !music.track) {
             status(`Music ${music.requested} is not embedded in this project. Reimport the game to add its MIDI/MUS soundtrack.`, true);
-          } else if (music.error) {
-            status(`Music could not start: ${music.error}`, true);
           } else if (!music.hasMusicAssets) {
             status('No music assets in this project. Reimport the game with the current version to add MIDI/MUS soundtracks.', true);
           }
@@ -2227,8 +2260,7 @@ function frame(now) {
       if (!hudWarningShown && runtime.gameScreen === 'playing' && hudView?.nodes?.size) {
         hudWarningShown = true;
         if (![...hudView.nodes.values()].some(entry => !entry.node.hidden)) {
-          const hiddenBySize = runtime.settings.viewSize === 11 &&
-            (previewProject.hud?.elements || []).some(element => element.statusbar);
+          const hiddenBySize = statusBarHidden(previewProject.hud, runtime.settings);
           status(hiddenBySize
             ? 'The status bar is hidden because Screen size is 11. Open Options and raise Screen size (- gives a smaller screen, + shows the bar), or reset settings.'
             : 'No HUD elements are visible. Check HUD element visibility and display mode in the HUD designer.', true);

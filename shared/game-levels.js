@@ -1,4 +1,4 @@
-import { resolveLevelMusic } from './music.js';
+import { resolveMusicAsset, musicReport } from './music.js';
 import { resolveString } from './language.js';
 
 // `actors` describes the game as a whole (monster and weapon state machines),
@@ -6,16 +6,20 @@ import { resolveString } from './language.js';
 const sharedKeys = new Set(['version', 'title', 'assets', 'game', 'actors', 'strings', 'soundAliases']);
 
 /**
- * Point a level's environment at its music asset. MAPINFO `music` wins; classic
- * Doom/Doom II level tables supply the default. Missing tracks stay unset so the
- * level is simply silent instead of referencing a non-existent asset.
+ * Point a level's environment at its music asset. MAPINFO `music` wins, then the
+ * `D_<map name>` lump, then the classic Doom/Doom II tables. A level that declares
+ * nothing while the WAD ships a soundtrack gets a reported placeholder instead of
+ * silence, so an unplayable level name never hides the music that was imported.
  */
-export function applyLevelMusic(data, levelId, explicit, assets) {
-  const track = resolveLevelMusic(levelId, explicit);
-  if (!track) return data;
-  const asset = assets.find(candidate => candidate.kind === 'music' && candidate.name.toUpperCase() === track.toUpperCase());
-  if (!asset) return data;
-  data.environment = { ...(data.environment || {}), music: asset.name, musicAsset: asset.id };
+export function applyLevelMusic(data, levelId, explicit, assets, warnings) {
+  const resolution = resolveMusicAsset(assets, levelId, explicit);
+  if (!resolution.asset) {
+    warnings?.add(musicReport(levelId, resolution));
+    return data;
+  }
+  data.environment = { ...(data.environment || {}), music: resolution.asset.name, musicAsset: resolution.asset.id };
+  // Conventional choices stay quiet; only a guess or a WAD without music is worth a line.
+  if (resolution.reason === 'placeholder') warnings?.add(musicReport(levelId, resolution));
   return data;
 }
 
@@ -116,7 +120,7 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
     }
     const route = routes.get(entry.id);
     const data = remap(levelData(project));
-    applyLevelMusic(data, entry.id, route?.music, assets);
+    applyLevelMusic(data, entry.id, route?.music, assets, warnings);
     // MAPINFO names and LANGUAGE keywords (`$TXT_MAP1`) resolve against the
     // project string table so the level list shows real names.
     const rawName = route?.name || entry.name || entry.id;

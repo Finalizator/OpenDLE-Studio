@@ -5,7 +5,8 @@ import { parseDecorate } from '../shared/decorate.js';
 import { importActors } from '../shared/actors.js';
 import { actorOf, actorStateOf, actorTic, hurtActor, setActorState, actionSupported, unsupportedActorActions } from '../shared/actor-runtime.js';
 import { canSeeTarget } from '../shared/combat.js';
-import { createRuntime, stepRuntime } from '../shared/runtime.js';
+import { executeSpecial } from '../shared/line-specials.js';
+import { createRuntime, stepRuntime, settleGroundActors } from '../shared/runtime.js';
 
 const DECORATE = `
 actor Guard 20001
@@ -160,4 +161,44 @@ test('the reported gaps stay honest about what monsters can run', () => {
   assert.equal(actionSupported('A_DefinitelyNotReal', false), false);
   for (const type of unsupportedActorActions(createProject()).map(gap => gap.name))
     assert.equal(actionSupported(type, false), false, `${type} is reported but supported`);
+});
+
+test('an actor left below its sector floor is moved back up and reported', () => {
+  const { project, state } = room();
+  const guard = state.entities.find(entity => entity.id === 'guard');
+  // A spawn spot or a scripted teleport can hand out a height that is inside the
+  // floor; the sprite would be drawn buried in it.
+  guard.z = -40;
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(guard.z, 0, 'the actor stands on the sector floor again');
+  assert.deepEqual(state.groundCorrections.first, { name: 'Guard', id: 'guard', below: 40 });
+  assert.equal(state.groundCorrections.count, 1);
+});
+
+test('an actor above its floor and a physics body are left alone', () => {
+  const { project, state } = room();
+  const guard = state.entities.find(entity => entity.id === 'guard');
+  guard.z = 24;
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(guard.z, 24, 'a height above the floor is never pulled down');
+  assert.equal(state.groundCorrections, undefined);
+  // Rigid bodies are simulated by Rapier, which already rests them on the floor, so
+  // the correction must not fight the solver.
+  const body = { ...guard, id: 'crate', z: -40, physics: { body: 'dynamic' } };
+  settleGroundActors({ ...state, entities: [body] });
+  assert.equal(body.z, -40);
+  assert.equal(settleGroundActors(Object.assign(state, { entities: [{ ...guard, z: -12 }] })), undefined);
+});
+
+test('Thing_Spawn places the new actor on the sector floor, not at the spawner height', () => {
+  const { project, state } = room();
+  const spot = state.entities.find(entity => entity.id === 'guard');
+  spot.tid = 7;
+  spot.z = 96; // the spot was raised earlier, so its own height is not the floor
+  const spawned = [];
+  executeSpecial(project, state, 135, [7, 20001, 0, 0, 0], {
+    spawn: options => { spawned.push(options); return 1; },
+  });
+  assert.equal(spawned.length, 1);
+  assert.equal(spawned[0].z, 0, 'the actor spawns on the floor');
 });

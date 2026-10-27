@@ -10,7 +10,7 @@ import { installGameMenu } from './game-menu.js';
 import { importSBarInfo } from './sbarinfo.js';
 import { assembleGameLevels, parseLevelRoutes } from './game-levels.js';
 import { parseGameEpisodes } from './game-episodes.js';
-import { resolveLevelMusic } from './music.js';
+import { resolveMusicAsset, musicReport } from './music.js';
 import { importActors, actorIndex } from './actors.js';
 import { unsupportedActorActions, mergeActorActionGaps, describeActorActionGaps, installActorProjectileSprites, usedActors, missileEffectActors } from './actor-runtime.js';
 import { buildStringTable, resolveString } from './language.js';
@@ -164,6 +164,23 @@ export function applyActorTranslations(project, assets, table, warnings) {
   }
   if (placed) warnings.push(`${placed} placed actor(s) have DECORATE/ZScript translations applied as translated sprite assets; edit them in the asset and sprite panels.`);
   if (clips) warnings.push(`${clips} spawned-actor animation(s) use translated sprites for actors that never appear as map things.`);
+}
+
+/**
+ * `music` declared for one map in MAPINFO/ZMAPINFO, or null.
+ *
+ * Single-map imports show that map only, so they cannot rely on the whole-game route
+ * table; reading the block here keeps a map that names its own track working.
+ */
+export function mapInfoMusic(wad, mapName) {
+  const sources = wad.lumps.filter(lump => ['MAPINFO', 'ZMAPINFO'].includes(lump.name) && lump.size <= 1024 * 1024)
+    .map(lump => new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)));
+  if (!sources.length) return null;
+  try {
+    return parseLevelRoutes(sources).get(String(mapName).toUpperCase())?.music || null;
+  } catch {
+    return null;
+  }
 }
 
 export function readWad(buffer, { allowNoMaps = false } = {}) {
@@ -500,13 +517,12 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     ...hudSource(lump), resolve: resolveHUD,
   }));
   installGameMenu(project, assets, [...definitions, ...menuDefinitions], warnings, episodeInfo);
-  const musicTrack = resolveLevelMusic(mapName, music);
-  if (musicTrack) {
-    const track = project.assets.find(asset => asset.kind === 'music' && asset.name.toUpperCase() === musicTrack.toUpperCase());
-    if (track) project.environment = { ...project.environment, music: track.name, musicAsset: track.id };
-    else if (assets) warnings.push(`Level music ${musicTrack} is not present in this game.`);
-  }
-  if (wad.lumps.some(lump => lump.name.startsWith('D_'))) warnings.push('Doom MUS/MIDI music is not synthesized yet; music controls apply to browser-decodable tracks only.');
+  // A single-map import has no MAPINFO routing of its own, so read the map's own
+  // music declaration here; the full game assembles routes for every level instead.
+  const declaredMusic = music || (episodeInfo ? null : mapInfoMusic(wad, mapName));
+  const musicTrack = resolveMusicAsset(project.assets, mapName, declaredMusic);
+  if (musicTrack.asset) project.environment = { ...project.environment, music: musicTrack.asset.name, musicAsset: musicTrack.asset.id };
+  if (assets) warnings.push(musicReport(mapName, musicTrack));
   warnings.push('Menus are editable HUD/events. MENUDEF support is partial: custom menu classes, arbitrary CVARs/commands and exact Nightmare respawn/fast states are not translated yet. Native browser save slots do not interoperate with GZDoom .zds saves. Full-game imports support native level selection and supported exits; scripted campaign behavior is not executed.');
   if (assets) warnings.push(...assets.warnings);
   const unsupported = [...new Set(project.map.entities.filter(entity => entity.type === 'pickup' &&

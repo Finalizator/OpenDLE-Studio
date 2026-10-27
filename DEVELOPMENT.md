@@ -233,7 +233,12 @@ provider credits or network access are required for tests.
   (`server/playtest-logs.js`) appends them with an `index.json` cache for the panel.
   Records carry the level, project, renderer, difficulty and play-time so a single
   line is readable on its own, and a repeating failure is stored once with a repeat
-  count instead of once per frame. Frame stalls are logged too: `shared/perf.js`
+  count instead of once per frame. The session header also records `viewSize`, the
+  HUD and status-bar element counts, the level's music track and its sky: a missing
+  HUD or a silent level is then answerable from the log instead of from memory (the
+  header used to drop those fields even though the app computed them). Actors found
+  below their sector floor are logged once with the actor name and how far under it
+  was. Frame stalls are logged too: `shared/perf.js`
   keeps session-wide stall and worst-frame totals beside its rolling window, and the
   app writes a `performance` warning naming the stalled frame with the entities,
   projectiles and effects that were live at the time; the stop record summarises
@@ -998,7 +1003,10 @@ and thermometer patches, including live messages, sensitivity and volume
 controls. Detail now halves horizontal world-render resolution without reducing
 HUD resolution. Screen size (3–11) centers a smaller world viewport; size 11
 hides the classic status bar. Both support mouse clicks and Left/Right on the
-selected row. These are browser-native equivalents, not software-renderer
+selected row. Because one click on that row can hide the whole status bar, the
+preview toolbar shows a **Show status bar** button for as long as screen size is 11
+and the project has a status-bar element; it sets screen size back to 10 and saves
+the preference, so a hidden HUD is never a dead end. These are browser-native equivalents, not software-renderer
 emulation; original border textures are not yet reproduced. Missing patches
 are diagnosed. Distinct
 `M_OPTION` and `M_OPTTTL` artwork is preserved, not recolored to match artificially.
@@ -1185,7 +1193,16 @@ as playable audio. OpenDLE imports every music lump as a `music` asset (bounded:
   map, program changes, note pairing) and MUS (140 Hz ticks, controller/program
   events, percussion on channel 15), returning one normalised score of timed
   notes with General MIDI families and a loop length. SMPTE-timed MIDI and
-  arbitrary SysEx are rejected rather than guessed. A tempo map keeps one mark per
+  arbitrary SysEx are rejected rather than guessed. MUS is read the way GZDoom's
+  player reads it: the descriptor's bit 7 marks the last event of a tick and only
+  those events carry a variable-length delay, a note byte with bit 7 set is
+  followed by a velocity byte (otherwise the channel keeps its last velocity), and
+  a bar line (`0x50`), score end (`0x60`) or the unused `0x70` all stop playback.
+  Reading a delay after every event — the original bug — swallowed the next event's
+  descriptor and made every Doom II MUS track either run millions of ticks past its
+  length or look unsupported, which is why `Doom2.wad` imported 35 tracks and played
+  none of them. A `MUS\x1a` signature is also searched for in the first 32 bytes, as
+  Doom's own loader does for sloppy WADs. A tempo map keeps one mark per
   distinct tick, so a file that changes tempo twice on tick 0 (six of Freedoom's
   35 tracks do) still parses instead of throwing mid-song.
 - `public/music-player.js` schedules those notes on the Web Audio graph with a
@@ -1198,24 +1215,46 @@ as playable audio. OpenDLE imports every music lump as a `music` asset (bounded:
   timeline to the audio clock (and notes more than 0.05 s late are skipped), so a
   freeze costs a moment of silence instead of a bang. The scheduler counts both
   events for diagnostics.
-- Track choice: `MAPINFO` `music = "D_XXX"` wins, then the classic Doom II table
-  (MAP01 `D_RUNNIN` ... MAP32 `D_ULTIMA`) or the level's own `D_E<e>M<m>` lump
-  with a fallback to `D_E<e>M2`. A level whose track is missing is silent rather
-  than pointing at a non-existent asset. `shared/game-levels.js` stores the
-  resolved track on each level, so every map of an imported campaign plays its
-  own music and the selection survives level switches and saves.
+- Track choice: `MAPINFO` `music = "D_XXX"` wins, then the lump named after the map
+  (`D_<mapname>`, ZDoom's default), then the classic Doom II table (MAP01
+  `D_RUNNIN` ... MAP32 `D_ULTIMA`) or the level's own `D_E<e>M<m>` lump with a
+  fallback to `D_E<e>M2`. A WAD that ships a soundtrack but declares nothing for a
+  custom map name gets a stable placeholder track and a report line saying exactly
+  what did not match, instead of a silent level:
+  "No music is declared for level FURDM05: MAPINFO has no music entry, the map name
+  is not MAPxx/ExMy and none of D_FURDM05 / D_RUNNIN exists in this WAD ...".
+  `shared/game-levels.js` stores the resolved track on each level, so every map of
+  an imported campaign plays its own music and the selection survives level switches
+  and saves.
 - Volume and mute follow the existing Music volume setting; music is independent
   of sound effects and is disposed with the preview.
 
-Verified: `D_RUNNIN` parses to 1361 notes over 133 s, `D_OPENIN` to 4116 notes,
-and a browser preview schedules oscillators for the current level.
+Verified: every `D_*` lump of `Doom2.wad` (MUS) and `freedoom2.wad` (MIDI) parses —
+Doom II's `D_RUNNIN` to 4931 notes over 230 s with no silent gaps, Freedoom's
+`D_RUNNIN` to 1361 notes over 133 s — and a browser preview schedules oscillators
+for the current level.
 
 The editor status line reports the soundtrack on start ("Music: D_RUNNIN") and
 names the cause when nothing plays: no music assets in the project (reimport
-needed), a requested track that is not embedded, a score that failed to parse, or
-a music volume of 0. Silent music is therefore diagnosable without a console. Importing
+needed), a score that failed to parse (the parser message is shown instead of a
+misleading "not embedded"), a requested track that is not embedded, or a music
+volume of 0. Silent music is therefore diagnosable without a console. Importing
 soundtracks is not sample-accurate OPL emulation: instruments are approximations,
 and pitch bends, vibrato and tracker effects are not emulated.
+
+### Actor height
+
+Actors that are not rigid bodies (every imported monster by default) live on the
+sector floor: `settleGroundActors` runs once per tic after projectiles and pushes any
+actor whose `z` ended up inside the floor back onto it, the way GZDoom's
+`P_ZMovement` does. Spawn spots, `Thing_Spawn`, scripted teleports and lowering
+platforms can all leave a stale height behind, and a sprite anchored there is drawn
+half-buried in the floor. The correction is recorded (`state.groundCorrections`) and
+the playtest log names the first actor and how far under it was. Rigid bodies are
+skipped because Rapier already rests them, and an actor above its floor is never
+pulled down. `Thing_Spawn` now reads the *sector* floor under its spawn spot
+(`sectorFloorAt`) instead of the spot's own height, so a spot that was raised earlier
+no longer spawns actors inside the ground.
 
 ### Actor translations
 

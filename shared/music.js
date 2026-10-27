@@ -12,6 +12,20 @@ function text(data, offset, length) {
   return value;
 }
 
+/**
+ * Offset of the `MUS\x1a` signature within the first 32 bytes.
+ *
+ * Doom's own player never validated the header and some WADs carry junk in front of
+ * it, so GZDoom searches the first 32 bytes instead of requiring offset 0.
+ */
+function musHeaderOffset(data) {
+  const limit = Math.min(32, data.length - 4);
+  for (let offset = 0; offset <= limit; offset++) {
+    if (data[offset] === 0x4d && data[offset + 1] === 0x55 && data[offset + 2] === 0x53 && data[offset + 3] === 0x1a) return offset;
+  }
+  return -1;
+}
+
 function variableLength(data, offset, end) {
   let value = 0, count = 0, byte;
   do {
@@ -138,42 +152,59 @@ export function parseMidi(data, name = 'music') {
   return score(notes, secondsAt(ticksToSeconds, endTick), 'midi', name);
 }
 
-/** Doom MUS: 140 ticks per second, channel 15 is percussion, controller 0 is program. */
+/**
+ * Doom MUS: 140 ticks per second, channel 15 is percussion, controller 0 is program.
+ *
+ * The score is a flag byte, one data byte, and — only when the flag byte has bit 7
+ * set, meaning "last event of this tick" — a variable-length delay. A "play note"
+ * byte with bit 7 set is followed by an extra velocity byte; without it the channel
+ * keeps the velocity it last used. Reading a delay after every event instead (the
+ * original bug here) swallowed the next event's flag byte as a delay and ran real
+ * Doom II tracks millions of ticks past their length.
+ */
 export function parseMus(data, name = 'music') {
-  if (data.length < 16 || text(data, 0, 4) !== 'MUS\x1a') throw new Error(`${name}: missing MUS header`);
+  const start = musHeaderOffset(data);
+  if (start < 0) throw new Error(`${name}: missing MUS header`);
+  if (start + 16 > data.length) throw new Error(`${name}: truncated MUS header`);
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const scoreLength = view.getUint16(4, true), scoreStart = view.getUint16(6, true);
-  const end = Math.min(data.length, scoreStart + scoreLength);
-  if (scoreStart < 16 || end > data.length) throw new Error(`${name}: malformed MUS score bounds`);
+  const scoreLength = view.getUint16(start + 4, true), scoreStart = view.getUint16(start + 6, true);
+  const end = Math.min(data.length, start + scoreStart + scoreLength);
+  if (scoreStart < 16 || scoreStart + start > data.length) throw new Error(`${name}: malformed MUS score bounds`);
   const active = new Map(), notes = [], programs = new Map(), controllers = new Map();
-  let offset = scoreStart, ticks = 0, events = 0, ended = false;
+  const velocities = new Map();
+  let offset = start + scoreStart, ticks = 0, events = 0;
   const seconds = tick => tick / 140;
-  while (offset < end && !ended) {
+  while (offset < end) {
     if (++events > MAX_EVENTS) throw new Error(`${name}: MUS event budget exceeded`);
     const descriptor = data[offset++];
     const channel = descriptor & 0x0f;
     const type = descriptor & 0x70;
+    // 0x50 (bar line), 0x60 (score end) and the unused 0x70 all end playback, which
+    // is what GZDoom's player does instead of failing on them.
+    if (type === 0x50 || type === 0x60 || type === 0x70) break;
+    if (offset >= end) throw new Error(`${name}: truncated MUS event`);
+    const value = data[offset++];
     if (type === 0x10) {
-      const note = data[offset], volume = data[offset + 1]; offset += 2;
-      if (volume > 0) active.set(`${channel}:${note}`, { start: ticks, velocity: volume, program: programs.get(channel) || 0 });
+      const note = value & 0x7f;
+      const velocity = value & 0x80 ? data[offset++] : velocities.get(channel) ?? 127;
+      velocities.set(channel, velocity);
+      if (velocity > 0) active.set(`${channel}:${note}`, { start: ticks, velocity, program: programs.get(channel) || 0 });
       else release(channel, note, ticks);
     } else if (type === 0x00) {
-      release(channel, data[offset++], ticks);
-    } else if (type === 0x20) {
-      offset += 1;
+      release(channel, value, ticks);
     } else if (type === 0x30) {
-      controllers.set(channel, data[offset++]);
+      controllers.set(channel, value);
     } else if (type === 0x40) {
-      const value = data[offset++];
-      if (controllers.get(channel) === 0) programs.set(channel, value & 0x7f);
-    } else if (type === 0x60) {
-      break; // score end: no trailing delay is stored
-    } else {
-      throw new Error(`${name}: unsupported MUS event type ${type >> 4}`);
+      // The event's own byte is the controller number; 0 means "program change" and
+      // every other value carries a controller value the synthesizer does not use.
+      if (value === 0) programs.set(channel, data[offset++] & 0x7f);
+      else data[offset++];
     }
-    const delay = variableLength(data, offset, end);
-    offset = delay.offset; ticks += delay.value;
-    if (ticks > MAX_SECONDS * 140) throw new Error(`${name}: MUS score exceeds the duration limit`);
+    if (descriptor & 0x80) {
+      const delay = variableLength(data, offset, end);
+      offset = delay.offset; ticks += delay.value;
+      if (ticks > MAX_SECONDS * 140) throw new Error(`${name}: MUS score exceeds the duration limit`);
+    }
   }
   for (const [key, start] of active) {
     const [channel, note] = key.split(':').map(Number);
@@ -191,11 +222,18 @@ export function parseMus(data, name = 'music') {
   }
 }
 
-export function parseMusic(bytes, name = 'music') {
+/** 'midi', 'mus' or null for data that is neither. */
+export function musicFormat(bytes) {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (text(data, 0, 4) === 'MThd') return parseMidi(data, name);
-  if (text(data, 0, 4) === 'MUS\x1a') return parseMus(data, name);
-  throw new Error(`${name}: unsupported music format (expected MIDI or Doom MUS)`);
+  if (text(data, 0, 4) === 'MThd') return 'midi';
+  return musHeaderOffset(data) >= 0 ? 'mus' : null;
+}
+
+export function parseMusic(bytes, name = 'music') {
+  const format = musicFormat(bytes);
+  if (!format) throw new Error(`${name}: unsupported music format (expected MIDI or Doom MUS)`);
+  return format === 'midi' ? parseMidi(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), name)
+    : parseMus(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), name);
 }
 
 // Doom II and Ultimate Doom keep their soundtrack order in the executable. This
@@ -224,6 +262,9 @@ export function defaultLevelMusic(levelId) {
 export function musicCandidates(levelId, explicit) {
   const names = [];
   if (explicit) names.push(String(explicit).toUpperCase());
+  // ZDoom's default track for a level is the lump named after the map itself, so a
+  // custom map name still finds its own music without any MAPINFO entry.
+  if (levelId) names.push(`D_${String(levelId).toUpperCase()}`);
   const primary = defaultLevelMusic(levelId);
   if (primary) names.push(primary);
   // Doom episodes reuse the second map's track when the first has none.
@@ -240,4 +281,39 @@ export function resolveLevelMusic(levelId, explicit) {
 /** First candidate lump that the game actually ships, or null. */
 export function resolveMusicName(levelId, explicit, hasTrack) {
   return musicCandidates(levelId, explicit).find(name => hasTrack(name)) || null;
+}
+
+/**
+ * The music asset a level should play, with the reason it was chosen.
+ *
+ * Order: MAPINFO/level `music`, the `D_<map name>` lump, the classic Doom II/Ultimate
+ * Doom table. When a WAD ships a soundtrack but declares nothing for this level the
+ * playlist is not guessed from the artwork order — a stable per-level name hash picks
+ * a placeholder so the level is not silent, and the caller reports why.
+ */
+export function resolveMusicAsset(assets, levelId, explicit) {
+  const tracks = (assets || []).filter(asset => asset.kind === 'music');
+  if (!tracks.length) return { asset: null, reason: 'none', candidates: musicCandidates(levelId, explicit), tracks: 0 };
+  const byName = new Map(tracks.map(asset => [String(asset.name).toUpperCase(), asset]));
+  const candidates = musicCandidates(levelId, explicit);
+  for (const name of candidates) {
+    const asset = byName.get(name);
+    if (asset) return { asset, reason: explicit && name === String(explicit).toUpperCase() ? 'explicit'
+      : name === `D_${String(levelId || '').toUpperCase()}` ? 'map-lump' : 'classic', candidates, tracks: tracks.length };
+  }
+  const hash = [...String(levelId || 'level')].reduce((value, character) => (value * 31 + character.charCodeAt(0)) >>> 0, 7);
+  return { asset: tracks[hash % tracks.length], reason: 'placeholder', candidates, tracks: tracks.length };
+}
+
+/** One import-report line explaining what a level plays and, when nothing matched, why. */
+export function musicReport(levelId, resolution) {
+  const { asset, reason, candidates, tracks = 0 } = resolution;
+  if (reason === 'none') return 'This WAD has no music lumps (D_* MIDI/MUS), so the level plays without music.';
+  if (reason === 'explicit') return `Music: ${asset.name} (declared for ${levelId}).`;
+  if (reason === 'map-lump') return `Music: ${asset.name} (named after the map).`;
+  if (reason === 'classic') return `Music: ${asset.name} (classic ${levelId} track).`;
+  const tried = candidates.join(' / ');
+  return `No music is declared for level ${levelId}: MAPINFO has no music entry, the map name is not `
+    + `MAPxx/ExMy and none of ${tried} exists in this WAD, so the ${tracks} imported track(s) could not be `
+    + `matched. Playing ${asset.name} as a placeholder — set the level's music in Assets → Music to choose another.`;
 }

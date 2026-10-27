@@ -38,14 +38,15 @@ export function buildMidi() {
 }
 
 export function buildMus() {
-  // Descriptor bits 4-6 select the event type; a variable-length delay follows
-  // each event and advances the 140 Hz tick clock.
+  // Real MUS layout: a descriptor byte (bit 7 = a variable-length delay follows this
+  // event, bits 4-6 = type, bits 0-3 = channel), one data byte, then the delay. A
+  // "play note" note byte with bit 7 set is followed by an extra velocity byte.
   const score = [
-    0x90, 60, 100, ...vlq(140),  // note on ch0 note 60, then wait 140 ticks (1s)
-    0x9f, 40, 90, ...vlq(0),     // percussion note on ch15
-    0x00, 60, ...vlq(0),         // release note 60
-    0x0f, 40, ...vlq(0),         // release percussion
-    0x60,                        // score end
+    0x90, 0xbc, 100, ...vlq(140),  // note on ch0 note 60 with velocity, then 140 ticks (1 s)
+    0x9f, 0xa8, 90, ...vlq(0),     // percussion note on ch15 note 40, no delay
+    0x00, 60,                      // release note 60 (no delay bit)
+    0x0f, 40,                      // release percussion (no delay bit)
+    0x60,                          // score end
   ];
   const header = [0x4d, 0x55, 0x53, 0x1a, score.length & 255, (score.length >> 8) & 255, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   return bytes(header, score);
@@ -83,7 +84,7 @@ test('MUS parsing handles note on/off, percussion channel and 140 Hz timing', ()
 test('music parsing rejects unknown, truncated and oversized input', () => {
   assert.throws(() => parseMusic(bytes([1, 2, 3, 4]), 'x'), /unsupported music format/);
   assert.throws(() => parseMidi(bytes([0x4d, 0x54, 0x68, 0x64]), 'bad'), /missing MIDI header|malformed/);
-  assert.throws(() => parseMus(bytes([0x4d, 0x55, 0x53, 0x1a]), 'bad'), /missing MUS header|malformed/);
+  assert.throws(() => parseMus(bytes([0x4d, 0x55, 0x53, 0x1a]), 'bad'), /missing MUS header|truncated|malformed/);
   const huge = new Uint8Array(2 * 1024 * 1024 + 1);
   huge.set([0x4d, 0x54, 0x68, 0x64]);
   assert.throws(() => encodeMusic(huge, 'midi'), /exceeds 2 MiB/);
@@ -100,18 +101,32 @@ test('classic level music tables resolve Doom II and episode tracks', () => {
   assert.equal(resolveLevelMusic('MAP02', null), 'D_STALKS');
 });
 
-test('applyLevelMusic only points at an existing music asset and never invents one', () => {
+test('a level with no declared track gets a reported placeholder, never silence', () => {
   const assets = [{ id: 'music_D_RUNNIN', name: 'D_RUNNIN', kind: 'music' }];
   const data = { environment: { sky: '#000' } };
   applyLevelMusic(data, 'MAP01', null, assets);
   assert.deepEqual(data.environment.music, 'D_RUNNIN');
   assert.equal(data.environment.musicAsset, 'music_D_RUNNIN');
-  const missing = { environment: {} };
-  applyLevelMusic(missing, 'MAP02', null, assets);
-  assert.deepEqual(missing.environment, {});
+  // Doom II's table has no MAP02 entry here, so the placeholder must be reported
+  // rather than quietly leaving the level silent.
+  const warnings = new Set();
+  const custom = { environment: {} };
+  applyLevelMusic(custom, 'FURDM05', null, assets, warnings);
+  assert.equal(custom.environment.musicAsset, 'music_D_RUNNIN');
+  assert.match([...warnings].join(' '), /No music is declared for level FURDM05/);
+  // A conventional match stays quiet.
+  const quiet = new Set();
+  applyLevelMusic({ environment: {} }, 'MAP01', null, assets, quiet);
+  assert.equal(quiet.size, 0);
   const explicit = { environment: {} };
   applyLevelMusic(explicit, 'MAP02', 'D_RUNNIN', assets);
   assert.equal(explicit.environment.musicAsset, 'music_D_RUNNIN');
+  // A project with no music at all says so once instead of inventing an asset.
+  const none = new Set();
+  const empty = { environment: {} };
+  applyLevelMusic(empty, 'MAP01', null, [], none);
+  assert.deepEqual(empty.environment, {});
+  assert.match([...none].join(' '), /no music lumps/);
 });
 
 test('instrument patches and frequencies stay in a playable range', () => {
@@ -269,4 +284,55 @@ test('every bundled Freedoom track parses', { skip: !existsSync(new URL('../Proj
     catch (error) { failed.push(`${lump.name}: ${error.message}`); }
   }
   assert.deepEqual(failed, []);
+});
+
+test('MUS grouping follows GZDoom: only flagged events carry a delay, velocity carries over', () => {
+  // Two controller events and a note live in the same tick, so only the note's
+  // descriptor has bit 7 set and carries the delay. The second note has bit 7 clear
+  // on its note byte, so it reuses the velocity the channel last used. A bar line
+  // (0x50) ends the score, exactly as GZDoom's player treats it.
+  const mus = [
+    0x40, 0x00, 0x2a,  // controller 0 = program change, program 42, no delay
+    0x40, 0x03, 0x64,  // controller 3 (channel volume), value 100, no delay
+    0x90, 0xbc, 100,   // note on ch0 note 60 + velocity 100, delay follows
+    70,                // 70 ticks = 0.5 s
+    0x10, 62,          // note on ch0 note 62 reusing the velocity, no delay
+    0x50,              // bar line: playback stops
+  ];
+  const header = [0x4d, 0x55, 0x53, 0x1a, mus.length & 255, (mus.length >> 8) & 255, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  const parsed = parseMus(bytes(header, mus), 'grouped.mus');
+  assert.equal(parsed.notes.length, 2);
+  const [first, second] = [...parsed.notes].sort((a, b) => a.note - b.note);
+  assert.equal(first.note, 60);
+  assert.equal(first.program, 42, 'the program change applies to the notes');
+  assert.ok(Math.abs(first.velocity - 100 / 127) < 1e-6);
+  assert.ok(Math.abs(second.time - .5) < 1e-6, `second note at ${second.time}`);
+  assert.ok(Math.abs(second.velocity - 100 / 127) < 1e-6, 'velocity carried over');
+});
+
+test('MUS tracks tolerate junk before the header and system events', () => {
+  const mus = [
+    0x30, 0x0c,        // system event (controller select), no delay
+    0x90, 0xa0, 90,    // note on ch0 note 32 with velocity, delay follows...
+    0x00,              // ...of zero ticks
+    0x00, 0xa0,        // release note 32
+    0x60,              // score end
+  ];
+  const header = [0x4d, 0x55, 0x53, 0x1a, mus.length & 255, (mus.length >> 8) & 255, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  const parsed = parseMus(bytes([0xde, 0xad, 0xbe, 0xef], header, mus), 'sloppy.mus');
+  assert.equal(parsed.format, 'mus');
+  assert.equal(parsed.notes.length, 1);
+  assert.equal(parsed.notes[0].note, 32);
+});
+
+test('every Doom MUS track in the local Doom II IWAD parses with a real length', { skip: !existsSync('Projects/Doom2.wad') }, () => {
+  const buffer = readFileSync('Projects/Doom2.wad');
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const tracks = wad.lumps.filter(lump => /^D_[A-Z0-9_]+$/.test(lump.name));
+  assert.ok(tracks.length >= 30, `found ${tracks.length} tracks`);
+  for (const lump of tracks) {
+    const track = parseMusic(new Uint8Array(wad.buffer, lump.start, lump.size).slice(), lump.name);
+    assert.ok(track.notes.length > 100, `${lump.name} has ${track.notes.length} notes`);
+    assert.ok(track.seconds > 10 && track.seconds < 900, `${lump.name} lasts ${track.seconds}s`);
+  }
 });

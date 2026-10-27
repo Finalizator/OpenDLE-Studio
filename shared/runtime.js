@@ -194,6 +194,30 @@ function alignUpAndApply(state, up, clearance = 0) {
   return true;
 }
 
+/**
+ * Keeps ground actors out of the floor.
+ *
+ * GZDoom's `P_ZMovement` pushes an actor that ends up inside the floor back up to
+ * it. Spawn spots, scripted teleports and lowering platforms can leave `z` below the
+ * sector floor, and a sprite anchored there is drawn half-buried, so the correction
+ * happens here and is recorded for the playtest log instead of passing silently.
+ */
+export function settleGroundActors(state) {
+  for (const entity of state.entities) {
+    if (entity.type === 'player' || !Number.isFinite(entity.z)) continue;
+    // Rigid bodies are simulated by Rapier, which already rests them on the floor.
+    if (entity.physics && entity.physics.body !== 'none') continue;
+    const sector = sectorAt(state.sectors, entity.x, entity.y);
+    if (!sector) continue;
+    if (entity.z >= sector.floorHeight - 1) continue;
+    state.groundCorrections ??= { count: 0, first: null };
+    state.groundCorrections.count++;
+    state.groundCorrections.first ??= { name: entity.name || entity.id, id: entity.id,
+      below: Math.round((sector.floorHeight - entity.z) * 10) / 10 };
+    entity.z = sector.floorHeight;
+  }
+}
+
 export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   dt = Math.max(0, Math.min(0.05, dt));
   const player = state.player, hud = state.hudState;
@@ -309,6 +333,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     tickMorphs(project, state);
   }
   stepProjectiles(project, state, dt);
+  settleGroundActors(state);
   advanceProjectiles(state, dt, projectile => runProjectileDeath(project, state, projectile),
     (entity, amount, source) => hurtActor(project, state, entity, amount, source));
   applySectorDamage(state, dt);

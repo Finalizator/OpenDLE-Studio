@@ -376,3 +376,18 @@ test('frame stats keep session-wide stall totals past the rolling window', async
   stats.reset();
   assert.equal(stats.summary().sessionStalls, 0);
 });
+
+test('the session header records display and music state, so a missing HUD is diagnosable', () => {
+  const header = sessionRecord({ session: 's', project: 'Hexabun', level: 'FURDM05',
+    viewSize: 11, hudElements: 45, statusBarElements: 1, music: 'D_RUNNIN', sky: 'SKY1' },
+  Date.parse('2026-10-27T12:00:00Z'));
+  assert.equal(header.details.viewSize, 11);
+  assert.equal(header.details.statusBarElements, 1);
+  assert.equal(header.details.music, 'D_RUNNIN');
+  assert.equal(header.details.sky, 'SKY1');
+  // Unknown or wrong-typed values are still dropped rather than written through.
+  const junk = sessionRecord({ session: 's', viewSize: '11', music: { name: 'x' } },
+    Date.parse('2026-10-27T12:00:00Z'));
+  assert.equal(junk.details.viewSize, undefined);
+  assert.equal(junk.details.music, undefined);
+});

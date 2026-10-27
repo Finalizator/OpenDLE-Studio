@@ -11,7 +11,7 @@
 
 import { moveSector, classicSpecialSupported } from './world-motion.js';
 import { doomSpecialName } from './doom-specials.js';
-import { floorAt, soundEvent } from './combat.js';
+import { floorAt, sectorFloorAt, soundEvent } from './combat.js';
 import { sectorAt } from './sectors.js';
 
 const SPECIAL_NAMES = [
@@ -460,7 +460,7 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       const spots = actorsByTid(state, arg1);
       for (const spot of spots) {
         const angle = special === 139 ? spot.angle : arg3 * 360 / 256;
-        if (options.spawn?.({ x: spot.x, y: spot.y, z: floorAt(state, spot), type: arg2, angle, tid: 0 })) spawned++;
+        if (options.spawn?.({ x: spot.x, y: spot.y, z: sectorFloorAt(state, spot), type: arg2, angle, tid: 0 })) spawned++;
       }
       return spawned;
     }
