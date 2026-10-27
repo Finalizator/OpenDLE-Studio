@@ -106,6 +106,10 @@ export const SUPPORTED_SPECIALS = new Set([
 ]);
 
 const TIC = 35;
+// Classic Doom maps carry no arguments, so their movement uses Doom's own constants:
+// VDOORSPEED is 2 units per tic, VFLOORSPEED is 4, and VDOORWAIT holds a door open
+// for 150 tics.
+const CLASSIC_DOOR_SPEED = 2, CLASSIC_PLANE_SPEED = 4, CLASSIC_DOOR_WAIT = 150 / TIC;
 
 function liveSector(state, id) {
   return state.sectors.find(sector => sector.id === id);
@@ -233,13 +237,23 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
   const [arg1, arg2, arg3, arg4, arg5] = args;
   const scripts = options.scripts;
   const sectors = arg1 ? taggedSectors(state, arg1) : [];
-  const speed = Math.max(1, arg2);
+  const line = options.line ? project.map.walls.find(wall => wall.id === options.line) : null;
+  // GZDoom converts every special's numbers before using them: SPEED(a) is a/8 units
+  // per tic, TICS(a) is a tics and OCTICS(a) is a/8 seconds. Reading the raw argument
+  // as units per tic made every door and lift eight times too fast, which is why a
+  // 120-unit door snapped open in two frames.
+  const zdoom = (options.format || line?.specialFormat) === 'zdoom';
+  const doorSpeed = zdoom ? Math.max(1, arg2) / 8 : CLASSIC_DOOR_SPEED;
+  const planeSpeed = zdoom ? Math.max(1, arg2) / 8 : CLASSIC_PLANE_SPEED;
+  const waitTics = value => Math.max(0, value || 0) / TIC;
+  const waitOctics = value => Math.max(0, value || 0) / 8;
+  const speed = doorSpeed;
   const planes = (kind, surface, amount, extra = {}) => {
     let moved = 0;
     for (const sector of sectors) {
       const others = planeHeights(state, project, sector, surface);
       const target = kind === 'absolute' ? amount : targetFor(kind, sector, surface, others, amount);
-      if (movePlane(state, sector, surface, target, speed, extra)) moved++;
+      if (movePlane(state, sector, surface, target, planeSpeed, extra)) moved++;
     }
     return moved;
   };
@@ -256,18 +270,22 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         options.message?.('You need a key to open this door.');
         return 0;
       }
+      // Door_Raise keeps the door open for a tic delay; CloseWaitOpen uses octics.
       for (const sector of sectors) {
+        const wait = zdoom ? (special === 249 ? waitOctics(arg3) : waitTics(arg3)) : CLASSIC_DOOR_WAIT;
         movePlane(state, sector, 'ceilingHeight', doorTarget(state, project, sector), speed,
-          { wait: Math.max(0, (arg4 || 0) / TIC), returnMode: arg4 ? 'return' : 'stay', sound: 'DSDOROPN' });
+          { wait, returnMode: wait > 0 ? 'return' : 'stay', sound: 'DSDOROPN' });
       }
       return 1;
-    case 106: // Door_WaitClose
+    case 106: { // Door_WaitClose — the wait is the second argument, in tics
+      const wait = zdoom ? waitTics(arg3) : CLASSIC_DOOR_WAIT;
       for (const sector of sectors) {
         moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: sector.floorHeight,
-          speed: Math.max(TIC, speed * TIC), wait: Math.max(0, (arg4 || 0) / TIC), returnMode: 'return',
+          speed: Math.max(TIC, speed * TIC), wait, returnMode: 'return',
           returnHeight: doorTarget(state, project, sector), sound: 'DSDORCLS' });
       }
       return 1;
+    }
     case 20: case 36: // Floor_LowerByValue(Times8)
       return planes('byValue', 'floorHeight', -(special === 36 ? arg3 * 8 : arg3), { sound: 'DSPSTART' });
     case 21: case 241: case 258: // Floor_LowerToLowest(-Ceiling)
@@ -517,18 +535,22 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       });
       return ordered.length;
     }
-    case 202: { // Generic_Door — speed, kind, delay, lock
-      if (arg4 && !hasLockKey(project, state, arg4)) {
+    case 202: { // Generic_Door — tag, speed, kind, delay (octics), lock
+      // Kind and delay are the third and fourth arguments, after tag and speed. Reading
+      // them one argument too early made the speed double as the kind bitfield (a speed
+      // of 82 is kind 2, "close first") and dropped the authored delay, so a door opened
+      // and shut again in the same moment and could never be walked through.
+      const kind = arg3 & 63;
+      if (kind > 3) return 0; // GZDoom performs 0 raise, 1 open, 2 close-wait-open, 3 close
+      if (arg5 && !hasLockKey(project, state, arg5)) {
         options.message?.('You need a key to open this door.');
         return 0;
       }
-      const kind = arg2 & 7;
-      const wait = Math.max(0, (arg3 || 0) / TIC);
-      const closingFirst = kind === 2 || kind === 3;
+      const wait = zdoom ? waitOctics(arg4) : CLASSIC_DOOR_WAIT;
+      const closingFirst = kind === 2 || kind === 3, cycle = kind === 0 || kind === 2;
       for (const sector of sectors) {
         const open = doorTarget(state, project, sector), closed = sector.floorHeight;
         const first = closingFirst ? closed : open;
-        const cycle = kind === 0 || kind === 2 || kind === 4;
         moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: first,
           speed: Math.max(TIC, speed * TIC), wait: cycle ? wait : 0,
           returnMode: cycle ? 'return' : 'stay', returnHeight: closingFirst ? open : closed,
@@ -536,19 +558,22 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       }
       return 1;
     }
-    case 203: { // Generic_Lift — speed, delay, kind, height
-      const kind = arg3;
-      const amount = (arg4 || 0) * 8;
+    case 203: { // Generic_Lift — tag, speed, delay (octics), target, height
+      const kind = arg4, height = Math.max(0, arg5 || 0) * 8;
+      const wait = zdoom ? waitOctics(arg3) : CLASSIC_DOOR_WAIT;
       for (const sector of sectors) {
         const others = planeHeights(state, project, sector, 'floorHeight');
         const lowest = targetFor('toLowest', sector, 'floorHeight', others, 0);
+        const ceilings = planeHeights(state, project, sector, 'ceilingHeight');
         const target = kind === 2 ? targetFor('toNearestDown', sector, 'floorHeight', others, 0)
-          : kind === 3 ? Math.min(sector.ceilingHeight - 64, sector.floorHeight)
-            : kind === 0 ? sector.floorHeight + amount : lowest;
+          : kind === 3 ? (ceilings.length ? Math.min(...ceilings) : sector.floorHeight)
+            : kind === 4 ? sector.floorHeight + (height || 64)
+              : kind === 1 ? lowest
+                : sector.floorHeight + height;
         moveSector(state, { sectorId: sector.id, surface: 'floorHeight', height: target,
-          speed: Math.max(TIC, speed * TIC), wait: Math.max(0, (arg2 || 0) / TIC),
-          returnMode: kind === 0 || kind === 4 ? 'return' : 'stay', returnHeight: sector.floorHeight,
-          sound: 'DSPSTART' });
+          speed: Math.max(TIC, speed * TIC), wait,
+          returnMode: kind === 1 || kind === 2 ? 'return' : kind === 4 ? 'cycle' : 'stay',
+          returnHeight: sector.floorHeight, sound: 'DSPSTART' });
       }
       return 1;
     }

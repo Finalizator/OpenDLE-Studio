@@ -6,6 +6,8 @@ import {
 export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
 export const pairKey = (a, b) => JSON.stringify([a, b].sort());
+// Heights identify a sector's collision geometry, so a change is easy to spot.
+const sectorHeights = sector => `${sector.floorHeight}/${sector.ceilingHeight}`;
 
 // This portable snapshot deliberately contains no Rapier handles or WASM memory.
 export function validatePhysicsState(snapshot, expectedIds) {
@@ -100,22 +102,48 @@ export function createPhysics(project, state, R, triangulate) {
     (!entity.physics || entity.physics.body === 'none') && Number.isFinite(entity.z)).map(entity => [entity.id, entity.z]));
   const world = new R.World({ x: 0, y: -9.81, z: 0 }), events = new R.EventQueue(true);
   world.timestep = FIXED_STEP;
-  const moving = new Set(project.events.flatMap(event => event.actions.filter(action => action.type === 'moveSector').map(action => action.sectorId)));
+  // Sectors whose heights can change end up in the dynamic collider, because a
+  // trimesh cannot be edited in place: the static one is rebuilt without them once,
+  // and their current geometry is rebuilt as they move. Events, line specials and
+  // ACS all move sectors through the same live sector list, so the set is discovered
+  // from the heights themselves instead of from one of those three sources.
+  const spawnHeights = new Map(state.sectors.map(sector => [sector.id, sectorHeights(sector)]));
+  const movableSectors = new Set(), moving = movableSectors;
   const mesh = collisionMesh(project, triangulate, { sectors: state.sectors, moving });
-  const worldCollider = mesh.indices.length ? world.createCollider(R.ColliderDesc.trimesh(mesh.positions, mesh.indices).setFriction(.7)
-    .setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setActiveCollisionTypes(R.ActiveCollisionTypes.ALL)) : null;
+  let worldCollider = createWorldCollider(mesh);
   const colliderIds = new Map(worldCollider ? [[worldCollider.handle, '$world']] : []), bodies = new Map(), colliders = new Map();
   let dynamicCollider = null, worldRevision = -1;
-  function syncWorld() {
-    if (!moving.size || worldRevision === state.worldRevision) return;
-    const updated = collisionMesh(project, triangulate, { sectors: state.sectors, moving, dynamic: true });
-    if (dynamicCollider) { colliderIds.delete(dynamicCollider.handle); world.removeCollider(dynamicCollider, true); }
-    dynamicCollider = updated.indices.length ? world.createCollider(R.ColliderDesc.trimesh(updated.positions, updated.indices).setFriction(.7)
-      .setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setActiveCollisionTypes(R.ActiveCollisionTypes.ALL)) : null;
-    if (dynamicCollider) colliderIds.set(dynamicCollider.handle, '$world');
-    worldRevision = state.worldRevision;
+  function createWorldCollider(built) {
+    if (!built.indices.length) return null;
+    return world.createCollider(R.ColliderDesc.trimesh(built.positions, built.indices).setFriction(.7)
+      .setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setActiveCollisionTypes(R.ActiveCollisionTypes.ALL));
   }
-  syncWorld();
+  function replaceCollider(current, built) {
+    if (current) { colliderIds.delete(current.handle); world.removeCollider(current, true); }
+    const next = createWorldCollider(built);
+    if (next) colliderIds.set(next.handle, '$world');
+    return next;
+  }
+  function syncWorld() {
+    if (worldRevision === state.worldRevision) return;
+    worldRevision = state.worldRevision;
+    // A sector that left its spawn height joins the movable set. That is the only
+    // time the static mesh has to be rebuilt, so a door opening costs one full
+    // rebuild and every following frame only re-triangulates the moving sectors.
+    let added = false;
+    for (const sector of state.sectors) {
+      if (movableSectors.has(sector.id) || spawnHeights.get(sector.id) === sectorHeights(sector)) continue;
+      movableSectors.add(sector.id); added = true;
+    }
+    if (!movableSectors.size) return;
+    if (added) {
+      worldCollider = replaceCollider(worldCollider,
+        collisionMesh(project, triangulate, { sectors: state.sectors, moving: movableSectors }));
+    }
+    dynamicCollider = replaceCollider(dynamicCollider,
+      collisionMesh(project, triangulate, { sectors: state.sectors, moving: movableSectors, dynamic: true }));
+    return added;
+  }
   const active = new Set(), forces = new Map();
   let contacts = new Set(), started = new Set(), ended = new Set(), accumulator = 0, verticalSpeed = 0, grounded = false;
   // The player's own up axis. Rapier capsules always grow along +Y, so walking on

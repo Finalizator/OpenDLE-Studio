@@ -1492,6 +1492,31 @@ Legacy WAD projects missing the HUD, audio or current combat starter show an
 explicit reimport warning. The 3D layout is an editor with a fly camera, not a
 running game: use **Play world** for HUD, sound and gameplay.
 
+### Doors, lifts and moving sectors
+
+ZDoom/UDMF linedef specials run through `shared/line-specials.js`, which follows
+GZDoom's own units: a special's speed argument is `SPEED(a) = a/8` map units per
+tic, and its delay is either `TICS(a)` (ticks) or `OCTICS(a)` (eighths of a
+second), depending on the special. Reading the raw number as units per tic made
+every door and lift eight times too fast; a real door in `Furdm05` (speed 82,
+delay 34) opened in two frames and shut again in the same moment, because the
+delay had been read from the argument before it. `Generic_Door` (202) and
+`Generic_Lift` (203) also take their `kind`/`delay`/`target`/`height` from the
+arguments GZDoom documents, and an unknown door kind does nothing. Maps without
+ZDoom arguments (classic Doom lines, or ACS `LSPEC`) use Doom's own constants
+instead: `VDOORSPEED` 2 units per tic, `VFLOORSPEED` 4, `VDOORWAIT` 150 tics.
+
+Collision has to follow those moving sectors, and a Rapier trimesh cannot be
+edited in place. `shared/physics.js` keeps a static collider for the level and a
+dynamic one for sectors that have left their spawn heights. The movable set is
+discovered from the *sectors themselves*, not from event `moveSector` actions, so
+doors opened by line specials, ACS or events all work: the first time a sector
+moves, the static mesh is rebuilt without it (about 10 ms on a 241-sector map)
+and from then on only that sector's geometry is re-triangulated (about 0.2 ms per
+frame). Before this, only sectors named by an editable `moveSector` action were
+ever updated, so an imported door opened, animated and stayed solid: the visual
+world moved through `state.worldRevision` while the collider did not.
+
 ### Physics and Blockbench models
 
 1. In **Assets & sectors**, click **Import models**. The picker accepts a
