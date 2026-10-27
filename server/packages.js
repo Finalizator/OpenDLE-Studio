@@ -9,7 +9,7 @@ import { actorSourcesFromArchive, actorSourcesFromWad, loadGzdoomActors, sndInfo
 import { mergeActorActionGaps, describeActorActionGaps } from '../shared/actor-runtime.js';
 import { acsLibrariesFromFiles, acsLibrariesFromWad } from '../shared/acs-libraries.js';
 import { validateProject } from '../shared/project.js';
-import { decodePatch, decodeFlat } from '../shared/doom-assets.js';
+import { decodePatch, decodeFlat, flatSize, composeTexture, textureDefinitionsFromText } from '../shared/doom-assets.js';
 import { encodeImage, cachedImageEncoder } from './import.js';
 import { doomSound, encodeSound } from '../shared/sound.js';
 import { assembleGameLevels, parseLevelRoutes } from '../shared/game-levels.js';
@@ -233,9 +233,10 @@ export function inspectPackage(files) {
   // reported as unread.
   const interpreterSupport = /(^|\/)(zscript|decorate|mapinfo|zmapinfo|gameinfo|language|dehacked)$|^(zscript|decorate)([./]|$)|\.(zc|zs|zsc|dec|deh|bex)$|(^|\/)language(\.[a-z]{2,3})?(\.txt)?$|(^|\/)mapinfo\//i;
   // LOADACS and acs/*.o are read now, so they are not "uninterpreted".
-  const unsupported = [...files.keys()].filter(name => /(^|\/)(gldefs|sndinfo|animdefs|sbarinfo|modeldef|cvarinfo|textures)([./]|$)|^filter\//i.test(name) &&
+  // TEXTURES is composed now, so texture definitions are no longer listed here.
+  const unsupported = [...files.keys()].filter(name => /(^|\/)(gldefs|modeldef|cvarinfo)([./]|$)|^filter\//i.test(name) &&
     !imageKind(name) && !/^sbarinfo(?:\.txt)?$/i.test(name) && !interpreterSupport.test(name));
-  if (unsupported.length) warnings.push(`${unsupported.length} definition files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Scripted HUDs, texture definitions, animations and filter classes need separate runtime support; actor stats, states, MAPINFO editor numbers, LANGUAGE strings, DEHACKED patches, per-map ACS scripts and LOADACS libraries are imported.`);
+  if (unsupported.length) warnings.push(`${unsupported.length} definition files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Dynamic lights, models and filter classes need separate runtime support; actor stats, states, MAPINFO editor numbers, LANGUAGE strings, DEHACKED patches, TEXTURES definitions, per-map ACS scripts and LOADACS libraries are imported.`);
   const actorFiles = [...files.keys()].filter(name => /(^|\/)(zscript|decorate)(\.(txt|zc|zs|zsc))?$|\.(zc|zs|zsc|dec)$/i.test(name));
   if (actorFiles.length) warnings.push(`${actorFiles.length} DECORATE/ZScript file(s) are imported as editable actor data (stats, flags, sounds, state machines). ZScript code beyond defaults and state blocks is not executed; map scripts call these actors through ACS_* actions.`);
   const maps = mapsIn(files), rejected = maps.filter(map => !map.supported);
@@ -313,7 +314,7 @@ function imageDecoder(files, palette) {
       const width = bytes.readUInt32BE(16), height = bytes.readUInt32BE(20);
       check(width > 0 && height > 0 && width <= LIMITS.imageSize && height <= LIMITS.imageSize,
         `Image dimensions exceed ${LIMITS.imageSize}x${LIMITS.imageSize}: ${path}`);
-      check(pixels + width * height <= 32 * MiB, 'Package image decoding exceeds pixel budget; select a smaller image batch');
+      check(pixels + width * height <= LIMITS.assetPixels, 'Package image decoding exceeds pixel budget; select a smaller image batch');
       const png = PNG.sync.read(bytes, { checkCRC: true });
       decoded = { width, height, pixels: png.data, offsetX: 0, offsetY: 0 };
       let offset = 8;
@@ -330,10 +331,11 @@ function imageDecoder(files, palette) {
       check(!/^\xff\xd8/.test(bytes.toString('latin1', 0, 2)) && !['.jpg', '.jpeg', '.webp', '.dds', '.tga', '.pcx'].includes(extname(path)),
         `Unsupported package image format: ${path}. Import PNG or Doom patches instead.`);
       check(palette?.length >= 768, `Legacy Doom image ${path} needs a base IWAD PLAYPAL palette`);
-      decoded = imageKind(path) === 'flat' && bytes.length === 4096 ? decodeFlat(bytes, palette) : decodePatch(bytes, palette);
+      // Modern flats are 128x128 or 256x256, so the size decides, not a fixed 4096.
+      decoded = imageKind(path) === 'flat' && flatSize(bytes) ? decodeFlat(bytes, palette) : decodePatch(bytes, palette);
     }
     pixels += decoded.width * decoded.height;
-    check(pixels <= 32 * MiB, 'Package image decoding exceeds pixel budget; select a smaller image batch');
+    check(pixels <= LIMITS.assetPixels, 'Package image decoding exceeds pixel budget; select a smaller image batch');
     cache.set(path, decoded); return decoded;
   };
 }
@@ -458,6 +460,43 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     images.set(`${kind}_${path.toUpperCase()}`, () => decode(path));
     images.set(`${kind}_${path.slice(path.indexOf('/') + 1).toUpperCase()}`, () => decode(path));
     if (kind === 'sprite' && path.startsWith('sprites/')) images.set(`weapon_${name}`, () => decode(path));
+  }
+  // ZDoom's text TEXTURES defines textures as a list of patches, which is how a mod
+  // adds a wall or flat that exists in no TEXTURE1 table. Composed lazily, so only the
+  // textures a map actually uses pay for their patches.
+  const textTextures = new Map();
+  for (const [path, file] of files) {
+    if (!/(^|\/)textures(\.(txt|textures))?$/i.test(path) || !file.data) continue;
+    for (const definition of textureDefinitionsFromText(Buffer.from(file.data).toString('latin1'),
+      { warnings: aliasWarnings, source: path })) {
+      if (textTextures.has(definition.name.toUpperCase())) {
+        aliasWarnings.push(`${path}: texture ${definition.name} is defined more than once; the last definition is used.`);
+      }
+      textTextures.set(definition.name.toUpperCase(), definition);
+    }
+  }
+  const composing = new Set();
+  const texturePatch = name => {
+    const upper = name.toUpperCase();
+    for (const key of [`texture_${upper}`, `sprite_${upper}`, `flat_${upper}`]) {
+      const entry = images.get(key);
+      if (entry) return entry();
+    }
+    const lump = combined.lumps.find(candidate => candidate.name.toUpperCase() === upper);
+    check(lump, `Texture patch ${name} was not found in the package`);
+    check(palette?.length >= 768, `Texture patch ${name} is a palette image and this package has no PLAYPAL`);
+    return decodePatch(new Uint8Array(combined.buffer, lump.start, lump.size), palette);
+  };
+  for (const [upper, definition] of textTextures) {
+    const key = `texture_${upper}`;
+    if (aliases.has(key)) aliasWarnings.push(`Package texture ${definition.name} is defined by both an image and TEXTURES; the TEXTURES definition wins.`);
+    aliases.set(key, `TEXTURES:${definition.name}`);
+    images.set(key, () => {
+      check(!composing.has(key), `Texture ${definition.name} includes itself through its patches`);
+      composing.add(key);
+      try { return composeTexture(definition, texturePatch); }
+      finally { composing.delete(key); }
+    });
   }
   const sounds = new Map();
   let soundBytes = 0;

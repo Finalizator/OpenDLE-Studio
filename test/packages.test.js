@@ -243,6 +243,25 @@ test('flats of any square palette size decode, including modern 128 and 256 pixe
   assert.ok(flat, 'the 128x128 flat was imported');
   assert.deepEqual([flat.width, flat.height], [128, 128]);
 });
+test('a TEXTURES definition composes a wall texture out of package patches', async () => {
+  const solid = (width, height, [red, green, blue]) => PNG.sync.write({ width, height,
+    data: Buffer.from(Array(width * height).fill([red, green, blue, 255]).flat()) });
+  const source = [...entries(),
+    ['TEXTURES', Buffer.from('// mod wall textures\nTexture "WALL", 4, 4 { Patch "PATCHA", 0, 0 Patch "PATCHB", 2, 0 }\n'
+      + 'WallTexture "STEEL", 2, 4, XScale 2 { Patch "PATCHB", 0, 0 }\n')],
+    ['patches/patcha.png', solid(2, 4, [255, 0, 0])],
+    ['patches/patchb.png', solid(2, 4, [0, 0, 255])]];
+  const { project } = importPackage(await readPackageArchive(archive(source)), { map: 'auto', baseBytes: base() });
+  const wall = project.assets.find(asset => asset.kind === 'texture' && asset.name === 'WALL');
+  assert.ok(wall, 'the TEXTURES defined wall texture was imported');
+  assert.deepEqual([wall.width, wall.height], [4, 4]);
+  const pixels = PNG.sync.read(Buffer.from(wall.src.split(',')[1], 'base64')).data;
+  const at = (x, y) => [...pixels.subarray((y * 4 + x) * 4, (y * 4 + x) * 4 + 4)];
+  assert.deepEqual(at(0, 0), [255, 0, 0, 255], 'the left half is the first patch');
+  assert.deepEqual(at(3, 3), [0, 0, 255, 255], 'the right half is the patch placed at x=2');
+  // A definition the map never uses stays lazy, and flat/sprite variants are accepted.
+  assert.ok(!project.assets.some(asset => asset.name === 'STEEL'), 'unused textures are not composed');
+});
 test('pk7 and pke archives are offered, and a folder of only flats or patches is a package', async t => {
   const root = directory(t);
   writeFileSync(join(root, 'mod.pk7'), archive(entries()));

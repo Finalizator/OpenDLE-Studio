@@ -91,6 +91,44 @@ export function textureDefinitions(bytes, names) {
   });
 }
 
+/**
+ * ZDoom's text `TEXTURES` format: textures defined as a list of patches.
+ *
+ * `Texture`, `WallTexture`, `FlatTexture`, `SpriteTexture` and `Graphic` all build one
+ * image out of patches, which is how a mod adds a wall texture that exists in no
+ * TEXTURE1 table. Patch options such as `FlipX` or `Rotate` are reported instead of
+ * silently drawn untransformed.
+ */
+export function textureDefinitionsFromText(text, { warnings = [], source = 'TEXTURES' } = {}) {
+  const clean = String(text ?? '')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/^\s*#.*$/gm, ' ');
+  const definitions = [];
+  const guards = [/check ?range ?\{[^}]*\}/i, /(?:pink|blue|gold|red|green)blood ?\{[^}]*\}/i];
+  let body = clean;
+  for (const guard of guards) body = body.replace(guard, ' ');
+  const block = /\b(?:Texture|WallTexture|FlatTexture|SpriteTexture|Graphic)\s+"?([^",\s{}]+)"?\s*,\s*(\d+)\s*,\s*(\d+)[^{]*\{([^}]*)\}/gi;
+  for (const match of body.matchAll(block)) {
+    const name = match[1], width = Number(match[2]), height = Number(match[3]), patchText = match[4];
+    if (!(width > 0 && height > 0 && width <= LIMITS.imageSize && height <= LIMITS.imageSize)) {
+      warnings.push(`${source}: texture ${name} has unsupported dimensions ${width}x${height}.`);
+      continue;
+    }
+    const patches = [];
+    for (const patch of patchText.matchAll(/\bPatch\s+"?([^",\s{}]+)"?\s*,\s*(-?\d+)\s*,\s*(-?\d+)/gi)) {
+      patches.push({ name: patch[1], x: Number(patch[2]), y: Number(patch[3]) });
+    }
+    // Patch options follow the coordinates; several patches can share a line.
+    if (/\b(?:FlipX|FlipY|Rotate)\b/i.test(patchText)) {
+      warnings.push(`${source}: ${name} uses rotated or flipped patches, which are not applied yet.`);
+    }
+    if (!patches.length) { warnings.push(`${source}: texture ${name} lists no patches.`); continue; }
+    definitions.push({ name, width, height, patches });
+  }
+  return definitions;
+}
+
 export function composeTexture(definition, getPatch) {
   const result = image(definition.width, definition.height);
   let work = 0;

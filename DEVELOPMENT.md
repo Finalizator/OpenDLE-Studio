@@ -2215,9 +2215,9 @@ flags are retained; New game selects them (Play level defaults to skill 4
 unless this browser has saved a different difficulty).
 Flats are square palette images of 32, 64, 128 or 256 pixels; a 128x128 or 256x256
 flat used to be rejected as malformed, which broke any modern replacement flat.
-TEXTURES/TEXTUREx definitions inside a PK3 are still not composed (only TEXTURE1 /
-TEXTURE2 in a WAD are), and bzip2/LZMA-compressed or encrypted archive entries are
-refused with an explicit message rather than imported.
+bzip2/LZMA-compressed or encrypted archive entries are refused with an explicit
+message rather than imported, and TEXTURES patch options (`FlipX`, `Rotate`) are
+reported instead of drawn untransformed.
 
 Common monster/pickup/decoration thing types map to imported sprite-frame clips.
 Unknown types remain visible colored placeholders. Recognized lamps import as
@@ -2254,6 +2254,11 @@ grown past the original assumptions:
 - **`replaces` takes over the editor number.** An actor that replaces another one
   inherits its editor number when it declares none, and the runtime's doomed-number
   index prefers the replacement, so thing 3004 spawns it.
+- **TEXTURES text definitions are composed.** `Texture`, `WallTexture`, `FlatTexture`,
+  `SpriteTexture` and `Graphic` blocks build an image out of patches, which is how a mod
+  adds a wall or flat that exists in no TEXTURE1 table; the composition is lazy, so only
+  the textures a map actually uses pay for their patches, and a definition that includes
+  itself through its patches is reported instead of recursing.
 - **Archive kinds and layouts**: `.pk3`, `.ipk3`, `.pk7`, `.pke` and `.pkz` are all
   zip containers and all accepted; WADs inside the archive are read whether they sit at
   the root or in a subfolder such as `wads/`; and a folder made only of `flats/`,
