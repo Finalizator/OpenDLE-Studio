@@ -559,6 +559,27 @@ rules, disable a whole sheet, and create Game or Engine sheets with **+ Sheet**.
 Each rule can be assigned to a sheet and an object, or run **For each**
 enemy/pickup/decoration with `$self` referring to that instance.
 
+**Reordering works like Construct.** Drag a rule by its `⋮⋮` grip or its header:
+the line above or below a rule shows where it will land, and dragging onto the
+middle of another rule makes it a sub-event (its own children travel with it).
+Dragging a condition or an action inside a rule reorders it; the first condition
+stays the primary one, so dropping something into the top slot promotes it. All
+of this is the same data the Up/Down buttons and sub-event buttons change, so
+undo covers it, and `shared/events.js` refuses a drop that would break the
+sub-event rules (different sheet, group or object context, or a rule dropped into
+its own branch).
+
+**Comments are editable in place**: clicking a rule's comment turns it into a
+text box (Enter keeps it, Escape drops it, Shift+Enter adds a line). A rule with
+no comment shows its name, and editing that text stores a real comment.
+
+The command catalogue also carries the general-purpose Construct-style
+conditions and actions: every N seconds, random chance, live object count,
+object facing angle, plus rotate-by, model tilt and set view pitch. They are
+declared in `shared/engine-script.js` only, so they appear for every project,
+imported or hand-built (`test/engine-generic-events.test.js` proves they work on a
+project with no WAD provenance, no campaign and no assets).
+
 Sheets are organizational views of one ordered rule list, not implicit
 include graphs. Enabled **beforePhysics** rules execute in list order,
 movement/physics runs, then **afterPhysics** rules execute in list order.
@@ -1549,6 +1570,12 @@ world moved through `state.worldRevision` while the collider did not.
    Imported model origins are retained, so put the origin at the feet in
    Blockbench. A model replaces that object's billboard sprite, and the
    selection box then follows the model's own bounds instead of the sprite's.
+   **Model pitch** and **Model roll** tilt the model without changing where the
+   object faces: 180 pitch stands it on its head, 90 roll lays it on its side, and
+   the box, the 3D view and the renderer all use the composed orientation
+   (`modelOrientation` in `shared/entity-visuals.js`). In the 3D view the
+   **Rotate / tilt** gizmo turns the object with a horizontal handle, pitches it
+   with the vertical handle and rolls it with Shift + vertical.
    Models are parsed with the preview, so the first assignment reloads the 3D
    scene once; later edits apply in place, and swapping one model for another
    replaces just that object.

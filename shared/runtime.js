@@ -157,6 +157,12 @@ export function projectUsesSurfaces(project) {
   return used;
 }
 
+/** Deterministic RNG: the same seed and inputs replay identically in a save. */
+function nextRandom(state) {
+  state.randomSeed = (Math.imul(state.randomSeed, 1664525) + 1013904223) >>> 0;
+  return state.randomSeed / 4294967296;
+}
+
 function touchingSurfaces(state) {
   return state.surfaces || (state.surfaces = state.physics?.probeSurfaces?.(state.player.up) || []);
 }
@@ -388,6 +394,28 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const target = findTarget(condition.entityId);
         return target && compare(target.variables[condition.variable], condition.operator, condition.value);
       }
+      if (condition.type === 'everySeconds') {
+        // Construct's "Every X seconds": the first tick fires immediately, then the
+        // interval restarts, so a rule cannot drift or fire twice for one interval.
+        const intervals = state.intervals ||= new Map();
+        const due = intervals.get(event.id) || 0;
+        if (state.time + 1e-9 < due) return false;
+        intervals.set(event.id, state.time + condition.seconds);
+        return true;
+      }
+      if (condition.type === 'randomChance') return nextRandom(state) < condition.probability;
+      if (condition.type === 'objectCount') {
+        const wanted = condition.entityType || condition.type_;
+        const count = wanted === 'any' ? state.entities.length
+          : state.entities.filter(entity => entity.type === wanted).length;
+        return compareValues(count, condition.operator, condition.value);
+      }
+      if (condition.type === 'entityAngle') {
+        const target = findTarget(condition.entityId);
+        const angle = target?.type === 'player' ? player.angle * 180 / Math.PI : Number(target?.angle) || 0;
+        const normalised = ((angle % 360) + 360) % 360;
+        return compareValues(Math.round(normalised * 1000) / 1000, condition.operator, condition.value);
+      }
       if (condition.type === 'playerTouchingSurface') {
         return touchingSurfaces(state).some(surface => condition.surface === 'any' || surface.kind === condition.surface);
       }
@@ -575,6 +603,25 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           state.worldRevision++;
           break;
         }
+        case 'rotateEntityBy': {
+          const entity = findTarget(action.entityId);
+          if (entity) {
+            entity.angle = (Number(entity.angle) || 0) + action.angle;
+            if (entity.type === 'player') player.angle += action.angle * Math.PI / 180;
+          }
+          break;
+        }
+        case 'setEntityTilt': {
+          const entity = findTarget(action.entityId);
+          if (entity) {
+            if (!action.pitch && !action.roll) delete entity.modelTilt;
+            else entity.modelTilt = { pitch: action.pitch, roll: action.roll };
+          }
+          break;
+        }
+        case 'setPlayerPitch':
+          player.pitch = action.pitch * Math.PI / 180;
+          break;
         case 'setEntityScale': {
           const entity = findTarget(action.entityId);
           if (entity) { entity.spriteScale = action.scale; if (entity.modelAsset) entity.modelScale = action.scale; }
@@ -830,10 +877,7 @@ function fireHitscan(state, action) {
   // The shot leaves the eye along the view direction, so it still lines up with the
   // crosshair after gravity has been turned onto a wall.
   const eye = eyePosition(player, player.z ?? sectorAt(state.sectors, player.x, player.y)?.floorHeight ?? 0);
-  const random = () => {
-    state.randomSeed = (Math.imul(state.randomSeed, 1664525) + 1013904223) >>> 0;
-    return state.randomSeed / 4294967296;
-  };
+  const random = () => nextRandom(state);
   state.lastShot = { time: state.time, hits: [] };
   for (let pellet = 0; pellet < action.pellets; pellet++) {
     const angle = player.angle + (action.spread ? (random() - .5) * action.spread * Math.PI / 180 : 0);

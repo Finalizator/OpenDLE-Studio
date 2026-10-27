@@ -47,6 +47,89 @@ export function moveEventBranch(project, id, direction) {
   remaining.splice(position, 0, ...branch); project.events = remaining;
 }
 
+function sameContext(a, b) {
+  return a.sheetId === b.sheetId && a.groupId === b.groupId && a.ownerId === b.ownerId && a.forEachType === b.forEachType;
+}
+
+/**
+ * Move a rule (with its sub-events) so it becomes a sibling of `targetId`, directly
+ * before or after it. Used by dragging a row in the visual editor; the order of
+ * `project.events` is the execution order, so this is also the order rules run in.
+ */
+export function moveEventBranchBeside(project, id, targetId, position = 'before') {
+  if (id === targetId) return;
+  if (position !== 'before' && position !== 'after') throw new Error(`Unknown drop position ${position}`);
+  const event = project.events.find(item => item.id === id);
+  const target = project.events.find(item => item.id === targetId);
+  if (!event || !target) throw new Error('That rule no longer exists');
+  const moved = eventBranch(project.events, id);
+  if (moved.has(targetId)) throw new Error('A rule cannot be dropped inside itself');
+  // Sub-events share their parent's sheet, group and object context, so a drop that
+  // changed any of those would produce a structure the validator rejects.
+  if (!sameContext(event, target)) throw new Error('Rules can only be reordered within the same sheet, group and object context');
+  const branch = project.events.filter(item => moved.has(item.id));
+  const remaining = project.events.filter(item => !moved.has(item.id));
+  if (target.parentId === undefined) delete branch[0].parentId; else branch[0].parentId = target.parentId;
+  const targetIndex = remaining.findIndex(item => item.id === targetId);
+  const at = position === 'after'
+    ? remaining.findLastIndex(item => eventBranch(remaining, targetId).has(item.id)) + 1
+    : targetIndex;
+  remaining.splice(at, 0, ...branch);
+  project.events = remaining;
+}
+
+/** Re-parent a rule branch: indent it under another rule, or outdent it to top level. */
+export function setEventParent(project, id, parentId = null) {
+  const event = project.events.find(item => item.id === id);
+  if (!event) throw new Error('That rule no longer exists');
+  const moved = eventBranch(project.events, id);
+  if (parentId !== null) {
+    if (parentId === id || moved.has(parentId)) throw new Error('A rule cannot be dropped inside itself');
+    const parent = project.events.find(item => item.id === parentId);
+    if (!parent) throw new Error('That parent rule no longer exists');
+    if (!sameContext(event, parent)) throw new Error('Sub-events must share the parent rule sheet, group and object context');
+    event.parentId = parentId;
+    const branch = project.events.filter(item => moved.has(item.id));
+    const remaining = project.events.filter(item => !moved.has(item.id));
+    // Sub-events must stay contiguous with their parent, so the branch goes after the
+    // parent's existing children.
+    const lastChild = remaining.findLastIndex(item => item.parentId === parentId);
+    const at = lastChild >= 0 ? lastChild + 1 : remaining.findIndex(item => item.id === parentId) + 1;
+    remaining.splice(at, 0, ...branch);
+    project.events = remaining;
+    return;
+  }
+  if (event.parentId === undefined) return;
+  const oldParent = event.parentId;
+  delete event.parentId;
+  const branch = project.events.filter(item => moved.has(item.id));
+  const remaining = project.events.filter(item => !moved.has(item.id));
+  // Outdenting keeps the branch together and puts it straight after its old parent.
+  const lastOfParent = remaining.findLastIndex(item => eventBranch(remaining, oldParent).has(item.id));
+  const at = lastOfParent >= 0 ? lastOfParent + 1 : remaining.length;
+  remaining.splice(at, 0, ...branch);
+  project.events = remaining;
+}
+
+/** Reorder the additional conditions of one rule (the first condition stays first). */
+export function moveCondition(event, from, to) {
+  const list = [event.condition, ...(event.conditions || [])];
+  if (from < 0 || from >= list.length || to < 0 || to >= list.length) throw new Error('Condition position is out of range');
+  if (from === to) return;
+  const [moved] = list.splice(from, 1);
+  list.splice(to, 0, moved);
+  event.condition = list[0];
+  if (list.length > 1) event.conditions = list.slice(1); else delete event.conditions;
+}
+
+/** Reorder one action of a rule. */
+export function moveAction(event, from, to) {
+  if (from < 0 || from >= event.actions.length || to < 0 || to >= event.actions.length) throw new Error('Action position is out of range');
+  if (from === to) return;
+  const [moved] = event.actions.splice(from, 1);
+  event.actions.splice(to, 0, moved);
+}
+
 export function validateEventStructure(project, assert) {
   const sheets = new Map((project.eventSheets || []).map(sheet => [sheet.id, sheet]));
   const groups = new Map((project.eventGroups || []).map(group => [group.id, group]));

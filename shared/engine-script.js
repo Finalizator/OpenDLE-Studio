@@ -49,6 +49,11 @@ export const ENGINE_CONDITIONS = [
   { type: 'keyOwned', label: 'Inventory: owns key', fields: [choice('key', 'blueCard', KEYS)] },
   { type: 'backpackOwned', label: 'Inventory: owns backpack', fields: [] },
   { type: 'ammoBelowCapacity', label: 'Inventory: ammo below capacity', fields: [choice('ammo', 'bullets', AMMO_TYPES)] },
+  { type: 'everySeconds', label: 'System: every N seconds', fields: [numeric('seconds', 1, .01, 3600)] },
+  { type: 'randomChance', label: 'System: random chance (0-1)', fields: [numeric('probability', .5, 0, 1)] },
+  { type: 'objectCount', label: 'Objects: count of live objects', fields: [
+    choice('entityType', 'enemy', ['any', 'player', 'enemy', 'pickup', 'light', 'decoration']), comparison(), numeric('value', 0, 0, 100000)] },
+  { type: 'entityAngle', label: 'Object: compare facing angle', target: true, fields: [comparison(), numeric('value', 0, -3600, 3600)] },
   { type: 'playerFeedback', label: 'Player: compare feedback signal', fields: [choice('signal', 'damage', ['damage', 'damageDirection', 'attackTime', 'weaponPickup']), comparison(), numeric('value', 0, -1e6, 1e6)] },
   { type: 'playerFace', label: 'Player: face expression', fields: [choice('expression', 'idle', FACE_EXPRESSIONS)] },
   { type: 'entityDoomType', label: 'Object: Doom thing type', fields: [numeric('doomType', 2007, 0, 65535)], target: true },
@@ -105,6 +110,10 @@ export const ENGINE_ACTIONS = [
     { name: 'templateId', kind: 'text', value: '' }, numeric('x', 0, -65536, 65536), numeric('y', 0, -65536, 65536),
     { ...numeric('z', 0, -65536, 65536), optional: true }, { ...numeric('angle', 0, -3600, 3600), optional: true },
     { name: 'name', value: '', kind: 'string', optional: true }] },
+  { type: 'rotateEntityBy', label: 'Object: rotate by (degrees, relative)', target: true, fields: [numeric('angle', 15, -3600, 3600)] },
+  { type: 'setEntityTilt', label: 'Object: set model tilt (pitch / roll)', target: true, fields: [
+    numeric('pitch', 0, -3600, 3600), numeric('roll', 0, -3600, 3600)] },
+  { type: 'setPlayerPitch', label: 'Player: set view pitch (degrees)', fields: [numeric('pitch', 0, -85, 85)] },
   { type: 'setEntityScale', label: 'Object: set visual scale', target: true, fields: [numeric('scale', 1, .01, 20)] },
   { type: 'setGravityScale', label: 'Physics: set gravity scale', target: true, fields: [numeric('scale', 1, 0, 10)] },
   { type: 'setDamping', label: 'Physics: set linear damping', target: true, fields: [numeric('damping', .1, 0, 100)] },

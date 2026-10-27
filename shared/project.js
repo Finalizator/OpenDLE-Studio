@@ -122,6 +122,15 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef }) {
   number(entity.x, 'Entity X');
   number(entity.y, 'Entity Y');
   number(entity.angle, 'Entity angle', -3600, 3600);
+  // Model tilt is a visual roll/pitch on top of the yaw: enough to lay a model on its
+  // side or stand it on its head without changing where the object faces.
+  if (entity.modelTilt !== undefined) {
+    assert(typeof entity.modelTilt === 'object' && entity.modelTilt !== null, 'Model tilt must be an object');
+    for (const key of ['pitch', 'roll']) {
+      if (entity.modelTilt[key] === undefined) continue;
+      number(entity.modelTilt[key], `Model tilt ${key}`, -3600, 3600);
+    }
+  }
   if (entity.health !== undefined) number(entity.health, 'Object health', 0, 1000000);
   if (entity.ambush !== undefined) assert(typeof entity.ambush === 'boolean', 'Object ambush must be boolean');
   if (entity.skillMask !== undefined) {

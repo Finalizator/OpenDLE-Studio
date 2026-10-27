@@ -11,7 +11,9 @@ import { requestMouseLock } from './pointer-lock.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
 import { shaderTemplate } from '/shared/shaders.js';
 import { recoverProject } from './project-recovery.js';
-import { eventBranch, eventDepth, moveEventBranch, removeEventBranch, eventScope } from '/shared/events.js';
+import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
+  removeEventBranch, setEventParent, eventScope } from '/shared/events.js';
+import { editInline, installRowDrag } from './row-drag.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, defaultEngineCommand, installEngineScripts,
   installWallWalkDemo } from '/shared/engine-script.js';
 import { createHUDEditor } from './hud-editor.js';
@@ -76,6 +78,26 @@ const splitters = installSplitters({
     setAssetExpanded(false);
   },
   onChange: () => { mapNeedsDraw = true; },
+});
+// Construct-style reordering: drag a rule by its grip to change execution order,
+// drop onto the middle of another rule to make it a sub-event, and drag conditions or
+// actions inside a rule the same way.
+installRowDrag($('event-list'), {
+  onDrop: (source, target, position) => {
+    if (source.kind === 'event') {
+      edit(next => {
+        if (position === 'inside') setEventParent(next, source.id, target.id);
+        else moveEventBranchBeside(next, source.id, target.id, position);
+      }, position === 'inside' ? 'Rule indented under another' : 'Rule order changed');
+      return;
+    }
+    edit(next => {
+      const event = next.events.find(item => item.id === source.id);
+      if (source.kind === 'condition') moveCondition(event, source.index, target.index);
+      else moveAction(event, source.index, target.index);
+    }, source.kind === 'condition' ? 'Condition order changed' : 'Action order changed');
+  },
+  onError: error => status(error.message, true),
 });
 // Scanning every actor state is cheap but not free, so the report is cached until
 // the actor table or the map placements change.
@@ -275,7 +297,7 @@ function setSceneMode(mode) {
   $('view-2d').setAttribute('aria-pressed', String(mode === '2d'));
   $('view-3d').setAttribute('aria-pressed', String(mode === '3d'));
   $('scene-hint').textContent = mode === '3d'
-    ? 'Right-drag: look + WASD fly / Q E down-up / Shift faster / wheel speed. Left: select or draw. Colored axes: transform.'
+    ? 'Right-drag: look + WASD fly / Q E down-up / Shift faster / wheel speed. Left: select or draw. Colored axes: transform; in Rotate / tilt the vertical axis pitches the model and Shift rolls it.'
     : 'Wheel: zoom / Right-drag: pan / Select wall, vertex or object to edit';
   if (mode === '2d') {
     scenePose = sceneEditor?.pose() || scenePose; sceneEditor?.dispose(); sceneEditor = null; sceneProject = null;
@@ -594,6 +616,16 @@ function renderInspector() {
         }), ['model']));
         if (item.modelAsset) {
           field(parent, 'Model scale (map units / glTF unit)', input(item.modelScale ?? 32, 'number', value => update('modelScale', value)));
+          // Yaw is the object's own facing; pitch and roll stand the model up, on its
+          // side (roll 90) or on its head (pitch 180) without turning the object.
+          const tilt = item.modelTilt || { pitch: 0, roll: 0 };
+          const changeTilt = (key, value) => edit(next => {
+            const entity = next.map.entities.find(entity => entity.id === item.id);
+            const updated = { ...tilt, [key]: value };
+            if (!updated.pitch && !updated.roll) delete entity.modelTilt; else entity.modelTilt = updated;
+          });
+          field(parent, 'Model pitch (deg)', input(tilt.pitch || 0, 'number', value => changeTilt('pitch', value)));
+          field(parent, 'Model roll (deg)', input(tilt.roll || 0, 'number', value => changeTilt('roll', value)));
           const clips = project.assets.find(asset => asset.id === item.modelAsset).animations;
           if (clips.length) {
             const animation = item.animation || { clip: clips[0], speed: 1, loop: true, autoPlay: false };
@@ -963,6 +995,16 @@ function eventsSignature() {
     project.hud?.animations?.map(clip => [clip.id, clip.name]),
     [...collapsedEvents], [...collapsedGroups]]);
 }
+// Grip element for drag-reordering. The row it sits in carries data-drag-*, so the
+// installer can tell a rule from a condition without knowing the DOM structure.
+function grip() {
+  const element = make('span', '⋮⋮', 'drag-grip');
+  element.dataset.dragGrip = '';
+  element.setAttribute('aria-hidden', 'true');
+  element.title = 'Drag to reorder';
+  return element;
+}
+
 function renderEvents() {
   const parent = $('event-list');
   // A large imported game carries hundreds of event rules; rebuilding every
@@ -1025,10 +1067,15 @@ function renderEvents() {
     if (!matchesScope(event)) return;
     const card = make('div', undefined, 'event-card');
     card.dataset.eventId = event.id;
+    // Dragging a rule moves it (with its sub-events) in execution order.
+    card.dataset.dragRow = 'event'; card.dataset.dragId = event.id; card.dataset.dragKind = 'event';
     const modify = fn => edit(next => fn(next.events[index]));
     const context = scriptContext(event);
     const meta = make('details', undefined, 'event-meta');
-    meta.append(make('summary', `${String(index + 1).padStart(2, '0')}  ${eventScope(event) === 'object' ? 'Object' : 'Game'}${event.once ? ' · Once' : ''}${event.enabled ? '' : ' · Disabled'}`));
+    const summary = make('summary');
+    summary.append(grip());
+    summary.append(make('span', `${String(index + 1).padStart(2, '0')}  ${eventScope(event) === 'object' ? 'Object' : 'Game'}${event.once ? ' · Once' : ''}${event.enabled ? '' : ' · Disabled'}`));
+    meta.append(summary);
     field(meta, 'Rule name', input(event.name || event.id, 'text', value => modify(item => { item.name = value; })));
     field(meta, 'Sheet', select([['', 'Unfiled / scene'], ...(project.eventSheets || []).map(sheet => [sheet.id, `${sheet.section} / ${sheet.name}`])],
       event.sheetId || '', value => edit(next => {
@@ -1077,25 +1124,35 @@ function renderEvents() {
     }));
     meta.append(controls);
     const conditions = make('div', undefined, 'event-conditions');
+    conditions.dataset.dragList = `${event.id}:condition`;
     eventConditions(event).forEach((condition, conditionIndex) => {
-      conditions.append(commandRow(condition, conditionLabels, objectName, () => editCommand('condition', condition, value => modify(item => {
+      const row = commandRow(condition, conditionLabels, objectName, () => editCommand('condition', condition, value => modify(item => {
         if (conditionIndex === 0) item.condition = value; else item.conditions[conditionIndex - 1] = value;
       }), eventConditions(event).length > 1 ? () => modify(item => {
         if (conditionIndex === 0) item.condition = item.conditions.shift(); else item.conditions.splice(conditionIndex - 1, 1);
-      }) : undefined), { inverted: condition.inverted, or: event.conditionMode === 'or' && conditionIndex > 0 }));
+      }) : undefined), { inverted: condition.inverted, or: event.conditionMode === 'or' && conditionIndex > 0 });
+      row.prepend(grip());
+      row.dataset.dragRow = 'condition'; row.dataset.dragId = event.id;
+      row.dataset.dragKind = 'condition'; row.dataset.dragIndex = String(conditionIndex);
+      conditions.append(row);
     });
     conditions.append(button('+ Add condition', () => editCommand('condition', undefined, value => modify(item => {
       item.conditions ||= []; item.conditions.push(value);
     })), 'add-script-command'));
     const actions = make('div', undefined, 'event-actions');
+    actions.dataset.dragList = `${event.id}:action`;
     event.actions.forEach((action, actionIndex) => {
-      actions.append(commandRow(action, actionLabels, objectName, () => editCommand('action', action,
+      const row = commandRow(action, actionLabels, objectName, () => editCommand('action', action,
         value => modify(item => { item.actions[actionIndex] = value; }),
         () => modify(item => { item.actions.splice(actionIndex, 1); }), direction => modify(item => {
           const target = actionIndex + direction;
           if (target < 0 || target >= item.actions.length) throw new Error('No adjacent action');
           [item.actions[actionIndex], item.actions[target]] = [item.actions[target], item.actions[actionIndex]];
-        }))));
+        })));
+      row.prepend(grip());
+      row.dataset.dragRow = 'action'; row.dataset.dragId = event.id;
+      row.dataset.dragKind = 'action'; row.dataset.dragIndex = String(actionIndex);
+      actions.append(row);
     });
     actions.append(button('+ Add action', () => editCommand('action', undefined, value => modify(item => { item.actions.push(value); })), 'add-script-command'));
     function objectName(id) {
@@ -1136,7 +1193,19 @@ function renderEvents() {
     if (event.comment || event.name) {
       const comment = make('p', event.comment || event.name.replaceAll('_', ' '), 'event-comment');
       comment.dataset.eventId = event.id;
+      comment.title = 'Click to edit this comment';
       comment.hidden = card.hidden; comment.style.marginLeft = `${depth * 22 + 32}px`;
+      comment.addEventListener('click', () => {
+        // Start from the text that is on screen: a rule without a comment shows its
+        // name, so editing it writes a real comment instead of an empty box.
+        const field = editInline(comment, { value: event.comment || event.name?.replaceAll('_', ' ') || '', multiline: true,
+          onCommit: text => edit(next => {
+            const target = next.events.find(item => item.id === event.id);
+            if (text) target.comment = text; else delete target.comment;
+          }, 'Rule comment changed'),
+          onCancel: () => renderEvents() });
+        field.addEventListener('blur', () => { if (!field.isConnected) renderEvents(); }, { once: true });
+      });
       parent.append(comment);
     }
     parent.append(card);

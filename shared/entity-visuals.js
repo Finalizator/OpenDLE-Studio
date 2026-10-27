@@ -40,6 +40,41 @@ function rotateQuaternion(vector, quaternion) {
   ];
 }
 
+/** Quaternion [x, y, z, w] for a rotation of `degrees` about `axis`. */
+function axisRotation(axis, degrees) {
+  const half = (Number(degrees) || 0) * Math.PI / 360, sine = Math.sin(half);
+  return [axis[0] * sine, axis[1] * sine, axis[2] * sine, Math.cos(half)];
+}
+
+function multiplyQuaternion(a, b) {
+  return [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+}
+
+/**
+ * Where a model points: the object's yaw, then the optional model tilt, then the
+ * physics rotation when a rigid body owns the object. Objects face the camera's map
+ * with the negated Y angle, exactly like the renderer has always rotated them, so a
+ * project without tilt or physics produces the same quaternion as before.
+ */
+export function modelOrientation(entity) {
+  const yaw = -((Number(entity?.angle) || 0) * Math.PI / 360);
+  let quaternion = entity?.rotation
+    ? [entity.rotation.x, entity.rotation.y, entity.rotation.z, entity.rotation.w]
+    : [0, Math.sin(yaw), 0, Math.cos(yaw)];
+  const tilt = entity?.modelTilt;
+  const pitch = Number(tilt?.pitch) || 0, roll = Number(tilt?.roll) || 0;
+  // Tilt is applied in the model's own frame, so 180 pitch stands it on its head
+  // whatever direction the object faces.
+  if (pitch) quaternion = multiplyQuaternion(quaternion, axisRotation([1, 0, 0], pitch));
+  if (roll) quaternion = multiplyQuaternion(quaternion, axisRotation([0, 0, 1], roll));
+  return quaternion;
+}
+
 /**
  * World-space box of a model instance from the model's own bounds, its scale and
  * the object transform. Objects face the camera's map with the negated Y angle,

@@ -12,7 +12,7 @@ import RAPIER from '/vendor/rapier/rapier.mjs';
 import { createPhysics } from '/shared/physics.js';
 import { eyePosition, upVector, viewDirection } from '/shared/gravity.js';
 import { restoreCulling, restoreVisibility, revealForWarmup, uncullDrawables } from '/shared/render-warmup.js';
-import { liveProjectPlan, modelWorldBox, entityOrigin } from '/shared/entity-visuals.js';
+import { liveProjectPlan, modelOrientation, modelWorldBox, entityOrigin } from '/shared/entity-visuals.js';
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { gameView } from '/shared/game-view.js';
@@ -565,8 +565,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const box = modelWorldBox({ min: local.min.toArray(), max: local.max.toArray() }, {
           scale: entity.modelScale ?? 32,
           position: entityOrigin(entity, sector?.floorHeight || 0),
-          angle: entity.angle || 0,
-          quaternion: entity.rotation ? [entity.rotation.x, entity.rotation.y, entity.rotation.z, entity.rotation.w] : null,
+          quaternion: modelOrientation(entity),
         });
         return new THREE.Box3(new THREE.Vector3(...box.min), new THREE.Vector3(...box.max));
       }
@@ -918,7 +917,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
         if (editor) entry.object.scale.setScalar(entity.modelScale ?? 32);
         const sector = sectorIndex.at(entity.x, entity.y);
         entry.root.position.set(entity.x, entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0), entity.y);
-        if (entity.rotation) entry.root.quaternion.copy(entity.rotation);
+        // Yaw, model tilt and a physics rotation all compose into one quaternion, so a
+        // model can be tilted or stood on its head without affecting its facing.
+        if (entity.rotation || entity.modelTilt) entry.root.quaternion.fromArray(modelOrientation(entity));
         else entry.root.rotation.set(0, -entity.angle * Math.PI / 180, 0);
         // Doom light levels still tint a model, but a dark room must not erase it.
         const shade = Math.max(MODEL_LIGHTING.ambientFloor, (sector?.light ?? 255) / 255);

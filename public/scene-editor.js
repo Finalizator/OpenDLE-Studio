@@ -691,7 +691,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       liveDrag(action.selection, action.baseline, 'move', delta, `3D move ${axisLabel(action.axis)} ${formatDistance(delta)}`);
       handles.position.copy(action.end);
     } else if (mode === 'rotate') {
-      liveDrag(action.selection, action.baseline, 'rotate', { angle: dragDelta * .5 }, `3D rotate ${Math.round(dragDelta * .5)}deg`);
+      // Horizontal handles turn the object; the vertical handle tilts the model, and
+      // Shift with it rolls, so a model can be laid on its side or stood on its head.
+      const amount = Math.round(dragDelta * .5);
+      const delta = action.axis === 'z'
+        ? (keys.has('ShiftLeft') || keys.has('ShiftRight') ? { roll: amount } : { pitch: amount })
+        : { angle: amount };
+      const label = delta.roll !== undefined ? `roll ${delta.roll}deg` : delta.pitch !== undefined ? `pitch ${delta.pitch}deg` : `yaw ${delta.angle}deg`;
+      liveDrag(action.selection, action.baseline, 'rotate', delta, `3D rotate ${label}`);
     } else {
       liveDrag(action.selection, action.baseline, 'scale', { scale: Math.exp(dragDelta * .01) }, `3D scale ${Math.round(Math.exp(dragDelta * .01) * 100)}%`);
     }

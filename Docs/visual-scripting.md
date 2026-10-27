@@ -265,6 +265,10 @@ an object (`entityId`); `$self` is available inside object rules.
 | owns key | `keyOwned` | — | key |
 | owns backpack | `backpackOwned` | — | — |
 | ammo below capacity | `ammoBelowCapacity` | — | ammo |
+| every N seconds | `everySeconds` | — | seconds |
+| random chance (0-1) | `randomChance` | — | probability |
+| count of live objects | `objectCount` | — | entityType, operator, value |
+| compare facing angle | `entityAngle` | yes | operator, value |
 | compare feedback signal | `playerFeedback` | — | signal, operator, value |
 | face expression | `playerFace` | — | expression |
 | Doom thing type | `entityDoomType` | yes | doomType |
@@ -347,6 +351,9 @@ an object (`entityId`); `$self` is available inside object rules.
 | turn (degrees / second) | `turnPlayer` | — | speed |
 | apply mouse movement | `mouseLook` | — | sensitivity, vertical |
 | request jump | `jumpPlayer` | — | — |
+| rotate by (degrees, relative) | `rotateEntityBy` | yes | angle |
+| set model tilt (pitch / roll) | `setEntityTilt` | yes | pitch, roll |
+| set view pitch (degrees) | `setPlayerPitch` | — | pitch |
 | set gravity direction (walk on that surface) | `setPlayerGravity` | — | mode, reach |
 | set stat | `setPlayerStat` | — | stat, value |
 | add capped stat | `addPlayerStat` | — | stat, value, maximum |

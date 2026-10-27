@@ -1,12 +1,23 @@
 import { sectorAt, sectorGeometry } from './sectors.js';
 
+const wrapAngle = value => ((value % 360) + 540) % 360 - 180;
+
+/** Yaw plus the model tilt a rotate drag asked for; a zero tilt is removed. */
+function applyRotation(item, origin, delta) {
+  if (delta.angle) item.angle = (origin.angle || 0) + delta.angle;
+  const pitch = (Number(origin.modelTilt?.pitch) || 0) + (Number(delta.pitch) || 0);
+  const roll = (Number(origin.modelTilt?.roll) || 0) + (Number(delta.roll) || 0);
+  if (pitch || roll) item.modelTilt = { pitch: wrapAngle(pitch), roll: wrapAngle(roll) };
+  else delete item.modelTilt;
+}
+
 export function transformSelection(project, selection, mode, delta, grid) {
   const snap = value => Math.round(value / grid) * grid;
   const collections = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' };
   const item = project.map[collections[selection.kind]]?.find(item => item.id === selection.id);
   if (!item) throw new Error('Selected scene element no longer exists');
   if (mode !== 'move' && selection.kind !== 'entity') throw new Error('Rotation and scale apply to objects only');
-  if (mode === 'rotate') { item.angle += delta.angle; return; }
+  if (mode === 'rotate') { applyRotation(item, item, delta); return; }
   if (mode === 'scale') {
     if (item.type === 'player') throw new Error('The player capsule has a fixed size');
     const key = item.modelAsset ? 'modelScale' : 'spriteScale';
@@ -50,7 +61,7 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
   if (!item) throw new Error('Selected scene element no longer exists');
   if (!origin) throw new Error('The drag started from a project state that no longer exists');
   if (mode !== 'move' && selection.kind !== 'entity') throw new Error('Rotation and scale apply to objects only');
-  if (mode === 'rotate') { item.angle = origin.angle + delta.angle; return; }
+  if (mode === 'rotate') { applyRotation(item, origin, delta); return; }
   if (mode === 'scale') {
     if (item.type === 'player') throw new Error('The player capsule has a fixed size');
     const key = item.modelAsset ? 'modelScale' : 'spriteScale';
