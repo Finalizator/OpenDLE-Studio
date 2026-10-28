@@ -40,16 +40,23 @@ function commandReferences(command) {
  * make the project invalid.
  */
 export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [] } = {}) {
-  const subtree = sceneSubtree(scene, nodeId);
+  // Selecting the scene root means "save the whole scene", so the top-level nodes are
+  // wrapped in a group named after the scene and travel as one object.
+  const wholeScene = nodeId === scene?.id;
+  const subtree = wholeScene ? [...(scene.entities || [])] : sceneSubtree(scene, nodeId);
   if (!subtree.length) throw new Error('That node no longer exists');
-  if (subtree.length > MAX_SCENE_ENTITIES) throw new Error(`A node file holds at most ${MAX_SCENE_ENTITIES} nodes`);
+  const root = wholeScene ? { id: `${scene.id}_root`, type: 'decoration', name: name || scene.name || 'Scene',
+    x: 0, y: 0, angle: 0, elevation: 0 } : null;
+  const carried = root ? [root, ...subtree] : subtree;
+  if (carried.length > MAX_SCENE_ENTITIES) throw new Error(`A node file holds at most ${MAX_SCENE_ENTITIES} nodes`);
   const ids = new Set(subtree.map(node => node.id));
-  const minX = Math.min(...subtree.map(node => node.x));
-  const minY = Math.min(...subtree.map(node => node.y));
-  const nodes = subtree.map(node => {
+  const minX = Math.min(...carried.map(node => node.x));
+  const minY = Math.min(...carried.map(node => node.y));
+  const nodes = carried.map(node => {
     const copy = cloneProjectData(node);
     copy.x = round(node.x - minX);
     copy.y = round(node.y - minY);
+    if (root && node.id !== root.id && !copy.parentId) copy.parentId = root.id;
     return copy;
   });
 
@@ -92,7 +99,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [] 
   return {
     format: NODE_FILE_FORMAT,
     version: NODE_FILE_VERSION,
-    name: String(name || subtree[0].name || 'Node').slice(0, 100),
+    name: String(name || root?.name || subtree[0].name || 'Node').slice(0, 100),
     createdAt: new Date().toISOString(),
     // The group's floor corner, so an importer can place it without guesswork.
     origin: { x: round(minX), y: round(minY) },

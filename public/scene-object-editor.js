@@ -111,9 +111,11 @@ export function createSceneObjectEditor({ callbacks }) {
   /** Saving a `.node` file needs a node; importing only needs an open scene. */
   function syncNodeFileButtons() {
     const current = scene();
-    const hasNode = Boolean(current && state.selection && state.selection !== current.id);
+    const hasNode = Boolean(current && state.selection);
     if (dom.saveNode) { dom.saveNode.disabled = !hasNode; dom.saveNode.title = hasNode
-      ? 'Save the selected node, and the group under it, as a .node file you can import into another scene'
+      ? state.selection === current.id
+        ? 'Save the whole scene, wrapped in one group, as a .node file you can import elsewhere'
+        : 'Save the selected node, and the group under it, as a .node file you can import into another scene'
       : 'Select a node to save it as a .node file'; }
     if (dom.importNode) dom.importNode.disabled = !current;
   }
@@ -381,11 +383,7 @@ export function createSceneObjectEditor({ callbacks }) {
     try {
       switch (tool) {
         case 'add': addNode(isRoot ? null : id); return;
-        case 'save-node': {
-          if (isRoot) { callbacks.status('Select a node to save as a .node file', true); return; }
-          saveNodeFile(id);
-          return;
-        }
+        case 'save-node': saveNodeFile(isRoot ? current.id : id); return;
         case 'import-node': importNodeFile(); return;
         case 'duplicate': {
           if (isRoot) { callbacks.status('Select a node to duplicate', true); return; }

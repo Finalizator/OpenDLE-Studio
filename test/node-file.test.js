@@ -257,6 +257,24 @@ test('the scene limit and file names behave', () => {
   assert.equal(nodeFileName('a/b\\c*'), 'abc.node');
 });
 
+test('selecting the scene root saves the whole scene as one group', () => {
+  const scene = newScene('Whole');
+  const frame = addSceneObject(scene, { name: 'Frame', x: 100, y: 50 });
+  addSceneObject(scene, { name: 'Lid', x: 140, y: 50, parentId: frame.id });
+  addSceneObject(scene, { name: 'Loose', x: 60, y: 90 });
+  const document = exportNodeFile(scene, scene.id, {});
+  validateNodeFile(document);
+  parseNodeFile(nodeFileText(document));
+  assert.equal(document.name, 'Whole');
+  const root = document.nodes[0];
+  assert.equal(root.name, 'Whole');
+  assert.equal(root.parentId, undefined);
+  // Every top-level node hangs under the wrapper, so the import is one object again.
+  for (const node of document.nodes.slice(1)) assert.equal(node.parentId !== undefined, true);
+  assert.deepEqual(document.nodes.map(node => [node.name, node.x, node.y]),
+    [['Whole', 0, 0], ['Frame', 100, 50], ['Lid', 140, 50], ['Loose', 60, 90]]);
+});
+
 test('the studio offers saving and importing node files', () => {
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   const editor = readFileSync(new URL('../public/scene-object-editor.js', import.meta.url), 'utf8');
