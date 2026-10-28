@@ -1723,7 +1723,9 @@ export function createSceneObjectEditor({ callbacks }) {
         for (const strip of strips) {
           const node = addSceneObject(next, {
             type: 'decoration', name: strip.name, x: strip.x, y: strip.y, elevation: strip.elevation,
-            panel: strip.panel, physics: panelPhysics(strip.panel),
+            // A plastic strip is not a 35%-opaque pane: at that opacity the strips vanish
+            // against a dark room, which is what made the curtain look missing.
+            panel: { ...strip.panel, opacity: Math.max(.8, strip.panel.opacity ?? 0) }, physics: panelPhysics(strip.panel),
           });
           node.shaderId = shaderId;
           node.angle = strip.angle;
