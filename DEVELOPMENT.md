@@ -2093,6 +2093,23 @@ A panel with a shader is therefore drawn as its own `MeshBasicNodeMaterial` whos
 *is* the effect, rather than by replacing a lit material's output: folding a screen sample
 into a translucent physical material's output drew nothing in the WebGL 2 backend.
 
+The built-in **Glass (Shadertoy)** effect is written the way real glass is described, and it
+is the reference for what a screen-sampling effect should do:
+
+| step | what it does |
+| --- | --- |
+| surface normal | value noise, two octaves, centred on zero — its slope is the normal, so the sheet undulates instead of leaning as a whole (a leaning sheet reads the picture from somewhere else entirely, which is what makes strips look painted) |
+| refraction | `refract(-eye, normal, 1 / ior)` bends the eye ray, and the picture is read where the bent ray leaves the sheet; the distance travelled is in viewport units and is the whole strength of the effect |
+| dispersion | six taps between the red index (1.31) and the blue one (1.72), weighted towards the middle, so the edge of whatever is behind splits into colours instead of showing three hard fringes |
+| caustics | one further read along the same bend: where it crosses a contrast edge, the sheet focuses light and brightens |
+| fresnel & glint | the sheet goes opaque at a glancing angle and a specular highlight sits on the steepest part of each ripple |
+
+Two mistakes are worth remembering, because both produced a flat grey plate that looked like
+a texture on a plane rather than glass: taking the fresnel dot product against `-eye` (which
+saturates to "opaque everywhere"), and sizing the refraction offset in *world* units so the
+bend was under a pixel and invisible. The panels themselves stay flat slabs — all of the look
+comes from the effect.
+
 Effects can be written in **Shadertoy's shape** as well as the engine's own:
 
 | Shadertoy | here |
@@ -2129,6 +2146,24 @@ character controller pushes them aside as they walk through (the capsule applies
 to dynamic bodies), and they settle back. `curtainStrips()` lays the strips out along the
 object's facing, so an angled curtain works too, and the inspector's *Panel* category
 tunes the colour, opacity, size and thickness of any strip afterwards.
+
+The strips stay flat slabs on purpose: the glass is the effect, not geometry, so a `.node`
+file carries the whole look in its shader and nothing has to be modelled. Because the
+spherical joint lets a strip turn about any axis, a strip can also *spin* about the vertical
+one — the hinge has no preferred facing, so a curtain pushed hard fans out instead of
+swinging back into line.
+
+### Preview viewport and the scissor box
+
+The playtest draws the world into `gameView(...)`: the whole drawing buffer, or a smaller
+central rectangle for a reduced *Screen size* or a reserved status bar. Three never
+re-applies a scissor rectangle that matches the drawing buffer — it compares the rect with
+the screen and leaves the GL context alone — but `setScissorTest(true)` still enables the
+test, with whatever box the context last held. That box is the renderer's construction size
+(800x450), so on a preview of any other size the world was clipped to an 800x450 corner of
+the canvas and the clear colour showed around it, looking like two black rectangles over the
+level. `viewNeedsScissor()` therefore turns the test on only for a real sub-viewport; a
+full-buffer view leaves it off (`test/game-view.test.js` guards the rule).
 
 ### Node files (.node)
 

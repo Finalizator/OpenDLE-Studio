@@ -19,7 +19,7 @@ import { liveProjectPlan, modelOrientation, modelWorldBox, entityOrigin } from '
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
-import { gameView } from '/shared/game-view.js';
+import { gameView, viewNeedsScissor } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
 import { skyAssetFor, skyRequestName } from '/shared/sky.js';
 import { createSpriteIndex } from '/shared/sprite-animation.js';
@@ -1032,13 +1032,22 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const view = gameView(project.hud || { width: 320, height: 200 }, state.settings,
           canvas.width * detail, canvas.height, state.hud);
         const inset = view.inset;
+        const viewX = view.x / detail, viewWidth = view.width / detail;
         renderer.setScissorTest(false);
         renderer.setViewport(0, 0, canvas.width, canvas.height);
         renderer.setClearColor(clearColor('#272a2e')); renderer.clear();
         // The shared WebGPU/WebGL renderer uses a top-left viewport origin.
-        renderer.setViewport(view.x / detail, view.y, view.width / detail, view.height);
-        renderer.setScissor(view.x / detail, view.y, view.width / detail, view.height);
-        renderer.setScissorTest(true);
+        renderer.setViewport(viewX, view.y, viewWidth, view.height);
+        // The scissor test is only turned on for a view that really is smaller than the
+        // drawing buffer. Three never re-applies a scissor rectangle that covers the whole
+        // buffer (it compares it with the screen and leaves the context alone), yet turning
+        // the test on still enables it with whatever box the context last held — the 800x450
+        // of the renderer's construction size. That clipped the world to a corner of the
+        // preview and left the clear colour around it.
+        if (viewNeedsScissor(view, canvas.width, canvas.height, detail)) {
+          renderer.setScissor(viewX, view.y, viewWidth, view.height);
+          renderer.setScissorTest(true);
+        }
         const signature = `${view.x}/${view.y}/${view.width}/${view.height}/${inset}`;
         if (viewportSignature !== signature) { viewportSignature = signature; viewportJson = JSON.stringify(view); }
         writeDataset('hudInset', inset);

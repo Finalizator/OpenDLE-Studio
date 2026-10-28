@@ -11,6 +11,20 @@ export function gameView(hud, settings, width, height, hudVisible = true) {
 }
 
 /**
+ * Whether the game view needs a scissor rectangle at all.
+ *
+ * A view that covers the whole drawing buffer must *not* turn the scissor test on: Three
+ * skips a scissor rectangle that matches the screen and leaves the GL context untouched,
+ * so enabling the test would keep whatever box the context last held (the renderer's
+ * construction size) and clip the world to a corner of a resized preview. `scale` is the
+ * low-detail divisor applied to the drawn width.
+ */
+export function viewNeedsScissor(view, bufferWidth, bufferHeight, scale = 1) {
+  const width = view.width / scale;
+  return view.x / scale > 0 || view.y > 0 || width < bufferWidth - .5 || view.height < bufferHeight - .5;
+}
+
+/**
  * Whether the classic status bar is hidden by the current screen size.
  *
  * Screen size 11 reserves no room for the bar in `gameView` and the HUD view hides
