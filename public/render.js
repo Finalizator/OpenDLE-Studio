@@ -18,6 +18,7 @@ import { skyView } from '/shared/sky-view.js';
 import { liveProjectPlan, modelOrientation, modelWorldBox, entityOrigin } from '/shared/entity-visuals.js';
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
+import { PANEL_DEFAULTS } from '/shared/panel.js';
 import { gameView } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
 import { skyAssetFor, skyRequestName } from '/shared/sky.js';
@@ -71,12 +72,35 @@ export async function createPreview(canvas, project, state, { editor = false } =
   }));
   const effectTime = uniform(0), effectEnabled = uniform(1);
   let shaderEffect = null;
-  function withEffect(material) {
-    if (!shaderEffect) return material;
+  // Objects can carry their own shader; compile each one once and reuse it. The key holds
+  // the source too, so editing a shader rebuilds its effect instead of drawing a stale one.
+  const entityEffects = new Map();
+  function effectFor(id) {
+    if (!id) return null;
+    const shader = (project.shaders || []).find(entry => entry.id === id);
+    if (!shader) return null;
+    const key = [shader.id, shader.source, JSON.stringify(shader.uniforms ?? {})].join('\u0000');
+    if (!entityEffects.has(key)) {
+      let compiled = null;
+      try { compiled = compileGLSLEffect(shader); } catch { compiled = null; }
+      entityEffects.set(key, compiled);
+    }
+    return entityEffects.get(key);
+  }
+  function effectMaterial(material, effect) {
     const result = renderer.library.fromMaterial(material);
     if (!result) throw new Error(`Shader effects do not support material ${material.type}`);
-    result.outputNode = mix(output, shaderEffect.effect(output, uv(), effectTime), effectEnabled);
+    result.outputNode = mix(output, effect.effect(output, uv(), effectTime), effectEnabled);
     return result;
+  }
+  function withEffect(material) {
+    if (!shaderEffect) return material;
+    return effectMaterial(material, shaderEffect);
+  }
+  /** The object's own shader wins over the level-wide one. */
+  function withEffectFor(material, entity) {
+    const effect = effectFor(entity?.shaderId);
+    return effect ? effectMaterial(material, effect) : withEffect(material);
   }
   const loader = new THREE.TextureLoader();
   let physics = null, environmentTarget = null;
@@ -505,8 +529,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const asset = assetMap.get(entity.spriteAsset);
       const map = entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
       const color = asset ? '#ffffff' : entityColors[entity.type] || '#ffffff';
-      const material = spriteTemplate ? spriteTemplate.clone()
-        : withEffect(new THREE.SpriteNodeMaterial({ map, color, alphaTest: .5, transparent: false, sizeAttenuation: true }));
+      // A shadered sprite cannot share the pre-wrapped template material.
+      const material = entity.shaderId
+        ? withEffectFor(new THREE.SpriteNodeMaterial({ map, color, alphaTest: .5, transparent: false, sizeAttenuation: true }), entity)
+        : spriteTemplate ? spriteTemplate.clone()
+          : withEffect(new THREE.SpriteNodeMaterial({ map, color, alphaTest: .5, transparent: false, sizeAttenuation: true }));
       if (spriteTemplate) { material.map = map; material.color.set(color); }
       materials.add(material); spriteTemplate ||= material;
       const sprite = new THREE.Sprite(material);
@@ -525,7 +552,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         if (node.geometry) geometries.add(node.geometry);
         if (node.material) {
           const copy = original => {
-            const result = withEffect(original.clone()); materials.add(result);
+            const result = withEffectFor(original.clone(), entity); materials.add(result);
             if (result.color) { result.userData.baseColor = result.color.clone(); tinted.push(result); }
             for (const value of Object.values(result)) if (value?.isTexture) textures.set(value.uuid, value);
             return result;
@@ -538,6 +565,25 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const entry = { id: entity.id, assetId: entity.modelAsset, root, object, mixer, clips: loaded.animations, revision: -1, action: null, tinted, shade: -1 };
       models.set(entity.id, entry); modelList.push(entry);
     }
+    // Panels: plastic strips, glass and screens are real translucent slabs, so they can
+    // be rigid bodies that the player pushes around.
+    const panels = new Map(), panelList = [];
+    function addPanel(entity) {
+      if (panels.has(entity.id)) return;
+      const panel = entity.panel;
+      const geometry = new THREE.BoxGeometry(panel.width, panel.height, Math.max(.5, panel.thickness ?? 2));
+      geometries.add(geometry);
+      const material = withEffectFor(new THREE.MeshPhysicalMaterial({
+        color: panel.color, transparent: true, opacity: panel.opacity ?? PANEL_DEFAULTS.opacity,
+        roughness: panel.roughness ?? PANEL_DEFAULTS.roughness, metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
+        side: THREE.DoubleSide, depthWrite: false,
+      }), entity);
+      materials.add(material);
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.userData.selection = { kind: 'entity', id: entity.id };
+      scene.add(mesh); panels.set(entity.id, mesh);
+      panelList.push({ id: entity.id, mesh, shade: -1 });
+    }
     // Runtime spawns reuse the loaded model, fall back to the entity sprite, and are
     // otherwise skipped instead of failing the frame.
     const unrenderable = new Set();
@@ -546,6 +592,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // still needs a placholder to select and move them.
     const withoutArtwork = [];
     function addEntity(entity) {
+      if (entity.panel) { addPanel(entity); return; }
       if (!entity.modelAsset) { addSprite(entity); return; }
       if (modelAssets.has(entity.modelAsset)) { addModel(entity); return; }
       // In the editor an unloaded model means the project gained a model after the
@@ -557,6 +604,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
     }
     // A model and a sprite are separate objects, so switching between them (or
     // replacing one) has to drop the previous representation.
+    function forgetPanel(id) {
+      const mesh = panels.get(id);
+      if (!mesh) return;
+      mesh.removeFromParent();
+      mesh.material.dispose();
+      panels.delete(id);
+      const index = panelList.findIndex(entry => entry.id === id);
+      if (index >= 0) panelList.splice(index, 1);
+    }
     function forgetEntity(id) {
       const sprite = sprites.get(id);
       if (sprite) {
@@ -573,6 +629,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const index = modelList.indexOf(model);
         if (index >= 0) modelList.splice(index, 1);
       }
+      forgetPanel(id);
       unrenderable.delete(id);
     }
     // World bounds of what is actually drawn for an object, so the editor's
@@ -1020,6 +1077,17 @@ export async function createPreview(canvas, project, state, { editor = false } =
         }
         if (entry.action) entry.mixer.update(Math.min(.05, dt));
       }
+      for (let index = 0; index < panelList.length; index++) {
+        const entry = panelList[index];
+        const entity = entityIndex.get(entry.id);
+        if (entry.mesh.visible !== Boolean(entity)) entry.mesh.visible = Boolean(entity);
+        if (!entity) continue;
+        const sector = sectorIndex.at(entity.x, entity.y);
+        const anchor = entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0);
+        entry.mesh.position.set(entity.x, anchor + entity.panel.height / 2, entity.y);
+        if (entity.rotation) entry.mesh.quaternion.fromArray(modelOrientation(entity));
+        else entry.mesh.rotation.set(0, -entity.angle * Math.PI / 180, 0);
+      }
       for (let index = 0; index < spriteList.length; index++) {
         const record = spriteList[index], sprite = record.sprite;
         const entity = entityIndex.get(record.id);
@@ -1179,7 +1247,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // same full reload instead of silently staying a sprite forever.
       const plan = liveProjectPlan(next.map.entities, {
         hasModel: id => modelAssets.has(id),
-        drawn: id => (models.has(id) ? 'model' : sprites.has(id) ? 'sprite' : null),
+        drawn: id => (models.has(id) ? 'model' : panels.has(id) ? 'panel' : sprites.has(id) ? 'sprite' : null),
         drawnModel: id => models.get(id)?.assetId,
       });
       if (plan.needsReload) return false;

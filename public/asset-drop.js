@@ -2,6 +2,8 @@
 // and sounds because a glTF drop also carries its .bin buffer and textures, which
 // the model bundler resolves by relative path.
 const MODEL_SOURCE = /\.(glb|gltf|bbmodel)$/i;
+// A saved node is a scene object of its own, not artwork.
+const NODE_FILE = /\.node$/i;
 const IMAGE = /\.(png|jpe?g|webp)$/i;
 const SOUND = /\.(wav|ogg|mp3)$/i;
 
@@ -12,12 +14,15 @@ export function groupDroppedFiles(files) {
   const models = list.filter(file => MODEL_SOURCE.test(file.name));
   const images = list.filter(file => IMAGE.test(file.name));
   const sounds = list.filter(file => SOUND.test(file.name));
+  const nodes = list.filter(file => NODE_FILE.test(file.name));
   return {
     // Everything travels with a model drop so .bin buffers and textures resolve.
     models: models.length ? list : [],
     images: models.length ? [] : images,
     sounds: models.length ? [] : sounds,
-    ignored: list.filter(file => !MODEL_SOURCE.test(file.name) && !IMAGE.test(file.name) && !SOUND.test(file.name)),
+    nodes: models.length ? [] : nodes,
+    ignored: list.filter(file => !MODEL_SOURCE.test(file.name) && !IMAGE.test(file.name) && !SOUND.test(file.name)
+      && !NODE_FILE.test(file.name)),
   };
 }
 

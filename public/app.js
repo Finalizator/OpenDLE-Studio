@@ -39,6 +39,7 @@ import { suggestedArea } from '/shared/areas.js';
 import { captureScene, instantiateScene, sceneIsEmpty, newScene } from '/shared/scenes.js';
 import { createSceneObjectEditor } from './scene-object-editor.js';
 import { contextMenu } from './context-menu.js';
+import { applyNodeFile, parseNodeFile, planNodeFileInstall } from '/shared/node-file.js';
 import { openAssetPicker, PICTURE_KINDS, MODEL_KINDS } from './asset-picker.js';
 import { captureModelPreview } from './model-thumbnail.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
@@ -3145,6 +3146,7 @@ function ensureSceneObjectEditor() {
       scenes: () => project?.scenes || [],
       openScenes: () => openSceneIds,
       assets: () => project?.assets || [],
+      shaders: () => project?.shaders || [],
       entities: () => project?.map?.entities || [],
       editScene(id, fn, message) {
         editGame(next => {
@@ -3202,6 +3204,7 @@ function ensureSceneObjectEditor() {
         if (activeSceneId) sceneObjectEditor?.open(activeSceneId); else showTab('map');
         renderSceneObjects();
       },
+      importNode: (document, options) => importNodeDocument(document, options),
       openEvents: ownerId => openScript(ownerId),
       status: (message, isError) => status(message, isError),
     },
@@ -3328,11 +3331,21 @@ async function dropAssets(event) {
   const files = await readDroppedFiles(event.dataTransfer);
   const group = groupDroppedFiles(files);
   const section = event.target.closest?.('.asset-folder')?.dataset.filter;
+  if (group.nodes.length) return importDroppedNodes(group.nodes);
   if (group.models.length) return importModelFiles(group.models);
   if (group.images.length) return importImageFiles(group.images, IMAGE_KINDS.has(section) ? section : $('image-kind').value);
   if (group.sounds.length) return importSoundFiles(group.sounds);
   throw new Error('Drop GLB, glTF, .bbmodel, PNG/JPEG/WebP images or WAV/OGG/MP3 sounds');
 }
+/** A dropped `.node` file is a scene object: import it where the pointer is. */
+async function importDroppedNodes(files) {
+  for (const file of files) {
+    const document = parseNodeFile(await file.text());
+    const target = sceneObjectEditor?.viewPoint?.() || { x: 0, y: 0 };
+    importNodeDocument(document, target);
+  }
+}
+
 const assetDropTarget = $('assets-panel');
 assetDropTarget.addEventListener('dragover', event => {
   if (![...(event.dataTransfer?.types || [])].includes('Files')) return;
@@ -3598,6 +3611,31 @@ function eventCardMenu(id, event) {
     { label: 'Delete this rule and its sub-events', danger: true,
       run: guard(() => edit(next => removeEventBranch(next, rule.id), 'Rule deleted')) },
   ], { label: 'Rule actions' });
+}
+
+/**
+ * Installs a `.node` file's artwork and shaders, then places its nodes in the open scene.
+ * It is one edit, so the whole import is a single undo step.
+ */
+function importNodeDocument(document, options = {}) {
+  const sceneId = activeSceneId || project.scenes?.[0]?.id;
+  if (!sceneId) throw new Error('Create a scene object before importing a .node file');
+  const plan = planNodeFileInstall(document, { assets: project.assets || [], shaders: project.shaders || [] });
+  let imported = null;
+  editGame(next => {
+    next.assets ||= [];
+    next.shaders ||= [];
+    next.assets.push(...plan.addAssets);
+    next.shaders.push(...plan.addShaders);
+    const scene = (next.scenes || []).find(item => item.id === sceneId);
+    if (!scene) throw new Error('That scene object no longer exists');
+    imported = applyNodeFile(scene, document, { ...options, assetRemap: plan.assetRemap, shaderRemap: plan.shaderRemap });
+  }, `Imported ${document.nodes.length} node(s) from ${document.name}`);
+  renderSceneObjects();
+  const notes = [...(document.warnings || [])];
+  if (plan.addAssets.length) notes.push(`${plan.addAssets.length} asset(s) added`);
+  status(`Imported "${document.name}" (${document.nodes.length} node(s)${notes.length ? `; ${notes.join('; ')}` : ''})`);
+  return imported;
 }
 
 /** Picks artwork for the layout object under the pointer, sprites and models together. */

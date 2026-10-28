@@ -99,3 +99,29 @@ test('a joint that references a missing object is skipped instead of breaking th
   }, { validate: false });
   assert.doesNotThrow(() => tick(30));
 });
+
+test('the player pushes a hanging plastic strip aside', t => {
+  const { project, state, tick } = scene(t, project => {
+    const panel = { width: 30, height: 192, thickness: 2, color: '#d7e8f2', opacity: .35, roughness: .18, metalness: .05 };
+    // Hung 48 units off the floor — inside the player's height — so it can be pushed and
+    // "still hanging" is something the test can see: without the joint it falls to z=0.
+    project.map.entities.push({ id: 'strip', name: 'Strip', type: 'decoration', x: -140, y: 0, angle: 0, elevation: 48, panel,
+      physics: { body: 'dynamic', shape: 'box', width: 30, height: 192, depth: 2, radius: 15, mass: 2,
+        friction: .45, restitution: 0, sensor: false, lockRotation: false } });
+    project.map.joints = [newJoint({ type: 'spherical', a: null, b: 'strip', anchor: { x: -140, y: 0, z: 240 } })];
+  });
+  const rotationOf = () => {
+    const strip = state.entities.find(entity => entity.id === 'strip');
+    const q = strip.rotation;
+    return q ? Math.abs(q.x) + Math.abs(q.y) + Math.abs(q.z) : 0;
+  };
+  const before = rotationOf();
+  // Walk straight into the curtain.
+  for (let index = 0; index < 240; index++) stepRuntime(project, state, 1 / 60, new Set(['KeyW']), new Set());
+  const player = state.entities.find(entity => entity.type === 'player');
+  const strip = state.entities.find(entity => entity.id === 'strip');
+  assert.ok(player.x > -160, `the player walked into the strip (x=${Math.round(player.x)})`);
+  assert.ok(rotationOf() > before + .01, `the strip swung aside (rotation ${before.toFixed(3)} -> ${rotationOf().toFixed(3)})`);
+  // It stays hanging from its anchor instead of falling to the floor.
+  assert.ok(strip.z > 20, `the strip still hangs (z=${Math.round(strip.z)})`);
+});

@@ -373,7 +373,7 @@ test('bundleModel imports a .bbmodel file into a self contained GLB asset', asyn
 
 test('dropped files are routed to models, images or sounds', () => {
   const file = name => ({ name, size: 10 });
-  assert.deepEqual(groupDroppedFiles([]), { models: [], images: [], sounds: [], ignored: [] });
+  assert.deepEqual(groupDroppedFiles([]), { models: [], images: [], sounds: [], nodes: [], ignored: [] });
   const modelDrop = groupDroppedFiles([file('hero.gltf'), file('hero.bin'), file('atlas.png')]);
   assert.deepEqual(modelDrop.models.map(item => item.name), ['hero.gltf', 'hero.bin', 'atlas.png']);
   assert.deepEqual(modelDrop.images, []);
@@ -382,6 +382,10 @@ test('dropped files are routed to models, images or sounds', () => {
   assert.deepEqual(mixed.sounds.map(item => item.name), ['roar.ogg']);
   assert.deepEqual(mixed.ignored.map(item => item.name), ['notes.txt']);
   assert.equal(groupDroppedFiles([file('drone.BBMODEL')]).models.length, 1);
+  // A saved node is its own kind of drop.
+  const nodeDrop = groupDroppedFiles([file('crate.node'), file('wall.png')]);
+  assert.deepEqual(nodeDrop.nodes.map(item => item.name), ['crate.node']);
+  assert.deepEqual(nodeDrop.images.map(item => item.name), ['wall.png']);
 });
 
 test('dropped folders are read recursively with their relative paths', async () => {

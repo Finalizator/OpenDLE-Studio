@@ -9,6 +9,8 @@ import { ENTITY_TYPES } from '/shared/project.js';
 import { assetField, openAssetPicker, MODEL_KINDS, PICTURE_KINDS } from './asset-picker.js';
 import { contextMenu } from './context-menu.js';
 import { JOINT_TYPES, JOINT_LABELS, AXIS_JOINTS, newJoint, jointAnchorBetween, jointsOf } from '/shared/joints.js';
+import { PANEL_LIMITS, curtainStrips, newPanel, panelPhysics } from '/shared/panel.js';
+import { NODE_FILE_EXTENSION, exportNodeFile, nodeFileName, nodeFileText, parseNodeFile } from '/shared/node-file.js';
 import { createScene3dView } from './scene-3d-view.js';
 
 // A scene object editor laid out like Godot's scene dock and inspector: the node tree
@@ -21,7 +23,7 @@ const TYPE_GLYPHS = { scene: 'S', enemy: 'E', pickup: 'P', light: 'L', decoratio
 const TYPE_LABELS = { scene: 'Scene', enemy: 'Enemy', pickup: 'Pickup', light: 'Light', decoration: 'Decoration' };
 const GRID = 32;
 /** Godot's inspector groups; a row is only shown when the object has that data. */
-const CATEGORIES = ['Transform', 'Node', 'Visual', 'Model', 'Physics', 'Joints', 'Light', 'Interaction area', 'Script'];
+const CATEGORIES = ['Transform', 'Node', 'Visual', 'Panel', 'Model', 'Physics', 'Joints', 'Light', 'Interaction area', 'Script'];
 
 export function createSceneObjectEditor({ callbacks }) {
   const state = {
@@ -196,6 +198,8 @@ export function createSceneObjectEditor({ callbacks }) {
       select(current.id);
       contextMenu(menuEvent, [
         { label: 'Add node', run: () => addNode(null) },
+        { label: 'Add a plastic strip curtain', run: () => addCurtain() },
+        { label: 'Import a .node file\u2026', run: () => importNodeFile() },
         { label: 'Expand all', run: () => runTool('expand') },
         { label: 'Collapse all', run: () => runTool('collapse') },
         { separator: true },
@@ -722,6 +726,18 @@ export function createSceneObjectEditor({ callbacks }) {
             target.spriteAsset ? () => clear('spriteAsset', 'Sprite cleared') : null),
         });
       }
+      if (!isRoot && visible('Shader')) {
+        shown++;
+        const shaders = callbacks.shaders?.() || [];
+        propertyRow(dom.properties, {
+          label: 'Shader', value: target.shaderId ?? '',
+          editor: selectEditor([['', '(use the level shader)'], ...shaders.map(shader => [shader.id, shader.name])],
+            target.shaderId ?? '', value => value
+              ? set('shaderId', value, `Shader ${shaders.find(shader => shader.id === value)?.name || value} applied`)
+              : clear('shaderId', 'The level shader applies again')),
+          reset: target.shaderId ? () => clear('shaderId', 'Shader removed') : null,
+        });
+      }
       if (!isRoot && visible('Sprite scale')) {
         shown++;
         propertyRow(dom.properties, {
@@ -729,6 +745,43 @@ export function createSceneObjectEditor({ callbacks }) {
           editor: numberEditor(target.spriteScale ?? 1, { min: .05, max: 16, step: .05, onChange: value => set('spriteScale', value, 'Sprite scale updated') }),
           reset: target.spriteScale !== undefined ? () => clear('spriteScale', 'Sprite scale reset') : null,
         });
+      }
+    });
+
+    rows('Panel', () => {
+      if (visible('Panel')) {
+        shown++;
+        propertyRow(dom.properties, {
+          label: 'Panel', value: Boolean(target.panel),
+          editor: checkEditor(target.panel, value => value
+            ? set('panel', newPanel({}), 'Panel added')
+            : clear('panel', 'Panel removed'), 'Panel'),
+        });
+      }
+      if (target.panel) {
+        for (const [key, label, step] of [['width', 'Panel width', 1], ['height', 'Panel height', 1], ['thickness', 'Thickness', .5],
+          ['opacity', 'Opacity', .05], ['roughness', 'Roughness', .05], ['metalness', 'Metalness', .05]]) {
+          if (!visible(label)) continue;
+          shown++;
+          const limits = PANEL_LIMITS[key];
+          propertyRow(dom.properties, {
+            label, value: target.panel[key] ?? 0,
+            editor: numberEditor(target.panel[key] ?? 0, { min: limits[0], max: limits[1], step,
+              onChange: value => setPath(`panel.${key}`, value, `${label} updated`) }),
+          });
+        }
+        if (visible('Panel color')) {
+          shown++;
+          propertyRow(dom.properties, {
+            label: 'Panel color', value: target.panel.color,
+            editor: (() => {
+              const input = el('input');
+              input.type = 'color'; input.value = target.panel.color;
+              input.addEventListener('change', () => setPath('panel.color', input.value, 'Panel color updated'));
+              return input;
+            })(),
+          });
+        }
       }
     });
 
@@ -1091,10 +1144,10 @@ export function createSceneObjectEditor({ callbacks }) {
     ensure3d().then(() => { sync3d(true); render3d(); }).catch(() => {});
   }
 
-  function render3d() {
+  function render3d(dt = 0) {
     if (!view3d || dom.canvas3d?.hidden) return;
     aimViewport();
-    view3d.render();
+    view3d.render(dt);
   }
 
   /** Rebuilds the drawn scene when the data changed; a plain camera move only redraws. */
@@ -1102,10 +1155,12 @@ export function createSceneObjectEditor({ callbacks }) {
   function sync3d(force = false) {
     const current = scene();
     if (!view3d || !current) return;
-    const signature = `${current.id}\u0000${JSON.stringify(current.entities)}\u0000${JSON.stringify(current.joints || [])}`;
+    const signature = `${current.id}\u0000${JSON.stringify(current.entities)}\u0000${JSON.stringify(current.joints || [])}`
+      + `\u0000${JSON.stringify(callbacks.shaders?.() || [])}`;
     if (!force && signature === view3dSignature) return;
     view3dSignature = signature;
-    view3d.setScene(current.entities, callbacks.assets() || [], current.joints || []);
+    view3d.setScene(current.entities, callbacks.assets() || [], current.joints || [],
+      callbacks.shaders?.() || []);
     view3d.select(state.selection);
     render3d();
   }
@@ -1255,7 +1310,23 @@ export function createSceneObjectEditor({ callbacks }) {
       const point = sceneToScreen(entity);
       if (point.x < -size || point.y < -size || point.x > width + size || point.y > height + size) continue;
       const picture = artworkImage(artworkOf(entity)?.src);
-      if (picture) {
+      if (entity.panel) {
+        // Top-down a panel reads as a translucent strip as wide as the slab.
+        const panelWidth = Math.max(4, entity.panel.width * zoom);
+        const panelDepth = Math.max(3, (entity.panel.thickness || 2) * zoom);
+        const radians = (Number(entity.angle) || 0) * Math.PI / 180;
+        ctx.save();
+        ctx.translate(point.x, point.y);
+        ctx.rotate(radians);
+        ctx.globalAlpha = Math.max(.15, Math.min(1, entity.panel.opacity ?? .35));
+        ctx.fillStyle = entity.panel.color || '#d7e8f2';
+        ctx.fillRect(-panelWidth / 2, -panelDepth / 2, panelWidth, panelDepth);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = selected?.id === entity.id ? '#ffffff' : 'rgba(215,232,242,.7)';
+        ctx.lineWidth = selected?.id === entity.id ? 2 : 1;
+        ctx.strokeRect(-panelWidth / 2, -panelDepth / 2, panelWidth, panelDepth);
+        ctx.restore();
+      } else if (picture) {
         // A sprite or model preview drawn at its real world size in the top-down view.
         const art = artworkOf(entity);
         const drawnWidth = Math.max(6, art.width * zoom), drawnHeight = Math.max(6, art.height * zoom);
@@ -1395,8 +1466,10 @@ export function createSceneObjectEditor({ callbacks }) {
         const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
         if (!drag.moved && Math.hypot(dx, dy) < 3) return;
         drag.moved = true;
-        // Same sensitivity and clamp as the layout's 3D view.
-        state.fly.yaw = drag.yaw + dx * .003;
+        // Same sensitivity and clamp as the layout's 3D view. The yaw turns the other way
+        // here because map space is (x, y on the floor, z up): in Three's y-up space the
+        // camera's right is -z, which flips the sign the layout view can keep positive.
+        state.fly.yaw = drag.yaw - dx * .003;
         state.fly.pitch = Math.max(-1.48, Math.min(1.48, drag.pitch - dy * .003));
         draw();
         return;
@@ -1493,8 +1566,9 @@ export function createSceneObjectEditor({ callbacks }) {
     const lift = Number(keys.has('KeyE')) - Number(keys.has('KeyQ'));
     if (!walk && !strafe && !lift) return false;
     const forward = flyDirection();
-    // Right is the horizontal perpendicular of the view, so strafing never tilts.
-    const right = { x: -forward.y, y: forward.x, z: 0 };
+    // Screen right in map space is (forward.y, -forward.x), so strafing never tilts and
+    // D walks right on screen instead of left.
+    const right = { x: forward.y, y: -forward.x, z: 0 };
     const rightLength = Math.hypot(right.x, right.y) || 1;
     const motion = {
       x: forward.x * walk + right.x / rightLength * strafe,
@@ -1602,6 +1676,89 @@ export function createSceneObjectEditor({ callbacks }) {
       }, `Joint between ${first.name} and ${second.name}`);
       callbacks.status(`Joint added: ${first.name} ↔ ${second.name}`);
     } catch (error) { callbacks.status(error.message, true); }
+  }
+
+  /**
+   * A plastic strip curtain: one thin, translucent, rigid slab per strip, each hanging
+   * from a ball socket at its top edge, so walking into it pushes the strips aside.
+   */
+  function addCurtain(point = null) {
+    const current = scene();
+    if (!current) return;
+    const at = point || (state.view3d
+      ? { x: Math.round(state.fly.x), y: Math.round(state.fly.y) }
+      : worldToScene({ x: activeCanvas().clientWidth / 2, y: activeCanvas().clientHeight / 2 }));
+    const strips = curtainStrips({
+      x: state.snap ? Math.round(at.x / GRID) * GRID : Math.round(at.x),
+      y: state.snap ? Math.round(at.y / GRID) * GRID : Math.round(at.y),
+      width: 320, height: 192, stripWidth: 30, gap: 6,
+    });
+    if (current.entities.length + strips.length > MAX_SCENE_ENTITIES) {
+      callbacks.status(`A curtain needs ${strips.length} nodes and the scene is almost full`, true);
+      return;
+    }
+    let created = [];
+    try {
+      editScene(next => {
+        next.joints ||= [];
+        for (const strip of strips) {
+          const node = addSceneObject(next, {
+            type: 'decoration', name: strip.name, x: strip.x, y: strip.y, elevation: strip.elevation,
+            panel: strip.panel, physics: panelPhysics(strip.panel),
+          });
+          node.angle = strip.angle;
+          // Hanging from its top edge: a ball socket lets the strip swing whichever way
+          // it is pushed, which is what makes a curtain feel like a curtain.
+          next.joints.push(newJoint({
+            type: 'spherical', a: null, b: node.id,
+            anchor: { x: strip.x, y: strip.y, z: strip.elevation + strip.panel.height },
+            name: `${strip.name} hinge`,
+          }));
+          created.push(node.id);
+        }
+      }, `Plastic curtain (${strips.length} strips)`);
+      callbacks.status(`Plastic curtain added: ${strips.length} rigid strips hanging from their top edge`);
+      if (created.length) select(created[0]);
+    } catch (error) { callbacks.status(error.message, true); }
+  }
+
+  /** Downloads one node (with its group) as a `.node` file. */
+  function saveNodeFile(nodeId) {
+    const current = scene();
+    if (!current) return;
+    try {
+      const document = exportNodeFile(current, nodeId, {
+        assets: callbacks.assets() || [], shaders: callbacks.shaders?.() || [],
+      });
+      const name = nodeFileName(document.name);
+      const url = URL.createObjectURL(new Blob([nodeFileText(document)], { type: 'application/json' }));
+      const link = el('a');
+      link.href = url; link.download = name; link.click();
+      URL.revokeObjectURL(url);
+      callbacks.status(`Saved ${name}${document.warnings.length ? ` (${document.warnings.join('; ')})` : ''}`);
+    } catch (error) { callbacks.status(error.message, true); }
+  }
+
+  /** Asks for a `.node` file and imports it at the pointer, or at the view centre. */
+  function importNodeFile(point = null) {
+    const current = scene();
+    if (!current) { callbacks.status('Open a scene object to import a node into', true); return; }
+    const picker = el('input');
+    picker.type = 'file';
+    picker.accept = NODE_FILE_EXTENSION;
+    picker.addEventListener('change', () => {
+      const file = picker.files?.[0];
+      if (!file) return;
+      void file.text().then(text => {
+        const document = parseNodeFile(text);
+        const at = point || (state.view3d
+          ? { x: state.fly.x + flyDirection().x * 128, y: state.fly.y + flyDirection().y * 128 }
+          : worldToScene({ x: activeCanvas().clientWidth / 2, y: activeCanvas().clientHeight / 2 }));
+        const result = callbacks.importNode(document, { x: Math.round(at.x), y: Math.round(at.y) });
+        if (result?.ids?.length) select(result.root || result.ids[0]);
+      }).catch(error => callbacks.status(error.message, true));
+    });
+    picker.click();
   }
 
   /** Asks which node to connect this one to, the way the scene picker asks for a number. */
@@ -1829,6 +1986,16 @@ export function createSceneObjectEditor({ callbacks }) {
       { separator: true },
       { label: 'Assign sprite\u2026', run: () => pickArtworkFor(entity.id, 'sprite') },
       { label: 'Assign 3D model\u2026', run: () => pickArtworkFor(entity.id, 'model') },
+      { label: entity.panel ? 'Remove the panel' : 'Add a translucent panel', run: () => {
+        try {
+          editScene(next => {
+            const node = next.entities.find(item => item.id === entity.id);
+            if (!node) throw new Error('That object no longer exists');
+            if (node.panel) delete node.panel;
+            else node.panel = newPanel({});
+          }, entity.panel ? `Panel removed from ${entity.name}` : `Panel added to ${entity.name}`);
+        } catch (error) { callbacks.status(error.message, true); }
+      } },
       { label: 'Remove artwork', disabled: !entity.spriteAsset && !entity.modelAsset, run: () => {
         try {
           editScene(next => {
@@ -1848,6 +2015,10 @@ export function createSceneObjectEditor({ callbacks }) {
         },
       },
       { label: 'Connect to another node\u2026', run: () => connectNodePrompt(entity) },
+      { label: 'Add a plastic strip curtain', run: () => addCurtain({ x: entity.x, y: entity.y }) },
+      { separator: true },
+      { label: 'Save as a .node file', run: () => saveNodeFile(entity.id) },
+      { label: 'Import a .node file\u2026', run: () => importNodeFile({ x: entity.x, y: entity.y }) },
       { separator: true },
       { label: 'Open event sheet', run: () => callbacks.openEvents(entity.id) },
       { label: 'Move to scene root', disabled: !entity.parentId, run: () => {
@@ -1868,6 +2039,8 @@ export function createSceneObjectEditor({ callbacks }) {
     const point = dropPointAt(event);
     const viewItems = [
       { label: 'Add node here', disabled: !point, run: () => addNode(null, point) },
+      { label: 'Add a plastic strip curtain here', run: () => addCurtain(point) },
+      { label: 'Import a .node file here\u2026', run: () => importNodeFile(point) },
       { label: 'Add node at the view centre', run: () => addNode(null) },
       { separator: true },
       { label: state.view3d ? 'Switch to the 2D view' : 'Switch to the 3D view', run: () => {
@@ -2071,6 +2244,11 @@ export function createSceneObjectEditor({ callbacks }) {
     addNode: () => addNode(null),
     /** Asks which scene object to open, like the + tab button. */
     choose: () => callbacks.chooseScene(),
+    /** The scene point a drop lands on in the visible view, for import-at-pointer. */
+    viewPoint() {
+      if (state.view3d) return { x: Math.round(state.fly.x), y: Math.round(state.fly.y) };
+      return worldToScene({ x: activeCanvas().clientWidth / 2, y: activeCanvas().clientHeight / 2 });
+    },
     /** Re-render after any project change (undo, imported scene, rename elsewhere). */
     render() {
       renderAll();
@@ -2083,7 +2261,7 @@ export function createSceneObjectEditor({ callbacks }) {
       if (state.view3d) {
         // Holding WASD/QE walks the fly camera, exactly like the layout's 3D view.
         if (state.camera === 'fly' && state.keys.size) moveFly(dt);
-        render3d();
+        render3d(dt);
         return;
       }
       draw();

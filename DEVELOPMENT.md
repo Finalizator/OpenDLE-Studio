@@ -2042,6 +2042,61 @@ joints at the copied objects, duplicating a group copies the joints inside it, a
 open side is pinned to a fixed body standing exactly at the anchor, which is how a
 swinging door hangs from its frame.
 
+### Per-object shaders
+
+The project's shader list (`shared/shaders.js`, edited in **Environment**) applies to the
+level through `environment.shaderId`. An object can now carry one of its own: the
+inspector's **Shader** row in *Visual* lists the project's shaders, and the object's
+choice wins over the level's. Both renderers honour it — `public/render.js` for the game
+and the playtest, `public/scene-3d-view.js` for the editor's 3D tab — by wrapping that
+object's materials (`MeshStandardMaterial` for models, the sprite billboard, the panel
+slab) with the compiled TSL effect. Effects are compiled once per shader id and shared,
+and a per-object effect can never leak into the shared sprite template material: an
+object with a shader gets a material of its own. Validation only accepts a shader that
+exists in the project (`validateEntityShaders`), for map objects and scene objects alike.
+
+### Panels and the plastic strip curtain
+
+A panel is a flat translucent slab: `entity.panel` carries its size, colour, opacity,
+roughness and metalness (`shared/panel.js`). It is drawn as a real box with a
+`MeshPhysicalMaterial` in both renderers, so a panel is also something you can make a
+rigid body out of — and the 2D blueprint draws it as a translucent strip.
+
+**Add a plastic strip curtain** (node menu, scene root menu, or the 3D view menu at the
+pointer) builds exactly the thing in the reference photo: a row of thin translucent
+strips down to the floor, each its own node with a dynamic box collider and a
+**spherical joint at its top edge**, anchored to the world. The strips hang, the player's
+character controller pushes them aside as they walk through (the capsule applies impulses
+to dynamic bodies), and they settle back. `curtainStrips()` lays the strips out along the
+object's facing, so an angled curtain works too, and the inspector's *Panel* category
+tunes the colour, opacity, size and thickness of any strip afterwards.
+
+### Node files (.node)
+
+A node can be saved on its own and imported into another scene: **Save as a .node file**
+on the node menu writes a JSON document (`shared/node-file.js`), and *Import a .node
+file…* (node menu, scene root menu, 3D view menu, or by dropping the file on the asset
+browser) installs it at the pointer.
+
+The file is self-contained, because a node that names artwork by id would otherwise
+break the moment it left its project:
+
+| part | why |
+| --- | --- |
+| `nodes` | the node and the group under it, in coordinates relative to the group's corner |
+| `joints` | the joints inside the group, plus the ones that hang it from the world |
+| `assets` | the sprite, flat and model payloads the nodes actually reference |
+| `shaders` | the shaders an object in the group runs |
+| `events` | only the events that talk to objects inside the group; others are listed in `warnings` |
+
+Importing gives every node, joint and event a fresh id, remaps the grouping and event
+references, can rotate the group and hang it under an existing node, and leaves the
+artwork alone when the project already has the same asset. An asset id that exists with
+*different* content is imported under a new id and the copied nodes are re-pointed at it
+(`planNodeFileInstall`), so a file never silently picks up someone else's texture. The
+whole import — artwork, shaders and nodes — is one undoable edit, and a damaged file is
+refused with a reason before anything reaches the project (`validateNodeFile`).
+
 ### Context menus everywhere
 
 Every list, tile and view answers a right click through one shared menu

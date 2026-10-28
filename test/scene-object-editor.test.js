@@ -420,7 +420,9 @@ test('the 3D view flies with WASD by default and keeps the orbit camera as an op
   assert.match(editor, /function orbitFromFly\(\)/);
   // Right-drag looks around, and a right click that never moved still opens the menu.
   assert.match(editor, /kind: right \? 'look' : 'none'/);
-  assert.match(editor, /state\.fly\.yaw = drag\.yaw \+ dx \* \.003/);
+  // Map space is (x, y floor, z up), so the yaw turns the other way from the layout view.
+  assert.match(editor, /state\.fly\.yaw = drag\.yaw - dx \* \.003/);
+  assert.match(editor, /const right = \{ x: forward\.y, y: -forward\.x, z: 0 \};/);
   assert.match(editor, /drag\.kind === 'look'\) && !drag\.moved/);
   // WASD/QE walking with the layout view's four-times Shift boost and capped frame step.
   assert.match(editor, /const speed = state\.fly\.speed \* Math\.min\(dt, \.05\)/);

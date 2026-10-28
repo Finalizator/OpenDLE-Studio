@@ -15,6 +15,9 @@ import { createBrowserRenderer } from './renderer-backend.js';
 import { GLTFLoader } from '/vendor/three-addons/loaders/GLTFLoader.js';
 import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
+import { PANEL_DEFAULTS } from '/shared/panel.js';
+import { compileGLSLEffect } from './shader-effects.js';
+import { mix, output, uniform, uv } from 'three/tsl';
 
 const MODEL_LIGHTING = { fill: .9, key: 2.8, rim: .6 };
 /** Doom sprites are one pixel to the unit, so artwork with no size still draws. */
@@ -68,6 +71,41 @@ export async function createScene3dView(canvas) {
   // Sprite nodes are billboards: quads that are turned towards the camera every frame,
   // which a mesh does reliably with either renderer backend.
   const billboards = new Set();
+  // Per-object shaders, compiled once per shader id and shared by every object using it.
+  const effectTime = uniform(0);
+  const shaderEffects = new Map();
+  let shadersById = new Map();
+
+  // The key includes the source, so editing a shader recompiles instead of drawing the old one.
+  function shaderSignature(shader) {
+    return [shader.id, shader.source, JSON.stringify(shader.uniforms ?? {})].join('\u0000');
+  }
+  function effectFor(id) {
+    const shader = id ? shadersById.get(id) : null;
+    if (!shader) return null;
+    const key = shaderSignature(shader);
+    if (!shaderEffects.has(key)) {
+      let compiled = null;
+      try { compiled = compileGLSLEffect(shader); } catch { compiled = null; }
+      shaderEffects.set(key, compiled);
+    }
+    return shaderEffects.get(key);
+  }
+
+  /** Wraps a material with the object's own shader, when it has one. */
+  function withShader(material, entity) {
+    const effect = effectFor(entity?.shaderId);
+    if (!effect) return material;
+    try {
+      const wrapped = renderer.library.fromMaterial(material);
+      if (!wrapped) return material;
+      wrapped.outputNode = mix(output, effect.effect(output, uv(), effectTime), 1);
+      return wrapped;
+    } catch {
+      // A shader that cannot wrap this material must not hide the object.
+      return material;
+    }
+  }
   // Joint links: a dashed line through the anchor plus a marker where it pivots.
   const joints = new THREE.Group();
   world.add(joints);
@@ -143,12 +181,16 @@ export async function createScene3dView(canvas) {
         if (tilt.roll) object.rotation.z += Number(tilt.roll) * Math.PI / 180;
         object.traverse(node => {
           if (!node.material) return;
-          for (const material of Array.isArray(node.material) ? node.material : [node.material]) {
+          const materials = Array.isArray(node.material) ? node.material : [node.material];
+          node.material = materials.map(material => {
             // Emissive is the selection tint, so remember what to restore it to.
-            if (!material.emissive) continue;
-            material.userData.baseEmissive = material.emissive.getHex();
-            material.emissive.setHex(entity.id === selectionId ? 0x4a4230 : 0);
-          }
+            if (material.emissive) {
+              material.userData.baseEmissive = material.emissive.getHex();
+              material.emissive.setHex(entity.id === selectionId ? 0x4a4230 : 0);
+            }
+            return withShader(material, entity);
+          });
+          if (!Array.isArray(object.material) && materials.length === 1) node.material = node.material[0];
         });
         // Drop whatever stand-in the group still holds, then show the real mesh.
         for (const child of [...group.children]) {
@@ -160,14 +202,33 @@ export async function createScene3dView(canvas) {
         group.add(object);
         report();
       }).catch(error => { group.userData.error = error.message; report(); });
+    } else if (entity.panel) {
+      // A panel is drawn as the translucent slab it is, so a plastic strip curtain looks
+      // like one and a rigid strip is a body you can push.
+      const panel = entity.panel;
+      const material = withShader(new THREE.MeshPhysicalMaterial({
+        color: panel.color || PANEL_DEFAULTS.color,
+        transparent: true,
+        opacity: panel.opacity ?? PANEL_DEFAULTS.opacity,
+        roughness: panel.roughness ?? PANEL_DEFAULTS.roughness,
+        metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }), entity);
+      // Inside the Z-up group local Z is up and local Y is map depth, so the slab's height
+      // has to be its Z size; putting it on Y laid every strip flat on the floor.
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(panel.width, Math.max(.5, panel.thickness ?? 2), panel.height), material);
+      slab.position.z = panel.height / 2;
+      slab.userData.pickable = true;
+      group.add(slab);
     } else if (entity.spriteAsset) {
       const art = assetsById.get(entity.spriteAsset);
       const scale = Number(entity.spriteScale) || 1;
       const width = (art?.width || DEFAULT_SPRITE.width) * scale;
       const height = (art?.height || DEFAULT_SPRITE.height) * scale;
-      const material = new THREE.MeshBasicMaterial({
+      const material = withShader(new THREE.MeshBasicMaterial({
         map: art?.src ? spriteTexture(art) : null, color: '#ffffff', transparent: false, alphaTest: .5, side: THREE.DoubleSide,
-      });
+      }), entity);
       const quad = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
       // Doom sprites hang from their bottom edge, so the quad is raised by half a height.
       quad.position.z = height / 2;
@@ -248,9 +309,13 @@ export async function createScene3dView(canvas) {
   }
 
   /** Replaces what the viewport draws, keeping the loaded models and textures. */
-  function setScene(sceneEntities, assets, jointList = []) {
+  function setScene(sceneEntities, assets, jointList = [], shaderList = []) {
     entities = sceneEntities || [];
     assetsById = new Map((assets || []).map(asset => [asset.id, asset]));
+    const wantedShaders = new Map((shaderList || []).map(shader => [shader.id, shader]));
+    // A different shader set means the cached wrappers are stale.
+    for (const key of [...shaderEffects.keys()]) if (!wantedShaders.has(key.split('\u0000')[0])) shaderEffects.delete(key);
+    shadersById = wantedShaders;
     for (const group of groups.values()) { group.userData.disposed = true; disposeGroup(group); }
     groups.clear();
     billboards.clear();
@@ -279,8 +344,9 @@ export async function createScene3dView(canvas) {
     return true;
   }
 
-  function render() {
+  function render(dt = 0) {
     if (disposed || !resize()) return;
+    effectTime.value += Math.min(.1, Math.max(0, dt));
     // Billboards keep their height and turn towards the camera, like a Doom sprite.
     for (const quad of billboards) if (quad.parent) quad.lookAt(camera.position);
     renderer.render(scene, camera);

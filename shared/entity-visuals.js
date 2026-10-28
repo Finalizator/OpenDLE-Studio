@@ -2,6 +2,9 @@
 // renderer agree on the same rules and both stay testable without a GPU.
 
 export function entityRepresentation(entity) {
+  // A panel is a translucent slab of its own; it has no artwork to load, so switching to
+  // one from a sprite or a model is a swap like any other.
+  if (entity?.panel) return 'panel';
   return entity?.modelAsset ? 'model' : 'sprite';
 }
 

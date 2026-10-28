@@ -36,7 +36,7 @@ export function sceneOrigin(scene) {
 }
 
 /** Rewrites every string that names a captured entity, so copied events follow their objects. */
-function remapReferences(value, mapping, depth = 0) {
+export function remapReferences(value, mapping, depth = 0) {
   if (depth > 12 || value === null || typeof value !== 'object') {
     return typeof value === 'string' && mapping.has(value) ? mapping.get(value) : value;
   }
@@ -173,7 +173,8 @@ export function sceneDescendants(scene, id) {
   return sceneSubtree(scene, id).slice(1).map(entity => entity.id);
 }
 
-function sceneEntityId(scene, base) {
+/** A free id for a scene object, derived from the base it was copied from. */
+export function sceneEntityId(scene, base) {
   const used = new Set((scene.entities || []).map(entity => entity.id));
   if (used.has(base)) base = `${base}_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
   return base.slice(0, ID_LIMIT);

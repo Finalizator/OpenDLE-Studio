@@ -10,6 +10,7 @@ import { validateShaders } from './shaders.js';
 import { AREA_SHAPES } from './areas.js';
 import { MAX_SCENES, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
 import { MAX_JOINTS, validateJoint } from './joints.js';
+import { validatePanel } from './panel.js';
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
 
 export const VERSION = 1;
@@ -187,7 +188,7 @@ export function cloneProjectForEdit(project, { deepGame = false, shareActors = f
  * check still runs on save, import, export and MCP changes.
  */
 /** Shared object rules, used by map objects and by the objects inside a scene. */
-export function validateEntity(entity, { assetRef, clipRef, modelRef }) {
+export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [] }) {
   assert(ENTITY_TYPES.includes(entity.type), 'Unknown entity type');
   number(entity.x, 'Entity X');
   number(entity.y, 'Entity Y');
@@ -251,6 +252,10 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef }) {
       assert(typeof config.sensor === 'boolean' && typeof config.lockRotation === 'boolean', 'Physics flags must be boolean');
     }
   }
+  if (entity.panel !== undefined) {
+    validatePanel(entity.panel);
+    assert(entity.type !== 'player', 'The player uses the built-in capsule, not a panel');
+  }
   if (entity.light !== undefined) {
     object(entity.light, 'Object light');
     assert(colorPattern.test(entity.light.color), 'Light color must be #rrggbb');
@@ -269,6 +274,21 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef }) {
  * Joints hold two objects together, so they are checked against the objects that exist:
  * a joint to a deleted object is a broken project, not a harmless leftover.
  */
+/**
+ * An object may run a shader of its own instead of the level-wide one, so the reference
+ * has to exist; the shader validation in shared/shaders.js checks the rest.
+ */
+function validateEntityShaders(project) {
+  const known = new Set((project.shaders || []).map(shader => shader.id));
+  const check = (entity, label) => {
+    if (entity?.shaderId === undefined || entity.shaderId === null) return;
+    assert(typeof entity.shaderId === 'string' && known.has(entity.shaderId),
+      `${label} references the unknown shader ${entity.shaderId}`);
+  };
+  for (const entity of project.map?.entities || []) check(entity, `Object ${entity.id}`);
+  for (const scene of project.scenes || []) for (const entity of scene.entities || []) check(entity, `Scene object ${entity.id}`);
+}
+
 function validateLevelJoints(map, entityIds) {
   if (map.joints === undefined) return;
   array(map.joints, 'Joints', MAX_JOINTS);
@@ -503,7 +523,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   }
   for (const entity of entities) {
     unique(entity, 'Entity');
-    validateEntity(entity, { assetRef, clipRef, modelRef });
+    validateEntity(entity, { assetRef, clipRef, modelRef, assets });
   }
   assert(entities.filter(entity => entity.type === 'light' && entity.light).length <= 16, 'At most 16 dynamic point lights are supported');
   assert(entities.filter(entity => entity.physics && entity.physics.body !== 'none').length <= 256, 'At most 256 object rigid bodies are supported');
@@ -527,7 +547,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         assert(!sceneEntityIds.has(entity.id), `Duplicate ID in scene ${scene.name}: ${entity.id}`);
         sceneEntityIds.add(entity.id);
         assert(entity.type !== 'player', 'A scene cannot contain the player object');
-        validateEntity(entity, { assetRef, clipRef, modelRef });
+        validateEntity(entity, { assetRef, clipRef, modelRef, assets });
       }
       // Scene objects can be grouped like nodes; the parent must exist in the same scene
       // and the grouping must stay a tree.
@@ -631,6 +651,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   validateEventStructure(project, assert);
   const entityIds = new Set(entities.map(entity => entity.id));
   validateLevelJoints(project.map, entityIds);
+  validateEntityShaders(project);
   validateHUD(project.hud, { unique, assets, variables: project.variables, assert });
   if (project.gameMenus !== undefined) {
     object(project.gameMenus, 'Game menus');
