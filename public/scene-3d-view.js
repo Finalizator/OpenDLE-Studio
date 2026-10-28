@@ -129,21 +129,26 @@ export async function createScene3dView(canvas) {
     const effect = effectFor(entity?.shaderId);
     const color = panel.color || PANEL_DEFAULTS.color;
     const opacity = panel.opacity ?? PANEL_DEFAULTS.opacity;
-    if (effect?.usesScreen) {
-      const material = new THREE.MeshBasicNodeMaterial({ transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false });
-      const tint = new THREE.Color(color);
-      material.colorNode = effect.effect(vec4(tint.r, tint.g, tint.b, opacity), uv(), effectTime, screenUV, effectResolution);
-      screenMaterials.add(material);
-      return material;
-    }
-    return withShader(new THREE.MeshPhysicalMaterial({
+    const material = new THREE.MeshPhysicalMaterial({
       color, transparent: true, opacity,
       roughness: panel.roughness ?? PANEL_DEFAULTS.roughness, metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
       emissive: new THREE.Color(color).multiplyScalar(.18),
       clearcoat: .7, clearcoatRoughness: .18, reflectivity: .5,
       side: THREE.DoubleSide, depthWrite: false,
-    }), entity);
+    });
+    // The effect only replaces the panel's *albedo*, never its output: the lighting model
+    // still writes the fragment, which is what keeps a strip visible no matter what the
+    // shader does. Swapping the output node instead left the draw with no fragment output.
+    if (effect?.usesScreen) {
+      const tint = new THREE.Color(color);
+      const shaded = effect.effect(vec4(tint.r, tint.g, tint.b, opacity), uv(), effectTime, screenUV, effectResolution);
+      material.colorNode = shaded.rgb;
+      screenMaterials.add(material);
+      return material;
+    }
+    return withShader(material, entity);
   }
+
 
   // The selected node is framed by a box, so a translucent panel or an unlit sprite still
   // says which node is selected when a tint alone cannot be seen.
