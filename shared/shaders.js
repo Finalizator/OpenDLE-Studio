@@ -50,7 +50,10 @@ export const shadertoyTemplate = `void mainImage(out vec4 fragColor, in vec2 fra
 export function curtainShaderId(project) {
   project.shaders ||= [];
   const existing = project.shaders.find(shader => shader.name === CURTAIN_SHADER_NAME);
-  if (existing) return existing.id;
+  // The built-in is refreshed rather than reused as-is: a project that was created with
+  // an older preset would otherwise keep that older look forever, because the shader is
+  // stored in the project and every edit here would silently do nothing.
+  if (existing) { existing.source = curtainShaderTemplate; existing.uniforms ||= {}; return existing.id; }
   const id = 'plastic_curtain';
   if (project.shaders.some(shader => shader.id === id)) return project.shaders[0]?.id || '';
   project.shaders.push({ id, name: CURTAIN_SHADER_NAME, language: 'glsl', source: curtainShaderTemplate, uniforms: {} });
