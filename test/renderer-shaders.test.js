@@ -5,8 +5,8 @@ import { readFileSync } from 'node:fs';
 import { shaderTemplate, validateShaders } from '../shared/shaders.js';
 import { compileGLSLEffect } from '../public/shader-effects.js';
 import { selectRendererBackend, createBrowserRenderer } from '../public/renderer-backend.js';
-import { vec4, vec2, float } from 'three/tsl';
-import { parseShaderSource } from '../shared/shader-language.js';
+import { vec4, vec2, float, uniform } from 'three/tsl';
+import { isShadertoySource, parseShaderSource } from '../shared/shader-language.js';
 
 const shader = (overrides = {}) => ({ id: 'pulse', name: 'Pulse', language: 'glsl', source: shaderTemplate, uniforms: { strength: 1 }, ...overrides });
 
@@ -40,23 +40,27 @@ test('portable GLSL reports unsupported syntax rather than interpreting arbitrar
     'return color.constructor;',
     'return alert(time);',
     'return vec4("javascript");',
-    'for (int i=0; i<2; i++) {} return color;',
+    'for (int i=0; i<2; i++) { return color; } return color; return color;',
+    'while (true) { } return color;',
     'return color; return color;',
     'return color.rgb.__proto__;',
     'return missing;',
   ];
   for (const body of bodies) assert.throws(() => compileGLSLEffect(shader({ source: `vec4 effect(vec4 color, vec2 uv, float time) { ${body} }` })), undefined, body);
-  assert.throws(() => compileGLSLEffect(shader({ source: 'vec4 effect(vec4 x, vec2 uv, float time) { return x; }' })), /Expected/);
+  // The entry point keeps its signature, so a shader cannot quietly change what it is fed.
+  assert.throws(() => compileGLSLEffect(shader({ source: 'vec4 effect(vec4 color) { return color; }' })), /effect expects \(vec4 color, vec2 uv, float time\)/);
+  assert.ok(compileGLSLEffect(shader({ source: 'vec4 effect(vec4 paint, vec2 st, float clock) { return vec4(paint.rgb * st.x * clock, paint.a); }' })));
   assert.throws(() => compileGLSLEffect(shader({ source: `uniform float x;\n${shaderTemplate}` })), /uniforms object/);
   assert.throws(() => compileGLSLEffect(shader({ uniforms: { sin: 1 } })), /reserved/);
 });
 
 test('Save/MCP shader validation parses source without browser or Three dependencies', () => {
   const invalid = [
-    'for (int i=0; i<2; i++) {} return color;',
     'while (true) {} return color;',
-    'if (time > 0.0) { return color; } return color;',
+    'for (;;) {} return color;',
+    'for (int i = 0; i < 4; i += 1) {} return uv;',
     'return texture2D(image, uv);',
+    'return texture(iChannel9, uv);',
     'return color.rgb;',
     'return color + uv;',
     'return vec4(uv.z);',
@@ -76,9 +80,47 @@ test('Save/MCP shader validation parses source without browser or Three dependen
     assert.ok(errors.some(error => error.includes('GLSL:')), body);
     assert.throws(() => compileGLSLEffect(shader({ source })), undefined, body);
   }
-  assert.match(validateShaders({ shaders: [shader({ source: 'vec4 effect(vec4 color, vec2 uv, float time) { for (;;) {} return color; }' })] }).join(), /Unsupported GLSL statement for/);
+  assert.match(validateShaders({ shaders: [shader({ source: 'vec4 effect(vec4 color, vec2 uv, float time) { for (;;) {} return color; }' })] }).join(), /A for loop must declare its counter/);
+  assert.match(validateShaders({ shaders: [shader({ source: 'vec4 effect(vec4 color, vec2 uv, float time) { while (true) {} return color; }' })] }).join(), /Unsupported GLSL statement while/);
   assert.throws(() => parseShaderSource('/*'), /Unterminated/);
-  assert.throws(() => parseShaderSource(`${shaderTemplate} arbitrary`, { strength: 1 }), /extra GLSL/);
+  assert.throws(() => parseShaderSource(`${shaderTemplate} arbitrary`, { strength: 1 }), /Unsupported GLSL type arbitrary/);
+});
+
+test('Shadertoy shaders run as effects: mainImage, uniforms, control flow and channels', () => {
+  const shadertoy = `float wave(float x) { return 0.5 + 0.5 * sin(x * 6.2831853); }
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec2 p = fragCoord / iResolution.xy;
+  vec3 col = vec3(0.0);
+  for (int i = 0; i < 4; i++) {
+    if (i == 2) { continue; }
+    col += texture(iChannel0, p + vec2(float(i) * 0.01)).rgb * wave(p.x + iTime);
+  }
+  fragColor = vec4(col, 1.0);
+}`;
+  assert.equal(isShadertoySource(shadertoy), true);
+  const parsed = parseShaderSource(shadertoy, {});
+  assert.deepEqual(parsed.functions.map(fn => fn.name), ['wave', 'effect']);
+  assert.ok(parsed.functions.find(fn => fn.name === 'effect').params.every(param => param.type));
+  const compiled = compileGLSLEffect(shader({ source: shadertoy, uniforms: {} }));
+  // Without a background texture the sampler compiles to black, so nothing is marked
+  // as needing the extra pass.
+  assert.equal(compiled.usesScreen, false);
+  assert.equal(compileGLSLEffect(shader({ source: shadertoy, uniforms: {} }), { screen: uniform(0) }).usesScreen, true);
+  assert.ok(compiled.effect(vec4(1), vec2(0), float(0)).isNode);
+  // A shader that samples nothing costs no extra pass.
+  assert.equal(compileGLSLEffect(shader({ source: 'void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(0.5); }' })).usesScreen, false);
+  // Shadertoy's entry point is rewritten, so a mangled one is reported clearly.
+  assert.throws(() => parseShaderSource('void mainImage(out vec4 c, in vec2 uv) { c = vec4(1.0)'), /Unterminated Shadertoy mainImage body/);
+});
+
+test('effects keep control flow inside the sandbox', () => {
+  const body = 'vec4 effect(vec4 color, vec2 uv, float time) { %s }';
+  assert.match(validateShaders({ shaders: [shader({ source: body.replace('%s', 'while (time > 0.0) {} return color;') })] }).join(), /Unsupported GLSL statement while/);
+  assert.match(validateShaders({ shaders: [shader({ source: body.replace('%s', '#define X 1.0 return color;') })] }).join(), /preprocessor/);
+  assert.match(validateShaders({ shaders: [shader({ source: body.replace('%s', 'for (int i = 0; i < 2; i++) { return color; return color; } return color;') })] }).join(), /after return/);
+  // A bounded loop with a counter and a helper function is allowed.
+  const ok = body.replace('%s', 'float total = 0.0; for (int i = 0; i < 3; i++) { total += float(i); } return vec4(color.rgb * total, color.a);');
+  assert.deepEqual(validateShaders({ shaders: [shader({ source: ok, uniforms: {} })] }), []);
 });
 
 test('portable GLSL supports typed locals, const, reassignment and common math intrinsics', () => {

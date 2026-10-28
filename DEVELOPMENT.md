@@ -2065,6 +2065,34 @@ and a per-object effect can never leak into the shared sprite template material:
 object with a shader gets a material of its own. Validation only accepts a shader that
 exists in the project (`validateEntityShaders`), for map objects and scene objects alike.
 
+### Refraction and Shadertoy effects
+
+A translucent panel used to be *see-through* and nothing more: the level showed through it
+undistorted. Effects can now read what is actually drawn behind them. When any visible
+object's shader samples the screen, the renderer first draws the sky and the world into a
+render target with those objects hidden, then draws the frame with the target available as
+`iChannel0` (`screenUv` is the fragment's own place on the viewport, so an effect can offset
+where it reads from). That extra pass only happens while such an object is on screen —
+`needsScreenPass()` decides per frame, and the editor viewport reports `dataset.screenGroups`
+and `dataset.screenPass` so a test can see the decision.
+
+Effects can be written in **Shadertoy's shape** as well as the engine's own:
+
+| Shadertoy | here |
+| --- | --- |
+| `void mainImage(out vec4 fragColor, in vec2 fragCoord)` | rewritten into the `effect` entry point (`shadertoySource`) |
+| `fragCoord` | the pixel on the viewport: `screenUv * iResolution.xy` |
+| `iTime`, `iResolution`, `iMouse`, `iFrame` | live values; `iMouse` is zero and `iFrame` counts at 60 Hz |
+| `iChannel0` | what the renderer drew behind the object; `iChannel1`–`3` sample black |
+| `if`/`else`, bounded `for`, `break`/`continue`/`return`, helper functions, `mat2`–`mat4` | compiled to TSL `If`/`Loop`, one `Fn` per helper |
+| `texture(iChannel0, uv)` | the same sample as `sampleScreen(uv)` |
+
+A shader cannot escape the sandbox: preprocessor directives, `while`/`do` loops, arrays,
+structs and any resource other than those channels are refused with a message, and the same
+parse runs at save time so a broken effect is reported in the editor rather than on the GPU.
+**Add a Shadertoy effect** in *Environment* starts one off, and a Shadertoy shader can simply
+be pasted into the source box and applied.
+
 ### Panels and the plastic strip curtain
 
 A panel is a flat translucent slab: `entity.panel` carries its size, colour, opacity,
@@ -2075,7 +2103,9 @@ rigid body out of — and the 2D blueprint draws it as a translucent strip.
 **Add a plastic strip curtain** (node menu, scene root menu, or the 3D view menu at the
 pointer) builds exactly the thing in the reference photo: a row of thin translucent
 strips down to the floor, each its own node with a dynamic box collider and a
-**spherical joint at its top edge**, anchored to the world. The strips hang, the player's
+**spherical joint at its top edge**, anchored to the world. The strips wear the project's
+**Glass (Shadertoy)** effect — created by the action on first use — so they bend the light
+that crosses them instead of merely being transparent. They hang, the player's
 character controller pushes them aside as they walk through (the capsule applies impulses
 to dynamic bodies), and they settle back. `curtainStrips()` lays the strips out along the
 object's facing, so an angled curtain works too, and the inspector's *Panel* category

@@ -17,7 +17,7 @@ import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
 import { compileGLSLEffect } from './shader-effects.js';
-import { mix, output, uniform, uv } from 'three/tsl';
+import { mix, output, screenUV, uniform, uv } from 'three/tsl';
 
 const MODEL_LIGHTING = { fill: .9, key: 2.8, rim: .6 };
 /** Doom sprites are one pixel to the unit, so artwork with no size still draws. */
@@ -75,6 +75,16 @@ export async function createScene3dView(canvas) {
   const effectTime = uniform(0);
   const shaderEffects = new Map();
   let shadersById = new Map();
+  // What is drawn behind an effect that samples the screen: a plastic strip or a pane of
+  // glass refracts what is behind it instead of only being see-through.
+  const screenTarget = new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true });
+  const screenSize = new THREE.Vector2();
+  // `iResolution` for Shadertoy effects: one uniform shared by every compiled effect.
+  const effectResolution = uniform(new THREE.Vector2(1280, 720));
+  // Groups whose material samples the screen; they sit out the background pass.
+  const screenGroups = new Set();
+  // `fromMaterial` may hand back a fresh material, so the samplers are tracked here.
+  const screenMaterials = new WeakSet();
 
   // The key includes the source, so editing a shader recompiles instead of drawing the old one.
   function shaderSignature(shader) {
@@ -86,7 +96,7 @@ export async function createScene3dView(canvas) {
     const key = shaderSignature(shader);
     if (!shaderEffects.has(key)) {
       let compiled = null;
-      try { compiled = compileGLSLEffect(shader); } catch { compiled = null; }
+      try { compiled = compileGLSLEffect(shader, { screen: screenTarget.texture, resolution: effectResolution }); } catch { compiled = null; }
       shaderEffects.set(key, compiled);
     }
     return shaderEffects.get(key);
@@ -99,7 +109,8 @@ export async function createScene3dView(canvas) {
     try {
       const wrapped = renderer.library.fromMaterial(material);
       if (!wrapped) return material;
-      wrapped.outputNode = mix(output, effect.effect(output, uv(), effectTime), 1);
+      wrapped.outputNode = mix(output, effect.effect(output, uv(), effectTime, screenUV), 1);
+      if (effect.usesScreen) screenMaterials.add(wrapped);
       return wrapped;
     } catch {
       // A shader that cannot wrap this material must not hide the object.
@@ -191,6 +202,7 @@ export async function createScene3dView(canvas) {
             return withShader(material, entity);
           });
           if (!Array.isArray(object.material) && materials.length === 1) node.material = node.material[0];
+          if (materials.some(material => screenMaterials.has(material))) screenGroups.add(group);
         });
         // Drop whatever stand-in the group still holds, then show the real mesh.
         for (const child of [...group.children]) {
@@ -220,6 +232,7 @@ export async function createScene3dView(canvas) {
       const slab = new THREE.Mesh(new THREE.BoxGeometry(panel.width, Math.max(.5, panel.thickness ?? 2), panel.height), material);
       slab.position.z = panel.height / 2;
       slab.userData.pickable = true;
+      if (screenMaterials.has(material)) screenGroups.add(group);
       group.add(slab);
     } else if (entity.spriteAsset) {
       const art = assetsById.get(entity.spriteAsset);
@@ -235,6 +248,7 @@ export async function createScene3dView(canvas) {
       quad.userData.pickable = true;
       quad.userData.billboard = true;
       billboards.add(quad);
+      if (screenMaterials.has(material)) screenGroups.add(group);
       group.add(quad);
     } else {
       const height = nodeHeight(entity);
@@ -316,6 +330,7 @@ export async function createScene3dView(canvas) {
     // A different shader set means the cached wrappers are stale.
     for (const key of [...shaderEffects.keys()]) if (!wantedShaders.has(key.split('\u0000')[0])) shaderEffects.delete(key);
     shadersById = wantedShaders;
+    screenGroups.clear();
     for (const group of groups.values()) { group.userData.disposed = true; disposeGroup(group); }
     groups.clear();
     billboards.clear();
@@ -341,7 +356,18 @@ export async function createScene3dView(canvas) {
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
     }
+    screenSize.set(Math.round(width * ratio), Math.round(height * ratio));
     return true;
+  }
+
+  /** True while a group whose material reads the screen is actually on screen. */
+  function needsScreenPass() {
+    for (const group of screenGroups) {
+      let shown = group.visible;
+      for (let node = group.parent; node && shown; node = node.parent) shown = node.visible;
+      if (shown) return true;
+    }
+    return false;
   }
 
   function render(dt = 0) {
@@ -349,6 +375,20 @@ export async function createScene3dView(canvas) {
     effectTime.value += Math.min(.1, Math.max(0, dt));
     // Billboards keep their height and turn towards the camera, like a Doom sprite.
     for (const quad of billboards) if (quad.parent) quad.lookAt(camera.position);
+    effectResolution.value.set(screenSize.x, screenSize.y);
+    canvas.dataset.screenGroups = String(screenGroups.size);
+    canvas.dataset.screenPass = String(needsScreenPass());
+    // What is behind a refractive object has to be drawn before the object itself, so
+    // the screen-sampling panels are drawn into a target with themselves hidden.
+    if (needsScreenPass()) {
+      if (screenTarget.width !== screenSize.x || screenTarget.height !== screenSize.y) screenTarget.setSize(screenSize.x, screenSize.y);
+      const hidden = [];
+      for (const group of screenGroups) if (group.visible) { hidden.push(group); group.visible = false; }
+      renderer.setRenderTarget(screenTarget);
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null);
+      for (const object of hidden) object.visible = true;
+    }
     renderer.render(scene, camera);
   }
 
@@ -425,6 +465,8 @@ export async function createScene3dView(canvas) {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    screenGroups.clear();
+    screenTarget.dispose();
     for (const group of groups.values()) { group.userData.disposed = true; disposeGroup(group); }
     groups.clear();
     billboards.clear();

@@ -9,7 +9,7 @@ import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.j
 import { createSceneEditor } from './scene-editor.js';
 import { requestMouseLock } from './pointer-lock.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
-import { shaderTemplate } from '/shared/shaders.js';
+import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
 import { recoverProject } from './project-recovery.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
   removeEventBranch, setEventParent, eventScope } from '/shared/events.js';
@@ -1609,7 +1609,12 @@ function renderEnvironment() {
     const id = newId('shader');
     next.shaders.push({ id, name: 'World effect', language: 'glsl', source: shaderTemplate, uniforms: { strength: 1 } });
     next.environment.shaderId ||= id;
-  })), make('p', 'Effect signature: vec4 effect(vec4 color, vec2 uv, float time). Uniform names are numeric parameters declared by the engine, not source declarations. Set uniforms and toggle the effect with visual-script shader commands. This portable GLSL subset is not an unrestricted vertex/fragment pipeline.', 'muted'));
+  })), button('Add a Shadertoy effect', () => edit(next => {
+    next.shaders ||= [];
+    const id = newId('shader');
+    next.shaders.push({ id, name: 'Shadertoy effect', language: 'glsl', source: shadertoyTemplate, uniforms: {} });
+    next.environment.shaderId ||= id;
+  })), make('p', 'Effect signature: vec4 effect(vec4 color, vec2 uv, float time). Shadertoy shaders can be pasted as they are: mainImage, iTime, iResolution, iMouse, if/else, bounded for loops and helper functions all compile, and iChannel0 is what the renderer drew behind the object, so an effect can refract the level instead of only being transparent. Uniform names are numeric parameters declared by the engine, not source declarations. This portable GLSL subset is not an unrestricted vertex/fragment pipeline.', 'muted'));
   for (const key of ['sky', 'floor']) field(parent, key === 'sky' ? 'Sky color' : 'Floor color',
     input(project.environment[key], 'color', value => edit(next => { next.environment[key] = value; })));
   field(parent, 'Sky panorama', assetSelect(project.environment.skyAsset, value => edit(next => {
@@ -3154,7 +3159,9 @@ function ensureSceneObjectEditor() {
         editGame(next => {
           const scene = (next.scenes || []).find(item => item.id === id);
           if (!scene) throw new Error('That scene object no longer exists');
-          fn(scene);
+          // The scene first, then the whole project, so a scene edit can also add the
+          // shader or asset its nodes need.
+          fn(scene, next);
           if (scene.id === activeSceneId && scene.name !== undefined) {
             const tab = document.querySelector(`.scene-tab[data-scene-id="${scene.id}"]`);
             if (tab) tab.querySelector('.scene-tab-name').textContent = scene.name;

@@ -10,6 +10,7 @@ import { assetField, openAssetPicker, MODEL_KINDS, PICTURE_KINDS } from './asset
 import { contextMenu } from './context-menu.js';
 import { JOINT_TYPES, JOINT_LABELS, AXIS_JOINTS, newJoint, jointAnchorBetween, jointsOf } from '/shared/joints.js';
 import { PANEL_LIMITS, curtainStrips, newPanel, panelPhysics } from '/shared/panel.js';
+import { curtainShaderId } from '/shared/shaders.js';
 import { NODE_FILE_EXTENSION, exportNodeFile, nodeFileName, nodeFileText, parseNodeFile } from '/shared/node-file.js';
 import { createScene3dView } from './scene-3d-view.js';
 
@@ -1716,13 +1717,17 @@ export function createSceneObjectEditor({ callbacks }) {
     }
     let created = [];
     try {
-      editScene(next => {
+      editScene((next, project) => {
         next.joints ||= [];
+        // The strips wear the project's plastic shader, which refracts the level behind
+        // them, so a curtain looks like plastic instead of a pane of tinted glass.
+        const shaderId = curtainShaderId(project);
         for (const strip of strips) {
           const node = addSceneObject(next, {
             type: 'decoration', name: strip.name, x: strip.x, y: strip.y, elevation: strip.elevation,
             panel: strip.panel, physics: panelPhysics(strip.panel),
           });
+          node.shaderId = shaderId;
           node.angle = strip.angle;
           // Hanging from its top edge: a ball socket lets the strip swing whichever way
           // it is pushed, which is what makes a curtain feel like a curtain.
@@ -1734,7 +1739,7 @@ export function createSceneObjectEditor({ callbacks }) {
           created.push(node.id);
         }
       }, `Plastic curtain (${strips.length} strips)`);
-      callbacks.status(`Plastic curtain added: ${strips.length} rigid strips hanging from their top edge`);
+      callbacks.status(`Plastic curtain added: ${strips.length} rigid strips hanging from their top edge, refracting what is behind them`);
       if (created.length) select(created[0]);
     } catch (error) { callbacks.status(error.message, true); }
   }

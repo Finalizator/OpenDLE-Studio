@@ -7,6 +7,50 @@ export const shaderTemplate = `vec4 effect(vec4 color, vec2 uv, float time) {
   return vec4(tint, color.a);
 }`;
 
+// A plastic strip curtain is not a window: the plastic bends the light that crosses it.
+// This is written the way Shadertoy shaders are — `mainImage`, `iTime`, `iResolution`,
+// `iChannel0` — so any Shadertoy effect can be pasted straight over it. `iChannel0` is
+// what the renderer drew behind the panel, so sampling it refracts the level instead of
+// only being see-through.
+export const CURTAIN_SHADER_NAME = 'Glass (Shadertoy)';
+export const curtainShaderTemplate = `// Glass: refracts what is behind the panel, tints it and catches a rim highlight.
+// Shadertoy syntax — iTime, iResolution, iChannel0 and helper functions all work here.
+float bend(float y, float t) {
+  // The plastic bows along its length, so the picture behind it wobbles as it swings.
+  return 0.45 + 0.55 * (0.5 + 0.5 * sin(y * 3.0 - t * 1.4));
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec2 view = fragCoord / iResolution.xy;
+  // The effect's 'uv' input is this panel's own coordinate: 0..1 across it.
+  vec2 centred = uv - vec2(0.5, 0.5);
+  vec2 warp = centred * 0.045 * bend(uv.y, iTime);
+  vec3 behind = texture(iChannel0, view + warp).rgb;
+  float rim = smoothstep(0.30, 0.5, abs(centred.x));
+  float sheen = 0.05 * (1.0 - uv.y);
+  vec3 glassy = mix(behind * 0.92, vec3(0.82, 0.92, 1.0), 0.16) + rim * 0.10 + sheen;
+  fragColor = vec4(glassy, 1.0);
+}`;
+
+// A starting point for a pasted Shadertoy shader: mainImage, iResolution, iTime and
+// iChannel0 (what is drawn behind the object) all work here.
+export const shadertoyTemplate = `void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec2 uv = fragCoord / iResolution.xy;
+  vec3 behind = texture(iChannel0, uv).rgb;
+  fragColor = vec4(behind * 0.9 + 0.1 * vec3(uv.y), 1.0);
+}`;
+
+/** The project's glass shader, created the first time a curtain is added. */
+export function curtainShaderId(project) {
+  project.shaders ||= [];
+  const existing = project.shaders.find(shader => shader.name === CURTAIN_SHADER_NAME);
+  if (existing) return existing.id;
+  const id = 'plastic_curtain';
+  if (project.shaders.some(shader => shader.id === id)) return project.shaders[0]?.id || '';
+  project.shaders.push({ id, name: CURTAIN_SHADER_NAME, language: 'glsl', source: curtainShaderTemplate, uniforms: {} });
+  return id;
+}
+
 export function validateShaders(project) {
   const errors = [], shaders = project.shaders ?? [];
   if (!Array.isArray(shaders)) return ['shaders must be an array'];

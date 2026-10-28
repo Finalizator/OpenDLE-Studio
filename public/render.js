@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { uniform, vec2, vec3, vec4, materialColor, positionWorld, positionGeometry, output, uv, texture, sin, cos, tan, atan, cross, normalize, length, clamp, mix } from 'three/tsl';
+import { uniform, vec2, vec3, vec4, materialColor, positionWorld, positionGeometry, output, uv, screenUV, texture, sin, cos, tan, atan, cross, normalize, length, clamp, mix } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
@@ -72,6 +72,18 @@ export async function createPreview(canvas, project, state, { editor = false } =
   }));
   const effectTime = uniform(0), effectEnabled = uniform(1);
   let shaderEffect = null;
+  // Everything drawn behind an effect that samples the screen, so a plastic strip or a
+  // pane of glass refracts the level instead of merely being see-through. It only costs
+  // a second scene pass while such an object is on screen.
+  const screenTarget = new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true });
+  const screenSize = new THREE.Vector2();
+  // `iResolution` for Shadertoy effects: one uniform shared by every compiled effect.
+  const effectResolution = uniform(new THREE.Vector2(1280, 720));
+  const screenObjects = new Set();
+  function needsScreenPass() {
+    for (const object of screenObjects) if (object.visible) return true;
+    return false;
+  }
   // Objects can carry their own shader; compile each one once and reuse it. The key holds
   // the source too, so editing a shader rebuilds its effect instead of drawing a stale one.
   const entityEffects = new Map();
@@ -82,7 +94,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     const key = [shader.id, shader.source, JSON.stringify(shader.uniforms ?? {})].join('\u0000');
     if (!entityEffects.has(key)) {
       let compiled = null;
-      try { compiled = compileGLSLEffect(shader); } catch { compiled = null; }
+      try { compiled = compileGLSLEffect(shader, { screen: screenTarget.texture, resolution: effectResolution }); } catch { compiled = null; }
       entityEffects.set(key, compiled);
     }
     return entityEffects.get(key);
@@ -90,8 +102,17 @@ export async function createPreview(canvas, project, state, { editor = false } =
   function effectMaterial(material, effect) {
     const result = renderer.library.fromMaterial(material);
     if (!result) throw new Error(`Shader effects do not support material ${material.type}`);
-    result.outputNode = mix(output, effect.effect(output, uv(), effectTime), effectEnabled);
+    result.outputNode = mix(output, effect.effect(output, uv(), effectTime, screenUV), effectEnabled);
+    if (effect.usesScreen) screenMaterials.add(result);
     return result;
+  }
+  // `fromMaterial` may hand back a fresh material, so the ones that read the screen are
+  // remembered here rather than by a flag on the material they came from.
+  const screenMaterials = new WeakSet();
+  /** Remembers an object whose material reads the screen, so the pass is only paid for then. */
+  function trackScreen(object, material) {
+    if (screenMaterials.has(material)) screenObjects.add(object); else screenObjects.delete(object);
+    return object;
   }
   function withEffect(material) {
     if (!shaderEffect) return material;
@@ -126,6 +147,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     mixers.forEach(mixer => mixer.stopAllAction());
     scene.traverse(object => { if (object.isSkinnedMesh) object.skeleton.dispose(); });
     environmentTarget?.dispose();
+    screenTarget.dispose();
     const images = new Set();
     for (const texture of textures.values()) { images.add(texture.image); texture.dispose(); }
     for (const image of images) image?.close?.();
@@ -138,7 +160,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     if (shaderErrors.length) throw new Error(shaderErrors.join('; '));
     const selectedShader = project.shaders?.find(shader => shader.id === project.environment.shaderId);
     if (selectedShader) {
-      try { shaderEffect = compileGLSLEffect(selectedShader); }
+      try { shaderEffect = compileGLSLEffect(selectedShader, { screen: screenTarget.texture, resolution: effectResolution }); }
       catch (error) { canvas.dataset.shaderError = error.message; throw new Error(`Shader ${selectedShader.name}: ${error.message}`); }
     }
     canvas.dataset.shaderId = selectedShader?.id || '';
@@ -538,6 +560,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       materials.add(material); spriteTemplate ||= material;
       const sprite = new THREE.Sprite(material);
       sprite.userData.selection = { kind: 'entity', id: entity.id };
+      trackScreen(sprite, material);
       scene.add(sprite); sprites.set(entity.id, sprite);
       spriteList.push({ id: entity.id, sprite, frame: undefined, flip: false, scale: 0, red: 0, green: 0, blue: 0 });
     }
@@ -546,6 +569,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       if (!loaded) throw new Error(`Model ${entity.modelAsset} was not loaded`);
       const object = cloneModel(loaded.scene), root = new THREE.Group(); root.add(object); scene.add(root);
       root.userData.selection = { kind: 'entity', id: entity.id };
+      root.userData.samplesScreen = false;
       object.scale.setScalar(entity.modelScale ?? 32);
       const tinted = [];
       object.traverse(node => {
@@ -553,6 +577,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         if (node.material) {
           const copy = original => {
             const result = withEffectFor(original.clone(), entity); materials.add(result);
+            if (screenMaterials.has(result)) root.userData.samplesScreen = true;
             if (result.color) { result.userData.baseColor = result.color.clone(); tinted.push(result); }
             for (const value of Object.values(result)) if (value?.isTexture) textures.set(value.uuid, value);
             return result;
@@ -562,6 +587,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       });
       const mixer = new THREE.AnimationMixer(object); mixers.add(mixer);
       mixer.addEventListener('finished', () => state.animationFinished.add(entity.id));
+      if (root.userData.samplesScreen) screenObjects.add(root);
       const entry = { id: entity.id, assetId: entity.modelAsset, root, object, mixer, clips: loaded.animations, revision: -1, action: null, tinted, shade: -1 };
       models.set(entity.id, entry); modelList.push(entry);
     }
@@ -581,6 +607,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       materials.add(material);
       const mesh = new THREE.Mesh(geometry, material);
       mesh.userData.selection = { kind: 'entity', id: entity.id };
+      trackScreen(mesh, material);
       scene.add(mesh); panels.set(entity.id, mesh);
       panelList.push({ id: entity.id, mesh, shade: -1 });
     }
@@ -1175,12 +1202,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const drawStarted = clock();
       renderCameraTextures(state);
       applySky(state);
-      renderer.autoClear = true;
-      renderer.setClearColor(clearColor(project.environment.sky));
-      if (backgroundScene.userData.skybox) {
-        backgroundScene.userData.skybox.position.copy(camera.position);
-        renderer.render(backgroundScene, camera);
-      } else {
+      if (backgroundScene.userData.skybox) backgroundScene.userData.skybox.position.copy(camera.position);
+      else {
         const panorama = backgroundScene.userData.panorama;
         if (panorama) {
           const view = skyView({ editor, direction: camera.getWorldDirection(cameraDirection), player: state.player });
@@ -1189,12 +1212,32 @@ export async function createPreview(canvas, project, state, { editor = false } =
           panorama.userData.panoramaUniforms.aspect.value = camera.aspect;
           panorama.userData.panoramaUniforms.fieldOfView.value = Math.tan(camera.fov * Math.PI / 360);
         }
-        renderer.render(backgroundScene, backgroundCamera);
       }
-      renderer.autoClear = false;
-      // Preserve the rendered sky; only opaque world surfaces write depth/color.
-      const background = scene.background; scene.background = null;
-      renderer.clearDepth(); renderer.render(scene, camera); scene.background = background;
+      // The sky and the world, drawn in one go. Effects that read the screen run it into
+      // a render target first, with themselves hidden, so they refract the level behind.
+      const drawWorld = () => {
+        renderer.autoClear = true;
+        renderer.setClearColor(clearColor(project.environment.sky));
+        renderer.render(backgroundScene, backgroundScene.userData.skybox ? camera : backgroundCamera);
+        renderer.autoClear = false;
+        // Preserve the rendered sky; only opaque world surfaces write depth/color.
+        const background = scene.background; scene.background = null;
+        renderer.clearDepth(); renderer.render(scene, camera); scene.background = background;
+      };
+      renderer.getDrawingBufferSize(screenSize);
+      effectResolution.value.set(screenSize.x, screenSize.y);
+      if (needsScreenPass()) {
+        const size = screenSize;
+        if (screenTarget.width !== size.x || screenTarget.height !== size.y) screenTarget.setSize(size.x, size.y);
+        const hidden = [];
+        for (const object of screenObjects) if (object.visible) { hidden.push(object); object.visible = false; }
+        renderer.setRenderTarget(screenTarget);
+        drawWorld();
+        renderer.setRenderTarget(null);
+        for (const object of hidden) object.visible = true;
+        renderer.clear();
+      }
+      drawWorld();
       renderer.clearDepth(); renderer.render(overlayScene, overlayCamera);
       renderer.setScissorTest(false);
       if (shaderCompileError) throw new Error(`GPU shader compilation failed: ${shaderCompileError}`);

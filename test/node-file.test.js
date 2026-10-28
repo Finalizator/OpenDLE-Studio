@@ -111,7 +111,7 @@ test('the renderers apply per-object shaders and draw panels', () => {
   assert.match(render, /new THREE\.MeshPhysicalMaterial\(/);
   const view = readFileSync(new URL('../public/scene-3d-view.js', import.meta.url), 'utf8');
   assert.match(view, /function withShader\(material, entity\)/);
-  assert.match(view, /compileGLSLEffect\(shader\)/);
+  assert.match(view, /compileGLSLEffect\(shader, \{ screen: screenTarget\.texture, resolution: effectResolution \}\)/);
   assert.match(view, /} else if \(entity\.panel\) \{/);
   const editor = readFileSync(new URL('../public/scene-object-editor.js', import.meta.url), 'utf8');
   assert.match(editor, /label: 'Shader'/);

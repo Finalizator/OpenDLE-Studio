@@ -117,6 +117,11 @@ export function parseMenuDefinitions(source, label = 'MENUDEF', resolve) {
 }
 
 export function installGameMenu(project, assets, definitions = [], warnings = [], episodeInfo = { episodes: [], sources: [] }) {
+  // A project made from scratch has no sheets, events, groups or assets yet.
+  project.assets ||= [];
+  project.eventSheets ||= [];
+  project.eventGroups ||= [];
+  project.events ||= [];
   if (project.eventSheets.some(sheet => sheet.id === 'game_menu_sheet')) return project;
   if (!project.hud) installDefaultHUD(project);
   const hud = project.hud, sx = hud.width / 320, sy = hud.height / 200;
