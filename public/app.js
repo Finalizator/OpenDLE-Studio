@@ -1620,7 +1620,7 @@ function renderEnvironment() {
   // lets the page talk to it; the bot challenge is reported rather than hidden.
   const shadertoyLink = input('', 'text', () => {}, 'https://www.shadertoy.com/view/XXXXXXXX');
   shadertoyLink.setAttribute('aria-label', 'Shadertoy link');
-  parent.append(field(null, 'Import a Shadertoy link', shadertoyLink));
+  field(parent, 'Import a Shadertoy link', shadertoyLink);
   parent.append(button('Import from Shadertoy', guard(async () => {
     const link = shadertoyLink.value.trim();
     if (!link) throw new Error('Paste a Shadertoy link first');
