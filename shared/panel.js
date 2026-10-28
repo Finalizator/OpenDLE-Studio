@@ -60,7 +60,7 @@ export function panelPhysics(panel, { body = 'dynamic', mass = 2 } = {}) {
  */
 export function curtainStrips({
   x = 0, y = 0, elevation = 0, angle = 0, width = 320, height = 192,
-  stripWidth = 30, gap = 6, panel = { opacity: .8 }, name = 'Curtain strip',
+  stripWidth = 30, gap = 6, panel = {}, name = 'Curtain strip',
 } = {}) {
   const pitch = stripWidth + gap;
   const count = Math.max(1, Math.min(64, Math.floor((width + gap) / pitch)));

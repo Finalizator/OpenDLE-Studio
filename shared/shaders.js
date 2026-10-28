@@ -37,7 +37,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // the same in a lit room and in a dark one.
   vec3 base = mix(vec3(0.88, 0.93, 0.98), color.rgb, 0.35);
   vec3 plastic = base * (1.0 + sheen) + edge * 0.24 + sheen;
-  fragColor = vec4(mix(behind, plastic, haze), 1.0);
+  // The panel's own opacity still decides how much of the strip is see-through, which is
+  // what made a strip read as plastic over a bright wall in the first place.
+  fragColor = vec4(mix(behind, plastic, haze), color.a);
 }`;
 
 // A starting point for a pasted Shadertoy shader: mainImage, iResolution, iTime and
