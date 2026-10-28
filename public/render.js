@@ -118,6 +118,33 @@ export async function createPreview(canvas, project, state, { editor = false } =
     if (!shaderEffect) return material;
     return effectMaterial(material, shaderEffect);
   }
+  /**
+   * A panel's material.
+   *
+   * A panel that refracts is drawn as a basic node material whose colour *is* the effect:
+   * replacing a physical material's output node with a screen sample left the draw with no
+   * fragment output (a blank strip), so the refraction gets a material built for it.
+   */
+  function panelMaterial(panel, entity) {
+    const effect = effectFor(entity?.shaderId);
+    const color = panel.color || PANEL_DEFAULTS.color;
+    const opacity = panel.opacity ?? PANEL_DEFAULTS.opacity;
+    if (effect?.usesScreen) {
+      const material = new THREE.MeshBasicNodeMaterial({ transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false });
+      const tint = new THREE.Color(color);
+      material.colorNode = effect.effect(vec4(tint.r, tint.g, tint.b, opacity), uv(), effectTime, screenUV, effectResolution);
+      screenMaterials.add(material);
+      return material;
+    }
+    return withEffectFor(new THREE.MeshPhysicalMaterial({
+      color, transparent: true, opacity,
+      roughness: panel.roughness ?? PANEL_DEFAULTS.roughness, metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
+      emissive: new THREE.Color(color).multiplyScalar(.18),
+      clearcoat: .7, clearcoatRoughness: .18, reflectivity: .5,
+      side: THREE.DoubleSide, depthWrite: false,
+    }), entity);
+  }
+
   /** The object's own shader wins over the level-wide one. */
   function withEffectFor(material, entity) {
     const effect = effectFor(entity?.shaderId);
@@ -601,13 +628,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       geometries.add(geometry);
       // A translucent slab with nothing lighting it reads as a flat grey bar, so the panel
       // carries a little of its own light and a clear coat that catches what the level has.
-      const material = withEffectFor(new THREE.MeshPhysicalMaterial({
-        color: panel.color, transparent: true, opacity: panel.opacity ?? PANEL_DEFAULTS.opacity,
-        roughness: panel.roughness ?? PANEL_DEFAULTS.roughness, metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
-        emissive: new THREE.Color(panel.color || PANEL_DEFAULTS.color).multiplyScalar(.18),
-        clearcoat: .7, clearcoatRoughness: .18, reflectivity: .5,
-        side: THREE.DoubleSide, depthWrite: false,
-      }), entity);
+      const material = panelMaterial(panel, entity);
       materials.add(material);
       const mesh = new THREE.Mesh(geometry, material);
       mesh.userData.selection = { kind: 'entity', id: entity.id };

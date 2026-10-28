@@ -17,7 +17,7 @@ import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
 import { compileGLSLEffect } from './shader-effects.js';
-import { mix, output, screenUV, uniform, uv } from 'three/tsl';
+import { mix, output, screenUV, uniform, uv, vec4 } from 'three/tsl';
 
 const MODEL_LIGHTING = { fill: .9, key: 2.8, rim: .6 };
 /** Doom sprites are one pixel to the unit, so artwork with no size still draws. */
@@ -120,6 +120,31 @@ export async function createScene3dView(canvas) {
       return material;
     }
   }
+  /**
+   * A panel's material: a refractive panel is a basic node material whose colour is the
+   * effect, because replacing a physical material's output with a screen sample drew
+   * nothing at all.
+   */
+  function panelMaterial(panel, entity) {
+    const effect = effectFor(entity?.shaderId);
+    const color = panel.color || PANEL_DEFAULTS.color;
+    const opacity = panel.opacity ?? PANEL_DEFAULTS.opacity;
+    if (effect?.usesScreen) {
+      const material = new THREE.MeshBasicNodeMaterial({ transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false });
+      const tint = new THREE.Color(color);
+      material.colorNode = effect.effect(vec4(tint.r, tint.g, tint.b, opacity), uv(), effectTime, screenUV, effectResolution);
+      screenMaterials.add(material);
+      return material;
+    }
+    return withShader(new THREE.MeshPhysicalMaterial({
+      color, transparent: true, opacity,
+      roughness: panel.roughness ?? PANEL_DEFAULTS.roughness, metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
+      emissive: new THREE.Color(color).multiplyScalar(.18),
+      clearcoat: .7, clearcoatRoughness: .18, reflectivity: .5,
+      side: THREE.DoubleSide, depthWrite: false,
+    }), entity);
+  }
+
   // The selected node is framed by a box, so a translucent panel or an unlit sprite still
   // says which node is selected when a tint alone cannot be seen.
   const selectionOutline = new THREE.Box3Helper(new THREE.Box3(), 0xffc46b);
@@ -227,17 +252,7 @@ export async function createScene3dView(canvas) {
       // A panel is drawn as the translucent slab it is, so a plastic strip curtain looks
       // like one and a rigid strip is a body you can push.
       const panel = entity.panel;
-      const material = withShader(new THREE.MeshPhysicalMaterial({
-        color: panel.color || PANEL_DEFAULTS.color,
-        transparent: true,
-        opacity: panel.opacity ?? PANEL_DEFAULTS.opacity,
-        roughness: panel.roughness ?? PANEL_DEFAULTS.roughness,
-        metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
-        emissive: new THREE.Color(panel.color || PANEL_DEFAULTS.color).multiplyScalar(.18),
-        clearcoat: .7, clearcoatRoughness: .18, reflectivity: .5,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      }), entity);
+      const material = panelMaterial(panel, entity);
       // Inside the Z-up group local Z is up and local Y is map depth, so the slab's height
       // has to be its Z size; putting it on Y laid every strip flat on the floor.
       const slab = new THREE.Mesh(new THREE.BoxGeometry(panel.width, Math.max(.5, panel.thickness ?? 2), panel.height), material);
