@@ -102,8 +102,19 @@ export function createSceneObjectEditor({ callbacks }) {
     if (id && id !== state.sceneId) revealInTree(id);
     renderTree();
     renderInspector();
+    syncNodeFileButtons();
     view3d?.select(id);
     draw();
+  }
+
+  /** Saving a `.node` file needs a node; importing only needs an open scene. */
+  function syncNodeFileButtons() {
+    const current = scene();
+    const hasNode = Boolean(current && state.selection && state.selection !== current.id);
+    if (dom.saveNode) { dom.saveNode.disabled = !hasNode; dom.saveNode.title = hasNode
+      ? 'Save the selected node, and the group under it, as a .node file you can import into another scene'
+      : 'Select a node to save it as a .node file'; }
+    if (dom.importNode) dom.importNode.disabled = !current;
   }
 
   function revealInTree(id) {
@@ -369,6 +380,12 @@ export function createSceneObjectEditor({ callbacks }) {
     try {
       switch (tool) {
         case 'add': addNode(isRoot ? null : id); return;
+        case 'save-node': {
+          if (isRoot) { callbacks.status('Select a node to save as a .node file', true); return; }
+          saveNodeFile(id);
+          return;
+        }
+        case 'import-node': importNodeFile(); return;
         case 'duplicate': {
           if (isRoot) { callbacks.status('Select a node to duplicate', true); return; }
           let result = null;
@@ -2092,6 +2109,8 @@ export function createSceneObjectEditor({ callbacks }) {
     dom.menu = document.getElementById('scene-menu');
     dom.dockMenu = document.getElementById('scene-dock-menu');
     dom.inspectorMenu = document.getElementById('scene-inspector-menu');
+    dom.saveNode = document.getElementById('scene-save-node');
+    dom.importNode = document.getElementById('scene-import-node');
     dom.panel = document.getElementById('scene-panel');
   }
 
@@ -2155,6 +2174,8 @@ export function createSceneObjectEditor({ callbacks }) {
     document.getElementById('scene-place')?.addEventListener('click', () => {
       if (state.sceneId) callbacks.placeScene(state.sceneId);
     });
+    dom.saveNode?.addEventListener('click', () => runTool('save-node'));
+    dom.importNode?.addEventListener('click', () => runTool('import-node'));
     document.getElementById('scene-view-add')?.addEventListener('click', () => addNode(null));
     syncCameraButtons();
     bindCameraKeys();
@@ -2273,5 +2294,6 @@ export function createSceneObjectEditor({ callbacks }) {
     renderTabs();
     renderTree();
     renderInspector();
+    syncNodeFileButtons();
   }
 }

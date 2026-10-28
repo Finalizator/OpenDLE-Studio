@@ -398,7 +398,11 @@ dialog::backdrop { background: #111c; }
 .scene-editor-body { display: grid; grid-template-columns: var(--scene-dock-width, 272px) var(--splitter-size) minmax(0, 1fr) var(--splitter-size) var(--scene-inspector-width, 330px); min-height: 0; }
 /* The scene editor's gutters sit inside a single-row grid, not across the app rows. */
 .scene-editor-body > .scene-splitter { grid-row: auto; }
-.scene-dock, .scene-inspector { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 0; background: var(--panel); }
+/* A dragged column may be narrower than the toolbar's text, so nothing inside it
+   gets to hold the column open: every row shrinks and its inputs shrink with it. */
+.scene-dock, .scene-inspector { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 0; min-width: 0; background: var(--panel); }
+.scene-editor-body > .scene-dock > *, .scene-editor-body > .scene-inspector > * { min-width: 0; }
+.scene-dock input, .scene-dock select, .scene-inspector input, .scene-inspector select { min-width: 0; }
 .scene-inspector { grid-template-rows: auto auto auto minmax(0, 1fr); }
 .scene-dock-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .dock-menu { background: transparent; border: 1px solid transparent; color: var(--muted); padding: 1px 6px; font-size: 10px; }
@@ -452,8 +456,8 @@ dialog::backdrop { background: #111c; }
 .dock-popup button { display: block; width: 100%; text-align: left; background: transparent; padding: 4px 8px; }
 .dock-popup button:hover { background: #5a5a5a; }
 .dock-popup-separator { height: 1px; margin: 3px 2px; background: #5a5a5a; }
-.scene-view { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; background: #1f2024; }
-.scene-view-toolbar { display: flex; align-items: center; gap: 3px; padding: 3px 5px; background: #3a3a3a; border-bottom: 1px solid var(--border); }
+.scene-view { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; background: #1f2024; overflow: hidden; }
+.scene-view-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; padding: 3px 5px; background: #3a3a3a; border-bottom: 1px solid var(--border); }
 .scene-view-toolbar button { background: transparent; color: var(--muted); padding: 2px 7px; }
 .scene-view-toolbar button:hover { background: #575757; color: var(--text); }
 .scene-view-toolbar button.active { background: #5f5c4c; color: var(--text); }
@@ -479,7 +483,7 @@ dialog::backdrop { background: #111c; }
 .property-row:hover { background: #4f4f4f; }
 .property-name { color: var(--muted); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; }
 .property-value { min-width: 0; display: flex; align-items: center; gap: 3px; }
-.property-value input, .property-value select { width: 100%; padding: 1px 4px; }
+.property-value input, .property-value select { width: 100%; min-width: 0; padding: 1px 4px; }
 .property-value input[type=checkbox] { width: auto; }
 .property-value input[type=color] { height: 18px; padding: 0; }
 .property-revert { background: transparent; border: none; color: var(--accent); padding: 0; font-size: 11px; visibility: hidden; }

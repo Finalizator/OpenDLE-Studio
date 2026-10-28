@@ -258,7 +258,15 @@ test('the scene limit and file names behave', () => {
 });
 
 test('the studio offers saving and importing node files', () => {
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   const editor = readFileSync(new URL('../public/scene-object-editor.js', import.meta.url), 'utf8');
+  // Both actions are visible buttons in the scene view's toolbar, not only menu entries.
+  assert.match(html, /<button id="scene-save-node"[^>]*>Save \.node<\/button>/);
+  assert.match(html, /<button id="scene-import-node"[^>]*>Import \.node<\/button>/);
+  assert.match(editor, /dom\.saveNode\?\.addEventListener\('click', \(\) => runTool\('save-node'\)\)/);
+  assert.match(editor, /dom\.importNode\?\.addEventListener\('click', \(\) => runTool\('import-node'\)\)/);
+  // Saving needs a node, so the button is disabled on the scene root rather than failing.
+  assert.match(editor, /dom\.saveNode\.disabled = !hasNode/);
   assert.match(editor, /function saveNodeFile\(nodeId\)/);
   assert.match(editor, /link\.download = name;/);
   assert.match(editor, /function importNodeFile\(point = null\)/);
