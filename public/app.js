@@ -1609,12 +1609,30 @@ function renderEnvironment() {
     const id = newId('shader');
     next.shaders.push({ id, name: 'World effect', language: 'glsl', source: shaderTemplate, uniforms: { strength: 1 } });
     next.environment.shaderId ||= id;
-  })), button('Add a Shadertoy effect', () => edit(next => {
+  })));
+  parent.append(button('Add a Shadertoy effect', () => edit(next => {
     next.shaders ||= [];
     const id = newId('shader');
     next.shaders.push({ id, name: 'Shadertoy effect', language: 'glsl', source: shadertoyTemplate, uniforms: {} });
     next.environment.shaderId ||= id;
-  })), make('p', 'Effect signature: vec4 effect(vec4 color, vec2 uv, float time). Shadertoy shaders can be pasted as they are: mainImage, iTime, iResolution, iMouse, if/else, bounded for loops and helper functions all compile, and iChannel0 is what the renderer drew behind the object, so an effect can refract the level instead of only being transparent. Uniform names are numeric parameters declared by the engine, not source declarations. This portable GLSL subset is not an unrestricted vertex/fragment pipeline.', 'muted'));
+  })));
+  // A Shadertoy link is read by this server, because the studio's content policy only
+  // lets the page talk to it; the bot challenge is reported rather than hidden.
+  const shadertoyLink = input('', 'text', () => {}, 'https://www.shadertoy.com/view/XXXXXXXX');
+  shadertoyLink.setAttribute('aria-label', 'Shadertoy link');
+  parent.append(field(null, 'Import a Shadertoy link', shadertoyLink));
+  parent.append(button('Import from Shadertoy', guard(async () => {
+    const link = shadertoyLink.value.trim();
+    if (!link) throw new Error('Paste a Shadertoy link first');
+    const result = await api(`/api/shadertoy?link=${encodeURIComponent(link)}`);
+    edit(next => {
+      next.shaders ||= [];
+      const id = newId('shader');
+      next.shaders.push({ id, name: result.name?.trim() || `Shadertoy ${result.id}`, language: 'glsl', source: result.code, uniforms: {} });
+      next.environment.shaderId ||= id;
+    }, `Imported ${result.name || result.id} from Shadertoy`);
+  })));
+  parent.append(make('p', 'Effect signature: vec4 effect(vec4 color, vec2 uv, float time). Shadertoy shaders can be pasted as they are: mainImage, iTime, iResolution, iMouse, if/else, bounded for loops and helper functions all compile, and iChannel0 is what the renderer drew behind the object, so an effect can refract the level instead of only being transparent. Uniform names are numeric parameters declared by the engine, not source declarations. This portable GLSL subset is not an unrestricted vertex/fragment pipeline.', 'muted'));
   for (const key of ['sky', 'floor']) field(parent, key === 'sky' ? 'Sky color' : 'Floor color',
     input(project.environment[key], 'color', value => edit(next => { next.environment[key] = value; })));
   field(parent, 'Sky panorama', assetSelect(project.environment.skyAsset, value => edit(next => {

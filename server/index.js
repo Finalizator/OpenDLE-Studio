@@ -19,6 +19,7 @@ import { createPortableBuild } from './export-build.js';
 import { loadGzdoomActors } from './actor-sources.js';
 import { createPlaytestLogStore, DEFAULT_LOG_DIRECTORY } from './playtest-logs.js';
 import { isLogId, normalizeLogEntry, LOG_LIMITS } from '../shared/playtest-log.js';
+import { fetchShadertoy } from './shadertoy.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function equal(a, b) {
@@ -59,6 +60,14 @@ export function createApp({
   });
   app.get('/api/health', (req, res) => {
     res.set('Cache-Control', 'no-store').json({ service: 'OpenDLE', version: readEngineVersion(versionFile) });
+  });
+  // Importing a shader from a Shadertoy link: the page is read here because the studio's
+  // own content policy only lets it talk to this server.
+  app.get('/api/shadertoy', async (req, res) => {
+    try {
+      const result = await fetchShadertoy(req.query.link || req.query.id, { fetchImpl });
+      res.json(result);
+    } catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.get('/api/license', (req, res) => {
     const text = readFileSync(resolve(root, 'LICENSE'), 'utf8');

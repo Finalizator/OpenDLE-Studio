@@ -13,23 +13,31 @@ export const shaderTemplate = `vec4 effect(vec4 color, vec2 uv, float time) {
 // what the renderer drew behind the panel, so sampling it refracts the level instead of
 // only being see-through.
 export const CURTAIN_SHADER_NAME = 'Glass (Shadertoy)';
-export const curtainShaderTemplate = `// Glass: refracts what is behind the panel, tints it and catches a rim highlight.
-// Shadertoy syntax — iTime, iResolution, iChannel0 and helper functions all work here.
-float bend(float y, float t) {
-  // The plastic bows along its length, so the picture behind it wobbles as it swings.
-  return 0.45 + 0.55 * (0.5 + 0.5 * sin(y * 3.0 - t * 1.4));
+export const curtainShaderTemplate = `// Plastic strip curtain: bends what is behind it, milky towards its cut edges, and
+// keeps the light the scene throws at it. Shadertoy syntax — iTime, iResolution,
+// iChannel0 and helper functions all work here.
+float ripple(float y, float t) {
+  // A hanging strip bows as it swings, so the picture behind it wobbles along its length.
+  return 0.5 + 0.5 * sin(y * 4.0 - t * 1.6);
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 view = fragCoord / iResolution.xy;
-  // The effect's 'uv' input is this panel's own coordinate: 0..1 across it.
-  vec2 centred = uv - vec2(0.5, 0.5);
-  vec2 warp = centred * 0.045 * bend(uv.y, iTime);
+  // The effect's 'uv' input is this panel's own coordinate: 0..1 across it, 0 at the top.
+  vec2 centred = uv - vec2(0.5);
+  vec2 warp = vec2(centred.x * 0.055, centred.y * 0.030) * ripple(uv.y, iTime);
   vec3 behind = texture(iChannel0, view + warp).rgb;
-  float rim = smoothstep(0.30, 0.5, abs(centred.x));
-  float sheen = 0.05 * (1.0 - uv.y);
-  vec3 glassy = mix(behind * 0.92, vec3(0.82, 0.92, 1.0), 0.16) + rim * 0.10 + sheen;
-  fragColor = vec4(glassy, 1.0);
+  // A strip is not a window: it is milky, brightest where it curves, and its cut edges
+  // catch the light. Those edges are what make a strip curtain readable at a distance.
+  float edge = smoothstep(0.26, 0.5, abs(centred.x));
+  float crease = 0.5 + 0.5 * sin(uv.x * 9.0 + sin(uv.y * 4.0 - iTime * 1.6) * 1.2);
+  float sheen = 0.14 * crease * (0.35 + 0.65 * uv.y);
+  float haze = 0.52 + 0.30 * edge + 0.10 * crease;
+  // The plastic has a colour of its own; the lit surface only tints it, so a strip reads
+  // the same in a lit room and in a dark one.
+  vec3 base = mix(vec3(0.88, 0.93, 0.98), color.rgb, 0.35);
+  vec3 plastic = base * (1.0 + sheen) + edge * 0.24 + sheen;
+  fragColor = vec4(mix(behind, plastic, haze), 1.0);
 }`;
 
 // A starting point for a pasted Shadertoy shader: mainImage, iResolution, iTime and
