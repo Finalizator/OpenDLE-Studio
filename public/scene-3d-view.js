@@ -120,6 +120,12 @@ export async function createScene3dView(canvas) {
       return material;
     }
   }
+  // The selected node is framed by a box, so a translucent panel or an unlit sprite still
+  // says which node is selected when a tint alone cannot be seen.
+  const selectionOutline = new THREE.Box3Helper(new THREE.Box3(), 0xffc46b);
+  selectionOutline.visible = false;
+  selectionOutline.name = 'selection-outline';
+  scene.add(selectionOutline);
   // Joint links: a dashed line through the anchor plus a marker where it pivots.
   const joints = new THREE.Group();
   world.add(joints);
@@ -275,7 +281,19 @@ export async function createScene3dView(canvas) {
     return null;
   }
 
+  /** Frames the selected node, padded so the box does not sit inside its faces. */
+  function outlineSelection() {
+    const group = selectionId ? groups.get(selectionId) : null;
+    if (!group) { selectionOutline.visible = false; return; }
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) { selectionOutline.visible = false; return; }
+    const padding = Math.max(2, Math.min(24, box.getSize(new THREE.Vector3()).length() * 0.02));
+    selectionOutline.box.copy(box.expandByScalar(padding));
+    selectionOutline.visible = true;
+  }
+
   function highlight() {
+    outlineSelection();
     for (const [id, group] of groups) {
       const selected = id === selectionId;
       group.traverse(node => {
