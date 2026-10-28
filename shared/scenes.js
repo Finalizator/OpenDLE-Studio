@@ -274,3 +274,141 @@ export function renameSceneObject(scene, id, name) {
   entity.name = clean;
   return entity;
 }
+
+/* ------------------------------------------------------------------------- *
+ * Assets on scene objects
+ *
+ * Dropping an asset on a scene is the same gesture as dropping it on the layout: a
+ * picture becomes the object's sprite, a 3D model becomes its mesh, and dropping it on
+ * empty space places a new decoration that already carries it.
+ * ------------------------------------------------------------------------- */
+
+const SPRITE_ASSET_KINDS = ['sprite', 'weapon', 'flat', 'texture', 'sky', 'image', 'hud'];
+
+/** 'sprite', 'model' or null for an asset a scene object cannot show. */
+export function sceneAssetUse(asset) {
+  if (!asset || typeof asset !== 'object') return null;
+  if (asset.kind === 'model') return 'model';
+  return SPRITE_ASSET_KINDS.includes(asset.kind) ? 'sprite' : null;
+}
+
+function uniqueSceneName(scene, base) {
+  const names = new Set((scene.entities || []).map(entity => entity.name));
+  if (!names.has(base)) return base;
+  for (let index = 2; ; index++) if (!names.has(`${base} ${index}`)) return `${base} ${index}`;
+}
+
+/** The name a newly placed object takes from an asset: the file name without its extension. */
+export function sceneAssetName(asset) {
+  const base = String(asset?.name || 'Object').replace(/\.[^.]+$/, '').trim();
+  return (base || 'Object').slice(0, 100);
+}
+
+/** Points an existing scene object at an asset, dropping the other kind of artwork. */
+export function setSceneObjectAsset(scene, id, asset) {
+  const entity = (scene?.entities || []).find(item => item.id === id);
+  if (!entity) throw new Error('That object no longer exists');
+  const use = sceneAssetUse(asset);
+  if (!use) throw new Error(`${asset?.name || 'That asset'} is not a picture or a model; drop a sprite, an image or a 3D model on a node`);
+  if (use === 'model') {
+    entity.modelAsset = asset.id;
+    delete entity.animation;
+    return `Model ${asset.name} set on ${entity.name}`;
+  }
+  const hadModel = Boolean(entity.modelAsset);
+  entity.spriteAsset = asset.id;
+  if (hadModel) { delete entity.modelAsset; delete entity.animation; }
+  return `Sprite ${asset.name} set on ${entity.name}${hadModel ? ' (3D model removed)' : ''}`;
+}
+
+/** Places a new object that already carries `asset`, at x/y, optionally under a parent. */
+export function addSceneObjectFromAsset(scene, asset, { x = 0, y = 0, parentId = null, type = 'decoration' } = {}) {
+  const use = sceneAssetUse(asset);
+  if (!use) throw new Error(`${asset?.name || 'That asset'} is not a picture or a model`);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Drop the asset inside the scene view to place it');
+  const artwork = use === 'model' ? { modelAsset: asset.id, modelScale: 32 } : { spriteAsset: asset.id };
+  return addSceneObject(scene, {
+    type, name: uniqueSceneName(scene, sceneAssetName(asset)), x, y, parentId, ...artwork,
+  });
+}
+
+/** Copies a layout object into a scene, so dragging an object tile into a scene works. */
+export function addSceneObjectFromEntity(scene, entity, { x = 0, y = 0, parentId = null } = {}) {
+  if (!entity) throw new Error('That object no longer exists');
+  if (entity.type === 'player') throw new Error('A scene cannot contain the player object');
+  if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Drop the object inside the scene view');
+  const copy = structuredClone(entity);
+  copy.id = sceneEntityId(scene, `${entity.id}_in_scene`);
+  copy.x = round(x);
+  copy.y = round(y);
+  copy.name = uniqueSceneName(scene, entity.name).slice(0, 100);
+  delete copy.parentId;
+  if (parentId) copy.parentId = parentId;
+  if ((scene.entities || []).length >= MAX_SCENE_ENTITIES) throw new Error(`A scene holds at most ${MAX_SCENE_ENTITIES} objects`);
+  scene.entities.push(copy);
+  return copy;
+}
+
+/**
+ * Nesting a scene inside another scene, which is how a Godot scene instance behaves:
+ * the copied nodes become children of one group node named after the source.
+ */
+export function nestScene(scene, source, { x = 0, y = 0, parentId = null } = {}) {
+  if (!source || !Array.isArray(source.entities)) throw new Error('That scene object no longer exists');
+  if (source.id === scene.id) throw new Error('A scene cannot be placed inside itself');
+  if (!source.entities.length) throw new Error(`${source.name} has no objects to place`);
+  if ((scene.entities || []).length + source.entities.length + 1 > MAX_SCENE_ENTITIES) {
+    throw new Error(`A scene holds at most ${MAX_SCENE_ENTITIES} objects`);
+  }
+  const group = addSceneObject(scene, {
+    type: 'decoration', name: uniqueSceneName(scene, source.name).slice(0, 100), x, y, parentId,
+  });
+  const origin = sceneOrigin(source);
+  const mapping = new Map(source.entities.map(entity => [entity.id, sceneEntityId(scene, `${group.id}_${entity.id}`)]));
+  const copies = source.entities.map(entity => {
+    const copy = structuredClone(entity);
+    copy.id = mapping.get(entity.id);
+    copy.parentId = entity.parentId && mapping.has(entity.parentId) ? mapping.get(entity.parentId) : group.id;
+    copy.x = round(entity.x - origin.x + x);
+    copy.y = round(entity.y - origin.y + y);
+    return copy;
+  });
+  scene.entities.push(...copies);
+  const events = (source.events || []).filter(event => event.ownerId && mapping.has(event.ownerId));
+  const room = MAX_SCENE_EVENTS - (scene.events || []).length;
+  if (events.length && room > 0) {
+    scene.events = [...(scene.events || []), ...events.slice(0, room).map(event => {
+      const copy = remapReferences(structuredClone(event), mapping);
+      copy.id = `${event.id}_nest_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`.slice(0, ID_LIMIT);
+      copy.ownerId = mapping.get(event.ownerId);
+      if (event.sheetId !== undefined) delete copy.sheetId;
+      return copy;
+    })];
+  }
+  return { group, ids: copies.map(copy => copy.id) };
+}
+
+/**
+ * The artwork a scene object draws: the sprite image and its world size, or the model's
+ * preview picture. The scene view uses this so assigning an asset visibly changes
+ * something instead of leaving a plain box.
+ */
+export function sceneArtwork(entity, assets) {
+  if (!entity) return null;
+  const find = id => (assets || []).find(asset => asset && asset.id === id) || null;
+  if (entity.modelAsset) {
+    const asset = find(entity.modelAsset);
+    const size = Math.max(1, Number(entity.modelScale) || 32);
+    return { kind: 'model', asset, src: asset?.preview || null, width: size, height: size,
+      label: asset?.name || entity.modelAsset };
+  }
+  if (entity.spriteAsset) {
+    const asset = find(entity.spriteAsset);
+    if (!asset) return null;
+    const scale = Number(entity.spriteScale) || 1;
+    return { kind: 'sprite', asset, src: asset.src || null,
+      width: Math.max(1, (asset.width || 32) * scale), height: Math.max(1, (asset.height || 32) * scale),
+      label: asset.name };
+  }
+  return null;
+}

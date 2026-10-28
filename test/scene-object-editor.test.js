@@ -5,6 +5,7 @@ import {
   newScene, addSceneObject, removeSceneObjects, duplicateSceneObject, reparentSceneObject,
   moveSceneObject, renameSceneObject, sceneChildren, sceneDepths, sceneSubtree, sceneDescendants,
   instantiateScene, captureScene, MAX_SCENE_ENTITIES,
+  sceneAssetUse, setSceneObjectAsset, addSceneObjectFromAsset, addSceneObjectFromEntity, nestScene, sceneArtwork,
 } from '../shared/scenes.js';
 import { createProject, validateProject } from '../shared/project.js';
 
@@ -231,8 +232,10 @@ test('the 2D and 3D tabs both draw the scene, and neither uses inline styles', (
   assert.match(editor, /kind: event\.button === 2 \? 'dolly' : 'orbit'/);
   // up = forward x right: getting this backwards drew every node as a flat sliver.
   assert.match(editor, /up = forward x right/);
-  // The app's CSP refuses inline styles, so indentation and the dock popup are classes.
-  assert.equal(/\.style\./.test(editor), false, 'no style attribute writes');
+  // The app's CSP refuses inline style *attributes*, so indentation and the dock popup are
+  // classes. CSSOM property writes are allowed, and the menu positioning and the drag
+  // ghost need them (the layout editor already moves its own drag ghost the same way).
+  assert.equal(/setAttribute\('style'|\.style\.cssText/.test(editor), false, 'no style attribute writes');
   assert.match(editor, /row\.classList\.add\(`node-depth-\$\{Math\.min\(depth, 8\)\}`\)/);
   const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
   for (const depth of [0, 4, 8]) assert.match(style, new RegExp(`\\.node-depth-${depth} \\{`), `depth ${depth} has a class`);
@@ -252,4 +255,157 @@ test('scene object edits go through the project edit path so undo and validation
   assert.match(app, /renderSceneObjectTabs\(\)/);
   // The scene panel is part of the tab list, so switching tabs hides it again.
   assert.match(app, /\['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'about', 'scene'\]/);
+});
+
+/* ------------------------------------------------------------------ assets */
+
+const SPRITE = { id: 'asset_imp', kind: 'sprite', name: 'Imp', width: 40, height: 56, src: 'data:image/png;base64,AA==' };
+const MODEL = { id: 'asset_crate', kind: 'model', name: 'Crate.glb', preview: 'data:image/png;base64,BB==' };
+const SOUND = { id: 'asset_boom', kind: 'sound', name: 'Boom' };
+
+test('an asset decides whether a node shows a sprite or a model', () => {
+  assert.equal(sceneAssetUse(SPRITE), 'sprite');
+  assert.equal(sceneAssetUse({ ...SPRITE, kind: 'flat' }), 'sprite');
+  assert.equal(sceneAssetUse(MODEL), 'model');
+  assert.equal(sceneAssetUse(SOUND), null);
+  assert.equal(sceneAssetUse(null), null);
+});
+
+test('assigning a sprite or a model replaces the other kind of artwork', () => {
+  const scene = newScene('Props');
+  const node = addSceneObject(scene, { name: 'Crate' });
+  assert.match(setSceneObjectAsset(scene, node.id, SPRITE), /Sprite Imp set on Crate/);
+  assert.equal(node.spriteAsset, SPRITE.id);
+  assert.match(setSceneObjectAsset(scene, node.id, MODEL), /Model Crate.glb set on Crate/);
+  assert.equal(node.modelAsset, MODEL.id);
+  // The sprite stays as the fallback artwork, exactly like the layout editor.
+  assert.equal(node.spriteAsset, SPRITE.id);
+  // Going back to a sprite drops the model so the node is not geometry any more.
+  setSceneObjectAsset(scene, node.id, SPRITE);
+  assert.equal(node.modelAsset, undefined);
+  assert.throws(() => setSceneObjectAsset(scene, node.id, SOUND), /not a picture or a model/);
+  assert.throws(() => setSceneObjectAsset(scene, 'node_missing', SPRITE), /no longer exists/);
+});
+
+test('dropping an asset places a node named after it, reusing names', () => {
+  const scene = newScene('Props');
+  const first = addSceneObjectFromAsset(scene, SPRITE, { x: 32, y: 64 });
+  assert.equal(first.name, 'Imp');
+  assert.equal(first.type, 'decoration');
+  assert.equal(first.spriteAsset, SPRITE.id);
+  assert.deepEqual([first.x, first.y], [32, 64]);
+  const second = addSceneObjectFromAsset(scene, SPRITE, { x: 0, y: 0 });
+  assert.equal(second.name, 'Imp 2');
+  const model = addSceneObjectFromAsset(scene, MODEL, { x: 8, y: 8 });
+  // The file extension never becomes part of the node name.
+  assert.equal(model.name, 'Crate');
+  assert.equal(model.modelAsset, MODEL.id);
+  assert.equal(model.modelScale, 32);
+  assert.throws(() => addSceneObjectFromAsset(scene, SOUND, { x: 0, y: 0 }), /not a picture or a model/);
+  assert.throws(() => addSceneObjectFromAsset(scene, SPRITE, { x: Number.NaN, y: 0 }), /inside the scene view/);
+});
+
+test('a layout object can be dragged into a scene as a copy', () => {
+  const scene = newScene('Props');
+  const source = { id: 'pickup_cell', type: 'pickup', name: 'Energy cell', x: -128, y: 96, angle: 90, spriteAsset: SPRITE.id };
+  const copy = addSceneObjectFromEntity(scene, source, { x: 16, y: 16 });
+  assert.notEqual(copy.id, source.id);
+  assert.equal(copy.name, 'Energy cell');
+  assert.equal(copy.type, 'pickup');
+  assert.deepEqual([copy.x, copy.y], [16, 16]);
+  assert.equal(copy.spriteAsset, SPRITE.id);
+  assert.equal(scene.entities.length, 1);
+  assert.throws(() => addSceneObjectFromEntity(scene, { id: 'player_1', type: 'player', name: 'Player' }, { x: 0, y: 0 }),
+    /cannot contain the player/);
+});
+
+test('nesting a scene copies its nodes under one group and re-parents them inside it', () => {
+  const target = newScene('Level');
+  const source = newScene('Door');
+  const frame = addSceneObject(source, { name: 'Frame', x: 0, y: 0 });
+  const panel = addSceneObject(source, { name: 'Panel', x: 32, y: 0, parentId: frame.id });
+  const { group, ids } = nestScene(target, source, { x: 128, y: 64 });
+  assert.equal(group.name, 'Door');
+  assert.equal(ids.length, 2);
+  const [copiedFrame, copiedPanel] = target.entities.slice(1);
+  assert.notEqual(copiedFrame.id, frame.id);
+  assert.equal(copiedFrame.parentId, group.id);
+  assert.equal(copiedPanel.parentId, copiedFrame.id);
+  // Coordinates are moved to the drop point and stay absolute inside the scene.
+  assert.deepEqual([copiedFrame.x, copiedFrame.y], [128, 64]);
+  assert.deepEqual([copiedPanel.x, copiedPanel.y], [160, 64]);
+  assert.equal(copiedPanel.id, ids[1]);
+  assert.throws(() => nestScene(target, target, { x: 0, y: 0 }), /cannot be placed inside itself/);
+  assert.throws(() => nestScene(target, newScene('Empty'), { x: 0, y: 0 }), /has no objects to place/);
+});
+
+test('scene artwork reports the picture and the world size each node draws', () => {
+  const assets = [SPRITE, MODEL];
+  const sprite = sceneArtwork({ spriteAsset: SPRITE.id, spriteScale: 2 }, assets);
+  assert.equal(sprite.kind, 'sprite');
+  assert.equal(sprite.src, SPRITE.src);
+  assert.deepEqual([sprite.width, sprite.height], [80, 112]);
+  const model = sceneArtwork({ modelAsset: MODEL.id, modelScale: 48 }, assets);
+  assert.equal(model.kind, 'model');
+  assert.equal(model.src, MODEL.preview);
+  assert.deepEqual([model.width, model.height], [48, 48]);
+  assert.equal(sceneArtwork({}, assets), null);
+  assert.equal(sceneArtwork({ spriteAsset: 'asset_gone' }, assets), null);
+});
+
+test('a scene built from dropped assets and nested scenes validates', () => {
+  const project = createProject();
+  const props = newScene('Props');
+  addSceneObjectFromAsset(props, SPRITE, { x: 0, y: 0 });
+  const nested = newScene('Nested');
+  addSceneObjectFromAsset(nested, SPRITE, { x: 16, y: 16 });
+  const outer = newScene('Outer');
+  nestScene(outer, nested, { x: 64, y: 64 });
+  project.assets = [SPRITE];
+  project.scenes = [props, nested, outer];
+  assert.doesNotThrow(() => validateProject(project));
+});
+
+test('the editor has one context menu and one searchable asset picker', () => {
+  const menu = readFileSync(new URL('../public/context-menu.js', import.meta.url), 'utf8');
+  assert.match(menu, /export function contextMenu\(/);
+  assert.match(menu, /export function closeContextMenu\(/);
+  // Positioned with CSSOM writes, which the CSP allows; style attributes are refused.
+  assert.equal(/setAttribute\('style'|\.style\.cssText/.test(menu), false, 'no style attribute writes');
+  const picker = readFileSync(new URL('../public/asset-picker.js', import.meta.url), 'utf8');
+  assert.match(picker, /export function openAssetPicker\(/);
+  // An imported game carries about 1500 sprites, so the list is bounded and searchable
+  // instead of one <select> option per asset.
+  assert.match(picker, /const ROW_LIMIT = 200;/);
+  assert.match(picker, /Showing \$\{matches\.length\} of \$\{total\} assets/);
+  const editor = readFileSync(new URL('../public/scene-object-editor.js', import.meta.url), 'utf8');
+  assert.match(editor, /openAssetPicker\(\{/);
+  // Assigning artwork goes through the shared helper, so a sprite drops the model.
+  assert.match(editor, /setSceneObjectAsset\(/);
+  assert.match(editor, /function bindDropping\(/);
+  assert.match(editor, /addSceneObjectFromAsset\(/);
+  assert.match(editor, /nestScene\(/);
+  // The view draws the assigned artwork instead of an anonymous box.
+  assert.match(editor, /artworkImage\(artworkOf\(entity\)\?\.src\)/);
+  assert.match(editor, /function groundPointAt\(/);
+});
+
+test('right click answers on the layout, in the 3D view and on every list', () => {
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /function installContextMenus\(\)/);
+  for (const list of ['asset-list', 'event-list', 'sector-list', 'scene-objects']) {
+    assert.match(app, new RegExp(`\\$\\('${list}'\\)\\.addEventListener\\('contextmenu'`), `${list} has a context menu`);
+  }
+  assert.match(app, /for \(const id of \['entities', 'project-objects'\]\)/);
+  assert.match(app, /\$\(id\)\.addEventListener\('contextmenu'/);
+  assert.match(app, /function mapCanvasMenu\(/);
+  assert.match(app, /menu: \(event, picked\) => mapViewMenu\(event, picked\)/);
+  // A right click is told apart from a right-drag pan, so panning does not open menus.
+  assert.match(app, /finished\.kind === 'pan' && finished\.button === 2 && !finished\.moved/);
+  const scene = readFileSync(new URL('../public/scene-editor.js', import.meta.url), 'utf8');
+  assert.match(scene, /if \(!completed\.moved\) \{/);
+  assert.match(scene, /callbacks\.menu\?\.\(event/);
+  const logs = readFileSync(new URL('../public/playtest-log-panel.js', import.meta.url), 'utf8');
+  assert.match(logs, /Playtest session actions/);
+  assert.match(logs, /Log entry actions/);
 });

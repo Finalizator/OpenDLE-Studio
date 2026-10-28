@@ -1948,7 +1948,7 @@ the top keep several open, exactly like Godot's scene tabs.
 | dock | what it does |
 | --- | --- |
 | Scene (left) | filter box, the node tree, and the node toolbar: add child node, duplicate, move up/down, expand/collapse, rename, delete. Right-clicking a node opens the same actions, and dragging a node onto another one groups it (drag onto the scene root to ungroup). |
-| View (middle) | **2D** is a top-down blueprint: dot grid, scene bounds, parent links, facing ticks, interaction-area rings, drag to move (snapped), wheel to zoom, middle-drag or alt-drag to pan. **3D** is an orbit camera over the same nodes, drawn as boxes whose height is the node's collider or type height, so elevation, collider size and grouping are readable; left-drag orbits, right-drag dollies, the wheel zooms. |
+| View (middle) | **2D** is a top-down blueprint: dot grid, scene bounds, parent links, facing ticks, interaction-area rings, drag to move (snapped), wheel to zoom, middle-drag or alt-drag to pan. **3D** is an orbit camera over the same nodes, drawn as boxes whose height is the node's collider or type height, so elevation, collider size and grouping are readable; dragging a node moves it along the ground plane, left-drag on empty space orbits, right-drag dollies, and a right click that stays put opens the node menu. Both views draw the node's artwork — the sprite image at its real world size, or the model's preview picture — so assigning an asset visibly changes the view. |
 | Inspector (right) | the selected node's properties in folded categories — Transform, Node, Visual, Model, Physics, Light, Interaction area, Script — with Godot's right-aligned labels and per-row revert arrow, plus a property filter and an expand/collapse menu. Empty categories are not drawn. |
 
 The scene itself is the tree root, so its inspector edits the scene name and its
@@ -1964,8 +1964,56 @@ all apply as they do elsewhere in the studio.
 The view draws on a 2D canvas rather than a Three.js scene: the editor must stay
 responsive while a big map is open, and the canvas needs no GPU context, textures
 or shader warm-up. Colours and node icons come from the stylesheet (the app's CSP
-refuses inline styles, so tree indentation and the dock popup are classes, not
-`element.style` writes).
+refuses inline style *attributes*, so tree indentation and the dock popup are
+classes; CSSOM writes such as a menu's `left`/`top` are allowed and are how the
+menus and the drag ghost follow the pointer).
+
+**Dropping onto a scene.** Assets, other scene objects and layout objects can be
+dragged into the view or onto a tree row, using pointer events like the layout's own
+drag and drop (a tile that contains an `<img>` would otherwise start the browser's
+image drag and swallow the drop):
+
+| dragged | dropped on a node | dropped on empty space |
+| --- | --- | --- |
+| sprite, flat, texture, weapon or sky asset | sets the node's sprite, and removes its model | places a new decoration that already carries it |
+| 3D model | sets the node's model | places a new decoration holding the model at scale 32 |
+| another scene object | nests its objects under that node | nests it at the drop point as one group node |
+| a layout object | copies it in under that node | copies it in at the drop point |
+
+A hint band over the viewport says what the drop will do before the button is
+released, and the whole gesture is one undoable edit (`shared/scenes.js`:
+`setSceneObjectAsset`, `addSceneObjectFromAsset`, `addSceneObjectFromEntity`,
+`nestScene`). The scene editor's sprite and model rows open a **searchable asset
+picker** (`public/asset-picker.js`) instead of a `<select>` of every asset: an
+imported game has around 1500 sprites, and a list that long is unusable and slow to
+build. The picker shows the first 200 matches, filters as you type, and keeps the
+current value on top.
+
+### Context menus everywhere
+
+Every list, tile and view answers a right click through one shared menu
+(`public/context-menu.js`), so the editor behaves the same way everywhere instead
+of going silent outside the scene tree. The menu is plain data — `{ label, run,
+disabled, checked, danger, separator }` — placed at the pointer, kept inside the
+window, and closed by Escape, a second right click or a click elsewhere; arrow keys
+and Home/End walk it.
+
+| where | what it offers |
+| --- | --- |
+| Layout 1 (2D) | actions for the object, sector, wall or vertex under the pointer, plus "place this object type here", fit the view and copy coordinates |
+| 3D view | the same object and sector actions for what the ray hit, or "place this object type at the view centre" |
+| object tiles and the object list | select, edit its script, assign artwork, duplicate, capture as a scene object, delete |
+| asset tiles | assign to the selected object, use as weapon overlay/sky/level music, rename, copy name |
+| scene tiles and scene object rows | open the editor, place in the layout, rename, capture, delete |
+| event cards | enable, run once, move up/down, delete the rule and its sub-events |
+| scene tree rows, scene root and scene tabs | the node toolbar actions, artwork assignment and scene actions |
+| sector list | select, set the light level, capture its objects as a scene, copy the id |
+| playtest log rows | copy the message or the whole record |
+
+A right click is told apart from a right **drag**: the layout pans on a right drag
+and the 3D view flies on one, so the menu only opens when the button never moved.
+That is why both views track `moved` on their drag state instead of using the
+`contextmenu` event.
 
 ### Model thumbnails
 

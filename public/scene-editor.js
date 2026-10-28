@@ -443,6 +443,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   function assetFromTile(tile) {
     const list = tile.closest('#asset-list');
     if (!list) return null;
+    // The tile carries its asset id, which is exact; the position match below is the
+    // fallback for tiles rendered before that attribute existed.
+    if (tile.dataset.assetId) {
+      const byId = (project.assets || []).find(asset => asset.id === tile.dataset.assetId);
+      if (byId) return byId;
+    }
     const tiles = [...list.querySelectorAll(':scope > .asset-tile')];
     const filter = document.getElementById('asset-filter')?.value || 'all';
     const search = (document.getElementById('asset-search')?.value || '').trim().toLowerCase();
@@ -624,7 +630,11 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     canvas.focus();
     try { canvas.setPointerCapture(event.pointerId); } catch { /* capture is best effort */ }
     cast(event);
-    if (event.button === 2) { action = { kind: 'fly', x: event.clientX, y: event.clientY }; return; }
+    // The right button flies the camera; a right click that never moves opens the menu.
+    if (event.button === 2) {
+      action = { kind: 'fly', x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
+      return;
+    }
     const tool = callbacks.tool();
     if (tool !== 'select') {
       const hit = worldHit(), point = hit?.point || planePoint(0);
@@ -657,6 +667,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   listen(canvas, 'pointermove', event => {
     if (!action) return;
     if (action.kind === 'fly') {
+      if (!action.moved && Math.hypot(event.clientX - action.startX, event.clientY - action.startY) >= 3) action.moved = true;
       yaw += (event.clientX - action.x) * .003;
       pitch = THREE.MathUtils.clamp(pitch - (event.clientY - action.y) * .003, -1.48, 1.48);
       action.x = event.clientX; action.y = event.clientY; return;
@@ -704,10 +715,18 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       liveDrag(action.selection, action.baseline, 'scale', { scale: Math.exp(dragDelta * .01) }, `3D scale ${Math.round(Math.exp(dragDelta * .01) * 100)}%`);
     }
   });
-  listen(canvas, 'pointerup', () => {
+  listen(canvas, 'pointerup', event => {
     const completed = action; action = null; keys.clear(); roomOutline.visible = false;
     canvas.dataset.transform = '';
-    if (!completed || completed.kind === 'fly') return;
+    if (!completed) return;
+    if (completed.kind === 'fly') {
+      // A right click that stayed put is a context menu request, not a camera drag.
+      if (!completed.moved) {
+        cast(event);
+        callbacks.menu?.(event, worldHit() ? selectionOf(worldHit().object) : null);
+      }
+      return;
+    }
     if (completed.kind === 'room') { callbacks.room(completed.start, completed.end); return; }
     if (completed.kind === 'surface') {
       hideReadout();

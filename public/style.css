@@ -493,3 +493,49 @@ dialog::backdrop { background: #111c; }
 .scene-object-row.active { background: #6a6758; border-color: #8a8160; }
 .scene-object-count { margin-left: auto; color: #9b9b9b; font-size: 9px; }
 .scene-add { color: var(--accent); }
+
+/* Shared context menu and asset picker: one look for right clicks everywhere. */
+.context-menu { position: fixed; z-index: 200; min-width: 170px; max-width: min(420px, 90vw); max-height: 80vh; overflow: auto; padding: 3px; background: #3d3d3d; border: 1px solid #6b6b6b; box-shadow: 0 8px 24px #000a; }
+.context-menu-item { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: transparent; border: none; padding: 4px 8px 4px 4px; }
+.context-menu-item:hover:not([disabled]) { background: var(--accent); color: #202020; }
+.context-menu-item[disabled] { opacity: .45; cursor: default; }
+.context-menu-item.danger { color: #ffb5ab; }
+.context-menu-item.danger:hover:not([disabled]) { background: #8f4a41; color: #fff; }
+.context-menu-tick { width: 12px; color: var(--accent); font-size: 10px; flex: 0 0 auto; }
+.context-menu-item:hover:not([disabled]) .context-menu-tick { color: #202020; }
+.context-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-menu-hint { color: var(--muted); font-size: 10px; }
+.context-menu-separator { height: 1px; margin: 3px 2px; background: #5f5f5f; }
+
+.asset-picker { position: fixed; z-index: 210; width: min(360px, 92vw); max-height: min(60vh, 460px); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 4px; padding: 6px; background: #3d3d3d; border: 1px solid #6b6b6b; box-shadow: 0 10px 28px #000a; }
+.asset-picker-head { display: flex; align-items: center; gap: 6px; }
+.asset-picker-head strong { flex: 1; font-weight: 500; }
+.asset-picker-close { background: transparent; border: none; padding: 0 4px; font-size: 13px; color: var(--muted); }
+.asset-picker-close:hover { color: var(--text); background: #575757; }
+.asset-picker-search { width: 100%; }
+.asset-picker-list { overflow: auto; display: grid; gap: 1px; align-content: start; min-height: 40px; }
+.asset-picker-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; text-align: left; background: transparent; border: 1px solid transparent; padding: 2px 4px; }
+.asset-picker-row:hover, .asset-picker-row:focus-visible { background: #545454; }
+.asset-picker-row.selected { background: #6a6758; border-color: #8a8160; }
+.asset-picker-thumb { width: 26px; height: 26px; object-fit: contain; background: #2c2c2c; border: 1px solid #2a2a2a; image-rendering: pixelated; }
+.asset-picker-glyph { display: grid; place-content: center; font-size: 9px; color: var(--muted); }
+.asset-picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-picker-meta { color: #a5a5a5; font-size: 9px; white-space: nowrap; }
+.asset-picker-footer { margin: 0; color: var(--muted); font-size: 10px; }
+.asset-picker-empty { margin: 4px; }
+
+.asset-field { display: flex; align-items: center; gap: 2px; width: 100%; min-width: 0; }
+.asset-field-button { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; padding: 1px 4px; background: #373737; border: 1px solid #505050; text-align: left; }
+.asset-field-button:hover { background: #414141; }
+.asset-field-thumb { width: 16px; height: 16px; object-fit: contain; image-rendering: pixelated; }
+.asset-field-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-field-caret { color: var(--muted); font-size: 9px; }
+.asset-field-clear { padding: 0 4px; background: transparent; color: var(--muted); border: none; }
+.asset-field-clear:hover { color: #ffb5ab; background: #575757; }
+
+/* Dragging assets into the scene object view. */
+.scene-drag-ghost { position: fixed; z-index: 300; pointer-events: none; padding: 2px 6px; background: #2f2f2f; border: 1px solid var(--accent); color: var(--text); font-size: 10px; box-shadow: 0 4px 14px #000a; }
+.scene-drop-hint { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); padding: 3px 8px; background: #2f2f2fd0; border: 1px solid #6b6b6b; color: var(--text); font-size: 10px; pointer-events: none; z-index: 5; max-width: 90%; text-align: center; }
+.scene-drop-hint.error { color: #ffb5ab; border-color: #8f4a41; }
+#scene-canvas.scene-drop-target { outline: 2px dashed var(--accent); outline-offset: -4px; }
+body.scene-dragging { cursor: grabbing; }

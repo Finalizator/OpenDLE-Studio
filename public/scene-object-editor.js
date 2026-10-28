@@ -3,8 +3,11 @@ import {
   sceneChildren, sceneDepths, sceneSubtree, sceneDescendants, sceneBounds, sceneOrigin,
   addSceneObject, removeSceneObjects, duplicateSceneObject, reparentSceneObject, moveSceneObject,
   renameSceneObject, MAX_SCENE_ENTITIES,
+  sceneArtwork, sceneAssetUse, setSceneObjectAsset, addSceneObjectFromAsset, addSceneObjectFromEntity, nestScene,
 } from '/shared/scenes.js';
 import { ENTITY_TYPES } from '/shared/project.js';
+import { assetField, openAssetPicker, MODEL_KINDS, PICTURE_KINDS } from './asset-picker.js';
+import { contextMenu } from './context-menu.js';
 
 // A scene object editor laid out like Godot's scene dock and inspector: the node tree
 // on the left with the node toolbar under it, the view in the middle, and the
@@ -37,6 +40,8 @@ export function createSceneObjectEditor({ callbacks }) {
     orbitDistance: 420,
     drag: null,
     treeDrag: null,
+    // Dragging an asset, a scene or a layout object onto the view or the tree.
+    drop: null,
   };
   const dom = {};
   const scene = () => callbacks.scenes().find(item => item.id === state.sceneId) || null;
@@ -114,6 +119,19 @@ export function createSceneObjectEditor({ callbacks }) {
       close.addEventListener('click', event => { event.stopPropagation(); callbacks.closeScene(id); });
       tab.append(close);
       tab.addEventListener('click', () => callbacks.openScene(id));
+      tab.addEventListener('contextmenu', menuEvent => {
+        menuEvent.preventDefault();
+        contextMenu(menuEvent, [
+          { label: 'Open', run: () => callbacks.openScene(id) },
+          { label: 'Close', run: () => callbacks.closeScene(id) },
+          { label: 'Close other scene objects', disabled: open.length < 2, run: () => {
+            for (const other of open) if (other !== id) callbacks.closeScene(other);
+          } },
+          { separator: true },
+          { label: 'Place in layout', run: () => callbacks.placeScene(id) },
+          { label: 'Delete scene', danger: true, run: () => callbacks.deleteScene(id) },
+        ], { label: `${item.name} tab` });
+      });
       dom.tabs.append(tab);
     }
     const add = el('button', '+', 'scene-tab-add');
@@ -160,6 +178,20 @@ export function createSceneObjectEditor({ callbacks }) {
     root.append(el('span', `${count} node${count === 1 ? '' : 's'}`, 'node-badge'));
     root.addEventListener('mousedown', event => { event.stopPropagation(); select(current.id); });
     root.addEventListener('dblclick', () => beginRename(current.id, root));
+    root.addEventListener('contextmenu', menuEvent => {
+      menuEvent.preventDefault();
+      select(current.id);
+      contextMenu(menuEvent, [
+        { label: 'Add node', run: () => addNode(null) },
+        { label: 'Expand all', run: () => runTool('expand') },
+        { label: 'Collapse all', run: () => runTool('collapse') },
+        { separator: true },
+        { label: 'Place in layout', run: () => callbacks.placeScene(current.id) },
+        { label: 'Capture selected layout objects', run: () => callbacks.captureInto(current.id) },
+        { separator: true },
+        { label: 'Delete scene', danger: true, run: () => callbacks.deleteScene(current.id) },
+      ], { label: `${current.name} actions` });
+    });
     makeTreeDropTarget(root, null);
     dom.tree.append(root);
 
@@ -217,21 +249,12 @@ export function createSceneObjectEditor({ callbacks }) {
         row.addEventListener('contextmenu', menuEvent => {
           menuEvent.preventDefault();
           select(entity.id);
-          openMenu(dom.dockMenu, [
-            { label: 'Add child node', run: () => runTool('add') },
-            { label: 'Duplicate', run: () => runTool('duplicate') },
-            { label: 'Rename', run: () => runTool('rename') },
+          contextMenu(menuEvent, [
+            ...nodeMenuItems(entity),
             { separator: true },
-            { label: 'Move up', run: () => runTool('up') },
-            { label: 'Move down', run: () => runTool('down') },
-            { label: 'Move to scene root', run: () => {
-              try { editScene(next => reparentSceneObject(next, entity.id, null), 'Node moved to the scene root'); }
-              catch (error) { callbacks.status(error.message, true); }
-            } },
-            { separator: true },
-            { label: 'Open event sheet', run: () => callbacks.openEvents(entity.id) },
-            { label: 'Delete', run: () => runTool('delete') },
-          ]);
+            { label: 'Move up', run: () => { select(entity.id); runTool('up'); } },
+            { label: 'Move down', run: () => { select(entity.id); runTool('down'); } },
+          ], { label: `${entity.name} actions` });
         });
         makeTreeDropTarget(row, entity.id);
         dom.tree.append(row);
@@ -300,15 +323,16 @@ export function createSceneObjectEditor({ callbacks }) {
 
   /* ---------------------------------------------------------------- toolbar */
 
-  function addNode(parentId = null) {
+  function addNode(parentId = null, point = null) {
     const current = scene();
     if (!current) return;
     if (current.entities.length >= MAX_SCENE_ENTITIES) {
       callbacks.status(`A scene holds at most ${MAX_SCENE_ENTITIES} nodes`, true);
       return;
     }
-    // New nodes land in front of the view centre so they are visible straight away.
-    const centre = worldToScene({ x: dom.canvas.clientWidth / 2, y: dom.canvas.clientHeight / 2 });
+    // New nodes land in front of the view centre, or at the point the caller dropped on.
+    const centre = point || (state.view3d ? { x: 0, y: 0 }
+      : worldToScene({ x: dom.canvas.clientWidth / 2, y: dom.canvas.clientHeight / 2 }));
     const snap = value => state.snap ? Math.round(value / GRID) * GRID : Math.round(value);
     let created = null;
     try {
@@ -438,17 +462,31 @@ export function createSceneObjectEditor({ callbacks }) {
     return input;
   }
 
-  function assetEditor(kind, value, onChange) {
-    const options = [['', '(none)']];
+  /**
+   * A sprite or model slot. An imported game has thousands of sprites, so the row shows
+   * the current asset and opens the searchable picker instead of a list of every asset.
+   */
+  function assetEditor(kind, value, onChange, onClear) {
     const assets = callbacks.assets() || [];
-    for (const asset of assets) {
-      if (kind === 'sprite' && !['sprite', 'weapon'].includes(asset.kind)) continue;
-      if (kind === 'model' && asset.kind !== 'model') continue;
-      options.push([asset.id, asset.name]);
-    }
-    const known = options.some(([id]) => id === (value ?? '')) || !value;
-    if (!known) options.push([value, `${value} (missing)`]);
-    return selectEditor(options, value ?? '', onChange);
+    const asset = value ? assets.find(candidate => candidate.id === value) || null : null;
+    const kinds = kind === 'model' ? MODEL_KINDS : PICTURE_KINDS;
+    const missing = value && !asset;
+    return assetField(missing ? { name: `${value} (missing)`, kind } : asset, {
+      placeholder: kind === 'model' ? 'Choose a 3D model' : 'Choose a sprite',
+      title: missing ? `${value} is not part of this project any more` : undefined,
+      onOpen: button => openAssetPicker({
+        anchor: button,
+        title: kind === 'model' ? 'Choose a 3D model' : 'Choose a sprite or image',
+        assets, kinds, value,
+        noneLabel: kind === 'model' ? '(no model)' : '(no sprite)',
+        emptyText: kind === 'model'
+          ? 'No 3D models yet. Import a glTF, glb, obj or bbmodel from the Assets tab.'
+          : 'No pictures yet. Import a WAD or images to get sprites.',
+        onPick: chosen => onChange(chosen.id),
+        ...(onClear ? { onClear } : {}),
+      }),
+      ...(onClear ? { onClear, clearLabel: kind === 'model' ? 'Remove the model' : 'Remove the sprite' } : {}),
+    });
   }
 
   function categoryHeader(container, title) {
@@ -485,6 +523,12 @@ export function createSceneObjectEditor({ callbacks }) {
       } catch (error) { callbacks.status(error.message, true); }
     };
     const set = (key, value, message) => propertiesOf(target.id, { [key]: value }, message || 'Node updated');
+    // Assigning artwork goes through the shared helper so a sprite replaces a model and
+    // the other way round, exactly like dropping an asset on the layout.
+    const assignAsset = assetId => {
+      if (isRoot) { callbacks.status('Pick a node, not the scene, to assign artwork', true); return; }
+      assignNodeAsset(target.id, assetId);
+    };
     const setPath = (path, value, message) => {
       try {
         editScene(next => {
@@ -660,8 +704,9 @@ export function createSceneObjectEditor({ callbacks }) {
         shown++;
         propertyRow(dom.properties, {
           label: 'Sprite', value: target.spriteAsset ?? '',
-          editor: assetEditor('sprite', target.spriteAsset, value => value ? set('spriteAsset', value, 'Sprite assigned') : clear('spriteAsset', 'Sprite cleared')),
-          reset: target.spriteAsset ? () => clear('spriteAsset', 'Sprite cleared') : null,
+          editor: assetEditor('sprite', target.spriteAsset,
+            value => assignAsset(value),
+            target.spriteAsset ? () => clear('spriteAsset', 'Sprite cleared') : null),
         });
       }
       if (!isRoot && visible('Sprite scale')) {
@@ -679,8 +724,9 @@ export function createSceneObjectEditor({ callbacks }) {
         shown++;
         propertyRow(dom.properties, {
           label: 'Model', value: target.modelAsset ?? '',
-          editor: assetEditor('model', target.modelAsset, value => value ? set('modelAsset', value, 'Model assigned') : clear('modelAsset', 'Model cleared')),
-          reset: target.modelAsset ? () => clear('modelAsset', 'Model cleared') : null,
+          editor: assetEditor('model', target.modelAsset,
+            value => assignAsset(value),
+            target.modelAsset ? () => clear('modelAsset', 'Model cleared') : null),
         });
       }
       if (!isRoot && target.modelAsset && visible('Model scale')) {
@@ -873,6 +919,21 @@ export function createSceneObjectEditor({ callbacks }) {
 
   /** Projects a scene point (x, y on the floor, z up) to the canvas. */
   function project(point) {
+    const { eye, forward, right, up, scale } = cameraBasis();
+    const dx = point.x - eye.x, dy = point.y - eye.y, dz = (point.z || 0) - eye.z;
+    const depth = dx * forward.x + dy * forward.y + dz * forward.z;
+    if (depth <= 1) return null;
+    const screenX = dx * right.x + dy * right.y + dz * right.z;
+    const screenY = dx * up.x + dy * up.y + dz * up.z;
+    return {
+      x: dom.canvas.clientWidth / 2 + (screenX / depth) * scale,
+      y: dom.canvas.clientHeight / 2 - (screenY / depth) * scale,
+      depth,
+    };
+  }
+
+  /** The orbit camera basis, shared by the projection and by inverse picking. */
+  function cameraBasis() {
     const eye = orbitEye();
     // Camera basis: forward towards the pivot at the scene origin.
     const forward = { x: -eye.x, y: -eye.y, z: -eye.z };
@@ -887,17 +948,48 @@ export function createSceneObjectEditor({ callbacks }) {
       y: forward.z * right.x - forward.x * right.z,
       z: forward.x * right.y - forward.y * right.x,
     };
-    const dx = point.x - eye.x, dy = point.y - eye.y, dz = (point.z || 0) - eye.z;
-    const depth = dx * forward.x + dy * forward.y + dz * forward.z;
-    if (depth <= 1) return null;
-    const screenX = dx * right.x + dy * right.y + dz * right.z;
-    const screenY = dx * up.x + dy * up.y + dz * up.z;
-    const scale = (dom.canvas.clientHeight / 2) / Math.tan(FOV / 2);
-    return {
-      x: dom.canvas.clientWidth / 2 + (screenX / depth) * scale,
-      y: dom.canvas.clientHeight / 2 - (screenY / depth) * scale,
-      depth,
+    return { eye, forward, right, up, scale: (dom.canvas.clientHeight / 2) / Math.tan(FOV / 2) };
+  }
+
+  /** Where a canvas pixel meets the ground plane, so 3D drops and drags have a point. */
+  function groundPointAt(local) {
+    const { eye, forward, right, up, scale } = cameraBasis();
+    const sx = (local.x - dom.canvas.clientWidth / 2) / scale;
+    const sy = -(local.y - dom.canvas.clientHeight / 2) / scale;
+    const dir = {
+      x: forward.x + right.x * sx + up.x * sy,
+      y: forward.y + right.y * sx + up.y * sy,
+      z: forward.z + right.z * sx + up.z * sy,
     };
+    if (Math.abs(dir.z) < 1e-6) return null;
+    const t = -eye.z / dir.z;
+    if (!Number.isFinite(t) || t <= 0) return null;
+    return { x: eye.x + dir.x * t, y: eye.y + dir.y * t, z: 0 };
+  }
+
+  /* --------------------------------------------------------------- artwork */
+
+  // Sprite pictures and model previews are decoded once per asset; both views draw them,
+  // which is what makes assigning an asset visibly change the node.
+  const artworkImages = new Map();
+
+  function artworkImage(src) {
+    if (!src) return null;
+    let record = artworkImages.get(src);
+    if (!record) {
+      record = { image: new Image(), ready: false };
+      record.image.addEventListener('load', () => {
+        record.ready = true;
+        if (!dom.panel?.hidden) draw();
+      });
+      record.image.src = src;
+      artworkImages.set(src, record);
+    }
+    return record.ready ? record.image : null;
+  }
+
+  function artworkOf(entity) {
+    return sceneArtwork(entity, callbacks.assets?.() || []);
   }
 
   /** Height of a node as a 3D box, so elevation and colliders are visible. */
@@ -948,9 +1040,11 @@ export function createSceneObjectEditor({ callbacks }) {
       const focal = (dom.canvas.clientHeight / 2) / Math.tan(FOV / 2);
       const half = Math.max(3, GRID / 2 * focal / Math.max(1, box.centre.depth));
       const top = Math.min(box.headPoint.y, footPoint.y), tall = Math.max(3, Math.abs(footPoint.y - box.headPoint.y));
-      // Front face plus a lighter top face, so a box reads as a solid at any angle.
-      ctx.fillStyle = selectedNow ? '#ffffff' : colour;
-      ctx.fillRect(box.centre.x - half, top, half * 2, tall);
+      // The sprite or model preview fills the box's front face, so the assigned artwork is
+      // what the view shows instead of an anonymous block.
+      const picture = artworkImage(artworkOf(entity)?.src);
+      if (picture) ctx.drawImage(picture, box.centre.x - half, top, half * 2, tall);
+      else { ctx.fillStyle = selectedNow ? '#ffffff' : colour; ctx.fillRect(box.centre.x - half, top, half * 2, tall); }
       ctx.globalAlpha = .55;
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(box.centre.x - half, top, half * 2, Math.max(2, tall * .18));
@@ -1082,16 +1176,29 @@ export function createSceneObjectEditor({ callbacks }) {
     for (const entity of current.entities) {
       const point = sceneToScreen(entity);
       if (point.x < -size || point.y < -size || point.x > width + size || point.y > height + size) continue;
-      ctx.fillStyle = `${entityColors[entity.type] || '#a6a4bc'}cc`;
-      ctx.strokeStyle = selected?.id === entity.id ? '#ffffff' : '#1b1c20';
-      ctx.lineWidth = selected?.id === entity.id ? 2 : 1;
-      ctx.beginPath();
-      if (entity.type === 'light') {
-        ctx.arc(point.x, point.y, size / 2, 0, Math.PI * 2);
+      const picture = artworkImage(artworkOf(entity)?.src);
+      if (picture) {
+        // A sprite or model preview drawn at its real world size in the top-down view.
+        const art = artworkOf(entity);
+        const drawnWidth = Math.max(6, art.width * zoom), drawnHeight = Math.max(6, art.height * zoom);
+        ctx.globalAlpha = .95;
+        ctx.drawImage(picture, point.x - drawnWidth / 2, point.y - drawnHeight / 2, drawnWidth, drawnHeight);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = selected?.id === entity.id ? '#ffffff' : 'rgba(20,20,20,.65)';
+        ctx.lineWidth = selected?.id === entity.id ? 2 : 1;
+        ctx.strokeRect(point.x - drawnWidth / 2, point.y - drawnHeight / 2, drawnWidth, drawnHeight);
       } else {
-        ctx.rect(point.x - size / 2, point.y - size / 2, size, size);
+        ctx.fillStyle = `${entityColors[entity.type] || '#a6a4bc'}cc`;
+        ctx.strokeStyle = selected?.id === entity.id ? '#ffffff' : '#1b1c20';
+        ctx.lineWidth = selected?.id === entity.id ? 2 : 1;
+        ctx.beginPath();
+        if (entity.type === 'light') {
+          ctx.arc(point.x, point.y, size / 2, 0, Math.PI * 2);
+        } else {
+          ctx.rect(point.x - size / 2, point.y - size / 2, size, size);
+        }
+        ctx.fill(); ctx.stroke();
       }
-      ctx.fill(); ctx.stroke();
       // Facing tick, so rotation is visible without opening the inspector.
       const angle = (Number(entity.angle) || 0) * Math.PI / 180;
       ctx.strokeStyle = 'rgba(20,20,20,.9)';
@@ -1149,6 +1256,20 @@ export function createSceneObjectEditor({ callbacks }) {
     return best;
   }
 
+  function localPoint(event) {
+    const rect = dom.canvas.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  /** The scene point a drop lands on: the floor plane in 3D, the grid in 2D. */
+  function dropPointAt(event) {
+    const local = localPoint(event);
+    const point = state.view3d ? groundPointAt(local) : worldToScene(local);
+    if (!point) return null;
+    const snap = value => state.snap ? Math.round(value / GRID) * GRID : Math.round(value);
+    return { x: snap(point.x), y: snap(point.y) };
+  }
+
   function bindCanvas() {
     const canvas = dom.canvas;
     if (!canvas) return;
@@ -1157,12 +1278,21 @@ export function createSceneObjectEditor({ callbacks }) {
       if (!current) return;
       canvas.focus();
       if (state.view3d) {
-        // Orbit with the left button, dolly with the right one, select on a plain click.
-        state.drag = { kind: event.button === 2 ? 'dolly' : 'orbit', startX: event.clientX, startY: event.clientY,
-          yaw: state.orbitYaw, pitch: state.orbitPitch, distance: state.orbitDistance, moved: false };
+        // Hit a node and drag it along the ground; miss and orbit. The right button
+        // dollies, and a right click that does not move opens the node menu.
+        const hit = event.button === 2 ? null : pickAt(event);
+        state.drag = hit
+          ? { kind: 'move3d', id: hit.id, moved: false, startX: event.clientX, startY: event.clientY,
+            originX: hit.x, originY: hit.y }
+          : { kind: event.button === 2 ? 'dolly' : 'orbit', startX: event.clientX, startY: event.clientY,
+            yaw: state.orbitYaw, pitch: state.orbitPitch, distance: state.orbitDistance, moved: false };
         canvas.setPointerCapture(event.pointerId);
-        const hit = pickAt(event);
         if (hit) select(hit.id);
+        return;
+      }
+      if (event.button === 2) {
+        state.drag = { kind: 'menu', startX: event.clientX, startY: event.clientY, moved: false };
+        canvas.setPointerCapture(event.pointerId);
         return;
       }
       if (event.button === 1 || (event.button === 0 && event.altKey)) {
@@ -1182,6 +1312,10 @@ export function createSceneObjectEditor({ callbacks }) {
     canvas.addEventListener('pointermove', event => {
       const drag = state.drag;
       if (!drag) return;
+      if (drag.kind === 'menu') {
+        if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 3) drag.moved = true;
+        return;
+      }
       if (drag.kind === 'orbit' || drag.kind === 'dolly') {
         const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
         if (!drag.moved && Math.hypot(dx, dy) < 3) return;
@@ -1191,6 +1325,16 @@ export function createSceneObjectEditor({ callbacks }) {
           state.orbitPitch = Math.max(-1.45, Math.min(1.45, drag.pitch + dy * .008));
         } else state.orbitDistance = Math.max(60, Math.min(4000, drag.distance * Math.exp(dy * .006)));
         draw();
+        return;
+      }
+      if (drag.kind === 'move3d') {
+        if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 3) return;
+        drag.moved = true;
+        const point = dropPointAt(event);
+        if (!point) return;
+        drag.nextX = point.x; drag.nextY = point.y;
+        draw();
+        if (!state.view3d) drawDragGhost(drag.nextX, drag.nextY);
         return;
       }
       if (drag.kind === 'pan') {
@@ -1210,10 +1354,13 @@ export function createSceneObjectEditor({ callbacks }) {
       draw();
       drawDragGhost(drag.nextX, drag.nextY);
     });
-    const finish = () => {
+    const finish = event => {
       const drag = state.drag;
       state.drag = null;
-      if (!drag || drag.kind !== 'move' || !drag.moved) return;
+      if (!drag) return;
+      if ((drag.kind === 'menu' || drag.kind === 'dolly') && !drag.moved) { canvasMenu(event); return; }
+      if (drag.kind !== 'move' && drag.kind !== 'move3d') return;
+      if (!drag.moved) return;
       const current = scene();
       const entity = current?.entities.find(item => item.id === drag.id);
       if (!entity || (entity.x === drag.nextX && entity.y === drag.nextY)) { draw(); return; }
@@ -1229,6 +1376,7 @@ export function createSceneObjectEditor({ callbacks }) {
     };
     canvas.addEventListener('pointerup', finish);
     canvas.addEventListener('pointercancel', finish);
+    canvas.addEventListener('contextmenu', event => event.preventDefault());
     canvas.addEventListener('wheel', event => {
       event.preventDefault();
       if (state.view3d) {
@@ -1260,6 +1408,196 @@ export function createSceneObjectEditor({ callbacks }) {
     ctx.setLineDash([]);
   }
 
+  /* --------------------------------------------------------------- artwork */
+
+  /** Visually points a node at an asset; the shared helper drops the other artwork kind. */
+  function assignNodeAsset(nodeId, assetId) {
+    const asset = (callbacks.assets() || []).find(candidate => candidate.id === assetId);
+    if (!asset) { callbacks.status('That asset is no longer part of this project', true); return; }
+    try {
+      let message = 'Asset assigned';
+      editScene(next => { message = setSceneObjectAsset(next, nodeId, asset); }, `Asset ${asset.name} assigned`);
+      callbacks.status(message);
+    } catch (error) { callbacks.status(error.message, true); }
+  }
+
+  /** Opens the asset picker for a node, anchored at the pointer or the inspector row. */
+  function pickArtworkFor(nodeId, kind, anchor) {
+    const assets = callbacks.assets() || [];
+    openAssetPicker({
+      anchor: anchor || { left: dom.canvas.getBoundingClientRect().left + 40, top: dom.canvas.getBoundingClientRect().top + 40 },
+      title: kind === 'model' ? 'Choose a 3D model' : 'Choose a sprite or image',
+      assets, kinds: kind === 'model' ? MODEL_KINDS : PICTURE_KINDS,
+      emptyText: kind === 'model'
+        ? 'No 3D models yet. Import a glTF, glb, obj or bbmodel from the Assets tab.'
+        : 'No pictures yet. Import a WAD or images to get sprites.',
+      onPick: asset => assignNodeAsset(nodeId, asset.id),
+    });
+  }
+
+  /* -------------------------------------------------------------- dropping */
+
+  // Assets, scene objects and layout objects are dragged into a scene with pointer
+  // events, the same way the layout view takes them: a tile that contains an <img>
+  // would otherwise start the browser's own image drag and lose the drop target.
+  function sourceFrom(target) {
+    if (!target?.closest || dom.panel?.hidden) return null;
+    const tile = target.closest('#asset-list .asset-tile');
+    if (tile) {
+      // Buttons inside a tile are actions, not drag handles.
+      if (target.closest('button, audio, input')) return null;
+      if (tile.dataset.sceneId) {
+        const source = (callbacks.scenes() || []).find(item => item.id === tile.dataset.sceneId);
+        return source ? { kind: 'scene', id: source.id, label: `${source.name} (scene)` } : null;
+      }
+      const asset = (callbacks.assets() || []).find(item => item.id === tile.dataset.assetId);
+      return asset ? { kind: 'asset', id: asset.id, label: `${asset.name} (${asset.kind})` } : null;
+    }
+    const sceneRow = target.closest('#scene-objects .scene-object-row');
+    if (sceneRow?.dataset.sceneId) {
+      const source = (callbacks.scenes() || []).find(item => item.id === sceneRow.dataset.sceneId);
+      return source ? { kind: 'scene', id: source.id, label: `${source.name} (scene)` } : null;
+    }
+    const objectTile = target.closest('[data-object-id]');
+    if (objectTile?.dataset.objectId) {
+      const entity = (callbacks.entities?.() || []).find(item => item.id === objectTile.dataset.objectId);
+      return entity ? { kind: 'object', id: entity.id, label: `${entity.name} (layout object)` } : null;
+    }
+    return null;
+  }
+
+  function dropTargets(event) {
+    const current = scene();
+    if (!current) return null;
+    const row = document.elementFromPoint(event.clientX, event.clientY)?.closest('.node-row[data-node-id]');
+    if (row) {
+      const entity = current.entities.find(item => item.id === row.dataset.nodeId);
+      if (entity) return { node: entity };
+    }
+    const rect = dom.canvas.getBoundingClientRect();
+    const inside = event.clientX >= rect.left && event.clientX <= rect.right
+      && event.clientY >= rect.top && event.clientY <= rect.bottom;
+    if (!inside) return null;
+    return { point: dropPointAt(event), hit: pickAt(event) };
+  }
+
+  function planDrop(target, source) {
+    const current = scene();
+    if (!current || !target) return { error: 'Drop it inside the scene view or on a node' };
+    const node = target.node || target.hit || null;
+    const point = target.point || { x: node?.x ?? 0, y: node?.y ?? 0 };
+    if (source.kind === 'asset') {
+      const asset = (callbacks.assets() || []).find(item => item.id === source.id);
+      if (!asset) return { error: 'That asset is no longer part of this project' };
+      const use = sceneAssetUse(asset);
+      if (!use) return { error: `${asset.name} is a ${asset.kind} asset; drop a picture or a model on a node` };
+      if (node) return { label: `Set ${use === 'model' ? 'model' : 'sprite'} ${asset.name} on ${node.name}`, asset, nodeId: node.id };
+      return { label: `Place ${asset.name} at ${point.x}, ${point.y}`, asset, point };
+    }
+    if (source.kind === 'scene') {
+      const other = (callbacks.scenes() || []).find(item => item.id === source.id);
+      if (!other) return { error: 'That scene object no longer exists' };
+      if (other.id === current.id) return { error: 'A scene cannot be placed inside itself' };
+      if (!other.entities.length) return { error: `${other.name} has no objects to place` };
+      return { label: node ? `Nest ${other.name} under ${node.name}` : `Nest ${other.name} at ${point.x}, ${point.y}`,
+        scene: other, parentId: node?.id ?? null, point };
+    }
+    const entity = (callbacks.entities?.() || []).find(item => item.id === source.id);
+    if (!entity) return { error: 'That layout object no longer exists' };
+    if (entity.type === 'player') return { error: 'A scene cannot contain the player object' };
+    return { label: node ? `Add ${entity.name} under ${node.name}` : `Add ${entity.name} at ${point.x}, ${point.y}`,
+      entity, parentId: node?.id ?? null, point };
+  }
+
+  function applyDrop(plan) {
+    if (plan.nodeId) { assignNodeAsset(plan.nodeId, plan.asset.id); return; }
+    let created = null;
+    try {
+      editScene(next => {
+        if (plan.asset) created = addSceneObjectFromAsset(next, plan.asset, { x: plan.point.x, y: plan.point.y });
+        else if (plan.scene) created = nestScene(next, plan.scene, { x: plan.point.x, y: plan.point.y, parentId: plan.parentId }).group;
+        else if (plan.entity) created = addSceneObjectFromEntity(next, plan.entity, { x: plan.point.x, y: plan.point.y, parentId: plan.parentId });
+      }, plan.label);
+    } catch (error) { callbacks.status(error.message, true); return; }
+    if (created) select(created.id);
+    callbacks.status(plan.label);
+  }
+
+  let ghost = null;
+  function ghostElement() {
+    if (!ghost) {
+      ghost = el('div', '', 'scene-drag-ghost');
+      ghost.hidden = true;
+      document.body.append(ghost);
+    }
+    return ghost;
+  }
+
+  function showDropHint(text, isError) {
+    if (!dom.hint) return;
+    dom.hint.textContent = text || '';
+    dom.hint.hidden = !text;
+    dom.hint.classList.toggle('error', Boolean(isError));
+  }
+
+  function endDropVisuals() {
+    const element = ghostElement();
+    element.hidden = true;
+    element.textContent = '';
+    document.body.classList.remove('scene-dragging');
+    showDropHint('');
+    dom.canvas?.classList.remove('scene-drop-target');
+  }
+
+  /** The click that follows a drop is the drag's, not the user's. */
+  function suppressNextClick() {
+    const stop = event => { event.stopPropagation(); event.preventDefault(); };
+    document.addEventListener('click', stop, true);
+    setTimeout(() => document.removeEventListener('click', stop, true), 0);
+  }
+
+  function bindDropping() {
+    document.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || dom.panel?.hidden) return;
+      const source = sourceFrom(event.target);
+      if (!source) return;
+      state.drop = { pointerId: event.pointerId, source, startX: event.clientX, startY: event.clientY, active: false };
+    });
+    document.addEventListener('pointermove', event => {
+      const drop = state.drop;
+      if (!drop || drop.pointerId !== event.pointerId) return;
+      if (!drop.active) {
+        if (Math.hypot(event.clientX - drop.startX, event.clientY - drop.startY) < 5) return;
+        drop.active = true;
+        ghostElement().hidden = false;
+        document.body.classList.add('scene-dragging');
+      }
+      event.preventDefault();
+      const element = ghostElement();
+      element.textContent = drop.source.label;
+      element.style.transform = `translate(${event.clientX + 14}px, ${event.clientY + 12}px)`;
+      const plan = planDrop(dropTargets(event), drop.source);
+      showDropHint(plan.error || plan.label, Boolean(plan.error));
+      dom.canvas?.classList.toggle('scene-drop-target', !plan.error);
+    });
+    document.addEventListener('pointerup', event => {
+      const drop = state.drop;
+      if (!drop || drop.pointerId !== event.pointerId) return;
+      state.drop = null;
+      endDropVisuals();
+      if (!drop.active) return;
+      suppressNextClick();
+      const plan = planDrop(dropTargets(event), drop.source);
+      if (plan.error) { callbacks.status(plan.error, true); return; }
+      applyDrop(plan);
+    });
+    document.addEventListener('pointercancel', () => {
+      if (!state.drop) return;
+      state.drop = null;
+      endDropVisuals();
+    });
+  }
+
   /* ------------------------------------------------------------------ menus */
 
   function closeMenu() {
@@ -1281,6 +1619,73 @@ export function createSceneObjectEditor({ callbacks }) {
     menu.hidden = false;
     anchor.setAttribute('aria-expanded', 'true');
     dom.menu.dataset.anchor = anchor.id;
+  }
+
+  /** The actions for one node, shared by the tree, the node menu and the view menu. */
+  function nodeMenuItems(entity) {
+    return [
+      { label: 'Add child node', run: () => addNode(entity.id) },
+      { label: 'Duplicate', run: () => { select(entity.id); runTool('duplicate'); } },
+      { label: 'Rename', run: () => beginRename(entity.id, dom.tree.querySelector(`.node-row[data-node-id="${entity.id}"]`) || dom.tree) },
+      { separator: true },
+      { label: 'Assign sprite\u2026', run: () => pickArtworkFor(entity.id, 'sprite') },
+      { label: 'Assign 3D model\u2026', run: () => pickArtworkFor(entity.id, 'model') },
+      { label: 'Remove artwork', disabled: !entity.spriteAsset && !entity.modelAsset, run: () => {
+        try {
+          editScene(next => {
+            const node = next.entities.find(item => item.id === entity.id);
+            if (!node) throw new Error('That object no longer exists');
+            delete node.spriteAsset; delete node.modelAsset; delete node.animation;
+          }, `Artwork removed from ${entity.name}`);
+        } catch (error) { callbacks.status(error.message, true); }
+      } },
+      { separator: true },
+      { label: 'Open event sheet', run: () => callbacks.openEvents(entity.id) },
+      { label: 'Move to scene root', disabled: !entity.parentId, run: () => {
+        try { editScene(next => reparentSceneObject(next, entity.id, null), 'Node moved to the scene root'); }
+        catch (error) { callbacks.status(error.message, true); }
+      } },
+      { separator: true },
+      { label: 'Delete node', danger: true, run: () => { select(entity.id); runTool('delete'); } },
+    ];
+  }
+
+  /** Right-clicking the view: node actions when a node is under the pointer. */
+  function canvasMenu(event) {
+    const current = scene();
+    if (!current) return;
+    const hit = pickAt(event);
+    if (hit) select(hit.id);
+    const point = dropPointAt(event);
+    const viewItems = [
+      { label: 'Add node here', disabled: !point, run: () => addNode(null, point) },
+      { label: 'Add node at the view centre', run: () => addNode(null) },
+      { separator: true },
+      { label: state.view3d ? 'Switch to the 2D view' : 'Switch to the 3D view', run: () => {
+        state.view3d = !state.view3d;
+        for (const button of document.querySelectorAll('[data-scene-view]')) {
+          button.classList.toggle('active', (button.dataset.sceneView === '3d') === state.view3d);
+        }
+        updateZoomLabel();
+        draw();
+      } },
+      { label: 'Center the view', run: () => { centerView(); draw(); } },
+      { label: 'Show the grid', checked: state.grid, run: () => {
+        state.grid = !state.grid;
+        document.getElementById('scene-view-grid')?.setAttribute('aria-pressed', String(state.grid));
+        draw();
+      } },
+      { label: 'Snap to the grid', checked: state.snap, run: () => {
+        state.snap = !state.snap;
+        document.getElementById('scene-view-snap')?.setAttribute('aria-pressed', String(state.snap));
+      } },
+    ];
+    if (!hit) { contextMenu(event, viewItems, { label: 'Scene view' }); return; }
+    contextMenu(event, [
+      ...nodeMenuItems(hit),
+      { separator: true },
+      ...viewItems,
+    ], { label: `${hit.name} actions` });
   }
 
   /* ------------------------------------------------------------------- bind */
@@ -1305,6 +1710,13 @@ export function createSceneObjectEditor({ callbacks }) {
   function bind() {
     cacheDom();
     bindCanvas();
+    bindDropping();
+    if (dom.panel && !dom.hint) {
+      // The drop hint sits over the viewport and says what the drop would do.
+      dom.hint = el('div', '', 'scene-drop-hint');
+      dom.hint.hidden = true;
+      dom.canvas?.parentElement?.append(dom.hint);
+    }
     dom.filter?.addEventListener('input', () => { state.filter = dom.filter.value.trim(); renderTree(); });
     dom.filterClear?.addEventListener('click', () => {
       state.filter = ''; if (dom.filter) dom.filter.value = ''; renderTree(); dom.filter?.focus();

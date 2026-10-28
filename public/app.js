@@ -38,6 +38,8 @@ import { upgradePickupReach } from '/shared/doom-hud.js';
 import { suggestedArea } from '/shared/areas.js';
 import { captureScene, instantiateScene, sceneIsEmpty, newScene } from '/shared/scenes.js';
 import { createSceneObjectEditor } from './scene-object-editor.js';
+import { contextMenu } from './context-menu.js';
+import { openAssetPicker, PICTURE_KINDS, MODEL_KINDS } from './asset-picker.js';
 import { captureModelPreview } from './model-thumbnail.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
 import { installIntermission } from '/shared/intermission.js';
@@ -311,6 +313,7 @@ async function refreshScene() {
           edit(next => addRoom(next, { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), depth: Math.abs(a.y - b.y) }), 'Room added in 3D');
         } catch (error) { status(error.message, true); }
       },
+      menu: (event, picked) => mapViewMenu(event, picked),
     }, scenePose);
     if (sceneMode !== '3d' || project !== snapshot) { scenePose = editor.pose(); editor.dispose(); return; }
     editor.settings(readEngineTweaks());
@@ -1714,6 +1717,9 @@ function renderAssets() {
   }
   for (const asset of assets) {
     const tile = make('div', undefined, 'asset-tile'), image = make('img');
+    // The id makes drag and drop and the context menu exact instead of inferring which
+    // asset a tile shows from its position in the filtered list.
+    tile.dataset.assetId = asset.id;
     if (asset.kind === 'music') {
       tile.append(make('strong', '♪'), make('strong', asset.name), make('small', `${asset.format.toUpperCase()} score / plays as level music`),
         button('Set as level music', () => edit(next => {
@@ -1893,7 +1899,8 @@ canvas.addEventListener('pointerdown', guard(event => {
   capturePointer(canvas, event.pointerId);
   const point = worldPoint(event);
   if (event.button === 2 || event.button === 1) {
-    drag = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, x: camera.x, y: camera.y }; return;
+    drag = { kind: 'pan', button: event.button, clientX: event.clientX, clientY: event.clientY, x: camera.x, y: camera.y,
+      startX: event.clientX, startY: event.clientY, moved: false }; return;
   }
   if ($('tool').value === 'room') { drag = { kind: 'room', start: snap(point), end: snap(point) }; return; }
   if ($('tool').value === 'entity') {
@@ -1915,16 +1922,18 @@ canvas.addEventListener('pointermove', event => {
   $('coordinates').textContent = `X ${Math.round(point.x)} / Y ${Math.round(point.y)}`;
   if (!drag) return;
   if (drag.kind === 'pan') {
+    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 3) drag.moved = true;
     camera.x = drag.x - (event.clientX - drag.clientX) / camera.zoom;
     camera.y = drag.y - (event.clientY - drag.clientY) / camera.zoom;
   } else drag.end = snap(point);
   mapNeedsDraw = true;
 });
-canvas.addEventListener('pointerup', guard(() => {
+canvas.addEventListener('pointerup', guard(event => {
   const finished = drag;
   drag = null;
   mapNeedsDraw = true;
   if (!finished) return;
+  if (finished.kind === 'pan' && finished.button === 2 && !finished.moved) { mapCanvasMenu(event); return; }
   if (finished.kind === 'room') {
     const { start, end } = finished;
     edit(next => addRoom(next, { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: Math.abs(start.x - end.x), depth: Math.abs(start.y - end.y) }), 'Room added. Select shared walls and disable collision to make openings.');
@@ -3132,6 +3141,7 @@ function ensureSceneObjectEditor() {
       scenes: () => project?.scenes || [],
       openScenes: () => openSceneIds,
       assets: () => project?.assets || [],
+      entities: () => project?.map?.entities || [],
       editScene(id, fn, message) {
         editGame(next => {
           const scene = (next.scenes || []).find(item => item.id === id);
@@ -3396,6 +3406,357 @@ $('apply-ai').addEventListener('click', guard(async () => {
   replace(pendingAI.project, 'AI draft applied locally. Review the world, then save when ready.');
   $('ai-result').textContent = 'Draft applied. You can undo this change.';
 }));
+/* ---------------------------------------------------------------------------
+   Context menus
+
+   Every list, tile and view answers a right click with the actions that apply to what is
+   under the pointer, so the editor behaves the same way everywhere instead of going
+   silent outside the scene tree.
+   ------------------------------------------------------------------------- */
+
+function selectionEntity() {
+  return project.map.entities.find(entity => entity.id === selection?.id) || null;
+}
+
+function assetUseOf(asset) {
+  if (asset?.kind === 'model') return 'model';
+  return ['sprite', 'weapon', 'flat', 'texture', 'sky', 'image', 'hud'].includes(asset?.kind) ? 'sprite' : null;
+}
+
+/** Applies an asset to the object selected in the layout, the way a drop would. */
+function assignAssetToSelection(asset) {
+  const entity = selectionEntity();
+  if (!entity) throw new Error('Select an object in the layout first');
+  const use = assetUseOf(asset);
+  if (!use) throw new Error(`${asset.name} is a ${asset.kind} asset; objects take pictures or models`);
+  if (use === 'model' && entity.type === 'player') throw new Error('Assign world models to a non-player object');
+  edit(next => {
+    const target = next.map.entities.find(item => item.id === entity.id);
+    if (!target) throw new Error('That object no longer exists');
+    if (use === 'model') { target.modelAsset = asset.id; delete target.animation; return; }
+    target.spriteAsset = asset.id;
+    if (target.modelAsset) { delete target.modelAsset; delete target.animation; }
+  }, `${asset.name} assigned to ${entity.name}`);
+  render();
+}
+
+function renameAsset(asset) {
+  const answer = prompt('Asset name', asset.name);
+  if (answer === null) return;
+  const clean = answer.trim().slice(0, 100);
+  if (!clean || clean === asset.name) return;
+  edit(next => {
+    const target = next.assets.find(item => item.id === asset.id);
+    if (!target) throw new Error('That asset no longer exists');
+    target.name = clean;
+  }, `Asset renamed to ${clean}`);
+}
+
+function renameSceneObject(id) {
+  const scene = (project.scenes || []).find(item => item.id === id);
+  if (!scene) throw new Error('That scene object no longer exists');
+  const answer = prompt('Scene object name', scene.name);
+  if (answer === null) return;
+  const clean = answer.trim().slice(0, 100);
+  if (!clean || clean === scene.name) return;
+  edit(next => {
+    const target = (next.scenes || []).find(item => item.id === id);
+    if (!target) throw new Error('That scene object no longer exists');
+    target.name = clean;
+  }, `Scene object renamed to ${clean}`);
+  renderSceneObjects();
+  renderSceneObjectTabs();
+  if (activeSceneId === id) sceneObjectEditor?.render();
+}
+
+function duplicateLayoutObject(id) {
+  const entity = project.map.entities.find(item => item.id === id);
+  if (!entity) throw new Error('That object no longer exists');
+  if (entity.type === 'player') throw new Error('The layout keeps exactly one player object');
+  const copyId = newId('entity');
+  edit(next => {
+    const source = next.map.entities.find(item => item.id === id);
+    const copy = structuredClone(source);
+    copy.id = copyId;
+    copy.name = `${source.name} copy`.slice(0, 100);
+    copy.x += 64; copy.y += 64;
+    delete copy.parentId;
+    next.map.entities.push(copy);
+  }, `${entity.name} duplicated`);
+  selection = { kind: 'entity', id: copyId };
+  render();
+}
+
+function deleteLayoutObject(id) {
+  const entity = project.map.entities.find(item => item.id === id);
+  if (!entity) throw new Error('That object no longer exists');
+  if (entity.type === 'player') throw new Error('The layout must keep the player object');
+  const count = project.events.filter(event => event.ownerId === id).length;
+  if (count && !confirm(`Delete ${entity.name} and its ${count} attached events? You can undo this change.`)) return;
+  edit(next => removeEntity(next, id), 'Object deleted');
+  if (selection?.id === id) selection = null;
+  render();
+}
+
+function setSectorLight(sector) {
+  const answer = prompt(`Light level of ${sector.id} (0-255)`, String(sector.light ?? 160));
+  if (answer === null) return;
+  const value = Math.round(Number(answer));
+  if (!Number.isFinite(value)) { status('A light level is a number between 0 and 255', true); return; }
+  const light = Math.max(0, Math.min(255, value));
+  edit(next => {
+    const target = next.map.sectors.find(item => item.id === sector.id);
+    if (!target) throw new Error('That sector no longer exists');
+    target.light = light;
+  }, `Sector ${sector.id} light ${light}`);
+  render();
+}
+
+function copyText(text, label) {
+  navigator.clipboard?.writeText(text).then(() => status(`Copied ${label}`),
+    () => status(`Clipboard access was refused; ${label} is ${text}`, true));
+}
+
+function assetTileMenu(tile, event) {
+  const sceneId = tile.dataset.sceneId;
+  if (sceneId) {
+    const scene = (project.scenes || []).find(item => item.id === sceneId);
+    if (!scene) return;
+    contextMenu(event, [
+      { label: 'Open in the scene object editor', run: () => openSceneObject(scene.id) },
+      { label: 'Place at the view', run: () => guard(() => placeScene(scene.id))() },
+      { label: 'Rename\u2026', run: guard(() => renameSceneObject(scene.id)) },
+      { separator: true },
+      { label: 'Delete scene object', danger: true, run: guard(() => {
+        if (!confirm(`Delete the scene object "${scene.name}"? Objects already placed from it are kept.`)) return;
+        edit(next => { next.scenes = (next.scenes || []).filter(item => item.id !== scene.id); }, `Scene ${scene.name} deleted`);
+        openSceneIds = openSceneIds.filter(candidate => candidate !== scene.id);
+        if (activeSceneId === scene.id) { activeSceneId = openSceneIds.at(-1) || null; if (activeSceneId) sceneObjectEditor?.open(activeSceneId); }
+        renderSceneObjects();
+        renderSceneObjectTabs();
+        renderAssets();
+      }) },
+    ], { label: `${scene.name} actions` });
+    return;
+  }
+  const asset = (project.assets || []).find(item => item.id === tile.dataset.assetId);
+  if (!asset) return;
+  const entity = selectionEntity();
+  const use = assetUseOf(asset);
+  const items = [{
+    label: entity ? `Assign ${asset.name} to ${entity.name}` : 'Assign to the selected object',
+    disabled: !entity || !use || (use === 'model' && entity.type === 'player'),
+    run: guard(() => assignAssetToSelection(asset)),
+  }];
+  if (asset.kind === 'music') {
+    items.push({ label: 'Set as the level music', run: guard(() => edit(next => {
+      next.environment = { ...next.environment, music: asset.name, musicAsset: asset.id };
+    }, `Level music set to ${asset.name}`)) });
+  }
+  if (asset.kind === 'weapon') {
+    items.push({ label: 'Use as the weapon overlay', run: guard(() => edit(next => { next.environment.weaponAsset = asset.id; })) });
+  }
+  if (asset.kind === 'sky') {
+    items.push({ label: 'Use as the sky panorama', run: guard(() => edit(next => {
+      next.environment.skyAsset = asset.id; next.environment.skyMode = 'panorama'; delete next.environment.skybox;
+    })) });
+  }
+  items.push({ separator: true });
+  items.push({ label: 'Rename asset\u2026', run: guard(() => renameAsset(asset)) });
+  items.push({ label: 'Copy name', run: () => copyText(asset.name, `"${asset.name}"`) });
+  contextMenu(event, items, { label: `${asset.name} actions` });
+}
+
+function objectTileMenu(id, event) {
+  const entity = project.map.entities.find(item => item.id === id);
+  if (!entity) return;
+  contextMenu(event, objectMenuItems(entity), { label: `${entity.name} actions` });
+}
+
+function eventCardMenu(id, event) {
+  const rule = project.events.find(item => item.id === id);
+  if (!rule) return;
+  const index = project.events.indexOf(rule);
+  const siblings = siblingRules(rule);
+  const position = siblings.indexOf(rule);
+  contextMenu(event, [
+    { label: 'Enabled', checked: rule.enabled, run: guard(() => edit(next => {
+      next.events[index].enabled = !next.events[index].enabled;
+    }, 'Rule enabled toggled')) },
+    { label: 'Run once', checked: rule.once, run: guard(() => edit(next => {
+      next.events[index].once = !next.events[index].once;
+    }, 'Rule once toggled')) },
+    { separator: true },
+    { label: 'Move up', disabled: position <= 0, run: guard(() => edit(next => moveEventBranch(next, rule.id, -1), 'Rule moved up')) },
+    { label: 'Move down', disabled: position < 0 || position >= siblings.length - 1,
+      run: guard(() => edit(next => moveEventBranch(next, rule.id, 1), 'Rule moved down')) },
+    { separator: true },
+    { label: 'Delete this rule and its sub-events', danger: true,
+      run: guard(() => edit(next => removeEventBranch(next, rule.id), 'Rule deleted')) },
+  ], { label: 'Rule actions' });
+}
+
+/** Picks artwork for the layout object under the pointer, sprites and models together. */
+function pickAssetForEntity(entity) {
+  openAssetPicker({
+    anchor: $('map-canvas'),
+    title: `Artwork for ${entity.name}`,
+    assets: project.assets || [],
+    kinds: [...PICTURE_KINDS, ...MODEL_KINDS],
+    value: entity.spriteAsset || entity.modelAsset || '',
+    emptyText: 'No pictures or models yet. Import a WAD, images or a model first.',
+    onPick: asset => { selection = { kind: 'entity', id: entity.id }; guard(() => assignAssetToSelection(asset))(); },
+  });
+}
+
+/** Places the entity type chosen in the toolbar at a layout point. */
+function placeLayoutObject(position, elevation = 0) {
+  const type = $('entity-type').value;
+  edit(next => {
+    if (type === 'player') Object.assign(next.map.entities.find(entity => entity.type === 'player'), position);
+    else next.map.entities.push({ id: newId('entity'), type, name: `${type[0].toUpperCase()}${type.slice(1)}`, ...position, elevation, angle: 0,
+      ...(type === 'light' ? { light: { color: '#ffbd72', intensity: 1, radius: 192 } } : {}) });
+  }, `${type} placed`);
+}
+
+function objectMenuItems(entity) {
+  const isPlayer = entity.type === 'player';
+  return [
+    { label: 'Select', run: () => { selection = { kind: 'entity', id: entity.id }; render(); } },
+    { label: 'Edit its visual script', run: () => openScript(entity.id) },
+    { label: 'Assign sprite or model\u2026', run: guard(() => pickAssetForEntity(entity)) },
+    { separator: true },
+    { label: 'Duplicate 64 units away', disabled: isPlayer, run: guard(() => duplicateLayoutObject(entity.id)) },
+    { label: 'Capture as a scene object', disabled: isPlayer, run: guard(() => {
+      selection = { kind: 'entity', id: entity.id };
+      render();
+      captureSceneFromSelection('object');
+    }) },
+    { separator: true },
+    { label: 'Delete object', danger: !isPlayer, disabled: isPlayer, run: guard(() => deleteLayoutObject(entity.id)) },
+  ];
+}
+
+function sectorMenuItems(sector) {
+  return [
+    { label: 'Select', run: () => { selection = { kind: 'sector', id: sector.id }; renderInspector(); mapNeedsDraw = true; } },
+    { label: 'Set light level\u2026', run: guard(() => setSectorLight(sector)) },
+    { label: 'Capture its objects as a scene', run: guard(() => {
+      selection = { kind: 'sector', id: sector.id };
+      captureSceneFromSelection('sector');
+    }) },
+    { label: 'Copy sector id', run: () => copyText(sector.id, sector.id) },
+  ];
+}
+
+/** Right click in the 2D layout: act on whatever is under the pointer. */
+function mapCanvasMenu(event) {
+  const point = worldPoint(event);
+  const hit = hitTest(point);
+  const position = snap(point);
+  const items = [];
+  if (hit?.kind === 'entity') {
+    const entity = project.map.entities.find(item => item.id === hit.id);
+    if (entity) items.push(...objectMenuItems(entity), { separator: true });
+  } else if (hit?.kind === 'sector') {
+    const sector = project.map.sectors.find(item => item.id === hit.id);
+    if (sector) items.push(...sectorMenuItems(sector), { separator: true });
+  } else if (hit) {
+    items.push({ label: `Select ${hit.kind} ${hit.id}`, run: () => { selection = { ...hit }; render(); } },
+      { label: 'Copy id', run: () => copyText(hit.id, hit.id) }, { separator: true });
+  }
+  items.push(
+    { label: `Place ${$('entity-type').value} here`, run: guard(() => placeLayoutObject(position)) },
+    { label: 'Fit the map in the view', run: () => { fitMap(); mapNeedsDraw = true; } },
+    { separator: true },
+    { label: 'Copy coordinates', run: () => copyText(`${position.x}, ${position.y}`, `${position.x}, ${position.y}`) });
+  contextMenu(event, items, { label: 'Layout actions' });
+}
+
+/** Right click in the 3D view, with the object the ray hit (the view selects nothing). */
+function mapViewMenu(event, picked) {
+  const entity = picked?.kind === 'entity' ? project.map.entities.find(item => item.id === picked.id) : null;
+  const sector = picked?.kind === 'sector' ? project.map.sectors.find(item => item.id === picked.id) : null;
+  if (!entity && !sector) {
+    contextMenu(event, [
+      { label: `Place ${$('entity-type').value} at the view centre`, run: guard(() => {
+        placeLayoutObject({ x: Math.round(camera.x), y: Math.round(camera.y) });
+      }) },
+      { label: 'Copy view coordinates', run: () => copyText(`${Math.round(camera.x)}, ${Math.round(camera.y)}`, `${Math.round(camera.x)}, ${Math.round(camera.y)}`) },
+    ], { label: '3D view actions' });
+    return;
+  }
+  if (sector) { contextMenu(event, sectorMenuItems(sector), { label: `${sector.id} actions` }); return; }
+  selection = { kind: 'entity', id: entity.id };
+  render();
+  contextMenu(event, objectMenuItems(entity), { label: `${entity.name} actions` });
+}
+
+function installContextMenus() {
+  $('asset-list').addEventListener('contextmenu', event => {
+    const tile = event.target.closest('.asset-tile');
+    if (!tile) return;
+    event.preventDefault();
+    assetTileMenu(tile, event);
+  });
+  for (const id of ['entities', 'project-objects']) {
+    $(id).addEventListener('contextmenu', event => {
+      const tile = event.target.closest('[data-object-id]');
+      if (!tile) return;
+      event.preventDefault();
+      objectTileMenu(tile.dataset.objectId, event);
+    });
+  }
+  $('event-list').addEventListener('contextmenu', event => {
+    const card = event.target.closest('.event-card');
+    if (!card) return;
+    event.preventDefault();
+    eventCardMenu(card.dataset.eventId, event);
+  });
+  $('sector-list').addEventListener('contextmenu', event => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    event.preventDefault();
+    const sector = project.map.sectors.find(item => button.textContent.startsWith(`${item.id} /`));
+    if (!sector) return;
+    contextMenu(event, [
+      { label: `Select ${sector.id}`, run: () => {
+        selection = { kind: 'sector', id: sector.id }; renderInspector(); mapNeedsDraw = true;
+      } },
+      { label: 'Set light level\u2026', run: guard(() => setSectorLight(sector)) },
+      { label: 'Capture its objects as a scene', run: guard(() => {
+        selection = { kind: 'sector', id: sector.id };
+        captureSceneFromSelection('sector');
+      }) },
+      { separator: true },
+      { label: 'Copy sector id', run: () => copyText(sector.id, sector.id) },
+    ], { label: `${sector.id} actions` });
+  });
+  $('scene-objects').addEventListener('contextmenu', event => {
+    const row = event.target.closest('.scene-object-row');
+    if (!row?.dataset.sceneId) return;
+    event.preventDefault();
+    const scene = (project.scenes || []).find(item => item.id === row.dataset.sceneId);
+    if (!scene) return;
+    contextMenu(event, [
+      { label: 'Open in the scene object editor', run: () => openSceneObject(scene.id) },
+      { label: 'Place at the view', run: guard(() => placeScene(scene.id)) },
+      { label: 'Rename\u2026', run: guard(() => renameSceneObject(scene.id)) },
+      { label: 'Capture the selected layout objects', run: guard(() => captureIntoSceneObject(scene.id)) },
+      { separator: true },
+      { label: 'Delete scene object', danger: true, run: guard(() => {
+        if (!confirm(`Delete the scene object "${scene.name}"? Objects already placed from it are kept.`)) return;
+        edit(next => { next.scenes = (next.scenes || []).filter(item => item.id !== scene.id); }, `Scene ${scene.name} deleted`);
+        openSceneIds = openSceneIds.filter(candidate => candidate !== scene.id);
+        if (activeSceneId === scene.id) { activeSceneId = openSceneIds.at(-1) || null; if (activeSceneId) sceneObjectEditor?.open(activeSceneId); }
+        renderSceneObjects();
+        renderSceneObjectTabs();
+      }) },
+    ], { label: `${scene.name} actions` });
+  });
+}
+
+installContextMenus();
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
 
 async function start() {

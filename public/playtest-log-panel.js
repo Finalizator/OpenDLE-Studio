@@ -1,3 +1,4 @@
+import { contextMenu } from './context-menu.js';
 /**
  * Playtest logs panel.
  *
@@ -31,6 +32,12 @@ function whenText(iso) {
 export function createPlaytestLogPanel(nodes, { list, read, clear, status = () => {} } = {}) {
   if (!nodes?.list || !nodes?.detail) throw new Error('Playtest log panel needs a list and a detail node');
   let sessions = [], selected = null, detail = null, busy = false, show = 'all';
+
+  /** Copies text out of the log; the clipboard can be refused outside a user gesture. */
+  function copy(text, label) {
+    navigator.clipboard?.writeText(text).then(() => status(`Copied ${label}`),
+      () => status('Clipboard access was refused by the browser', true));
+  }
 
   async function render() {
     if (busy) return;
@@ -69,6 +76,13 @@ export function createPlaytestLogPanel(nodes, { list, read, clear, status = () =
         element('small', '', `${whenText(session.startedAt)} · ${session.entries} record(s) · ${bytesText(session.bytes)}${session.truncated ? ' · truncated' : ''}`),
         counts);
       row.addEventListener('click', () => { selected = session.id; renderSessions(); showSession(session.id).catch(error => status(error.message)); });
+      row.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        contextMenu(event, [
+          { label: 'Open this session', run: () => { selected = session.id; renderSessions(); showSession(session.id).catch(error => status(error.message)); } },
+          { label: 'Copy the session id', run: () => copy(`${session.id}\n`, 'the session id') },
+        ], { label: 'Playtest session actions' });
+      });
       nodes.list.append(row);
     }
   }
@@ -112,6 +126,13 @@ export function createPlaytestLogPanel(nodes, { list, read, clear, status = () =
         details.append(element('summary', '', 'Details'), element('pre', '', JSON.stringify(entry.details, null, 1)));
         item.append(details);
       }
+      item.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        contextMenu(event, [
+          { label: 'Copy the message', run: () => copy(`${entry.message}\n`, 'the message') },
+          { label: 'Copy the whole record', run: () => copy(`${JSON.stringify(entry, null, 1)}\n`, 'the record') },
+        ], { label: 'Log entry actions' });
+      });
       list.append(item);
     }
     nodes.detail.append(list);
