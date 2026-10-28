@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { uniform, vec2, vec3, vec4, materialColor, positionWorld, positionGeometry, output, uv, screenUV, texture, sin, cos, tan, atan, cross, normalize, length, clamp, mix } from 'three/tsl';
+import { uniform, vec2, vec3, vec4, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, cross, normalize, length, clamp, mix } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
@@ -94,7 +94,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
     const key = [shader.id, shader.source, JSON.stringify(shader.uniforms ?? {})].join('\u0000');
     if (!entityEffects.has(key)) {
       let compiled = null;
-      try { compiled = compileGLSLEffect(shader, { screen: screenTarget.texture, resolution: effectResolution }); } catch { compiled = null; }
+      try { compiled = compileGLSLEffect(shader, { screen: screenTarget.texture, resolution: effectResolution }); }
+      catch (error) { compiled = null; canvas.dataset.shaderError = `render.js: ${error.message}`; console.warn(`Shader ${shader.name} failed to compile:`, error); }
       entityEffects.set(key, compiled);
     }
     return entityEffects.get(key);
@@ -125,25 +126,34 @@ export async function createPreview(canvas, project, state, { editor = false } =
    * replacing a physical material's output node with a screen sample left the draw with no
    * fragment output (a blank strip), so the refraction gets a material built for it.
    */
-  function panelMaterial(panel) {
-    // A panel is a thick piece of plastic: the renderer's own transmission bends whatever
-    // is behind it through the slab's thickness, which is the refraction a strip needs and
-    // the one path here that is implemented by the renderer rather than by an effect.
-    return new THREE.MeshPhysicalMaterial({
-      color: panel.color || PANEL_DEFAULTS.color,
-      transparent: true,
-      opacity: panel.opacity ?? PANEL_DEFAULTS.opacity,
-      roughness: panel.roughness ?? PANEL_DEFAULTS.roughness,
-      metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
-      emissive: new THREE.Color(panel.color || PANEL_DEFAULTS.color).multiplyScalar(.16),
-      clearcoat: .8, clearcoatRoughness: .2, reflectivity: .6,
-      transmission: 1,
-      thickness: Math.max(4, (panel.thickness || 2) * 4),
-      ior: 1.45,
-      side: THREE.DoubleSide,
-      depthWrite: false,
+  function panelMaterial(panel, entity) {
+    const effect = effectFor(entity?.shaderId);
+    const color = panel.color || PANEL_DEFAULTS.color;
+    const opacity = panel.opacity ?? PANEL_DEFAULTS.opacity;
+    const material = new THREE.MeshPhysicalMaterial({
+      color, transparent: true, opacity,
+      roughness: panel.roughness ?? PANEL_DEFAULTS.roughness, metalness: 0,
+      emissive: new THREE.Color(color).multiplyScalar(.10),
+      clearcoat: 1, clearcoatRoughness: .08, reflectivity: .8,
+      transmission: 1, thickness: Math.max(6, (panel.thickness || 2) * 6), ior: 1.5,
+      attenuationColor: new THREE.Color(color), attenuationDistance: 24,
+      side: THREE.DoubleSide, depthWrite: false,
     });
+    if (effect) {
+      // The shader *is* the look of the strip, so it is drawn as a node material of its
+      // own: folding it into a lit surface's output node left translucent panels with no
+      // fragment output at all (an invisible strip), while this draws exactly what the
+      // effect returned.
+      const shaded = new THREE.MeshBasicNodeMaterial({ transparent: true, side: THREE.DoubleSide, depthWrite: false });
+      const tint = new THREE.Color(color);
+      shaded.colorNode = effect.effect(vec4(tint.r, tint.g, tint.b, opacity), uv(), effectTime, viewportUV, effectResolution);
+      if (effect.usesScreen) screenMaterials.add(shaded);
+      return shaded;
+    }
+    return material;
   }
+
+
 
 
 

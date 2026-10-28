@@ -17,7 +17,7 @@ import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
 import { compileGLSLEffect } from './shader-effects.js';
-import { mix, output, screenUV, uniform, uv, vec4 } from 'three/tsl';
+import { mix, output, screenUV, uniform, uv, vec4, viewportUV } from 'three/tsl';
 
 const MODEL_LIGHTING = { fill: .9, key: 2.8, rim: .6 };
 /** Doom sprites are one pixel to the unit, so artwork with no size still draws. */
@@ -96,7 +96,8 @@ export async function createScene3dView(canvas) {
     const key = shaderSignature(shader);
     if (!shaderEffects.has(key)) {
       let compiled = null;
-      try { compiled = compileGLSLEffect(shader, { screen: screenTarget.texture, resolution: effectResolution }); } catch { compiled = null; }
+      try { compiled = compileGLSLEffect(shader, { screen: screenTarget.texture, resolution: effectResolution }); }
+      catch (error) { compiled = null; canvas.dataset.shaderError = `scene-3d-view.js: ${error.message}`; console.warn(`Shader ${shader.name} failed to compile:`, error); }
       shaderEffects.set(key, compiled);
     }
     return shaderEffects.get(key);
@@ -121,29 +122,34 @@ export async function createScene3dView(canvas) {
     }
   }
   /**
-   * A panel's material: a refractive panel is a basic node material whose colour is the
-   * effect, because replacing a physical material's output with a screen sample drew
-   * nothing at all.
+   * A panel's material. A panel with a shader is drawn through a node material whose
+   * colour *is* what the shader returned, so a screen sample lands on screen instead of
+   * being folded into a lit surface (which drew translucent panels as nothing at all).
    */
-  function panelMaterial(panel) {
-    // A panel is a thick piece of plastic: the renderer's own transmission bends whatever
-    // is behind it through the slab's thickness, which is the refraction a strip needs and
-    // the one path here that is implemented by the renderer rather than by an effect.
-    return new THREE.MeshPhysicalMaterial({
-      color: panel.color || PANEL_DEFAULTS.color,
-      transparent: true,
-      opacity: panel.opacity ?? PANEL_DEFAULTS.opacity,
-      roughness: panel.roughness ?? PANEL_DEFAULTS.roughness,
-      metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
-      emissive: new THREE.Color(panel.color || PANEL_DEFAULTS.color).multiplyScalar(.16),
-      clearcoat: .8, clearcoatRoughness: .2, reflectivity: .6,
-      transmission: 1,
-      thickness: Math.max(4, (panel.thickness || 2) * 4),
-      ior: 1.45,
-      side: THREE.DoubleSide,
-      depthWrite: false,
+  function panelMaterial(panel, entity) {
+    const effect = effectFor(entity?.shaderId);
+    const color = panel.color || PANEL_DEFAULTS.color;
+    const opacity = panel.opacity ?? PANEL_DEFAULTS.opacity;
+    if (effect) {
+      const shaded = new THREE.MeshBasicNodeMaterial({ transparent: true, side: THREE.DoubleSide, depthWrite: false });
+      const tint = new THREE.Color(color);
+      shaded.colorNode = effect.effect(vec4(tint.r, tint.g, tint.b, opacity), uv(), effectTime, viewportUV, effectResolution);
+      if (effect.usesScreen) screenMaterials.add(shaded);
+      return shaded;
+    }
+    const material = new THREE.MeshPhysicalMaterial({
+      color, transparent: true, opacity,
+      roughness: panel.roughness ?? PANEL_DEFAULTS.roughness, metalness: 0,
+      emissive: new THREE.Color(color).multiplyScalar(.10),
+      clearcoat: 1, clearcoatRoughness: .08, reflectivity: .8,
+      transmission: 1, thickness: Math.max(6, (panel.thickness || 2) * 6), ior: 1.5,
+      attenuationColor: new THREE.Color(color), attenuationDistance: 24,
+      side: THREE.DoubleSide, depthWrite: false,
     });
+    return withShader(material, entity);
   }
+
+
 
 
 

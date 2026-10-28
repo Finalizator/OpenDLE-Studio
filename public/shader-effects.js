@@ -25,6 +25,19 @@ const blockReturns = (statements) => (statements || []).some(statement =>
   statement.isReturn || blockReturns(statement.then) || blockReturns(statement.otherwise) || blockReturns(statement.body));
 
 /**
+ * The GLSL name a local gets in the generated shader.
+ *
+ * Three's WebGL node builder writes the fragment result into a variable called
+ * `fragColor`, and the Shadertoy entry point this engine compiles names its output
+ * `fragColor` too, so a local that kept the shader's own name would shadow the output
+ * and the whole draw would write nothing at all.
+ */
+function localName(scope, name) {
+  const owner = scope.owner ? `${scope.owner}_` : '';
+  return `fx_${owner}${name}`;
+}
+
+/**
  * Compiles one portable GLSL effect into a TSL function.
  *
  * `screen` is the texture holding everything drawn behind the object this frame: an
@@ -45,7 +58,7 @@ export function compileGLSLEffect(shader, { screen = null, resolution = null } =
 
   /** A scope chain: a local shadows an input of the same name, as GLSL allows in a block. */
   function scopeOf(parent, entries = []) {
-    return { parent, vars: new Map(entries) };
+    return { parent, vars: new Map(entries), owner: parent ? parent.owner : '' };
   }
   function resolve(scope, name) {
     for (let current = scope; current; current = current.parent) if (current.vars.has(name)) return current.vars.get(name);
@@ -102,7 +115,33 @@ export function compileGLSLEffect(shader, { screen = null, resolution = null } =
       for (const statement of list) compileStatement(statement, scope, builtins, functions, target);
       return;
     }
-    for (const statement of list) TSL.If(target.done.equal(0), () => compileStatement(statement, scope, builtins, functions, target));
+    // Locals are declared before the guarded statements, not inside them: a variable
+    // created within the `if` that guards everything after a return belongs to that
+    // block, so every later read of it reads a variable the function never declares and
+    // the fragment stage compiles to nothing at all. The value is still assigned in
+    // order by the declaration's own guarded statement.
+    const hoisted = new Set();
+    for (const statement of list) {
+      if (!statement.isVariableDeclaration || !ZERO[statement.type]) continue;
+      hoisted.add(statement);
+      scope.vars.set(statement.name, ZERO[statement.type]().toVar(localName(scope, statement.name)));
+    }
+    for (const statement of list) {
+      if (statement.isVariableDeclaration && !hoisted.has(statement)) {
+        // A type with no known zero is declared where it stands, unguarded: its value is
+        // a pure expression, so running it after a return changes nothing.
+        compileStatement(statement, scope, builtins, functions, target);
+        continue;
+      }
+      if (statement.isVariableDeclaration) {
+        const local = scope.vars.get(statement.name);
+        // The callback must not return the assignment: TSL would turn the guarded body
+        // into a `return`, which an inline Fn discards, leaving the local at zero.
+        TSL.If(target.done.equal(0), () => { local.assign(expression(statement.value, scope, builtins, functions)); });
+        continue;
+      }
+      TSL.If(target.done.equal(0), () => compileStatement(statement, scope, builtins, functions, target));
+    }
   }
 
   function compileStatement(statement, scope, builtins, functions, target) {
@@ -112,7 +151,7 @@ export function compileGLSLEffect(shader, { screen = null, resolution = null } =
       return;
     }
     if (statement.isVariableDeclaration) {
-      scope.vars.set(statement.name, value(statement.value).toVar(statement.name));
+      scope.vars.set(statement.name, value(statement.value).toVar(localName(scope, statement.name)));
       return;
     }
     if (statement.isAssignment) {
@@ -158,6 +197,7 @@ export function compileGLSLEffect(shader, { screen = null, resolution = null } =
     const result = ZERO[fn.returnType]().toVar();
     const done = TSL.int(0).toVar();
     const scope = scopeOf(null, fn.params.map((param, index) => [param.name, params[index]]));
+    scope.owner = fn.name;
     compileStatements(fn.body, scope, builtins, functionCache, { result, done });
     return result;
   }

@@ -13,29 +13,66 @@ export const shaderTemplate = `vec4 effect(vec4 color, vec2 uv, float time) {
 // what the renderer drew behind the panel, so sampling it refracts the level instead of
 // only being see-through.
 export const CURTAIN_SHADER_NAME = 'Glass (Shadertoy)';
-export const curtainShaderTemplate = `// Rippled glass: the level behind a strip is read off-centre and wobbled, so the
-// picture bends through the plastic the way it does in a thick glass block.
-// Shadertoy syntax — iTime, iResolution, iChannel0 and helper functions all work here.
-float wave(vec2 p, float t) {
-  return sin(p.x * 6.0 + t) * 0.5 + sin(p.y * 4.5 - t * 1.3) * 0.5;
+export const curtainShaderTemplate = `// A strip of thick plastic sheeting, written the way Shadertoy shaders are: mainImage,
+// iTime, iResolution and iChannel0 (what the renderer drew behind the panel) all work.
+//
+// The sheet is crumpled rather than smooth: a cellular pattern gives every crease a
+// direction, the picture behind is read off that direction, and the creases themselves
+// catch the light. That is what makes it read as thick rippled plastic instead of a
+// clean pane of glass.
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// Nearest crease: (distance to its centre, offset to it). The offset is the normal the
+// refraction bends along.
+vec3 creases(vec2 p) {
+  vec2 cell = floor(p);
+  vec2 local = fract(p);
+  float nearest = 8.0;
+  float offsetX = 0.0;
+  float offsetY = 0.0;
+  for (int row = -1; row <= 1; row++) {
+    for (int column = -1; column <= 1; column++) {
+      vec2 neighbour = vec2(float(column), float(row));
+      vec2 centre = neighbour + vec2(hash(cell + neighbour), hash(cell + neighbour + vec2(17.0, 31.0)));
+      vec2 delta = centre - local;
+      float distance = length(delta);
+      if (distance < nearest) {
+        nearest = distance;
+        offsetX = delta.x;
+        offsetY = delta.y;
+      }
+    }
+  }
+  return vec3(nearest, offsetX, offsetY);
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  // The pixel of the viewport; iChannel0 holds the level drawn behind this strip.
   vec2 view = fragCoord / iResolution.xy;
-  // The effect's 'uv' input is this panel's own coordinate: 0..1 across it, 0 at the top.
-  vec2 centred = uv - vec2(0.5);
-  // A strip is thickest through its middle, so that is where it bends the most.
-  float depth = 1.0 - abs(centred.x) * 1.5;
-  vec2 warp = (centred * 0.16 + vec2(wave(uv * 5.0, iTime * 1.4)) * 0.02) * depth;
-  vec2 read = view + warp;
-  vec3 behind = texture(iChannel0, read).rgb;
-  vec3 offset = texture(iChannel0, read + vec2(0.0025, 0.0015)).rgb;
-  // Two nearby reads: their difference is the ripple highlight on the plastic.
-  float ripple = abs(behind.r - offset.r) + abs(behind.g - offset.g);
-  float edge = smoothstep(0.34, 0.5, abs(centred.x));
-  vec3 plastic = mix(vec3(0.86, 0.91, 0.96), color.rgb, 0.30) * (0.82 + ripple * 5.0) + edge * 0.16;
-  // Thin through the middle, milkier at the cut edges, and the panel's own opacity.
-  fragColor = vec4(mix(behind, plastic, 0.16 + 0.26 * edge + ripple * 0.4), color.a);
+  // The effect's 'uv' input is the strip's own coordinate: 0..1 across it, 0 at the top.
+  vec2 across = uv - vec2(0.5);
+  // A hanging strip is a shallow cylinder: thickest down its middle, thin where it is cut.
+  float thickness = clamp(1.0 - abs(across.x) * 1.5, 0.0, 1.0);
+  // Creases are a few centimetres across, so the pattern runs many cells up a strip.
+  vec3 sheet = creases(uv * vec2(4.0, 26.0) + vec2(0.0, iTime * 0.03));
+  // The crease bends the picture sideways and up, most where the sheet is thickest, and
+  // the whole strip acts as a shallow lens on top of that.
+  vec2 bend = (sheet.yz * 0.018 + vec2(across.x * 0.05, 0.0)) * (0.35 + 0.65 * thickness);
+  vec3 behind = texture(iChannel0, view + bend).rgb;
+  vec3 shifted = texture(iChannel0, view + bend * 1.7 + vec2(0.002, 0.0)).rgb;
+  // Where the two reads differ, the plastic itself is catching the light.
+  float glare = abs(behind.r - shifted.r) + abs(behind.g - shifted.g) + abs(behind.b - shifted.b);
+  // Creases are milky and bright; the flats between them stay clear.
+  float crease = smoothstep(0.46, 0.66, sheet.x);
+  vec3 sheeting = mix(vec3(0.88, 0.92, 0.96), color.rgb, 0.30);
+  vec3 shaded = mix(behind, sheeting, 0.06 + 0.10 * thickness + crease * 0.14);
+  shaded += crease * 0.20 + glare * 0.8;
+  // The cut edge of the sheet is brighter than its face.
+  float rim = smoothstep(0.40, 0.5, abs(across.x));
+  shaded += rim * 0.16;
+  fragColor = vec4(shaded, clamp(color.a + rim * 0.18 + crease * 0.10 + glare * 0.45, 0.0, 1.0));
 }`;
 
 // A starting point for a pasted Shadertoy shader: mainImage, iResolution, iTime and

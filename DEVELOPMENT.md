@@ -2076,6 +2076,23 @@ where it reads from). That extra pass only happens while such an object is on sc
 `needsScreenPass()` decides per frame, and the editor viewport reports `dataset.screenGroups`
 and `dataset.screenPass` so a test can see the decision.
 
+Three things about that graph are load-bearing, and each of them silently produced a
+*fragment stage that wrote nothing at all* (the symptom: `GL_INVALID_OPERATION: Active draw
+buffers with missing fragment shader outputs`, and an invisible object):
+
+* Three's WebGL node builder writes the fragment result into a local called `fragColor`, so
+  a shader local may never keep that name. The compiler prefixes every local (`fx_<fn>_<name>`).
+* A local declared inside the `if` that guards the statements after a `return` belongs to
+  that block, so every later read of it reads an undeclared variable. Locals are declared in
+  the function scope first and only assigned in order.
+* `TSL.If(condition, () => local.assign(value))` returns the assignment node, which TSL turns
+  into a `return` and then discards for an inline `Fn` — the assignment never happened. The
+  guarded callbacks return nothing.
+
+A panel with a shader is therefore drawn as its own `MeshBasicNodeMaterial` whose `colorNode`
+*is* the effect, rather than by replacing a lit material's output: folding a screen sample
+into a translucent physical material's output drew nothing in the WebGL 2 backend.
+
 Effects can be written in **Shadertoy's shape** as well as the engine's own:
 
 | Shadertoy | here |
@@ -2096,9 +2113,11 @@ be pasted into the source box and applied.
 ### Panels and the plastic strip curtain
 
 A panel is a flat translucent slab: `entity.panel` carries its size, colour, opacity,
-roughness and metalness (`shared/panel.js`). It is drawn as a real box with a
-`MeshPhysicalMaterial` in both renderers, so a panel is also something you can make a
-rigid body out of — and the 2D blueprint draws it as a translucent strip.
+roughness and metalness (`shared/panel.js`). It is drawn as a real box in both renderers, so
+a panel is also something you can make a rigid body out of — and the 2D blueprint draws it as
+a translucent strip. A panel *without* a shader is a `MeshPhysicalMaterial` with
+transmission, thickness and attenuation, so it refracts what is behind it on its own; a panel
+*with* a shader is a `MeshBasicNodeMaterial` whose colour is that effect (see above).
 
 **Add a plastic strip curtain** (node menu, scene root menu, or the 3D view menu at the
 pointer) builds exactly the thing in the reference photo: a row of thin translucent
