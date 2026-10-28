@@ -395,9 +395,11 @@ dialog::backdrop { background: #111c; }
 .scene-tab-close:hover { background: #6a3f3f; color: #ffd7d2; }
 .scene-tab-add { background: transparent; color: var(--muted); padding: 0 9px; font-size: 13px; }
 .scene-tab-add:hover { background: #4d4d4d; color: var(--text); }
-.scene-editor-body { display: grid; grid-template-columns: minmax(190px, 17vw) minmax(220px, 1fr) minmax(230px, 21vw); min-height: 0; }
-.scene-dock, .scene-inspector { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 0; background: var(--panel); border-right: 1px solid var(--border); }
-.scene-inspector { border-right: none; border-left: 1px solid var(--border); grid-template-rows: auto auto auto minmax(0, 1fr); }
+.scene-editor-body { display: grid; grid-template-columns: var(--scene-dock-width, 272px) var(--splitter-size) minmax(0, 1fr) var(--splitter-size) var(--scene-inspector-width, 330px); min-height: 0; }
+/* The scene editor's gutters sit inside a single-row grid, not across the app rows. */
+.scene-editor-body > .scene-splitter { grid-row: auto; }
+.scene-dock, .scene-inspector { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 0; background: var(--panel); }
+.scene-inspector { grid-template-rows: auto auto auto minmax(0, 1fr); }
 .scene-dock-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .dock-menu { background: transparent; border: 1px solid transparent; color: var(--muted); padding: 1px 6px; font-size: 10px; }
 .dock-menu:hover { background: #606060; color: var(--text); }

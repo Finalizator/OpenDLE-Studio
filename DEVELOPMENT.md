@@ -1951,6 +1951,16 @@ the top keep several open, exactly like Godot's scene tabs.
 | View (middle) | **2D** is a top-down blueprint: dot grid, scene bounds, parent links, facing ticks, interaction-area rings, drag to move (snapped), wheel to zoom, middle-drag or alt-drag to pan. **3D** draws the same nodes as boxes whose height is the node's collider or type height, so elevation, collider size and grouping are readable; dragging a node moves it along the ground plane and a right click that stays put opens the node menu. Both views draw the node's artwork — the sprite image at its real world size, or the model's preview picture — so assigning an asset visibly changes the view. |
 | Inspector (right) | the selected node's properties in folded categories — Transform, Node, Visual, Model, Physics, Light, Interaction area, Script — with Godot's right-aligned labels and per-row revert arrow, plus a property filter and an expand/collapse menu. Empty categories are not drawn. |
 
+**Every edge of the editor is draggable.** The tree and the inspector are columns with
+their own separators (`#scene-splitter-dock`, `#scene-splitter-inspector`), the same
+ones the app shell uses: drag an edge, double-click it to reset that side, or focus it
+and nudge it with the arrow keys (`Shift` for bigger steps). The widths live in
+`--scene-dock-width` / `--scene-inspector-width` and are remembered next to the app's
+own panel sizes (`public/splitters.js`), and the scene view is what gives way last: when
+a narrow window cannot fit both columns, the inspector sheds first, then the tree, and
+only then do both scale down — `clampLayout` measures the editor itself, so the
+viewport keeps its width instead of being pushed off the panel.
+
 The scene itself is the tree root, so its inspector edits the scene name and its
 origin. A scene's nodes can be grouped: `parentId` on a scene object turns the
 list into a tree, and moving a parent in the view or in the inspector carries its

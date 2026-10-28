@@ -4,10 +4,16 @@
 // never have to be recomputed from JavaScript.
 
 export const LAYOUT_STORAGE_KEY = 'opendle-layout';
-export const DEFAULT_LAYOUT = Object.freeze({ left: 245, right: 245, assets: 215 });
-export const LAYOUT_LIMITS = Object.freeze({ left: [170, 480], right: [170, 480], assets: [110, 2000] });
+export const DEFAULT_LAYOUT = Object.freeze({ left: 245, right: 245, assets: 215, sceneDock: 272, sceneInspector: 330 });
+export const LAYOUT_LIMITS = Object.freeze({
+  left: [170, 480], right: [170, 480], assets: [110, 2000],
+  sceneDock: [170, 620], sceneInspector: [190, 700],
+});
 // Two vertical gutters plus a usable middle: the centre editor is never squeezed out.
 export const MIN_WORKSPACE = 320;
+// The scene editor's own three columns live inside that editor, so they are fitted to it.
+export const MIN_SCENE_VIEW = 220;
+const SCENE_GUTTERS = 10;
 const GUTTERS = 10;
 const MIN_DOCK = 110, MIN_EDITOR_HEIGHT = 240;
 
@@ -23,8 +29,7 @@ const number = (value, fallback) => value === null || value === undefined || val
  */
 export function clampLayout(layout, viewport = { width: 1280, height: 800 }) {
   const width = Math.max(320, number(viewport.width, 1280));
-  const height = Math.max(320, number(viewport.height, 800));
-  let left = clamp(number(layout?.left, DEFAULT_LAYOUT.left), LAYOUT_LIMITS.left[0], LAYOUT_LIMITS.left[1]);
+  const height = Math.max(320, number(viewport.height, 800));  let left = clamp(number(layout?.left, DEFAULT_LAYOUT.left), LAYOUT_LIMITS.left[0], LAYOUT_LIMITS.left[1]);
   let right = clamp(number(layout?.right, DEFAULT_LAYOUT.right), LAYOUT_LIMITS.right[0], LAYOUT_LIMITS.right[1]);
   const overflow = left + right + GUTTERS + MIN_WORKSPACE - width;
   if (overflow > 0) {
@@ -34,13 +39,38 @@ export function clampLayout(layout, viewport = { width: 1280, height: 800 }) {
   }
   const assets = clamp(number(layout?.assets, DEFAULT_LAYOUT.assets), LAYOUT_LIMITS.assets[0],
     Math.max(MIN_DOCK, height - MIN_EDITOR_HEIGHT));
-  return { left: Math.round(left), right: Math.round(right), assets: Math.round(assets) };
+  // The scene object editor's tree and inspector sit inside the workspace, so they are
+  // fitted to the room the sidebars leave: its inspector gives way first, then the tree,
+  // and only a scene view that still cannot fit shrinks the columns further. Callers that
+  // can measure the workspace pass its width, which beats guessing from the viewport.
+  const room = Math.max(MIN_SCENE_VIEW, number(viewport.sceneRoom, width - left - right - GUTTERS));
+  let sceneDock = clamp(number(layout?.sceneDock, DEFAULT_LAYOUT.sceneDock), LAYOUT_LIMITS.sceneDock[0], LAYOUT_LIMITS.sceneDock[1]);
+  let sceneInspector = clamp(number(layout?.sceneInspector, DEFAULT_LAYOUT.sceneInspector),
+    LAYOUT_LIMITS.sceneInspector[0], LAYOUT_LIMITS.sceneInspector[1]);
+  const crowded = () => sceneDock + sceneInspector + SCENE_GUTTERS + MIN_SCENE_VIEW - room;
+  if (crowded() > 0) {
+    const shed = Math.min(crowded(), sceneInspector - LAYOUT_LIMITS.sceneInspector[0]);
+    sceneInspector -= shed;
+  }
+  if (crowded() > 0) sceneDock = Math.max(LAYOUT_LIMITS.sceneDock[0], sceneDock - crowded());
+  if (crowded() > 0) {
+    // Even the minimums overflow a tiny workspace; scale both columns so the scene view
+    // still gets its width instead of being pushed off the panel.
+    const spare = Math.max(0, room - SCENE_GUTTERS - MIN_SCENE_VIEW);
+    const total = sceneDock + sceneInspector;
+    const scale = total > 0 ? Math.min(1, spare / total) : 0;
+    sceneDock *= scale;
+    sceneInspector *= scale;
+  }
+  return { left: Math.round(left), right: Math.round(right), assets: Math.round(assets),
+    sceneDock: Math.round(sceneDock), sceneInspector: Math.round(sceneInspector) };
 }
 
 /** Static limits only, used to store what the user asked for from any window size. */
 export function clipLayout(layout) {
   const clip = (key) => clamp(number(layout?.[key], DEFAULT_LAYOUT[key]), LAYOUT_LIMITS[key][0], LAYOUT_LIMITS[key][1]);
-  return { left: Math.round(clip('left')), right: Math.round(clip('right')), assets: Math.round(clip('assets')) };
+  return { left: Math.round(clip('left')), right: Math.round(clip('right')), assets: Math.round(clip('assets')),
+    sceneDock: Math.round(clip('sceneDock')), sceneInspector: Math.round(clip('sceneInspector')) };
 }
 
 /** Nudge one edge by `delta` pixels; positive always makes that panel bigger. */
@@ -66,8 +96,15 @@ export function writeLayout(layout, storage = globalThis.localStorage) {
  * redraw, and `onStart(key)` lets it close a panel state that fights the drag.
  */
 export function installSplitters({ body = globalThis.document.body, storage = globalThis.localStorage,
-  onChange = () => {}, onStart = () => {} } = {}) {
-  const viewportSize = () => ({ width: globalThis.innerWidth || 1280, height: globalThis.innerHeight || 800 });
+  measure = () => null, onChange = () => {}, onStart = () => {} } = {}) {
+  // `measure` reports the scene editor's real width when the host can see it; the
+  // viewport is only a guess, and a stacked layout would guess wrong.
+  const viewportSize = () => {
+    const width = globalThis.innerWidth || 1280, height = globalThis.innerHeight || 800;
+    let sceneRoom = null;
+    try { sceneRoom = measure?.() ?? null; } catch { sceneRoom = null; }
+    return { width, height, sceneRoom };
+  };
   // The preference survives a small window: only the drawn size is fitted, so
   // shrinking the browser and growing it again restores the panels you chose.
   let preference = readLayout(storage), shown = clampLayout(preference, viewportSize());
@@ -75,12 +112,17 @@ export function installSplitters({ body = globalThis.document.body, storage = gl
     { key: 'left', id: 'splitter-left', axis: 'x', sign: 1 },
     { key: 'right', id: 'splitter-right', axis: 'x', sign: -1 },
     { key: 'assets', id: 'splitter-assets', axis: 'y', sign: -1 },
+    // The scene object editor's own tree and inspector edges.
+    { key: 'sceneDock', id: 'scene-splitter-dock', axis: 'x', sign: 1 },
+    { key: 'sceneInspector', id: 'scene-splitter-inspector', axis: 'x', sign: -1 },
   ];
   function apply() {
     shown = clampLayout(preference, viewportSize());
     body.style.setProperty('--left-width', `${shown.left}px`);
     body.style.setProperty('--right-width', `${shown.right}px`);
     body.style.setProperty('--asset-dock-height', `${shown.assets}px`);
+    body.style.setProperty('--scene-dock-width', `${shown.sceneDock}px`);
+    body.style.setProperty('--scene-inspector-width', `${shown.sceneInspector}px`);
     for (const handle of handles) {
       const element = body.querySelector(`#${handle.id}`);
       element?.setAttribute('aria-valuenow', String(shown[handle.key]));
@@ -143,6 +185,6 @@ export function installSplitters({ body = globalThis.document.body, storage = gl
   const onWindowResize = () => apply();
   globalThis.addEventListener?.('resize', onWindowResize);
   apply();
-  return { get layout() { return { ...shown }; }, get preference() { return { ...preference }; }, set, reset,
+  return { get layout() { return { ...shown }; }, get preference() { return { ...preference }; }, set, reset, refresh: apply,
     dispose() { globalThis.removeEventListener?.('resize', onWindowResize); } };
 }

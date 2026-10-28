@@ -98,7 +98,7 @@
       </section>
       <section id="scene-panel" class="panel scene-editor-panel" hidden>
         <nav id="scene-tabs" class="scene-tabs" aria-label="Open scene objects"></nav>
-        <div class="scene-editor-body">
+        <div id="scene-editor-body" class="scene-editor-body">
           <aside class="scene-dock" aria-label="Scene">
             <div class="dock-heading scene-dock-heading">Scene
               <button id="scene-dock-menu" class="dock-menu" aria-haspopup="menu" title="Node actions">Edit</button>
@@ -120,6 +120,9 @@
             </div>
             <div id="scene-menu" class="dock-popup" role="menu" hidden></div>
           </aside>
+          <div id="scene-splitter-dock" class="splitter splitter-vertical scene-splitter" role="separator"
+            aria-orientation="vertical" aria-label="Resize the scene tree" aria-valuemin="170" aria-valuemax="620"
+            tabindex="0" title="Drag to resize · double-click to reset"></div>
           <section class="scene-view" aria-label="Scene view">
             <div class="scene-view-toolbar">
               <button data-scene-view="2d" class="active" title="Top-down view">2D</button>
@@ -146,6 +149,9 @@
               </div>
             </div>
           </section>
+          <div id="scene-splitter-inspector" class="splitter splitter-vertical scene-splitter" role="separator"
+            aria-orientation="vertical" aria-label="Resize the Inspector" aria-valuemin="190" aria-valuemax="700"
+            tabindex="0" title="Drag to resize · double-click to reset"></div>
           <aside class="scene-inspector" aria-label="Inspector">
             <div class="dock-heading scene-dock-heading">Inspector
               <button id="scene-inspector-menu" class="dock-menu" aria-haspopup="menu" title="Property actions">Options</button>

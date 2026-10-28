@@ -90,6 +90,8 @@ let drag = null, mapNeedsDraw = true;
 // Panel edges are draggable and remembered per browser; the 2D map only repaints
 // when it is told its drawing buffer changed size, so every resize redraws it.
 const splitters = installSplitters({
+  // The scene editor's own columns are fitted to the panel that holds them.
+  measure: () => document.getElementById('scene-editor-body')?.clientWidth || null,
   onStart: key => {
     const dock = $('asset-dock');
     if (key !== 'assets' || !dock.classList.contains('expanded')) return;
@@ -947,7 +949,7 @@ function showTab(tab) {
   // The designer is only refreshed while its tab is visible, so opening the tab
   // has to build it once.
   if (tab === 'hud') hudEditor.render();
-  if (tab === 'scene') sceneObjectEditor?.render();
+  if (tab === 'scene') { sceneObjectEditor?.render(); /* the scene editor's columns are fitted to the panel, so measure it now that it is visible */ splitters.refresh(); }
   if (tab === 'actors') actorsPanel.render();
   if (tab === 'scripts') scriptsPanel.render();
   if (tab === 'logs') playtestLogPanel.render();
