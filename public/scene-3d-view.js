@@ -233,6 +233,8 @@ export async function createScene3dView(canvas) {
         opacity: panel.opacity ?? PANEL_DEFAULTS.opacity,
         roughness: panel.roughness ?? PANEL_DEFAULTS.roughness,
         metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
+        emissive: new THREE.Color(panel.color || PANEL_DEFAULTS.color).multiplyScalar(.18),
+        clearcoat: .7, clearcoatRoughness: .18, reflectivity: .5,
         side: THREE.DoubleSide,
         depthWrite: false,
       }), entity);

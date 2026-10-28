@@ -599,9 +599,13 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const panel = entity.panel;
       const geometry = new THREE.BoxGeometry(panel.width, panel.height, Math.max(.5, panel.thickness ?? 2));
       geometries.add(geometry);
+      // A translucent slab with nothing lighting it reads as a flat grey bar, so the panel
+      // carries a little of its own light and a clear coat that catches what the level has.
       const material = withEffectFor(new THREE.MeshPhysicalMaterial({
         color: panel.color, transparent: true, opacity: panel.opacity ?? PANEL_DEFAULTS.opacity,
         roughness: panel.roughness ?? PANEL_DEFAULTS.roughness, metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
+        emissive: new THREE.Color(panel.color || PANEL_DEFAULTS.color).multiplyScalar(.18),
+        clearcoat: .7, clearcoatRoughness: .18, reflectivity: .5,
         side: THREE.DoubleSide, depthWrite: false,
       }), entity);
       materials.add(material);
