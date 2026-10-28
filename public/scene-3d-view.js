@@ -112,8 +112,11 @@ export async function createScene3dView(canvas) {
       wrapped.outputNode = mix(output, effect.effect(output, uv(), effectTime, screenUV), 1);
       if (effect.usesScreen) screenMaterials.add(wrapped);
       return wrapped;
-    } catch {
-      // A shader that cannot wrap this material must not hide the object.
+    } catch (error) {
+      // A shader that cannot wrap this material must not hide the object, and the edit
+      // must not be silent either: the reason is reported on the canvas and in the log.
+      canvas.dataset.shaderError = `${entity?.name || 'node'}: ${error.message}`;
+      console.warn(`Shader on ${entity?.name || 'node'} failed: ${error.message}`);
       return material;
     }
   }
@@ -232,6 +235,8 @@ export async function createScene3dView(canvas) {
       const slab = new THREE.Mesh(new THREE.BoxGeometry(panel.width, Math.max(.5, panel.thickness ?? 2), panel.height), material);
       slab.position.z = panel.height / 2;
       slab.userData.pickable = true;
+      slab.userData.panel = true;
+      group.userData.panel = true;
       if (screenMaterials.has(material)) screenGroups.add(group);
       group.add(slab);
     } else if (entity.spriteAsset) {
@@ -378,6 +383,11 @@ export async function createScene3dView(canvas) {
     effectResolution.value.set(screenSize.x, screenSize.y);
     canvas.dataset.screenGroups = String(screenGroups.size);
     canvas.dataset.screenPass = String(needsScreenPass());
+    // What is actually drawn per node kind, so an invisible node can be told apart from
+    // one that was never built.
+    let panelGroups = 0;
+    for (const group of groups.values()) if (group.children.some(child => child.userData.panel)) panelGroups++;
+    canvas.dataset.panels = String(panelGroups);
     // What is behind a refractive object has to be drawn before the object itself, so
     // the screen-sampling panels are drawn into a target with themselves hidden.
     if (needsScreenPass()) {
