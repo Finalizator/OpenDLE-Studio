@@ -229,7 +229,7 @@ test('the 2D and 3D tabs both draw the scene, and neither uses inline styles', (
   assert.match(editor, /function draw3d\(/);
   assert.match(editor, /state\.view3d = button\.dataset\.sceneView === '3d'/);
   assert.match(editor, /function orbitEye\(\)/);
-  assert.match(editor, /kind: event\.button === 2 \? 'dolly' : 'orbit'/);
+  assert.match(editor, /kind: right \? 'dolly' : 'orbit'/);
   // up = forward x right: getting this backwards drew every node as a flat sliver.
   assert.match(editor, /up = forward x right/);
   // The app's CSP refuses inline style *attributes*, so indentation and the dock popup are
@@ -408,4 +408,30 @@ test('right click answers on the layout, in the 3D view and on every list', () =
   const logs = readFileSync(new URL('../public/playtest-log-panel.js', import.meta.url), 'utf8');
   assert.match(logs, /Playtest session actions/);
   assert.match(logs, /Log entry actions/);
+});
+
+test('the 3D view flies with WASD by default and keeps the orbit camera as an option', () => {
+  const editor = readFileSync(new URL('../public/scene-object-editor.js', import.meta.url), 'utf8');
+  // The layout's 3D movement is the default here too: Fly, with Orbit beside it.
+  assert.match(editor, /camera: 'fly',/);
+  assert.match(editor, /function setCameraMode\(mode\)/);
+  assert.match(editor, /function flyDirection\(\)/);
+  assert.match(editor, /function frameFlyFromOrbit\(\)/);
+  assert.match(editor, /function orbitFromFly\(\)/);
+  // Right-drag looks around, and a right click that never moved still opens the menu.
+  assert.match(editor, /kind: right \? 'look' : 'none'/);
+  assert.match(editor, /state\.fly\.yaw = drag\.yaw \+ dx \* \.003/);
+  assert.match(editor, /drag\.kind === 'look'\) && !drag\.moved/);
+  // WASD/QE walking with the layout view's four-times Shift boost and capped frame step.
+  assert.match(editor, /const speed = state\.fly\.speed \* Math\.min\(dt, \.05\)/);
+  assert.match(editor, /\* \(keys\.has\('ShiftLeft'\) \|\| keys\.has\('ShiftRight'\) \? 4 : 1\)/);
+  assert.match(editor, /if \(state\.view3d && state\.camera === 'fly' && state\.keys\.size\) moveFly\(dt\);/);
+  // The wheel sets the fly speed, exactly like the layout view.
+  assert.match(editor, /state\.fly\.speed = Math\.max\(16, Math\.min\(8192, state\.fly\.speed \* Math\.exp\(-event\.deltaY \* \.001\)\)\)/);
+  const page = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(page, /data-scene-camera="fly" class="active" aria-pressed="true"/);
+  assert.match(page, /data-scene-camera="orbit"/);
+  // The frame loop has to hand the editor its delta time, or the camera would jitter.
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /sceneObjectEditor\?\.frame\(dt\)/);
 });

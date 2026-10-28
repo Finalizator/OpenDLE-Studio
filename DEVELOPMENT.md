@@ -1948,7 +1948,7 @@ the top keep several open, exactly like Godot's scene tabs.
 | dock | what it does |
 | --- | --- |
 | Scene (left) | filter box, the node tree, and the node toolbar: add child node, duplicate, move up/down, expand/collapse, rename, delete. Right-clicking a node opens the same actions, and dragging a node onto another one groups it (drag onto the scene root to ungroup). |
-| View (middle) | **2D** is a top-down blueprint: dot grid, scene bounds, parent links, facing ticks, interaction-area rings, drag to move (snapped), wheel to zoom, middle-drag or alt-drag to pan. **3D** is an orbit camera over the same nodes, drawn as boxes whose height is the node's collider or type height, so elevation, collider size and grouping are readable; dragging a node moves it along the ground plane, left-drag on empty space orbits, right-drag dollies, and a right click that stays put opens the node menu. Both views draw the node's artwork — the sprite image at its real world size, or the model's preview picture — so assigning an asset visibly changes the view. |
+| View (middle) | **2D** is a top-down blueprint: dot grid, scene bounds, parent links, facing ticks, interaction-area rings, drag to move (snapped), wheel to zoom, middle-drag or alt-drag to pan. **3D** draws the same nodes as boxes whose height is the node's collider or type height, so elevation, collider size and grouping are readable; dragging a node moves it along the ground plane and a right click that stays put opens the node menu. Both views draw the node's artwork — the sprite image at its real world size, or the model's preview picture — so assigning an asset visibly changes the view. |
 | Inspector (right) | the selected node's properties in folded categories — Transform, Node, Visual, Model, Physics, Light, Interaction area, Script — with Godot's right-aligned labels and per-row revert arrow, plus a property filter and an expand/collapse menu. Empty categories are not drawn. |
 
 The scene itself is the tree root, so its inspector edits the scene name and its
@@ -1967,6 +1967,19 @@ or shader warm-up. Colours and node icons come from the stylesheet (the app's CS
 refuses inline style *attributes*, so tree indentation and the dock popup are
 classes; CSSOM writes such as a menu's `left`/`top` are allowed and are how the
 menus and the drag ghost follow the pointer).
+
+**Two 3D cameras, fly first.** The 3D view opens on a **Fly** camera because that is
+how the layout's 3D view moves: right-drag looks around, `W`/`A`/`S`/`D` walk, `Q`/`E`
+drop and rise, `Shift` is four times faster, and the wheel sets the speed. It reuses the
+layout view's numbers (320 u/s, a `.05 s` capped frame step, 16–8192 u/s from the
+wheel), so both 3D views feel the same. The camera mode buttons are next to the 2D/3D
+tabs and only appear in 3D; `Orbit` is the original camera that circles the scene root
+(left-drag orbits, right-drag dollies, the wheel zooms), and the 3D view's context menu
+lists both with the current one ticked. Switching modes keeps the viewpoint: going to
+orbit derives the orbit angles from the fly camera's position, and going back to fly
+places the fly camera where the orbit camera sat, looking at the origin. Keys are read
+from the canvas, so typing in the node filter never moves the camera, and in orbit mode
+they do nothing at all.
 
 **Dropping onto a scene.** Assets, other scene objects and layout objects can be
 dragged into the view or onto a tree row, using pointer events like the layout's own

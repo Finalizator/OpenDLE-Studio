@@ -125,6 +125,11 @@
               <button data-scene-view="2d" class="active" title="Top-down view">2D</button>
               <button data-scene-view="3d" title="Preview the scene in 3D">3D</button>
               <span class="scene-view-separator" role="presentation"></span>
+              <button data-scene-camera="fly" class="active" aria-pressed="true"
+                title="WASD fly camera: right-drag looks around, WASD moves, Q/E lower and raise, Shift is faster, the wheel sets the speed">Fly</button>
+              <button data-scene-camera="orbit" aria-pressed="false"
+                title="Orbit camera: left-drag circles the scene root, right-drag dollies, the wheel zooms">Orbit</button>
+              <span class="scene-view-separator" role="presentation"></span>
               <button id="scene-view-grid" aria-pressed="true" title="Show the grid">Grid</button>
               <button id="scene-view-snap" aria-pressed="true" title="Snap to the grid">Snap</button>
               <button id="scene-view-center" title="Center the view on the scene">Center</button>

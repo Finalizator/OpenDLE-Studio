@@ -33,11 +33,16 @@ export function createSceneObjectEditor({ callbacks }) {
     panY: 0,
     grid: true,
     snap: true,
-    // The 3D tab orbits a camera around the scene origin, the way Godot's 3D view does.
     view3d: false,
+    // Two 3D cameras, both offered in the toolbar. `fly` is the default because it is how
+    // the layout's 3D view moves: right-drag looks around, WASD walks, Q/E change height.
+    // `orbit` is the original camera that stays outside the scene and circles its origin.
+    camera: 'fly',
+    fly: { x: 0, y: -300, z: 260, yaw: 0, pitch: -0.35, speed: 320 },
     orbitYaw: -0.7,
     orbitPitch: 0.55,
     orbitDistance: 420,
+    keys: new Set(),
     drag: null,
     treeDrag: null,
     // Dragging an asset, a scene or a layout object onto the view or the tree.
@@ -932,11 +937,58 @@ export function createSceneObjectEditor({ callbacks }) {
     };
   }
 
-  /** The orbit camera basis, shared by the projection and by inverse picking. */
-  function cameraBasis() {
+  /** The fly camera's forward vector: the same yaw/pitch convention as the layout view. */
+  function flyDirection() {
+    const { yaw, pitch } = state.fly;
+    return { x: Math.cos(pitch) * Math.cos(yaw), y: Math.cos(pitch) * Math.sin(yaw), z: Math.sin(pitch) };
+  }
+
+  /** Places the fly camera where the orbit camera sits, looking back at the scene origin. */
+  function frameFlyFromOrbit() {
     const eye = orbitEye();
-    // Camera basis: forward towards the pivot at the scene origin.
-    const forward = { x: -eye.x, y: -eye.y, z: -eye.z };
+    state.fly.x = eye.x; state.fly.y = eye.y; state.fly.z = eye.z;
+    // forward = -eye, so the yaw turns half a circle and the pitch flips.
+    state.fly.yaw = state.orbitYaw + Math.PI;
+    state.fly.pitch = Math.max(-1.48, Math.min(1.48, -state.orbitPitch));
+  }
+
+  /** Points the orbit camera back at the origin from wherever the fly camera is. */
+  function orbitFromFly() {
+    const { x, y, z } = state.fly;
+    const distance = Math.hypot(x, y, z) || 1;
+    state.orbitDistance = Math.max(60, Math.min(4000, distance));
+    state.orbitYaw = Math.atan2(y, x);
+    state.orbitPitch = Math.max(-1.45, Math.min(1.45, Math.asin(Math.max(-1, Math.min(1, z / distance)))));
+  }
+
+  function setCameraMode(mode) {
+    const next = mode === 'orbit' ? 'orbit' : 'fly';
+    if (next === state.camera) return;
+    if (next === 'orbit') orbitFromFly(); else frameFlyFromOrbit();
+    state.camera = next;
+    state.drag = null;
+    state.keys.clear();
+    syncCameraButtons();
+    updateZoomLabel();
+    draw();
+  }
+
+  function syncCameraButtons() {
+    for (const button of document.querySelectorAll('[data-scene-camera]')) {
+      const active = button.dataset.sceneCamera === state.camera;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+      // The camera buttons only apply to the 3D view.
+      button.hidden = !state.view3d;
+    }
+  }
+
+  /** The camera basis, shared by the projection and by inverse picking. */
+  function cameraBasis() {
+    const flying = state.camera === 'fly';
+    const eye = flying ? { x: state.fly.x, y: state.fly.y, z: state.fly.z } : orbitEye();
+    // The orbit camera always looks at the scene origin; the fly camera looks where it is aimed.
+    const forward = flying ? flyDirection() : { x: -eye.x, y: -eye.y, z: -eye.z };
     const length = Math.hypot(forward.x, forward.y, forward.z) || 1;
     forward.x /= length; forward.y /= length; forward.z /= length;
     const right = { x: -forward.y, y: forward.x, z: 0 };
@@ -1080,6 +1132,7 @@ export function createSceneObjectEditor({ callbacks }) {
     // extent, so opening a scene never starts inside a node.
     const spread = Math.max(...current.entities.map(entity => Math.max(Math.abs(entity.x), Math.abs(entity.y))), 128);
     state.orbitDistance = Math.max(240, Math.min(4000, spread * 2.6));
+    frameFlyFromOrbit();
     updateZoomLabel();
     const origin = sceneOrigin(current);
     state.panX = origin.x; state.panY = origin.y;
@@ -1093,9 +1146,9 @@ export function createSceneObjectEditor({ callbacks }) {
 
   function updateZoomLabel() {
     if (!dom.zoom) return;
-    dom.zoom.textContent = state.view3d
-      ? `3D ${Math.round(state.orbitDistance)}u`
-      : `${Math.round(state.zoom * 100)}%`;
+    dom.zoom.textContent = !state.view3d ? `${Math.round(state.zoom * 100)}%`
+      : state.camera === 'fly' ? `3D fly ${Math.round(state.fly.speed)}u/s`
+        : `3D orbit ${Math.round(state.orbitDistance)}u`;
   }
 
   function draw() {
@@ -1278,14 +1331,19 @@ export function createSceneObjectEditor({ callbacks }) {
       if (!current) return;
       canvas.focus();
       if (state.view3d) {
-        // Hit a node and drag it along the ground; miss and orbit. The right button
-        // dollies, and a right click that does not move opens the node menu.
+        // Hit a node and drag it along the ground, otherwise move the camera. The fly
+        // camera looks around on a right drag; the orbit camera dollies on one. Either
+        // way a right click that does not move opens the node menu.
         const hit = event.button === 2 ? null : pickAt(event);
+        const right = event.button === 2;
         state.drag = hit
           ? { kind: 'move3d', id: hit.id, moved: false, startX: event.clientX, startY: event.clientY,
             originX: hit.x, originY: hit.y }
-          : { kind: event.button === 2 ? 'dolly' : 'orbit', startX: event.clientX, startY: event.clientY,
-            yaw: state.orbitYaw, pitch: state.orbitPitch, distance: state.orbitDistance, moved: false };
+          : state.camera === 'fly'
+            ? { kind: right ? 'look' : 'none', startX: event.clientX, startY: event.clientY,
+              yaw: state.fly.yaw, pitch: state.fly.pitch, moved: false }
+            : { kind: right ? 'dolly' : 'orbit', startX: event.clientX, startY: event.clientY,
+              yaw: state.orbitYaw, pitch: state.orbitPitch, distance: state.orbitDistance, moved: false };
         canvas.setPointerCapture(event.pointerId);
         if (hit) select(hit.id);
         return;
@@ -1314,6 +1372,16 @@ export function createSceneObjectEditor({ callbacks }) {
       if (!drag) return;
       if (drag.kind === 'menu') {
         if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 3) drag.moved = true;
+        return;
+      }
+      if (drag.kind === 'look') {
+        const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
+        if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+        drag.moved = true;
+        // Same sensitivity and clamp as the layout's 3D view.
+        state.fly.yaw = drag.yaw + dx * .003;
+        state.fly.pitch = Math.max(-1.48, Math.min(1.48, drag.pitch - dy * .003));
+        draw();
         return;
       }
       if (drag.kind === 'orbit' || drag.kind === 'dolly') {
@@ -1358,7 +1426,7 @@ export function createSceneObjectEditor({ callbacks }) {
       const drag = state.drag;
       state.drag = null;
       if (!drag) return;
-      if ((drag.kind === 'menu' || drag.kind === 'dolly') && !drag.moved) { canvasMenu(event); return; }
+      if ((drag.kind === 'menu' || drag.kind === 'dolly' || drag.kind === 'look') && !drag.moved) { canvasMenu(event); return; }
       if (drag.kind !== 'move' && drag.kind !== 'move3d') return;
       if (!drag.moved) return;
       const current = scene();
@@ -1380,7 +1448,9 @@ export function createSceneObjectEditor({ callbacks }) {
     canvas.addEventListener('wheel', event => {
       event.preventDefault();
       if (state.view3d) {
-        state.orbitDistance = Math.max(60, Math.min(4000, state.orbitDistance * Math.exp(event.deltaY * .0015)));
+        if (state.camera === 'fly') {
+          state.fly.speed = Math.max(16, Math.min(8192, state.fly.speed * Math.exp(-event.deltaY * .001)));
+        } else state.orbitDistance = Math.max(60, Math.min(4000, state.orbitDistance * Math.exp(event.deltaY * .0015)));
         updateZoomLabel();
         draw();
         return;
@@ -1394,6 +1464,47 @@ export function createSceneObjectEditor({ callbacks }) {
       updateZoomLabel();
       draw();
     }, { passive: false });
+  }
+
+  /** WASD/QE walking for the fly camera, with the same speeds the layout view uses. */
+  function moveFly(dt) {
+    const keys = state.keys;
+    const walk = Number(keys.has('KeyW')) - Number(keys.has('KeyS'));
+    const strafe = Number(keys.has('KeyD')) - Number(keys.has('KeyA'));
+    const lift = Number(keys.has('KeyE')) - Number(keys.has('KeyQ'));
+    if (!walk && !strafe && !lift) return false;
+    const forward = flyDirection();
+    // Right is the horizontal perpendicular of the view, so strafing never tilts.
+    const right = { x: -forward.y, y: forward.x, z: 0 };
+    const rightLength = Math.hypot(right.x, right.y) || 1;
+    const motion = {
+      x: forward.x * walk + right.x / rightLength * strafe,
+      y: forward.y * walk + right.y / rightLength * strafe,
+      z: forward.z * walk + lift,
+    };
+    const length = Math.hypot(motion.x, motion.y, motion.z);
+    if (!length) return false;
+    // Q/E lift along world up, and Shift is the same four-times boost the layout view has.
+    const speed = state.fly.speed * Math.min(dt, .05)
+      * (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 4 : 1);
+    state.fly.x += motion.x / length * speed;
+    state.fly.y += motion.y / length * speed;
+    state.fly.z += motion.z / length * speed;
+    return true;
+  }
+
+  function bindCameraKeys() {
+    const canvas = dom.canvas;
+    if (!canvas) return;
+    const moving = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'];
+    canvas.addEventListener('keydown', keyEvent => {
+      if (!moving.includes(keyEvent.code)) return;
+      keyEvent.preventDefault();
+      state.keys.add(keyEvent.code);
+    });
+    canvas.addEventListener('keyup', keyEvent => state.keys.delete(keyEvent.code));
+    canvas.addEventListener('blur', () => state.keys.clear());
+    window.addEventListener('blur', () => state.keys.clear());
   }
 
   function drawDragGhost(x, y) {
@@ -1666,9 +1777,13 @@ export function createSceneObjectEditor({ callbacks }) {
         for (const button of document.querySelectorAll('[data-scene-view]')) {
           button.classList.toggle('active', (button.dataset.sceneView === '3d') === state.view3d);
         }
+        state.keys.clear();
+        syncCameraButtons();
         updateZoomLabel();
         draw();
       } },
+      { label: 'WASD fly camera', checked: state.camera === 'fly', run: () => setCameraMode('fly') },
+      { label: 'Orbit camera', checked: state.camera === 'orbit', run: () => setCameraMode('orbit') },
       { label: 'Center the view', run: () => { centerView(); draw(); } },
       { label: 'Show the grid', checked: state.grid, run: () => {
         state.grid = !state.grid;
@@ -1768,11 +1883,18 @@ export function createSceneObjectEditor({ callbacks }) {
       if (state.sceneId) callbacks.placeScene(state.sceneId);
     });
     document.getElementById('scene-view-add')?.addEventListener('click', () => addNode(null));
+    syncCameraButtons();
+    bindCameraKeys();
+    for (const button of document.querySelectorAll('[data-scene-camera]')) {
+      button.addEventListener('click', () => setCameraMode(button.dataset.sceneCamera));
+    }
     for (const button of document.querySelectorAll('[data-scene-view]')) {
       button.addEventListener('click', () => {
         for (const peer of document.querySelectorAll('[data-scene-view]')) peer.classList.toggle('active', peer === button);
         state.view3d = button.dataset.sceneView === '3d';
         state.drag = null;
+        state.keys.clear();
+        syncCameraButtons();
         updateZoomLabel();
         draw();
       });
@@ -1848,8 +1970,10 @@ export function createSceneObjectEditor({ callbacks }) {
       draw();
     },
     /** Called from the app frame loop while the panel is visible. */
-    frame() {
+    frame(dt = 0) {
       if (dom.panel?.hidden) return;
+      // Holding WASD/QE walks the fly camera, exactly like the layout's 3D view.
+      if (state.view3d && state.camera === 'fly' && state.keys.size) moveFly(dt);
       draw();
     },
     center: () => { centerView(); draw(); },

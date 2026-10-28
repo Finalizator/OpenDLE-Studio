@@ -2636,7 +2636,7 @@ function frame(now) {
   } else if (project && !$('scene-panel').hidden) {
     // The scene object editor draws its own canvas: redraws keep it in step with
     // window resizes and edits made from anywhere else (undo, inspector, import).
-    try { sceneObjectEditor?.frame(); } catch (error) { status(`Scene editor failed: ${error.message}`, true); }
+    try { sceneObjectEditor?.frame(dt); } catch (error) { status(`Scene editor failed: ${error.message}`, true); }
   } else if (project && !$('map-panel').hidden) {
     if (sceneMode === '3d') {
       try { sceneEditor?.frame(dt); } catch (error) { status(`3D editor failed: ${error.message}`, true); setSceneMode('2d'); }
