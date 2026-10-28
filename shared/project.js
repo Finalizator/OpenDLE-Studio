@@ -509,6 +509,21 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         assert(entity.type !== 'player', 'A scene cannot contain the player object');
         validateEntity(entity, { assetRef, clipRef, modelRef });
       }
+      // Scene objects can be grouped like nodes; the parent must exist in the same scene
+      // and the grouping must stay a tree.
+      for (const entity of scene.entities) {
+        if (entity.parentId === undefined) continue;
+        identifier(entity.parentId, 'Scene object parent');
+        assert(entity.parentId !== entity.id, 'A scene object cannot be grouped under itself');
+        assert(sceneEntityIds.has(entity.parentId), 'A scene object parent references an unknown object');
+        const seen = new Set([entity.id]);
+        let parent = entity.parentId;
+        for (let depth = 0; parent && depth <= scene.entities.length; depth++) {
+          assert(!seen.has(parent), `Scene object grouping has a cycle at ${entity.id}`);
+          seen.add(parent);
+          parent = scene.entities.find(item => item.id === parent)?.parentId;
+        }
+      }
       if (scene.events !== undefined) {
         array(scene.events, 'Scene events', MAX_SCENE_EVENTS);
         const eventIds = new Set();
@@ -519,11 +534,15 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           eventIds.add(event.id);
           assert(typeof event.enabled === 'boolean' && typeof event.once === 'boolean', 'Scene event enabled/once must be boolean');
           if (event.ownerId !== undefined) assert(sceneEntityIds.has(event.ownerId), 'Scene event owner references an unknown scene object');
-          for (const list of [event.conditions, event.actions]) {
+          // A scene event carries the same commands a map event does: core actions such
+          // as addVariable live in ACTIONS, not in the engine tables, so looking them up
+          // in engineCommand alone rejected a scene holding a pickup's own script.
+          for (const [list, label] of [[event.conditions, 'condition'], [event.actions, 'action']]) {
             array(list || [], 'Scene event commands', 64);
             for (const command of list || []) {
               object(command, 'Scene event command');
-              assert(engineCommand(command.type), `Unknown scene event command: ${command.type}`);
+              assert(label === 'action' ? ACTIONS.includes(command.type) : CONDITIONS.includes(command.type),
+                `Unknown scene event ${label}: ${command.type}`);
             }
           }
           if (event.condition !== undefined) assert(CONDITIONS.includes(event.condition?.type), `Unknown scene event condition: ${event.condition?.type}`);

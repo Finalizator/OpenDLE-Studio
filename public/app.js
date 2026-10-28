@@ -36,7 +36,8 @@ import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { upgradePickupReach } from '/shared/doom-hud.js';
 import { suggestedArea } from '/shared/areas.js';
-import { captureScene, instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
+import { captureScene, instantiateScene, sceneIsEmpty, newScene } from '/shared/scenes.js';
+import { createSceneObjectEditor } from './scene-object-editor.js';
 import { captureModelPreview } from './model-thumbnail.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
 import { installIntermission } from '/shared/intermission.js';
@@ -76,6 +77,9 @@ let wadImport = null;
 let packageSource = null, packageInspection = null, packageBusy = false, packageController = null;
 let engineVersion = '';
 let sceneMode = '2d', sceneEditor = null, sceneProject = null, sceneLoading = false, scenePose = null;
+// Scene objects open in their own editor, the way Godot opens a scene in a tab. The
+// list of open ids is what the tab strip shows; the active one is edited below.
+let sceneObjectEditor = null, openSceneIds = [], activeSceneId = null;
 const camera = { x: 0, y: 0, zoom: 1 };
 const keys = new Set(), pressed = new Set();
 const canvas = $('map'), ctx = canvas.getContext('2d');
@@ -235,6 +239,10 @@ function render() {
       ...(project.game?.levels || []).map(level => new Option(`${level.id} — ${level.name}`, level.id, false, level.id === value)));
   }
   $('project-name').textContent = project.title;
+  renderSceneObjects();
+  // Undo, redo and edits made elsewhere change scene objects too, and the editor is
+  // only re-drawn while it is the visible panel.
+  if (!$('scene-panel').hidden) sceneObjectEditor?.render();
   $('dirty').textContent = badgeText();
   $('undo').disabled = history.length === 0;
   $('redo').disabled = future.length === 0;
@@ -444,6 +452,13 @@ function replace(next, message) {
   // or saved, which is what keeps Save from overwriting whatever was open before.
   projectId = null;
   projectTemporary = false;
+  // A replaced document has its own scenes: close the scene editor instead of showing
+  // the previous project's nodes.
+  openSceneIds = [];
+  activeSceneId = null;
+  sceneObjectEditor?.close(null);
+  if (!$('scene-panel').hidden) showTab('map');
+  renderSceneObjectTabs();
   fitMap();
 }
 /**
@@ -923,11 +938,12 @@ function showTab(tab) {
   if (tab === 'assets') {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
-  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'about'])
+  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'about', 'scene'])
     $(name + '-panel').hidden = tab !== name;
   // The designer is only refreshed while its tab is visible, so opening the tab
   // has to build it once.
   if (tab === 'hud') hudEditor.render();
+  if (tab === 'scene') sceneObjectEditor?.render();
   if (tab === 'actors') actorsPanel.render();
   if (tab === 'scripts') scriptsPanel.render();
   if (tab === 'logs') playtestLogPanel.render();
@@ -2608,6 +2624,10 @@ function frame(now) {
     ].join('  /  ');
     frameParts.hud = performance.now() - frameStart - frameParts.step - frameParts.audio - frameParts.render;
     if (frameBudget.push(performance.now() - frameStart, frameParts)) reportSlowFrame();
+  } else if (project && !$('scene-panel').hidden) {
+    // The scene object editor draws its own canvas: redraws keep it in step with
+    // window resizes and edits made from anywhere else (undo, inspector, import).
+    try { sceneObjectEditor?.frame(); } catch (error) { status(`Scene editor failed: ${error.message}`, true); }
   } else if (project && !$('map-panel').hidden) {
     if (sceneMode === '3d') {
       try { sceneEditor?.frame(dt); } catch (error) { status(`3D editor failed: ${error.message}`, true); setSceneMode('2d'); }
@@ -3072,6 +3092,196 @@ function captureSceneFromSelection(scope) {
 }
 $('scene-from-object').addEventListener('click', guard(() => captureSceneFromSelection('object')));
 $('scene-from-sector').addEventListener('click', guard(() => captureSceneFromSelection('sector')));
+
+/* ---------------------------------------------------------------------------
+   Scene objects: a scene opens in its own editor (node tree, view, inspector)
+   instead of being only a reusable bag of objects.
+--------------------------------------------------------------------------- */
+function sceneObjectRow(scene) {
+  const row = button('', () => openSceneObject(scene.id), 'scene-object-row');
+  row.dataset.sceneId = scene.id;
+  const parentCount = scene.entities.filter(entity => entity.parentId).length;
+  row.append(make('span', '◆', 'node-glyph node-glyph-scene'), make('span', scene.name, 'node-name'),
+    make('span', `${scene.entities.length}`, 'scene-object-count'));
+  row.title = `${scene.name}: ${scene.entities.length} object${scene.entities.length === 1 ? '' : 's'}`
+    + `${scene.events?.length ? `, ${scene.events.length} event${scene.events.length === 1 ? '' : 's'}` : ''}`
+    + `${parentCount ? `, ${parentCount} grouped node${parentCount === 1 ? '' : 's'}` : ''}`;
+  row.setAttribute('aria-label', row.title);
+  return row;
+}
+/** Keeps the Layouts section list in step with the project and the open scene. */
+function renderSceneObjects() {
+  const list = $('scene-objects');
+  if (!list) return;
+  list.replaceChildren();
+  const scenes = project?.scenes || [];
+  if (!scenes.length) {
+    list.append(make('p', 'No scene objects yet. Capture a selection or press + Scene Object.', 'muted scene-empty'));
+    return;
+  }
+  for (const scene of scenes) {
+    const row = sceneObjectRow(scene);
+    row.classList.toggle('active', scene.id === activeSceneId);
+    list.append(row);
+  }
+}
+function ensureSceneObjectEditor() {
+  if (sceneObjectEditor) return sceneObjectEditor;
+  sceneObjectEditor = createSceneObjectEditor({
+    callbacks: {
+      scenes: () => project?.scenes || [],
+      openScenes: () => openSceneIds,
+      assets: () => project?.assets || [],
+      editScene(id, fn, message) {
+        editGame(next => {
+          const scene = (next.scenes || []).find(item => item.id === id);
+          if (!scene) throw new Error('That scene object no longer exists');
+          fn(scene);
+          if (scene.id === activeSceneId && scene.name !== undefined) {
+            const tab = document.querySelector(`.scene-tab[data-scene-id="${scene.id}"]`);
+            if (tab) tab.querySelector('.scene-tab-name').textContent = scene.name;
+          }
+        }, message);
+        renderSceneObjects();
+        sceneObjectEditor?.render();
+      },
+      openScene: id => openSceneObject(id),
+      closeScene(id) {
+        openSceneIds = openSceneIds.filter(candidate => candidate !== id);
+        sceneObjectEditor?.close(id);
+        if (activeSceneId === id) {
+          activeSceneId = openSceneIds.at(-1) || null;
+          if (activeSceneId) sceneObjectEditor?.open(activeSceneId);
+          else showTab('map');
+        }
+        renderSceneObjects();
+        renderSceneObjectTabs();
+      },
+      chooseScene: () => {
+        const scenes = project?.scenes || [];
+        if (!scenes.length) { status('There are no scene objects yet; press + Scene Object to make one.', true); return; }
+        const names = scenes.map((scene, index) => `${index + 1}. ${scene.name}`);
+        const answer = prompt(`Open which scene object?\n${names.join('\n')}\n\nType a number.`,
+          String(scenes.findIndex(scene => scene.id === activeSceneId) + 1 || 1));
+        if (!answer) return;
+        const index = Number(answer) - 1;
+        if (!Number.isInteger(index) || !scenes[index]) { status('That is not a scene object number', true); return; }
+        openSceneObject(scenes[index].id);
+      },
+      placeScene(id) {
+        placeScene(id);
+        status(`Placed ${(project.scenes || []).find(scene => scene.id === id)?.name || 'the scene'} in the layout; press Layout 1 to see it.`);
+      },
+      captureInto(id) {
+        try {
+          captureIntoSceneObject(id);
+        } catch (error) { status(error.message, true); }
+      },
+      deleteScene(id) {
+        const scene = (project.scenes || []).find(item => item.id === id);
+        if (!scene) return;
+        if (!confirm(`Delete the scene object "${scene.name}"? Objects already placed from it in the layout are kept.`)) return;
+        edit(next => { next.scenes = (next.scenes || []).filter(item => item.id !== id); }, `Scene ${scene.name} deleted`);
+        openSceneIds = openSceneIds.filter(candidate => candidate !== id);
+        sceneObjectEditor?.close(id);
+        activeSceneId = openSceneIds.at(-1) || null;
+        if (activeSceneId) sceneObjectEditor?.open(activeSceneId); else showTab('map');
+        renderSceneObjects();
+      },
+      openEvents: ownerId => openScript(ownerId),
+      status: (message, isError) => status(message, isError),
+    },
+  });
+  return sceneObjectEditor;
+}
+function renderSceneObjectTabs() {
+  const strip = $('scene-tabs');
+  if (!strip) return;
+  strip.replaceChildren();
+  for (const id of openSceneIds) {
+    const scene = (project?.scenes || []).find(item => item.id === id);
+    if (!scene) continue;
+    const tab = make('button', null, 'scene-tab');
+    tab.dataset.sceneId = id;
+    tab.classList.toggle('active', id === activeSceneId);
+    tab.append(make('span', null, 'scene-tab-icon'), make('span', scene.name, 'scene-tab-name'));
+    const close = make('span', '×', 'scene-tab-close');
+    close.title = 'Close this scene object';
+    close.addEventListener('click', event => {
+      event.stopPropagation();
+      openSceneIds = openSceneIds.filter(candidate => candidate !== id);
+      if (activeSceneId === id) {
+        activeSceneId = openSceneIds.at(-1) || null;
+        if (activeSceneId) sceneObjectEditor?.open(activeSceneId);
+        else showTab('map');
+      }
+      renderSceneObjects();
+      renderSceneObjectTabs();
+    });
+    tab.append(close);
+    tab.addEventListener('click', () => openSceneObject(id));
+    strip.append(tab);
+  }
+  const add = make('button', '+', 'scene-tab-add');
+  add.title = 'Open another scene object';
+  add.addEventListener('click', guard(() => {
+    const scenes = project?.scenes || [];
+    if (!scenes.length) { createSceneObject(); return; }
+    const names = scenes.map((scene, index) => `${index + 1}. ${scene.name}`);
+    const answer = prompt(`Open which scene object?\n${names.join('\n')}\n\nType a number.`, '1');
+    if (!answer) return;
+    const scene = scenes[Number(answer) - 1];
+    if (scene) openSceneObject(scene.id);
+  }));
+  strip.append(add);
+}
+function openSceneObject(id) {
+  const scene = (project?.scenes || []).find(item => item.id === id);
+  if (!scene) { status('That scene object no longer exists', true); return; }
+  if (!openSceneIds.includes(id)) openSceneIds.push(id);
+  activeSceneId = id;
+  showTab('scene');
+  const editor = ensureSceneObjectEditor();
+  editor.open(id);
+  renderSceneObjectTabs();
+  renderSceneObjects();
+  status(`Editing scene object "${scene.name}"`);
+}
+function createSceneObject() {
+  const scene = newScene(uniqueSceneName('Scene Object'));
+  edit(next => { next.scenes ||= []; next.scenes.push(scene); }, `Scene object ${scene.name} created`);
+  renderSceneObjects();
+  openSceneObject(scene.id);
+}
+/** Adds the layout's selected objects to an open scene, keeping their relative layout. */
+function captureIntoSceneObject(id) {
+  const scene = (project.scenes || []).find(item => item.id === id);
+  if (!scene) throw new Error('That scene object no longer exists');
+  const player = project.map.entities.find(entity => entity.type === 'player');
+  let ids;
+  if (selection?.kind === 'entity') ids = [selection.id];
+  else if (selection?.kind === 'sector') {
+    ids = project.map.entities.filter(entity => sectorAt(mapSectors, entity.x, entity.y)?.id === selection.id).map(entity => entity.id);
+  } else {
+    // The layout is not visible while a scene object is open, so say where to select.
+    throw new Error('Select an object or a sector in Layout 1 (this scene stays open in its tab), then use Edit > Capture selected layout objects');
+  }
+  ids = ids.filter(entityId => entityId !== player?.id);
+  if (!ids.length) throw new Error('Nothing in the layout is selected to add');
+  const captured = captureScene(project, ids, { name: scene.name });
+  edit(next => {
+    const target = next.scenes.find(item => item.id === id);
+    const existing = new Set(target.entities.map(entity => entity.id));
+    for (const entity of captured.entities) {
+      const copy = { ...entity, id: existing.has(entity.id) ? `${entity.id}_${newId('n').slice(2, 8)}` : entity.id };
+      target.entities.push(copy);
+    }
+    target.events = [...(target.events || []), ...captured.events];
+  }, `${captured.entities.length} object(s) added to ${scene.name}`);
+  renderSceneObjects();
+  sceneObjectEditor?.render();
+}
+$('new-scene-object').addEventListener('click', guard(createSceneObject));
 async function importImageFiles(files, kind) {
   if (files.length > 64) throw new Error('Import at most 64 images at a time');
   const version = editVersion;

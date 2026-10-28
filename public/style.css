@@ -377,3 +377,119 @@ dialog::backdrop { background: #111c; }
 .log-details summary { cursor: pointer; color: #8d99a6; font-size: 11px; }
 .log-details pre { margin: 4px 0 0; padding: 6px 8px; background: #14181d; border: 1px solid #2f3740; border-radius: 3px;
   font-size: 11px; max-height: 30vh; overflow: auto; white-space: pre-wrap; }
+
+/* ---------------------------------------------------------------------------
+   Scene object editor — Godot's scene dock, view and inspector.
+   The layout is the three-column editor: node tree, view, property list, with
+   the scene tab strip above them.
+--------------------------------------------------------------------------- */
+#scene-panel.scene-editor-panel { display: grid; grid-template-rows: 26px minmax(0, 1fr); flex: 1 1 auto; height: 100%; min-height: 0; padding: 0; }
+.property-group { display: contents; }
+.scene-tabs { display: flex; align-items: stretch; gap: 1px; background: #2b2b2b; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.scene-tab { display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 8px; background: #3a3a3a; border: 1px solid transparent; border-bottom: none; border-radius: 0; color: var(--muted); }
+.scene-tab.active { background: #4d4d4d; color: var(--text); border-color: #5e5e5e; }
+.scene-tab-name { white-space: nowrap; max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+.scene-tab-icon { width: 9px; height: 9px; border-radius: 2px; background: #d4c28e; flex: 0 0 auto; }
+.scene-tab:not(.active) .scene-tab-icon { background: #7d7a70; }
+.scene-tab-close { padding: 0 2px; color: var(--muted); border-radius: 2px; }
+.scene-tab-close:hover { background: #6a3f3f; color: #ffd7d2; }
+.scene-tab-add { background: transparent; color: var(--muted); padding: 0 9px; font-size: 13px; }
+.scene-tab-add:hover { background: #4d4d4d; color: var(--text); }
+.scene-editor-body { display: grid; grid-template-columns: minmax(190px, 17vw) minmax(220px, 1fr) minmax(230px, 21vw); min-height: 0; }
+.scene-dock, .scene-inspector { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 0; background: var(--panel); border-right: 1px solid var(--border); }
+.scene-inspector { border-right: none; border-left: 1px solid var(--border); grid-template-rows: auto auto auto minmax(0, 1fr); }
+.scene-dock-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.dock-menu { background: transparent; border: 1px solid transparent; color: var(--muted); padding: 1px 6px; font-size: 10px; }
+.dock-menu:hover { background: #606060; color: var(--text); }
+.scene-filter { display: flex; gap: 3px; padding: 3px; border-bottom: 1px solid var(--border); }
+.scene-filter input { flex: 1; padding: 2px 4px; }
+.scene-filter button { padding: 0 5px; background: #3d3d3d; color: var(--muted); }
+.scene-filter button:hover { color: var(--text); }
+.node-tree { overflow: auto; padding: 2px 0; user-select: none; outline: none; }
+.node-tree:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.node-row { display: flex; align-items: center; gap: 5px; padding: 2px 6px 2px 8px; line-height: 18px; border: 1px solid transparent; cursor: default; white-space: nowrap; }
+.node-row:hover { background: #545454; }
+/* Tree indentation is a class per depth: inline styles are refused by the app's CSP. */
+.node-row { padding-left: 8px; }
+.node-depth-0 { padding-left: 22px; }
+.node-depth-1 { padding-left: 36px; }
+.node-depth-2 { padding-left: 50px; }
+.node-depth-3 { padding-left: 64px; }
+.node-depth-4 { padding-left: 78px; }
+.node-depth-5 { padding-left: 92px; }
+.node-depth-6 { padding-left: 106px; }
+.node-depth-7 { padding-left: 120px; }
+.node-depth-8 { padding-left: 134px; }
+.node-row.selected { background: #6a6758; border-color: #8a8160; }
+.node-row.drop-into { border-color: var(--accent); background: #5c5945; }
+.node-row.dragging { opacity: .55; }
+.node-row.dimmed { opacity: .45; }
+.node-row-root { font-weight: 600; }
+.node-twisty { width: 10px; text-align: center; color: var(--muted); font-size: 9px; flex: 0 0 auto; }
+.node-twisty-empty { visibility: hidden; }
+.node-glyph { width: 13px; height: 13px; border-radius: 3px; display: grid; place-items: center; font-size: 9px; font-weight: 700; color: #1b1c20; background: #6d6d6d; flex: 0 0 auto; }
+.node-glyph-scene { background: #d4c28e; }
+.node-glyph-enemy { background: #ed8b83; }
+.node-glyph-pickup { background: #efd17a; }
+.node-glyph-light { background: #a9beff; }
+.node-glyph-decoration { background: #a6a4bc; }
+.node-glyph-player { background: #70ddba; }
+.node-name { overflow: hidden; text-overflow: ellipsis; }
+.node-type { color: #9b9b9b; font-size: 10px; }
+.node-type::before { content: "("; }
+.node-type::after { content: ")"; }
+.node-badge { margin-left: auto; font-size: 9px; color: #1b1c20; background: #a9a9a9; border-radius: 7px; padding: 0 5px; }
+.node-badge-score { display: none; }
+.node-rename { width: 100%; padding: 0 3px; }
+.scene-empty { padding: 8px; font-size: 10px; }
+.scene-toolbar { display: flex; justify-content: space-between; gap: 1px; padding: 3px; border-top: 1px solid var(--border); background: #3d3d3d; }
+.scene-toolbar button { background: transparent; padding: 2px 6px; color: var(--muted); min-width: 22px; }
+.scene-toolbar button:hover { background: #5c5c5c; color: var(--text); }
+.scene-dock, .scene-inspector { position: relative; }
+.dock-popup { position: absolute; z-index: 40; top: 24px; left: 4px; right: 4px; padding: 3px; background: #3d3d3d; border: 1px solid #626262; box-shadow: 0 6px 18px #0009; }
+.dock-popup button { display: block; width: 100%; text-align: left; background: transparent; padding: 4px 8px; }
+.dock-popup button:hover { background: #5a5a5a; }
+.dock-popup-separator { height: 1px; margin: 3px 2px; background: #5a5a5a; }
+.scene-view { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; background: #1f2024; }
+.scene-view-toolbar { display: flex; align-items: center; gap: 3px; padding: 3px 5px; background: #3a3a3a; border-bottom: 1px solid var(--border); }
+.scene-view-toolbar button { background: transparent; color: var(--muted); padding: 2px 7px; }
+.scene-view-toolbar button:hover { background: #575757; color: var(--text); }
+.scene-view-toolbar button.active { background: #5f5c4c; color: var(--text); }
+.scene-view-toolbar button.primary { background: #6a6758; border-color: #8a8160; color: var(--text); }
+.scene-view-separator { width: 1px; height: 16px; background: #575757; margin: 0 3px; }
+.scene-view-zoom { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; padding-right: 4px; }
+#scene-canvas { width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+.scene-view-empty { position: absolute; inset: 30px 0 0; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--muted); pointer-events: none; }
+.scene-view-empty button { pointer-events: auto; }
+.scene-inspector-head { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-bottom: 1px solid var(--border); background: #434343; }
+.scene-inspector-name { flex: 1; min-width: 0; padding: 2px 4px; }
+.scene-inspector-type { color: #9b9b9b; font-size: 10px; }
+.scene-inspector-events { background: transparent; color: var(--muted); font-size: 10px; padding: 1px 4px; }
+.scene-inspector-events:hover { color: var(--text); background: #575757; }
+.scene-properties { overflow: auto; padding: 2px 0 12px; }
+.property-category { display: flex; align-items: center; gap: 5px; padding: 3px 6px; margin-top: 2px; background: #3f3f3f; border-top: 1px solid #555; border-bottom: 1px solid #333; font-weight: 600; cursor: pointer; position: sticky; top: 0; z-index: 1; }
+.property-category:hover { background: #484848; }
+.property-twisty { width: 9px; color: var(--muted); font-size: 9px; }
+.property-category-name { flex: 1; }
+.property-row { display: grid; grid-template-columns: minmax(70px, 43%) minmax(0, 1fr) 14px; align-items: center; gap: 4px; padding: 1px 6px 1px 10px; min-height: 21px; }
+.property-row:hover { background: #4f4f4f; }
+.property-name { color: var(--muted); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; }
+.property-value { min-width: 0; display: flex; align-items: center; gap: 3px; }
+.property-value input, .property-value select { width: 100%; padding: 1px 4px; }
+.property-value input[type=checkbox] { width: auto; }
+.property-value input[type=color] { height: 18px; padding: 0; }
+.property-revert { background: transparent; border: none; color: var(--accent); padding: 0; font-size: 11px; visibility: hidden; }
+.property-row:hover .property-revert { visibility: visible; }
+.property-revert-empty { display: block; }
+.property-readonly { color: var(--muted); background: #333; }
+.property-events { display: flex; align-items: center; gap: 6px; }
+.property-events-count { color: var(--muted); }
+.property-events-open { padding: 1px 6px; }
+.number-editor { display: flex; width: 100%; }
+.number-editor input { text-align: right; font-variant-numeric: tabular-nums; }
+.scene-object-list { display: grid; gap: 1px; }
+.scene-object-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; background: transparent; border: 1px solid transparent; text-align: left; width: 100%; }
+.scene-object-row:hover { background: #545454; }
+.scene-object-row.active { background: #6a6758; border-color: #8a8160; }
+.scene-object-count { margin-left: auto; color: #9b9b9b; font-size: 9px; }
+.scene-add { color: var(--accent); }

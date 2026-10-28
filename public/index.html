@@ -96,6 +96,60 @@
         <div class="panel-heading"><div><h1>Environment & variables</h1><p>Set the atmosphere and game state.</p></div></div>
         <div id="environment-form"></div>
       </section>
+      <section id="scene-panel" class="panel scene-editor-panel" hidden>
+        <nav id="scene-tabs" class="scene-tabs" aria-label="Open scene objects"></nav>
+        <div class="scene-editor-body">
+          <aside class="scene-dock" aria-label="Scene">
+            <div class="dock-heading scene-dock-heading">Scene
+              <button id="scene-dock-menu" class="dock-menu" aria-haspopup="menu" title="Node actions">Edit</button>
+            </div>
+            <div class="scene-filter">
+              <input id="scene-filter" type="search" placeholder="Filter nodes" aria-label="Filter scene nodes">
+              <button id="scene-filter-clear" title="Clear the node filter" aria-label="Clear the node filter">x</button>
+            </div>
+            <div id="scene-tree" class="node-tree" role="tree" tabindex="0" aria-label="Scene node tree"></div>
+            <div class="scene-toolbar" role="toolbar" aria-label="Scene node actions">
+              <button data-scene-tool="add" title="Add child node">+</button>
+              <button data-scene-tool="duplicate" title="Duplicate (Ctrl+D)">&#10697;</button>
+              <button data-scene-tool="up" title="Move up">&#9650;</button>
+              <button data-scene-tool="down" title="Move down">&#9660;</button>
+              <button data-scene-tool="expand" title="Expand all">&#8615;</button>
+              <button data-scene-tool="collapse" title="Collapse all">&#8613;</button>
+              <button data-scene-tool="rename" title="Rename (F2)">abc</button>
+              <button data-scene-tool="delete" class="danger" title="Delete (Del)">&#10005;</button>
+            </div>
+            <div id="scene-menu" class="dock-popup" role="menu" hidden></div>
+          </aside>
+          <section class="scene-view" aria-label="Scene view">
+            <div class="scene-view-toolbar">
+              <button data-scene-view="2d" class="active" title="Top-down view">2D</button>
+              <button data-scene-view="3d" title="Preview the scene in 3D">3D</button>
+              <span class="scene-view-separator" role="presentation"></span>
+              <button id="scene-view-grid" aria-pressed="true" title="Show the grid">Grid</button>
+              <button id="scene-view-snap" aria-pressed="true" title="Snap to the grid">Snap</button>
+              <button id="scene-view-center" title="Center the view on the scene">Center</button>
+              <span id="scene-view-zoom" class="scene-view-zoom">100%</span>
+              <span class="scene-view-separator" role="presentation"></span>
+              <button id="scene-place" class="primary" title="Place a copy of this scene in the layout">Place in layout</button>
+            </div>
+            <canvas id="scene-canvas" tabindex="0" aria-label="Scene objects"></canvas>
+            <div id="scene-view-empty" class="scene-view-empty" hidden>
+              <p>This scene object has no nodes yet.</p>
+              <button id="scene-view-add">Add the first node</button>
+            </div>
+          </section>
+          <aside class="scene-inspector" aria-label="Inspector">
+            <div class="dock-heading scene-dock-heading">Inspector
+              <button id="scene-inspector-menu" class="dock-menu" aria-haspopup="menu" title="Property actions">Options</button>
+            </div>
+            <div id="scene-inspector-head" class="scene-inspector-head"></div>
+            <div class="scene-filter">
+              <input id="scene-inspector-filter" type="search" placeholder="Filter properties" aria-label="Filter properties">
+            </div>
+            <div id="scene-properties" class="scene-properties"></div>
+          </aside>
+        </div>
+      </section>
       <section id="hud-panel" class="panel" hidden>
         <div class="panel-heading"><div><h1>HUD overlay</h1><p>Anchored layouts, nine-patch panels, fonts, CSS classes, animations and visual scripts.</p></div></div>
         <div id="hud-editor"></div>
@@ -226,7 +280,11 @@
       <input id="project-search" type="search" placeholder="Search project" aria-label="Search project">
       <div class="project-tree">
         <strong id="project-name">Project</strong>
-        <details open><summary>Layouts</summary><button data-tab="map" class="tree-link">Layout 1</button></details>
+        <details open><summary>Layouts</summary>
+          <button data-tab="map" class="tree-link">Layout 1</button>
+          <div id="scene-objects" class="scene-object-list" aria-label="Scene objects"></div>
+          <button id="new-scene-object" class="tree-link scene-add">+ Scene Object</button>
+        </details>
         <details><summary>Game logic</summary><button data-tab="scripts" class="tree-link">Map scripts (ACS)</button></details>
         <details><summary>Diagnostics</summary><button data-tab="logs" class="tree-link">Playtest logs</button></details>
         <details open><summary>HUD overlays</summary><button data-tab="hud" class="tree-link">Game HUD / designer</button></details>

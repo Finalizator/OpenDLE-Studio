@@ -1937,6 +1937,36 @@ Objects and events inside a scene cannot include the player. Captured events
 keep their actions but drop their HUD `sheetId`, because a scene can be placed
 in any level. Limits are 64 scenes, 128 objects and 256 events per scene.
 
+### The Scene Object editor
+
+A scene is not only a bag of objects to place: **Menu → Layouts → Scene Object**
+lists every scene in the project, and pressing one opens it in its own editor
+laid out like Godot's scene dock (`public/scene-object-editor.js`). New scenes come
+from **+ Scene Object**, which creates an empty one and opens it. Scene tabs across
+the top keep several open, exactly like Godot's scene tabs.
+
+| dock | what it does |
+| --- | --- |
+| Scene (left) | filter box, the node tree, and the node toolbar: add child node, duplicate, move up/down, expand/collapse, rename, delete. Right-clicking a node opens the same actions, and dragging a node onto another one groups it (drag onto the scene root to ungroup). |
+| View (middle) | **2D** is a top-down blueprint: dot grid, scene bounds, parent links, facing ticks, interaction-area rings, drag to move (snapped), wheel to zoom, middle-drag or alt-drag to pan. **3D** is an orbit camera over the same nodes, drawn as boxes whose height is the node's collider or type height, so elevation, collider size and grouping are readable; left-drag orbits, right-drag dollies, the wheel zooms. |
+| Inspector (right) | the selected node's properties in folded categories — Transform, Node, Visual, Model, Physics, Light, Interaction area, Script — with Godot's right-aligned labels and per-row revert arrow, plus a property filter and an expand/collapse menu. Empty categories are not drawn. |
+
+The scene itself is the tree root, so its inspector edits the scene name and its
+origin. A scene's nodes can be grouped: `parentId` on a scene object turns the
+list into a tree, and moving a parent in the view or in the inspector carries its
+whole group. Grouping is an **editing aid**: coordinates stay absolute inside the
+scene, and `instantiateScene` drops `parentId` when the scene is placed in a map,
+so a placed copy is a flat set of map objects and older scenes keep working.
+Cycles and dangling parents are rejected by `validateProject`, and every edit goes
+through the normal project edit path, so undo, validation and the browser draft
+all apply as they do elsewhere in the studio.
+
+The view draws on a 2D canvas rather than a Three.js scene: the editor must stay
+responsive while a big map is open, and the canvas needs no GPU context, textures
+or shader warm-up. Colours and node icons come from the stylesheet (the app's CSP
+refuses inline styles, so tree indentation and the dock popup are classes, not
+`element.style` writes).
+
 ### Model thumbnails
 
 The asset library shows a snapshot of each model instead of a "3D" placeholder.

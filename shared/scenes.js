@@ -89,6 +89,8 @@ export function instantiateScene(scene, { x = 0, y = 0, angle = 0, prefix = newS
     const offset = rotate(entity.x, entity.y, angle);
     const copy = structuredClone(entity);
     copy.id = mapping.get(entity.id);
+    // Grouping is an editing aid inside the scene; a placed copy joins the flat map.
+    delete copy.parentId;
     copy.x = round(x + offset.x);
     copy.y = round(y + offset.y);
     copy.angle = (Number(entity.angle) || 0) + angle;
@@ -106,4 +108,169 @@ export function instantiateScene(scene, { x = 0, y = 0, angle = 0, prefix = newS
 /** True when the scene has something to draw, so empty scenes can be reported. */
 export function sceneIsEmpty(scene) {
   return !scene?.entities?.length;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Scene object editing
+ *
+ * A scene's objects are also its node tree: `parentId` groups them the way a Godot
+ * scene groups nodes, so an editor can fold a group, move a whole branch and show
+ * where each object belongs. Coordinates stay absolute inside the scene (a child is
+ * not re-based on its parent), so placing a scene in a map behaves exactly as before
+ * and an imported or captured scene is still a flat list.
+ * ------------------------------------------------------------------------- */
+
+const MAX_DEPTH = 16;
+
+/** Children of every parent, in stored order, with the roots under `''`. */
+export function sceneChildren(scene) {
+  const known = new Set((scene?.entities || []).map(entity => entity.id));
+  const children = new Map();
+  for (const entity of scene?.entities || []) {
+    const parent = entity.parentId && known.has(entity.parentId) && entity.parentId !== entity.id ? entity.parentId : '';
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(entity);
+  }
+  return children;
+}
+
+/** Depth of each object (roots are 0), clamped so a malformed chain cannot loop. */
+export function sceneDepths(scene) {
+  const children = sceneChildren(scene), depths = new Map();
+  const walk = (parent, depth) => {
+    for (const entity of children.get(parent) || []) {
+      depths.set(entity.id, depth);
+      if (depth < MAX_DEPTH) walk(entity.id, depth + 1);
+    }
+  };
+  walk('', 0);
+  for (const entity of scene?.entities || []) if (!depths.has(entity.id)) depths.set(entity.id, 0);
+  return depths;
+}
+
+/** An object plus everything grouped under it, parents first. */
+export function sceneSubtree(scene, id) {
+  const children = sceneChildren(scene), out = [];
+  const walk = (entity) => {
+    out.push(entity);
+    for (const child of children.get(entity.id) || []) walk(child);
+  };
+  const root = (scene?.entities || []).find(entity => entity.id === id);
+  if (root) walk(root);
+  return out;
+}
+
+/** Every object that would be shown folded with `id` collapsed. */
+export function sceneDescendants(scene, id) {
+  return sceneSubtree(scene, id).slice(1).map(entity => entity.id);
+}
+
+function sceneEntityId(scene, base) {
+  const used = new Set((scene.entities || []).map(entity => entity.id));
+  if (used.has(base)) base = `${base}_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
+  return base.slice(0, ID_LIMIT);
+}
+
+/** A new, empty scene with the name the caller asked for. */
+export function newScene(name = 'Scene') {
+  return { id: newSceneId(), name: String(name).slice(0, 100), origin: { x: 0, y: 0 }, entities: [], events: [] };
+}
+
+/** Adds an object under `parentId` (or at the root) and returns it. */
+export function addSceneObject(scene, { type = 'decoration', name, x = 0, y = 0, parentId = null, ...rest } = {}) {
+  if (!Array.isArray(scene.entities)) throw new Error('Scene has no object list');
+  if (scene.entities.length >= MAX_SCENE_ENTITIES) throw new Error(`A scene holds at most ${MAX_SCENE_ENTITIES} objects`);
+  if (parentId && !scene.entities.some(entity => entity.id === parentId)) throw new Error('Unknown parent object');
+  const label = name || `New ${type}`;
+  const entity = {
+    id: sceneEntityId(scene, `node_${label.toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'object'}`),
+    type, name: String(label).slice(0, 100), x: round(x), y: round(y), angle: 0, elevation: 0,
+    ...(parentId ? { parentId } : {}),
+    ...(type === 'light' ? { light: { color: '#ffbd72', intensity: 1, radius: 192 } } : {}),
+    ...rest,
+  };
+  scene.entities.push(entity);
+  return entity;
+}
+
+/** Removes objects, everything grouped under them, and the events that scripted them. */
+export function removeSceneObjects(scene, ids) {
+  const removing = new Set();
+  for (const id of [].concat(ids)) for (const entity of sceneSubtree(scene, id)) removing.add(entity.id);
+  if (!removing.size) return { removed: 0, events: 0 };
+  const events = (scene.events || []).filter(event => event.ownerId && removing.has(event.ownerId));
+  scene.events = (scene.events || []).filter(event => !event.ownerId || !removing.has(event.ownerId));
+  scene.entities = scene.entities.filter(entity => !removing.has(entity.id));
+  return { removed: removing.size, events: events.length };
+}
+
+/** Copies an object (and its group) with fresh ids, nudged so the copy is visible. */
+export function duplicateSceneObject(scene, id, { offset = 32 } = {}) {
+  const subtree = sceneSubtree(scene, id);
+  if (!subtree.length) throw new Error('That object no longer exists');
+  const added = subtree.length;
+  if (scene.entities.length + added > MAX_SCENE_ENTITIES) throw new Error(`A scene holds at most ${MAX_SCENE_ENTITIES} objects`);
+  const mapping = new Map();
+  for (const entity of subtree) mapping.set(entity.id, sceneEntityId(scene, `${entity.id}_copy`));
+  const copies = subtree.map(entity => {
+    const copy = structuredClone(entity);
+    copy.id = mapping.get(entity.id);
+    if (entity.parentId && mapping.has(entity.parentId)) copy.parentId = mapping.get(entity.parentId);
+    copy.x = round(entity.x + offset);
+    copy.y = round(entity.y + offset);
+    copy.name = `${entity.name} copy`.slice(0, 100);
+    return copy;
+  });
+  scene.entities.push(...copies);
+  const idMap = mapping;
+  const events = (scene.events || []).filter(event => event.ownerId && mapping.has(event.ownerId)).map(event => {
+    const copy = remapReferences(structuredClone(event), idMap);
+    copy.id = `${event.id}_copy_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`.slice(0, ID_LIMIT);
+    copy.ownerId = idMap.get(event.ownerId);
+    return copy;
+  });
+  if ((scene.events || []).length + events.length <= MAX_SCENE_EVENTS) scene.events = [...(scene.events || []), ...events];
+  return { ids: copies.map(copy => copy.id), root: mapping.get(id) };
+}
+
+/** Moves an object (with its group) under another object, or back to the scene root. */
+export function reparentSceneObject(scene, id, parentId) {
+  const entity = (scene.entities || []).find(item => item.id === id);
+  if (!entity) throw new Error('That object no longer exists');
+  if (parentId) {
+    if (parentId === id) throw new Error('An object cannot be grouped under itself');
+    if (!scene.entities.some(item => item.id === parentId)) throw new Error('Unknown parent object');
+    if (sceneDescendants(scene, id).includes(parentId)) throw new Error('An object cannot be grouped under its own child');
+  }
+  if (parentId) entity.parentId = parentId;
+  else delete entity.parentId;
+  return entity;
+}
+
+/** Reorders an object among its siblings; `direction` is -1 (up) or 1 (down). */
+export function moveSceneObject(scene, id, direction) {
+  const entity = (scene?.entities || []).find(item => item.id === id);
+  if (!entity) throw new Error('That object no longer exists');
+  const siblings = (sceneChildren(scene).get(entity.parentId || '') || []).map(sibling => sibling.id);
+  const index = siblings.indexOf(id), target = index + Math.sign(direction);
+  if (index < 0 || target < 0 || target >= siblings.length) return false;
+  // Stored order is the display order, so swap the two records in the array.
+  const order = new Map(scene.entities.map((item, position) => [item.id, position]));
+  const swap = siblings[target];
+  const first = order.get(id), second = order.get(swap);
+  const temporary = scene.entities[first];
+  scene.entities[first] = scene.entities[second];
+  scene.entities[second] = temporary;
+  return true;
+}
+
+/** Renames one object, rejecting empty names. */
+export function renameSceneObject(scene, id, name) {
+  const entity = (scene?.entities || []).find(item => item.id === id);
+  if (!entity) throw new Error('That object no longer exists');
+  const clean = String(name ?? '').trim();
+  if (!clean) throw new Error('An object name cannot be empty');
+  if (clean.length > 100) throw new Error('Object names are limited to 100 characters');
+  entity.name = clean;
+  return entity;
 }
