@@ -1717,15 +1717,16 @@ export function createSceneObjectEditor({ callbacks }) {
     try {
       editScene((next, project) => {
         next.joints ||= [];
-        // The strips wear the project's plastic shader, which refracts the level behind
-        // them, so a curtain looks like plastic instead of a pane of tinted glass.
-        const shaderId = curtainShaderId(project);
+        // The strips are plain translucent panels: a panel plus its rigid body is what
+        // makes a curtain, and it draws reliably with no shader attached. The glass
+        // effect is there to be assigned in Visual → Shader once it is wanted.
+        curtainShaderId(project);
         for (const strip of strips) {
           const node = addSceneObject(next, {
             type: 'decoration', name: strip.name, x: strip.x, y: strip.y, elevation: strip.elevation,
             panel: strip.panel, physics: panelPhysics(strip.panel),
           });
-          node.shaderId = shaderId;
+
           node.angle = strip.angle;
           // Hanging from its top edge: a ball socket lets the strip swing whichever way
           // it is pushed, which is what makes a curtain feel like a curtain.
