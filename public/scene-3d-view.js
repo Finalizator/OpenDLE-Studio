@@ -125,29 +125,28 @@ export async function createScene3dView(canvas) {
    * effect, because replacing a physical material's output with a screen sample drew
    * nothing at all.
    */
-  function panelMaterial(panel, entity) {
-    const effect = effectFor(entity?.shaderId);
-    const color = panel.color || PANEL_DEFAULTS.color;
-    const opacity = panel.opacity ?? PANEL_DEFAULTS.opacity;
-    const material = new THREE.MeshPhysicalMaterial({
-      color, transparent: true, opacity,
-      roughness: panel.roughness ?? PANEL_DEFAULTS.roughness, metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
-      emissive: new THREE.Color(color).multiplyScalar(.18),
-      clearcoat: .7, clearcoatRoughness: .18, reflectivity: .5,
-      side: THREE.DoubleSide, depthWrite: false,
+  function panelMaterial(panel) {
+    // A panel is a thick piece of plastic: the renderer's own transmission bends whatever
+    // is behind it through the slab's thickness, which is the refraction a strip needs and
+    // the one path here that is implemented by the renderer rather than by an effect.
+    return new THREE.MeshPhysicalMaterial({
+      color: panel.color || PANEL_DEFAULTS.color,
+      transparent: true,
+      opacity: panel.opacity ?? PANEL_DEFAULTS.opacity,
+      roughness: panel.roughness ?? PANEL_DEFAULTS.roughness,
+      metalness: panel.metalness ?? PANEL_DEFAULTS.metalness,
+      emissive: new THREE.Color(panel.color || PANEL_DEFAULTS.color).multiplyScalar(.16),
+      clearcoat: .8, clearcoatRoughness: .2, reflectivity: .6,
+      transmission: 1,
+      thickness: Math.max(4, (panel.thickness || 2) * 4),
+      ior: 1.45,
+      side: THREE.DoubleSide,
+      depthWrite: false,
     });
-    // The effect only replaces the panel's *albedo*, never its output: the lighting model
-    // still writes the fragment, which is what keeps a strip visible no matter what the
-    // shader does. Swapping the output node instead left the draw with no fragment output.
-    if (effect?.usesScreen) {
-      const tint = new THREE.Color(color);
-      const shaded = effect.effect(vec4(tint.r, tint.g, tint.b, opacity), uv(), effectTime, screenUV, effectResolution);
-      material.colorNode = shaded.rgb;
-      screenMaterials.add(material);
-      return material;
-    }
-    return withShader(material, entity);
   }
+
+
+
 
 
   // The selected node is framed by a box, so a translucent panel or an unlit sprite still
@@ -430,6 +429,10 @@ export async function createScene3dView(canvas) {
     canvas.dataset.panels = String(panelGroups);
     // What is behind a refractive object has to be drawn before the object itself, so
     // the screen-sampling panels are drawn into a target with themselves hidden.
+    renderer.render(scene, camera);
+    // The background for the *next* frame is captured after this one is drawn, never
+    // during: sampling a target that is being written in the same pass leaves the strip
+    // with no fragment output at all, which is what made the curtain invisible.
     if (needsScreenPass()) {
       if (screenTarget.width !== screenSize.x || screenTarget.height !== screenSize.y) screenTarget.setSize(screenSize.x, screenSize.y);
       const hidden = [];
@@ -439,7 +442,6 @@ export async function createScene3dView(canvas) {
       renderer.setRenderTarget(null);
       for (const object of hidden) object.visible = true;
     }
-    renderer.render(scene, camera);
   }
 
   /** Counts the drawn node kinds, the way the layout view reports its world parts. */

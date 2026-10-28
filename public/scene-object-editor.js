@@ -1717,15 +1717,14 @@ export function createSceneObjectEditor({ callbacks }) {
     try {
       editScene((next, project) => {
         next.joints ||= [];
-        // The strips wear the plastic shader: panels that refract are drawn by a material
-        // built for the effect, so the curtain bends what is behind it.
-        const shaderId = curtainShaderId(project);
+        // Panels refract themselves (transmission), so a curtain needs no shader; the
+        // built-in glass shader stays in the project for anyone who wants to assign it.
+        curtainShaderId(project);
         for (const strip of strips) {
           const node = addSceneObject(next, {
             type: 'decoration', name: strip.name, x: strip.x, y: strip.y, elevation: strip.elevation,
             panel: strip.panel, physics: panelPhysics(strip.panel),
           });
-          node.shaderId = shaderId;
 
           node.angle = strip.angle;
           // Hanging from its top edge: a ball socket lets the strip swing whichever way
