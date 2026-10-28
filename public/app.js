@@ -3070,8 +3070,12 @@ function placeScene(sceneId) {
   if (sceneIsEmpty(scene)) throw new Error(`Scene ${scene.name} has no objects`);
   const target = sceneTargetPoint();
   const placed = instantiateScene(scene, { x: target.x, y: target.y });
-  edit(next => { next.map.entities.push(...placed.entities); next.events.push(...placed.events); },
-    `Placed ${scene.name} (${placed.entities.length} objects) at ${target.x}, ${target.y}`);
+  edit(next => {
+    next.map.entities.push(...placed.entities);
+    next.events.push(...placed.events);
+    // A scene's joints come with it, re-pointed at the copied objects.
+    if (placed.joints.length) next.map.joints = [...(next.map.joints || []), ...placed.joints];
+  }, `Placed ${scene.name} (${placed.entities.length} objects) at ${target.x}, ${target.y}`);
   selection = placed.entities.length ? { kind: 'entity', id: placed.entities[0].id } : selection;
   render();
 }
@@ -3692,6 +3696,87 @@ function mapViewMenu(event, picked) {
   contextMenu(event, objectMenuItems(entity), { label: `${entity.name} actions` });
 }
 
+/**
+ * Right-clicking the empty part of a list opens that area's own actions, so a menu is
+ * never missing just because the pointer missed a row. Every menu here offers the thing
+ * you would otherwise have to hunt for in a toolbar.
+ */
+function emptyAreaMenus() {
+  const menus = [
+    [$('scene-tree'), 'Node tree', () => [
+      { label: 'Add a node', run: guard(() => { if (activeSceneId) ensureSceneObjectEditor().addNode(); else status('Open a scene object first', true); }) },
+      { label: 'Capture the selected layout objects', run: guard(() => { if (activeSceneId) captureIntoSceneObject(activeSceneId); else status('Open a scene object first', true); }) },
+      { separator: true },
+      { label: 'New scene object', run: guard(() => createSceneObject()) },
+      { label: 'Place this scene in the layout', run: guard(() => { if (activeSceneId) placeScene(activeSceneId); }) },
+    ]],
+    [$('scene-tabs'), 'Scene object tabs', () => [
+      { label: 'New scene object', run: guard(() => createSceneObject()) },
+      { label: 'Open another scene object\u2026', run: guard(() => ensureSceneObjectEditor().choose()) },
+    ]],
+    [$('scene-properties'), 'Inspector', () => [
+      { label: 'Show every property', run: () => sceneInspectorAction('expand') },
+      { label: 'Fold every category', run: () => sceneInspectorAction('collapse') },
+      { separator: true },
+      { label: 'Clear the property filter', run: () => sceneInspectorAction('clear') },
+    ]],
+    [$('scene-objects'), 'Scene objects', () => [
+      { label: 'New scene object', run: guard(() => createSceneObject()) },
+      { label: 'Capture the selected layout objects', run: guard(() => { if (selection) captureSceneFromSelection(selection.kind === 'sector' ? 'sector' : 'object'); else status('Select objects in the layout first', true); }) },
+    ]],
+    [$('asset-list'), 'Assets', () => [
+      { label: 'Show every asset', run: () => { $('asset-filter').value = 'all'; $('asset-search').value = ''; renderAssets(); } },
+      { label: 'Show the scene objects', run: () => { $('asset-filter').value = 'scene'; renderAssets(); } },
+      { separator: true },
+      { label: 'Import a game or an archive\u2026', run: guard(() => showWadImport()) },
+      { label: 'New scene object', run: guard(() => createSceneObject()) },
+    ]],
+    [$('event-list'), 'Event sheet', () => [
+      { label: 'Add an event', run: guard(() => addScriptEvent()) },
+      { label: 'Open the sheet properties', run: () => { $('sheet-properties').scrollIntoView({ block: 'nearest' }); } },
+      { separator: true },
+      { label: 'Collapse every rule', run: () => { for (const event of project.events) collapsedEvents.add(event.id); renderEvents(); } },
+    ]],
+    [$('entities'), 'Objects', () => [
+      { label: 'Place the chosen object type at the view centre', run: guard(() => placeLayoutObject({ x: Math.round(camera.x), y: Math.round(camera.y) })) },
+      { label: 'New object script sheet', run: guard(() => attachObjectScriptSheet()) },
+      { separator: true },
+      { label: 'Fit the map in the view', run: () => { fitMap(); mapNeedsDraw = true; } },
+    ]],
+    [$('sector-list'), 'Sectors', () => [
+      { label: 'Fit the map in the view', run: () => { fitMap(); mapNeedsDraw = true; } },
+      { label: 'Open the layout', run: () => showTab('map') },
+    ]],
+    [$('project-objects'), 'Project objects', () => [
+      { label: 'New object script sheet', run: guard(() => attachObjectScriptSheet()) },
+    ]],
+    [$('object-scripts'), 'Object scripts', () => [
+      { label: 'New object script sheet', run: guard(() => attachObjectScriptSheet()) },
+    ]],
+  ];
+  for (const [element, label, items] of menus) {
+    if (!element) continue;
+    element.addEventListener('contextmenu', event => {
+      // A row's own menu wins; this only answers the empty space around the rows.
+      if (event.defaultPrevented) return;
+      const row = event.target.closest('[data-object-id], [data-scene-id], [data-event-id], .node-row, button');
+      if (row && element.contains(row)) return;
+      event.preventDefault();
+      contextMenu(event, items(), { label: `${label} actions` });
+    });
+  }
+}
+
+/** The scene object editor's own toolbar actions, reachable from the inspector menu. */
+function sceneInspectorAction(action) {
+  const button = $('scene-inspector-menu');
+  if (!button) return;
+  button.click();
+  const menu = $('scene-menu');
+  const wanted = action === 'expand' ? 0 : action === 'collapse' ? 1 : 3;
+  menu?.querySelectorAll('button')[wanted]?.click();
+}
+
 function installContextMenus() {
   $('asset-list').addEventListener('contextmenu', event => {
     const tile = event.target.closest('.asset-tile');
@@ -3732,6 +3817,7 @@ function installContextMenus() {
       { label: 'Copy sector id', run: () => copyText(sector.id, sector.id) },
     ], { label: `${sector.id} actions` });
   });
+  emptyAreaMenus();
   $('scene-objects').addEventListener('contextmenu', event => {
     const row = event.target.closest('.scene-object-row');
     if (!row?.dataset.sceneId) return;

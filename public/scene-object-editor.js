@@ -8,6 +8,8 @@ import {
 import { ENTITY_TYPES } from '/shared/project.js';
 import { assetField, openAssetPicker, MODEL_KINDS, PICTURE_KINDS } from './asset-picker.js';
 import { contextMenu } from './context-menu.js';
+import { JOINT_TYPES, JOINT_LABELS, AXIS_JOINTS, newJoint, jointAnchorBetween, jointsOf } from '/shared/joints.js';
+import { createScene3dView } from './scene-3d-view.js';
 
 // A scene object editor laid out like Godot's scene dock and inspector: the node tree
 // on the left with the node toolbar under it, the view in the middle, and the
@@ -19,7 +21,7 @@ const TYPE_GLYPHS = { scene: 'S', enemy: 'E', pickup: 'P', light: 'L', decoratio
 const TYPE_LABELS = { scene: 'Scene', enemy: 'Enemy', pickup: 'Pickup', light: 'Light', decoration: 'Decoration' };
 const GRID = 32;
 /** Godot's inspector groups; a row is only shown when the object has that data. */
-const CATEGORIES = ['Transform', 'Node', 'Visual', 'Model', 'Physics', 'Light', 'Interaction area', 'Script'];
+const CATEGORIES = ['Transform', 'Node', 'Visual', 'Model', 'Physics', 'Joints', 'Light', 'Interaction area', 'Script'];
 
 export function createSceneObjectEditor({ callbacks }) {
   const state = {
@@ -48,7 +50,12 @@ export function createSceneObjectEditor({ callbacks }) {
     // Dragging an asset, a scene or a layout object onto the view or the tree.
     drop: null,
   };
+  /** Whichever canvas is on screen: the 2D blueprint or the 3D viewport. */
+  const activeCanvas = () => (state.view3d ? dom.canvas3d : dom.canvas) || dom.canvas;
   const dom = {};
+  // Created on the first visit to the 3D tab: the renderer costs a GPU context and a
+  // shader warm-up, so the 2D view never pays for it.
+  let view3d = null, view3dPending = null;
   const scene = () => callbacks.scenes().find(item => item.id === state.sceneId) || null;
   const selectedObject = () => {
     const current = scene();
@@ -93,6 +100,7 @@ export function createSceneObjectEditor({ callbacks }) {
     if (id && id !== state.sceneId) revealInTree(id);
     renderTree();
     renderInspector();
+    view3d?.select(id);
     draw();
   }
 
@@ -337,7 +345,7 @@ export function createSceneObjectEditor({ callbacks }) {
     }
     // New nodes land in front of the view centre, or at the point the caller dropped on.
     const centre = point || (state.view3d ? { x: 0, y: 0 }
-      : worldToScene({ x: dom.canvas.clientWidth / 2, y: dom.canvas.clientHeight / 2 }));
+      : worldToScene({ x: activeCanvas().clientWidth / 2, y: activeCanvas().clientHeight / 2 }));
     const snap = value => state.snap ? Math.round(value / GRID) * GRID : Math.round(value);
     let created = null;
     try {
@@ -782,8 +790,9 @@ export function createSceneObjectEditor({ callbacks }) {
         shown++;
         propertyRow(dom.properties, {
           label: 'Shape', value: config.shape,
-          editor: selectEditor([['box', 'Box'], ['ball', 'Ball'], ['capsule', 'Capsule']], config.shape,
-            value => setPath('physics.shape', value, 'Collider shape updated')),
+          editor: selectEditor([['box', 'Box'], ['ball', 'Ball'], ['capsule', 'Capsule'],
+            ['cylinder', 'Cylinder'], ['cone', 'Cone']], config.shape,
+          value => setPath('physics.shape', value, 'Collider shape updated')),
         });
       }
       if (config && config.body !== 'none') {
@@ -806,6 +815,84 @@ export function createSceneObjectEditor({ callbacks }) {
           });
         }
       }
+    });
+
+    if (!isRoot) rows('Joints', () => {
+      const current = scene();
+      const links = jointsOf(current?.joints, target.id);
+      const others = (current?.entities || []).filter(entity => entity.id !== target.id);
+      if (visible('Connect to')) {
+        shown++;
+        propertyRow(dom.properties, {
+          label: 'Connect to', value: '',
+          editor: selectEditor([['', others.length ? 'Add a joint\u2026' : 'No other node'], ...others.map(entity => [entity.id, entity.name])],
+            '', value => { if (value) connectNode(target.id, value); }),
+        });
+      }
+      for (const joint of links) {
+        const other = joint.a === target.id ? joint.b : joint.a;
+        const otherName = other ? current?.entities.find(entity => entity.id === other)?.name || other : 'the world';
+        const head = el('div', null, 'joint-head');
+        head.append(el('span', `\u2194 ${otherName}`, 'joint-peer'),
+          el('span', JOINT_LABELS[joint.type] || joint.type, 'joint-kind'),
+          iconButton('\u00d7', 'Remove this joint', () => removeJoint(joint.id)));
+        propertyHost.append(head);
+        propertyRow(propertyHost, {
+          label: 'Type', value: joint.type,
+          editor: selectEditor(JOINT_TYPES.map(type => [type, JOINT_LABELS[type]]), joint.type,
+            value => editJoint(joint.id, next => {
+              const anchor = next.anchor;
+              Object.assign(next, newJoint({ id: next.id, name: next.name, type: value, a: next.a, b: next.b, anchor }));
+            }, `Joint type ${JOINT_LABELS[value]}`)),
+        });
+        if (AXIS_JOINTS.has(joint.type)) {
+          propertyRow(propertyHost, {
+            label: 'Axis', value: 'z',
+            editor: selectEditor([['z', 'Up'], ['y', 'Along Y'], ['x', 'Along X']],
+              joint.axis?.z === 1 ? 'z' : joint.axis?.y === 1 ? 'y' : joint.axis?.x === 1 ? 'x' : 'z',
+              value => editJoint(joint.id, next => {
+                next.axis = value === 'z' ? { x: 0, y: 0, z: 1 } : value === 'y' ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
+              }, 'Joint axis updated')),
+          });
+          for (const [key, label] of [['min', 'Limit min'], ['max', 'Limit max']]) {
+            propertyRow(propertyHost, {
+              label, value: joint.limits?.[key] ?? 0,
+              editor: numberEditor(joint.limits?.[key] ?? 0, { min: -3600, max: 3600, step: 1,
+                onChange: value => editJoint(joint.id, next => {
+                  next.limits = { min: joint.limits?.min ?? 0, max: joint.limits?.max ?? 0, [key]: value };
+                }, `Joint ${label.toLowerCase()} updated`) }),
+            });
+          }
+        }
+        if (joint.type === 'rope' || joint.type === 'spring') {
+          propertyRow(propertyHost, {
+            label: 'Length', value: joint.length ?? 64,
+            editor: numberEditor(joint.length ?? 64, { min: 1, max: 4096, step: 1,
+              onChange: value => editJoint(joint.id, next => { next.length = value; }, 'Joint length updated') }),
+          });
+        }
+        if (joint.type === 'revolute' || joint.type === 'prismatic') {
+          propertyRow(propertyHost, {
+            label: 'Motor target', value: joint.motor?.target ?? 0,
+            editor: numberEditor(joint.motor?.target ?? 0, { min: -1000, max: 1000, step: 1,
+              onChange: value => editJoint(joint.id, next => {
+                // Zero turns the motor off, which keeps a plain hinge a plain hinge.
+                if (value) next.motor = { target: value, stiffness: next.motor?.stiffness ?? 100 };
+                else delete next.motor;
+              }, value ? 'Joint motor set' : 'Joint motor removed') }),
+          });
+        }
+        if (joint.type === 'spring') {
+          for (const [key, label] of [['stiffness', 'Stiffness'], ['damping', 'Damping']]) {
+            propertyRow(propertyHost, {
+              label, value: joint[key] ?? 0,
+              editor: numberEditor(joint[key] ?? 0, { min: 0, max: 1e6, step: 1,
+                onChange: value => editJoint(joint.id, next => { next[key] = value; }, `Joint ${label.toLowerCase()} updated`) }),
+            });
+          }
+        }
+      }
+      if (!links.length && !others.length) propertyHost.append(el('p', 'Add another node to connect this one to.', 'muted joint-note'));
     });
 
     if (!isRoot) rows('Light', () => {
@@ -906,12 +993,10 @@ export function createSceneObjectEditor({ callbacks }) {
     return { x: (point.x - canvas.clientWidth / 2) / zoom + panX, y: (point.y - canvas.clientHeight / 2) / zoom + panY };
   }
 
-  /* --------------------------------------------------------- 3D projection */
+  /* ------------------------------------------------------------- 3D camera */
 
-  // A small perspective camera: orbit angles around the scene origin, no matrices, so
-  // the projection stays readable and the editor keeps no renderer alive.
-  const FOV = 1.05;
-
+  // The 3D view is a real renderer (public/scene-3d-view.js); this editor only owns the
+  // camera model, so both 3D modes and the 2D view share one set of state.
   function orbitEye() {
     const distance = state.orbitDistance;
     const pitch = state.orbitPitch;
@@ -919,21 +1004,6 @@ export function createSceneObjectEditor({ callbacks }) {
       x: Math.cos(state.orbitYaw) * Math.cos(pitch) * distance,
       y: Math.sin(state.orbitYaw) * Math.cos(pitch) * distance,
       z: Math.sin(pitch) * distance,
-    };
-  }
-
-  /** Projects a scene point (x, y on the floor, z up) to the canvas. */
-  function project(point) {
-    const { eye, forward, right, up, scale } = cameraBasis();
-    const dx = point.x - eye.x, dy = point.y - eye.y, dz = (point.z || 0) - eye.z;
-    const depth = dx * forward.x + dy * forward.y + dz * forward.z;
-    if (depth <= 1) return null;
-    const screenX = dx * right.x + dy * right.y + dz * right.z;
-    const screenY = dx * up.x + dy * up.y + dz * up.z;
-    return {
-      x: dom.canvas.clientWidth / 2 + (screenX / depth) * scale,
-      y: dom.canvas.clientHeight / 2 - (screenY / depth) * scale,
-      depth,
     };
   }
 
@@ -983,40 +1053,61 @@ export function createSceneObjectEditor({ callbacks }) {
     }
   }
 
-  /** The camera basis, shared by the projection and by inverse picking. */
-  function cameraBasis() {
-    const flying = state.camera === 'fly';
-    const eye = flying ? { x: state.fly.x, y: state.fly.y, z: state.fly.z } : orbitEye();
-    // The orbit camera always looks at the scene origin; the fly camera looks where it is aimed.
-    const forward = flying ? flyDirection() : { x: -eye.x, y: -eye.y, z: -eye.z };
-    const length = Math.hypot(forward.x, forward.y, forward.z) || 1;
-    forward.x /= length; forward.y /= length; forward.z /= length;
-    const right = { x: -forward.y, y: forward.x, z: 0 };
-    const rightLength = Math.hypot(right.x, right.y) || 1;
-    right.x /= rightLength; right.y /= rightLength;
-    // up = forward x right, so a point above the floor projects above the floor.
-    const up = {
-      x: forward.y * right.z - forward.z * right.y,
-      y: forward.z * right.x - forward.x * right.z,
-      z: forward.x * right.y - forward.y * right.x,
-    };
-    return { eye, forward, right, up, scale: (dom.canvas.clientHeight / 2) / Math.tan(FOV / 2) };
+  /** Aims the real 3D camera at the state the toolbar and the mouse controls. */
+  function aimViewport() {
+    if (!view3d) return;
+    if (state.camera === 'fly') {
+      view3d.aimCamera({ x: state.fly.x, y: state.fly.y, z: state.fly.z }, flyDirection());
+      return;
+    }
+    const eye = orbitEye();
+    view3d.aimCamera(eye, { x: -eye.x, y: -eye.y, z: -eye.z });
   }
 
-  /** Where a canvas pixel meets the ground plane, so 3D drops and drags have a point. */
-  function groundPointAt(local) {
-    const { eye, forward, right, up, scale } = cameraBasis();
-    const sx = (local.x - dom.canvas.clientWidth / 2) / scale;
-    const sy = -(local.y - dom.canvas.clientHeight / 2) / scale;
-    const dir = {
-      x: forward.x + right.x * sx + up.x * sy,
-      y: forward.y + right.y * sx + up.y * sy,
-      z: forward.z + right.z * sx + up.z * sy,
-    };
-    if (Math.abs(dir.z) < 1e-6) return null;
-    const t = -eye.z / dir.z;
-    if (!Number.isFinite(t) || t <= 0) return null;
-    return { x: eye.x + dir.x * t, y: eye.y + dir.y * t, z: 0 };
+  /** Creates the renderer on the first 3D visit; later visits reuse it. */
+  async function ensure3d() {
+    if (view3d) return view3d;
+    if (view3dPending) return view3dPending;
+    view3dPending = (async () => {
+      try {
+        view3d = await createScene3dView(dom.canvas3d);
+        view3dSignature = '';
+        sync3d(true);
+        return view3d;
+      } catch (error) {
+        view3dPending = null;
+        callbacks.status(`The 3D view could not start: ${error.message}`, true);
+        throw error;
+      }
+    })();
+    return view3dPending;
+  }
+
+  /** Only one canvas is visible at a time; the 3D one starts its renderer on demand. */
+  function showViewport() {
+    if (dom.canvas) dom.canvas.hidden = state.view3d;
+    if (dom.canvas3d) dom.canvas3d.hidden = !state.view3d;
+    if (!state.view3d) return;
+    ensure3d().then(() => { sync3d(true); render3d(); }).catch(() => {});
+  }
+
+  function render3d() {
+    if (!view3d || dom.canvas3d?.hidden) return;
+    aimViewport();
+    view3d.render();
+  }
+
+  /** Rebuilds the drawn scene when the data changed; a plain camera move only redraws. */
+  let view3dSignature = '';
+  function sync3d(force = false) {
+    const current = scene();
+    if (!view3d || !current) return;
+    const signature = `${current.id}\u0000${JSON.stringify(current.entities)}\u0000${JSON.stringify(current.joints || [])}`;
+    if (!force && signature === view3dSignature) return;
+    view3dSignature = signature;
+    view3d.setScene(current.entities, callbacks.assets() || [], current.joints || []);
+    view3d.select(state.selection);
+    render3d();
   }
 
   /* --------------------------------------------------------------- artwork */
@@ -1042,87 +1133,6 @@ export function createSceneObjectEditor({ callbacks }) {
 
   function artworkOf(entity) {
     return sceneArtwork(entity, callbacks.assets?.() || []);
-  }
-
-  /** Height of a node as a 3D box, so elevation and colliders are visible. */
-  function nodeHeight(entity) {
-    if (entity.physics?.body && entity.physics.body !== 'none') return entity.physics.height || 32;
-    if (entity.type === 'enemy') return 56;
-    if (entity.type === 'light') return 0;
-    return entity.height || 32;
-  }
-
-  function draw3d(ctx, width, height, current) {
-    // Sky gradient and a projected floor grid, Godot's dark viewport with a grid.
-    const sky = ctx.createLinearGradient(0, 0, 0, height);
-    sky.addColorStop(0, '#26282e'); sky.addColorStop(1, '#1b1c20');
-    ctx.fillStyle = sky; ctx.fillRect(0, 0, width, height);
-    if (state.grid) {
-      const span = Math.max(256, Math.ceil(Math.max(...current.entities.map(entity => Math.max(Math.abs(entity.x), Math.abs(entity.y))), 128) / GRID) * GRID);
-      ctx.strokeStyle = '#33373f'; ctx.lineWidth = 1;
-      for (let value = -span; value <= span; value += GRID * 2) {
-        for (const [from, to] of [[{ x: value, y: -span }, { x: value, y: span }], [{ x: -span, y: value }, { x: span, y: value }]]) {
-          const a = project({ ...from, z: 0 }), b = project({ ...to, z: 0 });
-          if (!a || !b) continue;
-          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-        }
-      }
-    }
-    // Axis marker so the orbit direction is readable.
-    for (const [axis, colour] of [[{ x: 96, y: 0, z: 0 }, '#d06a5f'], [{ x: 0, y: 96, z: 0 }, '#6aa85f'], [{ x: 0, y: 0, z: 96 }, '#5f7fd0']]) {
-      const origin = project({ x: 0, y: 0, z: 0 }), end = project(axis);
-      if (!origin || !end) continue;
-      ctx.strokeStyle = colour; ctx.beginPath(); ctx.moveTo(origin.x, origin.y); ctx.lineTo(end.x, end.y); ctx.stroke();
-    }
-    const selected = selectedObject();
-    const boxes = [];
-    for (const entity of current.entities) {
-      const base = { x: entity.x, y: entity.y, z: entity.elevation || 0 };
-      const top = { ...base, z: base.z + nodeHeight(entity) };
-      const centre = project({ x: base.x, y: base.y, z: base.z + nodeHeight(entity) / 2 });
-      const footPoint = project(base), headPoint = project(top);
-      if (!centre || !footPoint || !headPoint) continue;
-      boxes.push({ entity, centre, footPoint, headPoint, depth: centre.depth });
-    }
-    boxes.sort((a, b) => b.depth - a.depth);
-    for (const box of boxes) {
-      const { entity, footPoint, headPoint } = box;
-      const colour = entityColors[entity.type] || '#a6a4bc';
-      const selectedNow = selected?.id === entity.id;
-      const focal = (dom.canvas.clientHeight / 2) / Math.tan(FOV / 2);
-      const half = Math.max(3, GRID / 2 * focal / Math.max(1, box.centre.depth));
-      const top = Math.min(box.headPoint.y, footPoint.y), tall = Math.max(3, Math.abs(footPoint.y - box.headPoint.y));
-      // The sprite or model preview fills the box's front face, so the assigned artwork is
-      // what the view shows instead of an anonymous block.
-      const picture = artworkImage(artworkOf(entity)?.src);
-      if (picture) ctx.drawImage(picture, box.centre.x - half, top, half * 2, tall);
-      else { ctx.fillStyle = selectedNow ? '#ffffff' : colour; ctx.fillRect(box.centre.x - half, top, half * 2, tall); }
-      ctx.globalAlpha = .55;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(box.centre.x - half, top, half * 2, Math.max(2, tall * .18));
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = selectedNow ? '#d4c28e' : '#15161a';
-      ctx.lineWidth = selectedNow ? 2 : 1;
-      ctx.strokeRect(box.centre.x - half, top, half * 2, tall);
-      // A line down to the floor makes the elevation of a floating node obvious.
-      if ((entity.elevation || 0) > 0) {
-        const floorPoint = project({ x: entity.x, y: entity.y, z: 0 });
-        if (floorPoint) {
-          ctx.strokeStyle = 'rgba(212,194,142,.45)';
-          ctx.setLineDash([3, 3]);
-          ctx.beginPath(); ctx.moveTo(footPoint.x, footPoint.y); ctx.lineTo(floorPoint.x, floorPoint.y); ctx.stroke();
-          ctx.setLineDash([]);
-        }
-      }
-      if (entity.type === 'light' && entity.light) {
-        ctx.fillStyle = 'rgba(255,189,114,.28)';
-        ctx.beginPath(); ctx.arc(box.centre.x, box.centre.y, Math.max(6, half), 0, Math.PI * 2); ctx.fill();
-      }
-      ctx.fillStyle = selectedNow ? '#ffffff' : '#b9bdc6';
-      ctx.font = '11px "Segoe UI", system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(entity.name, box.centre.x, box.headPoint.y - 4, 140);
-    }
   }
 
   function centerView() {
@@ -1165,9 +1175,9 @@ export function createSceneObjectEditor({ callbacks }) {
     ctx.clearRect(0, 0, width, height);
     const sceneNow = scene();
     if (state.view3d) {
-      if (sceneNow) draw3d(ctx, width, height, sceneNow);
-      else { ctx.fillStyle = '#1f2024'; ctx.fillRect(0, 0, width, height); }
+      // The 3D tab is a real renderer on its own canvas; this one only clears.
       empty(!sceneNow?.entities.length);
+      render3d();
       return;
     }
     // Godot's 2D view: a dot grid on a dark background, grid lines strengthening.
@@ -1224,6 +1234,21 @@ export function createSceneObjectEditor({ callbacks }) {
         ctx.strokeStyle = 'rgba(212,194,142,.35)';
         ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(point.x, point.y); ctx.stroke();
       }
+    }
+    // Joints are drawn as a dashed link through their anchor, so a hinge is visible.
+    for (const joint of current.joints || []) {
+      const first = current.entities.find(entity => entity.id === joint.a);
+      const second = current.entities.find(entity => entity.id === joint.b);
+      const anchor = sceneToScreen({ x: joint.anchor?.x ?? 0, y: joint.anchor?.y ?? 0 });
+      ctx.strokeStyle = 'rgba(120,214,255,.85)';
+      ctx.setLineDash([5, 3]);
+      ctx.beginPath();
+      if (first) { const from = sceneToScreen(first); ctx.moveTo(from.x, from.y); ctx.lineTo(anchor.x, anchor.y); }
+      if (second) { const to = sceneToScreen(second); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(to.x, to.y); }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#78d6ff';
+      ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 3, 0, Math.PI * 2); ctx.fill();
     }
     const selected = selectedObject();
     for (const entity of current.entities) {
@@ -1282,22 +1307,12 @@ export function createSceneObjectEditor({ callbacks }) {
   function pickAt(event) {
     const current = scene();
     if (!current) return null;
-    const rect = dom.canvas.getBoundingClientRect();
+    const rect = activeCanvas().getBoundingClientRect();
     const local = { x: event.clientX - rect.left, y: event.clientY - rect.top };
     if (state.view3d) {
-      // Nearest projected node within reach, so the closest box wins in a crowd.
-      let best = null, bestDistance = 18, bestDepth = Infinity;
-      for (const entity of current.entities) {
-        const centre = project({ x: entity.x, y: entity.y, z: (entity.elevation || 0) + nodeHeight(entity) / 2 });
-        if (!centre) continue;
-        const distance = Math.hypot(centre.x - local.x, centre.y - local.y);
-        const half = Math.max(8, 24);
-        if (distance > half + 6) continue;
-        if (distance < bestDistance || (Math.abs(distance - bestDistance) < 4 && centre.depth < bestDepth)) {
-          best = entity; bestDistance = distance; bestDepth = centre.depth;
-        }
-      }
-      return best;
+      // The renderer answers with the node its ray hit, so what is picked is what is drawn.
+      const hit = view3d?.pickNode(event.clientX, event.clientY);
+      return hit ? current.entities.find(entity => entity.id === hit.id) || null : null;
     }
     const point = worldToScene(local);
     const reach = Math.max(GRID * .6, 10 / state.zoom);
@@ -1310,22 +1325,24 @@ export function createSceneObjectEditor({ callbacks }) {
   }
 
   function localPoint(event) {
-    const rect = dom.canvas.getBoundingClientRect();
+    const rect = activeCanvas().getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
 
-  /** The scene point a drop lands on: the floor plane in 3D, the grid in 2D. */
+  /** The scene point a drop lands on: the floor the ray hit in 3D, the grid in 2D. */
   function dropPointAt(event) {
-    const local = localPoint(event);
-    const point = state.view3d ? groundPointAt(local) : worldToScene(local);
+    const point = state.view3d ? view3d?.groundPoint(event.clientX, event.clientY) : worldToScene(localPoint(event));
     if (!point) return null;
     const snap = value => state.snap ? Math.round(value / GRID) * GRID : Math.round(value);
     return { x: snap(point.x), y: snap(point.y) };
   }
 
   function bindCanvas() {
-    const canvas = dom.canvas;
-    if (!canvas) return;
+    if (dom.canvas) bindCanvasElement(dom.canvas);
+    if (dom.canvas3d) bindCanvasElement(dom.canvas3d);
+  }
+
+  function bindCanvasElement(canvas) {
     canvas.addEventListener('pointerdown', event => {
       const current = scene();
       if (!current) return;
@@ -1401,6 +1418,8 @@ export function createSceneObjectEditor({ callbacks }) {
         const point = dropPointAt(event);
         if (!point) return;
         drag.nextX = point.x; drag.nextY = point.y;
+        // The real viewport moves the node as the pointer does; the edit lands on release.
+        view3d?.setNodePosition(drag.id, drag.nextX, drag.nextY);
         draw();
         if (!state.view3d) drawDragGhost(drag.nextX, drag.nextY);
         return;
@@ -1494,16 +1513,18 @@ export function createSceneObjectEditor({ callbacks }) {
   }
 
   function bindCameraKeys() {
-    const canvas = dom.canvas;
-    if (!canvas) return;
     const moving = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'];
-    canvas.addEventListener('keydown', keyEvent => {
-      if (!moving.includes(keyEvent.code)) return;
-      keyEvent.preventDefault();
-      state.keys.add(keyEvent.code);
-    });
-    canvas.addEventListener('keyup', keyEvent => state.keys.delete(keyEvent.code));
-    canvas.addEventListener('blur', () => state.keys.clear());
+    // Both canvases take the keys, because either one can be the visible viewport.
+    for (const canvas of [dom.canvas, dom.canvas3d]) {
+      if (!canvas) continue;
+      canvas.addEventListener('keydown', keyEvent => {
+        if (!moving.includes(keyEvent.code)) return;
+        keyEvent.preventDefault();
+        state.keys.add(keyEvent.code);
+      });
+      canvas.addEventListener('keyup', keyEvent => state.keys.delete(keyEvent.code));
+      canvas.addEventListener('blur', () => state.keys.clear());
+    }
     window.addEventListener('blur', () => state.keys.clear());
   }
 
@@ -1532,11 +1553,77 @@ export function createSceneObjectEditor({ callbacks }) {
     } catch (error) { callbacks.status(error.message, true); }
   }
 
+  /** The collider a node gets when physics is switched on for it. */
+  function defaultBody(body) {
+    return { body, shape: 'box', width: 32, height: 32, depth: 32, radius: 16, mass: 1,
+      friction: .7, restitution: 0, sensor: false, lockRotation: false };
+  }
+
+  /** Gives an object a rigid body, which a joint needs on both of its sides. */
+  function ensureBody(entity, body) {
+    if (entity.physics && entity.physics.body !== 'none') return;
+    entity.physics = defaultBody(body);
+  }
+
+  function editJoint(id, fn, message) {
+    try {
+      editScene(next => {
+        const joint = (next.joints || []).find(candidate => candidate.id === id);
+        if (!joint) throw new Error('That joint no longer exists');
+        fn(joint, next);
+      }, message || 'Joint updated');
+    } catch (error) { callbacks.status(error.message, true); }
+  }
+
+  function removeJoint(id) {
+    try {
+      editScene(next => { next.joints = (next.joints || []).filter(joint => joint.id !== id); }, 'Joint removed');
+    } catch (error) { callbacks.status(error.message, true); }
+  }
+
+  /**
+   * Joins two nodes: the node being edited becomes the moving part and the other one the
+   * mount, so a hinge or a slider swings the thing the user picked.
+   */
+  function connectNode(firstId, secondId, type = 'revolute') {
+    const current = scene();
+    if (!current) return;
+    const first = current.entities.find(entity => entity.id === firstId);
+    const second = current.entities.find(entity => entity.id === secondId);
+    if (!first || !second) { callbacks.status('Pick two nodes to connect', true); return; }
+    try {
+      editScene(next => {
+        const mover = next.entities.find(entity => entity.id === firstId);
+        const mount = next.entities.find(entity => entity.id === secondId);
+        ensureBody(mount, 'fixed');
+        ensureBody(mover, 'dynamic');
+        next.joints ||= [];
+        next.joints.push(newJoint({ type, a: firstId, b: secondId, anchor: jointAnchorBetween(mover, mount) }));
+      }, `Joint between ${first.name} and ${second.name}`);
+      callbacks.status(`Joint added: ${first.name} ↔ ${second.name}`);
+    } catch (error) { callbacks.status(error.message, true); }
+  }
+
+  /** Asks which node to connect this one to, the way the scene picker asks for a number. */
+  function connectNodePrompt(entity) {
+    const current = scene();
+    const others = (current?.entities || []).filter(candidate => candidate.id !== entity.id);
+    if (!others.length) { callbacks.status('A joint needs a second node; add one first', true); return; }
+    const answer = prompt(`Connect ${entity.name} to which node?\n${others.map((item, index) => `${index + 1}. ${item.name}`).join('\n')}\n\nType a number.`, '1');
+    if (!answer) return;
+    const target = others[Number(answer) - 1];
+    if (!target) { callbacks.status('That is not a node number', true); return; }
+    connectNode(entity.id, target.id);
+  }
+
   /** Opens the asset picker for a node, anchored at the pointer or the inspector row. */
   function pickArtworkFor(nodeId, kind, anchor) {
     const assets = callbacks.assets() || [];
     openAssetPicker({
-      anchor: anchor || { left: dom.canvas.getBoundingClientRect().left + 40, top: dom.canvas.getBoundingClientRect().top + 40 },
+      anchor: anchor || (() => {
+        const rect = activeCanvas().getBoundingClientRect();
+        return { left: rect.left + 40, top: rect.top + 40 };
+      })(),
       title: kind === 'model' ? 'Choose a 3D model' : 'Choose a sprite or image',
       assets, kinds: kind === 'model' ? MODEL_KINDS : PICTURE_KINDS,
       emptyText: kind === 'model'
@@ -1585,7 +1672,7 @@ export function createSceneObjectEditor({ callbacks }) {
       const entity = current.entities.find(item => item.id === row.dataset.nodeId);
       if (entity) return { node: entity };
     }
-    const rect = dom.canvas.getBoundingClientRect();
+    const rect = activeCanvas().getBoundingClientRect();
     const inside = event.clientX >= rect.left && event.clientX <= rect.right
       && event.clientY >= rect.top && event.clientY <= rect.bottom;
     if (!inside) return null;
@@ -1596,7 +1683,8 @@ export function createSceneObjectEditor({ callbacks }) {
     const current = scene();
     if (!current || !target) return { error: 'Drop it inside the scene view or on a node' };
     const node = target.node || target.hit || null;
-    const point = target.point || { x: node?.x ?? 0, y: node?.y ?? 0 };
+    if (!node && !target.point) return { error: 'Aim at the floor to place it, or drop it on a node' };
+    const point = target.point || { x: node.x, y: node.y };
     if (source.kind === 'asset') {
       const asset = (callbacks.assets() || []).find(item => item.id === source.id);
       if (!asset) return { error: 'That asset is no longer part of this project' };
@@ -1657,7 +1745,7 @@ export function createSceneObjectEditor({ callbacks }) {
     element.textContent = '';
     document.body.classList.remove('scene-dragging');
     showDropHint('');
-    dom.canvas?.classList.remove('scene-drop-target');
+    activeCanvas()?.classList.remove('scene-drop-target');
   }
 
   /** The click that follows a drop is the drag's, not the user's. */
@@ -1689,7 +1777,7 @@ export function createSceneObjectEditor({ callbacks }) {
       element.style.transform = `translate(${event.clientX + 14}px, ${event.clientY + 12}px)`;
       const plan = planDrop(dropTargets(event), drop.source);
       showDropHint(plan.error || plan.label, Boolean(plan.error));
-      dom.canvas?.classList.toggle('scene-drop-target', !plan.error);
+      activeCanvas()?.classList.toggle('scene-drop-target', !plan.error);
     });
     document.addEventListener('pointerup', event => {
       const drop = state.drop;
@@ -1751,6 +1839,16 @@ export function createSceneObjectEditor({ callbacks }) {
         } catch (error) { callbacks.status(error.message, true); }
       } },
       { separator: true },
+      {
+        label: 'Add a physics body',
+        disabled: Boolean(entity.physics && entity.physics.body !== 'none'),
+        run: () => {
+          try { editScene(next => { const node = next.entities.find(item => item.id === entity.id); ensureBody(node, 'dynamic'); }, `Physics added to ${entity.name}`); }
+          catch (error) { callbacks.status(error.message, true); }
+        },
+      },
+      { label: 'Connect to another node\u2026', run: () => connectNodePrompt(entity) },
+      { separator: true },
       { label: 'Open event sheet', run: () => callbacks.openEvents(entity.id) },
       { label: 'Move to scene root', disabled: !entity.parentId, run: () => {
         try { editScene(next => reparentSceneObject(next, entity.id, null), 'Node moved to the scene root'); }
@@ -1811,6 +1909,8 @@ export function createSceneObjectEditor({ callbacks }) {
     dom.filter = document.getElementById('scene-filter');
     dom.filterClear = document.getElementById('scene-filter-clear');
     dom.canvas = document.getElementById('scene-canvas');
+    dom.canvas3d = document.getElementById('scene-3d-canvas');
+    dom.stage = dom.canvas?.parentElement || null;
     dom.empty = document.getElementById('scene-view-empty');
     dom.properties = document.getElementById('scene-properties');
     dom.head = document.getElementById('scene-inspector-head');
@@ -1894,6 +1994,7 @@ export function createSceneObjectEditor({ callbacks }) {
         state.view3d = button.dataset.sceneView === '3d';
         state.drag = null;
         state.keys.clear();
+        showViewport();
         syncCameraButtons();
         updateZoomLabel();
         draw();
@@ -1953,6 +2054,8 @@ export function createSceneObjectEditor({ callbacks }) {
       if (dom.filter) dom.filter.value = '';
       renderAll();
       centerView();
+      view3dSignature = '';
+      sync3d(true);
       draw();
     },
     /** Closes the editor; `null` clears it whatever scene was open. */
@@ -1964,16 +2067,25 @@ export function createSceneObjectEditor({ callbacks }) {
     },
     selection: () => state.selection,
     select,
+    /** Adds a node at the view centre, the same action as the node toolbar's +. */
+    addNode: () => addNode(null),
+    /** Asks which scene object to open, like the + tab button. */
+    choose: () => callbacks.chooseScene(),
     /** Re-render after any project change (undo, imported scene, rename elsewhere). */
     render() {
       renderAll();
+      sync3d();
       draw();
     },
     /** Called from the app frame loop while the panel is visible. */
     frame(dt = 0) {
       if (dom.panel?.hidden) return;
-      // Holding WASD/QE walks the fly camera, exactly like the layout's 3D view.
-      if (state.view3d && state.camera === 'fly' && state.keys.size) moveFly(dt);
+      if (state.view3d) {
+        // Holding WASD/QE walks the fly camera, exactly like the layout's 3D view.
+        if (state.camera === 'fly' && state.keys.size) moveFly(dt);
+        render3d();
+        return;
+      }
       draw();
     },
     center: () => { centerView(); draw(); },

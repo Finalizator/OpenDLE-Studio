@@ -118,6 +118,8 @@ export function createPhysics(project, state, R, triangulate) {
   const mesh = collisionMesh(project, triangulate, { sectors: state.sectors, moving });
   let worldCollider = createWorldCollider(mesh);
   const colliderIds = new Map(worldCollider ? [[worldCollider.handle, '$world']] : []), bodies = new Map(), colliders = new Map();
+  // Impulse joints and the fixed bodies a world-side joint pins to.
+  const jointHandles = [], pinnedHandles = [];
   let dynamicCollider = null, worldRevision = -1;
   function createWorldCollider(built) {
     if (!built.indices.length) return null;
@@ -209,7 +211,9 @@ export function createPhysics(project, state, R, triangulate) {
     const shape = player || config.shape === 'capsule'
       ? R.ColliderDesc.capsule(Math.max(0, (player ? PLAYER_CAPSULE_HEIGHT : height) / 2 - radius) / PHYSICS_SCALE, radius / PHYSICS_SCALE)
       : config.shape === 'ball' ? R.ColliderDesc.ball(radius / PHYSICS_SCALE)
-        : R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, height / 2 / PHYSICS_SCALE, config.depth / 2 / PHYSICS_SCALE);
+        : config.shape === 'cylinder' ? R.ColliderDesc.cylinder(height / 2 / PHYSICS_SCALE, radius / PHYSICS_SCALE)
+          : config.shape === 'cone' ? R.ColliderDesc.cone(height / 2 / PHYSICS_SCALE, radius / PHYSICS_SCALE)
+            : R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, height / 2 / PHYSICS_SCALE, config.depth / 2 / PHYSICS_SCALE);
     shape.setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setActiveCollisionTypes(R.ActiveCollisionTypes.ALL);
     if (!player) {
       shape.setSensor(config.sensor).setFriction(config.friction).setRestitution(config.restitution);
@@ -219,6 +223,7 @@ export function createPhysics(project, state, R, triangulate) {
     colliderIds.set(collider.handle, entity.id); bodies.set(entity.id, body); colliders.set(entity.id, collider);
     entity.z = bottom;
   }
+  createJoints();
   const spawn = state.entities.find(entity => entity.type === 'player'), playerId = spawn.id;
   const controller = world.createCharacterController(.005);
   controller.enableAutostep(24 / PHYSICS_SCALE, 12 / PHYSICS_SCALE, true);
@@ -230,6 +235,66 @@ export function createPhysics(project, state, R, triangulate) {
   // Populate the broad phase before the first character query.
   world.step(events);
   events.clear();
+  /** A Rapier-space anchor converted into a body's local space. */
+  function localAnchor(body, anchor) {
+    const t = body.translation(), q = body.rotation();
+    const dx = anchor.x - t.x, dy = anchor.y - t.y, dz = anchor.z - t.z;
+    // Rotate by the conjugate of the body rotation, which is its inverse.
+    const x = -q.x, y = -q.y, z = -q.z, w = q.w;
+    return {
+      x: (1 - 2 * (y * y + z * z)) * dx + 2 * (x * y - z * w) * dy + 2 * (x * z + y * w) * dz,
+      y: 2 * (x * y + z * w) * dx + (1 - 2 * (x * x + z * z)) * dy + 2 * (y * z - x * w) * dz,
+      z: 2 * (x * z - y * w) * dx + 2 * (y * z + x * w) * dy + (1 - 2 * (x * x + y * y)) * dz,
+    };
+  }
+
+  /**
+   * Builds the level's joints. A joint with one open side is pinned to the world, which
+   * is how a swinging door or a hanging lamp is made, so that side becomes a fixed body
+   * standing exactly at the anchor.
+   */
+  function createJoints() {
+    for (const joint of project.map?.joints || []) {
+      try {
+        const anchor = toRapierPoint([joint.anchor.x, joint.anchor.y, joint.anchor.z || 0]);
+        const bodyA = joint.a ? bodies.get(joint.a) : null;
+        const bodyB = joint.b ? bodies.get(joint.b) : null;
+        if ((joint.a && !bodyA) || (joint.b && !bodyB)) continue;
+        if (!bodyA && !bodyB) continue;
+        const pinned = !bodyA || !bodyB
+          ? world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(anchor.x, anchor.y, anchor.z))
+          : null;
+        const first = bodyA || pinned, second = bodyB || pinned;
+        const firstAnchor = localAnchor(first, anchor), secondAnchor = localAnchor(second, anchor);
+        const axis = toRapier([joint.axis?.x ?? 0, joint.axis?.y ?? 0, joint.axis?.z ?? 1]);
+        let data = null;
+        if (joint.type === 'fixed') data = R.JointData.fixed(firstAnchor, { x: 0, y: 0, z: 0, w: 1 }, secondAnchor, { x: 0, y: 0, z: 0, w: 1 });
+        else if (joint.type === 'revolute') data = R.JointData.revolute(firstAnchor, secondAnchor, axis);
+        else if (joint.type === 'prismatic') data = R.JointData.prismatic(firstAnchor, secondAnchor, axis);
+        else if (joint.type === 'spherical') data = R.JointData.spherical(firstAnchor, secondAnchor);
+        else if (joint.type === 'rope') data = R.JointData.rope((joint.length || 64) / PHYSICS_SCALE, firstAnchor, secondAnchor);
+        else if (joint.type === 'spring') {
+          data = R.JointData.spring((joint.length || 64) / PHYSICS_SCALE, joint.stiffness ?? 100, joint.damping ?? 10,
+            firstAnchor, secondAnchor);
+        }
+        if (!data) continue;
+        // Limits and motors are read from the descriptor when the joint is built.
+        if (joint.limits) {
+          data.limitsEnabled = true;
+          data.limits = [joint.limits.min, joint.limits.max];
+        }
+        const handle = world.createImpulseJoint(data, first, second, true);
+        if (joint.motor && typeof handle.configureMotorVelocity === 'function') {
+          handle.configureMotorVelocity(joint.motor.target, joint.motor.stiffness ?? 100);
+        }
+        jointHandles.push(handle);
+        if (pinned) pinnedHandles.push(pinned);
+      } catch {
+        // A joint the engine refuses is skipped instead of taking the whole level down.
+      }
+    }
+  }
+
   function sync() {
     for (const entity of state.entities) {
       const body = bodies.get(entity.id);

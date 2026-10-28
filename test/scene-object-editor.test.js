@@ -64,7 +64,7 @@ test('removing a node removes its group and the events that scripted them', () =
     { id: 'ev_crate', ownerId: crate.id, enabled: true, once: true, actions: [] },
   ];
   const result = removeSceneObjects(scene, lamp.id);
-  assert.deepEqual(result, { removed: 3, events: 1 });
+  assert.deepEqual(result, { removed: 3, events: 1, joints: 0 });
   assert.deepEqual(scene.entities.map(entity => entity.name), ['Crate']);
   assert.deepEqual(scene.events.map(event => event.id), ['ev_crate']);
   // Removing a node that is already gone is a no-op rather than an error.
@@ -225,13 +225,13 @@ test('the scene editor copies the Godot docking, not a plain form', () => {
 
 test('the 2D and 3D tabs both draw the scene, and neither uses inline styles', () => {
   const editor = readFileSync(new URL('../public/scene-object-editor.js', import.meta.url), 'utf8');
-  // Godot's 2D/3D toggle: a top-down blueprint and an orbit camera over the same nodes.
-  assert.match(editor, /function draw3d\(/);
+  // Godot's 2D/3D toggle: a top-down blueprint and a real 3D viewport over the same nodes.
+  assert.match(editor, /function render3d\(/);
   assert.match(editor, /state\.view3d = button\.dataset\.sceneView === '3d'/);
   assert.match(editor, /function orbitEye\(\)/);
   assert.match(editor, /kind: right \? 'dolly' : 'orbit'/);
-  // up = forward x right: getting this backwards drew every node as a flat sliver.
-  assert.match(editor, /up = forward x right/);
+  // The 3D tab hands the drawing to the viewport instead of painting boxes on the canvas.
+  assert.match(editor, /render3d\(\);/);
   // The app's CSP refuses inline style *attributes*, so indentation and the dock popup are
   // classes. CSSOM property writes are allowed, and the menu positioning and the drag
   // ghost need them (the layout editor already moves its own drag ghost the same way).
@@ -387,7 +387,7 @@ test('the editor has one context menu and one searchable asset picker', () => {
   assert.match(editor, /nestScene\(/);
   // The view draws the assigned artwork instead of an anonymous box.
   assert.match(editor, /artworkImage\(artworkOf\(entity\)\?\.src\)/);
-  assert.match(editor, /function groundPointAt\(/);
+  assert.match(editor, /view3d\?\.groundPoint\(event\.clientX, event\.clientY\)/);
 });
 
 test('right click answers on the layout, in the 3D view and on every list', () => {
@@ -425,7 +425,7 @@ test('the 3D view flies with WASD by default and keeps the orbit camera as an op
   // WASD/QE walking with the layout view's four-times Shift boost and capped frame step.
   assert.match(editor, /const speed = state\.fly\.speed \* Math\.min\(dt, \.05\)/);
   assert.match(editor, /\* \(keys\.has\('ShiftLeft'\) \|\| keys\.has\('ShiftRight'\) \? 4 : 1\)/);
-  assert.match(editor, /if \(state\.view3d && state\.camera === 'fly' && state\.keys\.size\) moveFly\(dt\);/);
+  assert.match(editor, /if \(state\.camera === 'fly' && state\.keys\.size\) moveFly\(dt\);/);
   // The wheel sets the fly speed, exactly like the layout view.
   assert.match(editor, /state\.fly\.speed = Math\.max\(16, Math\.min\(8192, state\.fly\.speed \* Math\.exp\(-event\.deltaY \* \.001\)\)\)/);
   const page = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');

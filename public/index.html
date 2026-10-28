@@ -137,10 +137,13 @@
               <span class="scene-view-separator" role="presentation"></span>
               <button id="scene-place" class="primary" title="Place a copy of this scene in the layout">Place in layout</button>
             </div>
-            <canvas id="scene-canvas" tabindex="0" aria-label="Scene objects"></canvas>
-            <div id="scene-view-empty" class="scene-view-empty" hidden>
-              <p>This scene object has no nodes yet.</p>
-              <button id="scene-view-add">Add the first node</button>
+            <div class="scene-view-stage">
+              <canvas id="scene-canvas" tabindex="0" aria-label="Scene objects"></canvas>
+              <canvas id="scene-3d-canvas" tabindex="0" aria-label="Scene objects in 3D" hidden></canvas>
+              <div id="scene-view-empty" class="scene-view-empty" hidden>
+                <p>This scene object has no nodes yet.</p>
+                <button id="scene-view-add">Add the first node</button>
+              </div>
             </div>
           </section>
           <aside class="scene-inspector" aria-label="Inspector">

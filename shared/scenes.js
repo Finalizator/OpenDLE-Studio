@@ -2,6 +2,8 @@
 // physics, interaction areas) plus the events that script them, so it can be dropped
 // into a map as one thing. Instances are copies, exactly like the rest of the editor
 // data, so every placed object stays individually editable.
+import { MAX_JOINTS, pruneJoints, remapJoint } from './joints.js';
+
 export const MAX_SCENES = 64;
 export const MAX_SCENE_ENTITIES = 128;
 export const MAX_SCENE_EVENTS = 256;
@@ -63,6 +65,9 @@ export function captureScene(project, entityIds, { id = newSceneId(), name } = {
   const origin = { x: round((bounds.minX + bounds.maxX) / 2), y: round((bounds.minY + bounds.maxY) / 2) };
   const owned = new Set(ids);
   const events = project.events.filter(event => event.ownerId && owned.has(event.ownerId));
+  // A joint is captured only when both of its objects come along, so a captured group
+  // keeps its hinges and sliders.
+  const joints = (project.map.joints || []).filter(joint => owned.has(joint.a) && owned.has(joint.b));
   if (events.length > MAX_SCENE_EVENTS) throw new Error(`A scene holds at most ${MAX_SCENE_EVENTS} events`);
   return {
     id,
@@ -70,6 +75,7 @@ export function captureScene(project, entityIds, { id = newSceneId(), name } = {
     origin,
     entities: entities.map(entity => structuredClone({ ...entity, x: entity.x - origin.x, y: entity.y - origin.y })),
     events: structuredClone(events),
+    joints: structuredClone(joints),
   };
 }
 
@@ -102,7 +108,9 @@ export function instantiateScene(scene, { x = 0, y = 0, angle = 0, prefix = newS
     if (event.sheetId !== undefined) delete copy.sheetId;
     return copy;
   });
-  return { entities, events, prefix };
+  // A placed copy keeps its joints, re-pointed at the copied objects.
+  const joints = (scene.joints || []).map(joint => remapJoint(joint, mapping, { id: `${prefix}_${joint.id}` }));
+  return { entities, events, joints, prefix };
 }
 
 /** True when the scene has something to draw, so empty scenes can be reported. */
@@ -173,7 +181,7 @@ function sceneEntityId(scene, base) {
 
 /** A new, empty scene with the name the caller asked for. */
 export function newScene(name = 'Scene') {
-  return { id: newSceneId(), name: String(name).slice(0, 100), origin: { x: 0, y: 0 }, entities: [], events: [] };
+  return { id: newSceneId(), name: String(name).slice(0, 100), origin: { x: 0, y: 0 }, entities: [], events: [], joints: [] };
 }
 
 /** Adds an object under `parentId` (or at the root) and returns it. */
@@ -201,7 +209,9 @@ export function removeSceneObjects(scene, ids) {
   const events = (scene.events || []).filter(event => event.ownerId && removing.has(event.ownerId));
   scene.events = (scene.events || []).filter(event => !event.ownerId || !removing.has(event.ownerId));
   scene.entities = scene.entities.filter(entity => !removing.has(entity.id));
-  return { removed: removing.size, events: events.length };
+  const joints = (scene.joints || []).length;
+  scene.joints = pruneJoints(scene.joints, scene.entities.map(entity => entity.id));
+  return { removed: removing.size, events: events.length, joints: joints - scene.joints.length };
 }
 
 /** Copies an object (and its group) with fresh ids, nudged so the copy is visible. */
@@ -230,7 +240,11 @@ export function duplicateSceneObject(scene, id, { offset = 32 } = {}) {
     return copy;
   });
   if ((scene.events || []).length + events.length <= MAX_SCENE_EVENTS) scene.events = [...(scene.events || []), ...events];
-  return { ids: copies.map(copy => copy.id), root: mapping.get(id) };
+  // Only joints whose two ends were both copied can be duplicated.
+  const joints = (scene.joints || []).filter(joint => mapping.has(joint.a) && mapping.has(joint.b))
+    .map(joint => remapJoint(joint, idMap, { id: `${joint.id}_copy_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6)}` }));
+  if ((scene.joints || []).length + joints.length <= MAX_JOINTS) scene.joints = [...(scene.joints || []), ...joints];
+  return { ids: copies.map(copy => copy.id), root: mapping.get(id), joints: joints.map(joint => joint.id) };
 }
 
 /** Moves an object (with its group) under another object, or back to the scene root. */
@@ -385,7 +399,10 @@ export function nestScene(scene, source, { x = 0, y = 0, parentId = null } = {})
       return copy;
     })];
   }
-  return { group, ids: copies.map(copy => copy.id) };
+  const jointCopies = (source.joints || []).filter(joint => mapping.has(joint.a) && mapping.has(joint.b))
+    .map(joint => remapJoint(joint, mapping, { id: `${group.id}_${joint.id}` }));
+  if ((scene.joints || []).length + jointCopies.length <= MAX_JOINTS) scene.joints = [...(scene.joints || []), ...jointCopies];
+  return { group, ids: copies.map(copy => copy.id), joints: jointCopies.map(joint => joint.id) };
 }
 
 /**

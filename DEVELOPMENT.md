@@ -1961,12 +1961,24 @@ Cycles and dangling parents are rejected by `validateProject`, and every edit go
 through the normal project edit path, so undo, validation and the browser draft
 all apply as they do elsewhere in the studio.
 
-The view draws on a 2D canvas rather than a Three.js scene: the editor must stay
-responsive while a big map is open, and the canvas needs no GPU context, textures
-or shader warm-up. Colours and node icons come from the stylesheet (the app's CSP
-refuses inline style *attributes*, so tree indentation and the dock popup are
-classes; CSSOM writes such as a menu's `left`/`top` are allowed and are how the
-menus and the drag ghost follow the pointer).
+**The 3D tab is a real renderer** (`public/scene-3d-view.js`), not a picture of one:
+imported models are their actual meshes with their own materials under studio
+lighting, sprite nodes are camera-facing billboards sized by the artwork and
+`spriteScale`, light nodes add a real `PointLight`, and the floor is a 64-unit grid.
+Picking raycasts what is drawn, so clicking a model selects the node you can see, and
+dropping an asset meets the same floor the camera sees. The viewport keeps its own
+GPU context and only starts on the first visit to the 3D tab; the models it parses
+are cached per asset, and the editor keeps its camera model (`state.fly` /
+`state.orbit*`) and merely aims the real camera, so the fly and orbit modes, the WASD
+movement and the menus all work exactly as they did.
+
+The 2D tab keeps a plain 2D canvas: the blueprint is cheap, needs no GPU context and
+stays readable at any zoom. Colours and node icons come from the stylesheet (the
+app's CSP refuses inline style *attributes*, so tree indentation and the dock popup
+are classes; CSSOM writes such as a menu's `left`/`top` are allowed and are how the
+menus and the drag ghost follow the pointer). The canvas reports what it drew on
+`dataset` (`nodes`, `models`, `sprites`, `placeholders`, `failed`, `selection`), which
+is how the fixture tests check the viewport from the outside.
 
 **Two 3D cameras, fly first.** The 3D view opens on a **Fly** camera because that is
 how the layout's 3D view moves: right-drag looks around, `W`/`A`/`S`/`D` walk, `Q`/`E`
@@ -2002,6 +2014,34 @@ imported game has around 1500 sprites, and a list that long is unusable and slow
 build. The picker shows the first 200 matches, filters as you type, and keeps the
 current value on top.
 
+### Physics nodes: colliders and joints
+
+Every node in a scene can carry a rigid body, and any two of them (or a node and the
+world) can be joined by a Rapier joint. The inspector's **Physics** category edits the
+body: type (fixed, dynamic, kinematic), collider shape (box, ball, capsule, **cylinder**,
+**cone**), its size, mass, friction, restitution, sensor and rotation lock. The body the
+node menu's *Add a physics body* creates is a dynamic box the size of the node, ready to
+be tuned.
+
+The **Joints** category is the new part. `Connect to` picks another node and builds a
+joint between them: the node you are editing becomes the moving part, and the other
+becomes the mount (it gets a fixed body if it had none), so a hinge or a slider swings
+the thing you picked. Each joint shows its type — fixed weld, revolute hinge, prismatic
+slider, spherical ball socket, rope or spring — with the axis and limits for the two
+that take them, a motor target, and the length/stiffness/damping a rope or spring needs.
+Joints draw as a dashed link through their anchor in both views: in the scene editor and
+in the game.
+
+A joint is data (`scene.joints`, `map.joints`) validated against the objects that exist
+(`shared/joints.js`): both sides must be rigid bodies, an object cannot be joined to
+itself, and a joint cannot outlive the object it held. Placing a scene re-points its
+joints at the copied objects, duplicating a group copies the joints inside it, and
+`removeEntity`/`removeSceneObjects` prune the joints that referenced what they removed.
+`shared/physics.js` builds them with Rapier after the bodies exist — `fixed`, `revolute`,
+`prismatic`, `spherical`, `rope`, `spring`, with limits and motors — and a joint with one
+open side is pinned to a fixed body standing exactly at the anchor, which is how a
+swinging door hangs from its frame.
+
 ### Context menus everywhere
 
 Every list, tile and view answers a right click through one shared menu
@@ -2022,6 +2062,13 @@ and Home/End walk it.
 | scene tree rows, scene root and scene tabs | the node toolbar actions, artwork assignment and scene actions |
 | sector list | select, set the light level, capture its objects as a scene, copy the id |
 | playtest log rows | copy the message or the whole record |
+
+Empty space answers too, so a menu is never missing because the pointer missed a row:
+the node tree offers *Add a node* and the scene actions, the inspector offers expand,
+fold and clear-filter, the asset browser offers *Show every asset*, *Import a game or an
+archive* and *New scene object*, the event sheet offers *Add an event*, the objects bar
+offers placing the chosen type, and the scene object list and sector list carry their
+own actions.
 
 A right click is told apart from a right **drag**: the layout pans on a right drag
 and the 3D view flies on one, so the menu only opens when the button never moved.

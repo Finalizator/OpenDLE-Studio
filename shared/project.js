@@ -9,6 +9,7 @@ import { isExpression, validateExpression, validateVariables, scalar, expression
 import { validateShaders } from './shaders.js';
 import { AREA_SHAPES } from './areas.js';
 import { MAX_SCENES, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
+import { MAX_JOINTS, validateJoint } from './joints.js';
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
 
 export const VERSION = 1;
@@ -241,7 +242,7 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef }) {
     assert(entity.type !== 'player', 'Player uses the built-in Rapier capsule controller');
     assert(['none', 'fixed', 'dynamic', 'kinematic'].includes(config.body), 'Invalid rigid-body type');
     if (config.body !== 'none') {
-      assert(['box', 'ball', 'capsule'].includes(config.shape), 'Invalid collider shape');
+      assert(['box', 'ball', 'capsule', 'cylinder', 'cone'].includes(config.shape), 'Invalid collider shape');
       for (const key of ['width', 'height', 'depth', 'radius']) number(config[key], `Collider ${key}`, .1, 4096);
       if (config.shape === 'capsule') assert(config.height >= config.radius * 2, 'Capsule height must be at least twice its radius');
       if (config.shape === 'ball') assert(config.height === config.radius * 2, 'Ball height must be twice its radius');
@@ -263,6 +264,25 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef }) {
   }
 }
 
+
+/**
+ * Joints hold two objects together, so they are checked against the objects that exist:
+ * a joint to a deleted object is a broken project, not a harmless leftover.
+ */
+function validateLevelJoints(map, entityIds) {
+  if (map.joints === undefined) return;
+  array(map.joints, 'Joints', MAX_JOINTS);
+  const ids = new Set();
+  for (const joint of map.joints) {
+    assert(!ids.has(joint?.id), `Duplicate joint id: ${joint?.id}`);
+    ids.add(joint?.id);
+    validateJoint(joint, { ids: entityIds, label: `Joint ${joint?.id}` });
+    const bodies = [joint.a, joint.b].filter(Boolean)
+      .map(id => map.entities.find(entity => entity.id === id));
+    assert(bodies.every(entity => entity && entity.physics && entity.physics.body !== 'none'),
+      `Joint ${joint.id} needs objects with an enabled rigid body`);
+  }
+}
 
 export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   object(project, 'Project');
@@ -524,6 +544,21 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           parent = scene.entities.find(item => item.id === parent)?.parentId;
         }
       }
+      if (scene.joints !== undefined) {
+        array(scene.joints, 'Scene joints', MAX_JOINTS);
+        const jointIds = new Set();
+        for (const joint of scene.joints) {
+          assert(!jointIds.has(joint?.id), `Duplicate joint id in scene ${scene.name}: ${joint?.id}`);
+          jointIds.add(joint?.id);
+          validateJoint(joint, { ids: sceneEntityIds, label: `Scene ${scene.name} joint ${joint?.id}` });
+          for (const side of [joint.a, joint.b]) {
+            if (!side) continue;
+            const node = scene.entities.find(entity => entity.id === side);
+            assert(node.physics && node.physics.body !== 'none',
+              `Scene ${scene.name} joint ${joint.id} needs objects with an enabled rigid body`);
+          }
+        }
+      }
       if (scene.events !== undefined) {
         array(scene.events, 'Scene events', MAX_SCENE_EVENTS);
         const eventIds = new Set();
@@ -595,6 +630,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   array(project.events, 'Events', LIMITS.events);
   validateEventStructure(project, assert);
   const entityIds = new Set(entities.map(entity => entity.id));
+  validateLevelJoints(project.map, entityIds);
   validateHUD(project.hud, { unique, assets, variables: project.variables, assert });
   if (project.gameMenus !== undefined) {
     object(project.gameMenus, 'Game menus');
@@ -985,4 +1021,6 @@ export function removeEntity(project, id) {
   assert(!referenced, 'This entity is used by an event. Remove those references first.');
   project.events = project.events.filter(event => event.ownerId !== id);
   project.map.entities = project.map.entities.filter(item => item.id !== id);
+  // A joint cannot hold an object that is gone.
+  if (project.map.joints) project.map.joints = project.map.joints.filter(joint => joint.a !== id && joint.b !== id);
 }
