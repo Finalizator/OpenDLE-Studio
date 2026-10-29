@@ -16,6 +16,12 @@ node_modules/
 # Playtest logs: kept locally, never published
 /logs/
 
+# GZDoom comparison harness: the downloaded build, its pinned config and its saves are
+# installed locally by tools/gzdoom/fetch.mjs, never committed.
+/tools/gzdoom/dist/
+/tools/gzdoom/cache/
+/tools/gzdoom/.state/
+
 # Generated output and test artifacts
 coverage/
 /dist/

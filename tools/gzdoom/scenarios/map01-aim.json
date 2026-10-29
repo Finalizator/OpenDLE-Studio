@@ -1,0 +1,10 @@
+{
+  "name": "map01-aim",
+  "description": "Player stands still and faces 90° (GZDoom convention). A baseline for aim, spawn orientation and the first sight check.",
+  "iwad": "Projects/Doom2.wad",
+  "map": "MAP01",
+  "skill": 3,
+  "tics": 140,
+  "action": "aim",
+  "angle": 90
+}

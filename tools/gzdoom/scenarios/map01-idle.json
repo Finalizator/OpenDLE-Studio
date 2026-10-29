@@ -1,0 +1,9 @@
+{
+  "name": "map01-idle",
+  "description": "Player stands still on MAP01 for four seconds: the baseline for spawn state, physics and the tic rate.",
+  "iwad": "Projects/Doom2.wad",
+  "map": "MAP01",
+  "skill": 3,
+  "tics": 140,
+  "action": "idle"
+}

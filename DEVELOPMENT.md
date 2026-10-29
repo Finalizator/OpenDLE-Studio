@@ -2528,6 +2528,44 @@ and every format reports the remaining behavior gaps explicitly. Standalone WAD 
 set. Package map import can explicitly layer one base IWAD under package
 resources; arbitrary multi-mod load orders are not implemented.
 
+### Comparing behaviour with GZDoom
+
+Behaviour parity is measured against the real engine rather than by eye. `tools/gzdoom/`
+installs the pinned GZDoom release locally (`npm run gzdoom:fetch`), records a per-tic trace
+of a scenario in both engines, and diffs them:
+
+```
+npm run gzdoom:diff -- map01-idle
+```
+
+The GZDoom side is a ZScript `StaticEventHandler` (`tools/gzdoom/trace/`) registered from
+MAPINFO that prints one `ODT <tic> <tag> cls=… x=… y=… …` line per tic for the player and any
+watched actor, plus `ODT EVENT` lines for damage and death. OpenDLE's headless runtime prints
+the same lines (`tools/gzdoom/opendle-trace.mjs`), so `compare.mjs` pairs them tic by tic and
+names the first tic, field and pair of values that disagree.
+
+OpenDLE stores Doom's map with y flipped and angles running the other way, so the tracer
+normalises both on the way out; without that every tic "differs" and the diff says nothing.
+
+Five GZDoom facts the harness depends on, all found the hard way and kept in comments:
+
+* `+map` starts the map; `-warp` is numeric-only and `atoi("MAP01")` becomes MAP00, so the
+  game never starts and the trace is silently empty (`src/d_main.cpp`).
+* `+set use_mouse 0` is required: the window is on a real desktop, so the physical mouse
+  steers the camera and an "idle" trace records the player walking away.
+* `+set vid_lowerinbackground 0`, because an unfocused GZDoom deliberately waits between tics
+  (`src/d_net.cpp`), which makes a spawned run crawl.
+* The trace is read from `+logfile`, not stdout: piped stdout is block-buffered, so lines
+  arrive in bursts and a working run looks hung. Reading the file also lets the runner stop
+  the process the moment `ODT END` appears — 140 tics take about six seconds.
+* A trace may observe the player but must not animate it. Writing `player.vel` wedged the
+  engine against a wall; writing `player.angle` every tic hung it after a few seconds. Aim is
+  set once at load, and movement has to be real input (a demo, see `Docs/gzdoom-parity.md`).
+
+`Docs/gzdoom-parity.md` is the staged plan for the rest: scripted input through demos,
+spawned actors and combat, reading GZDoom's own source for *why* a divergence exists, and
+making the diff part of the release checklist.
+
 ### Hexen-format binary maps
 
 GZDoom decides a binary map's layout by its `BEHAVIOR` lump: a map with scripts is

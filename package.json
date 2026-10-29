@@ -5,12 +5,17 @@
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
   "description": "OpenDLE: Studio - source-available browser-native visual game engine with local DeepSeek and MCP tools",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node --env-file-if-exists=.env server/index.js",
     "test": "node --test test/*.test.js",
     "test:freedoom": "node scripts/check-freedoom.js",
-    "check": "node scripts/check.js"
+    "check": "node scripts/check.js",
+    "gzdoom:fetch": "node tools/gzdoom/fetch.mjs",
+    "gzdoom:run": "node tools/gzdoom/run.mjs",
+    "gzdoom:diff": "node tools/gzdoom/diff.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.0",

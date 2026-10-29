@@ -1,0 +1,7 @@
+// Scenario knobs, declared so they can be set from the command line
+// (`+odt_tics 140`). Without this GZDoom reads them as unknown commands.
+server int odt_tics = 140;
+server string odt_action = "";
+server string odt_watch = "";
+server int odt_tid = 0;
+server float odt_angle = 90;
