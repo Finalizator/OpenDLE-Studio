@@ -2528,6 +2528,22 @@ and every format reports the remaining behavior gaps explicitly. Standalone WAD 
 set. Package map import can explicitly layer one base IWAD under package
 resources; arbitrary multi-mod load orders are not implemented.
 
+### Playing GZDoom yourself
+
+`./GZDoom.sh` runs Doom 2 in the GZDoom that `npm run gzdoom:fetch` installed, as a normal game:
+your own config, saves, mouse look and sound, with whatever you pass passed through.
+
+```
+./GZDoom.sh                          # Doom 2, from the title screen
+./GZDoom.sh -warp 7 -skill 4         # MAP07 on nightmare
+./GZDoom.sh -file ~/mods/foo.pk3     # with a mod
+GZDOOM=/usr/bin/gzdoom ./GZDoom.sh   # a different binary
+```
+
+It is deliberately the opposite of `npm run gzdoom:run`, which drives a scripted scenario with
+the mouse turned off, its own throwaway config and a trace mod, so a run can be compared with
+OpenDLE. When a behaviour is in doubt, this is the one to play in.
+
 ### Comparing behaviour with GZDoom
 
 Behaviour parity is measured against the real engine rather than by eye. `tools/gzdoom/`

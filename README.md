@@ -60,6 +60,10 @@ projects—with room to build beyond the original engine.
 Playtest failures are written to `logs/playtest/` as they happen, one file per
 session, and can be read from the Logs tab or by the assistant over MCP.
 
+To play the real Doom 2 in GZDoom for comparison, `npm run gzdoom:fetch` installs a
+pinned GZDoom and `./GZDoom.sh` runs it as a normal game, with your own config and
+with any arguments passed through.
+
 **This is an early engine, not complete GZDoom compatibility.** Imported weapons,
 enemies and pickups run their own DECORATE/ZScript state machines, map line
 specials execute natively, and each map's compiled ACS module (`BEHAVIOR`) runs
