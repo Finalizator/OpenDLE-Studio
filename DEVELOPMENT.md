@@ -2546,11 +2546,15 @@ OpenDLE. When a behaviour is in doubt, this is the one to play in.
 
 **GZDoom's default layout leaves the arrow keys unbound.** Its `defbinds.txt` binds W/A/S/D and
 the mouse and nothing else, so Left, Right and Down do literally nothing - which reads as "I
-can't strafe or walk backwards". `tools/gzdoom/controls.cfg` fills those gaps (arrows, `,` and
-`.`, Ctrl, Q/R, mouse wheel), and the launcher only loads it when the config it is about to use
-has no arrow binds: once, on a fresh install, and never again once the layout is yours. It uses
-plain `bind` because `defaultbind` refuses to bind a key whose command is already on another
-key - `+forward` is on W, so Up and Down were silently skipped.
+can't strafe or walk backwards". `tools/gzdoom/controls.cfg` assigns them (arrows, `,` and `.`, Ctrl, Q/R, mouse wheel), and the
+launcher loads it on **every** launch, so the layout is always the one it prints. `GZDOOM_KEEP_KEYS=1`
+skips the file and leaves your binds alone.
+
+Two wrong turns are worth not repeating. `defaultbind` refuses to bind a key whose command is
+already on another key, and `+forward` is on W, so Up and Down were silently skipped. Loading the
+file only when a gap was detected was worse: a config that already carries the automap's own
+arrow binds (`UpArrow=+am_panup`) looks bound to any grep, so the conditional load did nothing on
+exactly the configs that needed it.
 
 The launcher also prints a control list before starting, because knowing the keys is half of
 being able to play. `GZDOOM_QUIET=1` skips it.

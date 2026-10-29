@@ -65,16 +65,13 @@ if [[ -x "$dist/gzdoom" && "$binary" == "$dist/gzdoom" ]]; then
 fi
 
 # GZDoom's default layout (`defbinds.txt`) binds W/A/S/D and leaves every arrow key unbound,
-# so Left, Right and Down do nothing at all. tools/gzdoom/controls.cfg fills those gaps, and
-# is only loaded when the config about to be used has no arrow binds - which means once, on a
-# fresh install, and never again once you have a layout of your own.
-config_file=""
-for ((i = 0; i < ${#args[@]}; i++)); do
-  if [[ "${args[i]}" == "-config" && $((i + 1)) -lt ${#args[@]} ]]; then config_file="${args[i + 1]}"; fi
-done
-config_file="${config_file:-${XDG_CONFIG_HOME:-$HOME/.config}/gzdoom/gzdoom.ini}"
+# so Left, Right and Down do nothing at all. tools/gzdoom/controls.cfg assigns them, and it is
+# loaded on every launch rather than only when a gap is detected: a config already carrying
+# automap arrows (`UpArrow=+am_panup`) looks bound to any grep, so a conditional load quietly
+# did nothing on exactly the configs that needed it. Loading it every time means the layout is
+# always the one printed below. GZDOOM_KEEP_KEYS=1 skips it and leaves your binds alone.
 bind_files=()
-if [[ ! -f "$config_file" ]] || ! grep -q '^UpArrow=' "$config_file"; then
+if [[ -z "${GZDOOM_KEEP_KEYS:-}" ]]; then
   bind_files=(-exec "$root/tools/gzdoom/controls.cfg")
 fi
 
