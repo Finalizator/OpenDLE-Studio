@@ -1110,6 +1110,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
           // The psprite's y grows downwards; the overlay scene's grows upwards.
           overlay.position.y = overlay.userData.restY - recoil - swing.y;
         }
+        // Where the drawn weapon actually ended up, so a bob can be checked from outside.
+        const shownWeapon = weaponOverlays.get(selected);
+        if (shownWeapon) writeDataset('weaponPosition',
+          `${shownWeapon.position.x.toFixed(2)} ${shownWeapon.position.y.toFixed(2)}`);
         writeDataset('weapon', state.inventory.selectedWeapon);
         // Player state for measurement: the GZDoom harness reports the same numbers, so what
         // the browser actually does can be compared with what the trace says it should do.
