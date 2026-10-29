@@ -64,4 +64,37 @@ if [[ -x "$dist/gzdoom" && "$binary" == "$dist/gzdoom" ]]; then
   extra=(-basedir "$dist")
 fi
 
-exec "$binary" "${extra[@]}" "${args[@]}"
+# GZDoom's default layout (`defbinds.txt`) binds W/A/S/D and leaves every arrow key unbound,
+# so Left, Right and Down do nothing at all. tools/gzdoom/controls.cfg fills those gaps, and
+# is only loaded when the config about to be used has no arrow binds - which means once, on a
+# fresh install, and never again once you have a layout of your own.
+config_file=""
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [[ "${args[i]}" == "-config" && $((i + 1)) -lt ${#args[@]} ]]; then config_file="${args[i + 1]}"; fi
+done
+config_file="${config_file:-${XDG_CONFIG_HOME:-$HOME/.config}/gzdoom/gzdoom.ini}"
+bind_files=()
+if [[ ! -f "$config_file" ]] || ! grep -q '^UpArrow=' "$config_file"; then
+  bind_files=(-exec "$root/tools/gzdoom/controls.cfg")
+fi
+
+if [[ -z "${GZDOOM_QUIET:-}" ]]; then
+  cat <<'CONTROLS'
+GZDoom controls (both layouts work):
+  move      W / Up = forward      S / Down = back
+            A / D  = strafe left / right        , / .  are also strafe
+            Left / Right arrows = turn          mouse = look, if freelook is on
+  run       hold Shift (or toggle with CapsLock)
+  act       Space = jump          E = use         Mouse1 = fire
+            Ctrl = fire (classic) Mouse2 = alternate fire / strafe
+  weapons   1-9 = slots           Q / R or mouse wheel = previous / next
+  map       Tab = automap         PgUp / PgDn = look up / down    End = centre view
+  saves     F6 = quick save       F9 = quick load  F2 / F3 = save / load menus
+  quit      F10 or Escape, then choose
+
+Anything you pass is passed to GZDoom, e.g. ./GZDoom.sh -warp 7 -skill 4
+Set GZDOOM_QUIET=1 to skip this list.
+CONTROLS
+fi
+
+exec "$binary" "${extra[@]}" "${bind_files[@]}" "${args[@]}"

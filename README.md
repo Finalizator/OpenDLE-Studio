@@ -62,7 +62,9 @@ session, and can be read from the Logs tab or by the assistant over MCP.
 
 To play the real Doom 2 in GZDoom for comparison, `npm run gzdoom:fetch` installs a
 pinned GZDoom and `./GZDoom.sh` runs it as a normal game, with your own config and
-with any arguments passed through.
+with any arguments passed through. It prints the controls on start, and fills in
+the keys GZDoom leaves unbound (its default layout has no arrow keys at all) the
+first time it runs.
 
 **This is an early engine, not complete GZDoom compatibility.** Imported weapons,
 enemies and pickups run their own DECORATE/ZScript state machines, map line
