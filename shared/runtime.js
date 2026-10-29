@@ -6,14 +6,26 @@ import { isExpression, evaluateExpression, expressionContext, scalar } from './e
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
 import { TIC_RATE, stepActors, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, initialiseActorEntities,
   installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
-import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond,
+import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
+
+/** The mark a bullet leaves, in map units, and how many are kept before the oldest goes. */
+const BULLET_MARK = { assetId: 'builtin:bullethole', width: 12, limit: 160 };
 
 /** The most player tics a single frame may run, so a stall cannot teleport the player. */
 const MAX_PLAYER_TICS = 4;
 
 /** The shortest move, in map units, that can count as being stopped by a wall. */
 const BLOCKED_STEP = 1;
+
+/**
+ * Substeps a player has to be stopped for before it counts as a wall.
+ *
+ * Climbing a step blocks one or two substeps before the capsule is lifted over it; treating
+ * the first of those as a wall dropped the player's momentum against every step on MAP01's
+ * staircase, and it never reached walking speed.
+ */
+const WALL_SUBSTEPS = 3;
 import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum } from './player-state.js';
 import { areaContains, areaEntered, areaVolume } from './areas.js';
 import {
@@ -21,7 +33,7 @@ import {
 } from './gravity.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
-import { sprayTarget, clipDecalToFace } from './spray.js';
+import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { BT } from './acs.js';
@@ -88,6 +100,8 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0, up: [...WORLD_UP] },
     // Momentum is Doom's, in map units per tic; see shared/player-motion.js.
     momentum: { x: 0, y: 0, z: 0 }, playerClock: 0, turnHeld: 0, turnRequest: 0,
+    // Doom bobs the weapon and the view with the player's speed; see shared/player-motion.js.
+    bob: 0, bobTimer: 0,
     playerStats, inventory, levelTransition: Boolean(progress),
     face: 'idle',
     feedback: { damage: null, weaponPickupTime: -Infinity, attackTime: 0, health: playerStats.health },
@@ -491,7 +505,6 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // are only built when that path is actually taken.
   const canMove = state.physics ? null : (cacheFor(state).canMove ||= fallbackMovement(state));
   const previousPosition = { x: player.x, y: player.y };
-  const previousHeight = player.z ?? 0;
   const grounded = state.physics ? state.physics.grounded : true;
   const jumpHeld = state.settings.jumping && !hud.cursor && state.playerStats.health > 0 &&
     (state.scriptedInput ? state.input.jump : pressed.has('Space'));
@@ -540,6 +553,11 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         + (basis.right[2] * cosHeading - basis.forward[2] * sinHeading) * thrust.side,
     }, { grounded });
   }
+  if (tics) {
+    // Doom advances the bob timer every player tic, whether the player moves or not.
+    state.bobTimer = (state.bobTimer || 0) + tics;
+    state.bob = bobFor(state.momentum);
+  }
   const velocity = momentumSpeed(state.momentum);
   const dx = velocity.x * dt, dy = velocity.y * dt, dz = velocity.z * dt;
   state.physics?.syncWorld();
@@ -554,19 +572,19 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (canMove(player.x, player.y + dy, currentFloor)) player.y += dy;
   }
   // Doom drops the momentum of an axis the player could not move along, so pushing at a
-  // wall does not bank speed that is released when it opens. Sliding still moves both
-  // axes, so only an axis that barely moved counts as blocked.
+  // wall does not bank speed that is released when it opens. The physics world reports which
+  // axes the character controller was stopped on; without one, the plain walking path moves
+  // the player exactly as far as it asked to or not at all.
   if (state.momentum) {
-    const movedX = player.x - previousPosition.x, movedY = player.y - previousPosition.y;
-    const climbed = Math.abs((player.z ?? previousHeight) - previousHeight) > .05;
-    // A capsule that is barely moving is not blocked: the character controller legitimately
-    // refuses moves smaller than its own tolerance, and treating that as a wall held the
-    // player at half a unit per tic forever. Climbing a step also looks like "did not move
-    // sideways" for a tic, so only a tic that neither moved nor climbed counts as a wall.
-    if (!climbed) {
-      if (Math.abs(dx) > BLOCKED_STEP && Math.abs(movedX) < Math.abs(dx) * .25) state.momentum.x = 0;
-      if (Math.abs(dy) > BLOCKED_STEP && Math.abs(movedY) < Math.abs(dy) * .25) state.momentum.y = 0;
-    }
+    // A physics world reports it, because it is the only thing that knows whether a move was
+    // refused; the plain walking path moves the player exactly as far as it asked to or not
+    // at all, so it can answer the same question itself.
+    const stopped = state.physics?.blocked ?? {
+      x: Math.abs(dx) > BLOCKED_STEP && player.x === previousPosition.x ? WALL_SUBSTEPS : 0,
+      y: Math.abs(dy) > BLOCKED_STEP && player.y === previousPosition.y ? WALL_SUBSTEPS : 0,
+    };
+    if (stopped.x >= WALL_SUBSTEPS) state.momentum.x = 0;
+    if (stopped.y >= WALL_SUBSTEPS) state.momentum.y = 0;
   }
   stage('physics');
   // Nothing can be crossed by a player who has not moved, and walking the whole wall
@@ -1238,6 +1256,25 @@ function applyWeaponAttack(project, state) {
     pitchOffset: attack.pitch || 0, seeker: attack.seeker === true });
 }
 
+/**
+ * Leaves the mark a bullet makes on the wall it hits.
+ *
+ * Doom's bullet puff is a sprite that flashes and vanishes; GZDoom keeps a chip on the wall
+ * afterwards. This reuses the spray decal — the same clipped quad against the wall face — with
+ * a built-in texture, so it needs no artwork from the project.
+ */
+function addBulletMark(state, eye, direction, distance) {
+  const target = decalTarget(state, eye, direction, distance + 1);
+  if (!target) return;
+  const face = clipDecalToFace(target, { width: BULLET_MARK.width, height: BULLET_MARK.width });
+  if (!face) return;
+  state.impacts.push({ id: `bullet_${state.decalCounter++}`, x: target.x, y: target.y, z: target.z,
+    clipId: '', start: state.time,
+    decal: { assetId: BULLET_MARK.assetId, corners: face.corners, uv: face.uv } });
+  const marks = state.impacts.filter(effect => effect.decal && effect.decal.assetId === BULLET_MARK.assetId);
+  if (marks.length > BULLET_MARK.limit) state.impacts.splice(state.impacts.indexOf(marks[0]), 1);
+}
+
 function fireHitscan(project, state, action) {
   const player = state.player;
   // The shot leaves the eye along the view direction, so it still lines up with the
@@ -1259,7 +1296,11 @@ function fireHitscan(project, state, action) {
       if (distance !== null) { nearest = distance; target = entity; }
     }
     const damage = action.damage * (1 + Math.floor(random() * action.diceSides));
-    if (!target) for (const id of shotWalls) state.worldTriggers.shoot.add(id);
+    if (!target) {
+      for (const id of shotWalls) state.worldTriggers.shoot.add(id);
+      // A shot that hits nothing has hit the wall behind it, and GZDoom leaves a mark there.
+      addBulletMark(state, eye, [dx, dy, dz], nearest);
+    }
     if (target) {
       hurtActor(project, state, target, damage, state.player);
       state.lastShot.hits.push({ id: target.id, damage });

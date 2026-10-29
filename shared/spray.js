@@ -16,8 +16,16 @@ export function sprayTarget(state, distance = 96) {
   const player = state.player;
   const feet = Number.isFinite(player?.z) ? player.z
     : sectorAt(state.sectors, player?.x ?? 0, player?.y ?? 0)?.floorHeight ?? 0;
-  const eye = eyePosition(player, feet);
-  const direction = viewDirection(player);
+  return decalTarget(state, eyePosition(player, feet), viewDirection(player), distance);
+}
+
+/**
+ * Where a ray from `eye` along `direction` meets a wall, as a decal can be painted on it.
+ *
+ * Split out of `sprayTarget` so a bullet, which leaves along its own pellet direction rather
+ * than the crosshair, can put its mark on the same kind of surface a spray paints.
+ */
+export function decalTarget(state, eye, direction, distance = 96) {
   if (!(Math.hypot(direction[0], direction[1]) > 1e-6)) return null;
   let best = null;
   for (const wall of state.walls || []) {

@@ -2,6 +2,7 @@ import { sectorAt, sectorGeometry, sectorShapes } from './sectors.js';
 import {
   PLAYER_CYLINDER, SURFACE_REACH, WORLD_UP, dot as dotMap, playerBasis, surfaceKind, upVector,
 } from './gravity.js';
+import { actorOf } from './actor-runtime.js';
 
 export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
@@ -15,6 +16,13 @@ export const FIXED_STEP = 1 / 60;
  * root of two times as long as it does in Doom.
  */
 export const DOOM_GRAVITY = 35 * 35;
+
+/** A move shorter than this, in world units, is the controller declining to move at all. */
+const BLOCK_TOLERANCE = 1 / PHYSICS_SCALE;
+/** Moving less than this share of what was asked for is being stopped, not merely slowed. */
+const BLOCK_FRACTION = 0.25;
+/** Vertical movement above this means the capsule climbed a step rather than hitting a wall. */
+const STEP_TOLERANCE = 1 / PHYSICS_SCALE;
 
 /** GZDoom doubles gravity on the tic a player runs off a ledge (`AActor::FallAndSink`). */
 const LEDGE_GRAVITY = 2;
@@ -123,6 +131,20 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
 // full-height capsule plus the character controller's query offset could not enter it.
 const PLAYER_CAPSULE_HEIGHT = 55;
 
+/**
+ * The actor an entity stands in for, if that actor is solid enough to block the player.
+ *
+ * Doom clears `MF_SOLID` when a monster dies (its death states call `A_NoBlocking`), so a
+ * corpse does not stop the player and only a living actor gets a collider.
+ */
+function solidActor(project, entity) {
+  if (entity.type !== 'enemy' && entity.type !== 'decoration') return null;
+  if (entity.type === 'enemy' && !(entity.health > 0)) return null;
+  const actor = actorOf(project, entity);
+  if (!actor || actor.flags?.SOLID === false || !(actor.radius > 0) || !(actor.height > 0)) return null;
+  return actor;
+}
+
 export function createPhysics(project, state, R, triangulate) {
   const initialUnbodiedHeights = new Map(state.entities.filter(entity => entity.type !== 'player' &&
     (!entity.physics || entity.physics.body === 'none') && Number.isFinite(entity.z)).map(entity => [entity.id, entity.z]));
@@ -138,6 +160,8 @@ export function createPhysics(project, state, R, triangulate) {
   const mesh = collisionMesh(project, triangulate, { sectors: state.sectors, moving });
   let worldCollider = createWorldCollider(mesh);
   const colliderIds = new Map(worldCollider ? [[worldCollider.handle, '$world']] : []), bodies = new Map(), colliders = new Map();
+  /** Heights of the imported actors that block the player; see `solidActor`. */
+  const actorHeights = new Map();
   // Impulse joints and the fixed bodies a world-side joint pins to.
   const jointHandles = [], pinnedHandles = [];
   let dynamicCollider = null, worldRevision = -1;
@@ -175,6 +199,10 @@ export function createPhysics(project, state, R, triangulate) {
   const active = new Set(), forces = new Map();
   let contacts = new Set(), started = new Set(), ended = new Set(), accumulator = 0, verticalSpeed = 0, grounded = false;
   let ledgeFallen = false;
+  // Consecutive substeps the player was stopped on, per world axis. Steps are climbed over
+  // a substep or two, so a single blocked substep is not a wall; pressing into one keeps the
+  // count climbing.
+  let blocked = { x: 0, z: 0 };
   // The player's own up axis. Rapier capsules always grow along +Y, so walking on
   // a wall means rotating the character and moving along its plane, not the world's.
   let upMap = [...WORLD_UP];
@@ -217,31 +245,40 @@ export function createPhysics(project, state, R, triangulate) {
   }
   for (const entity of state.entities) {
     const player = entity.type === 'player', config = entity.physics;
-    if (!player && (!config || config.body === 'none')) continue;
-    const height = player ? 56 : config.height, radius = player ? 12 : config.radius;
-    const bodyType = player ? 'kinematic' : config.body;
+    // An imported actor is solid in Doom: a monster stops the player rather than being walked
+    // through. Its size is the actor's own radius and height, and the body is kinematic
+    // because the actor runtime moves the monster itself.
+    const actor = player || config ? null : solidActor(project, entity);
+    if (!player && !config && !actor) continue;
+    const height = player ? 56 : config ? config.height : actor.height;
+    const radius = player ? 12 : config ? config.radius : actor.radius;
+    const bodyType = player || actor ? 'kinematic' : config.body;
     const descriptor = bodyType === 'dynamic' ? R.RigidBodyDesc.dynamic() : bodyType === 'fixed' ? R.RigidBodyDesc.fixed() : R.RigidBodyDesc.kinematicPositionBased();
     const bottom = floorAt(entity) + (entity.elevation || 0);
     descriptor.setTranslation(entity.x / PHYSICS_SCALE, (bottom + height / 2 + (player ? .4 : 0)) / PHYSICS_SCALE, entity.y / PHYSICS_SCALE);
     descriptor.setRotation(rotation(entity));
     // The player capsule is re-oriented onto the surface it stands on, so its
     // rotation follows the up axis instead of being locked upright.
-    if (!player && config.lockRotation) descriptor.lockRotations();
+    if (!player && config?.lockRotation) descriptor.lockRotations();
     if (bodyType === 'dynamic') descriptor.setCcdEnabled(true);
+    // An actor body sits on its own floor and is never rotated onto a surface.
+    if (actor) descriptor.setRotation({ x: 0, y: 0, z: 0, w: 1 });
     const body = world.createRigidBody(descriptor);
-    const shape = player || config.shape === 'capsule'
+    const shape = player || actor || config.shape === 'capsule'
       ? R.ColliderDesc.capsule(Math.max(0, (player ? PLAYER_CAPSULE_HEIGHT : height) / 2 - radius) / PHYSICS_SCALE, radius / PHYSICS_SCALE)
       : config.shape === 'ball' ? R.ColliderDesc.ball(radius / PHYSICS_SCALE)
         : config.shape === 'cylinder' ? R.ColliderDesc.cylinder(height / 2 / PHYSICS_SCALE, radius / PHYSICS_SCALE)
           : config.shape === 'cone' ? R.ColliderDesc.cone(height / 2 / PHYSICS_SCALE, radius / PHYSICS_SCALE)
             : R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, height / 2 / PHYSICS_SCALE, config.depth / 2 / PHYSICS_SCALE);
     shape.setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setActiveCollisionTypes(R.ActiveCollisionTypes.ALL);
-    if (!player) {
+    if (actor) shape.setFriction(.6);
+    else if (!player) {
       shape.setSensor(config.sensor).setFriction(config.friction).setRestitution(config.restitution);
       if (bodyType === 'dynamic') shape.setMass(config.mass);
     }
     const collider = world.createCollider(shape, body);
     colliderIds.set(collider.handle, entity.id); bodies.set(entity.id, body); colliders.set(entity.id, collider);
+    if (actor) actorHeights.set(entity.id, height);
     entity.z = bottom;
   }
   createJoints();
@@ -320,6 +357,16 @@ export function createPhysics(project, state, R, triangulate) {
     for (const entity of state.entities) {
       const body = bodies.get(entity.id);
       if (!body) { entity.z = floorAt(entity) + (entity.elevation || 0); continue; }
+      const actorHeight = actorHeights.get(entity.id);
+      if (actorHeight !== undefined) {
+        // An actor is moved by the actor runtime, not by Rapier, so its collider follows the
+        // actor. A dead one stops blocking, the way Doom's `A_NoBlocking` clears `MF_SOLID`.
+        body.setNextKinematicTranslation({ x: entity.x / PHYSICS_SCALE,
+          y: (entity.z + actorHeight / 2) / PHYSICS_SCALE, z: entity.y / PHYSICS_SCALE });
+        const blocking = entity.health > 0, collider = colliders.get(entity.id);
+        if (collider && collider.isEnabled() !== blocking) collider.setEnabled(blocking);
+        continue;
+      }
       const position = body.translation(), q = body.rotation();
       const height = entity.type === 'player' ? 56 : entity.physics.height;
       entity.x = position.x * PHYSICS_SCALE; entity.y = position.z * PHYSICS_SCALE;
@@ -417,6 +464,13 @@ export function createPhysics(project, state, R, triangulate) {
     world, bodies,
     syncWorld,
     get contacts() { return contacts; }, get started() { return started; }, get ended() { return ended; }, get grounded() { return grounded; },
+    /**
+     * Consecutive substeps the player was stopped on, per map axis.
+     *
+     * Anything above one is a step being climbed; a wall keeps counting, which is what the
+     * runtime waits for before it drops the player's momentum.
+     */
+    get blocked() { return { x: blocked.x, y: blocked.z }; },
     get up() { return [...upMap]; },
     orientPlayer, probeSurfaces,
     saveState() {
@@ -462,6 +516,7 @@ export function createPhysics(project, state, R, triangulate) {
     },
     step(dt, movement) {
       started = new Set(); ended = new Set();
+      // Consecutive substeps each axis was stopped on; see the getter below.
       if (movement.up && dotMap(upVector(movement.up), upMap) < .999999) orientPlayer(movement.up);
       const axis = toRapier(upMap);
       // Movement arrives in map space; gravity and the move both follow the up axis.
@@ -490,10 +545,25 @@ export function createPhysics(project, state, R, triangulate) {
         }, R.QueryFilterFlags.EXCLUDE_SENSORS, undefined, candidate => candidate.parent()?.handle !== body.handle);
         const corrected = controller.computedMovement(), position = body.translation();
         body.setNextKinematicTranslation({ x: position.x + corrected.x, y: position.y + corrected.y, z: position.z + corrected.z });
+        // A wall is the controller being asked to move and given (almost) nothing, while the
+        // vertical part of the move shows it is not climbing a step instead. This is measured
+        // here rather than from the frame's positions because the controller only runs a
+        // substep when its accumulator fills: at 100 frames a second most frames move the
+        // capsule nowhere, and reading that as a wall reset the player's momentum ten times
+        // in three seconds, so it never reached walking speed.
+        const requested = { x: velocity.x / PHYSICS_SCALE * FIXED_STEP + axis.x * fall,
+          z: velocity.z / PHYSICS_SCALE * FIXED_STEP + axis.z * fall };
+        const climbed = Math.abs(corrected.x * axis.x + corrected.y * axis.y + corrected.z * axis.z) > STEP_TOLERANCE;
+        const stoppedX = !climbed && Math.abs(requested.x) > BLOCK_TOLERANCE && Math.abs(corrected.x) < Math.abs(requested.x) * BLOCK_FRACTION;
+        const stoppedZ = !climbed && Math.abs(requested.z) > BLOCK_TOLERANCE && Math.abs(corrected.z) < Math.abs(requested.z) * BLOCK_FRACTION;
+        blocked.x = stoppedX ? blocked.x + 1 : 0;
+        blocked.z = stoppedZ ? blocked.z + 1 : 0;
         world.step(events);
         // Rapier's own grounded test follows world +Y, so it only answers for an
-        // upright player; on a wall the contact rays decide instead.
-        grounded = axis.y > .999 ? controller.computedGrounded() || standingOnSurface() : standingOnSurface();
+        // upright player; on a wall the contact rays decide instead. It also reports a
+        // contact the rays cannot find, which left a player hanging in mid-air after a
+        // gravity change, so an upright player has to satisfy both.
+        grounded = axis.y > .999 ? controller.computedGrounded() && standingOnSurface() : standingOnSurface();
         const characterContacts = new Set();
         for (let i = 0; i < controller.numComputedCollisions(); i++) {
           const collision = controller.computedCollision(i);
@@ -520,7 +590,7 @@ export function createPhysics(project, state, R, triangulate) {
       if (!entity) return;
       const bottom = z ?? floorAt({ x, y }) + (entity.elevation || 0);
       if (!body) { entity.x = x; entity.y = y; entity.z = bottom; entity.elevation = bottom - floorAt(entity); return; }
-      const height = entity.type === 'player' ? 56 : entity.physics.height;
+      const height = entity.type === 'player' ? 56 : actorHeights.get(id) ?? entity.physics.height;
       const position = entity.type === 'player'
         ? { x: x / PHYSICS_SCALE, y: (bottom + PLAYER_CYLINDER.halfHeight * upMap[2] + .4) / PHYSICS_SCALE, z: y / PHYSICS_SCALE }
         : { x: x / PHYSICS_SCALE, y: (bottom + height / 2 + .4) / PHYSICS_SCALE, z: y / PHYSICS_SCALE };

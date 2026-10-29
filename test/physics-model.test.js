@@ -276,6 +276,42 @@ test('real Freedoom MAP01 has a grounded Rapier spawn and playable static collis
   assert.ok(state.player.z > -10000 && Number.isFinite(state.player.z));
 });
 
+test('the player cannot walk through a monster, and a corpse stops blocking', { skip: !existsSync(wad) }, t => {
+  const { project, state } = scene(t, project => {
+    // The imported actor table, with one of its solid actors standing in a plain room: the
+    // point is the collision with it, not the map it came from.
+    project.actors = importWad(readFileSync(wad), 'MAP01').project.actors;
+    const actor = project.actors.find(entry => entry.flags?.SOLID !== false && entry.radius > 0 && entry.height > 0);
+    project.map.entities = [
+      { id: 'player', type: 'player', name: 'Player', x: -180, y: 0, angle: 0 },
+      { id: 'monster', type: 'enemy', name: actor.name, actorName: actor.name, x: 0, y: 0, angle: 0, health: actor.health },
+    ];
+  });
+  const player = state.player, monster = state.entities.find(entity => entity.id === 'monster');
+  const playerId = state.entities.find(entity => entity.type === 'player').id;
+  const actor = project.actors.find(entry => entry.name === monster.actorName);
+  const reach = 12 + actor.radius;
+  const start = { x: player.x, y: player.y, z: player.z ?? 0 };
+  // Walk straight at the monster and record how close the capsule ever got to its centre.
+  const walk = () => {
+    let closest = Infinity;
+    for (let i = 0; i < 120; i++) {
+      state.physics.step(1 / 35, { x: 291.6, y: 0, z: 0, up: [0, 0, 1] });
+      closest = Math.min(closest, Math.hypot(player.x - monster.x, player.y - monster.y));
+    }
+    return closest;
+  };
+  // Doom stops the player at the monster's edge and lets them slide around it; what must
+  // never happen is walking through it, which is what an actor without a collider allowed.
+  const closest = walk();
+  assert.ok(player.x > monster.x, 'the walk carried on past the monster');
+  assert.ok(closest > reach - 2, `came within ${closest.toFixed(1)} units, the radii sum to ${reach}`);
+  // Doom's death states call `A_NoBlocking`, so a corpse no longer stops the player.
+  monster.health = 0;
+  state.physics.teleport(playerId, start.x, start.y, start.z);
+  assert.ok(walk() < reach, 'the corpse still blocked the player');
+});
+
 test('a model can be tilted or stood on its head without changing its facing', () => {
   const plain = modelOrientation({ angle: 0 });
   assert.deepEqual(plain.map(value => Math.round(value) + 0), [0, 0, 0, 1], 'an untilted model is unchanged');

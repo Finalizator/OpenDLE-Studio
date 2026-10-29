@@ -136,6 +136,8 @@ function validateRuntime(project, state, baseline) {
   if (!Number.isFinite(state.playerClock)) state.playerClock = 0;
   if (!Number.isFinite(state.turnHeld)) state.turnHeld = 0;
   if (!Number.isFinite(state.turnRequest)) state.turnRequest = 0;
+  if (!Number.isFinite(state.bob)) state.bob = 0;
+  if (!Number.isFinite(state.bobTimer)) state.bobTimer = 0;
   for (const key of Object.keys(state)) if (omitted.has(key) || !Object.hasOwn(baseline, key) && !optional.has(key)) fail(`unknown runtime field ${key}`);
   for (const [key, value] of Object.entries(baseline)) if (!omitted.has(key)) {
     if (!Object.hasOwn(state, key)) fail(`missing runtime field ${key}`);

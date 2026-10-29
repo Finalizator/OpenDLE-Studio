@@ -148,3 +148,32 @@ export function thrustTowards({ forward = 0, side = 0 }) {
 
 /** Doom's speeds in map units per second: the numbers the editable input sheet asks for. */
 export const PLAYER_SPEED = Object.freeze({ walk: terminalSpeed() * TIC_RATE, run: terminalSpeed({ run: true }) * TIC_RATE });
+
+/**
+ * Doom's weapon and view bob.
+ *
+ * `player.bob` is the squared speed, capped at 16 units, and `BobTimer` counts player tics.
+ * The weapon swings on a five-and-five-eighths degree step per tic and the view rises and
+ * falls at a third of a degree, which is the gentle sway that makes walking read as walking.
+ */
+export const MAXBOB = 16;
+export const WEAPON_BOB_STEP = 128 * 360 / 8192;
+export const VIEW_BOB_STEP = 360 / 120;
+
+/** The bob amount for a momentum in map units per tic: Doom's `player.bob`. */
+export function bobFor(momentum) {
+  return Math.min((momentum.x * momentum.x + momentum.y * momentum.y + momentum.z * momentum.z), MAXBOB);
+}
+
+/** Where a weapon sits this frame, in the psprite's own units (x right, y down). */
+export function weaponBob(bob, bobTimer) {
+  if (!(bob > 0)) return { x: 0, y: 0 };
+  const angle = WEAPON_BOB_STEP * (bobTimer - 1) * Math.PI / 180;
+  return { x: bob * Math.cos(angle), y: bob * Math.abs(Math.sin(angle)) };
+}
+
+/** How far the view rises this tic, in map units. */
+export function viewBob(bob, bobTimer) {
+  if (!(bob > 0)) return 0;
+  return bob * Math.sin(bobTimer * VIEW_BOB_STEP * Math.PI / 180) * .5;
+}

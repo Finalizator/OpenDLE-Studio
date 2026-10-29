@@ -24,6 +24,7 @@ import { gameLevelAssetIds } from '/shared/game-levels.js';
 import { skyAssetFor, skyRequestName } from '/shared/sky.js';
 import { createSpriteIndex } from '/shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
+import { viewBob, weaponBob } from '/shared/player-motion.js';
 
 export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc' };
 // Imported models are shaded as physical surfaces instead of Doom's flat light
@@ -57,8 +58,41 @@ export async function createPreview(canvas, project, state, { editor = false } =
   let geometry = editor ? sectorGeometry(project) : state.sectors;
   const textures = new Map();
   let assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
+  // Textures the engine draws itself, for marks no imported artwork exists for. A bullet hole
+  // is the size of a thumbprint on a wall, and shipping a one-pixel idea as an asset would put
+  // it in every project's library; a canvas drawn once and cached is enough.
+  const builtinTextures = new Map();
+  function builtinTexture(id) {
+    let texture = builtinTextures.get(id);
+    if (texture) return texture;
+    const size = 32, canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const context = canvas.getContext('2d'), centre = size / 2;
+    const ring = context.createRadialGradient(centre, centre, 0, centre, centre, centre);
+    ring.addColorStop(0, 'rgba(4, 3, 2, 0.98)');
+    ring.addColorStop(.30, 'rgba(10, 8, 6, 0.92)');
+    ring.addColorStop(.52, 'rgba(46, 40, 34, 0.72)');
+    ring.addColorStop(.70, 'rgba(150, 142, 130, 0.34)');
+    ring.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    context.fillStyle = ring;
+    context.fillRect(0, 0, size, size);
+    // A few cracks, so the same mark at the same rotation does not read as a printed dot.
+    context.strokeStyle = 'rgba(12, 10, 8, 0.45)'; context.lineWidth = 1;
+    for (const angle of [.4, 1.9, 3.6, 5.2]) {
+      context.beginPath();
+      context.moveTo(centre + Math.cos(angle) * 2.5, centre + Math.sin(angle) * 2.5);
+      context.lineTo(centre + Math.cos(angle) * 10, centre + Math.sin(angle) * 10);
+      context.stroke();
+    }
+    texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+    builtinTextures.set(id, texture);
+    return texture;
+  }
   function imageTexture(id) {
     if (!id) return null;
+    if (id.startsWith('builtin:')) return builtinTexture(id);
     const result = textures.get(id);
     if (!result) throw new Error(`Preview image ${assetMap.get(id)?.name || id} (${id}) was not loaded`);
     return result;
@@ -1066,11 +1100,24 @@ export async function createPreview(canvas, project, state, { editor = false } =
         writeDataset('weaponFrame', selected || '');
         for (const [id, overlay] of weaponOverlays) overlay.visible = id === selected;
         const recoil = state.lastShot && state.time - state.lastShot.time < .12 ? 6 * (1 - (state.time - state.lastShot.time) / .12) : 0;
+        // Doom swings the weapon with the player's speed: x on a cosine and y on a sine of the
+        // bob timer, in psprite pixels, so a walk rocks the gun the way GZDoom's does.
+        const swing = weaponBob(state.bob || 0, state.bobTimer || 0);
         for (const overlay of weaponOverlays.values()) {
+          overlay.userData.restX ??= overlay.position.x;
           overlay.userData.restY ??= overlay.position.y;
-          overlay.position.y = overlay.userData.restY - recoil;
+          overlay.position.x = overlay.userData.restX + swing.x;
+          // The psprite's y grows downwards; the overlay scene's grows upwards.
+          overlay.position.y = overlay.userData.restY - recoil - swing.y;
         }
         writeDataset('weapon', state.inventory.selectedWeapon);
+        // Player state for measurement: the GZDoom harness reports the same numbers, so what
+        // the browser actually does can be compared with what the trace says it should do.
+        writeDataset('player', `${state.player.x.toFixed(2)} ${state.player.y.toFixed(2)} `
+          + `${(state.player.z ?? 0).toFixed(2)} ${state.player.angle.toFixed(4)}`);
+        writeDataset('momentum', `${(state.momentum?.x ?? 0).toFixed(3)} ${(state.momentum?.y ?? 0).toFixed(3)} `
+          + `${(state.momentum?.z ?? 0).toFixed(3)} ${state.physics?.grounded ? 'grounded' : 'airborne'} `
+          + `bob=${(state.bob ?? 0).toFixed(2)} timer=${state.bobTimer ?? 0}`);
       }
       // The eye and the look direction come from the player's own up axis, so an
       // event that turns gravity onto a wall also turns the view onto that wall.
@@ -1078,6 +1125,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const up = upVector(state.player.up);
         const eye = eyePosition(state.player, state.player.z ??
           sectorIndex.at(state.player.x, state.player.y)?.floorHeight ?? 0);
+        // The view rises and falls as the player walks, which is half of what makes Doom's
+        // movement read as movement rather than gliding.
+        eye[2] += viewBob(state.bob || 0, state.bobTimer || 0);
         const direction = viewDirection(state.player);
         camera.position.set(eye[0], eye[2], eye[1]);
         // Roll eases in: a gravity change should read as the world turning, not a cut.

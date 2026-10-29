@@ -149,7 +149,27 @@ than 160.
   starts.
 - **A wall GZDoom stops at and OpenDLE walks through** near y = 1098 on MAP01, and another in
   `player-strafe` at x = 48. These look like collision geometry rather than player physics and
-  need their own investigation.
+  need their own investigation. Monsters, at least, no longer pass through: an imported actor
+  whose actor table calls it solid gets a kinematic capsule the player is stopped by, and a
+  corpse stops blocking the way Doom's `A_NoBlocking` does.
+
+### What playing found that the trace cannot
+
+Two things the tic-by-tic trace says nothing about, both of which were wrong:
+
+- **Momentum has to be dropped when a wall stops the player, and only then.** The rule exists
+  so a player cannot bank speed against a door. It was judged from where the player ended up
+  each frame, but the character controller only runs a substep when its 1/60 s accumulator
+  fills: at a hundred frames a second most frames move the capsule nowhere, and every one of
+  those looked like a wall. The player's momentum was reset ten times in three seconds and it
+  never reached walking speed. `physics.blocked` now reports how many *consecutive* substeps
+  each axis was stopped for, and only a streak of three or more drops momentum, which outlasts
+  the substep or two that climbing a step takes.
+- **The bob is part of the movement.** Doom bobs the weapon and the view with the player's
+  speed — `player.bob` is the squared speed capped at 16, the weapon swings a cosine in x and
+  a sine in y every five and five eighths degrees of `BobTimer` — and without it walking reads
+  as gliding. `shared/player-motion.js` holds the maths; the renderer applies it to the weapon
+  overlay and the eye height.
 
 ### What measuring animation changed
 

@@ -170,10 +170,15 @@ test('holding F drops the player back to normal gravity from anywhere', t => {
   tick(30);
   jumpAtWall(state, tick);
   assert.ok(state.player.up[0] < -.9);
+  const droppedFrom = state.player.z;
   tick(2, new Set(['KeyF']));
   assert.deepEqual(state.player.up, [0, 0, 1]);
-  tick(120);
-  assert.ok(Math.abs(state.player.z) < 1, `fell back to the floor at ${state.player.z}`);
+  // What F promises is that gravity is the world's again and the player is on their way
+  // down. Where they end up is the demo's own rule deciding: `walk_on_walls` turns gravity
+  // back onto any wall an airborne player touches, so someone who drops beside the wall they
+  // just climbed is attached to it again a couple of tics later. The floor assertion this
+  // replaces only passed because the capsule happened to stop out of that rule's reach.
+  assert.ok(state.player.z < droppedFrom, `falling from ${droppedFrom} to ${state.player.z}`);
 });
 
 test('surface probing only runs for projects whose events can read a surface', t => {

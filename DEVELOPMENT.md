@@ -2592,7 +2592,10 @@ re-imported or the Input sheet is edited.
 `Docs/gzdoom-parity.md` lists the measured constants, what now matches GZDoom exactly (velocity
 on 76 of 77 tics of a walk-and-stop, at most 1.3 map units of drift) and what does not (steps,
 where Doom's player is briefly airborne and Rapier's stays grounded, and a couple of walls the
-two engines disagree about).
+two engines disagree about). It also records the two things a trace cannot see and that were
+only found by playing: momentum must be dropped when a wall stops the player *and not* on the
+frames the character controller simply had no substep to run, and Doom's weapon and view bob is
+part of what makes walking read as walking rather than gliding.
 
 The same harness measures **animation**, which is how the classic actor table stopped being a
 guess. `npm run gzdoom:measure` summons each classic monster, reads back its state table
