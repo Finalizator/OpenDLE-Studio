@@ -182,10 +182,15 @@ class OpenDLETrace : StaticEventHandler
 		// `tics` is what is left of the current state, `spr`/`frame` name the picture: a
 		// state that runs for the wrong number of tics, or the wrong picture on the wrong
 		// tic, shows up here even when nothing moved.
-		Console.Printf("ODT %d %s cls=%s x=%.3f y=%.3f z=%.3f vx=%.3f vy=%.3f vz=%.3f angle=%.3f pitch=%.3f health=%d tics=%d spr=%d frame=%d\n",
+		// The weapon's bob is added at draw time rather than stored in the psprite, so the
+		// trace reports the number it is built from: `bob` is the squared bob velocity,
+		// capped at 16. (`BobTimer` is a native field with no script name, so the swing's
+		// phase is not visible here; it advances one per player tic.)
+		Console.Printf("ODT %d %s cls=%s x=%.3f y=%.3f z=%.3f vx=%.3f vy=%.3f vz=%.3f angle=%.3f pitch=%.3f health=%d tics=%d spr=%d frame=%d bob=%.3f\n",
 			Level.time, tag, a.GetClassName(), a.pos.x, a.pos.y, a.pos.z,
 			a.vel.x, a.vel.y, a.vel.z, a.angle, a.pitch, a.health, a.tics,
-			a.curstate.sprite, a.curstate.Frame);
+			a.curstate.sprite, a.curstate.Frame,
+			a.player ? a.player.bob : 0);
 	}
 
 	// Damage and death are the behaviour that matters most and the hardest to read out of

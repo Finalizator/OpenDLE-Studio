@@ -152,24 +152,35 @@ export const PLAYER_SPEED = Object.freeze({ walk: terminalSpeed() * TIC_RATE, ru
 /**
  * Doom's weapon and view bob.
  *
- * `player.bob` is the squared speed, capped at 16 units, and `BobTimer` counts player tics.
- * The weapon swings on a five-and-five-eighths degree step per tic and the view rises and
- * falls at a third of a degree, which is the gentle sway that makes walking read as walking.
+ * `player.bob` is the squared speed **times `movebob`** — which is 0.25 by default, and is the
+ * step that was missing here at first: without it a walking player swung the weapon three
+ * times as far as GZDoom does. The product is capped at 16, which is only reached at running
+ * speed. The weapon swings five and five eighths degrees per tic; the view rises and falls on
+ * a `ViewBobSpeed` of 20, so eighteen degrees per tic.
  */
 export const MAXBOB = 16;
+
+/** GZDoom's `movebob` cvar default: how much of the squared speed becomes bob. */
+export const MOVE_BOB = .25;
+
+/** Player.ViewBob: the weapon's own multiplier on top of `movebob`. */
+export const VIEW_BOB = 1;
+
 export const WEAPON_BOB_STEP = 128 * 360 / 8192;
-export const VIEW_BOB_STEP = 360 / 120;
+export const VIEW_BOB_STEP = 360 / 20;
 
 /** The bob amount for a momentum in map units per tic: Doom's `player.bob`. */
-export function bobFor(momentum) {
-  return Math.min((momentum.x * momentum.x + momentum.y * momentum.y + momentum.z * momentum.z), MAXBOB);
+export function bobFor(momentum, { moveBob = MOVE_BOB } = {}) {
+  const squared = momentum.x * momentum.x + momentum.y * momentum.y + momentum.z * momentum.z;
+  return Math.min(squared * moveBob, MAXBOB);
 }
 
 /** Where a weapon sits this frame, in the psprite's own units (x right, y down). */
 export function weaponBob(bob, bobTimer) {
   if (!(bob > 0)) return { x: 0, y: 0 };
   const angle = WEAPON_BOB_STEP * (bobTimer - 1) * Math.PI / 180;
-  return { x: bob * Math.cos(angle), y: bob * Math.abs(Math.sin(angle)) };
+  const amount = bob * VIEW_BOB;
+  return { x: amount * Math.cos(angle), y: amount * Math.abs(Math.sin(angle)) };
 }
 
 /** How far the view rises this tic, in map units. */

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import {
-  DOOM_FRICTION, MAXBOB, PLAYER_SPEED, advanceMomentum, bobFor, momentumSpeed, terminalSpeed,
+  DOOM_FRICTION, MAXBOB, PLAYER_SPEED, VIEW_BOB_STEP, advanceMomentum, bobFor, momentumSpeed, terminalSpeed,
   thrustFor, thrustTowards, turnStep, weaponBob, viewBob,
 } from '../shared/player-motion.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
@@ -61,8 +61,14 @@ test('a held turn starts at half rate and the state machine turns it the Doom wa
 
 test('the weapon and the view bob with the player' + String.fromCharCode(39) + 's speed, capped at 16', () => {
   assert.equal(bobFor({ x: 0, y: 0, z: 0 }), 0, 'standing still does not bob');
-  assert.equal(bobFor({ x: 4, y: 0, z: 0 }), MAXBOB, 'a walk is already past the cap');
-  assert.ok(Math.abs(bobFor({ x: 2, y: 1, z: 0 }) - 5) < 1e-9);
+  // `movebob` is a quarter, so a walk of 4.57 units a tic bobs by 5.2 and only a run reaches
+  // the cap of 16. Leaving the quarter out made a walking weapon swing three times too far.
+  assert.ok(Math.abs(bobFor({ x: 4.571, y: 0, z: 0 }) - 5.22) < .01);
+  assert.equal(bobFor({ x: 8.333, y: 0, z: 0 }), MAXBOB);
+  assert.ok(Math.abs(bobFor({ x: 2, y: 1, z: 0 }) - 1.25) < 1e-9);
+  // GZDoom's own trace: walking, it reported bob = 10.9 while the player moved 6.6 units a
+  // tic. That is the same formula, and this pins it.
+  assert.ok(Math.abs(bobFor({ x: 6.6, y: 0, z: 0 }) - 10.89) < .02);
   // Doom swings the weapon on a cosine in x and a sine in y, so it is furthest sideways when
   // it is level, and level when it is furthest sideways.
   const level = weaponBob(10, 1);
@@ -71,7 +77,10 @@ test('the weapon and the view bob with the player' + String.fromCharCode(39) + '
   assert.ok(swung.y > 9 && swung.y <= 10, `swung to ${swung.y}`);
   assert.deepEqual(weaponBob(0, 40), { x: 0, y: 0 }, 'no speed, no swing');
   assert.equal(viewBob(0, 40), 0);
-  assert.ok(Math.abs(viewBob(16, 30) - 16 * Math.sin(30 * 3 * Math.PI / 180) * .5) < 1e-9);
+  // `ViewBobSpeed 20` makes the view swing eighteen degrees a tic, six times faster than the
+  // third of a degree this used before.
+  assert.ok(Math.abs(viewBob(16, 30) - 16 * Math.sin(30 * 18 * Math.PI / 180) * .5) < 1e-9);
+  assert.ok(Math.abs(VIEW_BOB_STEP - 18) < 1e-9);
 });
 
 test('a shot that hits a wall leaves a mark on it, and enough shots do not grow without end', { skip: !existsSync(fixtureWad()) }, () => {

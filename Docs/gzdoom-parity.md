@@ -166,10 +166,21 @@ Two things the tic-by-tic trace says nothing about, both of which were wrong:
   each axis was stopped for, and only a streak of three or more drops momentum, which outlasts
   the substep or two that climbing a step takes.
 - **The bob is part of the movement.** Doom bobs the weapon and the view with the player's
-  speed — `player.bob` is the squared speed capped at 16, the weapon swings a cosine in x and
-  a sine in y every five and five eighths degrees of `BobTimer` — and without it walking reads
-  as gliding. `shared/player-motion.js` holds the maths; the renderer applies it to the weapon
-  overlay and the eye height.
+  speed — `player.bob` is the squared speed *times `movebob`*, capped at 16, the weapon swings
+  a cosine in x and a sine in y every five and five eighths degrees of `BobTimer` — and without
+  it walking reads as gliding. `shared/player-motion.js` holds the maths; the renderer applies
+  it to the weapon overlay and the eye height.
+
+  The `movebob` quarter is easy to miss and was missed here first: `movebob` defaults to
+  **0.25**, so a walking player's bob is a fifth of the squared speed, not all of it. Without
+  the factor the weapon swung 27 map units across a 320 unit screen instead of 10, which is
+  exactly the "swings too much" a player notices. The trace settles it: GZDoom reported
+  `bob = 10.9` while the player moved 6.6 units a tic, and 6.6² × 0.25 = 10.9.
+
+  Two more of GZDoom's constants are not what a reading of the name suggests: the view bob's
+  step is `360 / ViewBobSpeed` with `ViewBobSpeed` defaulting to **20** — eighteen degrees a
+  tic, not the third of a degree the formula suggests at a glance — and the weapon's multiplier
+  (`Player.ViewBob`) is 1.
 
 ### What measuring animation changed
 
