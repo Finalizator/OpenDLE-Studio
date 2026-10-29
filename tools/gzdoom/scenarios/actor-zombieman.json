@@ -1,14 +1,14 @@
 {
   "name": "actor-zombieman",
-  "description": "A Zombieman is summoned in front of the player: its real state table, its animation timeline and the movement it produces.",
+  "description": "A Zombieman alone on the map: its real state table and animation timeline, with nothing else in the way.",
   "iwad": "Projects/Doom2.wad",
   "map": "MAP01",
   "skill": 3,
-  "tics": 220,
+  "tics": 200,
   "action": "aim",
   "angle": 90,
-  "watch": "Zombieman",
-  "summon": [
-    "Zombieman"
-  ]
+  "face": true,
+  "spawnActor": "ZombieMan",
+  "spawnDistance": 160,
+  "soloMonsters": true
 }

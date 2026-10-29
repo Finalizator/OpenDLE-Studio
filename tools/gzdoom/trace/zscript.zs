@@ -28,8 +28,6 @@ class OpenDLETrace : StaticEventHandler
 		maxTics = tics ? tics.GetInt() : 140;
 		CVar act = CVar.GetCVar('odt_action');
 		scripted = act ? act.GetString() : "";
-		CVar face = CVar.GetCVar('odt_face');
-		faceWatched = face ? face.GetInt() != 0 : false;
 		CVar watch = CVar.GetCVar('odt_watch');
 		watchClass = watch ? watch.GetString() : "";
 		CVar tid = CVar.GetCVar('odt_tid');
@@ -45,6 +43,8 @@ class OpenDLETrace : StaticEventHandler
 		// after a few seconds, and writing velocity wedges it against a wall: a trace may
 		// observe the player, but it must not animate it.
 		if (scripted == "aim" && players[0].mo != null) players[0].mo.angle = GetCvarAngle();
+		CVar faced = CVar.GetCVar('odt_face');
+		if (faced && faced.GetInt() != 0 && players[0].mo != null) SpawnWatched();
 
 		// The watched actor may not exist yet when the level loads (a `summon` runs after
 		// this), so the state table is dumped from the first instance seen while ticking.
@@ -106,6 +106,55 @@ class OpenDLETrace : StaticEventHandler
 		}
 	}
 
+	/**
+	 * Places the scenario's actor in front of the player, facing them.
+	 *
+	 * A class has to be written as a literal here, so the table covers the monsters the
+	 * comparison covers. `summon` was tried first and rejected: it places the actor at the
+	 * crosshair, which depends on map geometry, and the resulting position was not
+	 * reproducible — the actor landed on the player, or on top of a map monster.
+	 */
+	void SpawnWatched()
+	{
+		CVar nameCvar = CVar.GetCVar('odt_spawn');
+		string name = nameCvar ? nameCvar.GetString() : "";
+		CVar distanceCvar = CVar.GetCVar('odt_spawn_distance');
+		double distance = distanceCvar ? distanceCvar.GetFloat() : 96.0;
+		Actor player = players[0].mo;
+		if (player == null || name == "") return;
+		// A vector is built from a bare parenthesised triple in ZScript, not by calling a
+		// constructor, so the position is assembled field by field instead.
+		vector3 placement = player.pos;
+		placement.x += cos(player.angle) * distance;
+		placement.y += sin(player.angle) * distance;
+		placement.z += 8;
+
+		if (name == "ZombieMan") spawned = Actor.Spawn("ZombieMan", placement);
+		else if (name == "ShotgunGuy") spawned = Actor.Spawn("ShotgunGuy", placement);
+		else if (name == "ChaingunGuy") spawned = Actor.Spawn("ChaingunGuy", placement);
+		else if (name == "DoomImp") spawned = Actor.Spawn("DoomImp", placement);
+		else if (name == "Demon") spawned = Actor.Spawn("Demon", placement);
+		else if (name == "Spectre") spawned = Actor.Spawn("Spectre", placement);
+		else if (name == "Cacodemon") spawned = Actor.Spawn("Cacodemon", placement);
+		else if (name == "LostSoul") spawned = Actor.Spawn("LostSoul", placement);
+		else if (name == "HellKnight") spawned = Actor.Spawn("HellKnight", placement);
+		else if (name == "BaronOfHell") spawned = Actor.Spawn("BaronOfHell", placement);
+		else if (name == "Arachnotron") spawned = Actor.Spawn("Arachnotron", placement);
+		else if (name == "Revenant") spawned = Actor.Spawn("Revenant", placement);
+		else if (name == "Fatso") spawned = Actor.Spawn("Fatso", placement);
+		else if (name == "Archvile") spawned = Actor.Spawn("Archvile", placement);
+		else if (name == "SpiderMastermind") spawned = Actor.Spawn("SpiderMastermind", placement);
+		else if (name == "Cyberdemon") spawned = Actor.Spawn("Cyberdemon", placement);
+		else if (name == "PainElemental") spawned = Actor.Spawn("PainElemental", placement);
+		else if (name == "CommanderKeen") spawned = Actor.Spawn("CommanderKeen", placement);
+		else Console.Printf("ODT ERROR spawn: %s is not in the tracer's class table\n", name);
+
+		if (spawned == null) { Console.Printf("ODT ERROR spawn: %s could not be placed\n", name); return; }
+		// Facing the player once, at spawn: a summoned monster starts with its back turned
+		// and A_Look never fires. This is one-off setup, like the player's aim.
+		spawned.angle = atan2(player.pos.y - spawned.pos.y, player.pos.x - spawned.pos.x);
+	}
+
 	override void WorldTick()
 	{
 		int tic = Level.time;
@@ -116,15 +165,12 @@ class OpenDLETrace : StaticEventHandler
 		Actor mo = players[0].mo;
 		if (mo != null) PrintActor("player", mo);
 
-		Actor watched = Watched();
+		// The spawned actor is watched by identity, so a map monster of the same class can
+		// never be mistaken for it.
+		Actor watched = spawned != null ? spawned : Watched();
 		if (watched != null)
 		{
 			if (!statesDumped) { statesDumped = true; DumpStates(watched); }
-			// `summon` faces the crosshair, so a summoned monster starts with its back to
-			// the player and A_Look never fires. Facing it once, at spawn, is the same kind
-			// of one-off setup as the player's aim — not animation, which the trace must
-			// never do (a per-tic write hung the engine).
-			if (faceWatched && !faced) { faced = true; FacePlayer(watched); }
 			PrintActor("watch", watched);
 		}
 
@@ -160,14 +206,6 @@ class OpenDLETrace : StaticEventHandler
 			Level.time, e.Thing.GetClassName(), inflictor);
 	}
 
-	/** Points an actor at the player, once. */
-	void FacePlayer(Actor a)
-	{
-		Actor player = players[0].mo;
-		if (a == null || player == null) return;
-		a.angle = atan2(player.pos.y - a.pos.y, player.pos.x - a.pos.x);
-	}
-
 	/** `odt_angle`: the heading an `aim` scenario points the player at, in degrees. */
 	double GetCvarAngle()
 	{
@@ -177,9 +215,8 @@ class OpenDLETrace : StaticEventHandler
 
 	/** A state table is a property of the class, so it is dumped once per run. */
 	bool statesDumped;
-	/** `odt_face`: turn the watched actor towards the player once, so it can see them. */
-	bool faceWatched;
-	bool faced;
+	/** The actor this run placed, so its first tic can be described on tic zero. */
+	Actor spawned;
 
 	/** The actor a scenario watches: the first one of that class with that tid. */
 	Actor Watched()

@@ -2585,6 +2585,10 @@ Three details are worth knowing before touching that data:
 * A clip has one duration for all its frames, so a repeated pose (`AABB`) collapses into one
   frame of double duration when building a clip. The state machine keeps every state, because
   those carry separate actions — Doom's zombie walks through eight states, not four.
+* The look action belongs on **every** Spawn frame, the way Doom writes it (`POSS AB 10 A_Look`
+  is two states, each looking). With it on the last frame only, a monster was blind for a whole
+  extra frame: the actor trace showed GZDoom's Zombieman noticing the player at tic 6 while
+  ours was still waiting out its Spawn.
 
 ### Hexen-format binary maps
 

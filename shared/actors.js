@@ -349,9 +349,12 @@ function measuredStates(actor, measured) {
     return list;
   };
 
-  // Spawn: the first frame looks, the rest is the wind-up Doom plays before it notices.
+  // Every Spawn frame carries the look action, because that is how Doom writes it
+  // (`POSS AB 10 A_Look` is two states, each looking). Putting it on the last frame only —
+  // which this did at first — made a monster blind for a whole extra frame: the traced
+  // Zombieman noticed the player at tic 6 while ours was still waiting out its Spawn.
   const spawn = framesOf('Spawn');
-  withAction(spawn, spawn.length - 1, actor.seeAction, false);
+  for (const entry of spawn) entry.actions = [{ name: actor.seeAction, args: [], named: {} }];
   push('Spawn', spawn.length ? [...spawn, { kind: 'loop', target: 'Spawn' }] : []);
 
   const see = framesOf('See');

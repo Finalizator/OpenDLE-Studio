@@ -6,3 +6,5 @@ server string odt_watch = "";
 server int odt_tid = 0;
 server float odt_angle = 90;
 server int odt_face = 0;
+server string odt_spawn = "";
+server float odt_spawn_distance = 96;

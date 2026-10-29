@@ -32,12 +32,6 @@ export function scenarioPath(name) {
   return isAbsolute(name) ? name : join(here, 'scenarios', name.endsWith('.json') ? name : `${name}.json`);
 }
 
-/** `+summon` per actor the scenario adds, so a trace can study any class by name. */
-function summonArgs(scenario) {
-  const list = Array.isArray(scenario.summon) ? scenario.summon : scenario.summon ? [scenario.summon] : [];
-  return list.flatMap(name => [`+summon ${name}`]);
-}
-
 /**
  * A scenario's command-line arguments.
  *
@@ -64,11 +58,13 @@ function scenarioArgs(scenario, logPath) {
     `+odt_tid ${scenario.tid ?? 0}`,
     // A summoned actor starts facing the crosshair, away from the player; this turns it
     // once so it can see them and start chasing, which is what a movement trace needs.
+    // The tracer places the actor itself, in front of the player and facing them; `summon`
+    // was tried first and rejected, because it aims at the crosshair and the resulting
+    // position was not reproducible.
     `+odt_face ${scenario.face ? 1 : 0}`,
-    // Actors the scenario brings in. GZDoom's own `summon` places them, because ZScript
-    // can only name a class as a literal, and a tracer should not carry a table of every
-    // actor it might be asked about.
-    ...summonArgs(scenario),
+    `+odt_spawn ${scenario.spawnActor || ''}`,
+    `+odt_spawn_distance ${scenario.spawnDistance ?? 96}`,
+
     `+logfile "${logPath}"`,
   ];
 }
@@ -77,6 +73,14 @@ export function commandLine(scenario, { windowed = true, logPath = join(state, '
   const iwad = isAbsolute(scenario.iwad) ? scenario.iwad : resolve(root, scenario.iwad);
   return [
     '-iwad', iwad,
+    // A scenario that studies one actor wants only that actor: a map monster standing where
+    // the summoned one lands is a different experiment, and OpenDLE's monsters refuse to step
+    // within 32 units of another — so the trace would measure that rule instead.
+    ...(scenario.soloMonsters ? ['-nomonsters'] : []),
+    // Doom seeds its random number generator from the clock (`I_MakeRNGSeed`), so two runs of
+    // the *same* scenario take different paths and an actor comparison means nothing. A fixed
+    // seed makes a scenario reproducible; `-rngseed` is read in D_DoomInit.
+    '-rngseed', String(scenario.rngSeed ?? 1),
     '-file', join(here, 'trace'),
     '-config', join(state, 'gzdoom.ini'),
     '-savedir', join(state, 'saves'),
@@ -101,6 +105,11 @@ export async function runScenario(scenario, { windowed = true, timeoutMs = TIMEO
   mkdirSync(join(state, 'saves'), { recursive: true });
   const logPath = join(state, `${scenario.name || 'scenario'}.log`);
   rmSync(logPath, { force: true });
+  // GZDoom writes the tracer's own cvars into the config when it exits, so a scenario that
+  // ran an actor left `odt_spawn=ZombieMan` behind and the *next* run spawned one too — a
+  // baseline quietly measured a scenario it never asked for. The config is therefore rebuilt
+  // from defaults for every run; the tracer's knobs live on the command line only.
+  rmSync(join(state, 'gzdoom.ini'), { force: true });
 
   const child = spawn(binary, commandLine(scenario, { windowed, logPath }), {
     cwd: dirname(binary),

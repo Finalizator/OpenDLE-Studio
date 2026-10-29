@@ -116,6 +116,45 @@ so the loop/jump structure and the action names still come from OpenDLE's own ru
 sprite's *name* is not exposed either, so a sprite is identified by GZDoom's index, which is
 enough to tell that a label changes sprite but not which one.
 
+### What measuring movement found
+
+A watched actor is now placed by the tracer itself — in front of the player, facing it — and
+both engines trace it: `actor-zombieman-chase.json` runs a Zombieman alone on MAP01 and prints
+its position, velocity, facing, health and current frame every tic. Three real bugs fell out
+of building that:
+
+* **GZDoom writes the tracer's cvars into its config.** A run that spawned an actor left
+  `odt_spawn=Zombieman` behind, and the *next* scenario — a baseline that asked for no actor at
+  all — quietly spawned and watched one too. The config is now rebuilt from defaults for every
+  run; the tracer's knobs live on the command line only.
+* **`A_Look` belongs on every Spawn frame.** Doom writes `POSS AB 10 A_Look`, which is two
+  states that each look. Ours put the action on the last frame only, so a monster was blind for
+  a whole extra frame: the traced Zombieman noticed the player and walked at tic 6 while ours
+  was still waiting out its Spawn.
+* **Doom seeds its RNG from the clock**, so two runs of the same scenario took different paths
+  and an actor comparison meant nothing — GZDoom moved the same Zombieman 72 units in one run
+  and 218 in the next. `-rngseed` is passed for every scenario now, so a trace is reproducible
+  to the byte; two runs of the chase scenario now produce identical traces.
+* **An actor placed above its floor cannot move.** `moveEnemy` refuses to step down more than
+  24 units, so an actor started at GZDoom's mid-air spawn height never walked in the headless
+  runtime, which has no gravity. Height is therefore not carried into the OpenDLE trace and the
+  vertical fields are excluded from the comparison; vertical motion is a physics question and
+  needs Rapier running in the trace.
+
+What the comparison can and cannot say is now explicit in `diff.mjs`:
+
+| comparison | verdict |
+| --- | --- |
+| the player, every tic | must match; a divergence fails the run |
+| the watched actor, every tic | reported, not enforced — `A_Chase` strafes with Doom's random number generator, so the path differs between two runs *of GZDoom itself* |
+| the watched actor, aggregate | distance closed and the number of frame changes, printed side by side |
+
+With the seed pinned, the aggregate is stable: GZDoom closes 65.4 units over 33 frame changes,
+OpenDLE 55.8 over 44. The frame-change count is now a concrete lead — our actor runs through its
+animation more often than GZDoom's over the same tics, which points at the state machine rather
+than at movement — and the first divergence is a 45° facing difference at tic 10, i.e. the
+strafe direction.
+
 ### Phase 2 — actor movement and combat
 
 Animation is measured; movement is next, and the trace already carries it: a chase scenario

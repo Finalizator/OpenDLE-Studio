@@ -57,7 +57,9 @@ function fieldsOf(text) {
 
 function numberise(fields) {
   const result = { ...fields };
-  for (const key of [...NUMERIC, 'health', 'tics', 'damage', 'tic']) {
+  // `frame` and `spr` are numbers too: leaving `frame` a string made `frameLetter('0')`
+  // produce a letter that matched nothing, and the actor's starting state was never aligned.
+  for (const key of [...NUMERIC, 'health', 'tics', 'damage', 'tic', 'frame', 'spr']) {
     if (result[key] !== undefined && result[key] !== '' && Number.isFinite(Number(result[key]))) result[key] = Number(result[key]);
   }
   return result;
