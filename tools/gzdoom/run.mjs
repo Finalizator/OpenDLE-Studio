@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeDemo } from './make-demo.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -26,6 +27,14 @@ const POLL_MS = 150;
 export function gzdoomBinary() {
   const candidate = process.env.GZDOOM_BIN || join(here, 'dist/gzdoom');
   return existsSync(candidate) ? candidate : null;
+}
+
+/** A demo timeline name, or a path to an existing `.lmp`. */
+function demoPath(name) {
+  if (isAbsolute(name) || name.includes('/') || name.endsWith('.lmp')) {
+    return isAbsolute(name) ? name : resolve(root, name);
+  }
+  return writeDemo(name);
 }
 
 export function scenarioPath(name) {
@@ -43,7 +52,10 @@ export function scenarioPath(name) {
 function scenarioArgs(scenario, logPath) {
   return [
     '-skill', String(scenario.skill ?? 3),
-    `+map ${scenario.map || 'MAP01'}`,
+    // A demo carries its own map and its own input, so it replaces `+map`: the map named in
+    // the header is loaded and the ticcmds in the body drive the player. This is the only
+    // way to give GZDoom exact input — see tools/gzdoom/make-demo.mjs.
+    ...(scenario.demo ? ['-playdemo', demoPath(scenario.demo)] : [`+map ${scenario.map || 'MAP01'}`]),
     // The window is on a real desktop, so the mouse and any gamepad would otherwise drive
     // the camera and the player: an "idle" trace came back with the view turning and the
     // player walking away. A trace has to be driven by the scenario alone.

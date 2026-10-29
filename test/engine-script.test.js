@@ -26,7 +26,16 @@ test('Engine defaults are portable editable sheets and installation never overwr
   project.events.find(event => event.name === 'move_KeyW').actions[0].forward = 80;
   const state = createRuntime(project);
   stepRuntime(project, state, .05, new Set(['KeyW']));
-  assert.equal(state.player.x, -176);
+  // The player accelerates towards the speed the input sheet asks for instead of starting
+  // at it: Doom's thrust and friction, measured in tools/gzdoom. One slow frame moves a
+  // fraction of a unit, not the whole four that a fixed velocity would have produced.
+  assert.ok(state.player.x > -180 && state.player.x < -179, `the walk moved the player: ${state.player.x}`);
+  for (let frame = 0; frame < 30; frame++) stepRuntime(project, state, .05, new Set(['KeyW']));
+  const before = state.player.x;
+  stepRuntime(project, state, .05, new Set(['KeyW']));
+  // The sheet's `forward` is the speed the player settles at, in units per second.
+  const reached = (state.player.x - before) / .05;
+  assert.ok(Math.abs(reached - 80) < 3, `top speed ${reached}`);
   const input = project.eventSheets.find(sheet => sheet.name === 'Input');
   input.enabled = false;
   const next = createRuntime(project);

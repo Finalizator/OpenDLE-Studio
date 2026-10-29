@@ -1,4 +1,5 @@
 import { installDefaultHUD, HUD_PROPERTIES } from './hud.js';
+import { DOOM_TURN_SPEED, PLAYER_SPEED } from './player-motion.js';
 import { PLAYER_STATS, AMMO_TYPES, WEAPONS, KEYS, FACE_EXPRESSIONS } from './player-state.js';
 import { installEngineSounds } from './sound.js';
 import { doomWalk } from './sprite-animation.js';
@@ -150,8 +151,8 @@ export const ENGINE_ACTIONS = [
   { type: 'playHUDAnimation', label: 'HUD: play / restart animation', fields: [], hudAnimation: true },
   { type: 'stopHUDAnimation', label: 'HUD: stop animation (hold pose)', fields: [], hudAnimation: true },
   { type: 'setGroupActive', label: 'System: set group active', fields: [choice('active', 'yes', ['yes', 'no'])], group: true },
-  { type: 'movePlayer', label: 'Player: add local movement', fields: [numeric('forward', 160, -4096, 4096), numeric('strafe', 0, -4096, 4096)] },
-  { type: 'turnPlayer', label: 'Player: turn (degrees / second)', fields: [numeric('speed', 126, -3600, 3600)] },
+  { type: 'movePlayer', label: 'Player: add local movement', fields: [numeric('forward', PLAYER_SPEED.walk, -4096, 4096), numeric('strafe', 0, -4096, 4096)] },
+  { type: 'turnPlayer', label: 'Player: turn (degrees / second)', fields: [numeric('speed', DOOM_TURN_SPEED, -3600, 3600)] },
   { type: 'mouseLook', label: 'Player: apply mouse movement', fields: [numeric('sensitivity', .002, .00001, .1), choice('vertical', 'enabled', ['enabled', 'disabled'])] },
   { type: 'jumpPlayer', label: 'Player: request jump', fields: [] },
   { type: 'setPlayerGravity', label: 'Player: set gravity direction (walk on that surface)',
@@ -301,10 +302,16 @@ export function installEngineScripts(project, { organizeStarter = false, include
     { type: 'setPlayerStat', stat: 'health', value: 100 }, { type: 'setPlayerStat', stat: 'armor', value: 0 },
     { type: 'setPlayerStat', stat: 'armorDivisor', value: 3 }, { type: 'setPlayerStat', stat: 'bullets', value: 50 },
   ], [{ type: 'levelTransition', inverted: true }]);
-  for (const [key, forward, strafe] of [['KeyW', 160, 0], ['KeyS', -160, 0], ['KeyA', 0, -160], ['KeyD', 0, 160]]) {
+  // Doom's own walking speed, measured from GZDoom by tools/gzdoom: 8.333 map units a
+  // tic, which is 291.6 a second. Running doubles it, the same ratio as Doom's
+  // `normforwardmove` 25 and 50, and the run setting does that doubling here.
+  const speed = PLAYER_SPEED.walk;
+  for (const [key, forward, strafe] of [['KeyW', speed, 0], ['KeyS', -speed, 0], ['KeyA', 0, -speed], ['KeyD', 0, speed]]) {
     rule('Input', `move_${key}`, { type: 'keyHeld', key }, [{ type: 'movePlayer', forward, strafe }], [alive]);
   }
-  for (const [key, speed] of [['ArrowLeft', -126], ['ArrowRight', 126]]) {
+  // Doom's held-turn rate, 640/65536 of a turn a tic; the runtime halves it for the first
+  // six tics of a turn, which is what `SLOWTURNTICS` does.
+  for (const [key, speed] of [['ArrowLeft', -DOOM_TURN_SPEED], ['ArrowRight', DOOM_TURN_SPEED]]) {
     rule('Input', `turn_${key}`, { type: 'keyHeld', key }, [{ type: 'turnPlayer', speed }], [alive]);
   }
   rule('Input', 'mouse_look', { type: 'mouseMoved' }, [{ type: 'mouseLook', sensitivity: .002, vertical: 'enabled' }], [alive]);

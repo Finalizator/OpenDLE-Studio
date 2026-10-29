@@ -10,6 +10,7 @@
  */
 
 import { moveSector, classicSpecialSupported } from './world-motion.js';
+import { resetMomentum } from './player-motion.js';
 import { doomSpecialName } from './doom-specials.js';
 import { floorAt, sectorFloorAt, soundEvent } from './combat.js';
 import { sectorAt } from './sectors.js';
@@ -213,6 +214,7 @@ function placeThing(state, entity, position) {
   entity.x = position.x; entity.y = position.y;
   if (entity.type === 'player') {
     state.player.x = position.x; state.player.y = position.y;
+    resetMomentum(state);
     const playerEntity = state.entities.find(other => other.type === 'player');
     if (state.physics && playerEntity) state.physics.teleport(playerEntity.id, position.x, position.y, position.z);
     else if (playerEntity) playerEntity.z = position.z;

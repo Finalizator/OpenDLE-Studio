@@ -21,6 +21,8 @@ node_modules/
 /tools/gzdoom/dist/
 /tools/gzdoom/cache/
 /tools/gzdoom/.state/
+# demo files are written from tools/gzdoom/make-demo.mjs, not committed.
+/tools/gzdoom/demos/
 
 # Generated output and test artifacts
 coverage/

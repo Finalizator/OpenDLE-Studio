@@ -42,8 +42,8 @@ export function spawnFromTrace(tracePath) {
 }
 
 /** OpenDLE's trace for the same scenario, written to `logs/opendle/<name>.trace`. */
-export function recordOpenDLE(scenario) {
-  const result = traceScenario(scenario);
+export async function recordOpenDLE(scenario) {
+  const result = await traceScenario(scenario);
   const logDir = join(root, 'logs/opendle');
   mkdirSync(logDir, { recursive: true });
   const tracePath = join(logDir, `${scenario.name || 'scenario'}.trace`);
@@ -111,13 +111,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const scenarioForOpenDLE = gzdoom.result.lines.some(line => line.includes(' watch '))
     ? { ...scenario, spawn: spawnFromTrace(gzdoom.tracePath) }
     : scenario;
-  const opendle = recordOpenDLE(scenarioForOpenDLE);
+  const opendle = await recordOpenDLE(scenarioForOpenDLE);
   console.log(`opendle ${opendle.result.lines.length - 2} samples → ${opendle.tracePath}`);
 
   // A watched actor is compared as well as the player, so movement and animation are checked
   // on the same run.
-  // Height and vertical velocity are left out: the headless runtime has no physics, so an
-  // actor does not fall there, and comparing z would report that absence on every tic.
+  // Vertical fields are left out of the actor comparison: an actor still does not fall, as
+  // gravity for imported monsters is stepped separately from the player's capsule.
   // Only the options that were actually given may override the defaults: spreading `fields:
   // undefined` back over the object silently restored every field, including the vertical
   // ones this deliberately leaves out.

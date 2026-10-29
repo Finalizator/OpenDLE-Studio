@@ -16,6 +16,24 @@ const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(poin
   holes.map(ring => ring.map(point => new Vector2(point.x, point.y))));
 const near = (a, b, tolerance = 1e-6) => Math.abs(a - b) <= tolerance;
 
+/**
+ * Walks into the room's east wall and jumps there.
+ *
+ * Doom keeps the momentum a jump starts with and lets a player steer barely at all in the
+ * air (`sv_aircontrol` is 1/256), so a jump from a standstill stays where it started. The
+ * gravity rule fires on a wall the airborne capsule is still touching, which is the wall it
+ * just jumped from.
+ */
+function jumpAtWall(state, tick) {
+  // Long enough to reach the wall from the room's start and press against it.
+  for (let frame = 0; frame < 240 && state.player.x < -25; frame++) tick(1, new Set(['KeyW']));
+  // Jump there, and stop as soon as gravity has turned onto the wall: the loop used to
+  // keep holding forward, and the player climbed the whole 256-unit room while it ran.
+  for (let frame = 0; frame < 60 && state.player.up[2] > .9; frame++) {
+    tick(1, new Set(['KeyW']), new Set(frame === 0 ? ['Space'] : []));
+  }
+}
+
 test('the player frame defaults to world-up and stays orthogonal', () => {
   const basis = playerBasis();
   assert.deepEqual(basis.up, [0, 0, 1]);
@@ -122,9 +140,7 @@ test('jumping at a wall turns gravity onto it and the player can walk up the wal
   tick(30);
   const startZ = state.player.z;
   // Jump east into the wall; the demo rule turns gravity onto it while airborne.
-  for (let frame = 0; frame < 60 && state.player.up[2] > .9; frame++) {
-    tick(1, new Set(['KeyW']), new Set(frame === 0 ? ['Space'] : []));
-  }
+  jumpAtWall(state, tick);
   assert.ok(state.player.up[0] < -.9, `gravity now points at the wall: ${state.player.up}`);
   assert.equal(state.player.up[2], 0);
   // The capsule rests on the wall surface, not inside it.
@@ -140,9 +156,7 @@ test('jumping at a wall turns gravity onto it and the player can walk up the wal
 test('touching the floor again restores world gravity', t => {
   const { state, tick } = roomScene(t, p => { installWallWalkDemo(p); });
   tick(30);
-  for (let frame = 0; frame < 60 && state.player.up[2] > .9; frame++) {
-    tick(1, new Set(['KeyW']), new Set(frame === 0 ? ['Space'] : []));
-  }
+  jumpAtWall(state, tick);
   assert.ok(state.player.up[0] < -.9);
   // Walking back down the wall brings the real floor into reach, which flips gravity back.
   for (let frame = 0; frame < 240 && state.player.up[2] < .9; frame++) tick(1, new Set(['KeyS']));
@@ -154,9 +168,7 @@ test('touching the floor again restores world gravity', t => {
 test('holding F drops the player back to normal gravity from anywhere', t => {
   const { state, tick } = roomScene(t, p => { installWallWalkDemo(p); });
   tick(30);
-  for (let frame = 0; frame < 60 && state.player.up[2] > .9; frame++) {
-    tick(1, new Set(['KeyW']), new Set(frame === 0 ? ['Space'] : []));
-  }
+  jumpAtWall(state, tick);
   assert.ok(state.player.up[0] < -.9);
   tick(2, new Set(['KeyF']));
   assert.deepEqual(state.player.up, [0, 0, 1]);

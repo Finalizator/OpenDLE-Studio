@@ -5,6 +5,26 @@ import {
 
 export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
+
+/**
+ * Doom's gravity, in map units per second squared.
+ *
+ * `sv_gravity` is 800 and `AActor::GetGravity` multiplies it by 0.00125, which comes to one
+ * map unit per tic squared; at 35 tics that is 1225 units a second. The player used to fall
+ * at 9.81 m/s², which in this scale is 627.8 — exactly half, so every drop took the square
+ * root of two times as long as it does in Doom.
+ */
+export const DOOM_GRAVITY = 35 * 35;
+
+/** GZDoom doubles gravity on the tic a player runs off a ledge (`AActor::FallAndSink`). */
+const LEDGE_GRAVITY = 2;
+
+/**
+ * Doom's jump: `Player.JumpZ 8` map units per tic, `JumpZ * 35 / TICRATE` in GZDoom's own
+ * terms, which is a 32-unit apex. The capsule used to be thrown at 5 world units a second,
+ * 320 map units, which went noticeably higher than Doom's jump ever can.
+ */
+const DOOM_JUMP_SPEED = 8 * 35 / PHYSICS_SCALE;
 export const pairKey = (a, b) => JSON.stringify([a, b].sort());
 // Heights identify a sector's collision geometry, so a change is easy to spot.
 const sectorHeights = sector => `${sector.floorHeight}/${sector.ceilingHeight}`;
@@ -154,6 +174,7 @@ export function createPhysics(project, state, R, triangulate) {
   }
   const active = new Set(), forces = new Map();
   let contacts = new Set(), started = new Set(), ended = new Set(), accumulator = 0, verticalSpeed = 0, grounded = false;
+  let ledgeFallen = false;
   // The player's own up axis. Rapier capsules always grow along +Y, so walking on
   // a wall means rotating the character and moving along its plane, not the world's.
   let upMap = [...WORLD_UP];
@@ -446,7 +467,7 @@ export function createPhysics(project, state, R, triangulate) {
       // Movement arrives in map space; gravity and the move both follow the up axis.
       const velocity = toRapier([movement.x || 0, movement.y || 0, movement.z || 0]);
       accumulator = Math.min(accumulator + dt, FIXED_STEP * 8);
-      if (movement.jump && grounded) { verticalSpeed = 5; grounded = false; }
+      if (movement.jump && grounded) { verticalSpeed = DOOM_JUMP_SPEED; grounded = false; }
       while (accumulator + 1e-9 >= FIXED_STEP) {
         for (const [id, body] of bodies) if (body.isDynamic()) {
           body.resetForces(true);
@@ -455,7 +476,12 @@ export function createPhysics(project, state, R, triangulate) {
         }
         forces.clear();
         const body = bodies.get(playerId), collider = colliders.get(playerId);
-        verticalSpeed = grounded ? -.5 : Math.max(-50, verticalSpeed - 9.81 * FIXED_STEP);
+        // A player who walks off a ledge has no downward speed yet, and GZDoom gives that
+        // one tic twice the gravity, which is what makes a Doom step-down feel sharp.
+        const fell = !grounded && verticalSpeed <= 0 && !ledgeFallen;
+        if (grounded) ledgeFallen = false; else if (fell) ledgeFallen = true;
+        verticalSpeed = grounded ? -.5
+          : Math.max(-50, verticalSpeed - DOOM_GRAVITY / PHYSICS_SCALE * FIXED_STEP * (fell ? LEDGE_GRAVITY : 1));
         const fall = verticalSpeed * FIXED_STEP;
         controller.computeColliderMovement(collider, {
           x: velocity.x / PHYSICS_SCALE * FIXED_STEP + axis.x * fall,

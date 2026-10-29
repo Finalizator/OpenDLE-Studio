@@ -1,0 +1,9 @@
+{
+  "name": "player-stop",
+  "description": "Player input scripted as a demo (stop) so both engines run identical tic commands.",
+  "iwad": "Projects/Doom2.wad",
+  "skill": 3,
+  "demo": "stop",
+  "tics": 76,
+  "action": "idle"
+}

@@ -16,6 +16,7 @@ import { bindCameraTexture } from './cameratextures.js';
 import { requestSky } from './sky.js';
 import { addAmmo } from './player-state.js';
 import { soundEvent, floorAt, launchProjectile } from './combat.js';
+import { resetMomentum } from './player-motion.js';
 import { sectorAt } from './sectors.js';
 import { actorForThing } from './actors.js';
 import { doomThings } from './doom-assets.js';
@@ -522,6 +523,7 @@ export function createMapScripts(project, state, callbacks = {}) {
     entity.x = x; entity.y = y;
     if (entity.type === 'player') {
       state.player.x = x; state.player.y = y;
+      resetMomentum(state);
       const playerEntity = state.entities.find(candidate => candidate.type === 'player');
       if (state.physics && playerEntity) state.physics.teleport(playerEntity.id, x, y, z);
       state.player.z = z;

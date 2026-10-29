@@ -69,26 +69,89 @@ Each of these cost an hour; none is guessable, all are in comments next to the c
 
 ## The plan
 
-### Phase 1 — scripted input (the blocker)
+### Phase 1 — scripted input: done
 
 Everything about movement, doors, lifts, monster movement and combat needs input. The tracer
 cannot fake it (proven above), so input has to be a **demo**.
 
-GZDoom can record and play back demos: `-record <file>` writes a `.lmp` of the real TicCmds,
-and `-playdemo <file>` replays them deterministically at any speed. OpenDLE replays the same
-input through its own key state.
+The demos are now *generated* rather than recorded. `tools/gzdoom/make-demo.mjs` writes the
+format GZDoom reads (`G_ProcessIFFDemo` / `G_ReadDemoTiccmd` in `src/g_game.cpp`):
 
-1. Add `demo` to a scenario: `{ "demo": "demos/map01-walk", "tics": 350 }`.
-2. `run.mjs` passes `-playdemo <file>` instead of `+map`, and the trace handler detects demo
-   playback and skips the `aim` step.
-3. Record the reference demos once, by hand, with a fixed config: `-record`, walk forward,
-   open the first door, fire at the first monster, quit. Each demo becomes a fixture.
-4. `opendle-trace.mjs` replays the same tick timeline as key presses. A demo's TicCmds are
-   not portable as raw input, so a demo is paired with a hand-written equivalent
-   (`keys`: a list of `{ from, to, keys }`) — recorded once, then versioned with the demo.
+```
+FORM <len> ZDEM
+  ZDHD  version:int16, min:int8, kind:int8, map:string, rngseed:int32, console:int8
+  UINF  player:int8, "\"           a bare backslash means "every userinfo value is default"
+  BODY  per tic: 1 (DEM_USERCMD), a flags byte, then the fields the flags name
+```
 
-**Acceptance:** `npm run gzdoom:diff -- map01-walk` reports either no divergence, or a
-divergence that is a genuine OpenDLE bug worth fixing.
+A timeline is a description of the input, so both engines can be driven from one source:
+`TIMELINES` in `make-demo.mjs` is what GZDoom plays and what `opendle-trace.mjs` replays as key
+presses. Four facts about the format cost real time:
+
+- **The stream is big-endian.** `UncheckedWriteInt16` puts the high byte first. Little-endian
+  lengths produced a file GZDoom read as a mangled form and then segfaulted on.
+- **A ticcmd is a difference, not a snapshot.** `UnpackUserCmd` starts from the previous command
+  and writes only the fields the flags name, so `DEM_EMPTYUSERCMD` means "unchanged", not "no
+  input". A timeline that released a key by writing empty commands kept the player walking. A
+  field that becomes zero has to be written as a zero with its flag set.
+- **Movement fields are in 1/256 of a unit.** `G_BuildTiccmd` ends with `cmd->forwardmove <<= 8`,
+  so a walk is 6400 and a run 12800. Writing the familiar 25 produced a demo whose player never
+  moved, because 25/256 of a unit is a thousandth of what a key press gives.
+- **Yaw is counter-clockwise.** A positive `yaw` turns left, so a timeline that means to hold the
+  turn-right key has a negative yaw.
+
+GZDoom also discards a demo's **first eight commands** while the level is starting — none of them
+reach the player. A timeline therefore begins with eight idle tics (`DEMO_PREROLL`) so that
+command *N* is the command for tic *N* in both engines.
+
+**Result:** `npm run gzdoom:diff -- player-stop` compares 77 tics of "walk six tics, let go" and
+finds **identical velocity on 76 of them** and at most 1.3 map units of position drift. The
+player's acceleration, top speed, friction and stop threshold now match GZDoom exactly.
+
+### What measuring player movement found
+
+Doom does not set a velocity from the keys. Every tic it adds a thrust to the player's momentum
+and multiplies the momentum by friction, `momentum = momentum * 0.90625 + thrust`, which is why
+it takes about thirty tics to reach full speed and a moment to coast to a stop. The constants
+come from `src/doomdef.h` and `src/playsim/player.zs`, and the traces confirm them to three
+decimals:
+
+| | value | where |
+| --- | --- | --- |
+| friction | `0xE800 / 65536` = 0.90625 | `ORIG_FRICTION` |
+| thrust per unit of input | `2048 / 65536` = 0.03125 | `ORIG_FRICTION_FACTOR` |
+| walk / run input | 25 / 50 forward, 24 / 40 side | `normforwardmove`, `normsidemove` |
+| walk terminal speed | 8.333 units/tic = 291.6/s | measured |
+| run terminal speed | 16.667 units/tic = 583.2/s | measured |
+| strafe terminal speed | 8.0 units/tic = 280/s | measured |
+| stop speed | `0x1000 / 65536` = 0.0625 | `STOPSPEED` |
+| airborne thrust | 1/256 of the ground thrust | `sv_aircontrol` |
+| gravity | 1 map unit/tic² = 1225/s² | `sv_gravity` 800 × 0.00125 |
+| ledge gravity | doubled for one tic | `AActor::FallAndSink` |
+| jump | 8 units/tic, a 32-unit apex | `Player.JumpZ` |
+| turn | 640/65536 of a turn per tic, 320 for the first six | `turnspeedwalkfast`, `SLOWTURNTICS` |
+
+OpenDLE had been moving the player at a fixed **160 units a second** — 55% of Doom's walk and
+27% of its run — reached in a single frame instead of over thirty tics. Its gravity was 9.81 m/s²,
+which in this engine's scale (64 map units to a metre) is 627.8 units/s², exactly half of Doom's,
+so every drop took √2 times as long.
+
+All of it is now `shared/player-motion.js`, used by both the key path and the `movePlayer`
+actions of a scripted project, and the editable Engine input sheet asks for Doom's speeds rather
+than 160.
+
+**Still different, and measured:**
+
+- **Steps.** Walking down MAP01's staircase, GZDoom is briefly airborne on every step and keeps
+  its speed (no friction in the air); the Rapier character controller keeps the player grounded
+  and applies friction throughout, so OpenDLE decelerates over the steps. This is the largest
+  remaining difference in the traces: `player-walk` diverges at tic 24, where the staircase
+  starts.
+- **A wall GZDoom stops at and OpenDLE walks through** near y = 1098 on MAP01, and another in
+  `player-strafe` at x = 48. These look like collision geometry rather than player physics and
+  need their own investigation.
+
+### What measuring animation changed
 
 ### What measuring animation changed
 

@@ -8,11 +8,16 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import RAPIER from '@dimforge/rapier3d-compat';
+import { ShapeUtils, Vector2 } from 'three';
 import { readWad } from '/home/allukard/Code/OpenDLE/shared/wad.js';
+import { createPhysics } from '/home/allukard/Code/OpenDLE/shared/physics.js';
 import { importWad } from '/home/allukard/Code/OpenDLE/server/import.js';
 import { createRuntime, stepRuntime, settleGroundActors } from '/home/allukard/Code/OpenDLE/shared/runtime.js';
 import { actorOf } from '/home/allukard/Code/OpenDLE/shared/actor-runtime.js';
 import { sectorAt } from '/home/allukard/Code/OpenDLE/shared/sectors.js';
+import { NORM_FORWARD, NORM_SIDE } from '/home/allukard/Code/OpenDLE/shared/player-motion.js';
+import { TIMELINES, ticInputs } from './make-demo.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -23,15 +28,27 @@ export function scenarioPath(name) {
 }
 
 /**
- * Keys for a scripted action.
+ * The keys that reproduce one tic of a demo's input.
  *
- * Only aiming is scripted, on both sides: OpenDLE cannot be fed a GZDoom demo, and
- * writing the player's velocity directly in GZDoom is not input — it bypasses the engine's
- * movement code (and wedged it against a wall). Walking has to come from a demo or from the
- * person playing, which is what `manual` scenarios are for.
+ * A demo cannot be handed to OpenDLE as a file, but it does not have to be: the timeline
+ * it is built from is shared (see `TIMELINES` in make-demo.mjs), so the same tic can be
+ * replayed here as the key press a person would hold. One description of the input drives
+ * both engines instead of two that drift apart.
+ *
+ * A demo expresses an axis as a number and a key press is only on or off, so the timelines
+ * that are meant to mirror the keys use the values a key produces (`NORM_FORWARD`).
  */
-function keysFor() {
-  return new Set();
+function keysFor(input, { run = false } = {}) {
+  const keys = new Set();
+  if (input.forward > 0) keys.add('KeyW');
+  if (input.forward < 0) keys.add('KeyS');
+  if (input.side > 0) keys.add('KeyD');
+  if (input.side < 0) keys.add('KeyA');
+  // Doom's yaw is counter-clockwise, so a positive value is a turn to the left.
+  if (input.yaw > 0) keys.add('ArrowLeft');
+  if (input.yaw < 0) keys.add('ArrowRight');
+  if (run) keys.add('ShiftLeft');
+  return keys;
 }
 
 /**
@@ -40,7 +57,7 @@ function keysFor() {
  * The output mimics the trace mod's lines exactly, including the header and the end
  * marker, so both sides are produced and read by the same code.
  */
-export function traceScenario(scenario, { log = () => {} } = {}) {
+export async function traceScenario(scenario, { log = () => {} } = {}) {
   const iwad = isAbsolute(scenario.iwad) ? scenario.iwad : resolve(root, scenario.iwad);
   const buffer = readFileSync(iwad);
   const { project, warnings } = importWad(buffer, scenario.map || 'MAP01');
@@ -67,6 +84,16 @@ export function traceScenario(scenario, { log = () => {} } = {}) {
     alignToFirstSample(spawned, project, scenario.spawn);
   }
 
+  // The preview always has a physics world, so a trace without one measures the fallback
+  // path instead of the engine: the player stopped at a two-sided line that Rapier walks
+  // through, and the divergence that produced was not one the game has.
+  if (scenario.physics !== false) {
+    await RAPIER.init();
+    const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),
+      holes.map(ring => ring.map(point => new Vector2(point.x, point.y))));
+    state.physics = createPhysics(project, state, RAPIER, triangulate);
+  }
+
   const tics = scenario.tics ?? 140;
   const action = scenario.action || 'idle';
   const lines = [`ODT START map=${scenario.map || 'MAP01'} tics=${tics} action=${action} watch=${scenario.watch || ''} tid=${scenario.tid ?? 0}`];
@@ -75,22 +102,41 @@ export function traceScenario(scenario, { log = () => {} } = {}) {
   // OpenDLE stores Doom's map with y flipped, so its angle runs the other way round:
   // a GZDoom heading of 90° is -90° here, and the trace negates it back when writing.
   if (action === 'aim' && player) player.angle = -(scenario.angle ?? 90) * Math.PI / 180;
+  // A demo's tic stream is the scenario's input; `run` is what the demo's own movement
+  // values say about speed, and the keys that mean it are Shift, or `alwaysRun`.
+  const timeline = scenario.demo ? TIMELINES[scenario.demo] : null;
+  const inputs = timeline ? ticInputs(timeline) : [];
+  const running = timeline ? inputs.some(input => Math.abs(input.forward) >= NORM_FORWARD.run || Math.abs(input.side) >= NORM_SIDE.run) : false;
+  if (running) state.settings.alwaysRun = true;
+  // The timeline carries the same eight idle tics GZDoom throws away (see `DEMO_PREROLL`),
+  // so command N is the command for traced tic N and nothing has to be skipped here.
+  const lead = timeline ? (scenario.demoLead ?? 0) : 0;
   for (let tic = 0; tic <= tics; tic++) {
-    lines.push(playerLine(tic, player, state, project));
+    // GZDoom prints its sample at the end of the tic it names, so a trace that printed
+    // before stepping would describe the previous tic and every position would lag by one.
+    const index = tic;
+    // GZDoom samples a tic between the momentum update and the position update: its
+    // velocity for tic N is the speed the player leaves tic N at, while the position is
+    // the one tic N started from (`y[N + 1] - y[N]` equals `v[N]` in every trace). Reading
+    // the position from before the step puts both traces on the same instant.
+    const beforeStep = { x: player.x, y: player.y, z: player.z };
+    stepRuntime(project, state, TIC, index < lead ? new Set() : keysFor(inputs[index] || {}, { run: running }));
+    lines.push(playerLine(tic, player, state, project, beforeStep));
     if (spawned) lines.push(watchLine(tic, spawned, state, project));
-    stepRuntime(project, state, TIC, keysFor(action));
   }
   lines.push(`ODT END tics=${tics}`);
   return { lines, state, project, warnings };
 }
 
-function playerLine(tic, player, state, project) {
+function playerLine(tic, player, state, project, position) {
   if (!player) return `ODT ${tic} player none`;
-  const velocity = state.velocity || player.velocity || { x: 0, y: 0, z: 0 };
-  const floor = sectorAt(state.sectors, player.x, player.y)?.floorHeight ?? 0;
-  const z = player.z ?? floor;
+  // Doom's velocity is momentum in map units per tic, which is what the trace compares.
+  const velocity = state.momentum || { x: 0, y: 0, z: 0 };
+  const at = position || player;
+  const floor = sectorAt(state.sectors, at.x, at.y)?.floorHeight ?? 0;
+  const z = at.z ?? floor;
   const health = state.playerStats?.health ?? player.health ?? 0;
-  return `ODT ${tic} player cls=DoomPlayer x=${fixed(player.x)} y=${fixed(toGzdoomY(player.y))} z=${fixed(z)}`
+  return `ODT ${tic} player cls=DoomPlayer x=${fixed(at.x)} y=${fixed(toGzdoomY(at.y))} z=${fixed(z)}`
     + ` vx=${fixed(velocity.x)} vy=${fixed(toGzdoomY(velocity.y))} vz=${fixed(velocity.z ?? 0)}`
     + ` angle=${fixed(toGzdoomAngle(player.angle))} pitch=${fixed(player.pitch ?? 0)}`
     + ` health=${Math.round(health)} tics=-1`;
@@ -183,7 +229,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.exit(2);
   }
   const scenario = JSON.parse(readFileSync(scenarioPath(name), 'utf8'));
-  const result = traceScenario(scenario);
+  const result = await traceScenario(scenario);
   const outDir = join(root, 'logs/opendle');
   mkdirSync(outDir, { recursive: true });
   const out = join(outDir, `${scenario.name || 'scenario'}.trace`);

@@ -1,0 +1,9 @@
+{
+  "name": "player-strafe",
+  "description": "Player input scripted as a demo (strafe) so both engines run identical tic commands.",
+  "iwad": "Projects/Doom2.wad",
+  "skill": 3,
+  "demo": "strafe",
+  "tics": 80,
+  "action": "idle"
+}

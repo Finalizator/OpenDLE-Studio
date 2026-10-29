@@ -131,6 +131,11 @@ function validateRuntime(project, state, baseline) {
   if (!plain(state)) fail('snapshot must be an object');
   // Saves made before the player could stand on walls have no gravity axis.
   if (plain(state.player) && state.player.up === undefined) state.player.up = [...WORLD_UP];
+  // Saves made before the player accumulated momentum at rest survive as at rest.
+  if (!plain(state.momentum)) state.momentum = { x: 0, y: 0, z: 0 };
+  if (!Number.isFinite(state.playerClock)) state.playerClock = 0;
+  if (!Number.isFinite(state.turnHeld)) state.turnHeld = 0;
+  if (!Number.isFinite(state.turnRequest)) state.turnRequest = 0;
   for (const key of Object.keys(state)) if (omitted.has(key) || !Object.hasOwn(baseline, key) && !optional.has(key)) fail(`unknown runtime field ${key}`);
   for (const [key, value] of Object.entries(baseline)) if (!omitted.has(key)) {
     if (!Object.hasOwn(state, key)) fail(`missing runtime field ${key}`);

@@ -107,7 +107,9 @@ test('crossing tagged lift triggers only the tagged sector and one-shot/repeatab
   p.map.walls[1].special = 10; p.map.walls[1].tag = 1;
   installWorldScripts(p, []);
   const s = createRuntime(p);
-  tick(p, s, 10, ['KeyW']);
+  // Doom's player accelerates, so crossing the line 28 units away takes a few tics more
+  // than it did when the engine moved the player at a fixed speed from the first frame.
+  tick(p, s, 14, ['KeyW']);
   assert.ok(s.player.x > -32); assert.ok(s.sectorMotions.has('s1:floorHeight'));
   tick(p, s, 20);
   assert.equal(s.sectors[1].floorHeight, 0);

@@ -4,8 +4,16 @@ import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
-import { stepActors, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, initialiseActorEntities,
+import { TIC_RATE, stepActors, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, initialiseActorEntities,
   installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
+import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond,
+  momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
+
+/** The most player tics a single frame may run, so a stall cannot teleport the player. */
+const MAX_PLAYER_TICS = 4;
+
+/** The shortest move, in map units, that can count as being stopped by a wall. */
+const BLOCKED_STEP = 1;
 import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum } from './player-state.js';
 import { areaContains, areaEntered, areaVolume } from './areas.js';
 import {
@@ -78,6 +86,8 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     saveSlots: Array(6).fill(''), saveStatus: '', pendingSaveSlot: null,
     newGameLevel: project.game && project.gameMenus?.episodes?.length === 1 ? project.gameMenus.episodes[0].levelId : null,
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0, up: [...WORLD_UP] },
+    // Momentum is Doom's, in map units per tic; see shared/player-motion.js.
+    momentum: { x: 0, y: 0, z: 0 }, playerClock: 0, turnHeld: 0, turnRequest: 0,
     playerStats, inventory, levelTransition: Boolean(progress),
     face: 'idle',
     feedback: { damage: null, weaponPickupTime: -Infinity, attackTime: 0, health: playerStats.health },
@@ -441,6 +451,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     return !clipFrame(project, effect.clipId, state.time - effect.start)?.finished;
   });
   state.input.forward = 0; state.input.strafe = 0; state.input.jump = false;
+  // A `turnPlayer` action asks for a rate in degrees per second for this frame; the tic
+  // loop below is what actually turns, so a turn ramps the way Doom's does.
+  state.turnRequest = 0;
   state.prevButtons = state.buttons || 0;
   state.buttons = hud.cursor ? 0 : buttonsFor(keys);
   if (state.playerStats.health < state.feedback.health) recordDamage(state, state.feedback.health - state.playerStats.health);
@@ -459,31 +472,26 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   runRules('beforePhysics');
   stage('rules');
   if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
-  if (!state.scriptedInput && !hud.cursor) player.angle += ((keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0)) * dt * 2.2;
-  const forward = hud.cursor ? 0 : state.scriptedInput ? state.input.forward : ((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)) * 160;
-  const strafe = hud.cursor ? 0 : state.scriptedInput ? state.input.strafe : ((keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0)) * 160;
-  const scale = dt / (state.scriptedInput ? 1 : Math.max(1, Math.hypot(forward, strafe) / 160));
-  // Movement is laid out in the player's own plane, so it keeps working after an
-  // event turns gravity onto a wall: forward and strafe stay on that surface.
-  const basis = playerBasis(player.up), cosHeading = Math.cos(player.angle), sinHeading = Math.sin(player.angle);
-  const along = [
-    basis.forward[0] * cosHeading + basis.right[0] * sinHeading,
-    basis.forward[1] * cosHeading + basis.right[1] * sinHeading,
-    basis.forward[2] * cosHeading + basis.right[2] * sinHeading,
-  ];
-  const across = [
-    basis.right[0] * cosHeading - basis.forward[0] * sinHeading,
-    basis.right[1] * cosHeading - basis.forward[1] * sinHeading,
-    basis.right[2] * cosHeading - basis.forward[2] * sinHeading,
-  ];
-  const dx = (along[0] * forward + across[0] * strafe) * scale;
-  const dy = (along[1] * forward + across[1] * strafe) * scale;
-  const dz = (along[2] * forward + across[2] * strafe) * scale;
-  const runMultiplier = state.settings.alwaysRun !== keys.has('ShiftLeft') ? 2 : 1;
+  // Doom's player does not move at a speed the keys choose; it accumulates momentum one
+  // tic at a time (turn, thrust, friction), which is why it takes about thirty tics to
+  // reach full speed and a moment to coast to a stop. See shared/player-motion.js.
+  const forwardAxis = hud.cursor ? 0 : (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
+  const sideAxis = hud.cursor ? 0 : (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+  // A scripted project turns with its own `turnPlayer` actions; the arrow keys are not
+  // read there, the same way they were not before.
+  const turnAxis = hud.cursor || state.scriptedInput ? 0
+    : (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0);
+  // Shift toggles `alwaysRun`, the same way Doom's `always_run` does.
+  const running = state.settings.alwaysRun !== keys.has('ShiftLeft');
+  const runMultiplier = running ? 2 : 1;
+  // Doom ramps a held turn up: the first six tics run at half rate (`SLOWTURNTICS`).
+  const turnBam = state.scriptedInput ? (state.turnRequest || 0) * bamPerDegreePerSecond
+    : turnAxis * (running ? TURN_SPEED.runFast : TURN_SPEED.walkFast);
   // Walking without a physics world is the fallback path; its sector map and closures
   // are only built when that path is actually taken.
   const canMove = state.physics ? null : (cacheFor(state).canMove ||= fallbackMovement(state));
   const previousPosition = { x: player.x, y: player.y };
+  const previousHeight = player.z ?? 0;
   const grounded = state.physics ? state.physics.grounded : true;
   const jumpHeld = state.settings.jumping && !hud.cursor && state.playerStats.health > 0 &&
     (state.scriptedInput ? state.input.jump : pressed.has('Space'));
@@ -502,17 +510,63 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     }
   }
   const speed = runMultiplier * bunnyhop.multiplier;
+  state.playerClock = (state.playerClock || 0) + dt * TIC_RATE;
+  const wholeTics = Math.floor(state.playerClock + 1e-6);
+  const tics = Math.min(wholeTics, MAX_PLAYER_TICS);
+  state.playerClock -= wholeTics;
+  for (let tic = 0; tic < tics; tic++) {
+    if (turnBam) {
+      const radians = state.scriptedInput
+        ? Math.sign(turnBam) * Math.abs(turnBam) * (state.turnHeld < SLOW_TURN_TICS ? SLOW_TURN_RATIO : 1) * 2 * Math.PI / 65536
+        : turnAxis * turnStep(state.turnHeld, { run: running });
+      player.angle += radians;
+      state.turnHeld++;
+    } else state.turnHeld = 0;
+    // A visual script asks for a speed in units per second; Doom reaches a speed by
+    // thrusting towards it, so the request becomes the thrust that saturates at it.
+    const thrust = state.scriptedInput
+      ? thrustTowards({ forward: hud.cursor ? 0 : state.input.forward * speed, side: hud.cursor ? 0 : state.input.strafe * speed })
+      : thrustFor({ forward: forwardAxis, side: sideAxis }, { run: running, speedMultiplier: bunnyhop.multiplier });
+    // Movement is laid out in the player's own plane, so it keeps working after an
+    // event turns gravity onto a wall: forward and strafe stay on that surface.
+    const basis = playerBasis(player.up), cosHeading = Math.cos(player.angle), sinHeading = Math.sin(player.angle);
+    state.momentum ||= { x: 0, y: 0, z: 0 };
+    state.momentum = advanceMomentum(state.momentum, {
+      x: (basis.forward[0] * cosHeading + basis.right[0] * sinHeading) * thrust.forward
+        + (basis.right[0] * cosHeading - basis.forward[0] * sinHeading) * thrust.side,
+      y: (basis.forward[1] * cosHeading + basis.right[1] * sinHeading) * thrust.forward
+        + (basis.right[1] * cosHeading - basis.forward[1] * sinHeading) * thrust.side,
+      z: (basis.forward[2] * cosHeading + basis.right[2] * sinHeading) * thrust.forward
+        + (basis.right[2] * cosHeading - basis.forward[2] * sinHeading) * thrust.side,
+    }, { grounded });
+  }
+  const velocity = momentumSpeed(state.momentum);
+  const dx = velocity.x * dt, dy = velocity.y * dt, dz = velocity.z * dt;
   state.physics?.syncWorld();
   if (state.physics) {
-    state.physics.step(dt, { x: dt ? dx * speed / dt : 0, y: dt ? dy * speed / dt : 0, z: dt ? dz * speed / dt : 0,
-      jump: jumpHeld, up: player.up });
+    state.physics.step(dt, { x: velocity.x, y: velocity.y, z: velocity.z, jump: jumpHeld, up: player.up });
     // Surfaces the capsule touches, for the wall-walking events and conditions.
     if (projectUsesSurfaces(project)) state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
   }
   else {
     const currentFloor = sectorAt(state.sectors, player.x, player.y)?.floorHeight;
-    if (canMove(player.x + dx * speed, player.y, currentFloor)) player.x += dx * speed;
-    if (canMove(player.x, player.y + dy * speed, currentFloor)) player.y += dy * speed;
+    if (canMove(player.x + dx, player.y, currentFloor)) player.x += dx;
+    if (canMove(player.x, player.y + dy, currentFloor)) player.y += dy;
+  }
+  // Doom drops the momentum of an axis the player could not move along, so pushing at a
+  // wall does not bank speed that is released when it opens. Sliding still moves both
+  // axes, so only an axis that barely moved counts as blocked.
+  if (state.momentum) {
+    const movedX = player.x - previousPosition.x, movedY = player.y - previousPosition.y;
+    const climbed = Math.abs((player.z ?? previousHeight) - previousHeight) > .05;
+    // A capsule that is barely moving is not blocked: the character controller legitimately
+    // refuses moves smaller than its own tolerance, and treating that as a wall held the
+    // player at half a unit per tic forever. Climbing a step also looks like "did not move
+    // sideways" for a tic, so only a tic that neither moved nor climbed counts as a wall.
+    if (!climbed) {
+      if (Math.abs(dx) > BLOCKED_STEP && Math.abs(movedX) < Math.abs(dx) * .25) state.momentum.x = 0;
+      if (Math.abs(dy) > BLOCKED_STEP && Math.abs(movedY) < Math.abs(dy) * .25) state.momentum.y = 0;
+    }
   }
   stage('physics');
   // Nothing can be crossed by a player who has not moved, and walking the whole wall
@@ -966,7 +1020,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'setPlayerFace': state.face = action.expression; break;
         case 'setGroupActive': state.groups.set(action.groupId, action.active === 'yes'); break;
         case 'movePlayer': state.input.forward += action.forward; state.input.strafe += action.strafe; break;
-        case 'turnPlayer': player.angle += action.speed * Math.PI / 180 * dt; break;
+        // Recorded rather than applied: the player turns on the tic clock, where a held
+        // turn can ramp the way Doom's does (`shared/player-motion.js`).
+        case 'turnPlayer': state.turnRequest = (state.turnRequest || 0) + action.speed; break;
         case 'mouseLook':
           player.angle += state.input.mouseX * action.sensitivity;
           if (action.vertical === 'enabled') player.pitch = Math.max(-85 * Math.PI / 180, Math.min(85 * Math.PI / 180, player.pitch - state.input.mouseY * action.sensitivity));
@@ -1027,6 +1083,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'addVariable': assignVariable(state.variables, action.variable, action.value, true); break;
         case 'teleport':
           player.x = action.x; player.y = action.y;
+          // Doom drops the player's momentum when it teleports them.
+          resetMomentum(state);
           if (action.angle !== undefined) player.angle = action.angle * Math.PI / 180;
           state.physics?.teleport(state.entities.find(entity => entity.type === 'player').id, action.x, action.y, action.z);
           break;

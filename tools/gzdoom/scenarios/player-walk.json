@@ -1,0 +1,9 @@
+{
+  "name": "player-walk",
+  "description": "The player holds forward (forwardmove 25) for two seconds from the MAP01 start. A demo supplies the input, so both engines run the same tic commands.",
+  "iwad": "Projects/Doom2.wad",
+  "skill": 3,
+  "demo": "walk",
+  "tics": 120,
+  "action": "idle"
+}

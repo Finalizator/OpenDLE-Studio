@@ -2562,9 +2562,37 @@ Five GZDoom facts the harness depends on, all found the hard way and kept in com
   engine against a wall; writing `player.angle` every tic hung it after a few seconds. Aim is
   set once at load, and movement has to be real input (a demo, see `Docs/gzdoom-parity.md`).
 
-`Docs/gzdoom-parity.md` is the staged plan for the rest: scripted input through demos,
-spawned actors and combat, reading GZDoom's own source for *why* a divergence exists, and
-making the diff part of the release checklist.
+`Docs/gzdoom-parity.md` is the staged plan for the rest: spawned actors and combat, reading
+GZDoom's own source for *why* a divergence exists, and making the diff part of the release
+checklist.
+
+### Player movement
+
+Input is the one thing the harness cannot fake — a trace may observe the player but not drive
+it — so a scenario names a **timeline** instead. `tools/gzdoom/make-demo.mjs` turns a timeline
+into a GZDoom demo (`.lmp`), and `opendle-trace.mjs` replays the same timeline as key presses:
+
+```
+node tools/gzdoom/make-demo.mjs walk        # writes tools/gzdoom/demos/walk.lmp
+npm run gzdoom:diff -- player-stop
+```
+
+`TIMELINES` holds the scenarios — hold forward, hold the run axis, strafe, turn, walk into a
+wall, walk and let go — and a scenario file names one with `"demo": "walk"`. Adding a movement
+case means adding a timeline, not recording anything by hand.
+
+That measurement is what `shared/player-motion.js` is built on: Doom's thrust-and-friction model
+with the constants the traces confirm, used by the key path and by the `movePlayer` actions of a
+scripted project alike. The editable Engine input sheet asks for Doom's speeds (291.6 a second,
+583.2 while running) rather than the 160 it used before, and `PLAYER_SPEED` in
+`shared/player-motion.js` is where those numbers live. An **existing project keeps the values it
+was imported with**, so a game imported before that change still walks at 160 until it is
+re-imported or the Input sheet is edited.
+
+`Docs/gzdoom-parity.md` lists the measured constants, what now matches GZDoom exactly (velocity
+on 76 of 77 tics of a walk-and-stop, at most 1.3 map units of drift) and what does not (steps,
+where Doom's player is briefly airborne and Rapier's stays grounded, and a couple of walls the
+two engines disagree about).
 
 The same harness measures **animation**, which is how the classic actor table stopped being a
 guess. `npm run gzdoom:measure` summons each classic monster, reads back its state table

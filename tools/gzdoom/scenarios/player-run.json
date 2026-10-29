@@ -1,0 +1,9 @@
+{
+  "name": "player-run",
+  "description": "Player input scripted as a demo (run) so both engines run identical tic commands.",
+  "iwad": "Projects/Doom2.wad",
+  "skill": 3,
+  "demo": "run",
+  "tics": 120,
+  "action": "idle"
+}
