@@ -32,6 +32,12 @@ export function scenarioPath(name) {
   return isAbsolute(name) ? name : join(here, 'scenarios', name.endsWith('.json') ? name : `${name}.json`);
 }
 
+/** `+summon` per actor the scenario adds, so a trace can study any class by name. */
+function summonArgs(scenario) {
+  const list = Array.isArray(scenario.summon) ? scenario.summon : scenario.summon ? [scenario.summon] : [];
+  return list.flatMap(name => [`+summon ${name}`]);
+}
+
 /**
  * A scenario's command-line arguments.
  *
@@ -56,6 +62,13 @@ function scenarioArgs(scenario, logPath) {
     `+odt_action ${scenario.action || ''}`,
     `+odt_watch ${scenario.watch || ''}`,
     `+odt_tid ${scenario.tid ?? 0}`,
+    // A summoned actor starts facing the crosshair, away from the player; this turns it
+    // once so it can see them and start chasing, which is what a movement trace needs.
+    `+odt_face ${scenario.face ? 1 : 0}`,
+    // Actors the scenario brings in. GZDoom's own `summon` places them, because ZScript
+    // can only name a class as a literal, and a tracer should not carry a table of every
+    // actor it might be asked about.
+    ...summonArgs(scenario),
     `+logfile "${logPath}"`,
   ];
 }

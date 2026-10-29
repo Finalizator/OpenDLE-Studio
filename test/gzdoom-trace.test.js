@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseTrace } from '../tools/gzdoom/trace.mjs';
 import { compareTraces, report } from '../tools/gzdoom/compare.mjs';
+import { compareActor, compareClip, readAnimation, frameLetter } from '../tools/gzdoom/animation.mjs';
 
 const line = (tic, tag, fields) => `ODT ${tic} ${tag} cls=DoomPlayer ${Object.entries(fields).map(([key, value]) => `${key}=${value}`).join(' ')}`;
 
@@ -77,4 +78,41 @@ test('event lines are kept as events, not mistaken for tics', () => {
   assert.equal(parsed.events.length, 2);
   assert.equal(parsed.events[1].died, 'Zombieman');
   assert.equal(parsed.events[0].health, 8);
+});
+
+const state = (name, label, i, spr, frame, tics) => `ODT STATE ${name} label=${label} i=${i} spr=${spr} frame=${frame} tics=${tics}`;
+
+test('a trace becomes an animation table: frames, letters and durations per label', () => {
+  const animation = readAnimation([
+    state('Zombieman', 'See', 0, 31, 0, 4),
+    state('Zombieman', 'See', 1, 31, 1, 4),
+    state('Zombieman', 'Death', 0, 31, 7, 5),
+    state('Zombieman', 'Death', 1, 31, 8, -1),
+  ].join('\n'));
+  assert.deepEqual(animation.Zombieman.See.map(frame => frame.letter), ['A', 'B']);
+  assert.equal(animation.Zombieman.Death[1].tics, -1, 'a hold-forever state keeps its -1');
+  assert.equal(frameLetter(0), 'A');
+  assert.equal(frameLetter(25), 'Z');
+});
+
+test('a measured clip is compared with an actor record by frames, letters and durations', () => {
+  const record = { states: { labels: { See: 0 }, frames: [
+    { kind: 'frame', label: 'See', letter: 'A', duration: 4 },
+    { kind: 'frame', label: 'See', letter: 'B', duration: 4 },
+    { kind: 'loop', label: 'See', target: 'See' },
+  ] } };
+  const matching = compareActor('Zombieman', { See: [{ letter: 'A', tics: 4 }, { letter: 'B', tics: 4 }] }, record);
+  assert.deepEqual(matching, [], 'a matching actor reports nothing');
+
+  const wrong = compareActor('Zombieman', { See: [{ letter: 'A', tics: 4 }, { letter: 'C', tics: 8 }] }, record);
+  assert.equal(wrong.length, 2, 'one letter and one duration differ');
+  assert.equal(wrong[0].kind, 'letter');
+  assert.equal(wrong[1].kind, 'tics');
+});
+
+test('a frame GZDoom skips immediately counts as one tic on both sides', () => {
+  // Doom writes `Tics 0` for "no delay"; the actor still spends the tic it entered on, and
+  // OpenDLE's runtime advances it in one tic, so the two must compare as equal.
+  const problems = compareClip('Missile', [{ letter: 'F', tics: 0 }], [{ letter: 'F', tics: 0 }]);
+  assert.deepEqual(problems, []);
 });

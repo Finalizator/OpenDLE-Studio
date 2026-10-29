@@ -2566,6 +2566,26 @@ Five GZDoom facts the harness depends on, all found the hard way and kept in com
 spawned actors and combat, reading GZDoom's own source for *why* a divergence exists, and
 making the diff part of the release checklist.
 
+The same harness measures **animation**, which is how the classic actor table stopped being a
+guess. `npm run gzdoom:measure` summons each classic monster, reads back its state table
+(`State.Frame` and `State.Tics` per label, walked through `NextState`) and writes
+`shared/vanilla-animations.js`; `shared/actors.js` builds the state machines from it and
+`shared/sprite-animation.js` builds the sprite clips from it. `npm run gzdoom:animation --
+--all` re-checks the two against the measurement and reports nothing when they agree.
+
+Three details are worth knowing before touching that data:
+
+* A state table is **not one chain**. Each label's block ends by jumping back (`Loop`) or to
+  another label (`Goto See`), so walking `NextState` from Spawn yields the Spawn block only.
+  Each label is walked separately, and the walk stops as soon as the chain stops advancing by
+  exactly one state — a rule that also survives the Arachnotron, whose See loop jumps backwards
+  inside its own block.
+* `Tics 0` is Doom's "no delay". GZDoom advances out of it immediately, OpenDLE's runtime spends
+  one tic, and a comparison treats both as one tic.
+* A clip has one duration for all its frames, so a repeated pose (`AABB`) collapses into one
+  frame of double duration when building a clip. The state machine keeps every state, because
+  those carry separate actions — Doom's zombie walks through eight states, not four.
+
 ### Hexen-format binary maps
 
 GZDoom decides a binary map's layout by its `BEHAVIOR` lump: a map with scripts is

@@ -5,3 +5,4 @@ server string odt_action = "";
 server string odt_watch = "";
 server int odt_tid = 0;
 server float odt_angle = 90;
+server int odt_face = 0;

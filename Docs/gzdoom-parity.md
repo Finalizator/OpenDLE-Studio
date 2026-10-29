@@ -20,6 +20,8 @@ and records what happened:
 | `opendle-trace.mjs` | runs the *same scenario* in OpenDLE's headless runtime and writes the same format (`logs/opendle/<name>.trace`) |
 | `compare.mjs` | pairs the two traces tic by tic and reports the first divergence, the field and both values |
 | `diff.mjs` | runs both engines and compares, in one command |
+| `animation.mjs` | turns a trace into an animation table, and diffs it against OpenDLE's actors (`--all`) |
+| `measure-actors.mjs` | measures every classic monster and writes `shared/vanilla-animations.js` |
 
 ```
 npm run gzdoom:fetch
@@ -35,7 +37,13 @@ A scenario is a JSON file: IWAD, map, skill, tic budget, and an action.
 
 Both sides speak the same line format, and OpenDLE's own conventions are normalised on the
 way out (y flipped, angles negated), so "no divergence" means the engines agree, not that
-the comparison was blind. Two scenarios already agree for 140 tics: `map01-idle` and
+the comparison was blind. The animation side is no longer a plan: `npm run gzdoom:measure` asks GZDoom for the real
+state table of all eighteen classic monsters and writes `shared/vanilla-animations.js`, which
+the actor state machines and the sprite clips are built from. `npm run gzdoom:animation --
+--all` compares that measurement with what OpenDLE actually plays and reports every
+difference; it currently reports none.
+
+Two scenarios already agree for 140 tics: `map01-idle` and
 `map01-aim`. The harness has also been shown to *detect* a real difference — it caught a
 wrong angle conversion in the tracer itself, which was then fixed.
 
@@ -82,14 +90,49 @@ input through its own key state.
 **Acceptance:** `npm run gzdoom:diff -- map01-walk` reports either no divergence, or a
 divergence that is a genuine OpenDLE bug worth fixing.
 
-### Phase 2 — actors and combat
+### What measuring animation changed
+
+The classic actor table was a hand-written summary — `walkFrames: 'ABCD', walkTics: 4` — and
+nothing compared it with the engine. Measuring it found, for the Zombieman alone, fifteen
+differences:
+
+| label | Doom plays | the summary said |
+| --- | --- | --- |
+| Spawn | `A×10 B×10` | one frame |
+| See | `AABBCCDD` at 4 tics (8 states) | `ABCD` at 4 tics — half the animation |
+| Missile | `E×10 F×8 E×8` | `EF` at 6 and 4 |
+| Pain | `G×3 G×3` | one frame |
+| Death | `H I J K` then `L` forever | `HIJK`, so the corpse frame was missing |
+| XDeath | nine frames | absent |
+
+The same class of error was in every monster, because the table was written by hand. The
+measured table is generated, and the sprite clips are built from it as well: a repeated pose
+(`A A B B`) collapses to one frame of double duration when building a clip, because a clip has
+one duration for all its frames, while the state machine keeps every state — those carry
+separate actions.
+
+Two things the tracer cannot see, and how they are handled: an action's *name* is not exposed,
+so the loop/jump structure and the action names still come from OpenDLE's own runtime; and a
+sprite's *name* is not exposed either, so a sprite is identified by GZDoom's index, which is
+enough to tell that a label changes sprite but not which one.
+
+### Phase 2 — actor movement and combat
+
+Animation is measured; movement is next, and the trace already carries it: a chase scenario
+(`tools/gzdoom/scenarios/actor-zombieman-chase.json`) records `vx/vy/vz` and the position every
+tic, and a Zombieman moves 8 units every four tics — the same rate OpenDLE's `A_Chase` produces,
+so the two can now be compared for drift over a whole chase rather than by inspection. What is
+missing is the OpenDLE side of that scenario: the runtime has to spawn the same actor at the
+same spot so both traces line up tic for tic.
+
 
 The player alone proves physics; monsters prove behaviour.
 
-1. Add `spawn` to a scenario: `{ "spawn": [{ "class": "Zombieman", "x": 0, "y": 0, "tid": 7 }] }`,
-   placed by the trace handler at `WorldLoaded` (via `Spawn`), so no map edit is needed.
-2. Watch them: `"watch": "Zombieman"` already prints that actor's position, velocity, angle,
-   health and remaining state tics each tic.
+1. A scenario already summons actors by name (`"summon": ["Zombieman"]`, GZDoom's own
+   command) and turns them to face the player once (`"face": true`) so they can see it — ZScript
+   can only name a class as a literal, so spawning by name belongs to the console, not the tracer.
+2. Watching them works: `"watch": "Zombieman"` prints position, velocity, angle, health, the
+   remaining state tics and the current sprite/frame every tic.
 3. Use `ODT EVENT` damage/death lines to compare combat: who hit whom, for how much, on
    which tic.
 4. Compare **state durations** rather than sprites: `tics` (ticks left in the current state)

@@ -1,0 +1,15 @@
+{
+  "name": "actor-zombieman-chase",
+  "description": "A summoned Zombieman turned to face the player: its walk, attack and death animations with the movement they produce.",
+  "iwad": "Projects/Doom2.wad",
+  "map": "MAP01",
+  "skill": 3,
+  "tics": 260,
+  "action": "aim",
+  "angle": 90,
+  "watch": "Zombieman",
+  "summon": [
+    "Zombieman"
+  ],
+  "face": true
+}

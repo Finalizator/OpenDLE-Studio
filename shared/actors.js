@@ -1,6 +1,7 @@
 import { compileActorStates, frameBodyActions, actorSpritePrefixes, replacementMap } from './decorate.js';
 import { parseActorDefinitions } from './zscript.js';
 import { mergeDehackedPatches, parseDehacked, thingName } from './dehacked.js';
+import { VANILLA_ANIMATIONS } from './vanilla-animations.js';
 
 /**
  * Actor compiler.
@@ -288,6 +289,8 @@ export const VANILLA_ACTORS = [
  * Doom's own Spawn/See/Melee/Missile/Pain/Death/Raise block layout.
  */
 function vanillaStates(actor) {
+  const measured = VANILLA_ANIMATIONS[actor.name];
+  if (measured) return measuredStates(actor, measured);
   const frames = [], labels = {};
   const push = (label, entries) => { labels[label] = frames.length; for (const entry of entries) frames.push({ ...entry, label }); };
   const frame = (letter, duration, actions = [], bright = false) =>
@@ -321,6 +324,61 @@ function vanillaStates(actor) {
   death.push({ kind: 'stop' });
   push('Death', death);
   push('Raise', [frame(deathLetters.at(-1) || 'A', 8), { kind: 'goto', target: 'See' }]);
+  return { frames, labels };
+}
+
+/**
+ * The state machine built from what GZDoom actually plays (`shared/vanilla-animations.js`).
+ *
+ * The summary fields (`walkFrames: 'ABCD'`, `walkTics: 4`) were a guess and were often wrong
+ * in a way nothing caught: Doom's zombie walks through `AABBCCDD` at four tics, so half the
+ * animation at twice the speed, and its death has five frames, not four. The measured table
+ * carries the real frames and durations, so only the loop/jump structure and the action
+ * names are supplied here — the tracer cannot see an action's name, and the behaviour those
+ * actions drive is OpenDLE's own runtime.
+ */
+function measuredStates(actor, measured) {
+  const frames = [], labels = {};
+  const push = (label, entries) => { labels[label] = frames.length; for (const entry of entries) frames.push({ ...entry, label }); };
+  const framesOf = label => (measured[label] || []).map(entry =>
+    ({ kind: 'frame', sprite: actor.sprite, letter: entry.letter, duration: entry.tics,
+      bright: false, actions: [] }));
+  const withAction = (list, index, name, bright = true) => {
+    if (!list[index] || !name) return list;
+    list[index] = { ...list[index], actions: [{ name, args: [], named: {} }], bright };
+    return list;
+  };
+
+  // Spawn: the first frame looks, the rest is the wind-up Doom plays before it notices.
+  const spawn = framesOf('Spawn');
+  withAction(spawn, spawn.length - 1, actor.seeAction, false);
+  push('Spawn', spawn.length ? [...spawn, { kind: 'loop', target: 'Spawn' }] : []);
+
+  const see = framesOf('See');
+  for (let index = 0; index < see.length; index++) see[index].actions = [{ name: actor.walkAction, args: [], named: {} }];
+  push('See', see.length ? [...see, { kind: 'loop', target: 'See' }] : []);
+
+  // Melee and Missile are the same block in Doom; the attack lands on the last frame.
+  const attack = withAction(framesOf('Missile'), (measured.Missile || []).length - 1, actor.missileAction);
+  const melee = withAction(framesOf('Melee'), (measured.Melee || []).length - 1,
+    actor.meleeAction && actor.meleeAction !== actor.missileAction ? actor.meleeAction : null);
+  push('Melee', [...(measured.Melee ? melee : attack.map(entry => ({ ...entry }))), { kind: 'goto', target: 'See' }]);
+  push('Missile', [...attack, { kind: 'goto', target: 'See' }]);
+
+  // Pain interrupts and returns to See; the measured block already has Doom's frame count.
+  push('Pain', [...withAction(framesOf('Pain'), (measured.Pain || []).length - 1, 'A_Pain', false),
+    { kind: 'goto', target: 'See' }]);
+
+  // Death ends on a state that holds forever, which the measurement reports as -1.
+  const death = framesOf('Death');
+  if (death.length) {
+    const last = death.length - 1;
+    death[0].actions = [{ name: 'A_Scream', args: [], named: {} }];
+    death[last - 1 >= 0 ? last - 1 : 0].actions = [{ name: 'A_NoBlocking', args: [], named: {} }];
+  }
+  push('Death', [...death, { kind: 'stop' }]);
+  if (measured.XDeath) push('XDeath', [...framesOf('XDeath'), { kind: 'stop' }]);
+  push('Raise', [...framesOf('Raise'), { kind: 'goto', target: 'See' }]);
   return { frames, labels };
 }
 

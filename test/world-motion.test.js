@@ -6,6 +6,7 @@ import { ShapeUtils, Vector2 } from 'three';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
+import { SPRITE_ANIMATIONS } from '../shared/vanilla-animations.js';
 import { createPhysics } from '../shared/physics.js';
 import { moveSector, installWorldScripts, classicSpecialSupported } from '../shared/world-motion.js';
 import { specialName, unsupportedSpecials } from '../shared/line-specials.js';
@@ -247,9 +248,13 @@ test('sprite clip timing loops walking, completes attacks, preserves death and s
   assert.deepEqual(store.snapshot().project.spriteClips, p.spriteClips);
 });
 test('classic monster deaths end at normal corpse frames, never the next gib or resurrection sequence', () => {
-  const expected = { POSS: 'HIJKL', SPOS: 'HIJKL', CPOS: 'HIJKLMN', TROO: 'IJKLM', SARG: 'IJKLMN',
-    SKUL: 'FGHIJK', HEAD: 'GHIJK', BOSS: 'IJKLMNO', BOS2: 'IJKLMNO', BSPI: 'JKLMNOP',
-    PAIN: 'HIJKLM', SKEL: 'LMNOPQ', FATT: 'KLMNOPQRST', VILE: 'QRSTUVWXYZ', CYBR: 'HIJKLMNOP', SPID: 'JKLMNOPQRS' };
+  // The letters used to be a guess written out here; they now come from the animation
+  // measured out of GZDoom (`shared/vanilla-animations.js`). What this test still guards is
+  // the behaviour: a monster's death plays exactly its Death frames, ends on the corpse and
+  // never walks on into the next block (the gib or the resurrection).
+  const expected = Object.fromEntries(Object.entries(SPRITE_ANIMATIONS)
+    .filter(([, clips]) => clips.death)
+    .map(([prefix, clips]) => [prefix, clips.death.letters]));
   const p = createProject();
   p.assets = [];
   p.map.entities = p.map.entities.filter(e => e.type === 'player');

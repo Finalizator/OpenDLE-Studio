@@ -1,3 +1,5 @@
+import { SPRITE_ANIMATIONS } from './vanilla-animations.js';
+
 const deathFrames = {
   POSS: 'HIJKL', SPOS: 'HIJKL', CPOS: 'HIJKLMN', TROO: 'IJKLM', SARG: 'IJKLMN',
   SKUL: 'FGHIJK', HEAD: 'GHIJK', BOSS: 'IJKLMNO', BOS2: 'IJKLMNO', BSPI: 'JKLMNOP',
@@ -289,13 +291,21 @@ export function applyActorSpriteStates(project, entity, actor) {
 function actorStateClip(project, actor, state, label) {
   const names = spriteAssetNames(project), frames = [];
   let seconds = 0;
+  let previous = null, run = 0;
   for (const frame of actorFrameRun(actor, label)) {
     const sprite = String(frame.sprite || '').toUpperCase();
     const id = names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`);
     if (!id) continue;
+    // Doom holds a walking pose for two states (`AABBCCDD`), and a clip has one duration
+    // for all its frames, so a repeated picture becomes one longer frame: the animation
+    // looks identical and stays uniform. Only runs of the *same* picture collapse.
+    if (id === previous) { run += Math.max(1, frame.duration); continue; }
+    if (previous && !seconds) seconds = run;
+    previous = id;
+    run = Math.max(1, frame.duration);
     frames.push(id);
-    if (frame.duration > 0 && !seconds) seconds = frame.duration;
   }
+  if (previous && !seconds) seconds = run;
   if (!frames.length) return null;
   const id = `clip_actor_${actor.id}_${state}`;
   if (!(project.spriteClips || []).some(clip => clip.id === id)) {
@@ -344,12 +354,23 @@ export function installSpriteAnimations(project, assets) {
     const asset = assetById.get(entity.spriteAsset);
     if (!asset) continue;
     const prefix = asset.name.slice(0, 4);
-    const [walkLetters, walkSeconds] = doomWalk[prefix] || ['ABCD', 8 / 35];
+    // Measured from GZDoom where the prefix is one of Doom's monsters
+    // (`shared/vanilla-animations.js`): the frames Doom actually plays, not a guess. The
+    // tables below stay as the fallback for prefixes the measurement does not cover.
+    const measured = SPRITE_ANIMATIONS[prefix];
+    const sequence = (key, letters, seconds) => measured?.[key]
+      ? { letters: measured[key].letters, seconds: measured[key].tics / 35 }
+      : { letters, seconds };
+    const walk = sequence('see', ...(doomWalk[prefix] || ['ABCD', 8 / 35]));
+    const attack = sequence('missile', (attackFrames[prefix] || 'EF'), 6 / 35);
+    const pain = sequence('pain', (painFrames[prefix] || 'G'), 4 / 35);
+    const death = sequence('death', (deathFrames[prefix] || 'HIJKLMN'), 6 / 35);
     const states = entity.type === 'enemy'
       ? { stand: clip(prefix, 'stand', prefix === 'HEAD' || prefix === 'PAIN' ? 'A' : 'AB', 10 / 35, true),
-        walk: clip(prefix, 'walk', walkLetters, walkSeconds, true),
-        attack: clip(prefix, 'attack', attackFrames[prefix] || 'EF', 6 / 35, false), pain: clip(prefix, 'pain', painFrames[prefix] || 'G', 4 / 35, false),
-        death: clip(prefix, 'death', deathFrames[prefix] || 'HIJKLMN', 6 / 35, false) }
+        walk: clip(prefix, 'walk', walk.letters, walk.seconds, true),
+        attack: clip(prefix, 'attack', attack.letters, attack.seconds, false),
+        pain: clip(prefix, 'pain', pain.letters, pain.seconds, false),
+        death: clip(prefix, 'death', death.letters, death.seconds, false) }
       : { stand: clip(prefix, 'idle', 'ABCD', 6 / 35, true) };
     entity.spriteStates = Object.fromEntries(Object.entries(states).filter(([, id]) => id));
   }
