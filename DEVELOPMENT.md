@@ -2672,6 +2672,21 @@ staying at 150.0 and z following the surface from 11.6 to 151.6. A note that thi
 sideways instead of climbing" was my own measurement rig passing degrees where the runtime works
 in radians, and is withdrawn.
 
+### The map's 3D view is the game's renderer, not a picture of it
+
+The Layout 3D tab has no drawing code of its own: it calls `createPreview` from `render.js` — the
+module the game runs — with `{ editor: true }`, and an object goes through the same `addEntity`,
+the same collider box and the same per-frame placement that reads
+`sectorIndex.at(x, y).floorHeight + elevation`. The two views differ in camera, lighting and what
+they hide (the editor draws a placeholder for an object with no artwork, and no weapon), never in
+shape or height. Anything that looks different there is a browser holding an old module; app code
+is served `no-cache` for exactly that reason.
+
+The **scene object editor's** 3D view is a different module (`scene-3d-view.js`) and places a node
+at its `elevation` alone, while the game adds the sector floor under it. That is deliberate — a
+scene is a template placed somewhere later, so its coordinates are scene space, not map space —
+but it does mean an object in a raised sector sits lower there than it will in play.
+
 ### Known issue: the walking jiggle, with the numbers
 
 While walking, the view shakes by about 0.4 map units. The cause is measured, not guessed: a
