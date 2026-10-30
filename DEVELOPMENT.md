@@ -2905,6 +2905,38 @@ Two things to keep in mind when measuring this page: the VM's browser occasional
 take the median of 80 gaps; and running the 3D editor and the Play preview at the same time
 means two renderers of the same level.
 
+### Every gunshot stalled the frame: a trace walked the whole level
+
+Firing the pistol in Lullaby's MAP01 froze the game for **200 ms per shot** — every other
+frame while the trigger was held. A CPU profile put 28% of the whole session in
+`geometryDistance`, the line-of-sight/bullet trace, because it tested **every wall in the
+level** (55,365 segments) and, whenever the ray was not perfectly level, **every sector's
+floor and ceiling** (13,220 planes). One trace measured 0.88 ms. A shot wakes the whole
+level, so the burst of sight checks for distant ambush monsters was ~200 of those traces in
+one frame.
+
+`shared/trace-grid.js` now buckets walls and sectors into 128-unit cells, like Doom's
+blockmap, and a trace walks only the cells the ray crosses, in distance order, stopping as
+soon as the next cell is further away than the closest hit so far. A sector whose bounding
+box would fill more than 64 cells is kept on a list every trace consults rather than being
+copied across thousands of cells (41 sectors on MAP01, 48,590 cell entries for the rest).
+The grid is derived from the wall array and cached against it, so a rebuilt level gets a new
+one.
+
+`canHearPlayer` also asked for the sector under the shot and under each object, once per
+object per noise; the noise's sector is now worked out once per shot and each object's
+comes from the same `entitySector` cache the renderer uses.
+
+| frame gap while firing | before | after |
+| --- | --- | --- |
+| median | 29 ms | 27 ms |
+| every pistol shot | **195–211 ms** | 40–48 ms |
+| gaps over 45 ms in 220 frames | 14 (one per shot) | 1 |
+
+The trace is not a heuristic: `test/trace-grid.test.js` compares it against the exhaustive
+sweep on 4,800 random rays over a lattice of rooms (including a sector too large to file in
+cells), and requires the two to agree exactly.
+
 ### A mod's things need the mod's actor table
 
 Importing Lullaby left **3,214 of MAP01's 4,602 things as grey boxes**: unnamed

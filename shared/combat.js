@@ -1,4 +1,5 @@
-import { sectorAt, containsPoint } from './sectors.js';
+import { sectorAt, entitySector, containsPoint } from './sectors.js';
+import { traceGrid, forEachCellAlong } from './trace-grid.js';
 import { recordDamage } from './player-state.js';
 
 /**
@@ -83,27 +84,53 @@ export function entityDistance(state, origin, direction, entity, range, radius =
 export function geometryDistance(state, origin, direction, range, movement = false) {
   let nearest = range;
   const sectors = sectorMapOf(state);
-  for (const wall of state.walls) {
+  const vertical = direction.z || 0;
+  const testWall = wall => {
     const sx = wall.end.x - wall.start.x, sy = wall.end.y - wall.start.y;
     const cross = direction.x * sy - direction.y * sx;
-    if (Math.abs(cross) < 1e-9) continue;
+    if (Math.abs(cross) < 1e-9) return;
     const qx = wall.start.x - origin.x, qy = wall.start.y - origin.y;
     const distance = (qx * sy - qy * sx) / cross, u = (qx * direction.y - qy * direction.x) / cross;
-    if (distance <= 1e-5 || distance >= nearest || u < 0 || u > 1) continue;
+    if (distance <= 1e-5 || distance >= nearest || u < 0 || u > 1) return;
     const front = sectors.get(wall.right?.sectorId), back = sectors.get(wall.left?.sectorId);
-    const height = origin.z + (direction.z || 0) * distance;
-    if (!(movement && wall.solid) && front && back && height > Math.max(front.floorHeight, back.floorHeight) && height < Math.min(front.ceilingHeight, back.ceilingHeight)) continue;
-    if (!front && !back && !wall.solid) continue;
+    const height = origin.z + vertical * distance;
+    if (!(movement && wall.solid) && front && back && height > Math.max(front.floorHeight, back.floorHeight) && height < Math.min(front.ceilingHeight, back.ceilingHeight)) return;
+    if (!front && !back && !wall.solid) return;
     nearest = distance;
-  }
-  if (Math.abs(direction.z || 0) > 1e-9) for (const sector of state.sectors) {
-    // Two heights per sector, without building a two element array for each of them.
-    let distance = (sector.floorHeight - origin.z) / direction.z;
+  };
+  // Two height planes per sector, without building a two element array for each of them.
+  const testSector = sector => {
+    let distance = (sector.floorHeight - origin.z) / vertical;
     if (distance > 1e-5 && distance < nearest && containsPoint(sector.rings, origin.x + direction.x * distance, origin.y + direction.y * distance)) nearest = distance;
-    if (sector.sky) continue;
-    distance = (sector.ceilingHeight - origin.z) / direction.z;
+    if (sector.sky) return;
+    distance = (sector.ceilingHeight - origin.z) / vertical;
     if (distance > 1e-5 && distance < nearest && containsPoint(sector.rings, origin.x + direction.x * distance, origin.y + direction.y * distance)) nearest = distance;
+  };
+  // Walls, floors and ceilings are only tested in the cells the ray crosses, stopping as
+  // soon as every remaining cell is further away than the closest hit so far. A trace that
+  // starts outside the level (a script spawning one) still gets the exhaustive sweep.
+  const grid = traceGrid(state);
+  const inside = origin.x >= grid.minX && origin.x <= grid.maxX && origin.y >= grid.minY && origin.y <= grid.maxY;
+  if (inside) {
+    const visited = vertical ? new Set() : null;
+    forEachCellAlong(grid, origin.x, origin.y, direction.x, direction.y, range, (walls, cellSectors, exit) => {
+      for (let index = 0; index < walls.length; index++) testWall(walls[index]);
+      if (visited) for (let index = 0; index < cellSectors.length; index++) {
+        const sector = cellSectors[index];
+        if (visited.has(sector)) continue;
+        visited.add(sector);
+        testSector(sector);
+      }
+      return nearest <= exit;
+    });
+    if (visited) for (let index = 0; index < grid.oversizedSectors.length; index++) {
+      const sector = grid.oversizedSectors[index];
+      if (!visited.has(sector)) testSector(sector);
+    }
+    return nearest;
   }
+  for (let index = 0; index < state.walls.length; index++) testWall(state.walls[index]);
+  if (Math.abs(vertical) > 1e-9) for (const sector of state.sectors) testSector(sector);
   return nearest;
 }
 /**
@@ -124,14 +151,26 @@ export function canSeeTarget(state, entity, target, range, fov = 360) {
 export function canSeePlayer(state, entity, range, fov = 360) {
   return canSeeTarget(state, entity, state.player, range, fov);
 }
+// The sector the current noise came from, worked out once per shot rather than per object.
+const noiseSectors = new WeakMap();
+function noiseSector(state, noise) {
+  const cached = noiseSectors.get(noise);
+  if (cached && cached.sectors === state.sectors) return cached.sector;
+  const sector = sectorAt(state.sectors, noise.x, noise.y);
+  noiseSectors.set(noise, { sectors: state.sectors, sector });
+  return sector;
+}
 export function canHearPlayer(state, entity) {
   const noise = state.playerNoise;
   // A shot is fired inside the actor step, which runs after the event rules that
   // ask this question, so a noise within the last couple of tics still counts.
   if (!noise || state.time - noise.time > .06) return false;
   if (entity.ambush && !canSeePlayer(state, entity, 65536)) return false;
-  const source = sectorAt(state.sectors, noise.x, noise.y);
-  const target = sectorAt(state.sectors, entity.x, entity.y);
+  // Every object in the level asks this question on the tic a shot lands, so the two
+  // sector lookups are cached: the noise stays put, and an object that has not moved
+  // keeps the sector it reported a moment ago.
+  const source = noiseSector(state, noise);
+  const target = entitySector(state.sectors, entity);
   if (!source || !target) return !state.sectors.length && canSeePlayer(state, entity, 65536);
   if (state.soundFlood?.noise !== noise || state.soundFlood.revision !== state.worldRevision) {
     const sectors = sectorMapOf(state);
