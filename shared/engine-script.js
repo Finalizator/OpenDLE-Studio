@@ -1,5 +1,7 @@
 import { installDefaultHUD, HUD_PROPERTIES } from './hud.js';
 import { DOOM_TURN_SPEED, PLAYER_SPEED } from './player-motion.js';
+import { AIR_SPEED_CAP, HL2_GRAVITY, SV_ACCELERATE, SV_AIRACCELERATE, SV_FRICTION, SV_STOPSPEED } from './source-motion.js';
+import { sectorGeometry } from './sectors.js';
 import { PLAYER_STATS, AMMO_TYPES, WEAPONS, KEYS, FACE_EXPRESSIONS } from './player-state.js';
 import { installEngineSounds } from './sound.js';
 import { doomWalk } from './sprite-animation.js';
@@ -157,6 +159,18 @@ export const ENGINE_ACTIONS = [
   { type: 'jumpPlayer', label: 'Player: request jump', fields: [] },
   { type: 'setPlayerGravity', label: 'Player: set gravity direction (walk on that surface)',
     fields: [choice('mode', 'world', ['world', 'nearest', 'wall', 'floor', 'ceiling']), numeric('reach', 8, 0, 128)] },
+  // Half-Life's movement, with every constant the Source engine exposes as a cvar. See
+  // shared/source-motion.js for what each one does.
+  { type: 'setMotionModel', label: 'Player: movement model (Doom or Half-Life / Source)',
+    fields: [choice('model', 'source', ['doom', 'source']),
+      numeric('gravity', HL2_GRAVITY, 0, 4000),
+      numeric('jumpSpeed', 160, 0, 2000),
+      numeric('maxSpeed', 320, 1, 4000),
+      numeric('accelerate', SV_ACCELERATE, 0, 100),
+      numeric('airAccelerate', SV_AIRACCELERATE, 0, 4000),
+      numeric('friction', SV_FRICTION, 0, 100),
+      numeric('stopSpeed', SV_STOPSPEED, 0, 4000),
+      numeric('airSpeedCap', AIR_SPEED_CAP, 0, 4000)] },
   { type: 'setPlayerStat', label: 'Player: set stat', fields: [stat(), numeric('value', 100, 0, 1000000)] },
   { type: 'addPlayerStat', label: 'Player: add capped stat', fields: [stat(), numeric('value', 10, -1000000, 1000000), numeric('maximum', 100, 0, 1000000)] },
   { type: 'damagePlayer', label: 'Player: damage through armor', fields: [numeric('damage', 10, 0, 1000000),
@@ -177,6 +191,7 @@ export function defaultEngineCommand(type) {
 }
 export const WALL_WALK_SHEET = 'Wall walking (experiment)';
 export const SPRAY_SHEET = 'Spray (CS-style)';
+export const SOURCE_MOVEMENT_SHEET = 'Half-Life movement (Source)';
 
 /** Artwork the spray scriptlet starts with: the smallest imported image. */
 function defaultSprayAsset(project) {
@@ -205,6 +220,117 @@ export function installSprayScriptlet(project, { key = 'KeyT', assetId } = {}) {
     condition: { type: 'keyPressed', key }, conditions: [],
     actions: [{ type: 'sprayImage', assetId: assetId ?? defaultSprayAsset(project), distance: 96, size: 40, duration: 30 }] };
   project.events = [...project.events, rule];
+  return sheet.id;
+}
+
+/**
+ * The tilt and size of a surf ramp, and where its bottom edge ends up.
+ *
+ * A surf ramp is a box rotated about a horizontal axis: the top face is the ramp. A box
+ * centred on the floor would be half buried, so the centre is lifted by exactly the drop from
+ * its lowest corner to its face, which is what puts the bottom edge on the floor and leaves a
+ * clean climbable ramp above it.
+ *
+ * The width defaults to 128 rather than a surf map's usual 256 because a 50 degree ramp rises
+ * by `width * sin(50°)`, and 192 units of width would poke through a 128 unit ceiling — a ramp
+ * that reaches outside the room is one the player stands on the ceiling next to.
+ */
+export function surfRampGeometry({ width = 128, depth = 192, thickness = 16, angle = 50, roll = 50 } = {}) {
+  const radians = Math.abs(angle) * Math.PI / 180;
+  const centre = width / 2 * Math.sin(radians) + thickness / 2 * Math.cos(radians);
+  return { width, depth, thickness, roll, elevation: centre - thickness / 2,
+    rise: width * Math.sin(radians), run: width * Math.cos(radians) };
+}
+
+/** Whether a point is inside a sector's outline, which decides where a ramp will fit. */
+function pointInsideSector(sector, x, y) {
+  return (sector.rings || []).some(ring => {
+    let inside = false;
+    for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+      const a = ring[index], b = ring[previous];
+      if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  });
+}
+
+/** Adds a surf ramp to the map as an ordinary, editable scene object. */
+export function addSurfRamp(project, { x = 0, y = 0, angle = 0, roll = 50, id } = {}) {
+  const geometry = surfRampGeometry({ roll });
+  const used = new Set([...(project.map.entities || []).map(entity => entity.id)]);
+  let name = id || `surf_ramp_${(project.map.entities || []).filter(entity => entity.type === 'decoration').length + 1}`;
+  while (used.has(name)) name = `${name}_x`;
+  const ramp = {
+    id: name, name: 'Surf ramp', type: 'decoration', x, y, angle,
+    elevation: geometry.elevation,
+    // The collider follows this tilt: a tilted box is a ramp, and the drawn object and the
+    // thing the player collides with stay the same shape.
+    modelTilt: { pitch: 0, roll },
+    physics: { body: 'fixed', shape: 'box', width: geometry.width, height: geometry.thickness,
+      depth: geometry.depth, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true },
+  };
+  project.map.entities = [...(project.map.entities || []), ramp];
+  return ramp;
+}
+
+/**
+ * Half-Life movement and a surf ramp to try it on.
+ *
+ * The rules are ordinary editable events on their own sheet: one switches the player's
+ * movement model to Source (with every constant the engine exposes as a cvar), one explains
+ * the controls on start. Reinstalling replaces only this sheet's rules, and the ramps are
+ * ordinary scene objects that can be moved, resized or deleted.
+ */
+export function installSourceMovementScriptlet(project, { ramps = 0 } = {}) {
+  const used = new Set([...(project.eventSheets || []).map(item => item.id), ...project.events.map(item => item.id)]);
+  const id = name => {
+    let result = name, suffix = 1;
+    while (used.has(result)) result = `${name}_${suffix++}`;
+    used.add(result); return result;
+  };
+  const existing = (project.eventSheets || []).find(sheet => sheet.name === SOURCE_MOVEMENT_SHEET);
+  const sheet = existing || { id: id('engine_source_movement'), name: SOURCE_MOVEMENT_SHEET, section: 'engine',
+    enabled: true, phase: 'beforePhysics' };
+  if (!existing) project.eventSheets = [...(project.eventSheets || []), sheet];
+  project.events = project.events.filter(event => event.sheetId !== sheet.id);
+
+  const movement = {
+    type: 'setMotionModel', model: 'source',
+    gravity: HL2_GRAVITY, jumpSpeed: 160, maxSpeed: 320,
+    accelerate: SV_ACCELERATE, airAccelerate: SV_AIRACCELERATE, friction: SV_FRICTION,
+    stopSpeed: SV_STOPSPEED, airSpeedCap: AIR_SPEED_CAP,
+  };
+  project.events = [...project.events,
+    { id: id('engine_source_movement_model'), sheetId: sheet.id, enabled: true, once: false,
+      name: 'source_movement', condition: { type: 'onStart' }, conditions: [], actions: [movement] },
+    { id: id('engine_source_movement_hint'), sheetId: sheet.id, enabled: true, once: false,
+      name: 'surf_hint', condition: { type: 'onStart' }, conditions: [],
+      actions: [{ type: 'showMessage',
+        message: 'Half-Life movement: hold a strafe key into a steep ramp to surf it.' }] }];
+
+  // Ramps facing each other, placed either side of the player start so there is something to
+  // surf on straight away. A surf map is built from pairs like this: ride one down, cross to
+  // the other.
+  //
+  // They are placed inside the sector the player starts in rather than at a fixed offset: a
+  // ramp half outside the room is one the player falls off the edge of, and a ramp taller than
+  // the ceiling is one they stand on the ceiling next to.
+  if (ramps > 0) {
+    const start = (project.map.entities || []).find(entity => entity.type === 'player') || { x: 0, y: 0 };
+    const geometry = surfRampGeometry();
+    const room = (sectorGeometry(project).find(sector => pointInsideSector(sector, start.x, start.y))
+      || sectorGeometry(project)[0])?.bounds || { minX: -256, maxX: 256, minY: -256, maxY: 256 };
+    const clampTo = (value, low, high) => Math.max(low, Math.min(high, value));
+    const marginX = geometry.run / 2 + 16, marginY = geometry.depth / 2 + 16;
+    const y = clampTo(start.y, room.minY + marginY, room.maxY - marginY);
+    const created = [];
+    for (let index = 0; index < ramps; index++) {
+      const side = index % 2 === 0 ? 1 : -1;
+      const x = clampTo(start.x + side * 200, room.minX + marginX, room.maxX - marginX);
+      created.push(addSurfRamp(project, { x, y, angle: 0, roll: side * 50 }));
+    }
+    project.sourceMovementRamps = created.map(ramp => ramp.id);
+  }
   return sheet.id;
 }
 

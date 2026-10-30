@@ -929,6 +929,13 @@ function renderScriptlets() {
       openScript(`$sheet:${sheetId}`);
     });
     card.append(install);
+    // Some scriptlets can build a whole map to try themselves on — the surf one needs an empty
+    // room rather than ramps jammed into an imported WAD.
+    if (scriptlet.build) card.append(button(scriptlet.buildLabel || 'Build a new map', () => {
+      if (!confirm(`${scriptlet.buildDetail || 'Replace this project with a new one?'} You can undo this change.`)) return;
+      replace(scriptlet.build(createProject()), `${scriptlet.name}: new empty map built`);
+      renderScriptlets();
+    }, 'primary'));
     if (installed) card.append(button('Remove its rules', () => {
       if (!confirm(`Remove the ${scriptlet.name} scriptlet and its ${installed} rules? Undo restores them.`)) return;
       edit(next => removeScriptlet(next, scriptlet.id), `${scriptlet.name} scriptlet removed`);

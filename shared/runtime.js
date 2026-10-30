@@ -8,6 +8,7 @@ import { TIC_RATE, stepActors, stepProjectiles, runProjectileDeath, beginWeapon,
   installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
+import { HL2_MOVEMENT, clampHorizontal, horizontalStep, measuredVelocity } from './source-motion.js';
 
 /** The mark a bullet leaves, in map units, and how many are kept before the oldest goes. */
 const BULLET_MARK = { assetId: 'builtin:bullethole', width: 12, limit: 160 };
@@ -100,6 +101,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0, up: [...WORLD_UP] },
     // Momentum is Doom's, in map units per tic; see shared/player-motion.js.
     momentum: { x: 0, y: 0, z: 0 }, playerClock: 0, turnHeld: 0, turnRequest: 0,
+    // Half-Life movement is opt-in; a project that installs it runs this model instead.
+    motionModel: 'doom', motionSettings: { ...HL2_MOVEMENT }, motion: { x: 0, y: 0, z: 0 },
+    sourceGrounded: false,
     // Doom bobs the weapon and the view with the player's speed; see shared/player-motion.js.
     bob: 0, bobTimer: 0,
     playerStats, inventory, levelTransition: Boolean(progress),
@@ -527,6 +531,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   const wholeTics = Math.floor(state.playerClock + 1e-6);
   const tics = Math.min(wholeTics, MAX_PLAYER_TICS);
   state.playerClock -= wholeTics;
+  // A project can run Half-Life's movement instead of Doom's; see shared/source-motion.js.
+  const sourceModel = state.motionModel === 'source' ? state.motionSettings : null;
   for (let tic = 0; tic < tics; tic++) {
     if (turnBam) {
       const radians = state.scriptedInput
@@ -535,6 +541,21 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       player.angle += radians;
       state.turnHeld++;
     } else state.turnHeld = 0;
+    // The axis values a movement model is given: keys for a played game, the values a visual
+    // script asked for when the project is scripted.
+    const axisForward = state.scriptedInput ? (hud.cursor ? 0 : state.input.forward) / 160 : forwardAxis;
+    const axisSide = state.scriptedInput ? (hud.cursor ? 0 : state.input.strafe) / 160 : sideAxis;
+    if (sourceModel) {
+      // One Source player tic of horizontal movement. The vertical axis is the collision
+      // world's: it integrates gravity and slides the capsule, and `measuredVelocity` below
+      // adopts whatever the slide achieved, so a surf ramp hands its speed to the model.
+      state.motion ||= { x: 0, y: 0, z: 0 };
+      state.motion = clampHorizontal(horizontalStep(state.motion, {
+        grounded, forward: axisForward, side: axisSide, angle: player.angle, dt: 1 / TIC_RATE,
+        settings: sourceModel }), sourceModel);
+      state.momentum = { x: state.motion.x / TIC_RATE, y: state.motion.y / TIC_RATE, z: 0 };
+      continue;
+    }
     // A visual script asks for a speed in units per second; Doom reaches a speed by
     // thrusting towards it, so the request becomes the thrust that saturates at it.
     const thrust = state.scriptedInput
@@ -553,16 +574,20 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         + (basis.right[2] * cosHeading - basis.forward[2] * sinHeading) * thrust.side,
     }, { grounded });
   }
+  state.sourceGrounded = grounded;
   if (tics) {
     // Doom advances the bob timer every player tic, whether the player moves or not.
     state.bobTimer = (state.bobTimer || 0) + tics;
     state.bob = bobFor(state.momentum);
   }
-  const velocity = momentumSpeed(state.momentum);
+  const velocity = sourceModel ? { ...state.motion } : momentumSpeed(state.momentum);
   const dx = velocity.x * dt, dy = velocity.y * dt, dz = velocity.z * dt;
   state.physics?.syncWorld();
   if (state.physics) {
-    state.physics.step(dt, { x: velocity.x, y: velocity.y, z: velocity.z, jump: jumpHeld, up: player.up });
+    state.physics.step(dt, { x: velocity.x, y: velocity.y, z: velocity.z, jump: jumpHeld, up: player.up,
+      // A movement model can ask for its own gravity: Half-Life runs at 600 units/s² where
+      // Doom's is 1225, so the fall has to be the model's, not this engine's.
+      ...(sourceModel ? { gravity: sourceModel.gravity, jumpSpeed: sourceModel.jumpSpeed } : {}) });
     // Surfaces the capsule touches, for the wall-walking events and conditions.
     if (projectUsesSurfaces(project)) state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
   }
@@ -571,11 +596,20 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (canMove(player.x + dx, player.y, currentFloor)) player.x += dx;
     if (canMove(player.x, player.y + dy, currentFloor)) player.y += dy;
   }
+  if (sourceModel && tics) {
+    // Adopt the speed the player really travelled at: pressed against a wall that is zero,
+    // and sliding down a surf ramp it is the speed along the ramp, which is the whole point.
+    // The physics world measures it, over the substeps it really ran.
+    const travelled = state.physics?.playerVelocity ?? measuredVelocity({ x: previousPosition.x, y: previousPosition.y },
+      { x: player.x, y: player.y }, (tics / TIC_RATE));
+    state.motion = clampHorizontal({ x: travelled.x, y: travelled.y, z: 0 }, sourceModel);
+    state.momentum = { x: state.motion.x / TIC_RATE, y: state.motion.y / TIC_RATE, z: 0 };
+  }
   // Doom drops the momentum of an axis the player could not move along, so pushing at a
   // wall does not bank speed that is released when it opens. The physics world reports which
   // axes the character controller was stopped on; without one, the plain walking path moves
   // the player exactly as far as it asked to or not at all.
-  if (state.momentum) {
+  if (state.momentum && !sourceModel) {
     // A physics world reports it, because it is the only thing that knows whether a move was
     // refused; the plain walking path moves the player exactly as far as it asked to or not
     // at all, so it can answer the same question itself.
@@ -1047,6 +1081,21 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         case 'jumpPlayer':
           state.input.jump = true; break;
+        case 'setMotionModel':
+          // Switching a project's movement model. Doom's momentum is kept as it is, so a
+          // switch back mid-game does not teleport the player, and the Source velocity starts
+          // from however fast the player was already going.
+          if (action.model === 'source') {
+            state.motionModel = 'source';
+            state.motionSettings = { ...state.motionSettings, ...Object.fromEntries(Object.entries(action)
+              .filter(([key]) => ['gravity', 'jumpSpeed', 'maxSpeed', 'accelerate', 'airAccelerate', 'friction',
+                'stopSpeed', 'airSpeedCap'].includes(key))) };
+            state.motion = { x: (state.momentum?.x || 0) * 35, y: (state.momentum?.y || 0) * 35, z: 0 };
+          } else {
+            state.motionModel = 'doom';
+            state.momentum = { x: (state.motion?.x || 0) / 35, y: (state.motion?.y || 0) / 35, z: 0 };
+          }
+          break;
         case 'setPlayerGravity':
           setPlayerGravity(state, action.mode, action.reach); break;
         case 'setPlayerStat':

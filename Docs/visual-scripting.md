@@ -356,6 +356,7 @@ an object (`entityId`); `$self` is available inside object rules.
 | set view pitch (degrees) | `setPlayerPitch` | — | pitch |
 | spray an image on the wall | `sprayImage` | — | assetId (asset-library image), distance, size, duration |
 | set gravity direction (walk on that surface) | `setPlayerGravity` | — | mode, reach |
+| movement model (Doom or Half-Life / Source) | `setMotionModel` | — | model, gravity, jumpSpeed, maxSpeed, accelerate, airAccelerate, friction, stopSpeed, airSpeedCap |
 | set stat | `setPlayerStat` | — | stat, value |
 | add capped stat | `addPlayerStat` | — | stat, value, maximum |
 | damage through armor | `damagePlayer` | — | damage, direction |

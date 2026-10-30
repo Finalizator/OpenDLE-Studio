@@ -1,4 +1,5 @@
 import { createRuntime } from './runtime.js';
+import { HL2_MOVEMENT } from './source-motion.js';
 import { selectGameLevel } from './game-levels.js';
 import { validatePhysicsState } from './physics.js';
 import { gameSettings } from './game-settings.js';
@@ -137,6 +138,11 @@ function validateRuntime(project, state, baseline) {
   if (!Number.isFinite(state.turnHeld)) state.turnHeld = 0;
   if (!Number.isFinite(state.turnRequest)) state.turnRequest = 0;
   if (!Number.isFinite(state.bob)) state.bob = 0;
+  // Saves written before a project could run Half-Life movement are Doom-movement saves.
+  if (!['doom', 'source'].includes(state.motionModel)) state.motionModel = 'doom';
+  if (!plain(state.motionSettings)) state.motionSettings = { ...HL2_MOVEMENT };
+  if (!plain(state.motion)) state.motion = { x: 0, y: 0, z: 0 };
+  if (typeof state.sourceGrounded !== 'boolean') state.sourceGrounded = false;
   if (!Number.isFinite(state.bobTimer)) state.bobTimer = 0;
   for (const key of Object.keys(state)) if (omitted.has(key) || !Object.hasOwn(baseline, key) && !optional.has(key)) fail(`unknown runtime field ${key}`);
   for (const [key, value] of Object.entries(baseline)) if (!omitted.has(key)) {

@@ -3,6 +3,7 @@ import {
   PLAYER_CYLINDER, SURFACE_REACH, WORLD_UP, dot as dotMap, playerBasis, surfaceKind, upVector,
 } from './gravity.js';
 import { actorOf } from './actor-runtime.js';
+import { tiltQuaternion } from './source-motion.js';
 
 export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
@@ -203,6 +204,10 @@ export function createPhysics(project, state, R, triangulate) {
   // a substep or two, so a single blocked substep is not a wall; pressing into one keeps the
   // count climbing.
   let blocked = { x: 0, z: 0 };
+  /** Normals of the surfaces the player ran into during the last `step`, in map space. */
+  const contactNormals = [];
+  /** The speed the last `step` actually moved the player at, in map units a second. */
+  let achievedVelocity = { x: 0, y: 0, z: 0 };
   // The player's own up axis. Rapier capsules always grow along +Y, so walking on
   // a wall means rotating the character and moving along its plane, not the world's.
   let upMap = [...WORLD_UP];
@@ -241,6 +246,10 @@ export function createPhysics(project, state, R, triangulate) {
   }
   function rotation(entity) {
     const angle = -(entity.angle || 0) * Math.PI / 180;
+    // A tilted object's collider is tilted with it: an object rotated about a horizontal axis
+    // is a ramp, and `modelTilt` is already how the renderer tilts the thing that is drawn, so
+    // the collider and the artwork agree instead of being two guesses at the same shape.
+    if (entity.modelTilt) return tiltQuaternion(entity.modelTilt, angle);
     return { x: 0, y: Math.sin(angle / 2), z: 0, w: Math.cos(angle / 2) };
   }
   for (const entity of state.entities) {
@@ -471,6 +480,15 @@ export function createPhysics(project, state, R, triangulate) {
      * runtime waits for before it drops the player's momentum.
      */
     get blocked() { return { x: blocked.x, y: blocked.z }; },
+    /** Map-space normals of what the player touched in the last `step`. */
+    get surfaceNormals() { return contactNormals; },
+    /**
+     * The speed the last `step` actually moved the player at, in map units a second.
+     *
+     * This is the honest reading of what the collision did: pressed against a wall it is zero,
+     * and sliding down a surf ramp it is the speed along the ramp.
+     */
+    get playerVelocity() { return { ...achievedVelocity }; },
     get up() { return [...upMap]; },
     orientPlayer, probeSurfaces,
     saveState() {
@@ -519,10 +537,19 @@ export function createPhysics(project, state, R, triangulate) {
       // Consecutive substeps each axis was stopped on; see the getter below.
       if (movement.up && dotMap(upVector(movement.up), upMap) < .999999) orientPlayer(movement.up);
       const axis = toRapier(upMap);
+      const gravity = Number.isFinite(movement.gravity) ? movement.gravity : DOOM_GRAVITY;
+      // Where and when the player started, so the speed the world actually moved them at can be
+      // reported. Dividing by the substeps that really ran, rather than by the frame time, is
+      // what makes the number exact: a frame that ran one 1/60s substep and claimed 1/35s would
+      // otherwise understate the speed by a third.
+      const startBody = bodies.get(playerId)?.translation();
+      const startSubsteps = accumulator;
       // Movement arrives in map space; gravity and the move both follow the up axis.
       const velocity = toRapier([movement.x || 0, movement.y || 0, movement.z || 0]);
       accumulator = Math.min(accumulator + dt, FIXED_STEP * 8);
-      if (movement.jump && grounded) { verticalSpeed = DOOM_JUMP_SPEED; grounded = false; }
+      // A movement model can supply its own jump impulse (`sv_jumpvelocity`).
+      const jumpSpeed = Number.isFinite(movement.jumpSpeed) ? movement.jumpSpeed / PHYSICS_SCALE : DOOM_JUMP_SPEED;
+      if (movement.jump && grounded) { verticalSpeed = jumpSpeed; grounded = false; }
       while (accumulator + 1e-9 >= FIXED_STEP) {
         for (const [id, body] of bodies) if (body.isDynamic()) {
           body.resetForces(true);
@@ -533,10 +560,12 @@ export function createPhysics(project, state, R, triangulate) {
         const body = bodies.get(playerId), collider = colliders.get(playerId);
         // A player who walks off a ledge has no downward speed yet, and GZDoom gives that
         // one tic twice the gravity, which is what makes a Doom step-down feel sharp.
+        // A movement model that carries its own gravity passes `movement.gravity`, and 0
+        // means "none at all": the vertical motion is then the model's, not this one's.
         const fell = !grounded && verticalSpeed <= 0 && !ledgeFallen;
         if (grounded) ledgeFallen = false; else if (fell) ledgeFallen = true;
         verticalSpeed = grounded ? -.5
-          : Math.max(-50, verticalSpeed - DOOM_GRAVITY / PHYSICS_SCALE * FIXED_STEP * (fell ? LEDGE_GRAVITY : 1));
+          : Math.max(-50, verticalSpeed - gravity / PHYSICS_SCALE * FIXED_STEP * (fell ? LEDGE_GRAVITY : 1));
         const fall = verticalSpeed * FIXED_STEP;
         controller.computeColliderMovement(collider, {
           x: velocity.x / PHYSICS_SCALE * FIXED_STEP + axis.x * fall,
@@ -565,10 +594,20 @@ export function createPhysics(project, state, R, triangulate) {
         // gravity change, so an upright player has to satisfy both.
         grounded = axis.y > .999 ? controller.computedGrounded() && standingOnSurface() : standingOnSurface();
         const characterContacts = new Set();
+        contactNormals.length = 0;
         for (let i = 0; i < controller.numComputedCollisions(); i++) {
           const collision = controller.computedCollision(i);
           const other = colliderIds.get(collision.collider.handle);
           if (other) characterContacts.add(pairKey(playerId, other));
+          // The surface the capsule ran into, in map space. Source's movement slides the
+          // velocity along each of these (`ClipVelocity`), which is what turns a fall onto a
+          // surf ramp into speed along the ramp instead of a stop.
+          const normal = collision.normal1;
+          if (normal) {
+            const mapped = toMap(normal);
+            const length = Math.hypot(mapped[0], mapped[1], mapped[2]);
+            if (length > 1e-6) contactNormals.push({ x: mapped[0] / length, y: mapped[1] / length, z: mapped[2] / length });
+          }
         }
         events.drainCollisionEvents((a, b, begin) => {
           const left = colliderIds.get(a), right = colliderIds.get(b);
@@ -583,6 +622,20 @@ export function createPhysics(project, state, R, triangulate) {
         accumulator -= FIXED_STEP;
       }
       sync();
+      if (startBody) {
+        const now = bodies.get(playerId).translation();
+        // The time actually simulated, not the frame time: the accumulator carries over, so a
+        // frame can run two substeps of the fixed step while it only asked for 1/35 of a
+        // second. Dividing by the frame time instead measured 1.17 times the real speed.
+        const seconds = Math.max(0, startSubsteps + dt - accumulator);
+        achievedVelocity = seconds > 1e-9
+          ? {
+            x: (now.x - startBody.x) * PHYSICS_SCALE / seconds,
+            y: (now.z - startBody.z) * PHYSICS_SCALE / seconds,
+            z: (now.y - startBody.y) * PHYSICS_SCALE / seconds,
+          }
+          : { x: 0, y: 0, z: 0 };
+      }
     },
     teleport(id, x, y, z) {
       const entity = state.entities.find(entity => entity.id === id);

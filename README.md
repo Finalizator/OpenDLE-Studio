@@ -24,6 +24,9 @@ GDevelop-style condition/action scripting.
   and expressions, and customize imported gameplay. Game-wide and object-local
   scripts are separate authoring scopes; see
   [visual scripting](Docs/visual-scripting.md).
+- **Choose the movement:** Doom's thrust-and-friction, or Half-Life / Source
+  movement with its air-strafing and surf. The scriptlet installs the rule, and can
+  build a new empty map with two surf ramps to try it on; every constant is editable.
 - **Bring your worlds along:** import WAD, PK3 and standalone IPK3 resources,
   classic Doom and UDMF game levels, textures, sprites, weapons, sounds,
   MIDI/MUS level music and supported game menus.

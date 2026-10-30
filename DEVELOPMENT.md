@@ -612,8 +612,10 @@ their own **Engine scriptlets** tab next to Engine tweaks, not in the event-shee
 tree, so the tree lists sheets and the tab lists things that create them. Each
 scriptlet is an entry in `shared/scriptlets.js` with an installer and a remover;
 the panel is generated from that registry, so adding a generator is one entry and
-no UI work. Two scriptlets ship: **Wall walking** installs the "Wall walking
-(experiment)" sheet, and **Spray (Counter-Strike style)** installs the
+no UI work. Three scriptlets ship: **Wall walking** installs the "Wall walking
+(experiment)" sheet, **Half-Life movement and surf** installs the "Half-Life
+movement (Source)" sheet (see [Half-Life movement and surf](#half-life-movement-and-surf)),
+and **Spray (Counter-Strike style)** installs the
 "Spray (CS-style)" sheet with one rule: a `keyPressed` condition (`KeyT` by
 default) runs `sprayImage`, which paints a chosen image onto the wall under the
 crosshair, flat against the surface, for the action's duration. Both report how
@@ -2527,6 +2529,78 @@ binary and UDMF geometry all import natively; UDMF keeps its source properties
 and every format reports the remaining behavior gaps explicitly. Standalone WAD import still needs a complete base asset
 set. Package map import can explicitly layer one base IWAD under package
 resources; arbitrary multi-mod load orders are not implemented.
+
+### Half-Life movement and surf
+
+A project can run Half-Life's movement instead of Doom's. `shared/source-motion.js` is a
+translation of `CGameMovement` from the Source SDK 2013 (`src/game/shared/gamemovement.cpp`,
+`movevars_shared.cpp`), and the scriptlet installs the rule that switches to it plus two surf
+ramps to try it on.
+
+**The algorithm, and why the order matters.** Friction multiplies the velocity the player
+already has, then the thrust is added, capped at the shortfall *along the wish direction*
+rather than at a top speed — so a player already going faster than they asked for is not slowed
+by holding the key. Air acceleration caps the shortfall at `GetAirSpeedCap()` = **30** while
+computing the acceleration from the *uncapped* wish speed. That asymmetry is the whole of
+air-strafing and bunny hopping: you can never add more than 30 units/s along the direction you
+hold, but by turning that direction you keep the speed you have and add more on the new
+heading, so the total grows.
+
+| | Source default | where |
+| --- | --- | --- |
+| `sv_friction` | 4 | `movevars_shared.cpp` |
+| `sv_stopspeed` | 100 | the floor friction bleeds at, so a player stops instead of creeping |
+| `sv_accelerate` | 10 | ground acceleration |
+| `sv_airaccelerate` | 10 | **surf servers raise this to 100–1500** |
+| `sv_maxspeed` | 320 | the wish speed the input is clamped to |
+| `sv_gravity` | 600 (Unit) / 800 | Half-Life 2 runs at 600 |
+| jump | 160 (Unit) / 268.33 | `sqrt(2 * gravity * height)` |
+| `sv_maxvelocity` | 3500 | applied per axis |
+| air speed cap | 30 | `GetAirSpeedCap()` |
+| standable slope | 0.7 normal z | 45.573°, the angle surf maps are built around |
+
+**Surf is not a feature of the movement code; it falls out of two of its rules.**
+`CategorizePosition` refuses to call a surface ground when its normal's z component is below
+**0.7** (45.573°), and a player who is not on ground gets no friction. So on a steep ramp the
+player is permanently airborne and frictionless; gravity keeps pulling them into it;
+`ClipVelocity` projects the velocity *along* the ramp rather than stopping it; and air
+acceleration adds speed along the direction being held. Downward speed becomes speed along the
+ramp, and then speed back up it. That is the whole trick, and it is why raising
+`sv_airaccelerate` is what turns a slide into a surf.
+
+**What OpenDLE does differently, and why.** The collision world is Rapier's character
+controller, not Source's four-trace swept move, so the division of labour is: the model owns
+*how fast a player may go and in what direction* (friction, accelerate, air accelerate, the
+caps), and the controller owns *the movement itself* (gravity, sliding along surfaces, steps,
+ceilings). After each step the model adopts the speed the world actually moved the player at —
+`physics.playerVelocity`, measured over the substeps that really ran. Pressed against a wall
+that is zero; sliding down a surf ramp it is the speed along the ramp, which is exactly the
+quantity surf is built on. Measuring over the frame time instead of the simulated time made
+walking measure 1.17× too fast, which is the kind of error that only shows up as "it feels
+wrong".
+
+**Ramps.** A surf ramp is a box rotated about a horizontal axis, which needed one engine
+change: a collider now follows `modelTilt`, so the thing you collide with and the thing you
+see are the same tilted box (`shared/source-motion.js:tiltQuaternion`). `surfRampGeometry`
+computes the lift that puts a tilted box's *bottom edge* on the floor rather than half burying
+it, and the width defaults to 128 rather than a surf map's 256 because a 50° ramp rises by
+`width × sin(50°)` and 192 units of width pokes through a 128-unit ceiling — a ramp that
+reaches outside the room is one the player stands on the ceiling next to, which is exactly the
+bug the first version had.
+
+The measured result of a slide down a 50° ramp with `sv_airaccelerate` at 100: **63 → 139
+units a second over 16 tics**, never touching ground. On a 30° ramp the player is grounded and
+friction holds them still instead. On the map the scriptlet builds, a run down its ramp reaches
+the 320 unit cap with `grounded` false throughout.
+
+**Two actions, not one.** "Add to project" installs only the rules, into whatever map is open.
+"Build a new empty surf map" replaces the whole project with a valid new one — one room, a
+256-unit ceiling, a player start and two ramps facing each other — because adding ramps to an
+imported WAD means two ramps jammed against a wall, and a map for surfing is small and empty.
+A scriptlet can offer that second action by defining `build(project)`; the panel generates the
+button from it, so it needs no UI work either. The build replaces rather than merges, because an
+imported project's actors, assets and events all describe a map that is about to disappear and
+validation rejects events pointing at nothing.
 
 ### Playing GZDoom yourself
 
