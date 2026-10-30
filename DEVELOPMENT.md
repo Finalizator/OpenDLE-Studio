@@ -2564,6 +2564,56 @@ and every format reports the remaining behavior gaps explicitly. Standalone WAD 
 set. Package map import can explicitly layer one base IWAD under package
 resources; arbitrary multi-mod load orders are not implemented.
 
+### A real GZDoom package imports: the parsers stop refusing stock files
+
+Four defects made whole archives refuse to import, and each was found by importing the
+packages under `Projects` rather than a fixture:
+
+- **MAPINFO episodes.** Stock Strife MAPINFO writes `episode MAP02 teaser MAP33 { ... }`,
+  and GZDoom also accepts `episode = "MAP01"`. The reader took the token after `episode`
+  as the map name and then demanded `{`, so `teaser` was read as the name and the file
+  failed. The name is now read after an optional `=`, whatever stands before the block
+  (`teaser <map>`, `teaser = <map>`) is skipped, and a missing block is still refused —
+  stopped at the next top-level keyword rather than swallowing the following definition.
+- **Repeated includes.** gzdoom.pk3 includes the same shared MAPINFO from every game's
+  file, so `common.txt` was scanned a dozen times. Its episodes are the same however it
+  arrives, so each source is read once; the source budget now counts distinct files
+  (21, 107 KB) instead of include chains, which used to exceed 2 MB and refuse the file.
+- **SBARINFO mugshot states.** `{ST00, ST01, ST02} 17;` is a braced *value* — a mugshot's
+  three directional faces — not a nested block. Reading it as a block ended the statement
+  at `}` with no semicolon and failed every stock gzdoom/zandronum status bar.
+- **TEXTURES patches from another IWAD.** A widescreen-graphics package composes title
+  patches out of artwork only some IWADs carry. Composition is lazy, so the throw surfaced
+  the moment a texture was first requested and aborted the import of everything else. A
+  definition whose patches neither the package nor its base provides is now skipped with a
+  note (a name-only test, so nothing is decoded to find out).
+
+Two smaller ones came with them: `OptionMenu "OptionsMenu" protected` (how gzdoom.pk3
+protects its menus) was read as the opening brace, and a stock MENUDEF's 78 menus tripped a
+64-menu cap. The cap is 256 — it bounds a parse, not a real menu — and translation now
+*measures* each menu by translating it and rolling back the elements, events, pages and
+selectors it made when they do not fit, so a big MENUDEF loses its tail instead of aborting
+at the last check. That also replaced one "not translated" page per unresolved submenu with
+a single shared notice: a package with many unsupported submenus was spending its HUD
+element budget on near-identical screens.
+
+Measured over every package in `Projects`, all 13 now import (before: three refused and one
+aborted at the final check):
+
+| package | result |
+| --- | --- |
+| Lullaby.pk3 | 4 levels, entry TITLEMAP, 1835 assets, 232 HUD elements |
+| GZPT.ipk3 (standalone) | 2 levels, entry PT01, 366 assets |
+| Furdoom, ascentoftitan-1-1 | 17 and 13 levels, their declared base and entry |
+| intoOblivion/gameData.ipk3 | 1 level, 153 assets |
+| gzdoom.pk3, zandronum.pk3 | 32 levels of the base campaign, 498 and 370 HUD elements |
+| brightmaps/lights/game_support/widescreen packs | 32 base levels with their added assets |
+
+A package that declares no game title is now named after its archive (`gzdoom - imported
+package`) instead of the shared placeholder "Imported package game", which was identical for
+seven of those. The name travels as its own field so an upload's file name cannot be
+mistaken for a library entry.
+
 ### Half-Life movement and surf
 
 A project can run Half-Life's movement instead of Doom's. `shared/source-motion.js` is a
@@ -3423,6 +3473,7 @@ Use an existing non-player entity's ID as `ownerId`. Omit it for a scene rule.
 - `public/pointer-lock.js`: user-gesture pointer-lock requests and explicit errors.
 - `public/scene-editor.js`: fly camera, picking, edit handles and placement.
 - `shared/surface-batch.js`: merges static world quads into shared buffers and maps a picked triangle back to its wall or sector.
+- `shared/game-episodes.js`, `shared/sbarinfo.js`, `shared/game-menu.js`: MAPINFO, SBARINFO and MENUDEF readers whose grammars accept what stock GZDoom archives actually contain.
 - `shared/wad.js`, `shared/doom-assets.js`: bounded WAD geometry/image readers.
 - `shared/udmf.js`: bounded UDMF parser and native geometry record normalization.
 - `server/packages.js`: bounded PK3/directory reading, resource inspection and base-IWAD layering.

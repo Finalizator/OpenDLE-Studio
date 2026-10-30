@@ -163,7 +163,7 @@ export function createApp({
     if (cached) return res.json({ ...cached, cached: cached.cached || null });
     const files = await readLocalPackage(projectsDir, req.body.name);
     const result = importPackage(files, { map: req.body.map, paths: req.body.paths,
-      fullGame: options.fullGame, projectsDir,
+      fullGame: options.fullGame, projectsDir, packageName: req.body.name,
       baseBytes: req.body.base ? localWadBytes(projectsDir, req.body.base) : undefined });
     cache?.set(key, result);
     res.json({ ...result, cached: null });
@@ -178,7 +178,7 @@ export function createApp({
     const key = importCacheKey(['package-upload', createHash('sha256').update(req.body).digest('hex'), options]);
     const cached = fresh(req.query) ? null : cache?.get(key);
     const result = cached || importPackage(files, { map: req.query.map, paths: options.paths,
-      fullGame: options.fullGame, projectsDir,
+      fullGame: options.fullGame, projectsDir, packageName: req.query.name,
       baseBytes: req.query.base ? localWadBytes(projectsDir, req.query.base) : undefined });
     if (!cached) cache?.set(key, result);
     res.json({ ...result, cached: cached?.cached || null });

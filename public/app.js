@@ -3256,7 +3256,8 @@ $('package-file').addEventListener('change', guard(async event => {
   const inspection = await api('/api/packages/upload/inspect', {
     method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buffer,
   });
-  packageSource = { buffer }; showPackageInspection(inspection);
+  // `name` marks a package found in the library; an upload only carries its file name.
+  packageSource = { buffer, fileName: file.name }; showPackageInspection(inspection);
   $('package-source-label').hidden = true; $('package-dialog').showModal();
 }));
 $('package-search').addEventListener('input', () => { if (packageInspection) showPackageImages(); });
@@ -3280,7 +3281,9 @@ $('package-import').addEventListener('click', async () => {
   for (const id of ['package-source', 'package-base', 'package-map', 'package-scope', 'package-kind', 'package-search', 'package-images', 'package-import']) $(id).disabled = true;
   $('package-status').textContent = 'Importing package resources...';
   try {
-    const query = new URLSearchParams({ map, base, scope, images: paths.map(path => packageInspection.images.indexOf(path)).join(',') });
+    // The archive's own name labels the imported project when it declares no game title.
+    const query = new URLSearchParams({ map, base, scope, images: paths.map(path => packageInspection.images.indexOf(path)).join(','),
+      ...(source.fileName ? { name: source.fileName } : {}) });
     const result = source.name
       ? await api('/api/import/local-package', { method: 'POST', signal: controller.signal, body: JSON.stringify({ name: source.name, map, base, paths, scope }) })
       : await api(`/api/import/package?${query}`, { method: 'POST', signal: controller.signal,

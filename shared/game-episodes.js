@@ -2,15 +2,25 @@
 import { LIMITS } from './limits.js';
 export function parseGameEpisodes(definitions, levelIds, { inferClassic = true } = {}) {
   const available = new Set(levelIds), episodes = [], sources = [], warnings = [];
-  const active = new Set();
+  const active = new Set(), scanned = new Set();
   let budget = 0, declared = false;
   const unquote = token => token?.startsWith('"') ? JSON.parse(token) : token;
+  // Keywords that begin a new top-level definition, so an episode that is missing its
+  // block does not swallow the next one.
+  const topLevel = new Set(['map', 'episode', 'skill', 'clearepisodes', 'clearskills', 'include', 'gamedefaults',
+    'defaultmap', 'adddefaultmap', 'cluster', 'gameinfo', 'doomedits', 'automap', 'intermission']);
   function scan(definition, depth = 0) {
     const { name, source, resolve } = definition;
     if (depth > 16 || active.has(name)) throw new Error(`MAPINFO episode include cycle/depth: ${name}`);
     if (typeof source !== 'string' || source.length > LIMITS.textBytes) {
       throw new Error(`MAPINFO ${name} exceeds ${LIMITS.textBytes / 1024 / 1024} MiB`);
     }
+    // A file can be #included by many MAPINFO files (gzdoom.pk3 includes common.txt from
+    // every game's file) and its episodes are the same however it arrives, so it is read
+    // once. Scanning it again only inflated the source budget until a real package —
+    // gzdoom.pk3 itself — was refused.
+    if (scanned.has(name)) return;
+    scanned.add(name);
     budget += source.length;
     if (budget > 2 * 1024 * 1024 || sources.length >= 64) throw new Error('MAPINFO episode source budget exceeded');
     sources.push({ name, source }); active.add(name);
@@ -26,9 +36,27 @@ export function parseGameEpisodes(definitions, levelIds, { inferClassic = true }
         episodes.length = 0; declared = true;
       } else if (key === 'episode') {
         declared = true;
-        const levelId = unquote(tokens[++i])?.toUpperCase();
+        // GZDoom writes an episode three ways: `episode MAP01`, `episode = "MAP01"` and,
+        // for Strife, `episode MAP02 teaser MAP33`. Whatever stands between the name and
+        // the block is read and skipped, and the block itself is still required.
+        let cursor = i + 1;
+        if (tokens[cursor] === '=') cursor++;
+        const levelId = unquote(tokens[cursor])?.toUpperCase();
+        cursor++;
+        while (cursor < tokens.length && tokens[cursor] !== '{') {
+          const token = tokens[cursor].toLowerCase();
+          if (tokens[cursor] === '}' || topLevel.has(token)) {
+            throw new Error(`${name}: expected episode block for ${levelId}`);
+          }
+          if (tokens[cursor] === '=') { cursor++; continue; }
+          // `teaser <map>` (Strife) names the map the teaser shows; the menu does not use it yet.
+          if (token === 'teaser') { cursor += tokens[cursor + 1] === '=' ? 3 : 2; continue; }
+          warnings.push(`${name}/${levelId}: unsupported episode field ${tokens[cursor]}`);
+          cursor++;
+        }
+        if (tokens[cursor] !== '{') throw new Error(`${name}: expected episode block for ${levelId}`);
+        i = cursor;
         const episode = { levelId, name: levelId, noSkillMenu: false };
-        if (tokens[++i] !== '{') throw new Error(`${name}: expected episode block for ${levelId}`);
         let closed = false, remove = false;
         while (++i < tokens.length) {
           const field = tokens[i].toLowerCase();

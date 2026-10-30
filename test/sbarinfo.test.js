@@ -171,3 +171,25 @@ test('Furdoom-style numbers, key combinations, weapon slots and singleplayer bra
   assert.deepEqual([card, skull, both, unowned, owned].map(shown), [false, true, false, false, true]);
   assert.ok(warnings.every(message => message.includes('monospace')));
 });
+
+test('a braced value list is read as a mugshot state, not as a nested block', () => {
+  // The stock gzdoom and zandronum SBARINFOs draw a mugshot's three directional faces as
+  // `{ST00, ST01, ST02} 17;`. Treating the braces as a block refused the whole SBARINFO.
+  const parsed = parseSBarInfo(`mugshot "Normal", health2
+{
+	{ST00, ST01, ST02} 17;
+}
+mugshot "Pain", healthspecial, directional
+{
+	KILL0 1;
+}
+statusbar normal { height 32; }`);
+  assert.deepEqual(parsed.nodes.map(node => node.command), ['mugshot', 'mugshot', 'statusbar']);
+  const group = parsed.nodes[0].children[0];
+  assert.equal(group.command, '{');
+  assert.deepEqual(group.args.slice(0, 2).map(part => part.map(token => token.value)), [['ST00'], ['ST01']]);
+  assert.deepEqual(group.args.at(-1).map(token => token.value), ['ST02', '17']);
+  assert.equal(parsed.nodes[1].children[0].command, 'kill0');
+  assert.throws(() => parseSBarInfo('mugshot "x", health { {ST00, ST01'), /Unclosed SBARINFO group/);
+  assert.throws(() => parseSBarInfo('mugshot "x", health { {ST00, ST01 } }'), /Expected semicolon after a braced group/);
+});

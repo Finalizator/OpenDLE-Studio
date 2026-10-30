@@ -52,6 +52,26 @@ export function parseSBarInfo(source, name = 'SBARINFO', resolve) {
       const nodes = [];
       while (index < tokens.length && !is('}')) {
         if (is(';')) { index++; continue; }
+        // A braced list at the start of a statement is a value, not a block: a mugshot's
+        // states are written `{ST00, ST01, ST02} 17;` for its three directional faces.
+        // Reading that as a block made every stock gzdoom/zandronum SBARINFO fail.
+        if (is('{')) {
+          const node = { command: '{', args: [[]], name, line: tokens[index].line, group: true };
+          index++;
+          while (index < tokens.length && !is('}')) {
+            if (is(',')) { node.args.push([]); index++; }
+            else node.args.at(-1).push(tokens[index++]);
+          }
+          if (!is('}')) fail(node.line, 'Unclosed SBARINFO group');
+          index++;
+          // The duration that follows the group belongs to it.
+          while (index < tokens.length && !is(';') && !is('}')) node.args.at(-1).push(tokens[index++]);
+          if (!is(';')) fail(node.line, 'Expected semicolon after a braced group');
+          index++;
+          nodes.push(node);
+          if (++count > 4096) fail(node.line, 'SBARINFO command budget exceeded');
+          continue;
+        }
         const token = tokens[index++];
         if (token.value === '#' && !token.quoted) {
           const command = tokens[index++], path = tokens[index++];

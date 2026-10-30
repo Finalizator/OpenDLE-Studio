@@ -372,7 +372,7 @@ function mergeWads(sources) {
   return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), lumps,
     maps: [...new Set(sources.flatMap(source => source.maps))] };
 }
-export function importPackage(files, { map, paths, baseBytes, fullGame = false, context, projectsDir, deferActionGaps } = {}) {
+export function importPackage(files, { map, paths, baseBytes, fullGame = false, context, projectsDir, deferActionGaps, packageName } = {}) {
   const inspection = context?.inspection || inspectPackage(files), base = context?.base || (baseBytes ? wad(baseBytes) : null);
   const automatic = map === 'auto';
   if (automatic) {
@@ -420,12 +420,15 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     function* levels() {
       for (const [id, item] of maps) {
         check(item.supported, `${item.marker}: ${item.format} map is not supported; full-game import was not applied`);
-        const level = importPackage(files, { map: item.id, baseBytes, context: shared, deferActionGaps: true });
+        const level = importPackage(files, { map: item.id, baseBytes, context: shared, deferActionGaps: true, packageName });
         gapReports.push(level.actionGaps);
         yield { id, ...level };
       }
     }
-    const result = assembleGameLevels(levels(), entry, inspection.game.title || 'Imported package game', routes);
+    // A resource package often declares no game title (gzdoom.pk3, a brightmaps pack), so the
+    // archive's own name is a better label than "Imported package game" for every one of them.
+    const fallbackTitle = packageName ? `${basename(packageName).replace(/\.(pk3|ipk3|pk7|pke|zip|wad)$/i, '')} - imported package` : 'Imported package game';
+    const result = assembleGameLevels(levels(), entry, inspection.game.title || fallbackTitle, routes);
     result.warnings.push(...episodeInfo.warnings);
     const gameGaps = mergeActorActionGaps(gapReports);
     if (gameGaps.length) result.warnings.push(describeActorActionGaps(gameGaps, 'the imported levels'));
@@ -516,8 +519,25 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     check(palette?.length >= 768, `Texture patch ${name} is a palette image and this package has no PLAYPAL`);
     return decodePatch(new Uint8Array(combined.buffer, lump.start, lump.size), palette);
   };
+  // A patch is reachable if the package ships it under any of the names a graphic can be
+  // filed as, or if the base IWAD has a lump of that name. This is a name test only, so
+  // nothing is decoded here.
+  const patchAvailable = name => {
+    const upper = name.toUpperCase();
+    return ['patch_', 'texture_', 'sprite_', 'flat_'].some(prefix => images.has(`${prefix}${upper}`)) ||
+      combined.lumps.some(candidate => candidate.name.toUpperCase() === upper);
+  };
   for (const [upper, definition] of textTextures) {
     const key = `texture_${upper}`;
+    // Widescreen graphics packages compose pictures out of artwork that only some IWADs
+    // carry (a TNT patch, a Strife title). Composing one used to throw at the moment the
+    // texture was first asked for, which aborted the whole import, so a definition whose
+    // patches cannot be resolved is skipped here with a note instead.
+    const absent = definition.patches.map(placement => placement.name).filter(name => !patchAvailable(name));
+    if (absent.length) {
+      aliasWarnings.push(`TEXTURES ${definition.name} needs artwork this package and its base do not provide (${[...new Set(absent)].slice(0, 3).join(', ')}); it was skipped.`);
+      continue;
+    }
     if (aliases.has(key)) aliasWarnings.push(`Package texture ${definition.name} is defined by both an image and TEXTURES; the TEXTURES definition wins.`);
     // A patch is a graphic, and a definition may share its name: Lullaby's `TEXTURES/STAR2`
     // composes a picture called STAR2 that is drawn from a file called STAR2. Keeping the file

@@ -334,3 +334,37 @@ test('volume/mute feed actual gain nodes, and browser music loops independently 
   assert.equal(gains[0].gain.value, 0); assert.equal(gains[1].gain.value, 0);
   audio.dispose();
 });
+
+test('menu modifiers, large MENUDEFs and unresolved submenus stay within the HUD element budget', () => {
+  // `OptionMenu "OptionsMenu" protected` is how gzdoom.pk3 protects its own menus; reading the
+  // modifier as the opening brace refused the file. The element cost of a menu is only known
+  // after it is translated, so one that does not fit is rolled back instead of aborting.
+  const parsed = parseMenuDefinitions(`OptionMenu "First" protected
+{
+  StaticText 10, 20, "One"
+}
+ListMenu "Second"
+{
+  StaticText 10, 20, "Two"
+}`, 'mod');
+  assert.deepEqual(parsed.menus.map(menu => menu.name), ['First', 'Second']);
+  assert.equal(parsed.menus[0].directives.length, 1);
+
+  const menus = Array.from({ length: 160 }, (_, index) => `OptionMenu "Menu${index}"
+{
+  StaticText 10, 20, "Entry ${index}"
+  TextItem "Sub ${index}", "s", "Missing${index}"
+}`);
+  const project = createProject();
+  const warnings = [];
+  installGameMenu(project, null, [{ name: 'MENUDEF', source: menus.join('\n') }], warnings);
+  validateProject(project);
+  assert.ok(project.hud.elements.length <= 512, `${project.hud.elements.length} elements`);
+  assert.match(warnings.join('\n'), /menu\(s\) were not translated because they would exceed the 512 editable HUD element limit/);
+  // Every unresolved submenu shares one notice screen instead of a page each.
+  const notices = project.hud.elements.filter(item => item.name === 'Unsupported submenu');
+  assert.equal(notices.length, 1);
+  assert.match(warnings.join('\n'), /unresolved submenu\(s\)/);
+  const absurd = Array.from({ length: 300 }, (_, index) => `OptionMenu "Extra${index}" { StaticText 10, 20, "x" }`).join('\n');
+  assert.throws(() => parseMenuDefinitions(absurd, 'mod'), /more than 256 menus/);
+});

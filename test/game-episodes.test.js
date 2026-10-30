@@ -112,3 +112,27 @@ test('original direct-map commands convert to native no-code level actions, not 
   broken.gameMenus.episodes = [{ levelId: 'MISSING', name: 'Missing', noSkillMenu: false }];
   assert.throws(() => validateProject(broken), /unknown game level/);
 });
+
+test('GZDoom episode syntax survives assignment, Strife teasers and repeated includes', () => {
+  // Stock Strife MAPINFO writes `episode MAP02 teaser MAP33 { ... }`, and gzdoom.pk3 includes
+  // the same shared MAPINFO files from every game's file. Both used to refuse the package.
+  const parses = (definition, levels = ['MAP01', 'MAP02']) =>
+    parseGameEpisodes([definition], levels, { inferClassic: false });
+  assert.equal(parses('episode MAP01 { name = "Plain" }').episodes[0].levelId, 'MAP01');
+  assert.equal(parses('episode = "MAP01" { name = "Assigned" }').episodes[0].name, 'Assigned');
+  const teaser = parses('episode MAP02 teaser MAP33 { name = "Quest" }');
+  assert.equal(teaser.episodes.length, 1);
+  assert.equal(teaser.episodes[0].levelId, 'MAP02');
+  assert.equal(teaser.episodes[0].name, 'Quest');
+  // An episode whose block is missing must still be refused rather than swallow the next rule.
+  assert.throws(() => parses('episode MAP01\nmap MAP02 "Two" { next = "MAP03" }'), /expected episode block for MAP01/);
+
+  const shared = { name: 'mapinfo/common.txt', source: 'episode MAP01 { name = "Shared" }' };
+  const parent = (name, includes) => ({ name, source: includes.map(path => `include "${path}"`).join('\n'),
+    resolve: path => path === 'mapinfo/common.txt' ? shared : null });
+  const many = parseGameEpisodes([parent('mapinfo/doom2.txt', ['mapinfo/common.txt']),
+    parent('mapinfo/doom1.txt', ['mapinfo/common.txt']), parent('mapinfo/heretic.txt', ['mapinfo/common.txt'])],
+  ['MAP01'], { inferClassic: false });
+  assert.equal(many.sources.filter(item => item.name === 'mapinfo/common.txt').length, 1);
+  assert.equal(many.episodes.length, 1);
+});

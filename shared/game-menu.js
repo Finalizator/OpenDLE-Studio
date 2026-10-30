@@ -93,6 +93,13 @@ export function parseMenuDefinitions(source, label = 'MENUDEF', resolve) {
     const isDefault = kind.startsWith('default');
     const name = isDefault ? kind : text(tokens[i++]);
     while (tokens[i] === '\n') i++;
+    // A menu can carry modifiers between its name and its block: gzdoom.pk3 writes
+    // `OptionMenu "OptionsMenu" protected` for every option menu it does not want a mod
+    // to replace. Reading them as the opening brace refused the whole stock MENUDEF.
+    while (i < tokens.length && tokens[i] !== '{' && tokens[i] !== '}') {
+      if (tokens[i] !== '\n' && !/^protected$/i.test(tokens[i])) warnings.push(`${label}/${name}: unsupported menu modifier ${tokens[i]}`);
+      i++;
+    }
     if (!name || tokens[i++] !== '{') throw new Error(`${label}: expected menu name and opening brace`);
     const directives = [];
     let depth = 1;
@@ -111,11 +118,17 @@ export function parseMenuDefinitions(source, label = 'MENUDEF', resolve) {
     if (depth) throw new Error(`${label}/${name}: unterminated menu`);
     if (isDefault) defaults.push({ kind: kind.slice(7), directives });
     else menus.push({ name, kind, directives });
-    if (menus.length > 64) throw new Error(`${label}: more than 64 menus`);
+    // A stock GZDoom MENUDEF declares 78 menus (one set per game), so the ceiling is well
+    // above that; it exists to bound a project, not to refuse the engine's own menu. Menus
+    // past the HUD element budget are skipped later, so this only bounds the parse.
+    if (menus.length > 256) throw new Error(`${label}: more than 256 menus`);
   }
   return { menus, warnings, sources, defaults };
 }
 
+// Room kept for the selector patches, classic option screens and intermission artwork that
+// are installed after the menus have been translated.
+const MENU_ELEMENT_RESERVE = 24;
 export function installGameMenu(project, assets, definitions = [], warnings = [], episodeInfo = { episodes: [], sources: [] }) {
   // A project made from scratch has no sheets, events, groups or assets yet.
   project.assets ||= [];
@@ -434,6 +447,11 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
       const font = { ...source, id: id() };
       hud.fonts.push(font); importedFonts.set(key, font); return font;
     }
+    // The stock GZDoom MENUDEF carries 78 menus, one set per game, and translating all of
+    // them overruns the editable HUD element budget. Menus are translated in file order —
+    // the game's own menu comes first and the variants for other games come last — so the
+    // tail is what a Doom base does not need.
+    let skippedMenus = 0;
     for (const definition of definitions) {
       const parsed = parseMenuDefinitions(definition.source, definition.name, definition.resolve);
       project.gameMenus.sources.push(...parsed.sources.filter(source => source.source.trim()));
@@ -441,6 +459,11 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
       warnings.push(...parsed.warnings);
       for (const block of parsed.defaults) defaults.set(block.kind, [...(defaults.get(block.kind) || []), ...block.directives]);
       for (const menu of parsed.menus) {
+        // What one menu costs is only known after it is translated (rows, pagination, save
+        // slots), so the result is rolled back when it does not fit: estimates let a menu
+        // run past the ceiling and abort the whole import at the last check.
+        const elementsBefore = hud.elements.length, eventsBefore = project.events.length;
+        const pagesBefore = new Set(pages), selectorsBefore = new Set(selectors.keys());
         const pageName = menuScreen(menu.name);
         if (pages.has(pageName)) {
           clearPage(pageName);
@@ -563,14 +586,34 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
         } else if (['savegamemenu', 'loadgamemenu'].includes(menu.name.toLowerCase())) {
           saveRows(activePage, x, y, spacing, applyFont);
         }
+        // The selectors, classic options and intermission screens are installed after the
+        // menus and add elements of their own, so their room is kept in reserve here.
+        if (hud.elements.length > MAX_HUD_ELEMENTS - MENU_ELEMENT_RESERVE) {
+          hud.elements.length = elementsBefore;
+          project.events.length = eventsBefore;
+          for (const name of [...pages]) if (!pagesBefore.has(name)) pages.delete(name);
+          for (const name of [...selectors.keys()]) if (!selectorsBefore.has(name)) selectors.delete(name);
+          skippedMenus++;
+        }
       }
+      if (skippedMenus) warnings.push(`${definition.name}: ${skippedMenus} menu(s) were not translated because they would exceed the ${MAX_HUD_ELEMENTS} editable HUD element limit.`);
+      // A submenu that was not translated opens one shared notice instead of a page each:
+      // a package with many unsupported submenus otherwise spent the HUD element budget on
+      // near-identical "not translated" screens.
+      const unresolved = new Set();
       for (const event of project.events.filter(event => event.sheetId === sheet.id)) for (const action of event.actions) {
         if (action.type === 'setGameScreen' && !['playing', 'return'].includes(action.screen) && !pages.has(action.screen)) {
-          warnings.push(`${definition.name}: unresolved submenu ${action.screen}; opens an explicit compatibility notice`);
-          const missing = action.screen;
-          page(missing, 'Menu not translated');
-          element(missing, 'text', 'Unsupported submenu', 20, 45, 280, 100,
-            { text: `This game's submenu ${missing} is not translated yet.\nNo console command was executed.` });
+          unresolved.add(action.screen);
+          action.screen = 'unsupported_menu';
+        }
+      }
+      if (unresolved.size) {
+        const names = [...unresolved];
+        warnings.push(`${definition.name}: ${names.length} unresolved submenu(s) (${names.slice(0, 6).join(', ')}${names.length > 6 ? ', ...' : ''}) open an explicit compatibility notice`);
+        if (!pages.has('unsupported_menu')) {
+          page('unsupported_menu', 'Menu not translated');
+          element('unsupported_menu', 'text', 'Unsupported submenu', 20, 45, 280, 100,
+            { text: `These submenus are not translated yet:\n${names.slice(0, 6).join(', ')}${names.length > 6 ? '\nand more' : ''}\nNo console command was executed.` });
         }
       }
     }

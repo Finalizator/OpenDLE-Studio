@@ -535,7 +535,9 @@ test('authenticated HTTP supports local/upload inspection, image batches and cla
   const imported = await json('/api/import/local-package', { name: 'mod.pk3', map: inspection.maps[0].id, base: 'base.wad' });
   validateProject(imported.project);
   assert.equal(imported.project.game.levels.length, 1);
-  const uploadedMap = await fetch(`${url}/api/import/package?map=${encodeURIComponent(inspection.maps[0].id)}&base=base.wad&images=`,
+  // The archive name labels a package that declares no title, so an upload names itself the
+  // same way the library entry does and the two results stay identical.
+  const uploadedMap = await fetch(`${url}/api/import/package?name=mod.pk3&map=${encodeURIComponent(inspection.maps[0].id)}&base=base.wad&images=`,
     { method: 'POST', headers: binary, body: bytes });
   assert.deepEqual((await uploadedMap.json()).project, imported.project);
   assert.equal(store.snapshot().revision, 0);
@@ -596,4 +598,21 @@ test('UDMF references beyond 65536 sidedefs import, and a negative scale mirrors
   assert.equal(records.sides.length, 70000);
   assert.equal(records.lines[0].right, 69999, 'a sidedef index past the 16-bit ceiling is kept');
   assert.equal(records.sides[0].textureScale, -1, 'a negative scale is a mirrored texture, not an error');
+});
+
+test('a TEXTURES definition whose artwork lives in another IWAD is skipped, not fatal', async () => {
+  // Widescreen-graphics packages compose their title patches out of artwork some IWADs carry
+  // (a TNT: Evilution patch, a Strife title). Composing one threw at the moment the texture was
+  // first requested, which aborted the import of everything else in the package.
+  const solid = PNG.sync.write({ width: 4, height: 4, data: Buffer.from(Array(16).fill([0, 0, 200, 255]).flat()) });
+  const source = [...entries().filter(([name]) => name !== 'maps/room.wad'),
+    ['maps/room.wad', mapWad('ROOMONE', false, 'LOCAL')],
+    ['TEXTURES', Buffer.from('Texture "TITLE", 4, 4 { Patch "TNTINTER", 0, 0 }\n'
+      + 'Texture "LOCAL", 4, 4 { Patch "MYPATCH", 0, 0 }\n')],
+    ['patches/mypatch.png', solid]];
+  const { project, warnings } = importPackage(await readPackageArchive(archive(source)), { map: 'auto', baseBytes: base() });
+  assert.ok(project.assets.some(asset => asset.kind === 'texture' && asset.name === 'LOCAL'),
+    'the texture whose patch the package does provide is still imported');
+  assert.ok(!project.assets.some(asset => asset.name === 'TITLE'), 'the uncomposable texture is not imported');
+  assert.match(warnings.join('\n'), /TEXTURES TITLE needs artwork this package and its base do not provide \(TNTINTER\); it was skipped\./);
 });
