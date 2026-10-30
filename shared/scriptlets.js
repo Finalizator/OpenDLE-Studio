@@ -73,26 +73,33 @@ export function removeSourceMovement(project) {
 }
 
 /**
- * A new, empty project that is a surf map: one room, a tall ceiling, two parallel surf ramps and
- * a player who starts on one of them and slides down it.
+ * A new, empty project that is a surf map: a surf ramp to slide down, a walkable ramp back up, and
+ * a bridge at the top joining them, so the run can be repeated without leaving the map.
  *
  * Installing the movement rules into an imported WAD drops ramps into whatever geometry is
  * already there, which on a real map means two ramps jammed against a wall. A map built for
  * surfing is small and empty, so this replaces the whole project. Everything it produces is
  * ordinary — sectors, walls, scene objects — so it can be reshaped like any other map.
  *
- * **Why the ramps are parallel and apart.** A surface steeper than 45.573 degrees is never
- * ground, so it can only be started on or landed on: a player leaving a platform at the run
- * speed flies straight over one, because the surface drops at 320·tan50 = 381 units a second and
- * nothing pulls them after it. So the player starts on a ramp. Two earlier layouts put the two
- * ramps' edges against each other — a V, then a ridge — and both were broken: a V is a groove
- * narrower than the player's own body, so they jam in the bottom of it, and a ridge leaves a
- * crack between two tilted boxes that a player strafing sideways drops through. Parallel ramps
- * with open floor between them have neither problem.
+ * Six things about the shape are not free choices, and each was a bug before it was measured:
  *
- * A real surf course chains many ramps down a long descent, because a 50 degree ramp is a
- * one-way trip: you cannot walk back up one. The Momentum mapping guide starts at a 960 by 640
- * brush per ramp; these are deliberately smaller so the ramp fits one room.
+ * - **The player starts on the ramp.** A surface steeper than 45.573 degrees is never ground, so
+ *   it can only be started on or landed on. A player leaving a platform at the run speed flies
+ *   over a 50 degree ramp entirely — the surface drops at 320·tan50 = 381 units a second and
+ *   nothing pulls them after it.
+ * - **No two ramps share an edge.** Two meeting at their low edges make a groove narrower than
+ *   the player's own body, so they jam in it; two meeting at their high edges leave a crack
+ *   between tilted boxes that a strafing player drops through. The two ramps here are in
+ *   separate lanes, joined at the top by a flat bridge.
+ * - **The ramps are seated on the floor** (`seat: true`), so each is a wedge rather than a plank
+ *   floating a thickness above the ground with a gap a player can walk into — which is what
+ *   "I fell through the ramp" looked like.
+ * - **The way back is standable.** The return ramp is 30 degrees, which is under the 45.573 the
+ *   engine calls ground, so it can be walked up with friction instead of slid down.
+ * - **Everything fits inside the room.** The room outline is the collision, so a ramp that comes
+ *   out through a wall is one the player slides into the wall.
+ * - **Nothing is a lip.** The bridge's top is exactly the height of both ramps' high edges, which
+ *   `surfRampSurface` reads off the ramps themselves.
  */
 export function buildSurfTestMap(project) {
   // A fresh project is already a valid room with a player start and the editable engine
@@ -103,26 +110,49 @@ export function buildSurfTestMap(project) {
   for (const key of Object.keys(project)) delete project[key];
   Object.assign(project, fresh);
   const room = project.map.sectors[0];
-  // A 50 degree ramp of this size rises 196 units, and the player is 56 tall on top of that, so
-  // the default 128 unit ceiling would put them through the roof.
-  room.ceilingHeight = 384;
+  const ceiling = 320;
+  room.ceilingHeight = ceiling;
   room.light = 192;
-  const geometry = surfRampGeometry();
-  const lane = 140;
-  const created = [
-    addSurfRamp(project, { x: geometry.run / 2, y: -lane, angle: 0, roll: -50 }),
-    addSurfRamp(project, { x: geometry.run / 2, y: lane, angle: 0, roll: -50 }),
-  ];
-  // Standing on the ramp, a third of the way down it, facing the way it falls. The height comes
-  // from the ramp's own top face — placing this by the ramp's *width* instead of its run, a
-  // different number once the ramp is tilted, put the player beside the ramp, falling past it —
-  // plus a margin, so a couple of units of disagreement about where the surface is leave them
-  // above it rather than inside it.
-  const surface = surfRampSurface(created[0]);
-  const startX = surface.lowEdgeX + (surface.highEdgeX - surface.lowEdgeX) * .72;
+  const bounds = { x: 450, y: 300 };
+  for (const vertex of project.map.vertices) {
+    vertex.x = Math.sign(vertex.x) * bounds.x;
+    vertex.y = Math.sign(vertex.y) * bounds.y;
+  }
+  for (const wall of project.map.walls) wall.height = ceiling;
+
+  const lane = 150, depth = 240;
+  // The surf ramp descends towards +x from its high edge at x = -100, the left-hand one.
+  const surf = addSurfRamp(project, { x: -100 + surfRampGeometry().run / 2, y: -lane, angle: 0,
+    slope: 50, depth, seat: true });
+  const surfSurface = surfRampSurface(surf);
+  const top = surfSurface.highHeight;
+  // The way back: the same height over a 30 degree slope, which the engine calls ground, so it
+  // is walked up rather than slid down. It rises towards -x to the bridge.
+  const backWidth = top / Math.sin(30 * Math.PI / 180);
+  const backRun = backWidth * Math.cos(30 * Math.PI / 180);
+  const back = addSurfRamp(project, { x: surfSurface.highEdgeX - 40 + backRun / 2, y: lane, angle: 0,
+    slope: 30, width: backWidth, depth, seat: true, id: 'surf_return_ramp' });
+  const backSurface = surfRampSurface(back);
+  // The bridge across the two lanes, spanning exactly the gap between the two high edges and
+  // level with them, so both joins are flush: one ramp's high edge, the bridge, the other's.
+  const bridgeX = (surfSurface.highEdgeX + backSurface.highEdgeX) / 2;
+  const bridgeWidth = Math.abs(surfSurface.highEdgeX - backSurface.highEdgeX);
+  project.map.entities.push({ id: 'surf_bridge', name: 'Bridge', type: 'decoration',
+    x: bridgeX, y: 0, angle: 0,
+    physics: { body: 'fixed', shape: 'box', width: bridgeWidth, height: top, depth: lane * 2 + depth,
+      radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true } });
+
+  // Standing on the surf ramp, a little way down from its high edge, facing the way it falls.
+  const inset = 12;
+  const startX = surfSurface.highEdgeX + inset;
   const start = project.map.entities.find(entity => entity.type === 'player');
-  Object.assign(start, { x: startX, y: -lane, angle: 0, elevation: surface.heightAt(startX) + 8 });
-  project.sourceMovementRamps = created.map(ramp => ramp.id);
+  Object.assign(start, { x: startX, y: -lane, angle: 0, elevation: surfSurface.heightAt(startX) + 2 });
+  // On the floor at the bottom, where the slide ends.
+  const cell = project.map.entities.find(entity => entity.type === 'pickup');
+  if (cell) Object.assign(cell, { x: surfSurface.lowEdgeX + 60, y: 0, elevation: 0 });
+  project.sourceMovementRamps = [surf.id, back.id];
+  project.sourceMovementSurfRamp = surf.id;
+  project.surfBridge = 'surf_bridge';
   installSourceMovementScriptlet(project, { ramps: 0 });
   project.title = 'Surf test map';
   return project;

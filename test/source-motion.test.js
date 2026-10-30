@@ -116,7 +116,7 @@ test('the scriptlet installs editable rules and surf ramps that can be removed a
   assert.equal(project.events.filter(event => event.sheetId === sheetId).length, 0);
 });
 
-test('the scriptlet can build a new, empty surf map with two ramps', () => {
+test('the scriptlet can build a new, empty surf map with a surf ramp and a way back up', () => {
   const project = createProject();
   buildSurfTestMap(project);
   // A whole new document: one room, a player, and nothing left of the map that was open.
@@ -124,27 +124,46 @@ test('the scriptlet can build a new, empty surf map with two ramps', () => {
   assert.equal(project.title, 'Surf test map');
   assert.equal(project.map.sectors.length, 1);
   assert.equal(project.map.entities.filter(entity => entity.type === 'player').length, 1);
-  // Raised well above the default 128 units, because a 50 degree ramp of this size rises 196
-  // and the player is 56 tall on top of it.
+  // Raised above the default 128 units, because the ramp rises 196 and the player is 56 tall.
   assert.ok(project.map.sectors[0].ceilingHeight >= 252);
-  const ramps = project.map.entities.filter(entity => project.sourceMovementRamps.includes(entity.id));
-  assert.equal(ramps.length, 2);
-  for (const ramp of ramps) {
-    assert.ok(tiltedUpNormal(ramp.modelTilt).y < STANDABLE_NORMAL_Z, 'steep enough to surf');
-    assert.ok(ramp.x > -384 && ramp.x < 384 && ramp.y > -256 && ramp.y < 256, 'inside the room');
+  const [surfId, backId] = project.sourceMovementRamps;
+  const surf = project.map.entities.find(entity => entity.id === surfId);
+  const back = project.map.entities.find(entity => entity.id === backId);
+  // Only the surf ramp is too steep to stand on, which is what makes it a surf ramp.
+  assert.ok(tiltedUpNormal(surf.modelTilt).y < STANDABLE_NORMAL_Z, 'the surf ramp is too steep to stand on');
+  assert.ok(tiltedUpNormal(back.modelTilt).y > STANDABLE_NORMAL_Z, 'the way back is walkable');
+  const room = project.map.vertices;
+  const minX = Math.min(...room.map(vertex => vertex.x)), maxX = Math.max(...room.map(vertex => vertex.x));
+  const minY = Math.min(...room.map(vertex => vertex.y)), maxY = Math.max(...room.map(vertex => vertex.y));
+  for (const ramp of [surf, back]) {
+    const surface = surfRampSurface(ramp);
+    const half = ramp.physics.depth / 2;
+    // The room outline is the collision, so a ramp sticking out through a wall is one the player
+    // slides into the wall.
+    assert.ok(Math.min(surface.lowEdgeX, surface.highEdgeX) > minX && Math.max(surface.lowEdgeX, surface.highEdgeX) < maxX,
+      `${ramp.id} fits between x ${minX} and ${maxX}`);
+    assert.ok(ramp.y - half > minY && ramp.y + half < maxY, `${ramp.id} fits between y ${minY} and ${maxY}`);
+    // A ramp is a wedge: its top face meets the floor at the low end, so there is no gap under
+    // it for a player to walk into and no lip to climb.
+    assert.ok(Math.abs(surface.lowHeight) < 1, `${ramp.id} meets the floor at its low edge (${surface.lowHeight.toFixed(1)})`);
   }
-  // A slope steeper than 45 degrees cannot be walked onto, only started on or landed on, so the
-  // player starts *on* one of the ramps, near the ridge where the two high edges meet. An
-  // earlier version started them beside a ramp instead of on it — the ramp's run and its width
-  // are different numbers once it is tilted — and they fell past it.
-  const surface = surfRampSurface(ramps.find(ramp => ramp.x > 0));
+  // The bridge joins the two high edges exactly, so neither join is a step.
+  const bridge = project.map.entities.find(entity => entity.id === project.surfBridge);
+  const surfSurface = surfRampSurface(surf), backSurface = surfRampSurface(back);
+  assert.ok(Math.abs(bridge.physics.height - surfSurface.highHeight) < 1 && Math.abs(bridge.physics.height - backSurface.highHeight) < 1,
+    'the bridge is level with both high edges');
+  assert.ok(Math.abs(bridge.x - (surfSurface.highEdgeX + backSurface.highEdgeX) / 2) < .01, 'and spans the gap between them');
+  // A slope steeper than 45 degrees cannot be walked onto, only started on. An earlier version
+  // started the player beside a ramp instead of on it — a ramp's run and its width are different
+  // numbers once it is tilted — and they fell past it.
   const start = project.map.entities.find(entity => entity.type === 'player');
-  const onRamp = start.x > Math.min(surface.lowEdgeX, surface.highEdgeX) &&
-    start.x < Math.max(surface.lowEdgeX, surface.highEdgeX);
-  assert.ok(onRamp, `player starts on the +x ramp at ${start.x}`);
-  const onSurface = surface.heightAt(start.x);
-  assert.ok(start.elevation > onSurface && start.elevation - onSurface < 12,
-    `player stands at ${start.elevation.toFixed(1)} on a surface at ${onSurface.toFixed(1)}`);
+  const startSurface = surfRampSurface(surf);
+  assert.ok(start.x > Math.min(startSurface.lowEdgeX, startSurface.highEdgeX) &&
+    start.x < Math.max(startSurface.lowEdgeX, startSurface.highEdgeX), `player starts on the ramp at ${start.x}`);
+  assert.ok(Math.abs(start.y - surf.y) < .01, 'in the ramp\'s lane');
+  assert.ok(start.elevation > startSurface.heightAt(start.x) &&
+    start.elevation - startSurface.heightAt(start.x) < 12,
+    `player stands at ${start.elevation.toFixed(1)} on a surface at ${startSurface.heightAt(start.x).toFixed(1)}`);
   // The movement rules come with it.
   const sheet = project.eventSheets.find(item => item.name === SOURCE_MOVEMENT_SHEET);
   assert.ok(sheet, 'the movement sheet is installed');

@@ -294,6 +294,10 @@ export function createPhysics(project, state, R, triangulate) {
   const spawn = state.entities.find(entity => entity.type === 'player'), playerId = spawn.id;
   /** How far below the capsule a surface still counts as ground, in map units. */
   const GROUND_SNAP = 4;
+  /** The downward speed a grounded player keeps, in metres a second: contact, without jitter. */
+  const GGROUND_PRESS = -.5;
+  /** True between a jump and the top of its arc, so only a jump ignores the ground. */
+  let jumping = false;
   const controller = world.createCharacterController(.005);
   controller.enableAutostep(24 / PHYSICS_SCALE, 12 / PHYSICS_SCALE, true);
   controller.enableSnapToGround(GROUND_SNAP / PHYSICS_SCALE);
@@ -550,7 +554,9 @@ export function createPhysics(project, state, R, triangulate) {
       accumulator = Math.min(accumulator + dt, FIXED_STEP * 8);
       // A movement model can supply its own jump impulse (`sv_jumpvelocity`).
       const jumpSpeed = Number.isFinite(movement.jumpSpeed) ? movement.jumpSpeed / PHYSICS_SCALE : DOOM_JUMP_SPEED;
-      if (movement.jump && grounded) { verticalSpeed = jumpSpeed; grounded = false; }
+      // A jump is the one upward move that ignores the ground; stepping up onto a ledge also
+      // raises the player, and that must still count as standing.
+      if (movement.jump && grounded) { verticalSpeed = jumpSpeed; grounded = false; jumping = true; }
       while (accumulator + 1e-9 >= FIXED_STEP) {
         for (const [id, body] of bodies) if (body.isDynamic()) {
           body.resetForces(true);
@@ -565,7 +571,12 @@ export function createPhysics(project, state, R, triangulate) {
         // means "none at all": the vertical motion is then the model's, not this one's.
         const fell = !grounded && verticalSpeed <= 0 && !ledgeFallen;
         if (grounded) ledgeFallen = false; else if (fell) ledgeFallen = true;
-        verticalSpeed = grounded ? -.5
+        // A grounded player is pressed into the floor only just enough to stay in contact.
+        // Half a unit a substep used to do it, but the controller tolerates only its own
+        // 0.005 m offset before pushing back out, so the capsule oscillated by 0.4 units every
+        // substep — which reads as the whole view jiggling while walking. This is a twentieth of
+        // that, well inside the offset, so the press is absorbed instead of answered.
+        verticalSpeed = grounded ? GGROUND_PRESS
           : Math.max(-50, verticalSpeed - gravity / PHYSICS_SCALE * FIXED_STEP * (fell ? LEDGE_GRAVITY : 1));
         const fall = verticalSpeed * FIXED_STEP;
         // Snap-to-ground keeps a walking player glued to a step-down instead of bouncing off
@@ -603,11 +614,13 @@ export function createPhysics(project, state, R, triangulate) {
         // contact the rays cannot find, which left a player hanging in mid-air after a
         // gravity change, so an upright player has to satisfy both.
         grounded = axis.y > .999 ? controller.computedGrounded() && standingOnSurface() : standingOnSurface();
-        // A player on the way up is not on the ground, whatever the contact rays say. The
-        // ground test reaches GROUND_SNAP units below the capsule, which is more than a jump
-        // rises in its first substep (Half-Life's 160 units/s is 2.7), so without this the
-        // rise was read as still standing, gravity was reset, and the jump did nothing.
-        if (verticalSpeed > 0) grounded = false;
+        // A player on the way up from a jump is not on the ground, whatever the contact rays
+        // say. The ground test reaches GROUND_SNAP units below the capsule, which is more than a
+        // jump rises in its first substep (Half-Life's 160 units/s is 2.7), so without this the
+        // rise was read as still standing, gravity was reset, and the jump did nothing. Only a
+        // jump: stepping up onto a ledge also raises the player, and that is still standing.
+        if (jumping && verticalSpeed > 0) grounded = false;
+        else if (verticalSpeed <= 0) jumping = false;
         const characterContacts = new Set();
         contactNormals.length = 0;
         for (let i = 0; i < controller.numComputedCollisions(); i++) {
