@@ -16,6 +16,8 @@ import { isLogFileName, isLogId, logFileName, normalizeLogEntry, parseLogText, s
 const INDEX = 'index.json';
 
 export const DEFAULT_LOG_DIRECTORY = join('logs', 'playtest');
+/** Where "drawn as a grey placeholder" records go, kept apart from playtest failures. */
+export const DEFAULT_PLACEHOLDER_DIRECTORY = join('logs', 'placeholders');
 
 /**
  * @param {object} options

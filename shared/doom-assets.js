@@ -227,8 +227,12 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     if (!name || name === '-') return null;
     const key = `${kind}_${name}`;
     if (cache.has(key)) return cache.get(key);
+    // A mod ships its skies as `graphics/<NAME>`, which this importer files as a sprite, so a
+    // sky has to look there too: `sky1 = "NEBUSKY4"` otherwise finds nothing and the map
+    // renders against the flat fallback colour.
     const external = images.get(`${kind}_${name}`) ||
-      (kind === 'sky' || kind === 'flat' ? images.get(`texture_${name}`) : null) ||
+      (kind === 'sky' ? images.get(`texture_${name}`) || images.get(`sprite_${name}`) : null) ||
+      (kind === 'flat' ? images.get(`texture_${name}`) : null) ||
       (kind === 'texture' ? images.get(`flat_${name}`) : null);
     if (!external && !lumpMap.has(name) && !definitions.has(name)) {
       warnings.add(`Missing ${kind} ${name}; uses a visible fallback.`); return null;

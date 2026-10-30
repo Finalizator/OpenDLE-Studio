@@ -35,6 +35,7 @@ import { LIMITS } from '/shared/limits.js';
 
 const ARCHIVE_LIMIT = LIMITS.archiveBytes;
 import { createPlaytestLogger } from './playtest-log.js';
+import { createPlaceholderLog } from './placeholder-log.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
@@ -167,6 +168,33 @@ const playtestLog = createPlaytestLogger({
   }),
 });
 playtestLog.attach(window);
+// Objects drawn as grey placeholders are written to their own folder: a view that looks
+// wrong is usually a content gap, and the list of gaps names each object and where it is.
+const placeholderLog = createPlaceholderLog({
+  send: ({ session, header, entries }, { keepalive } = {}) => api('/api/placeholder/logs', {
+    method: 'POST', body: JSON.stringify({ session, header, entries }), ...(keepalive ? { keepalive: true } : {}),
+  }),
+});
+let placeholderTimer = null;
+function flushPlaceholders(mode = 'game', keepalive = false) {
+  const view = mode === 'editor' ? sceneEditor : previewRenderer;
+  const report = view?.placeholderReport?.();
+  if (!report?.length) return Promise.resolve(0);
+  const level = mode === 'editor' ? project?.game?.active || project?.title : runtime?.levelName || previewProject?.game?.active;
+  return placeholderLog.flush(report, { mode, level: level || '', project: (mode === 'editor' ? project : previewProject)?.title || '', keepalive })
+    .catch(() => 0);
+}
+function watchPlaceholders() {
+  if (placeholderTimer) clearInterval(placeholderTimer);
+  placeholderTimer = setInterval(() => {
+    flushPlaceholders('game');
+    if (sceneEditor && sceneMode === '3d') flushPlaceholders('editor');
+  }, 4000);
+}
+window.addEventListener('pagehide', () => { flushPlaceholders('game', true); flushPlaceholders('editor', true); });
+// The 3D editor has no play session to hang the report on, so the watcher starts with the
+// page; it does nothing until a view has something to report.
+watchPlaceholders();
 function status(message, error = false) {
   $('status').textContent = message;
   $('status').classList.toggle('error', error);
@@ -2505,6 +2533,7 @@ function stopPreview() {
   audioPlayer?.dispose(); audioPlayer = null;
   lookDrag = null; draggedLook = false;
   if (document.pointerLockElement === $('preview')) document.exitPointerLock();
+  flushPlaceholders('game', true);
   $('play-dialog').close(); runtime = null; previewRenderer?.dispose(); previewRenderer = null; keys.clear(); pressed.clear();
   hudView?.dispose(); hudView = null; previewProject = null; hudCursorActive = false;
   $('hud-cursor').setAttribute('aria-pressed', 'false');
@@ -2662,6 +2691,7 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       error: message => mouseStatus(message, true),
     });
     $('preview-title').textContent = `${snapshot.title}${snapshot.game ? ` / ${snapshot.game.active}` : ''}`;
+    watchPlaceholders();
     reportedStalls = 0;
     reportedSlowFrames = 0; reportedSlowWorst = 0; slowFrameReports = 0;
     frameBudget.reset();
@@ -2913,7 +2943,7 @@ function frame(now) {
       frameParts.step = performance.now() - frameStart;
       audioPlayer?.update(runtime);
       frameParts.audio = performance.now() - frameStart - frameParts.step;
-      previewRenderer.render(runtime, runtime.gameScreen === 'playing' ? dt : 0);
+      previewRenderer.render(runtime, runtime.gameScreen === 'playing' || runtime.ambientWorld ? dt : 0);
       frameParts.render = performance.now() - frameStart - frameParts.step - frameParts.audio;
       reportPlaytestFailures(runtime);
       reportFrameStalls(runtime);

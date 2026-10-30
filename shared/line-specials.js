@@ -451,6 +451,16 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       }
       return 1;
     }
+    case 237: { // ChangeCamera
+      // `tid` is the camera actor; 0 hands the view back to the player. A title map films
+      // the scene from a SecurityCamera while the player start sits out of sight.
+      if (!arg1) { state.viewCamera = null; return 1; }
+      const camera = actorByTid(state, arg1);
+      if (!camera) { if (arg2) state.viewCamera = null; return 0; }
+      state.viewCamera = camera.id;
+      state.viewCameraHeight = camera.cameraHeight || 0;
+      return 1;
+    }
     case 125: { // Thing_Move
       const entity = actorByTid(state, arg2 || arg1);
       const destination = sectors[0];

@@ -132,6 +132,12 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     impacts: [],
     decalCounter: 0,
     worldTriggers: { use: null, useSpecial: null, cross: new Set(), shoot: new Set() },
+    // A ChangeCamera special points the view at a camera actor; null is the player's eyes.
+    viewCamera: null,
+    // A level named TITLEMAP is GZDoom's title backdrop: its scripts and geometry keep
+    // running behind the menu (that is what animates the camera and the fades), while the
+    // player does not act.
+    ambientWorld: screen !== 'playing' && /^TITLEMAP$/i.test(String(project.game?.active || '')),
     variables: { ...project.variables },
     entities,
     levelStatistics: createLevelStatistics(entities, project.map.sectors || []),
@@ -456,7 +462,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   stage('interface');
   state.interfaceStarted = true;
   state.hudState.cursor = state.gameScreen !== 'playing' || state.hudState.cursor;
-  if (state.gameScreen !== 'playing') {
+  if (state.gameScreen !== 'playing' && !state.ambientWorld) {
     state.hudState.clicked.clear(); return;
   }
   state.time += dt;
@@ -489,7 +495,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.worldTriggers.shoot.clear();
   runRules('beforePhysics');
   stage('rules');
-  if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
+  if (state.gameScreen !== 'playing' && !state.ambientWorld) { hud.clicked.clear(); return; }
   // Doom's player does not move at a speed the keys choose; it accumulates momentum one
   // tic at a time (turn, thrust, friction), which is why it takes about thirty tics to
   // reach full speed and a moment to coast to a stop. See shared/player-motion.js.

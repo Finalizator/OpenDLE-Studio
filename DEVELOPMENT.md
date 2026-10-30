@@ -2323,6 +2323,61 @@ playtest log names them once (`N object(s) have no artwork and are not drawn: ..
 because artwork that is *missing* is an import problem worth seeing. The editor still
 draws the placeholder, since the object has to stay selectable.
 
+### Grey boxes get a log of their own
+
+A placeholder is a grey box or billboard drawn where artwork should be, so it is how a
+content gap becomes visible — and until now the only way to ask *what* was grey was to
+screenshot it. Every such object is now written to `logs/placeholders/`, one JSON line
+each, naming it and where it is:
+
+```
+Editor drew SecurityCamera (decoration #9025) as a grey billboard: no sprite assigned
+  {"x":352,"y":0,"z":0,"sector":"sector31","drawn":"billboard","reason":"no sprite assigned"}
+```
+
+The renderer records into a map keyed by object, so an object that stays grey for a whole
+session is one line, not one line per frame; `placeholderReport()` hands the list over and
+the studio posts it every four seconds, when a preview stops, and on `pagehide`. Both the
+editor and the play preview report, and each record says which one it came from. The server
+side is the same store the playtest log uses (`server/playtest-logs.js`) with a second
+folder and its own endpoints:
+
+| | |
+| --- | --- |
+| `POST /api/placeholder/logs` | append a batch (session, header, entries) |
+| `GET /api/placeholder/logs` | list the sessions that wrote one |
+| `GET /api/placeholder/logs/:session` | read one session's log |
+| `DELETE /api/placeholder/logs/:session` | remove it |
+
+One wrinkle worth knowing: the renderer cannot resolve a sector while entities are first
+added (`sectorOf` is still in its temporal dead zone during the first build), so records are
+stored without one and the sector is filled in when the report is built.
+
+### Documented gaps of the menu level
+
+The imported TITLEMAP of a campaign is not just a picture behind the menu, and two parts of
+that were missing:
+
+- **The world keeps running.** GZDoom plays the title level's ACS behind the menu, and the
+  Lullaby TITLEMAP uses it to point a camera at a security camera actor
+  (`ChangeCamera`, line special 237). The runtime now implements 237 (setting
+  `state.viewCamera`, with `tid 0` returning to the player) and marks a level as an ambient
+  world while the menu is up, so its scripts tick and the view renders from that camera
+  instead of the player's eyes — world-up, without view bob, with the heading negated
+  because entity angles are stored negated.
+- **`SetActorPosition` is silent.** A title map repositions an actor every tic, and every
+  one of those played `DSTELEPT`, which is the stuttering sound the menu had: a 1.07 s
+  teleport sound restarted every 28 ms. GZDoom's `SetActorPosition` plays nothing and leaves
+  only the fog, so the special now records `state.teleportFog` and no sound.
+- **A map may name its own sky.** `sky1 = "NEBUSKY4"` in MAPINFO is not one of the three
+  conventional `SKY1/2/3` names the importer only ever looked for. A declared sky now wins
+  over the convention, per level, and the artwork is found where the mod actually put it
+  (`graphics/NEBUSKY4`, which this importer files as a sprite).
+
+The title screen still looks dark: the map itself is dark by design and its "LULLABY" title
+is drawn by an ACS `HudMessage` (`SETFONT`/`SETHUDSIZE`/`BEGINPRINT`/`PRINTSTRING`), which is
+not rendered yet — a positioned-text gap, not a broken camera.
+
 ### Static world surfaces are merged, not one mesh each
 
 A fragment of every wall quad and every floor/ceiling triangle used to be its own

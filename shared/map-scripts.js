@@ -192,7 +192,10 @@ export function createMapScripts(project, state, callbacks = {}) {
       message(body);
       if (log) state.scriptLog = [...(state.scriptLog || []), body].slice(-50);
     },
-    hudMessage: (body, options) => message(body),
+    // The VM hands over a HudMessage object (text, position, colour, hold time), not a
+    // string. Passing it straight to message() stored the object and the overlay showed
+    // "[object Object]" where a title map's title should be.
+    hudMessage: (body) => message(typeof body === 'string' ? body : body?.text),
     thingCount: options => countThings(options),
     skill: () => (state.settings?.difficulty || 1) - 1,
     skillName: () => ['I am too young to die', 'Hey, not too rough', 'Hurt me plenty', 'Ultra-Violence',
@@ -287,7 +290,7 @@ export function createMapScripts(project, state, callbacks = {}) {
   if (program) api.vm = createAcsVm(program, host);
 
   function message(text) {
-    if (!text) return;
+    if (!text || typeof text !== 'string') return;
     state.message = text.length > 400 ? `${text.slice(0, 400)}…` : text;
     state.messageTime = 4;
     state.messageCount = (state.messageCount || 0) + 1;
@@ -531,7 +534,11 @@ export function createMapScripts(project, state, callbacks = {}) {
       entity.z = z;
       state.physics?.teleport(entity.id, x, y, z);
     }
-    if (!fog) soundEvent(state, 'DSTELEPT', .7);
+    // GZDoom's SetActorPosition moves the actor and nothing else: the optional fog is a
+    // visual, and no sound plays. A script that repositions something every tic (a floating
+    // decoration, a title-screen prop) otherwise stutters the teleport sound 35 times a
+    // second, which is heard as a loop of glitches over the music.
+    if (!fog) state.teleportFog = { x, y, z };
     return 1;
   }
 

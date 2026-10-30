@@ -936,6 +936,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     pointUnderPointer,
     /** Frame the whole room, for when the camera has been flown somewhere unhelpful. */
     fit,
+    /** Objects this view had to draw without artwork, for the editor's placeholder log. */
+    placeholderReport: () => view.placeholderReport?.() || [],
     dispose() {
       endExternalDrag();
       listeners.forEach(remove => remove()); clearHandles(); resources.forEach(resource => resource.dispose()); view.dispose();

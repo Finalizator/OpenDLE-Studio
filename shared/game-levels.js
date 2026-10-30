@@ -199,10 +199,12 @@ export function parseLevelRoutes(sources) {
       const id = match[1].replaceAll('"', '').toUpperCase(), route = { ...routes.get(id) };
       if (match[2]) route.name = match[2];
       const body = clean.slice(map.lastIndex, end - 1);
-      for (const field of body.matchAll(/\b(next|secretnext|music)\s*=\s*("[^"]*"|[a-zA-Z0-9_-]+)/gi)) {
+      for (const field of body.matchAll(/\b(next|secretnext|music|sky1)\s*=\s*("[^"]*"|[a-zA-Z0-9_-]+)/gi)) {
         const value = field[2].replaceAll('"', '').toUpperCase();
         const key = field[1].toLowerCase();
         if (key === 'music') { route.music = value; continue; }
+        // A map can name its own sky; a title map usually has no SKY1 to fall back on.
+        if (key === 'sky1') { route.sky = value; continue; }
         route[key === 'next' ? 'next' : 'secretNext'] = /^END/.test(value) ? null : value;
       }
       routes.set(id, route); map.lastIndex = end;

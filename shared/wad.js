@@ -184,6 +184,28 @@ export function mapInfoMusic(wad, mapName) {
   }
 }
 
+/**
+ * `sky1` declared for one map in MAPINFO/ZMAPINFO, or null.
+ *
+ * A title map is usually built as an untextured shell around a sky, so without its declared
+ * sky it renders as flat black. `mapInfoMusic` reads the same blocks; this is its twin.
+ */
+export function mapInfoSky(wad, mapName) {
+  const sources = wad.lumps.filter(lump => ['MAPINFO', 'ZMAPINFO'].includes(lump.name) && lump.size <= 1024 * 1024)
+    .map(lump => new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)));
+  return skyFromSources(sources, mapName);
+}
+
+function skyFromSources(sources, mapName) {
+  const texts = (sources || []).filter(source => typeof source === 'string' && source.length <= 1024 * 1024);
+  if (!texts.length) return null;
+  try {
+    return parseLevelRoutes(texts).get(String(mapName).toUpperCase())?.sky || null;
+  } catch {
+    return null;
+  }
+}
+
 export function readWad(buffer, { allowNoMaps = false } = {}) {
   if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 12) throw new Error('WAD header is truncated');
   if (buffer.byteLength > LIMITS.archiveBytes) {
@@ -476,8 +498,14 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     }
   }
   if (assets) {
+    // The level table is already parsed for a full game, so its sources carry the sky too.
+    const declaredSky = options.sky || skyFromSources(episodeInfo?.sources?.map(item => item.source ?? item), mapName)
+      || (episodeInfo ? null : mapInfoSky(wad, mapName));
     const mapNumber = Number(mapName.match(/\d+$/)?.[0] || 1);
-    const skyName = mapName.startsWith('MAP') ? `SKY${mapNumber <= 11 ? 1 : mapNumber <= 20 ? 2 : 3}` : `SKY${mapName[1]}`;
+    // A map's own `sky1` wins over the SKY1/SKY2/SKY3 convention, which only describes
+    // vanilla maps and leaves a title map with no sky at all.
+    const skyName = declaredSky && assets.has(declaredSky) ? declaredSky
+      : mapName.startsWith('MAP') ? `SKY${mapNumber <= 11 ? 1 : mapNumber <= 20 ? 2 : 3}` : `SKY${mapName[1]}`;
     if (assets.has(skyName)) { project.environment.skyAsset = assets.get(skyName, 'sky'); project.environment.skyMode = 'doom'; }
     // A script can ChangeSky to another classic sky mid-level, so all of them are
     // imported as editable image assets, not only the one this map starts with.

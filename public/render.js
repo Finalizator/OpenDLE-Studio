@@ -686,6 +686,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const asset = assetMap.get(entity.spriteAsset);
       const map = entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
       const color = asset ? '#ffffff' : entityColors[entity.type] || '#ffffff';
+      if (!asset) placeholder(entity, 'billboard', entity.spriteAsset ? `sprite ${entity.spriteAsset} is not in the project` : 'no sprite assigned');
       // A shadered sprite cannot share the pre-wrapped template material.
       const material = entity.shaderId
         ? withEffectFor(new THREE.SpriteNodeMaterial({ map, color, alphaTest: .5, transparent: false, sizeAttenuation: true }), entity)
@@ -772,6 +773,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const geometry = box.wedge ? wedgeGeometry(box) : new THREE.BoxGeometry(box.width, box.height, box.depth);
       const material = withEffect(new THREE.MeshBasicNodeMaterial({ color: entityColors[entity.type] || '#a6a4bc' }));
       applyBoxTexture(material, entity, box);
+      if (!material.map) placeholder(entity, 'box', entity.spriteAsset || entity.modelAsset ? 'assigned artwork could not be drawn' : 'no artwork, only a collider');
       geometries.add(geometry); materials.add(material);
       const mesh = new THREE.Mesh(geometry, material);
       mesh.userData.selection = { kind: 'entity', id: entity.id };
@@ -859,6 +861,20 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // Runtime spawns reuse the loaded model, fall back to the entity sprite, and are
     // otherwise skipped instead of failing the frame.
     const unrenderable = new Set();
+    // Everything this view had to draw without artwork. A grey box is not a rendering
+    // detail, it is a content gap, and the answer to "why does the map look wrong" is the
+    // list of them: what each one is, where it stands and what it wanted.
+    const placeholders = new Map();
+    function placeholder(entity, drawn, reason) {
+      if (!entity?.id || placeholders.has(`${drawn}:${entity.id}`)) return;
+      // Objects are added before the sector index exists, so nothing here may look one up;
+      // the report resolves the sector when it is read.
+      placeholders.set(`${drawn}:${entity.id}`, {
+        entity, id: entity.id, name: entity.name || '(unnamed)', type: entity.type, doomType: entity.doomType ?? null,
+        x: Math.round(entity.x), y: Math.round(entity.y), z: Math.round(entity.z ?? 0), drawn, reason,
+        asset: entity.spriteAsset ?? entity.modelAsset ?? null,
+      });
+    }
     // Things that carry no artwork. Doom draws nothing for them (TNT1, teleport
     // destinations, deathmatch starts), so a play preview must not either; the editor
     // still needs a placholder to select and move them.
@@ -1338,16 +1354,27 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // The eye and the look direction come from the player's own up axis, so an
       // event that turns gravity onto a wall also turns the view onto that wall.
       if (!editor) {
+        // A script can point the view at a camera actor instead of the player (GZDoom's
+        // ChangeCamera). A title map is built that way: the player start sits in a black
+        // box and a SecurityCamera films the scene, so rendering from the player showed
+        // nothing at all.
+        const spectator = state.viewCamera ? state.entities.find(entry => entry.id === state.viewCamera) : null;
         const up = upVector(state.player.up);
-        const eye = eyePosition(state.player, state.player.z ??
-          sectorOf(state.player)?.floorHeight ?? 0);
+        const eye = spectator
+          ? [spectator.x, spectator.y, (spectator.z ?? sectorOf(spectator)?.floorHeight ?? 0) + (spectator.cameraHeight || 0)]
+          : eyePosition(state.player, state.player.z ?? sectorOf(state.player)?.floorHeight ?? 0);
+        // An object's angle is stored negated (Doom's Y axis is flipped for the world), so the
+        // world-space heading is its negative — the same conversion the sprite facing uses.
+        const direction = spectator
+          ? viewDirection({ angle: -(spectator.angle || 0) * Math.PI / 180, pitch: spectator.cameraPitch || 0,
+            up: [0, 0, 1] })
+          : viewDirection(state.player);
         // The view rises and falls as the player walks, which is half of what makes Doom's
-        // movement read as movement rather than gliding.
-        eye[2] += viewBob(state.bob || 0, state.bobTimer || 0);
-        const direction = viewDirection(state.player);
+        // movement read as movement rather than gliding. A camera does not bob.
+        if (!spectator) eye[2] += viewBob(state.bob || 0, state.bobTimer || 0);
         camera.position.set(eye[0], eye[2], eye[1]);
         // Roll eases in: a gravity change should read as the world turning, not a cut.
-        viewUp.lerp(targetUp.set(up[0], up[2], up[1]), dt > 0 ? 1 - Math.exp(-12 * dt) : 1);
+        viewUp.lerp(targetUp.set(...(spectator ? [0, 1, 0] : [up[0], up[2], up[1]])), dt > 0 ? 1 - Math.exp(-12 * dt) : 1);
         if (viewUp.lengthSq() < 1e-8) viewUp.copy(targetUp); else viewUp.normalize();
         camera.up.copy(viewUp);
         camera.lookAt(eye[0] + direction[0], eye[2] + direction[2], eye[1] + direction[1]);
@@ -1657,6 +1684,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
     return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity,
       /** Editor only: hide a ceiling once the camera is above it, so rooms open up. */
       ceilings(visible) { ceilingsHidden = !visible; },
+      /** Every object drawn without artwork, one record each, for the placeholder log. */
+      placeholderReport: () => [...placeholders.values()].map(({ entity, ...record }) => ({
+        ...record, sector: sectorIndex.at(record.x, record.y)?.id ?? null })),
       spriteReport: () => ({ player: { x: Math.round(state.player.x), y: Math.round(state.player.y),
         z: Math.round((state.player.z ?? 0) * 10) / 10, pitch: Math.round((state.player.pitch || 0) * 1000) / 1000 },
       sprites: report.slice(), withoutArtwork: withoutArtwork.slice(), hiddenWithoutArtwork: unrenderable.size }),

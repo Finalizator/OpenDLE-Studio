@@ -17,7 +17,7 @@ import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, in
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
 import { createPortableBuild } from './export-build.js';
 import { loadGzdoomActors } from './actor-sources.js';
-import { createPlaytestLogStore, DEFAULT_LOG_DIRECTORY } from './playtest-logs.js';
+import { createPlaytestLogStore, DEFAULT_LOG_DIRECTORY, DEFAULT_PLACEHOLDER_DIRECTORY } from './playtest-logs.js';
 import { isLogId, normalizeLogEntry, LOG_LIMITS } from '../shared/playtest-log.js';
 import { fetchShadertoy } from './shadertoy.js';
 
@@ -38,6 +38,10 @@ export function createApp({
   versionFile = resolve(root, 'version.ini'),
   importCache,
   playtestLogs = createPlaytestLogStore({ directory: resolve(root, DEFAULT_LOG_DIRECTORY) }),
+  // Every object that had to be drawn as a grey placeholder — no artwork, no model, only a
+  // collider — is recorded here. It is the fastest way to answer "why does the map look
+  // wrong": one file lists each such object with its name, type and position.
+  placeholderLogs = createPlaytestLogStore({ directory: resolve(root, DEFAULT_PLACEHOLDER_DIRECTORY) }),
 } = {}) {
   readEngineVersion(versionFile);
   const app = express();
@@ -229,6 +233,26 @@ export function createApp({
     res.json(playtestLogs.read(req.params.session));
   });
   app.delete('/api/playtest/logs', (req, res) => res.json(playtestLogs.clear()));
+  // Placeholder records: the same session-log format, written to their own folder so a
+  // playtest's real failures are not buried under thousands of grey boxes.
+  app.post('/api/placeholder/logs', (req, res) => {
+    const session = req.body?.session;
+    if (!isLogId(session)) return res.status(400).json({ error: 'Placeholder session id is invalid' });
+    if (!Array.isArray(req.body?.entries)) return res.status(400).json({ error: 'Placeholder log entries must be an array' });
+    if (req.body.entries.length > LOG_LIMITS.entriesPerRequest) {
+      return res.status(413).json({ error: `At most ${LOG_LIMITS.entriesPerRequest} placeholder entries per request` });
+    }
+    if (!withinLogBudget(req.body.entries.length)) return res.status(429).json({ error: 'Too many placeholder entries in one minute' });
+    const entries = req.body.entries.map(entry => normalizeLogEntry({ severity: 'info', ...entry }, { session }));
+    const header = req.body.header && typeof req.body.header === 'object' ? normalizeLogEntry(req.body.header, { session }) : undefined;
+    res.json(placeholderLogs.append(session, entries, { header }));
+  });
+  app.get('/api/placeholder/logs', (req, res) => res.json(placeholderLogs.list()));
+  app.get('/api/placeholder/logs/:session', (req, res) => {
+    if (!isLogId(req.params.session)) return res.status(400).json({ error: 'Placeholder session id is invalid' });
+    res.json(placeholderLogs.read(req.params.session));
+  });
+  app.delete('/api/placeholder/logs', (req, res) => res.json(placeholderLogs.clear()));
   app.get('/api/project', (req, res) => res.json(store.snapshot()));
   app.put('/api/project', (req, res) => res.json(store.update(req.body.project, req.body.revision)));
   // Stored projects: the studio reopens the active one on the next start, so switching
