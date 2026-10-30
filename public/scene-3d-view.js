@@ -304,8 +304,10 @@ export async function createScene3dView(canvas) {
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geometry.setIndex([0, 2, 5, 0, 5, 3, 0, 4, 1, 1, 4, 5, 1, 5, 2, 0, 3, 4]);
       geometry.computeVertexNormals();
+      // Deliberately not the room's orange: the default walls are orange, and a ramp the same
+      // colour as the wall it leans on is a ramp you cannot pick out in the editor.
       const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-        color: '#c98b4b', transparent: true, opacity: .9, side: THREE.DoubleSide }));
+        color: '#6f5bd0', transparent: true, opacity: .92, side: THREE.DoubleSide }));
       mesh.userData.pickable = true;
       group.add(mesh);
     } else {
