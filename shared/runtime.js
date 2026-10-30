@@ -1,5 +1,5 @@
 import { resolveEntityId } from './project.js';
-import { sectorAt, sectorGeometry } from './sectors.js';
+import { entitySector, sectorAt, sectorGeometry } from './sectors.js';
 import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
@@ -381,7 +381,7 @@ export function settleGroundActors(state) {
     if (entity.type === 'player' || !Number.isFinite(entity.z)) continue;
     // Rigid bodies are simulated by Rapier, which already rests them on the floor.
     if (entity.physics && entity.physics.body !== 'none') continue;
-    const sector = sectorAt(state.sectors, entity.x, entity.y);
+    const sector = entitySector(state.sectors, entity);
     if (!sector) continue;
     if (entity.z >= sector.floorHeight - 1) continue;
     state.groundCorrections ??= { count: 0, first: null };

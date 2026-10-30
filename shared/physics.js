@@ -1,4 +1,4 @@
-import { sectorAt, sectorGeometry, sectorShapes } from './sectors.js';
+import { entitySector, sectorAt, sectorGeometry, sectorShapes } from './sectors.js';
 import {
   PLAYER_CYLINDER, SURFACE_REACH, WORLD_UP, dot as dotMap, playerBasis, surfaceKind, upVector,
 } from './gravity.js';
@@ -234,7 +234,9 @@ export function createPhysics(project, state, R, triangulate) {
   const toRapierPoint = v => ({ x: v[0] / PHYSICS_SCALE, y: v[2] / PHYSICS_SCALE, z: v[1] / PHYSICS_SCALE });
   const toMap = v => [v.x, v.z, v.y];
   const contactRay = new R.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
-  function floorAt(entity) { return sectorAt(mesh.sectors, entity.x, entity.y)?.floorHeight || 0; }
+  // Called for every object that Rapier does not simulate, every frame. Most never move, so
+  // the sector is remembered per object instead of re-tested against the level's rings.
+  function floorAt(entity) { return entitySector(mesh.sectors, entity)?.floorHeight || 0; }
   // Shortest-arc rotation from the capsule's +Y axis to `axis` (Rapier space).
   function capsuleRotation(axis) {
     if (axis.y > .999999) return { x: 0, y: 0, z: 0, w: 1 };
@@ -417,37 +419,37 @@ export function createPhysics(project, state, R, triangulate) {
     }
   }
 
-  function sync() {
-    for (const entity of state.entities) {
-      const body = bodies.get(entity.id);
-      if (!body) { entity.z = floorAt(entity) + (entity.elevation || 0); continue; }
-      const actorHeight = actorHeights.get(entity.id);
-      if (actorHeight !== undefined) {
-        // An actor is moved by the actor runtime, not by Rapier, so its collider follows the
-        // actor. A dead one stops blocking, the way Doom's `A_NoBlocking` clears `MF_SOLID`.
-        body.setNextKinematicTranslation({ x: entity.x / PHYSICS_SCALE,
-          y: (entity.z + actorHeight / 2) / PHYSICS_SCALE, z: entity.y / PHYSICS_SCALE });
-        const blocking = entity.health > 0, collider = colliders.get(entity.id);
-        if (collider && collider.isEnabled() !== blocking) collider.setEnabled(blocking);
-        continue;
-      }
-      const position = body.translation(), q = body.rotation();
-      const height = entity.type === 'player' ? 56 : entity.physics.height;
-      entity.x = position.x * PHYSICS_SCALE; entity.y = position.z * PHYSICS_SCALE;
-      // Feet are half a capsule below the centre along the player's own up axis, so
-      // a player lying on a wall reports the height their body actually occupies.
-      // A wedge and a model stand on their own origin, so their translation is already the
-      // bottom: subtracting half their height here reported them ~98 units underground, and the
-      // renderer places what it draws at this number, so the mesh sank while its collider did not.
-      const baseAtOrigin = entity.physics?.shape === 'wedge' || entity.physics?.shape === 'model';
-      entity.z = position.y * PHYSICS_SCALE - (entity.type === 'player'
-        ? PLAYER_CYLINDER.halfHeight * upMap[2] : baseAtOrigin ? 0 : height / 2);
-      entity.rotation = { x: q.x, y: q.y, z: q.z, w: q.w };
-      if (entity.type === 'player') {
-        state.player.x = entity.x; state.player.y = entity.y; state.player.z = entity.z;
-      }
+  /** Copies one entity's simulated position back onto the project data. */
+  function syncEntity(entity) {
+    const body = bodies.get(entity.id);
+    if (!body) { entity.z = floorAt(entity) + (entity.elevation || 0); return; }
+    const actorHeight = actorHeights.get(entity.id);
+    if (actorHeight !== undefined) {
+      // An actor is moved by the actor runtime, not by Rapier, so its collider follows the
+      // actor. A dead one stops blocking, the way Doom's `A_NoBlocking` clears `MF_SOLID`.
+      body.setNextKinematicTranslation({ x: entity.x / PHYSICS_SCALE,
+        y: (entity.z + actorHeight / 2) / PHYSICS_SCALE, z: entity.y / PHYSICS_SCALE });
+      const blocking = entity.health > 0, collider = colliders.get(entity.id);
+      if (collider && collider.isEnabled() !== blocking) collider.setEnabled(blocking);
+      return;
+    }
+    const position = body.translation(), q = body.rotation();
+    const height = entity.type === 'player' ? 56 : entity.physics.height;
+    entity.x = position.x * PHYSICS_SCALE; entity.y = position.z * PHYSICS_SCALE;
+    // Feet are half a capsule below the centre along the player's own up axis, so
+    // a player lying on a wall reports the height their body actually occupies.
+    // A wedge and a model stand on their own origin, so their translation is already the
+    // bottom: subtracting half their height here reported them ~98 units underground, and the
+    // renderer places what it draws at this number, so the mesh sank while its collider did not.
+    const baseAtOrigin = entity.physics?.shape === 'wedge' || entity.physics?.shape === 'model';
+    entity.z = position.y * PHYSICS_SCALE - (entity.type === 'player'
+      ? PLAYER_CYLINDER.halfHeight * upMap[2] : baseAtOrigin ? 0 : height / 2);
+    entity.rotation = { x: q.x, y: q.y, z: q.z, w: q.w };
+    if (entity.type === 'player') {
+      state.player.x = entity.x; state.player.y = entity.y; state.player.z = entity.z;
     }
   }
+  function sync() { for (const entity of state.entities) syncEntity(entity); }
   sync();
   /**
    * Rotate the player capsule onto a new up axis and slide it so the point it was
@@ -725,7 +727,7 @@ export function createPhysics(project, state, R, triangulate) {
       const body = bodies.get(id);
       if (!entity) return;
       const bottom = z ?? floorAt({ x, y }) + (entity.elevation || 0);
-      if (!body) { entity.x = x; entity.y = y; entity.z = bottom; entity.elevation = bottom - floorAt(entity); return; }
+      if (!body) { entity.x = x; entity.y = y; entity.z = bottom; entity.elevation = bottom - floorAt(entity); syncEntity(entity); return; }
       const height = entity.type === 'player' ? 56 : actorHeights.get(id) ?? entity.physics.height;
       const position = entity.type === 'player'
         ? { x: x / PHYSICS_SCALE, y: (bottom + PLAYER_CYLINDER.halfHeight * upMap[2] + .4) / PHYSICS_SCALE, z: y / PHYSICS_SCALE }
@@ -735,12 +737,14 @@ export function createPhysics(project, state, R, triangulate) {
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       world.propagateModifiedBodyPositionsToColliders();
       if (id === playerId) verticalSpeed = 0;
-      sync();
+      // Only the object that moved: scripts teleport many things per tic, and re-reading
+      // every body for each of them made a level with thousands of objects crawl.
+      syncEntity(entity);
     },
     rotate(id, angle) {
       const entity = state.entities.find(entity => entity.id === id), body = bodies.get(id);
       if (!entity || !body || id === playerId) return;
-      body.setRotation(rotation({ angle }), true); world.propagateModifiedBodyPositionsToColliders(); sync();
+      body.setRotation(rotation({ angle }), true); world.propagateModifiedBodyPositionsToColliders(); syncEntity(entity);
       if (body.isKinematic()) body.setNextKinematicRotation(rotation({ angle }));
     },
     impulse(id, vector) {

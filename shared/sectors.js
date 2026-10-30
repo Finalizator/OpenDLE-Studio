@@ -67,6 +67,31 @@ export function sectorAt(sectors, x, y) {
   return sectorIndex(sectors).at(x, y);
 }
 
+const entityCaches = new WeakMap();
+
+/**
+ * The sector an object stands in, remembered per object.
+ *
+ * A running level asks this for every object without a rigid body every frame, and most
+ * of those objects never move: an imported map has thousands of decorations, and the
+ * point-in-polygon test for each of them was the whole frame on a 13,000-sector level.
+ * The answer is only re-tested when the object actually moves, and the sector object is
+ * returned live, so a rising floor still reports its current height.
+ */
+export function entitySector(sectors, entity) {
+  const list = sectors || [];
+  let cache = entityCaches.get(list);
+  if (!cache) { cache = new Map(); entityCaches.set(list, cache); }
+  const hit = cache.get(entity.id);
+  if (hit && hit.x === entity.x && hit.y === entity.y) return hit.sector;
+  const sector = sectorAt(list, entity.x, entity.y);
+  // A long session can place far more objects than any one level holds; the cache is
+  // dropped wholesale rather than growing with every spawned effect.
+  if (cache.size > 20000) cache.clear();
+  cache.set(entity.id, { x: entity.x, y: entity.y, sector });
+  return sector;
+}
+
 const indexCache = new WeakMap();
 
 // Sector lookups run per entity, per light and for the camera every frame, so a

@@ -3,7 +3,7 @@ import { uniform, vec2, vec3, vec4, attribute, varying, materialColor, positionW
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
-import { sectorGeometry, createSectorIndex, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
+import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv } from '/shared/uv.js';
 import { spriteAnchor } from '/shared/sprite-anchor.js';
 import { wallSegments } from '/shared/runtime.js';
@@ -995,6 +995,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
       holes.map(ring => ring.map(point => new THREE.Vector2(point.x, point.y))));
     if (!editor) { physics = createPhysics(project, state, RAPIER, triangulate); state.physics = physics; }
     let sectorIndex = createSectorIndex(geometry);
+    // Thousands of objects ask for their sector every frame to pick up their floor and light
+    // level. Most of them stand still, so the answer is cached per object and only re-tested
+    // when it moves; on a 13,000-sector level the uncached test was the frame's whole cost.
+    const sectorOf = entity => entitySector(sectorIndex.sectors, entity);
     let spriteIndex = createSpriteIndex(project);
     let sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
     let worldRevision = state.worldRevision, appliedResolution = '';
@@ -1336,7 +1340,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       if (!editor) {
         const up = upVector(state.player.up);
         const eye = eyePosition(state.player, state.player.z ??
-          sectorIndex.at(state.player.x, state.player.y)?.floorHeight ?? 0);
+          sectorOf(state.player)?.floorHeight ?? 0);
         // The view rises and falls as the player walks, which is half of what makes Doom's
         // movement read as movement rather than gliding.
         eye[2] += viewBob(state.bob || 0, state.bobTimer || 0);
@@ -1359,7 +1363,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       }
       for (let index = 0; index < activeLights.length; index++) {
         const entity = activeLights[index];
-        const z = entity.z ?? sectorIndex.at(entity.x, entity.y)?.floorHeight ?? 0;
+        const z = entity.z ?? sectorOf(entity)?.floorHeight ?? 0;
         lightPositions[index].set(entity.x, z + 48, entity.y);
         lightColors[index].set(entity.light.color).multiplyScalar(entity.light.intensity);
         lightRadii[index] = entity.light.radius;
@@ -1385,7 +1389,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         if (entry.root.visible !== Boolean(entity)) entry.root.visible = Boolean(entity);
         if (!entity) continue;
         if (editor) entry.object.scale.setScalar(entity.modelScale ?? 32);
-        const sector = sectorIndex.at(entity.x, entity.y);
+        const sector = sectorOf(entity);
         entry.root.position.set(entity.x, entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0), entity.y);
         // Yaw, model tilt and a physics rotation all compose into one quaternion, so a
         // model can be tilted or stood on its head without affecting its facing.
@@ -1420,7 +1424,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const entity = entityIndex.get(entry.id);
         if (entry.mesh.visible !== Boolean(entity)) entry.mesh.visible = Boolean(entity);
         if (!entity) continue;
-        const sector = sectorIndex.at(entity.x, entity.y);
+        const sector = sectorOf(entity);
         const anchor = entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0);
         entry.mesh.position.set(entity.x, anchor + entity.panel.height / 2, entity.y);
         if (entity.rotation) entry.mesh.quaternion.fromArray(modelOrientation(entity));
@@ -1431,14 +1435,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
         entry.mesh.visible = Boolean(entity);
         if (!entity) continue;
         const box = solidBoxFor(entity);
-        const floor = sectorIndex.at(entity.x, entity.y)?.floorHeight || 0;
+        const floor = sectorOf(entity)?.floorHeight || 0;
         const bottom = entity.z ?? floor + (entity.elevation || 0);
         entry.mesh.position.set(entity.x, box.wedge ? bottom : bottom + box.height / 2, entity.y);
         // The collider's own orientation, tilt included, so the slope drawn is the slope
         // walked on.
         const [qx, qy, qz, qw] = modelOrientation(entity);
         entry.mesh.quaternion.set(qx, qy, qz, qw);
-        const light = Math.max(.03, (sectorIndex.at(entity.x, entity.y)?.light ?? 255) / 255);
+        const light = Math.max(.03, (sector?.light ?? 255) / 255);
         applyBoxTexture(entry.mesh.material, entity, box);
         const tint = entity.spriteAsset ? '#ffffff' : entityColors[entity.type] || '#a6a4bc';
         entry.mesh.material.color.setRGB(light, light, light).multiply(new THREE.Color(tint));
@@ -1473,7 +1477,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
           sprite.userData.frame = assetId; sprite.userData.flip = flip;
           record.frame = assetId; record.flip = flip; record.scale = scale;
         }
-        const sector = sectorIndex.at(entity.x, entity.y);
+        const sector = sectorOf(entity);
         const anchor = entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0);
         const height = sprite.scale.y;
         const offsetY = sprite.userData.offsetY || 0;

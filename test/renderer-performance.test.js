@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSectorIndex, sectorAt, containsPoint, sectorGeometry, surfaceMaterials } from '../shared/sectors.js';
+import { createSectorIndex, entitySector, sectorAt, containsPoint, sectorGeometry, surfaceMaterials } from '../shared/sectors.js';
 import { wallSegments } from '../shared/runtime.js';
 import { createSpriteIndex, spriteIndex, clipFrame, spriteView, spriteAsset, setSpriteState } from '../shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter, createFrameBudget } from '../shared/perf.js';
@@ -336,4 +336,32 @@ test('the render buffer ignores a few pixels of layout wobble', () => {
   assert.match(render, /Math\.abs\(width - appliedWidth\) > RENDER_SIZE_TOLERANCE \|\| Math\.abs\(height - appliedHeight\) > RENDER_SIZE_TOLERANCE/);
   // A real resize must still get through on the first call.
   assert.match(render, /if \(!appliedWidth \|\| !appliedHeight\) return true;/);
+});
+
+test('an object keeps its sector until it moves, and a rising floor is still current', () => {
+  const sectors = gridSectors(4, 4);
+  // Count the ring tests so a cache hit is proven, not assumed.
+  let tested = 0;
+  for (const sector of sectors) {
+    sector.rings = new Proxy(sector.rings, {
+      get(target, key, receiver) {
+        if (key === Symbol.iterator) tested++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+  }
+  const entity = { id: 'thing1', x: 10, y: 10 };
+  const first = entitySector(sectors, entity);
+  assert.equal(first.id, 's0_0');
+  const afterFirst = tested;
+  for (let frame = 0; frame < 50; frame++) assert.equal(entitySector(sectors, entity), first);
+  assert.equal(tested, afterFirst, 'a still object does not re-test the sector rings');
+
+  // The sector object is returned live, so a moving floor still reports its new height.
+  first.floorHeight = 64;
+  assert.equal(entitySector(sectors, entity).floorHeight, 64);
+
+  // Moving re-tests, and the new sector is the one under the new position.
+  entity.x = 200; entity.y = 10;
+  assert.equal(entitySector(sectors, entity).id, 's0_3');
 });
