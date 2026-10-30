@@ -2649,6 +2649,29 @@ Placement and the type dropdown both go through one constructor, so a ramp dropp
 placed in the 3D view, or switched from another type arrives with parameters and geometry that
 agree.
 
+### One set of corners, checked by a ray
+
+A wedge's six corners are written down once, in `wedgeCorners` (`shared/ramp.js`), and its
+triangles once, in `WEDGE_INDICES`. Everything that draws or collides a ramp reads them:
+`wedgeVertices` in `shared/physics.js` builds the Rapier convex hull from them, `wedgeGeometry` in
+`public/render.js` builds the mesh from them, and the 3D editor's own drawing path in
+`public/scene-3d-view.js` swaps the depth and up axes for its Z-up group and winds the triangles
+the other way, because a mirrored shape has its faces inside out. Two descriptions of the same
+ramp is how a shape the player is stopped by drifts away from the shape they can see, and the
+editor and the game had two.
+
+The test does not compare formulas, it casts rays at the live physics world: at 10, 30, 50, 70 and
+90 % of the run the collider answers within half a map unit of `surfRampSurface().heightAt(x)`,
+for a ramp facing each way, and a ray cast up from under the floor finds the floor and nothing
+else. That second ray is the regression: a tilted box's buried lower corner sat under the floor
+where the character controller still found it, which is what lifted the player into the air tens
+of units before they reached a ramp they could see.
+
+Walking the 30° return ramp climbs it: measured over 60 tics, x goes from 183.7 to −59.9 with y
+staying at 150.0 and z following the surface from 11.6 to 151.6. A note that this ramp "drifts
+sideways instead of climbing" was my own measurement rig passing degrees where the runtime works
+in radians, and is withdrawn.
+
 ### Known issue: the walking jiggle, with the numbers
 
 While walking, the view shakes by about 0.4 map units. The cause is measured, not guessed: a

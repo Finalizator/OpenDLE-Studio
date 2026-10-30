@@ -25,6 +25,7 @@ import { skyAssetFor, skyRequestName } from '/shared/sky.js';
 import { createSpriteIndex } from '/shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 import { viewBob, weaponBob } from '/shared/player-motion.js';
+import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 
 export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc', ramp: '#c98b4b' };
 // Imported models are shaded as physical surfaces instead of Doom's flat light
@@ -689,14 +690,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
     }
     /** A wedge as a mesh, from the same six corners the collider is built from. */
     function wedgeGeometry(box) {
-      const half = box.width / 2, halfDepth = box.depth / 2;
-      // 'right' falls towards +x, so its low edge is the +x one — the same convention the
-      // collider uses, which is the whole point of drawing one from the other.
-      const low = box.wedge === 'right' ? half : -half, high = -low;
-      const positions = new Float32Array([
-        low, 0, -halfDepth, high, 0, -halfDepth, high, box.height, -halfDepth,
-        low, 0, halfDepth, high, 0, halfDepth, high, box.height, halfDepth,
-      ]);
+      // The corners are the collider's, from shared/ramp.js: the ramp the player is stopped by and
+      // the ramp they see are one shape read twice, not two shapes kept in step by hand.
+      const corners = wedgeCorners({ width: box.width, height: box.height, depth: box.depth, facing: box.wedge });
+      const positions = new Float32Array(corners.flat());
+      const low = corners[0][0];
       const uvs = new Float32Array(positions.length / 3 * 2);
       for (let i = 0; i < positions.length / 3; i++) {
         uvs[i * 2] = (positions[i * 3] - low) / Math.max(1, box.width);
@@ -705,7 +703,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-      geometry.setIndex([0, 2, 5, 0, 5, 3, 0, 4, 1, 1, 4, 5, 1, 5, 2, 0, 3, 4]);
+      geometry.setIndex(WEDGE_INDICES);
       geometry.computeVertexNormals();
       return geometry;
     }

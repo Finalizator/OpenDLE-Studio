@@ -16,6 +16,7 @@ import { GLTFLoader } from '/vendor/three-addons/loaders/GLTFLoader.js';
 import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
+import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { mix, output, screenUV, uniform, uv, vec4, viewportUV } from 'three/tsl';
 
@@ -293,16 +294,23 @@ export async function createScene3dView(canvas) {
       // Z-up here, so the ridge rises in local Z and the map's depth is local Y — the collider
       // uses Y-up, and this is that shape stood on end.
       const wedge = entity.physics;
-      const half = wedge.width / 2, halfDepth = wedge.depth / 2;
-      const low = wedge.wedge?.facing === 'right' ? half : -half, high = -low;
-      const rise = Math.max(.5, Number(wedge.height) || 0);
-      const positions = new Float32Array([
-        low, -halfDepth, 0, high, -halfDepth, 0, high, -halfDepth, rise,
-        low, halfDepth, 0, high, halfDepth, 0, high, halfDepth, rise,
-      ]);
+      // The same six corners the collider uses, stood on end: this group is Z-up, so the map's
+      // depth is local Y and the rise is local Z.
+      const corners = wedgeCorners({ width: wedge.width, height: Math.max(.5, Number(wedge.height) || 0),
+        depth: wedge.depth, facing: wedge.wedge?.facing });
+      const positions = new Float32Array(corners.length * 3);
+      corners.forEach((corner, index) => {
+        positions[index * 3] = corner[0]; positions[index * 3 + 1] = corner[2]; positions[index * 3 + 2] = corner[1];
+      });
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      geometry.setIndex([0, 2, 5, 0, 5, 3, 0, 4, 1, 1, 4, 5, 1, 5, 2, 0, 3, 4]);
+      // Swapping the depth and up axes mirrors the shape, which turns every face inside out, so
+      // the triangles are wound the other way to keep them pointing outwards.
+      const indices = [];
+      for (let index = 0; index < WEDGE_INDICES.length; index += 3) {
+        indices.push(WEDGE_INDICES[index], WEDGE_INDICES[index + 2], WEDGE_INDICES[index + 1]);
+      }
+      geometry.setIndex(indices);
       geometry.computeVertexNormals();
       // Deliberately not the room's orange: the default walls are orange, and a ramp the same
       // colour as the wall it leans on is a ramp you cannot pick out in the editor.

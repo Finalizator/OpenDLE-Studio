@@ -114,6 +114,28 @@ export function normalizeRamp(entity, change = {}) {
   return entity;
 }
 
+/**
+ * The six corners of a wedge ramp: a triangular prism whose base sits on the floor.
+ *
+ * One definition, three readers — the physics hull, the play renderer and the editor's 3D view.
+ * Two descriptions of the same ramp is how the shape the player collides with drifts away from
+ * the shape they can see, and that is exactly what happened: a tilted box collided as one thing
+ * and was drawn as another. World units, y up, origin centred on the base.
+ */
+export function wedgeCorners({ width = RAMP_DEFAULTS.length, height = 0, depth, facing } = {}) {
+  const halfWidth = width / 2, halfDepth = (depth ?? width) / 2;
+  const rise = Math.max(0, Number(height) || 0);
+  // 'right' falls towards +x, so its low edge is the +x one and the ridge is at -x.
+  const low = facing === 'right' ? halfWidth : -halfWidth, high = -low;
+  return [
+    [low, 0, -halfDepth], [high, 0, -halfDepth], [high, rise, -halfDepth],
+    [low, 0, halfDepth], [high, 0, halfDepth], [high, rise, halfDepth],
+  ];
+}
+
+/** Triangles over `wedgeCorners`, wound so every face points outwards. */
+export const WEDGE_INDICES = [0, 2, 5, 0, 5, 3, 0, 4, 1, 1, 4, 5, 1, 5, 2, 0, 3, 4];
+
 /** A new ramp entity, ready to place. */
 export function addRamp(project, { x = 0, y = 0, id, name, ...change } = {}) {
   const used = new Set([...(project.map.entities || []).map(entity => entity.id)]);

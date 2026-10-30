@@ -4,6 +4,7 @@ import {
 } from './gravity.js';
 import { actorOf } from './actor-runtime.js';
 import { tiltQuaternion } from './source-motion.js';
+import { wedgeCorners } from './ramp.js';
 
 export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
@@ -154,14 +155,10 @@ function solidActor(project, entity) {
  * answered the character controller. Local origin is the middle of the base, +Y up.
  */
 function wedgeVertices(config) {
-  const halfWidth = config.width / 2 / PHYSICS_SCALE, halfDepth = config.depth / 2 / PHYSICS_SCALE;
-  const rise = Math.max(0, config.height) / PHYSICS_SCALE;
-  // 'right' falls towards +x, so its low edge is the +x one and the ridge is at -x.
-  const low = config.wedge?.facing === 'right' ? halfWidth : -halfWidth, high = -low;
-  return new Float32Array([
-    low, 0, -halfDepth, high, 0, -halfDepth, high, rise, -halfDepth,
-    low, 0, halfDepth, high, 0, halfDepth, high, rise, halfDepth,
-  ]);
+  // The corners come from the ramp model, so the hull the player is stopped by and the wedge they
+  // see cannot be two different shapes. Rapier works in metres.
+  return new Float32Array(wedgeCorners({ width: config.width, height: config.height,
+    depth: config.depth, facing: config.wedge?.facing }).flat().map(value => value / PHYSICS_SCALE));
 }
 
 export function createPhysics(project, state, R, triangulate) {
