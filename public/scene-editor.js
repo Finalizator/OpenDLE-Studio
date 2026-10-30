@@ -440,6 +440,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     return { x: point.x, z: point.z };
   }
 
+  /** The floor point under the pointer, for placing a copy where the user is looking. */
+  function pointUnderPointer() {
+    if (!lastPointer) return null;
+    const pick = pickAt(lastPointer);
+    if (pick) return floorPointAt(pick.point);
+    return floorPointAt({ ...emptyDropPoint() });
+  }
+
   function assetFromTile(tile) {
     const list = tile.closest('#asset-list');
     if (!list) return null;
@@ -482,6 +490,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   }
 
   const external = { pointerId: null, assetId: null, entityId: null, sceneId: null, label: '', startX: 0, startY: 0, active: false, suppressClick: false };
+  // Where the pointer last was over the viewport, so a pasted object lands where the user is
+  // looking rather than at an arbitrary offset.
+  let lastPointer = null;
   function endExternalDrag() {
     const active = external.active;
     ghost.hidden = true; ghost.textContent = '';
@@ -534,7 +545,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
           return { label: `Set model ${asset.name} on ${entity.name}`, highlight: selection, apply: next => applyEntityModel(next, entity.id, asset.id) };
         }
         try { requireImageAsset(project, asset.id, 'drop a sprite image instead'); } catch (error) { return { error: error.message }; }
-        return { label: `Set sprite ${asset.name} on ${entity.name}`, highlight: selection, apply: next => applyEntitySprite(next, entity.id, asset.id) };
+        return { label: entity.type === 'ramp' ? `Set texture ${asset.name} on ${entity.name}` : `Set sprite ${asset.name} on ${entity.name}`,
+          highlight: selection, apply: next => applyEntitySprite(next, entity.id, asset.id) };
       }
       // Dropping a model anywhere else places a new decoration that already carries it.
       if (asset.kind === 'model') {
@@ -665,6 +677,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     callbacks.select(selection);
   });
   listen(canvas, 'pointermove', event => {
+    lastPointer = { clientX: event.clientX, clientY: event.clientY };
     if (!action) return;
     if (action.kind === 'fly') {
       if (!action.moved && Math.hypot(event.clientX - action.startX, event.clientY - action.startY) >= 3) action.moved = true;
@@ -838,6 +851,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     areas(visible) { showAreas = Boolean(visible); rebuildOverlays(); },
     /** Wireframe rigid-body colliders, so physics volumes are visible while editing. */
     physicsOverlay(visible) { showPhysics = Boolean(visible); rebuildOverlays(); },
+    /** The floor point under the pointer, so a pasted copy lands where the user is looking. */
+    pointUnderPointer,
     dispose() {
       endExternalDrag();
       listeners.forEach(remove => remove()); clearHandles(); resources.forEach(resource => resource.dispose()); view.dispose();

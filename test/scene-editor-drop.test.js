@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addRoom, createProject, validateProject } from '../shared/project.js';
+import { addRamp } from '../shared/ramp.js';
 import { sectorGeometry } from '../shared/sectors.js';
 import {
-  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, describeSurfaceTarget,
+  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, cloneEntityForPaste, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, resolveWallSide, sectorTarget, snapValue, wallPartAt, wallTarget,
 } from '../public/editor-drop.js';
 import { entityOrigin, liveProjectPlan, modelWorldBox } from '../shared/entity-visuals.js';
@@ -184,4 +185,50 @@ test('axis drag maths projects pointer motion onto a world axis', () => {
   assert.equal(axisDragAmount({ originX: .2, originY: .3, tipX: .2, tipY: .3,
     width: 800, height: 450, deltaX: 40, deltaY: -32 }), 32);
   assert.equal(snapValue(19, 16), 16); assert.equal(snapValue(-24, 16), -16); assert.equal(snapValue(19, 0), 19);
+});
+
+test('a texture dropped on a ramp becomes its surface instead of replacing it', () => {
+  // A ramp is a model, so an image dropped on one has to work like an image dropped on a wall.
+  // Deleting the model here turned a textured ramp into a flat billboard picture of a ramp, and
+  // because the ramp tool then re-added a model on the next edit, whether the texture survived
+  // depended on the order the two ran — one ramp showed its texture and the next one did not.
+  const project = withAssets(createProject());
+  const entity = addRamp(project, { x: 32, y: 32, slope: 50, length: 128, width: 96 });
+  const mesh = entity.modelAsset;
+  const shape = entity.physics.shape;
+  assert.match(applyEntitySprite(project, entity.id, 'tex'), /Texture Brick set on Ramp/);
+  assert.equal(entity.spriteAsset, 'tex', 'the image is the ramp surface');
+  assert.equal(entity.modelAsset, mesh, 'and the ramp is still the mesh it was');
+  assert.equal(entity.physics.shape, shape, 'so it still collides as that mesh');
+  // A decoration keeps the sprite behaviour it had.
+  const decoration = addEntityWithModel(project, { x: 0, y: 0, assetId: 'model' });
+  const other = project.map.entities[project.map.entities.length - 1];
+  assert.match(applyEntitySprite(project, other.id, 'sprite'), /3D model removed/);
+  assert.equal(other.modelAsset, undefined);
+  assert.ok(decoration.includes('placed'));
+});
+
+test('a pasted object is a copy of everything it was, at the point asked for', () => {
+  const project = withAssets(createProject());
+  const ramp = addRamp(project, { x: 64, y: 64, slope: 50, length: 128, width: 96 });
+  ramp.spriteAsset = 'tex';
+  ramp.variables = { score: 7 };
+  const copy = cloneEntityForPaste(project, ramp, { x: -128, y: 96 });
+  assert.notEqual(copy.id, ramp.id, 'a copy is its own object');
+  assert.equal(copy.name, 'Ramp copy');
+  assert.equal(copy.x, -128);
+  assert.equal(copy.y, 96);
+  // Everything that made the original what it was comes with it.
+  for (const key of ['type', 'ramp', 'physics', 'modelAsset', 'modelScale', 'spriteAsset', 'variables']) {
+    assert.deepEqual(copy[key], ramp[key], `${key} is copied`);
+  }
+  assert.equal(copy.physics.shape, 'model');
+  // Pasted again, the name does not collide with the copy already in the map.
+  project.map.entities.push(copy);
+  const second = cloneEntityForPaste(project, ramp, null);
+  assert.equal(second.name, 'Ramp copy 2');
+  assert.equal(second.x, ramp.x + 32, 'with no pointer it lands beside the original');
+  // The player start is the one thing a level cannot have two of.
+  const player = project.map.entities.find(entity => entity.type === 'player');
+  assert.throws(() => cloneEntityForPaste(project, player, null), /cannot be copied/);
 });

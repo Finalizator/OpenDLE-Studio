@@ -2696,6 +2696,27 @@ staying at 150.0 and z following the surface from 11.6 to 151.6. A note that thi
 sideways instead of climbing" was my own measurement rig passing degrees where the runtime works
 in radians, and is withdrawn.
 
+### Textures on a ramp, and copying an object
+
+A ramp is a model, so an image dropped on one has to behave like an image dropped on a wall: it
+becomes the ramp's surface. `applyEntitySprite` used to delete `modelAsset` — right for turning a
+decoration into a sprite, wrong for a ramp, because it threw the mesh away and left a flat billboard
+picture of a ramp where the ramp had been. Then `syncRampModels` put a model back on the next edit,
+so whether the texture survived depended on the order the two ran: one ramp showed its texture and
+the next one did not. Ramps now keep their mesh and the image is their texture.
+
+The material is updated from the frame loop (`applyModelTexture`) rather than only when the model is
+created, because a texture assigned to a ramp that is already on screen otherwise waits for a reload
+that never comes — which is the same bug seen from the other side. The texture is applied once per
+change, tracked by the asset id on the model entry, so the loop does not rebuild it every frame.
+
+**Ctrl+C / Ctrl+V** on a selected object copies the whole object — properties, texture or model,
+physics, ramp numbers, script variables — and pastes it where the pointer is: the map point in 2D,
+the floor point under the cursor in 3D. The copy gets a new id and a name that is not taken, and the
+player start is refused because a level has exactly one. `cloneEntityForPaste` in
+`public/editor-drop.js` is the tested part; the key handler only decides when to call it, and it
+stays out of the way while a field has focus or the game preview is running.
+
 ### A body's centre is not its base
 
 The physics world writes back where every solid body ended up (`entity.z`) and the renderer places

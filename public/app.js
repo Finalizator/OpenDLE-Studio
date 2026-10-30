@@ -8,6 +8,7 @@ import { addRamp, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/r
 import { bundleModel } from '/shared/gltf.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
 import { createSceneEditor } from './scene-editor.js';
+import { cloneEntityForPaste } from './editor-drop.js';
 import { requestMouseLock } from './pointer-lock.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
 import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
@@ -1960,6 +1961,41 @@ function drawMap() {
   }
   ctx.restore();
 }
+// Ctrl+C / Ctrl+V on a selected object. The copy is the whole object — properties, texture or
+// model, physics, ramp numbers, script variables — so pasting gives an identical twin rather than
+// a fresh object of the same type.
+let clipboardEntity = null;
+let pointerMapPoint = null;
+function copySelectedEntity() {
+  if (selection?.kind !== 'entity') return false;
+  const entity = project.map.entities.find(item => item.id === selection.id);
+  if (!entity) return false;
+  clipboardEntity = structuredClone(entity);
+  status(`${entity.name} copied`);
+  return true;
+}
+function pasteEntity() {
+  if (!clipboardEntity) return false;
+  const point = (sceneMode === '3d' ? sceneEditor?.pointUnderPointer?.() : null) || pointerMapPoint;
+  let copy;
+  try { copy = cloneEntityForPaste(project, clipboardEntity, point ? snap(point) : null); }
+  catch (error) { status(error.message, true); return false; }
+  try { edit(next => { next.map.entities.push(structuredClone(copy)); }, `${copy.name} pasted`); }
+  catch (error) { status(error.message, true); return false; }
+  selection = { kind: 'entity', id: copy.id };
+  render();
+  return true;
+}
+document.addEventListener('keydown', event => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+  if (event.code !== 'KeyC' && event.code !== 'KeyV') return;
+  const target = event.target;
+  // Typing in a field is the browser's clipboard, not the editor's.
+  if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  if (runtime && $('play-dialog').open) return;
+  if (event.code === 'KeyC') { if (copySelectedEntity()) event.preventDefault(); return; }
+  if (pasteEntity()) event.preventDefault();
+});
 function hitTest(point) {
   const tolerance = 12 / camera.zoom;
   const entity = project.map.entities.find(item => Math.hypot(item.x - point.x, item.y - point.y) < tolerance);
@@ -1996,6 +2032,7 @@ canvas.addEventListener('pointerdown', guard(event => {
 canvas.addEventListener('pointermove', event => {
   if (!project) return;
   const point = worldPoint(event);
+  pointerMapPoint = point;
   $('coordinates').textContent = `X ${Math.round(point.x)} / Y ${Math.round(point.y)}`;
   if (!drag) return;
   if (drag.kind === 'pan') {

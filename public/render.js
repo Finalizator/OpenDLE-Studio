@@ -720,6 +720,38 @@ export async function createPreview(canvas, project, state, { editor = false } =
       colliderBoxes.set(entity.id, mesh);
       colliderBoxList.push({ id: entity.id, mesh });
     }
+    /**
+     * The image assigned to an object, as its model's texture.
+     *
+     * The ramp tool generates a plain white mesh, so the picture dropped on a ramp is what gives
+     * it a surface; an imported model keeps its own materials. This runs from the frame loop and
+     * not only when the model is created, because a texture assigned to a ramp that is already on
+     * screen used to wait for a reload that never came — one ramp showed its texture and the next
+     * one did not.
+     */
+    function applyModelTexture(entry, entity) {
+      if (entity.type !== 'ramp') return;
+      const signature = entity.spriteAsset || '';
+      if (entry.textureAsset === signature) return;
+      entry.textureAsset = signature;
+      const image = signature ? imageTexture(signature) : null;
+      for (const material of entry.tinted) {
+        const previous = material.map;
+        if (previous && material.userData.ownMap) { textures.delete(previous.uuid); previous.dispose(); }
+        if (!image) {
+          // Back to the model's own material, which carries no map.
+          material.map = null; material.userData.ownMap = false; material.needsUpdate = true;
+          continue;
+        }
+        const map = image.clone();
+        map.wrapS = THREE.RepeatWrapping; map.wrapT = THREE.RepeatWrapping;
+        // The generated mesh's UVs are already in map units over 64, so one repeat is one tile
+        // per 64 units and a bigger ramp simply repeats more.
+        map.repeat.set(1, 1);
+        map.needsUpdate = true; textures.set(map.uuid, map);
+        material.map = map; material.userData.ownMap = true; material.needsUpdate = true;
+      }
+    }
     function addModel(entity) {
       const loaded = modelAssets.get(entity.modelAsset);
       if (!loaded) throw new Error(`Model ${entity.modelAsset} was not loaded`);
@@ -741,20 +773,6 @@ export async function createPreview(canvas, project, state, { editor = false } =
           node.material = Array.isArray(node.material) ? node.material.map(copy) : copy(node.material);
         }
       });
-      // The ramp tool generates a plain white mesh, so the image assigned to the object is what
-      // gives it a surface; an imported model keeps its own materials.
-      const image = entity.type === 'ramp' && entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
-      if (image) {
-        for (const material of tinted) {
-          const map = image.clone();
-          map.wrapS = THREE.RepeatWrapping; map.wrapT = THREE.RepeatWrapping;
-          // The generated mesh's UVs are already in map units over 64, so one repeat is one
-          // tile per 64 units and a bigger ramp simply repeats more.
-          map.repeat.set(1, 1);
-          map.needsUpdate = true; textures.set(map.uuid, map);
-          material.map = map; material.needsUpdate = true;
-        }
-      }
       const mixer = new THREE.AnimationMixer(object); mixers.add(mixer);
       mixer.addEventListener('finished', () => state.animationFinished.add(entity.id));
       if (root.userData.samplesScreen) screenObjects.add(root);
@@ -1301,6 +1319,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // model can be tilted or stood on its head without affecting its facing.
         if (entity.rotation || entity.modelTilt) entry.root.quaternion.fromArray(modelOrientation(entity));
         else entry.root.rotation.set(0, -entity.angle * Math.PI / 180, 0);
+        applyModelTexture(entry, entity);
         // Doom light levels still tint a model, but a dark room must not erase it.
         const shade = Math.max(MODEL_LIGHTING.ambientFloor, (sector?.light ?? 255) / 255);
         if (entry.shade !== shade) {
