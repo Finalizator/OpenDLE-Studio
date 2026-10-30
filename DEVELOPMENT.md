@@ -2781,8 +2781,9 @@ in the running engine changed the diagnosis:
   objects flat at 205 geometries and 243 textures. The heap sawtooths (up to ~850 MB, back to
   ~280 MB when a major collection runs) but nothing grows, so the entity path does not leak.
 - **The editor now opens it in 2 s.** Fetch 1.27 s, validate 0.30 s, first render 0.21 s, framing
-  0.03 s. The 3D view builds in ~3 s and then runs at 30 ms/frame (8.3 ms update, 21.9 ms draw,
-  5,440 draw calls — the object sprites, one each; the world's own surfaces are batched).
+  0.03 s. The 3D view builds in ~3 s and then runs at 28-30 ms/frame (8.3 ms update, ~20 ms draw).
+  Its draw calls are the object sprites, one each - 648 with part of the level in frame, 5,440 with
+  the whole of it - while the world's own surfaces are batched into a handful of buffers.
 - **The freeze was not memory.** Every rule card cloned one `<option>` per object into its Owner
   picker, and every rule starts collapsed: 685 rules × 4,603 objects = 3.15 million option nodes
   that were never visible. `renderEvents` never returned, so the whole editor stopped responding
@@ -2790,12 +2791,23 @@ in the running engine changed the diagnosis:
   owner and attaches the full list when the rule's settings are first opened (the same lazy rule
   the dialogs already followed), which is 0.18–0.31 s for all 685 cards.
 
-So a 64 MB single level is comfortably inside a browser tab — Chromium's heap limit in this webview
-is 4,192 MB, and the parsed project is 130 MB. What does not scale is *several* such levels resident
-at once: four levels of that size is ~500 MB of JSON plus the copies the editor keeps for undo and
-validation, and the clone-per-level-switch behaviour already had to be removed (above). The fix
-stands as written: keep the active level in the client and the others on the server, so switching
-fetches a level instead of holding every one.
+**A whole campaign opens too.** The four-level Lullaby campaign that was reported as crashing a tab
+(164 MB on disk, 70 MB as compact JSON, MAP01 alone 55,365 walls / 13,220 sectors / 4,602 objects)
+now loads to a usable editor in **2.8 s** with a 191 MB heap, lists all four levels, and switches
+between them without trouble: TITLEMAP → MAP01 takes 2.0 s, MAP01 → TITLEMAP 1.6 s. Repeated
+switching does not accumulate — the heap sawtooths (516 → 686 → 323 MB as a major collection runs)
+and peaks near 690 MB, or 940 MB with the 3D view open on MAP01, against a 4,192 MB limit. The 3D
+view draws that level inside the campaign at 231,960 triangles and ~20 ms of draw time.
+
+So neither the 64 MB level nor the 164 MB campaign is near a browser limit; the crash was the
+picker. Chromium's heap limit in this webview is the same 4,192 MB a desktop Electron build gets, so
+packaging the studio as an app would not raise it — what a desktop shell would buy is elsewhere (no
+tab-kill for an unresponsive page, native file dialogs, no background throttling). The remaining
+scale limit is arithmetic: the client holds every level of the project at once, so a campaign of
+several MAP01-sized levels (≈250 MB of JSON) would approach the ceiling. That is the case for
+loading one level at a time — fetch the active level on switch and keep the others on the server —
+which is a change to how projects load and save, not to the editor's listing, and is worth doing
+before campaigns that large arrive.
 
 ### Grouping objects
 
