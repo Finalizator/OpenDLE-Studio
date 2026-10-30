@@ -2821,15 +2821,75 @@ Two things made it feel frozen:
   300 sectors, 300 asset tiles) and say how many more there are; everything remains selectable on
   the map or reachable through the filter and the project search.
 
+### Playing a large level: the sector query was the frame
+
+Playing Lullaby's MAP01 (55,365 walls, 13,220 sectors, 4,602 objects) ran at **1 fps** in
+the studio. It looked like a rendering problem and was not one: a CPU profile put 50% in
+`Physics.sync` and 43% in `containsPoint`.
+
+Every object Rapier does not simulate asked for the sector under it on every frame, and the
+renderer asked again for every object it drew. Each answer walks a sector's rings, so a
+thousand still decorations paid for a thousand point-in-polygon tests per frame against
+13,000 sectors. `entitySector` now remembers the answer per object and only re-tests when
+the object moves, returning the sector object itself, so a rising floor still reports its
+current height. `Physics.sync`, `settleGroundActors` and the sprite/model/panel/collider-box
+loops all use it.
+
+`teleport` and `rotate` also ran a full `sync` over every object, and a level's ACS moves
+things every tic: 5% of the profile on its own, quadratic in the number of objects moved.
+They now re-sync only the object they moved.
+
+| | before | after |
+| --- | --- | --- |
+| MAP01 in Play | 1 fps | ~30 ms/frame (median 28 ms) |
+| MAP01 in the 3D editor | — | ~90 ms/frame with the whole level in view |
+| MAP02 in Play | 323 fps | 323 fps |
+
+Two things to keep in mind when measuring this page: the VM's browser occasionally stalls
+*rAF* for ~1 s at a time (a blank page does it too), so a mean frame time is meaningless —
+take the median of 80 gaps; and running the 3D editor and the Play preview at the same time
+means two renderers of the same level.
+
+### A mod's things need the mod's actor table
+
+Importing Lullaby left **3,214 of MAP01's 4,602 things as grey boxes**: unnamed
+`Doom thing 9800` placeholders with no artwork. The importer parsed the mod's DECORATE and
+ZScript into an actor table, but the thing → entity mapping only consulted the classic Doom
+numbers, so every editor number a mod defines for itself fell through.
+
+The actor table is now read *before* the things are mapped, and a thing resolves its class
+by editor number. What that buys:
+
+- **A name and artwork.** The class's name, and the first frame of its sprite prefix.
+- **A role.** Enemy, pickup or decoration from the class flags and the chain it descends
+  from — so a monster defined as a child of `Monster` is an enemy with its real health, and
+  a `replaces DoomImp` class gets the replacement's sprite where the original used to be.
+- **No placeholders for nothing.** GZDoom's dynamic lights, sector actions and teleport
+  destinations are marked invisible and draw nothing; they are no longer placed at all, and
+  the import says how many were skipped. A placeholder per light was most of the grey.
+
+Measured on the same import: TITLEMAP 69 → 0 placeholders (70 objects → 37), MAP01 3,214 →
+10 (4,602 → 2,449 objects; objects with no artwork 2,777 → 15), MAP02 22 → 2, MAP03 1 → 0,
+with every monster and lamp still in place. Play got slightly faster for it (median 32.5 →
+28.4 ms) because the dropped markers were objects the renderer visited every frame.
+
+Two things this depends on, both easy to miss: the actor table only knows GZDoom's engine
+actors (dynamic lights, fog, sector actions) if a `gzdoom.pk3` is available under the
+projects folder, which is why the importer is given `projectsDir`; and a package whose
+levels are authored against a mod it does not ship still shows placeholders for the classes
+that mod would have defined.
+
 ### Large maps: measured limits
 
 The earlier note here was written from symptoms. Measuring a real imported level (Lullaby's MAP01
 shape: 55,365 walls, 13,220 sectors, 4,602 objects, 685 rules, 1,676 assets, a 64 MB project file)
 in the running engine changed the diagnosis:
 
-- **The renderer is fine.** In Play, that level draws at a 9.3 ms mean over 8,000 frames, with GPU
-  objects flat at 205 geometries and 243 textures. The heap sawtooths (up to ~850 MB, back to
-  ~280 MB when a major collection runs) but nothing grows, so the entity path does not leak.
+- **The renderer is fine.** GPU objects stay flat at 205 geometries and 243 textures over
+  thousands of frames, and the heap sawtooths (to ~850 MB, back to ~280 MB when a major
+  collection runs) without growing, so the entity path does not leak. What was *not* fine was
+  the per-frame work outside the draw: see "Playing a large level" above, where the same level
+  went from 1 fps to ~30 ms/frame once the sector lookups were cached.
 - **The editor now opens it in 2 s.** Fetch 1.27 s, validate 0.30 s, first render 0.21 s, framing
   0.03 s. The 3D view builds in ~3 s and then runs at 28-30 ms/frame (8.3 ms update, ~20 ms draw).
   Its draw calls are the object sprites, one each - 648 with part of the level in frame, 5,440 with
