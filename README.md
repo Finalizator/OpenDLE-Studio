@@ -2,9 +2,11 @@
 
 **Build worlds. Script visually. Make them playable in your browser.**
 
-OpenDLE: Studio is an experimental, source-available game engine and visual
-editor combining Doom-style worlds, a Construct-inspired workspace and
-GDevelop-style condition/action scripting.
+OpenDLE: Studio is an experimental, source-available **Doom/GZDoom-compatible game
+engine** that runs in the browser, with a **no-code visual editor**: import WAD and PK3
+levels, edit sectors and objects in 2D and 3D, script gameplay with Construct-inspired
+event sheets and GDevelop-style conditions/actions, and press play without leaving the
+page.
 
 ![OpenDLE: Studio editor workspace](./Docs/editor_overall.png)
 
