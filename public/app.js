@@ -2140,11 +2140,16 @@ function reportPlaytestFailures(session) {
   }
   if (spriteReport?.hiddenWithoutArtwork) {
     // Objects that carry no artwork are invisible in Doom and are not drawn here either;
-    // the log still names them, because a *missing* sprite is an import problem.
-    playtestLog.once('render:without-artwork', { severity: 'info', category: 'render',
+    // the log still names them, because a *missing* sprite is an import problem. An enemy among
+    // them is worse than a missing picture: it still attacks, so the player is shot by nothing
+    // they can see, and the log has to say that rather than list it with the scenery.
+    const threats = spriteReport.withoutArtwork.filter(entry => entry.type === 'enemy');
+    playtestLog.once('render:without-artwork', { severity: threats.length ? 'warning' : 'info', category: 'render',
       message: `${spriteReport.hiddenWithoutArtwork} object(s) have no artwork and are not drawn: ${spriteReport.withoutArtwork
-        .map(entry => `${entry.name} (${entry.doomType ?? entry.type})`).join(', ')}.`,
-      details: { count: spriteReport.hiddenWithoutArtwork, objects: spriteReport.withoutArtwork } });
+        .map(entry => `${entry.name} (${entry.doomType ?? entry.type})`).join(', ')}.`
+        + (threats.length ? ` ${threats.map(entry => entry.name).join(', ')} ${threats.length === 1 ? 'is an enemy and still attacks' : 'are enemies and still attack'}: the player is being hurt by something invisible. Assign it a sprite or model, or delete it.` : ''),
+      details: { count: spriteReport.hiddenWithoutArtwork, objects: spriteReport.withoutArtwork,
+        hostileInvisible: threats.map(entry => ({ id: entry.id, name: entry.name })) } });
   }
   if (session.groundCorrections?.first) {
     // An actor below its sector floor is drawn buried in it; the runtime snaps it back
