@@ -126,27 +126,6 @@ export function moveEntityToFloor(project, entityId, x, y) {
   return `${entity.name} moved to the floor at ${x}, ${y}`;
 }
 
-/**
- * A copy of an object, ready to paste: same properties, texture or model, physics, ramp numbers and
- * script variables, with a new identifier, a name that is not taken, and the position asked for.
- *
- * Copying an object is the whole object — pasting a fresh object of the same type would throw away
- * exactly the work the copy is for.
- */
-export function cloneEntityForPaste(project, entity, point) {
-  if (!entity) throw new Error('There is nothing to paste');
-  if (entity.type === 'player') throw new Error('The player start cannot be copied; a level has one');
-  const copy = structuredClone(entity);
-  copy.id = newId('entity');
-  const base = `${entity.name} copy`;
-  const names = new Set((project.map.entities || []).map(item => item.name));
-  copy.name = base;
-  for (let index = 2; names.has(copy.name); index++) copy.name = `${base} ${index}`;
-  if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) { copy.x = point.x; copy.y = point.y; }
-  else { copy.x = (entity.x || 0) + 32; copy.y = (entity.y || 0) + 32; }
-  return copy;
-}
-
 function uniqueName(entities, base) {
   const names = new Set(entities.map(entity => entity.name));
   if (!names.has(base)) return base;

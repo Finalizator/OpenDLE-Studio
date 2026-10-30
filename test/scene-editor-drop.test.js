@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addRoom, createProject, validateProject } from '../shared/project.js';
 import { addRamp } from '../shared/ramp.js';
+import { cloneEntitiesForPaste } from '../shared/entity-groups.js';
 import { sectorGeometry } from '../shared/sectors.js';
 import {
-  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, cloneEntityForPaste, describeSurfaceTarget,
+  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, resolveWallSide, sectorTarget, snapValue, wallPartAt, wallTarget,
 } from '../public/editor-drop.js';
 import { entityOrigin, liveProjectPlan, modelWorldBox } from '../shared/entity-visuals.js';
@@ -213,7 +214,7 @@ test('a pasted object is a copy of everything it was, at the point asked for', (
   const ramp = addRamp(project, { x: 64, y: 64, slope: 50, length: 128, width: 96 });
   ramp.spriteAsset = 'tex';
   ramp.variables = { score: 7 };
-  const copy = cloneEntityForPaste(project, ramp, { x: -128, y: 96 });
+  const copy = cloneEntitiesForPaste(project, [ramp], { x: -128, y: 96 }).entities[0];
   assert.notEqual(copy.id, ramp.id, 'a copy is its own object');
   assert.equal(copy.name, 'Ramp copy');
   assert.equal(copy.x, -128);
@@ -225,10 +226,10 @@ test('a pasted object is a copy of everything it was, at the point asked for', (
   assert.equal(copy.physics.shape, 'model');
   // Pasted again, the name does not collide with the copy already in the map.
   project.map.entities.push(copy);
-  const second = cloneEntityForPaste(project, ramp, null);
+  const second = cloneEntitiesForPaste(project, [ramp], null).entities[0];
   assert.equal(second.name, 'Ramp copy 2');
   assert.equal(second.x, ramp.x + 32, 'with no pointer it lands beside the original');
   // The player start is the one thing a level cannot have two of.
   const player = project.map.entities.find(entity => entity.type === 'player');
-  assert.throws(() => cloneEntityForPaste(project, player, null), /cannot be copied/);
+  assert.throws(() => cloneEntitiesForPaste(project, [player], null), /cannot be copied/);
 });

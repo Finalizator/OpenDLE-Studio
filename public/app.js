@@ -8,7 +8,9 @@ import { addRamp, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/r
 import { bundleModel } from '/shared/gltf.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
 import { createSceneEditor } from './scene-editor.js';
-import { cloneEntityForPaste } from './editor-drop.js';
+import {
+  cloneEntitiesForPaste, entityGroups, groupEntities, groupOf, leaveGroup, membersOf, ungroup,
+} from '/shared/entity-groups.js';
 import { requestMouseLock } from './pointer-lock.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
 import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
@@ -585,12 +587,44 @@ function checkbox(text, value, fn) {
   return label;
 }
 
-function selectObject(entity) {
-  selection = { kind: 'entity', id: entity.id };
+// Several objects can be selected together — Ctrl+click adds or removes one — so they can be
+// grouped, copied or moved as a set. `selection` stays the primary object, which is what the
+// inspector and the 3D gizmo follow; `multiSelection` is the whole set, and any change of primary
+// by other code drops the extras on the next render so the two can never disagree.
+let multiSelection = [];
+let lastPrimarySelection = undefined;
+function syncMultiSelection() {
+  const primary = selection?.kind === 'entity' ? selection.id : null;
+  if (primary !== lastPrimarySelection) { multiSelection = primary ? [primary] : []; lastPrimarySelection = primary; }
+}
+function selectedEntityIds() {
+  syncMultiSelection();
+  const ids = multiSelection.length ? multiSelection : (selection?.kind === 'entity' ? [selection.id] : []);
+  return ids.filter(id => project.map.entities.some(entity => entity.id === id));
+}
+function selectedEntities() {
+  const ids = new Set(selectedEntityIds());
+  return project.map.entities.filter(entity => ids.has(entity.id));
+}
+function selectObject(entity, additive = false) {
+  syncMultiSelection();
+  if (additive && multiSelection.length) {
+    // Ctrl+click toggles this object in the set and keeps the first one primary, so the
+    // inspector does not jump around while a set is being built.
+    multiSelection = multiSelection.includes(entity.id)
+      ? multiSelection.filter(id => id !== entity.id)
+      : [...multiSelection, entity.id];
+    if (!multiSelection.length) { selection = null; lastPrimarySelection = null; render(); return; }
+    if (!multiSelection.includes(selection?.id)) selection = { kind: 'entity', id: multiSelection[0] };
+  } else {
+    multiSelection = [entity.id];
+    selection = { kind: 'entity', id: entity.id };
+  }
+  lastPrimarySelection = selection?.id ?? null;
   showTab('map');
   renderInspector();
   sceneEditor?.select(selection);
-  document.querySelectorAll('[data-object-id]').forEach(element => element.classList.toggle('selected', element.dataset.objectId === entity.id));
+  render();
 }
 function openScript(ownerId = '$all') {
   scriptScope = ownerId;
@@ -610,17 +644,60 @@ function renderEntities() {
     $('entities').replaceChildren();
     $('project-objects').replaceChildren();
     $('object-scripts').replaceChildren();
-    for (const entity of project.map.entities) {
+    const tileFor = entity => {
       const count = counts.get(entity.id) || 0;
-      const tile = button('', () => selectObject(entity), 'object-tile');
+      const tile = button('', event => selectObject(entity, event.ctrlKey || event.metaKey), 'object-tile');
       tile.setAttribute('aria-label', `${entity.name}, ${count} attached events`);
       tile.append(make('span', entity.type[0].toUpperCase(), 'object-symbol'), make('span', entity.name, 'object-name'), make('small', `${count} events`));
-      const tree = button(entity.name, () => selectObject(entity), 'tree-link');
-      for (const element of [tile, tree]) {
-        element.dataset.objectId = entity.id;
-        element.addEventListener('dblclick', () => openScript(entity.id));
+      tile.dataset.objectId = entity.id;
+      tile.addEventListener('dblclick', () => openScript(entity.id));
+      return tile;
+    };
+    const grouped = new Set();
+    for (const group of entityGroups(project)) {
+      const members = membersOf(project, group.id);
+      if (!members.length) continue;
+      for (const member of members) grouped.add(member.id);
+      // The header selects the whole group, which is what makes a group one thing to grab.
+      const header = button('', () => {
+        selection = { kind: 'entity', id: members[0].id };
+        multiSelection = members.map(entity => entity.id);
+        lastPrimarySelection = selection.id;
+        showTab('map');
+        renderInspector();
+        render();
+      }, 'group-tile');
+      header.setAttribute('aria-label', `${group.name}, ${members.length} objects`);
+      header.dataset.groupId = group.id;
+      header.append(make('span', '\u25BE', 'group-symbol'), make('span', group.name, 'group-name'),
+        make('small', `${members.length} objects`));
+      header.title = `${group.name}: click to select the group, double-click to rename`;
+      header.addEventListener('dblclick', event => { event.preventDefault(); renameGroupInline(group.id); });
+      $('entities').append(header);
+      for (const member of members) {
+        const tile = tileFor(member);
+        tile.classList.add('grouped');
+        $('entities').append(tile);
       }
-      $('entities').append(tile);
+    }
+    for (const entity of project.map.entities) {
+      if (grouped.has(entity.id)) continue;
+      const count = counts.get(entity.id) || 0;
+      $('entities').append(tileFor(entity));
+      const tree = button(entity.name, event => selectObject(entity, event.ctrlKey || event.metaKey), 'tree-link');
+      tree.dataset.objectId = entity.id;
+      tree.addEventListener('dblclick', () => openScript(entity.id));
+      $('project-objects').append(tree);
+      const script = button(`${entity.name} (${count})`, () => openScript(entity.id), 'tree-link');
+      script.dataset.scriptScope = entity.id;
+      $('object-scripts').append(script);
+    }
+    for (const entity of project.map.entities) {
+      if (!grouped.has(entity.id)) continue;
+      const count = counts.get(entity.id) || 0;
+      const tree = button(entity.name, event => selectObject(entity, event.ctrlKey || event.metaKey), 'tree-link');
+      tree.dataset.objectId = entity.id;
+      tree.addEventListener('dblclick', () => openScript(entity.id));
       $('project-objects').append(tree);
       const script = button(`${entity.name} (${count})`, () => openScript(entity.id), 'tree-link');
       script.dataset.scriptScope = entity.id;
@@ -629,8 +706,9 @@ function renderEntities() {
     $('object-scripts').append(button('+ New object script sheet', () => attachObjectScriptSheet(), 'tree-link'));
   }
   // The highlight follows every click without rebuilding the lists.
-  for (const element of $('entities').children) element.classList.toggle('selected', element.dataset.objectId === selection?.id);
-  for (const element of $('project-objects').children) element.classList.toggle('selected', element.dataset.objectId === selection?.id);
+  const selected = new Set(selectedEntityIds());
+  for (const element of $('entities').children) element.classList.toggle('selected', selected.has(element.dataset.objectId));
+  for (const element of $('project-objects').children) element.classList.toggle('selected', selected.has(element.dataset.objectId));
   for (const element of $('object-scripts').children) element.classList.toggle('selected', element.dataset.scriptScope === scriptScope);
   filterProject();
 }
@@ -1940,12 +2018,14 @@ function drawMap() {
     ctx.fillStyle = selection?.id === vertex.id ? '#ffffff' : '#95abc0';
     ctx.fillRect(vertex.x - size / 2, vertex.y - size / 2, size, size);
   }
+  const marked = new Set(selectedEntityIds());
   for (const entity of display.map.entities) {
+    const isMarked = marked.has(entity.id);
     ctx.fillStyle = entityColors[entity.type];
-    ctx.strokeStyle = selection?.id === entity.id ? '#ffffff' : entityColors[entity.type];
+    ctx.strokeStyle = isMarked ? '#ffffff' : entityColors[entity.type];
     ctx.lineWidth = 2 / camera.zoom;
     ctx.beginPath(); ctx.arc(entity.x, entity.y, 7 / camera.zoom, 0, Math.PI * 2); ctx.fill();
-    if (selection?.id === entity.id) { ctx.beginPath(); ctx.arc(entity.x, entity.y, 12 / camera.zoom, 0, Math.PI * 2); ctx.stroke(); }
+    if (isMarked) { ctx.beginPath(); ctx.arc(entity.x, entity.y, 12 / camera.zoom, 0, Math.PI * 2); ctx.stroke(); }
     if (entity.type === 'player') {
       const angle = entity.angle * Math.PI / 180;
       ctx.beginPath(); ctx.moveTo(entity.x, entity.y);
@@ -1961,28 +2041,38 @@ function drawMap() {
   }
   ctx.restore();
 }
-// Ctrl+C / Ctrl+V on a selected object. The copy is the whole object — properties, texture or
-// model, physics, ramp numbers, script variables — so pasting gives an identical twin rather than
-// a fresh object of the same type.
-let clipboardEntity = null;
+// Ctrl+C / Ctrl+V on the selected objects. The copy is the whole object — properties, texture or
+// model, physics, ramp numbers, script variables — and a copied group comes back as a group, so
+// pasting reproduces what the mapper built rather than a pile of look-alikes.
+let clipboardEntities = null;
 let pointerMapPoint = null;
-function copySelectedEntity() {
-  if (selection?.kind !== 'entity') return false;
-  const entity = project.map.entities.find(item => item.id === selection.id);
-  if (!entity) return false;
-  clipboardEntity = structuredClone(entity);
-  status(`${entity.name} copied`);
+function copySelectedEntities() {
+  const entities = selectedEntities();
+  if (!entities.length) return false;
+  if (entities.some(entity => entity.type === 'player')) {
+    status('The player start cannot be copied; a level has one', true);
+    return false;
+  }
+  clipboardEntities = entities.map(entity => structuredClone(entity));
+  status(entities.length === 1 ? `${entities[0].name} copied` : `${entities.length} objects copied`);
   return true;
 }
-function pasteEntity() {
-  if (!clipboardEntity) return false;
+function pasteEntities() {
+  if (!clipboardEntities?.length) return false;
   const point = (sceneMode === '3d' ? sceneEditor?.pointUnderPointer?.() : null) || pointerMapPoint;
-  let copy;
-  try { copy = cloneEntityForPaste(project, clipboardEntity, point ? snap(point) : null); }
-  catch (error) { status(error.message, true); return false; }
-  try { edit(next => { next.map.entities.push(structuredClone(copy)); }, `${copy.name} pasted`); }
-  catch (error) { status(error.message, true); return false; }
-  selection = { kind: 'entity', id: copy.id };
+  let ids = [];
+  try {
+    edit(next => {
+      const { entities } = cloneEntitiesForPaste(next, clipboardEntities, point ? snap(point) : null);
+      next.map.entities.push(...entities);
+      ids = entities.map(entity => entity.id);
+    }, clipboardEntities.length === 1 ? `${clipboardEntities[0].name} copy pasted` : `${clipboardEntities.length} objects pasted`);
+  } catch (error) { status(error.message, true); return false; }
+  if (ids.length) {
+    multiSelection = ids;
+    selection = { kind: 'entity', id: ids[0] };
+    lastPrimarySelection = ids[0];
+  }
   render();
   return true;
 }
@@ -1993,8 +2083,8 @@ document.addEventListener('keydown', event => {
   // Typing in a field is the browser's clipboard, not the editor's.
   if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
   if (runtime && $('play-dialog').open) return;
-  if (event.code === 'KeyC') { if (copySelectedEntity()) event.preventDefault(); return; }
-  if (pasteEntity()) event.preventDefault();
+  if (event.code === 'KeyC') { if (copySelectedEntities()) event.preventDefault(); return; }
+  if (pasteEntities()) event.preventDefault();
 });
 function hitTest(point) {
   const tolerance = 12 / camera.zoom;
@@ -2012,6 +2102,12 @@ canvas.addEventListener('pointerdown', guard(event => {
   if (!project) return;
   capturePointer(canvas, event.pointerId);
   const point = worldPoint(event);
+  // Ctrl+click builds a set: the objects can then be grouped, copied or moved together.
+  if ((event.ctrlKey || event.metaKey) && event.button === 0) {
+    const hit = hitTest(point);
+    const entity = hit?.kind === 'entity' ? project.map.entities.find(item => item.id === hit.id) : null;
+    if (entity) { selectObject(entity, true); return; }
+  }
   if (event.button === 2 || event.button === 1) {
     drag = { kind: 'pan', button: event.button, clientX: event.clientX, clientY: event.clientY, x: camera.x, y: camera.y,
       startX: event.clientX, startY: event.clientY, moved: false }; return;
@@ -3615,15 +3711,15 @@ function duplicateLayoutObject(id) {
   const entity = project.map.entities.find(item => item.id === id);
   if (!entity) throw new Error('That object no longer exists');
   if (entity.type === 'player') throw new Error('The layout keeps exactly one player object');
-  const copyId = newId('entity');
+  let copyId = null;
   edit(next => {
-    const source = next.map.entities.find(item => item.id === id);
-    const copy = structuredClone(source);
-    copy.id = copyId;
-    copy.name = `${source.name} copy`.slice(0, 100);
-    copy.x += 64; copy.y += 64;
-    delete copy.parentId;
-    next.map.entities.push(copy);
+    // One clone path for both "duplicate" and paste, so a duplicate is the same kind of copy:
+    // every property, a free name, and a copied group when the object was in one.
+    const group = next.map.entityGroups?.find(item => item.id === entity.groupId);
+    const source = group ? next.map.entities.filter(item => item.groupId === group.id) : [next.map.entities.find(item => item.id === id)];
+    const { entities } = cloneEntitiesForPaste(next, source, { x: (source[0].x || 0) + 64, y: (source[0].y || 0) + 64 });
+    next.map.entities.push(...entities);
+    copyId = entities[0].id;
   }, `${entity.name} duplicated`);
   selection = { kind: 'entity', id: copyId };
   render();
@@ -3786,9 +3882,59 @@ function placeLayoutObject(position, elevation = 0) {
   }, `${type} placed`);
 }
 
+function groupSelection(name) {
+  const ids = selectedEntityIds();
+  if (ids.length < 2) throw new Error('Ctrl+click to select at least two objects, then group them');
+  edit(next => { groupEntities(next, ids, { name }); }, `${ids.length} objects grouped`);
+}
+function renameGroupInline(groupId) {
+  const header = [...document.querySelectorAll('#entities .group-tile')].find(row => row.dataset.groupId === groupId);
+  const label = header?.querySelector('.group-name');
+  if (!label) return;
+  const input = make('input');
+  input.value = label.textContent;
+  input.className = 'group-rename';
+  label.replaceWith(input);
+  input.focus(); input.select();
+  const commit = () => {
+    const name = input.value.trim();
+    if (name && name !== project.map.entityGroups?.find(group => group.id === groupId)?.name) {
+      try { edit(next => { const group = next.map.entityGroups.find(item => item.id === groupId); if (group) group.name = name.slice(0, 100); }, 'Group renamed'); }
+      catch (error) { status(error.message, true); }
+    }
+    renderEntities();
+  };
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); commit(); }
+    if (event.key === 'Escape') { event.preventDefault(); renderEntities(); }
+  });
+  input.addEventListener('blur', commit);
+}
+function groupMenuItems(entity) {
+  const chosen = selectedEntityIds();
+  const group = entity ? groupOf(project, entity) : null;
+  const items = [];
+  if (chosen.length >= 2) {
+    // Named "Group" straight away — the name is editable in the list by double-clicking it, which
+    // is one step fewer than a dialog and works where prompt() does not exist.
+    items.push({ label: `Group ${chosen.length} selected objects`, run: guard(() => groupSelection('Group')) });
+  }
+  if (group) {
+    items.push({ label: `Rename "${group.name}"`, run: () => { renameGroupInline(group.id); } });
+    items.push({ label: `Remove from "${group.name}"`, run: guard(() => {
+      edit(next => { leaveGroup(next, entity.id); }, `${entity.name} left ${group.name}`);
+    }) });
+    items.push({ label: `Ungroup "${group.name}"`, run: guard(() => {
+      edit(next => { ungroup(next, group.id); }, `${group.name} ungrouped`);
+    }) });
+  }
+  return items.length ? [...items, { separator: true }] : [];
+}
+
 function objectMenuItems(entity) {
   const isPlayer = entity.type === 'player';
   return [
+    ...groupMenuItems(entity),
     { label: 'Select', run: () => { selection = { kind: 'entity', id: entity.id }; render(); } },
     { label: 'Edit its visual script', run: () => openScript(entity.id) },
     { label: 'Assign sprite or model\u2026', run: guard(() => pickAssetForEntity(entity)) },
@@ -3901,6 +4047,7 @@ function emptyAreaMenus() {
       { label: 'Collapse every rule', run: () => { for (const event of project.events) collapsedEvents.add(event.id); renderEvents(); } },
     ]],
     [$('entities'), 'Objects', () => [
+      ...groupMenuItems(project.map.entities.find(entity => entity.id === selection?.id)),
       { label: 'Place the chosen object type at the view centre', run: guard(() => placeLayoutObject({ x: Math.round(camera.x), y: Math.round(camera.y) })) },
       { label: 'New object script sheet', run: guard(() => attachObjectScriptSheet()) },
       { separator: true },

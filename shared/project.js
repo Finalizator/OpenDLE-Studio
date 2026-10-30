@@ -546,9 +546,25 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       for (const value of wall.args) number(value, 'Linedef argument', -32768, 32767);
     }
   }
+  // Object groups are a label on objects, one level deep: the members stay ordinary objects that
+  // the renderer, the physics world and the event sheet know nothing about.
+  const objectGroups = project.map.entityGroups || [];
+  array(objectGroups, 'Object groups', 512);
+  const groupIds = new Set();
+  for (const group of objectGroups) {
+    object(group, 'Object group');
+    assert(typeof group.id === 'string' && group.id.length > 0 && group.id.length <= 120, 'Invalid object group id');
+    assert(!groupIds.has(group.id), `Duplicate object group ${group.id}`);
+    groupIds.add(group.id);
+    text(group.name, 'Object group name', 100);
+  }
   for (const entity of entities) {
     unique(entity, 'Entity');
     validateEntity(entity, { assetRef, clipRef, modelRef, assets });
+    if (entity.groupId !== undefined) {
+      assert(typeof entity.groupId === 'string' && groupIds.has(entity.groupId),
+        `Object ${entity.id} is in an unknown group`);
+    }
   }
   assert(entities.filter(entity => entity.type === 'light' && entity.light).length <= 16, 'At most 16 dynamic point lights are supported');
   assert(entities.filter(entity => entity.physics && entity.physics.body !== 'none').length <= 256, 'At most 256 object rigid bodies are supported');
@@ -1067,6 +1083,11 @@ export function removeEntity(project, id) {
   assert(!referenced, 'This entity is used by an event. Remove those references first.');
   project.events = project.events.filter(event => event.ownerId !== id);
   project.map.entities = project.map.entities.filter(item => item.id !== id);
+  // A group holds objects; when its last member is gone it is not a group any more.
+  if (project.map.entityGroups) {
+    const used = new Set(project.map.entities.map(item => item.groupId).filter(Boolean));
+    project.map.entityGroups = project.map.entityGroups.filter(group => used.has(group.id));
+  }
   // A joint cannot hold an object that is gone.
   if (project.map.joints) project.map.joints = project.map.joints.filter(joint => joint.a !== id && joint.b !== id);
 }

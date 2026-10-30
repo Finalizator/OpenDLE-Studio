@@ -2696,6 +2696,31 @@ staying at 150.0 and z following the surface from 11.6 to 151.6. A note that thi
 sideways instead of climbing" was my own measurement rig passing degrees where the runtime works
 in radians, and is withdrawn.
 
+### Grouping objects
+
+Objects can be selected together — Ctrl+click adds or removes one, in the map or in the Objects
+bar — and then grouped from the right-click menu. A group is a **label on its members**: a name and
+an id in `project.map.entityGroups`, and a `groupId` on each object. The members stay ordinary
+objects that the renderer, the physics world and the event sheet know nothing about, which is what
+keeps grouping from changing what the game does. It is one level deep: no nesting.
+
+- A group needs **two** members. Grouping one object is a rename, and a group of one would put a
+  header in the list that opens to a single row — so `pruneGroups` dissolves any group that drops
+  below two, and an object whose group is gone loses its `groupId` rather than pointing nowhere.
+- The Objects bar draws a group header with its members indented under it. Clicking the header
+  selects the whole group; double-clicking renames it in place (a prompt would be a modal on the
+  one thing a mapper does most while building, and it does not exist in every webview).
+- `Ctrl+C` / `Ctrl+V` on a group copies it **as a group**: the copy keeps how its objects sit
+  relative to each other, gets fresh ids and free names, and becomes its own group (`Group copy`)
+  so editing the copy never edits the original. Copying a single member out of a group copies just
+  that object, ungrouped.
+- Removing one member is `leaveGroup`; ungrouping is `ungroup`. Both keep the objects and only drop
+  the label.
+
+`shared/entity-groups.js` holds all of it and is covered by seven tests; the editor only draws the
+lists and calls it. `project.js` validates that every `groupId` names a real group, so a hand-edited
+or imported project cannot carry a dangling group.
+
 ### Textures on a ramp, and copying an object
 
 A ramp is a model, so an image dropped on one has to behave like an image dropped on a wall: it

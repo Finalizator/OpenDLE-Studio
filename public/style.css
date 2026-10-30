@@ -130,6 +130,17 @@ summary { cursor: pointer; }
 .object-symbol { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid #aaa; font-size: 10px; flex-shrink: 0; }
 .object-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .object-tile small { font-size: 9px; color: var(--muted); }
+/* A group is a heading over its members: the members are indented so the set is readable as one
+   thing, and the heading itself is clickable to select them all. */
+.group-tile { display: flex; align-items: center; gap: 6px; width: 100%; background: #4a4a4a; color: #eee;
+  text-align: left; padding: 4px; margin-top: 3px; font-size: 11px; }
+.group-tile:hover { background: #565656; }
+.group-symbol { width: 12px; color: #b9c8d8; flex-shrink: 0; }
+.group-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.group-tile small { font-size: 9px; color: var(--muted); }
+.group-rename { flex: 1; font-size: 11px; padding: 1px 4px; min-width: 40px; }
+.object-tile.grouped { padding-left: 18px; }
+.object-tile.grouped::before { content: ""; width: 1px; align-self: stretch; margin-right: 2px; background: #6c6c6c; }
 .assistant-dock { border-top: 3px solid #333; flex-shrink: 0; max-height: 55%; overflow: auto; }
 .assistant-heading { padding: 5px 7px; background: #535353; font-size: 10px; }
 .assistant-body { padding: 9px; }
