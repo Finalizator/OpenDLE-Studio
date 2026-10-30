@@ -20,6 +20,15 @@ test('surface texture scale changes how much map space one tile covers', () => {
   assert.deepEqual(shifted, [.25, .375, 1.25, .375, 1.25, .875, .25, .875]);
 });
 
+test('a back sidedef runs its texture the other way, as Doom draws it', () => {
+  const wall = { length: 128, bottom: 0, top: 64, referenceTop: 64, textureWidth: 64, textureHeight: 64 };
+  const front = wallQuadUv(wall), back = wallQuadUv({ ...wall, flip: true });
+  assert.deepEqual(front, [0, 0, 2, 0, 2, 1, 0, 1]);
+  // The same artwork, mirrored across the quad: U is reversed, V is untouched.
+  assert.deepEqual(back, [2, 0, 0, 0, 0, 1, 2, 1]);
+  for (let corner = 0; corner < 4; corner++) assert.equal(back[corner * 2 + 1], front[corner * 2 + 1]);
+});
+
 test('texture scale is validated per sector and per wall side', () => {
   const project = createProject();
   validateProject(project);

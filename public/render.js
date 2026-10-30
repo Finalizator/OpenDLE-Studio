@@ -508,14 +508,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
         if (!sector.sky) plane(sector, sector.ceilingHeight, sector.ceilingAsset, true);
       });
     }
-    function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false) {
+    function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false, flip = false) {
       if (top <= bottom) return;
       const length = Math.hypot(b.x - a.x, b.y - a.y), asset = assetMap.get(assetId);
       // Wall texture scale: one tile covers `scale` times its pixel size along the wall
       // and vertically, so the artwork's pixel density is per surface.
       const coords = wallQuadUv({ length, bottom, top, referenceTop,
         offsetX: side?.offsetX || 0, offsetY: side?.offsetY || 0,
-        textureWidth: asset?.width || 64, textureHeight: asset?.height || 64, scale: side?.textureScale || 1 });
+        textureWidth: asset?.width || 64, textureHeight: asset?.height || 64, scale: side?.textureScale || 1, flip });
       surface([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], coords, [0, 1, 2, 0, 2, 3],
         material(assetId, wall.color, { masked, oneSided: !editor }), light, { kind: 'wall', id: wall.id });
     }
@@ -527,29 +527,29 @@ export async function createPreview(canvas, project, state, { editor = false } =
       if (!wall.right && !wall.left) {
         if (wall.solid) {
           wallQuad(wall, wall.start, wall.end, 0, wall.height, wall.assetId, null, 255, wall.height);
-          wallQuad(wall, wall.end, wall.start, 0, wall.height, wall.assetId, null, 255, wall.height);
+          wallQuad(wall, wall.end, wall.start, 0, wall.height, wall.assetId, null, 255, wall.height, false, true);
         }
         return;
       }
-      for (const [side, back, a, b] of [[wall.right, wall.left, wall.start, wall.end], [wall.left, wall.right, wall.end, wall.start]]) {
+      for (const [side, back, a, b, flip] of [[wall.right, wall.left, wall.start, wall.end, false], [wall.left, wall.right, wall.end, wall.start, true]]) {
         if (!side) continue;
         const frontSector = sectorMap.get(side.sectorId), backSector = sectorMap.get(back?.sectorId);
         const floor = frontSector.floorHeight, ceiling = frontSector.ceilingHeight, light = frontSector.light;
         if (!backSector) {
           const asset = assetMap.get(side.middle);
           wallQuad(wall, a, b, floor, ceiling, side.middle, side, light,
-            wall.flags & 16 ? floor + (asset?.height || 128) : ceiling);
+            wall.flags & 16 ? floor + (asset?.height || 128) : ceiling, false, flip);
         } else {
           if (!(frontSector.sky && backSector.sky)) wallQuad(wall, a, b, Math.max(floor, backSector.ceilingHeight), ceiling,
-            side.upper, side, light, wall.flags & 8 ? ceiling : backSector.ceilingHeight + (assetMap.get(side.upper)?.height || 128));
+            side.upper, side, light, wall.flags & 8 ? ceiling : backSector.ceilingHeight + (assetMap.get(side.upper)?.height || 128), false, flip);
           wallQuad(wall, a, b, floor, Math.min(ceiling, backSector.floorHeight), side.lower, side, light,
-            wall.flags & 16 ? ceiling : backSector.floorHeight);
+            wall.flags & 16 ? ceiling : backSector.floorHeight, false, flip);
           if (side.middle) {
             const bottom = Math.max(floor, backSector.floorHeight), top = Math.min(ceiling, backSector.ceilingHeight);
             const height = assetMap.get(side.middle).height;
             const anchor = wall.flags & 16 ? bottom + height : top;
             wallQuad(wall, a, b, Math.max(bottom, anchor - height - side.offsetY), Math.min(top, anchor - side.offsetY),
-              side.middle, side, light, anchor, true);
+              side.middle, side, light, anchor, true, flip);
           }
         }
       }
