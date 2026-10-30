@@ -289,10 +289,21 @@ async function refreshScene() {
     sceneEditor?.dispose(); sceneEditor = null; sceneProject = null;
     const editor = await createSceneEditor($('scene-3d'), snapshot, {
       selection: () => selection,
-      select: value => {
+      select: (value, options = {}) => {
+        // Ctrl+click in the 3D view builds a set, the same as it does in the map and the list, so
+        // objects can be grouped from the view the mapper is actually looking at.
+        const entity = value?.kind === 'entity' ? project.map.entities.find(item => item.id === value.id) : null;
+        if (entity && options.additive) {
+          selectObject(entity, true);
+          sceneEditor?.select(selection);
+          return;
+        }
         selection = value;
+        multiSelection = value?.kind === 'entity' ? [value.id] : [];
+        lastPrimarySelection = value?.kind === 'entity' ? value.id : null;
         if (value?.kind === 'sector') $('sector-surface').value = value.surface || 'floorHeight';
         renderInspector(); sceneEditor?.select(selection);
+        renderEntities();
       },
       edit, error: message => status(message, true),
       live: (fn, message) => liveApply(fn, message),
@@ -454,6 +465,7 @@ function editActors(fn, message) {
   return edit(fn, message, { cloneActors: true });
 }
 function replace(next, message) {
+  scenePose = null;
   validateProject(next);
   $('import-report').hidden = true;
   selection = null;
@@ -2210,6 +2222,8 @@ async function reloadProject(initial = false) {
   syncRampModels(project);
   if ((project.assets?.length || 0) !== before) { dirty = true; status('Ramp meshes generated for this map; save to keep them.'); }
   history = []; future = []; selection = null; scriptScope = '$all'; editVersion++; clearDraft();
+  // The 3D view of a different map starts framed on that map, not on the last one's camera.
+  scenePose = null;
   render(); fitMap();
   status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'
     : recovery?.warning || 'Server project loaded', Boolean(recovery?.warning));
@@ -3992,6 +4006,8 @@ function mapViewMenu(event, picked) {
   const sector = picked?.kind === 'sector' ? project.map.sectors.find(item => item.id === picked.id) : null;
   if (!entity && !sector) {
     contextMenu(event, [
+      { label: 'Frame the room in this view', run: () => { sceneEditor?.fit?.(); } },
+      { separator: true },
       { label: `Place ${$('entity-type').value} at the view centre`, run: guard(() => {
         placeLayoutObject({ x: Math.round(camera.x), y: Math.round(camera.y) });
       }) },
@@ -4000,8 +4016,14 @@ function mapViewMenu(event, picked) {
     return;
   }
   if (sector) { contextMenu(event, sectorMenuItems(sector), { label: `${sector.id} actions` }); return; }
-  selection = { kind: 'entity', id: entity.id };
-  render();
+  // Right-clicking one of several selected objects keeps the set, so the menu can group it; only a
+  // right-click on something outside the set starts a new selection.
+  if (!selectedEntityIds().includes(entity.id)) {
+    selection = { kind: 'entity', id: entity.id };
+    multiSelection = [entity.id];
+    lastPrimarySelection = entity.id;
+    render();
+  }
   contextMenu(event, objectMenuItems(entity), { label: `${entity.name} actions` });
 }
 

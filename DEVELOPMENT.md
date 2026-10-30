@@ -2696,6 +2696,28 @@ staying at 150.0 and z following the surface from 11.6 to 151.6. A note that thi
 sideways instead of climbing" was my own measurement rig passing degrees where the runtime works
 in radians, and is withdrawn.
 
+### The 3D view: what is clickable, and where the camera starts
+
+Two things made the 3D view feel broken on a large map.
+
+**Nothing was clickable until an edit happened.** What the ray tests against is collected from the
+scene graph (`collectSceneHandles`), and the scene fills in *after* the editor is built: sector
+surfaces come with the renderer, objects as their models load. Collecting the pickable set once at
+creation therefore captured an empty scene, so left-click and right-click both found nothing and
+the inspector stayed on the layout. It is now re-collected on every pointerdown, so the set is
+whatever is on screen at the moment of the click.
+
+**The camera did not frame the room.** The old rule put it at `(centre − d, d, centre)` looking
+along +x, where `d` was three quarters of the room's longest side: a side-on view from a height
+equal to the room's size, which for a 24,000-unit room is 18,000 units away *and* pointed across it.
+`fit()` now builds the room's box from its vertices, the floor/ceiling extremes and the objects,
+places the camera on a three-quarter view direction, aims it at the centre, then projects the eight
+corners and pulls in until the widest one just fits. It only ever pulls in: a corner measured behind
+the camera reads as huge, and growing the distance on that is how the camera ended up arbitrarily
+far away. `Frame the room in this view` does the same thing from the 3D right-click menu, and
+opening a different project clears the saved camera pose so a big map's camera cannot strand a small
+one.
+
 ### Grouping objects
 
 Objects can be selected together — Ctrl+click adds or removes one, in the map or in the Objects

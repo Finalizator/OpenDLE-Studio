@@ -184,13 +184,65 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   }
   const hideReadout = () => { readout.hidden = true; };
 
+  /**
+   * Frame the room: a three-quarter view from outside it, far enough that it fits the view.
+   *
+   * The old rule put the camera at (centre - d, d, centre) and looked along +x, where d was three
+   * quarters of the room's longest side. That is a side-on view from a height equal to the room's
+   * size, so a large room was framed from thousands of units away and edge-on at that: the room
+   * was a sliver at the edge of the picture, which reads as "the camera is very far away". Fit by
+   * the bounding sphere and the field of view instead, and point the camera at the centre.
+   */
   function fit() {
     const fitBounds = new THREE.Box3();
-    project.map.vertices.forEach(vertex => fitBounds.expandByPoint(new THREE.Vector3(vertex.x, 0, vertex.y)));
+    const floors = (project.map.sectors || []).map(sector => sector.floorHeight);
+    const ceilings = (project.map.sectors || []).map(sector => sector.ceilingHeight);
+    const bottom = floors.length ? Math.min(...floors) : 0;
+    const top = ceilings.length ? Math.max(...ceilings) : 128;
+    const corners = project.map.vertices.map(vertex => new THREE.Vector3(vertex.x, bottom, vertex.y));
+    for (const entity of project.map.entities) corners.push(new THREE.Vector3(entity.x, bottom + (entity.elevation || 0), entity.y));
+    if (!corners.length) corners.push(new THREE.Vector3());
+    for (const corner of corners) fitBounds.expandByPoint(corner);
+    fitBounds.max.y = top;
     const center = fitBounds.getCenter(new THREE.Vector3()), size = fitBounds.getSize(new THREE.Vector3());
-    const distance = Math.max(256, Math.max(size.x, size.z) * .75);
-    camera.position.set(center.x - distance, distance, center.z);
-    yaw = 0; pitch = -.65;
+    // The sphere around the room has to fit the vertical field of view; the horizontal one is
+    // wider at this aspect, so the vertical angle is the one that decides the distance.
+    const radius = Math.max(64, size.length() / 2);
+    const fieldOfView = (camera.fov || 70) * Math.PI / 180;
+    let distance = Math.max(256, radius / Math.sin(fieldOfView / 2));
+    yaw = -Math.PI * .75; pitch = -.55;
+    const look = direction(new THREE.Vector3());
+    const corners3d = [
+      [fitBounds.min.x, fitBounds.min.y, fitBounds.min.z], [fitBounds.max.x, fitBounds.min.y, fitBounds.min.z],
+      [fitBounds.min.x, fitBounds.max.y, fitBounds.min.z], [fitBounds.max.x, fitBounds.max.y, fitBounds.min.z],
+      [fitBounds.min.x, fitBounds.min.y, fitBounds.max.z], [fitBounds.max.x, fitBounds.min.y, fitBounds.max.z],
+      [fitBounds.min.x, fitBounds.max.y, fitBounds.max.z], [fitBounds.max.x, fitBounds.max.y, fitBounds.max.z],
+    ].map(([x, y, z]) => new THREE.Vector3(x, y, z));
+    // The bounding sphere is bigger than the room, so fit the eight corners of the box instead:
+    // aim the camera, project them, and pull in to whatever makes the widest one just fit. The
+    // camera is oriented by the frame loop, not here, so it has to be aimed before projecting or
+    // the corners are measured through a camera that is looking somewhere else entirely.
+    const projected = new THREE.Vector3();
+    const aim = () => {
+      camera.position.copy(center).addScaledVector(look, -distance);
+      camera.lookAt(lookTarget.copy(camera.position).add(look));
+      camera.updateMatrixWorld();
+    };
+    for (let pass = 0; pass < 2; pass++) {
+      aim();
+      let worst = 0;
+      for (const corner of corners3d) {
+        projected.copy(corner).project(camera);
+        worst = Math.max(worst, Math.abs(projected.x), Math.abs(projected.y));
+      }
+      // Only ever pull in: a corner measured behind the camera reads as huge, and growing the
+      // distance on that is how the camera ended up thousands of units away from the room.
+      if (!(worst > 0) || !Number.isFinite(worst) || worst >= 1) break;
+      distance = Math.max(64, distance * worst * 1.08);
+    }
+    aim();
+    // A room can be bigger than the far plane that was set for gameplay.
+    if (camera.far < distance + radius * 4) { camera.far = distance + radius * 4; camera.updateProjectionMatrix(); }
   }
   if (pose) camera.position.copy(pose.position); else fit();
   function listen(target, name, fn, options) {
@@ -638,6 +690,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
 
   listen(canvas, 'contextmenu', event => event.preventDefault());
   listen(canvas, 'pointerdown', event => {
+    // What can be picked is read from the scene, and the scene fills in after this editor is
+    // built: sector surfaces arrive with the renderer and objects as their assets load. Collecting
+    // the pickable set once at creation therefore captured an empty scene, and nothing in the 3D
+    // view could be clicked at all until an edit happened to refresh it. Refresh on the way in
+    // instead, so the set is whatever is on screen at the moment of the click.
+    collectSceneHandles();
     if (event.button !== 0 && event.button !== 2) return;
     canvas.focus();
     try { canvas.setPointerCapture(event.pointerId); } catch { /* capture is best effort */ }
@@ -674,7 +732,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       }
       return;
     }
-    callbacks.select(selection);
+    callbacks.select(selection, { additive: Boolean(event.ctrlKey || event.metaKey) });
   });
   listen(canvas, 'pointermove', event => {
     lastPointer = { clientX: event.clientX, clientY: event.clientY };
@@ -853,6 +911,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     physicsOverlay(visible) { showPhysics = Boolean(visible); rebuildOverlays(); },
     /** The floor point under the pointer, so a pasted copy lands where the user is looking. */
     pointUnderPointer,
+    /** Frame the whole room, for when the camera has been flown somewhere unhelpful. */
+    fit,
     dispose() {
       endExternalDrag();
       listeners.forEach(remove => remove()); clearHandles(); resources.forEach(resource => resource.dispose()); view.dispose();
