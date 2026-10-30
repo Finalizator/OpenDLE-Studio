@@ -241,3 +241,36 @@ test('editing a ramp replaces its mesh and drops the one nothing uses', () => {
   assert.ok(project.assets.some(asset => asset.id === first));
   assert.equal(ramp.physics.shape, 'model');
 });
+
+test('the height a ramp is drawn at is the height its collider sits at', async () => {
+  // The physics world writes back where every solid body ended up, and the renderer places what it
+  // draws at that number. It converted a body's centre to a base by subtracting half its height,
+  // which is right for a box and wrong for a shape that stands on its own origin: ramps were
+  // reported ~98 units underground, so the mesh sank into the floor in play while the editor (no
+  // physics) drew it correctly and the collider never moved at all.
+  await R.init();
+  const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),
+    holes.map(ring => ring.map(point => new Vector2(point.x, point.y))));
+  const project = createProject();
+  const onFloor = addRamp(project, { x: 0, y: 0, slope: 50, length: 200, width: 160 });
+  const lifted = addRamp(project, { x: 400, y: 0, slope: 30, length: 200, width: 160, });
+  lifted.elevation = 64;
+  project.map.sectors[0].ceilingHeight = 512;
+  validateProject(project);
+  const state = createRuntime(project, { screen: 'playing', gameMode: true });
+  state.physics = createPhysics(project, state, R, triangulate);
+  const read = id => state.entities.find(entity => entity.id === id);
+  assert.ok(Math.abs(read(onFloor.id).z) < .5, `a ramp on the floor reports ${read(onFloor.id).z}`);
+  assert.ok(Math.abs(read(lifted.id).z - 64) < .5, `a ramp lifted 64 reports ${read(lifted.id).z}`);
+  // A box is centred on its body, so it must keep being reported by its bottom: the fix is about
+  // which shapes stand on their origin, not about dropping the conversion everywhere.
+  const platform = { id: 'platform', type: 'decoration', x: 800, y: 0, physics: { body: 'fixed', shape: 'box',
+    width: 128, height: 96, depth: 128, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true } };
+  project.map.entities.push(platform);
+  state.physics.dispose();
+  const fresh = createRuntime(project, { screen: 'playing', gameMode: true });
+  fresh.physics = createPhysics(project, fresh, R, triangulate);
+  const box = fresh.entities.find(entity => entity.id === 'platform');
+  assert.ok(Math.abs(box.z) < .5, `a box on the floor still reports its bottom, not its centre (${box.z})`);
+  fresh.physics.dispose();
+});

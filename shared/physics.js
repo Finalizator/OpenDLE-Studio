@@ -436,8 +436,12 @@ export function createPhysics(project, state, R, triangulate) {
       entity.x = position.x * PHYSICS_SCALE; entity.y = position.z * PHYSICS_SCALE;
       // Feet are half a capsule below the centre along the player's own up axis, so
       // a player lying on a wall reports the height their body actually occupies.
+      // A wedge and a model stand on their own origin, so their translation is already the
+      // bottom: subtracting half their height here reported them ~98 units underground, and the
+      // renderer places what it draws at this number, so the mesh sank while its collider did not.
+      const baseAtOrigin = entity.physics?.shape === 'wedge' || entity.physics?.shape === 'model';
       entity.z = position.y * PHYSICS_SCALE - (entity.type === 'player'
-        ? PLAYER_CYLINDER.halfHeight * upMap[2] : height / 2);
+        ? PLAYER_CYLINDER.halfHeight * upMap[2] : baseAtOrigin ? 0 : height / 2);
       entity.rotation = { x: q.x, y: q.y, z: q.z, w: q.w };
       if (entity.type === 'player') {
         state.player.x = entity.x; state.player.y = entity.y; state.player.z = entity.z;
