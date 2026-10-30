@@ -11,6 +11,7 @@ import { createProject, validateProject } from '../shared/project.js';
 import { wavSound, encodeSound } from '../shared/sound.js';
 import { selectGameLevel } from '../shared/game-levels.js';
 import { importActors, actorIndex } from '../shared/actors.js';
+import { parseUDMF, udmfRecords } from '../shared/udmf.js';
 
 function archive(entries) {
   const local = [], central = [];
@@ -48,7 +49,7 @@ function wad(lumps) {
   });
   return bytes;
 }
-function mapWad(marker = 'ROOMONE', withPalette = false) {
+function mapWad(marker = 'ROOMONE', withPalette = false, wall = 'WALL') {
   const things = Buffer.alloc(10); things.writeUInt16LE(1, 6); things.writeUInt16LE(7, 8);
   const vertices = Buffer.alloc(16), lines = Buffer.alloc(56);
   [[-128, -128], [128, -128], [128, 128], [-128, 128]].forEach(([x, y], index) => {
@@ -56,7 +57,7 @@ function mapWad(marker = 'ROOMONE', withPalette = false) {
     lines.writeUInt16LE(index, index * 14); lines.writeUInt16LE((index + 1) % 4, index * 14 + 2);
     lines.writeUInt16LE(65535, index * 14 + 12);
   });
-  const side = Buffer.alloc(30); side.write('WALL', 20);
+  const side = Buffer.alloc(30); side.write(wall, 20);
   const sector = Buffer.alloc(26); sector.writeInt16LE(128, 2); sector.write('STONE', 4); sector.write('STONE', 12);
   return wad([[marker, Buffer.alloc(0)], ['THINGS', things], ['LINEDEFS', lines], ['SIDEDEFS', side],
     ['VERTEXES', vertices], ['SECTORS', sector], ...(withPalette ? [['PLAYPAL', Buffer.alloc(768, 100)]] : [])]);
@@ -557,4 +558,42 @@ test('supplied Furdoom and Ascent packages expose UDMF geometry import and actua
     const project = createProject(); project.assets = imported.assets; validateProject(project);
     assert.equal(project.assets.length, 3);
   }
+});
+
+test('a TEXTURES definition may compose a picture that shares its name', async () => {
+  // Lullaby ships `TEXTURES/STAR2`, a definition that builds a texture called STAR2 from a
+  // graphic called STAR2. Composing the definition into itself is not a cycle in the mod, it is
+  // one name used for two things, and treating it as a cycle refused the whole package.
+  const patch = PNG.sync.write({ width: 4, height: 4,
+    data: Buffer.from(Array(16).fill([0, 200, 0, 255]).flat()) });
+  const source = [...entries().filter(([name]) => name !== 'maps/room.wad'),
+    ['maps/room.wad', mapWad('ROOMONE', false, 'STAR2')], ['TEXTURES/STAR2', patch],
+    ['TEXTURES', Buffer.from('Texture "STAR2", 4, 4 { Patch "STAR2", 0, 0 }\n')]];
+  const { project, warnings } = importPackage(await readPackageArchive(archive(source)), { map: 'auto', baseBytes: base() });
+  const star = project.assets.find(asset => asset.kind === 'texture' && asset.name === 'STAR2');
+  assert.ok(star, 'the texture was composed from the graphic of the same name');
+  const pixels = PNG.sync.read(Buffer.from(star.src.split(',')[1], 'base64')).data;
+  assert.deepEqual([...pixels.subarray(0, 4)], [0, 200, 0, 255]);
+  assert.ok(!warnings.some(warning => /includes itself/.test(warning)));
+});
+
+test('a large TEXTMAP is not refused for having many tokens', async () => {
+  // The token budget is a guard against a parser loop, not a size limit: the byte cap already
+  // bounds the work, and a real map (Lullaby MAP01) is 17 MB and 4.2 million tokens.
+  const properties = [];
+  for (let index = 0; index < 20000; index++) properties.push(`vertex { x = ${index}; y = ${index}; }`);
+  const document = parseUDMF(`namespace = "zdoom";\n${properties.join('\n')}`);
+  assert.equal(document.blocks.filter(block => block.type === 'vertex').length, 20000);
+});
+
+test('UDMF references beyond 65536 sidedefs import, and a negative scale mirrors', () => {
+  const lines = ['namespace = "zdoom";'];
+  for (let index = 0; index < 70000; index++) lines.push(`sidedef { sector = 0; texturemiddle = "WALL"; scalex_mid = -1.0; scaley_mid = 1.0; }`);
+  lines.push('linedef { v1 = 0; v2 = 1; sidefront = 69999; }');
+  lines.push('sector { texturefloor = "FLOOR"; }');
+  lines.push('vertex { x = 0; y = 0; }', 'vertex { x = 64; y = 0; }');
+  const records = udmfRecords(parseUDMF(lines.join('\n')));
+  assert.equal(records.sides.length, 70000);
+  assert.equal(records.lines[0].right, 69999, 'a sidedef index past the 16-bit ceiling is kept');
+  assert.equal(records.sides[0].textureScale, -1, 'a negative scale is a mirrored texture, not an error');
 });

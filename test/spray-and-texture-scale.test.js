@@ -26,12 +26,21 @@ test('texture scale is validated per sector and per wall side', () => {
   project.map.sectors[0].textureScale = 2;
   project.map.walls[0].right.textureScale = .5;
   validateProject(project);
-  for (const bad of [0, -1, 100, '2']) {
+  // A negative scale mirrors the texture, which GZDoom maps rely on, so the range is checked on
+  // the magnitude and the sign is kept. Zero means "not set" in some editors and reads as 1.
+  for (const mirrored of [-1, -2.5]) {
+    project.map.sectors[0].textureScale = mirrored;
+    project.map.walls[0].right.textureScale = mirrored;
+    assert.doesNotThrow(() => validateProject(project), `${mirrored} mirrors`);
+  }
+  project.map.sectors[0].textureScale = 0;
+  assert.doesNotThrow(() => validateProject(project), 'zero is unset');
+  for (const bad of [100, -100, '2']) {
     project.map.sectors[0].textureScale = bad;
     assert.throws(() => validateProject(project), /Surface texture scale/);
   }
   delete project.map.sectors[0].textureScale;
-  project.map.walls[0].right.textureScale = 0;
+  project.map.walls[0].right.textureScale = 100;
   assert.throws(() => validateProject(project), /Wall texture scale/);
 });
 

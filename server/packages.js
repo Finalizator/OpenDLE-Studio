@@ -498,7 +498,16 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   const composing = new Set();
   const texturePatch = name => {
     const upper = name.toUpperCase();
+    // The graphic a definition shares its name with comes first, then any other picture of that
+    // name, and only then a composed texture (which is what would recurse).
+    const raw = images.get(`patch_${upper}`);
+    if (raw) return raw();
     for (const key of [`texture_${upper}`, `sprite_${upper}`, `flat_${upper}`]) {
+      // A patch names a graphic, and a TEXTURES definition can share that name (Lullaby defines
+      // STAR2 from a lump also called STAR2). Composing the definition into itself is not a cycle
+      // in the mod, it is the same name used for two different things, so skip the definition
+      // being composed and let the file or lump below answer.
+      if (key === `texture_${upper}` && composing.has(key)) continue;
       const entry = images.get(key);
       if (entry) return entry();
     }
@@ -510,6 +519,10 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
   for (const [upper, definition] of textTextures) {
     const key = `texture_${upper}`;
     if (aliases.has(key)) aliasWarnings.push(`Package texture ${definition.name} is defined by both an image and TEXTURES; the TEXTURES definition wins.`);
+    // A patch is a graphic, and a definition may share its name: Lullaby's `TEXTURES/STAR2`
+    // composes a picture called STAR2 that is drawn from a file called STAR2. Keeping the file
+    // reachable under its own key is what stops the definition from being composed into itself.
+    if (images.has(key)) images.set(`patch_${upper}`, images.get(key));
     aliases.set(key, `TEXTURES:${definition.name}`);
     images.set(key, () => {
       check(!composing.has(key), `Texture ${definition.name} includes itself through its patches`);

@@ -22,6 +22,19 @@ const colorPattern = /^#[0-9a-f]{6}$/i;
 // units, so 2 draws the artwork twice as large and 0.5 twice as fine.
 export const MIN_TEXTURE_SCALE = .05;
 export const MAX_TEXTURE_SCALE = 16;
+/**
+ * GZDoom scales a texture by a factor, and a **negative** factor mirrors it. Real maps use that
+ * (Lullaby's MAP01 has `scalex_mid = -1.0` on 72 sides), so the range is checked on the magnitude
+ * and the sign is kept. Zero means "not set" in some editors and reads as 1 downstream.
+ */
+export function textureScaleInRange(value) {
+  if (!Number.isFinite(value)) return false;
+  const magnitude = Math.abs(value);
+  return magnitude === 0 || (magnitude >= MIN_TEXTURE_SCALE && magnitude <= MAX_TEXTURE_SCALE);
+}
+export function assertTextureScale(value, label) {
+  assert(textureScaleInRange(value), `${label} must be between ${MIN_TEXTURE_SCALE} and ${MAX_TEXTURE_SCALE}; a negative value mirrors the texture`);
+}
 
 function assert(value, message) {
   if (!value) throw new Error(message);
@@ -510,7 +523,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     if (sector.wallsOnly !== undefined) assert(typeof sector.wallsOnly === 'boolean', 'Sector wallsOnly must be boolean');
     assetRef(sector.floorAsset, 'Floor material');
     assetRef(sector.ceilingAsset, 'Ceiling material');
-    if (sector.textureScale !== undefined) number(sector.textureScale, 'Surface texture scale', MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE);
+    if (sector.textureScale !== undefined) assertTextureScale(sector.textureScale, 'Surface texture scale');
   }
   const sectorIds = new Set(sectors.map(sector => sector.id));
   for (const wall of walls) {
@@ -528,7 +541,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       assert(sectorIds.has(side.sectorId), 'Wall side references an unknown sector');
       number(side.offsetX, 'Wall X offset');
       number(side.offsetY, 'Wall Y offset');
-      if (side.textureScale !== undefined) number(side.textureScale, 'Wall texture scale', MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE);
+      if (side.textureScale !== undefined) assertTextureScale(side.textureScale, 'Wall texture scale');
       for (const key of ['upper', 'middle', 'lower']) assetRef(side[key], 'Side material');
     }
     if (wall.flags !== undefined) number(wall.flags, 'Wall flags', 0, 65535);

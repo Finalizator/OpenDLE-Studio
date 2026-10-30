@@ -1,4 +1,4 @@
-import { MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE } from './project.js';
+import { MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE, textureScaleInRange } from './project.js';
 import { LIMITS } from './limits.js';
 // Block budgets, not Doom's own limits: see shared/limits.js.
 const limits = { vertex: LIMITS.vertices, linedef: LIMITS.walls, sidedef: LIMITS.sidedefs,
@@ -9,6 +9,10 @@ export function parseUDMF(text) {
   if (typeof text !== 'string' || text.length > LIMITS.udmfTextBytes) {
     throw new Error(`UDMF TEXTMAP exceeds ${LIMITS.udmfTextBytes / 1024 / 1024} MiB`);
   }
+  // A token is at least one character, so the text length is the hard upper bound on how many
+  // there can be. The budget is there to stop a parser loop, not to second-guess a large map:
+  // Lullaby's MAP01 is a 17 MB TEXTMAP of 4.2M tokens, which the old flat 2M cap refused.
+  const tokenLimit = Math.max(2_000_000, text.length + 1024);
   let position = 0, tokens = 0;
   const globals = {}, blocks = [], counts = {};
   const fail = message => { throw new Error(`UDMF at character ${position}: ${message}`); };
@@ -27,7 +31,7 @@ export function parseUDMF(text) {
       }
       break;
     }
-    if (++tokens > 2000000) fail('Token budget exceeded');
+    if (++tokens > tokenLimit) fail('Token budget exceeded');
     if (position === text.length) return { type: 'end' };
     const char = text[position];
     if ('{}=;'.includes(char)) { position++; return { type: char }; }
@@ -120,14 +124,23 @@ export function udmfRecords(document) {
     if (typeof value !== 'string' || !value.length || value.length > 256) throw new Error(`UDMF ${key} must be a texture name`);
     return value.toUpperCase();
   }
-  const index = (p, key, fallback) => number(p, key, fallback, { integer: true, min: -1 });
+  // A sidedef reference is an index into a *large* table: this map has more than 65,536 of them,
+  // so the index range follows the block budget rather than the old 16-bit ceiling.
+  const index = (p, key, fallback) => number(p, key, fallback,
+    { integer: true, min: -1, max: Math.max(LIMITS.sidedefs, LIMITS.walls, LIMITS.vertices) });
   // UDMF splits texture scale into X and Y; one uniform factor is supported, so the
   // horizontal value wins and an absent/default pair stays undefined.
   function scale(p, xKey, yKey) {
     if (p[xKey] === undefined && p[yKey] === undefined) return undefined;
-    const value = number(p, xKey, 1, { min: MIN_TEXTURE_SCALE, max: MAX_TEXTURE_SCALE });
-    // Y is validated too: a mod that scales non-uniformly still has to be in range.
-    number(p, yKey, 1, { min: MIN_TEXTURE_SCALE, max: MAX_TEXTURE_SCALE });
+    const checked = (key) => {
+      const value = p[key] ?? 1;
+      // A negative scale mirrors the texture, which GZDoom maps do use; the magnitude is what
+      // has to be sane. Rejecting the sign made an ordinary modded map refuse to import.
+      if (!textureScaleInRange(value)) throw new Error(`UDMF ${key} must be between ${MIN_TEXTURE_SCALE} and ${MAX_TEXTURE_SCALE} (negative mirrors)`);
+      return value;
+    };
+    const value = checked(xKey);
+    checked(yKey);   // Y is validated too: a mod that scales non-uniformly still has to be in range.
     return value === 1 ? undefined : value;
   }
   return {

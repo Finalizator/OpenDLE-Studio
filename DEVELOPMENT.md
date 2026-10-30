@@ -3026,6 +3026,35 @@ the same three low bits Doom uses. Sector records are the classic 26 byte layout
 both binary formats; sector arguments are not part of it, so scripts read them through
 ACS as they do in GZDoom.
 
+### What refused a real GZDoom PK3, and what no longer does
+
+Importing `Lullaby.pk3` (a 7.5 MB ZDoom project with a 44,000-vertex MAP01) failed at four
+different places in a row. Each was a real rule that did not match what maps and mods actually
+contain, and each stopped the whole import rather than degrading:
+
+1. **`scalex_mid = -1.0`.** GZDoom scales a texture by a factor and a **negative** factor mirrors
+   it; Lullaby has 83 sides that use one. Texture scale was validated on the signed value against
+   `0.05…16`, so the first mirrored side rejected the map. The range is now checked on the
+   magnitude with the sign kept — the UV helpers already divide by `size * scale`, so a negative
+   scale mirrors exactly as it should — and 0 reads as "not set" the way some editors write it.
+2. **`TEXTURES/STAR2` "includes itself through its patches".** The file is a definition that
+   builds a texture called STAR2 out of a graphic called STAR2. Patches were resolved by looking
+   up the composed texture of that name first, so the definition composed itself. The graphic a
+   definition shares a name with is now kept reachable under its own key and patches prefer it,
+   which is what the name always meant.
+3. **"Token budget exceeded" at 7.4 MB of TEXTMAP.** The parser had a flat 2,000,000-token cap;
+   that map is 17 MB and 4.2 million tokens. A token is at least one character, so the budget is
+   now the text length — it still catches a parser loop, and the 64 MiB TEXTMAP cap is what bounds
+   the work.
+4. **`sideback` past 65,536.** Sidedef references were validated against the default 16-bit
+   ceiling; this map has far more sidedefs than that. Index ranges now follow the block budgets in
+   `shared/limits.js`.
+
+After those, both import paths — the local library and a direct upload — produce the map: 44,140
+vertices, 55,365 walls, 13,220 sectors, 4,602 objects and 1,676 assets in about 25 seconds, with
+308 warnings that name what was not interpreted. A second, unrelated 40 MB PK3 (`Furdoom`) imports
+its map through the same path.
+
 ### What the importer reads from a package
 
 A package is read for the resources a map needs, and the list of what counts has
