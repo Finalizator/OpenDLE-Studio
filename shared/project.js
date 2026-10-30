@@ -256,7 +256,12 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
     assert(entity.type !== 'player', 'Player uses the built-in Rapier capsule controller');
     assert(['none', 'fixed', 'dynamic', 'kinematic'].includes(config.body), 'Invalid rigid-body type');
     if (config.body !== 'none') {
-      assert(['box', 'ball', 'capsule', 'cylinder', 'cone', 'wedge'].includes(config.shape), 'Invalid collider shape');
+      assert(['box', 'ball', 'capsule', 'cylinder', 'cone', 'wedge', 'model'].includes(config.shape), 'Invalid collider shape');
+      // A shape collided from a model's own faces needs the model to exist and be one.
+      if (config.shape === 'model') {
+        assert(entity.modelAsset, 'A model collider needs the object to have a model');
+        assert(assets.find(asset => asset.id === entity.modelAsset)?.kind === 'model', 'A model collider needs a model asset');
+      }
       // A wedge's own numbers: how steep its face is and which edge is the ridge.
       if (config.shape === 'wedge') {
         object(config.wedge, 'Wedge');

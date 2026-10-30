@@ -2649,23 +2649,47 @@ Placement and the type dropdown both go through one constructor, so a ramp dropp
 placed in the 3D view, or switched from another type arrives with parameters and geometry that
 agree.
 
-### One set of corners, checked by a ray
+### A ramp is a generated model, and its collision is that model's faces
 
-A wedge's six corners are written down once, in `wedgeCorners` (`shared/ramp.js`), and its
-triangles once, in `WEDGE_INDICES`. Everything that draws or collides a ramp reads them:
-`wedgeVertices` in `shared/physics.js` builds the Rapier convex hull from them, `wedgeGeometry` in
-`public/render.js` builds the mesh from them, and the 3D editor's own drawing path in
-`public/scene-3d-view.js` swaps the depth and up axes for its Z-up group and winds the triangles
-the other way, because a mirrored shape has its faces inside out. Two descriptions of the same
-ramp is how a shape the player is stopped by drifts away from the shape they can see, and the
-editor and the game had two.
+The ramp tool does not describe a shape the engine has a special case for. It **generates a
+glTF** from the four numbers — one mesh, five faces (the surf face, the vertical back, the base and
+the two triangular ends) — and stores it in `project.assets` as an ordinary `kind: 'model'` asset.
+`shared/ramp-model.js` owns that, and `ensureRampModel` gives the object its mesh, `modelScale: 1`
+(the mesh is authored in map units, so nothing needs converting) and `physics.shape = 'model'`.
 
-The test does not compare formulas, it casts rays at the live physics world: at 10, 30, 50, 70 and
-90 % of the run the collider answers within half a map unit of `surfRampSurface().heightAt(x)`,
+From there a ramp is a model in every sense: it is drawn by `addModel`, placed by the same code
+that places an imported `.bbmodel`, lit like a model, and it shows up in the model list. The only
+thing that makes it a ramp is that it collides.
+
+**Collision is read back out of the mesh** (`shared/model-geometry.js`). The model's triangles are
+parsed, every node transform applied, scaled the way the renderer scales them, and wrapped in a
+convex hull, so Rapier resolves contacts face by face — the surf face hands back its own normal
+and the slide along it is the slide the player can see. This is not ramp-specific: any model with
+`physics.shape = 'model'` collides as itself, which is what makes a ramp cut in Blockbench and one
+built by the tool the same kind of object.
+
+- Editing a number gives a new mesh. The asset id is derived from slope, run, rise and facing
+  (`ramp_mesh_<width>x<height>x<depth>_<r|l>`), so equal ramps share one asset, a changed ramp gets
+  a new one, and `syncRampModels` (called on every committed edit and on project load) prunes the
+  meshes nothing references any more.
+- A ramp opened from an older save is still `shape: 'wedge'`, and the old hull and mesh paths stay
+  in place for it; the first edit or load upgrades it to a model. That legacy path is
+  `wedgeCorners`/`WEDGE_INDICES`, which now come from the same `wedgePoints` the faces are built
+  from, so even the old shape had one description.
+- Textures: the generated material is plain white on purpose, and the image assigned to a ramp is
+  applied to it as the base map, with UVs already in map units over 64 so a bigger ramp simply
+  repeats more.
+
+The test does not compare formulas — it casts rays at the live physics world: at 10, 30, 50, 70
+and 90 % of the run the collider answers within half a map unit of `surfRampSurface().heightAt(x)`
 for a ramp facing each way, and a ray cast up from under the floor finds the floor and nothing
-else. That second ray is the regression: a tilted box's buried lower corner sat under the floor
-where the character controller still found it, which is what lifted the player into the air tens
-of units before they reached a ramp they could see.
+else. A second test parses the generated asset with the same loader the engine uses, checks the
+mesh covers exactly the numbers it was given, and checks every triangle's normal points away from
+the middle of the solid — an inside-out face is a face the player falls through.
+
+Measured live after the change: the editor's 3D view and Play level both report `modelCount: 2`,
+the ramps draw as their generated meshes in both, and the spawn slides down the 50° ramp to the
+floor.
 
 Walking the 30° return ramp climbs it: measured over 60 tics, x goes from 183.7 to −59.9 with y
 staying at 150.0 and z following the surface from 11.6 to 151.6. A note that this ramp "drifts

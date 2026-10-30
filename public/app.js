@@ -4,7 +4,7 @@ import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
-import { addRamp, normalizeRamp, RAMP_DEFAULTS } from '/shared/ramp.js';
+import { addRamp, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { bundleModel } from '/shared/gltf.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
 import { createSceneEditor } from './scene-editor.js';
@@ -413,6 +413,8 @@ function renderLive(message) {
   render();
 }
 function commit(next, message = 'Project updated') {
+  // A ramp's mesh is generated from its numbers, so any edit may have changed what it should be.
+  syncRampModels(next);
   validateProject(next, { fast: true });
   // The previous project is never mutated in place (see cloneProjectForEdit), so the
   // old reference is already a valid snapshot; cloning it again cost a second
@@ -2064,6 +2066,11 @@ async function reloadProject(initial = false) {
   // Drafts and older imports can still carry the narrow pickup reach that made an
   // item on a ledge impossible to take.
   if (upgradePickupReach(project)) { dirty = true; status('Pickup reach widened so items on ledges can be collected; save to keep it.'); }
+  // Ramps saved before they were meshes get the model their numbers describe, so an old map
+  // opens with the ramps drawn and collided the way the tool now builds them.
+  const before = project.assets?.length || 0;
+  syncRampModels(project);
+  if ((project.assets?.length || 0) !== before) { dirty = true; status('Ramp meshes generated for this map; save to keep them.'); }
   history = []; future = []; selection = null; scriptScope = '$all'; editVersion++; clearDraft();
   render(); fitMap();
   status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'

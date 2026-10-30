@@ -7,6 +7,9 @@ import { createRuntime } from '../shared/runtime.js';
 import { createPhysics } from '../shared/physics.js';
 import { addRamp, normalizeRamp, rampShape, RAMP_DEFAULTS, WEDGE_INDICES, wedgeCorners } from '../shared/ramp.js';
 import { surfRampSurface } from '../shared/engine-script.js';
+import { faceNormal, syncRampModels } from '../shared/ramp-model.js';
+import { modelTriangles } from '../shared/model-geometry.js';
+import { decodeDataURI, readModel, validateModelDocument } from '../shared/gltf.js';
 
 const surfaceOf = ramp => surfRampSurface(ramp);
 
@@ -29,14 +32,19 @@ test('editing the four numbers changes the geometry the engine uses', () => {
   let surface = surfaceOf(ramp);
   assert.ok(Math.abs(surface.highHeight - surface.lowHeight - 256 * Math.tan(50 * Math.PI / 180)) < .5,
     `rises ${(surface.highHeight - surface.lowHeight).toFixed(1)}`);
-  // A wedge carries no tilt: its steepness is the number that built it, and a surface that steep
-  // is not ground, which is what makes it surfable.
-  assert.equal(ramp.physics.shape, 'wedge');
+  // The shape is the generated mesh, and it carries no tilt: its steepness is the number that
+  // built it, and a surface that steep is not ground, which is what makes it surfable.
+  const steepMesh = ramp.modelAsset;
+  syncRampModels(project);
+  assert.equal(ramp.physics.shape, 'model');
+  assert.deepEqual(ramp.modelTilt, { pitch: 0, roll: 0 });
   assert.ok(ramp.ramp.slope > 45.573, 'a 50 degree ramp is not ground');
   assert.equal(ramp.physics.wedge.facing, 'right', 'and it falls towards +x');
 
   // A walkable ramp at the same length is a different shape, not merely a different number.
   normalizeRamp(ramp, { slope: 30 });
+  syncRampModels(project);
+  assert.notEqual(ramp.modelAsset, steepMesh, 'a shallower ramp is a different mesh');
   assert.ok(ramp.ramp.slope < 45.573, 'a 30 degree ramp is ground');
   assert.ok(Math.abs(surfaceOf(ramp).highHeight - 256 * Math.tan(30 * Math.PI / 180)) < .5);
 
@@ -63,7 +71,13 @@ test('the collider, the tilt and the height are always derived, never set by han
   const ramp = addRamp(project, { slope: 45, length: 200, width: 128 });
   const shape = rampShape({ slope: 45, length: 200, width: 128 });
   assert.equal(ramp.physics.body, 'fixed');
-  assert.equal(ramp.physics.shape, 'wedge');
+  assert.equal(ramp.physics.shape, 'model', 'a ramp collides as the mesh the ramp tool generated');
+  // The mesh is a real model asset, so the object is placed and drawn like an imported one.
+  const model = project.assets.find(asset => asset.id === ramp.modelAsset);
+  assert.ok(model, 'the ramp has a generated model');
+  assert.equal(model.kind, 'model');
+  assert.equal(model.format, 'glb');
+  assert.equal(ramp.modelScale, 1, 'the mesh is authored in map units');
   assert.ok(Math.abs(ramp.physics.width - shape.run) < .01, 'the hull is as wide as the ground it covers');
   assert.ok(Math.abs(ramp.physics.height - shape.rise) < .01, 'and as tall as it rises');
   assert.equal(ramp.physics.depth, 128);
@@ -177,4 +191,53 @@ test('the collider answers a downward ray at exactly the height the ramp claims'
     }
     state.physics.dispose();
   }
+});
+
+test('the ramp tool generates a real model, and its faces are the collision', async () => {
+  const project = createProject();
+  const ramp = addRamp(project, { x: 0, y: 0, slope: 50, length: 256, width: 240 });
+  const asset = project.assets.find(item => item.id === ramp.modelAsset);
+  // It is a model by every measure the loader uses, not a shape the renderer has to special-case.
+  const { json, binary } = readModel(decodeDataURI(asset.src), asset.format);
+  assert.doesNotThrow(() => validateModelDocument(json, binary?.length));
+  const triangles = modelTriangles(json, binary);
+  assert.equal(triangles.indices.length / 3, 8, 'four quads and two triangular ends');
+  // The mesh covers exactly the ramp's numbers, in map units, standing on the floor.
+  const bounds = [0, 1, 2].map(axis => ({
+    min: Math.min(...[...triangles.positions].filter((_, index) => index % 3 === axis)),
+    max: Math.max(...[...triangles.positions].filter((_, index) => index % 3 === axis)),
+  }));
+  assert.ok(Math.abs(bounds[0].max - bounds[0].min - 256) < .01, 'the mesh is the length it covers');
+  assert.ok(Math.abs(bounds[1].max - ramp.physics.height) < .01, 'and rises to the height it says');
+  assert.ok(Math.abs(bounds[2].max - bounds[2].min - 240) < .01, 'and is the width it was given');
+  assert.ok(Math.abs(bounds[1].min) < 1e-6, 'with its base on the origin, which is the floor');
+  // Every face points away from the middle of the solid, so nothing is inside out and a ray from
+  // outside meets an outward surface.
+  const centre = [0, ramp.physics.height / 3, 0];
+  for (let triangle = 0; triangle < triangles.indices.length; triangle += 3) {
+    const [a, b, c] = [0, 1, 2].map(offset => triangles.indices[triangle + offset]);
+    const point = index => [triangles.positions[index * 3], triangles.positions[index * 3 + 1], triangles.positions[index * 3 + 2]];
+    const normal = faceNormal([point(a), point(b), point(c)]);
+    const middle = [0, 1, 2].map(axis => (point(a)[axis] + point(b)[axis] + point(c)[axis]) / 3);
+    const outward = [0, 1, 2].reduce((sum, axis) => sum + normal[axis] * (middle[axis] - centre[axis]), 0);
+    assert.ok(outward > 0, `triangle ${triangle / 3} faces outwards (${outward.toFixed(2)})`);
+  }
+});
+
+test('editing a ramp replaces its mesh and drops the one nothing uses', () => {
+  const project = createProject();
+  const ramp = addRamp(project, { slope: 50 });
+  const first = ramp.modelAsset;
+  const share = addRamp(project, { x: 256, slope: 50 });
+  assert.equal(share.modelAsset, first, 'two ramps of the same shape share one mesh');
+  syncRampModels(project);
+  assert.equal(project.assets.filter(asset => asset.id === first).length, 1, 'and it is stored once');
+  normalizeRamp(ramp, { slope: 30 });
+  syncRampModels(project);
+  assert.notEqual(ramp.modelAsset, first, 'a new angle is a new mesh');
+  assert.ok(!project.assets.some(asset => asset.id === ramp.modelAsset && asset.id === first));
+  // The other ramp still uses the old shape, so its mesh stays.
+  assert.equal(share.modelAsset, first);
+  assert.ok(project.assets.some(asset => asset.id === first));
+  assert.equal(ramp.physics.shape, 'model');
 });

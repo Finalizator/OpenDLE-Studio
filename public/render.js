@@ -741,6 +741,20 @@ export async function createPreview(canvas, project, state, { editor = false } =
           node.material = Array.isArray(node.material) ? node.material.map(copy) : copy(node.material);
         }
       });
+      // The ramp tool generates a plain white mesh, so the image assigned to the object is what
+      // gives it a surface; an imported model keeps its own materials.
+      const image = entity.type === 'ramp' && entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
+      if (image) {
+        for (const material of tinted) {
+          const map = image.clone();
+          map.wrapS = THREE.RepeatWrapping; map.wrapT = THREE.RepeatWrapping;
+          // The generated mesh's UVs are already in map units over 64, so one repeat is one
+          // tile per 64 units and a bigger ramp simply repeats more.
+          map.repeat.set(1, 1);
+          map.needsUpdate = true; textures.set(map.uuid, map);
+          material.map = map; material.needsUpdate = true;
+        }
+      }
       const mixer = new THREE.AnimationMixer(object); mixers.add(mixer);
       mixer.addEventListener('finished', () => state.animationFinished.add(entity.id));
       if (root.userData.samplesScreen) screenObjects.add(root);
@@ -780,6 +794,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // collider is drawn, tilted exactly as the collider is.
       // A ramp is a shape, not a picture: it is always drawn as its collider, and a texture goes
       // on that shape. Letting it fall through to the sprite path turned it into a flat billboard.
+      // A ramp is a model: the ramp tool generates its mesh, so it is drawn by the model path with
+      // the texture on the mesh itself. Only a ramp saved before ramps were models falls through
+      // to the collider box below.
+      if (entity.type === 'ramp' && entity.modelAsset && modelAssets.has(entity.modelAsset)) { addModel(entity); return; }
       if (entity.type === 'ramp' && solidBoxFor(entity)) { addColliderBox(entity); return; }
       if (!entity.modelAsset && !entity.spriteAsset && solidBoxFor(entity)) { addColliderBox(entity); return; }
       if (!entity.modelAsset) { addSprite(entity); return; }

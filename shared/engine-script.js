@@ -1,5 +1,5 @@
 import { installDefaultHUD, HUD_PROPERTIES } from './hud.js';
-import { surfRampGeometry, normalizeRamp } from './ramp.js';
+import { surfRampGeometry, normalizeRamp, ensureRampModel } from './ramp.js';
 // Re-exported so every caller that reached for the ramp maths through this module keeps
 // working; it lives in `ramp.js` because a ramp is a thing, not a rule set.
 export { surfRampGeometry };
@@ -248,7 +248,9 @@ export function installSprayScriptlet(project, { key = 'KeyT', assetId } = {}) {
 export function surfRampSurface(ramp) {
   // A wedge states its own surface: run and rise are its collider, its base is on the floor.
   const wedge = ramp.physics?.wedge;
-  if (ramp.physics?.shape === 'wedge' && wedge) {
+  // A generated ramp is a model, and a ramp imported as a model still states its surface with a
+  // wedge's slope, run and facing; the shape field only says how it is collided.
+  if (wedge) {
     const slope = Math.abs(wedge.slope) || 50, tan = Math.tan(slope * Math.PI / 180);
     const run = ramp.physics.width, right = wedge.facing !== 'left';
     const lowEdgeX = right ? ramp.x + run / 2 : ramp.x - run / 2;
@@ -298,6 +300,7 @@ export function addSurfRamp(project, { x = 0, y = 0, angle = 0, slope = 50, faci
   const radians = Math.abs(slope) * Math.PI / 180;
   const entity = { id: name, name: 'Surf ramp', type: 'ramp', x, y, angle };
   normalizeRamp(entity, { slope, facing, length: (width || 256) * Math.cos(radians), width: depth || 256 });
+  ensureRampModel(project, entity);
   project.map.entities = [...(project.map.entities || []), entity];
   return entity;
 }

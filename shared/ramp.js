@@ -13,6 +13,9 @@
  * low end, which is why `seat` exists: it drops the ramp by that much so the surf face meets the
  * floor and the ramp is a wedge rather than a floating plank.
  */
+export { ensureRampModel, syncRampModels, WEDGE_INDICES, wedgeCorners } from './ramp-model.js';
+import { ensureRampModel } from './ramp-model.js';
+
 export function surfRampGeometry({ width = 256, depth = 256, thickness, slope = 50, facing = 'right' } = {}) {
   const radians = Math.abs(slope) * Math.PI / 180;
   // A surf ramp is a **wedge**: solid from the slope down to the floor, the way a Hammer brush cut
@@ -108,33 +111,14 @@ export function normalizeRamp(entity, change = {}) {
   // in the editor and the renderer expects the field to exist.
   entity.modelTilt = { pitch: 0, roll: 0 };
   entity.elevation = 0;
-  entity.physics = { body: 'fixed', shape: 'wedge', width: shape.run, height: shape.rise,
+  // A ramp that already has its generated mesh is collided as that mesh; a fresh one is a wedge
+  // until `ensureRampModel` gives it a model to be collided as.
+  entity.physics = { body: 'fixed', shape: entity.modelAsset ? 'model' : 'wedge',
+    width: shape.run, height: shape.rise,
     depth: width, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true,
     wedge: { slope: shape.slope, facing } };
   return entity;
 }
-
-/**
- * The six corners of a wedge ramp: a triangular prism whose base sits on the floor.
- *
- * One definition, three readers — the physics hull, the play renderer and the editor's 3D view.
- * Two descriptions of the same ramp is how the shape the player collides with drifts away from
- * the shape they can see, and that is exactly what happened: a tilted box collided as one thing
- * and was drawn as another. World units, y up, origin centred on the base.
- */
-export function wedgeCorners({ width = RAMP_DEFAULTS.length, height = 0, depth, facing } = {}) {
-  const halfWidth = width / 2, halfDepth = (depth ?? width) / 2;
-  const rise = Math.max(0, Number(height) || 0);
-  // 'right' falls towards +x, so its low edge is the +x one and the ridge is at -x.
-  const low = facing === 'right' ? halfWidth : -halfWidth, high = -low;
-  return [
-    [low, 0, -halfDepth], [high, 0, -halfDepth], [high, rise, -halfDepth],
-    [low, 0, halfDepth], [high, 0, halfDepth], [high, rise, halfDepth],
-  ];
-}
-
-/** Triangles over `wedgeCorners`, wound so every face points outwards. */
-export const WEDGE_INDICES = [0, 2, 5, 0, 5, 3, 0, 4, 1, 1, 4, 5, 1, 5, 2, 0, 3, 4];
 
 /** A new ramp entity, ready to place. */
 export function addRamp(project, { x = 0, y = 0, id, name, ...change } = {}) {
@@ -143,6 +127,9 @@ export function addRamp(project, { x = 0, y = 0, id, name, ...change } = {}) {
   while (used.has(rampId)) rampId = `${rampId}_x`;
   const entity = { id: rampId, name: name || 'Ramp', type: 'ramp', x, y, angle: 0 };
   normalizeRamp(entity, { ...RAMP_DEFAULTS, ...change });
+  // A ramp is a generated mesh: give it the model its numbers describe so it is placed, drawn and
+  // collided like any other model.
+  ensureRampModel(project, entity);
   project.map.entities = [...(project.map.entities || []), entity];
   return entity;
 }

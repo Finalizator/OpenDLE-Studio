@@ -5,6 +5,7 @@ import {
 import { actorOf } from './actor-runtime.js';
 import { tiltQuaternion } from './source-motion.js';
 import { wedgeCorners } from './ramp.js';
+import { modelAssetTriangles } from './model-geometry.js';
 
 export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
@@ -165,6 +166,8 @@ export function createPhysics(project, state, R, triangulate) {
   const initialUnbodiedHeights = new Map(state.entities.filter(entity => entity.type !== 'player' &&
     (!entity.physics || entity.physics.body === 'none') && Number.isFinite(entity.z)).map(entity => [entity.id, entity.z]));
   const world = new R.World({ x: 0, y: -9.81, z: 0 }), events = new R.EventQueue(true);
+  // Parsed model geometry, keyed by the asset source: a rebuild reads each mesh once.
+  const modelCache = new Map();
   world.timestep = FIXED_STEP;
   // Sectors whose heights can change end up in the dynamic collider, because a
   // trimesh cannot be edited in place: the static one is rebuilt without them once,
@@ -267,6 +270,30 @@ export function createPhysics(project, state, R, triangulate) {
     if (entity.modelTilt) return tiltQuaternion(entity.modelTilt, angle);
     return { x: 0, y: Math.sin(angle / 2), z: 0, w: Math.cos(angle / 2) };
   }
+  /**
+   * The collider for a mesh, built from the mesh itself.
+   *
+   * A ramp, a wall cut in Blockbench, anything whose solid shape is its own artwork: the model's
+   * triangles are read back, scaled the way the renderer scales them, and wrapped in a convex
+   * hull. Rapier resolves contacts face by face, so a surf face hands back its own normal and the
+   * slide along it is the slide the player can see. A model that is not convex is approximated by
+   * its hull, which is at least honest about being a solid; it is not silently passed through.
+   */
+  function modelCollider(entity, config, height) {
+    const asset = (project.assets || []).find(item => item.id === entity.modelAsset);
+    const triangles = modelAssetTriangles(asset, modelCache);
+    const scale = (Number(entity.modelScale) || 32) / PHYSICS_SCALE;
+    if (triangles?.positions.length) {
+      const points = new Float32Array(triangles.positions.length);
+      for (let index = 0; index < points.length; index++) points[index] = triangles.positions[index] * scale;
+      const hull = R.ColliderDesc.convexHull(points);
+      if (hull) return hull;
+    }
+    // No readable triangles: fall back to the box the numbers describe rather than to a shape
+    // nothing can collide with.
+    return R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, Math.max(height, 1) / 2 / PHYSICS_SCALE,
+      config.depth / 2 / PHYSICS_SCALE);
+  }
   for (const entity of state.entities) {
     const player = entity.type === 'player', config = entity.physics;
     // An imported actor is solid in Doom: a monster stops the player rather than being walked
@@ -280,7 +307,9 @@ export function createPhysics(project, state, R, triangulate) {
     const descriptor = bodyType === 'dynamic' ? R.RigidBodyDesc.dynamic() : bodyType === 'fixed' ? R.RigidBodyDesc.fixed() : R.RigidBodyDesc.kinematicPositionBased();
     const bottom = floorAt(entity) + (entity.elevation || 0);
     // A wedge's origin is its base on the floor; every other shape's is its centre.
-    const lift = config?.shape === 'wedge' ? 0 : height / 2 + (player ? .4 : 0);
+    // A wedge's origin is its base on the floor and a model's is its own origin, which is where
+    // the renderer puts it too; every other shape's origin is its centre.
+    const lift = config?.shape === 'wedge' || config?.shape === 'model' ? 0 : height / 2 + (player ? .4 : 0);
     descriptor.setTranslation(entity.x / PHYSICS_SCALE, (bottom + lift) / PHYSICS_SCALE, entity.y / PHYSICS_SCALE);
     descriptor.setRotation(rotation(entity));
     // The player capsule is re-oriented onto the surface it stands on, so its
@@ -297,6 +326,7 @@ export function createPhysics(project, state, R, triangulate) {
           : config.shape === 'cone' ? R.ColliderDesc.cone(height / 2 / PHYSICS_SCALE, radius / PHYSICS_SCALE)
             : config.shape === 'wedge' ? (R.ColliderDesc.convexHull(wedgeVertices(config)) || R.ColliderDesc.cuboid(
               config.width / 2 / PHYSICS_SCALE, Math.max(height, 1) / 2 / PHYSICS_SCALE, config.depth / 2 / PHYSICS_SCALE))
+              : config.shape === 'model' ? modelCollider(entity, config, height)
               : R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, height / 2 / PHYSICS_SCALE, config.depth / 2 / PHYSICS_SCALE);
     shape.setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setActiveCollisionTypes(R.ActiveCollisionTypes.ALL);
     if (actor) shape.setFriction(.6);
