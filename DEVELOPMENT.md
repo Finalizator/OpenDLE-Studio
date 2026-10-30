@@ -2649,6 +2649,29 @@ Placement and the type dropdown both go through one constructor, so a ramp dropp
 placed in the 3D view, or switched from another type arrives with parameters and geometry that
 agree.
 
+### Known issue: the walking jiggle, with the numbers
+
+While walking, the view shakes by about 0.4 map units. The cause is measured, not guessed: a
+grounded player is pressed down 0.5 m/s — 0.53 units a substep — while the character controller
+holds the capsule at its own 0.32-unit gap, so every substep the press is answered by a push-back.
+Over 90 frames of walking that is a 0.416-unit vertical range and 53 direction changes.
+
+Four fixes were tried and each was measured, which is why the shipped build still presses:
+
+| change | jitter (range / flips in 90 frames) | what broke |
+| --- | --- | --- |
+| none (shipped: press 0.5, ground tolerance 4 units) | 0.416 / 53 | — |
+| press 0.05 | ~0.01 / 2 | 16-unit ledge step and monster blocking tests fail |
+| press 0.3 | 0.186 / 65 | monster blocking fails |
+| press 0 + ground tolerance 0.5 units | 0.047 / 4 | ledge step, monster blocking and jump-settling tests fail |
+
+The press is load-bearing for two behaviours that have nothing to do with it: stepping up a
+ledge, and sliding around an obstacle instead of sticking to it. Removing it therefore is not a
+tuning change — those two need to be produced deliberately (a step-up probe and a slide probe of
+their own) before the press can go. The ground test's tolerance is a separate latent problem: it
+is 4 units, the same number as the controller's snap distance, so gravity stops as soon as a
+surface is within 4 units and a player can rest in the air unless something presses them down.
+
 **A tilted box drawn is a collider seen.** Objects with a collider and no artwork were not drawn
 at all during play — the sprite path marks them `unrenderable` and nothing else took them — so the
 ramps in the built map were invisible in the preview and the map read as an empty room the player
