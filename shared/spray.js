@@ -51,11 +51,34 @@ export function decalTarget(state, eye, direction, distance = 96) {
     const floor = sector ? sector.floorHeight : -32768;
     const ceiling = sector ? Math.max(sector.ceilingHeight, floor + 1) : 32767;
     if (z < floor + 1 || z > ceiling - 1) continue;
+    // A two-sided line is a hole with textures around it, not a wall. A bullet only meets a
+    // surface where the opening between the two sectors is closed — an upper or lower texture —
+    // and the midtexture a fence or a shelf uses stops nothing in Doom, so a mark painted there
+    // hung in mid-air with the geometry it belonged to nowhere near it.
+    let top = ceiling, bottom = floor;
+    const beyond = sectorAt(state.sectors, x - nx * .5, y - ny * .5);
+    if (beyond && sector && beyond.id !== sector.id) {
+      const openingFloor = Math.max(floor, beyond.floorHeight);
+      const openingCeiling = Math.min(top, beyond.ceilingHeight);
+      const side = wall.right?.sectorId === sector.id ? wall.right : wall.left;
+      if (z > openingCeiling + .5) {
+        if (!solidTexture(side?.upper)) continue;
+        bottom = openingCeiling;
+      } else if (z < openingFloor - .5) {
+        if (!solidTexture(side?.lower)) continue;
+        top = openingFloor;
+      } else continue;
+    }
     best = { x, y, z, normal: [nx, ny], distance: along,
       start: { x: ax, y: ay }, end: { x: wall.end.x, y: wall.end.y }, length,
-      along: Math.hypot(x - ax, y - ay), floor, ceiling };
+      along: Math.hypot(x - ax, y - ay), floor: bottom, ceiling: top };
   }
   return best;
+}
+
+/** Whether a wall side actually has a texture on it, rather than Doom's `-` (none). */
+function solidTexture(assetId) {
+  return Boolean(assetId) && assetId !== '-';
 }
 
 const DECAL_GAP = .5;

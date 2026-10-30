@@ -200,3 +200,41 @@ test('a spray is clipped to the wall it was painted on', async () => {
   assert.equal(clipDecalToFace({ ...wall, floor: 70 }, { width: 40, height: 40 }), null);
   assert.equal(clipDecalToFace(null, { width: 10, height: 10 }), null);
 });
+
+test('a decal is only painted where a bullet meets a surface, never on a fence or a doorway', async () => {
+  const { createRuntime } = await import('../shared/runtime.js');
+  const { decalTarget } = await import('../shared/spray.js');
+  const project = sprayProject();
+  const state = createRuntime(project);
+  // Two sectors side by side, and nothing else, so the sector a sample lands in is unambiguous.
+  const near = { id: 'near', floorHeight: 0, ceilingHeight: 128, light: 192, sky: false,
+    rings: [[{ x: -192, y: -128 }, { x: 32, y: -128 }, { x: 32, y: 128 }, { x: -192, y: 128 }]],
+    bounds: { minX: -192, maxX: 32, minY: -128, maxY: 128 } };
+  const far = { id: 'far', floorHeight: 0, ceilingHeight: 64, light: 192, sky: false,
+    rings: [[{ x: 32, y: -128 }, { x: 256, y: -128 }, { x: 256, y: 128 }, { x: 32, y: 128 }]],
+    bounds: { minX: 32, maxX: 256, minY: -128, maxY: 128 } };
+  state.sectors.splice(0, state.sectors.length, near, far);
+  // Eyes at chest height, looking straight down +x: `decalTarget` takes (x, y, z).
+  const eye = [0, 0, 48], ahead = [1, 0, 0];
+  // A two-sided line: a fence with a midtexture and nothing else. The opening between the two
+  // sectors is clear, so the shot goes through it and the mark belongs to the wall behind.
+  const fence = { id: 'fence', solid: true, start: { x: 32, y: -64 }, end: { x: 32, y: 64 },
+    right: { sectorId: near.id, middle: 'asset_fence' }, left: { sectorId: far.id, middle: 'asset_fence' } };
+  const back = { id: 'back', solid: true, start: { x: 96, y: -64 }, end: { x: 96, y: 64 },
+    right: { sectorId: far.id, middle: 'asset_wall' } };
+  state.walls.push(fence, back);
+  const through = decalTarget(state, eye, ahead, 200);
+  assert.equal(through.start.x, 96, 'the decal lands on the wall behind the fence, not on the fence');
+
+  // Above the far sector's ceiling the same line is closed by its upper texture, so that is a
+  // surface — and the decal is clipped to the upper part instead of hanging over the opening.
+  fence.right.upper = 'asset_upper';
+  const high = decalTarget(state, [0, 0, 80], ahead, 200);
+  assert.equal(high.start.x, 32, 'the upper texture stops the shot');
+  assert.equal(high.floor, 64, 'the decal cannot extend below the opening it sits above');
+
+  // With no upper texture the space above the opening is empty air, and the wall behind it ends
+  // at the same height: nothing is painted rather than a mark floating in the gap.
+  fence.right.upper = null;
+  assert.equal(decalTarget(state, [0, 0, 80], ahead, 200), null);
+});

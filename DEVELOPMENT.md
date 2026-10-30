@@ -2937,6 +2937,24 @@ The trace is not a heuristic: `test/trace-grid.test.js` compares it against the 
 sweep on 4,800 random rays over a lattice of rooms (including a sector too large to file in
 cells), and requires the two to agree exactly.
 
+### A bullet mark goes where a bullet stopped
+
+Bullet marks were painted on any blocking line the ray crossed, which put them on fences, grates
+and shelves — the midtexture of a two-sided line — and inside doorways, so holes hung in the air
+with no surface under them. A two-sided line is a hole with textures around it, not a wall: Doom's
+bullets pass through its opening and only stop where it is closed. `decalTarget` now samples the
+sector on each side of the line and paints only where the shot meets geometry:
+
+- inside the opening (between the higher floor and the lower ceiling) → no mark, the ray continues
+  to whatever is behind;
+- above it → only if the side has an upper texture, and the mark is clipped to that part so it
+  cannot overhang the opening;
+- below it → the same, with the lower texture;
+- one-sided line → unchanged, which is where a mark belongs.
+
+The clip bounds come from the surface that was hit rather than the front sector's ceiling, so a
+mark near a doorway edge is cropped where the wall ends instead of crossing into it.
+
 ### A surface animates because the mod says so, not because Doom does
 
 Doom's built-in animations are lump ranges: `NUKAGE1`-`NUKAGE3`, `FWATER1`-`FWATER4`, and whatever
