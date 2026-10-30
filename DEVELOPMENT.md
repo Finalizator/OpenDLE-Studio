@@ -2696,6 +2696,31 @@ staying at 150.0 and z following the surface from 11.6 to 151.6. A note that thi
 sideways instead of climbing" was my own measurement rig passing degrees where the runtime works
 in radians, and is withdrawn.
 
+### A body's centre is not its base
+
+The physics world writes back where every solid body ended up (`entity.z`) and the renderer places
+what it draws at that number, so the two can never disagree — unless the conversion is wrong.
+`synchronise` converted a body's translation to a "bottom" by subtracting half the entity's
+height, which is right for a box (whose body is its centre) and wrong for a wedge or a model
+(whose translation already *is* their base). Ramps came back at exactly −height/2 — 98 units
+underground for the 50° surf ramp — so the mesh sank into the floor during play while the **editor**
+(which runs no physics) fell back to `floor + elevation` and drew it correctly, and the collider
+never moved at all. That is the shape of the report "editor is right, the game is wrong, but its
+collider is in the right place".
+
+`baseAtOrigin` now names the shapes that stand on their own origin, and the regression test pins
+both halves of it: a ramp on the floor reports 0, a ramp lifted 64 reports 64, and a box still
+reports its bottom.
+
+### An invisible enemy is still an enemy
+
+Objects with no artwork are not drawn — Doom does the same for `TNT1` — but a monster among them
+still runs its attack, so the player loses health to nothing they can see. An "Enemy" placed with
+no sprite or model did exactly that in the surf test map: 100 → 70 → 34 → 25 with an empty room on
+screen. The undrawn-object log entry was `info` next to the scenery; it is now a `warning` that
+names the enemy, says the player is being hurt by something invisible, and offers the two fixes
+(assign artwork, or delete it).
+
 ### The map's 3D view is the game's renderer, not a picture of it
 
 The Layout 3D tab has no drawing code of its own: it calls `createPreview` from `render.js` — the
