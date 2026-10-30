@@ -166,8 +166,9 @@ const sourceMovement = {
     + 'the way Half-Life does: friction, ground acceleration and an air acceleration that can only '
     + 'add 30 units a second along the direction held, which is what makes air-strafing and bunny '
     + 'hopping work. A surface steeper than 45.6 degrees cannot be stood on, so it has no friction '
-    + 'and the player slides along it — that is a surf ramp, and the two ramps this installs are '
-    + 'ordinary scene objects you can move or delete. Every constant is a field on the '
+    + 'and the player slides along it — that is a surf ramp, and the ramps this installs are '
+    + 'scene objects of their own type with an angle, length, width and height you can edit. '
+    + 'Every constant is a field on the '
     + '"source_movement" rule: gravity, jump speed, run speed, accelerate, airaccelerate, friction, '
     + 'stop speed and the air speed cap. Raise airaccelerate to 100 for the feel of a surf server.',
   rules: 2,
@@ -176,9 +177,9 @@ const sourceMovement = {
   // geometry this project already has.
   build(project) { return buildSurfTestMap(project); },
   buildLabel: 'Build a new empty surf map',
-  buildDetail: 'Replaces the whole project with a new, empty room, two parallel surf ramps and the '
-    + 'movement rules, and puts the player on one of them — the quickest way to try surfing. Undo '
-    + 'restores what was open before.',
+  buildDetail: 'Replaces the whole project with a new, empty room, a surf ramp to slide down, a '
+    + 'walkable ramp back up and a bridge between them, and puts the player on the surf ramp — the '
+    + 'quickest way to try surfing. Undo restores what was open before.',
   remove(project) { return removeSourceMovement(project); },
   installed(project) {
     const sheet = (project.eventSheets || []).find(sheet => sheet.name === SOURCE_MOVEMENT_SHEET);

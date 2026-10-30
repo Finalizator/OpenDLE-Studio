@@ -2623,6 +2623,32 @@ worked, which is exactly the report "jump no longer works" after the surf script
 Two changes fix it: the snap is disabled for any sub-step where the player is rising, and a player
 with positive vertical speed is never considered grounded whatever the contact rays say.
 
+### Ramps are their own kind of object
+
+A surf ramp is `type: 'ramp'`, not a decoration wearing a tilt, so that what a mapper edits is
+what the engine builds. An entity of that type carries `ramp: { slope, length, width, height,
+facing }` and **everything else is derived** by `normalizeRamp` in `shared/ramp.js`: the collider
+box, the tilt it is drawn and collided with, and the height it sits at. Nothing else is allowed to
+set those, so a ramp cannot be drawn as one shape and collided as another — which is how a ramp
+ended up a floating plank over a gap before.
+
+- **`slope`** is degrees. Above 45.573 the engine stops calling the surface ground, so the player
+  slides instead of walking: that is the whole of what makes a ramp surfable, and it is why the
+  type is worth having rather than a rotation field.
+- **`length`** is the ground it covers, **`width`** is across, **`height`** is how far it rises.
+  Three numbers with two degrees of freedom, so the last one edited decides the other: raise the
+  angle and it rises more over the same ground; ask for a height and the ground it covers follows.
+- **`facing`** is which way it falls. Steepness and direction were once one parameter, and asking
+  for a 30 degree ramp that rises to the left got a 50 degree ramp tilted 30.
+
+Editing the angle from 50 to 30 in the properties panel turns a 164.55-long ramp from 196.1 tall
+with a 256-long, 126-thick box into 95.0 tall with a 190-long, 82-thick one, seated correctly at
+both ends — measured in the running editor, not asserted from the formula.
+
+Placement and the type dropdown both go through one constructor, so a ramp dropped in the 2D map,
+placed in the 3D view, or switched from another type arrives with parameters and geometry that
+agree.
+
 **A tilted box drawn is a collider seen.** Objects with a collider and no artwork were not drawn
 at all during play — the sprite path marks them `unrenderable` and nothing else took them — so the
 ramps in the built map were invisible in the preview and the map read as an empty room the player

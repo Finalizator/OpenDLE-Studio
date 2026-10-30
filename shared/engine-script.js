@@ -1,4 +1,8 @@
 import { installDefaultHUD, HUD_PROPERTIES } from './hud.js';
+import { surfRampGeometry, normalizeRamp } from './ramp.js';
+// Re-exported so every caller that reached for the ramp maths through this module keeps
+// working; it lives in `ramp.js` because a ramp is a thing, not a rule set.
+export { surfRampGeometry };
 import { DOOM_TURN_SPEED, PLAYER_SPEED } from './player-motion.js';
 import { AIR_SPEED_CAP, HL2_GRAVITY, SV_ACCELERATE, SV_AIRACCELERATE, SV_FRICTION, SV_STOPSPEED } from './source-motion.js';
 import { sectorGeometry } from './sectors.js';
@@ -224,41 +228,6 @@ export function installSprayScriptlet(project, { key = 'KeyT', assetId } = {}) {
 }
 
 /**
- * The tilt, size and placement of a surf ramp.
- *
- * Two numbers describe a ramp and they are easy to confuse, so they are separate parameters:
- * **`slope`** is how steep it is, in degrees, and **`facing`** is which way it falls. The entity's
- * `modelTilt.roll` is then `slope` signed by `facing`, which is what the renderer tilts and what
- * the collider follows — passing a roll of 30 and getting a 50 degree ramp tilted 30 instead was
- * a bug waiting to happen, and it happened.
- *
- * A box rotated about a horizontal axis has its top face as the ramp. A box centred on the floor
- * would be half buried, so the centre is lifted by exactly the drop from its lowest corner to its
- * face, which puts that corner on the floor. The face is then a thickness above the floor at its
- * low end, which is why `seat` exists: it drops the ramp by that much so the surf face meets the
- * floor and the ramp is a wedge rather than a floating plank.
- */
-export function surfRampGeometry({ width = 256, depth = 256, thickness, slope = 50, facing = 'right' } = {}) {
-  const radians = Math.abs(slope) * Math.PI / 180;
-  // A surf ramp is a **wedge**: solid from the slope down to the floor, the way a Hammer brush cut
-  // to a slant is. A tilted box only is a wedge if it is thick enough that its underside never
-  // comes above the floor, which is `rise · cos(slope)`: any thinner and the ramp is a plank
-  // floating over a triangular gap the player can walk into — which is what "I fell through the
-  // ramp" looked like. Seated (see the elevation below), that thickness puts the underside below
-  // the floor at the low end and exactly on it at the high end.
-  thickness ??= Math.max(16, Math.round(width * Math.sin(radians) * Math.cos(radians)));
-  const centre = width / 2 * Math.sin(radians) + thickness / 2 * Math.cos(radians);
-  const roll = (facing === 'left' ? 1 : -1) * Math.abs(slope);
-  return { width, depth, thickness, slope: Math.abs(slope), facing, roll,
-    elevation: centre - thickness / 2,
-    rise: width * Math.sin(radians), run: width * Math.cos(radians),
-    // The top face's height at its high edge, which is where anything joining the ramp has to be.
-    topHeight: centre + thickness / 2 * Math.cos(radians) + width / 2 * Math.sin(radians),
-    // And at its low edge: a thickness above the floor, unless the ramp is seated.
-    lowHeight: thickness * Math.cos(radians) };
-}
-
-/**
  * A surf ramp's top face as a line: where its low and high edges are along x, and its height at
  * any x.
  *
@@ -318,7 +287,12 @@ export function addSurfRamp(project, { x = 0, y = 0, angle = 0, slope = 50, faci
   let name = id || `surf_ramp_${(project.map.entities || []).filter(entity => entity.type === 'decoration').length + 1}`;
   while (used.has(name)) name = `${name}_x`;
   const ramp = {
-    id: name, name: 'Surf ramp', type: 'decoration', x, y, angle,
+    // A ramp is its own type now: it carries `slope`/`length`/`width`/`height` and derives the
+    // collider, tilt and height from them, so it can be reshaped in the properties panel instead
+    // of being a rotated block of "decoration".
+    id: name, name: 'Surf ramp', type: 'ramp', x, y, angle,
+    ramp: { slope: geometry.slope, length: geometry.run, width: geometry.depth,
+      facing: geometry.facing, height: geometry.rise },
     // `lift` raises the whole ramp, which is what puts its low edge in the air: a ramp that
     // comes all the way down to the floor has nothing to launch off. The Momentum mapping guide
     // does the same thing by cutting the ramp's lower edge above the bottom corner.

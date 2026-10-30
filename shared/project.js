@@ -16,7 +16,7 @@ import { GAME_SETTINGS, validateSetting } from './game-settings.js';
 export const VERSION = 1;
 export const CONDITIONS = ['onStart', 'always', 'keyPressed', 'nearEntity', 'collisionStarted', 'collisionEnded', 'isTouching', 'playerGrounded', 'animationFinished', ...ENGINE_CONDITIONS.map(command => command.type)];
 export const ACTIONS = ['showMessage', 'setVariable', 'addVariable', 'teleport', 'removeEntity', 'setEntityPosition', 'rotateEntity', 'applyImpulse', 'applyForce', 'setVelocity', 'playAnimation', 'stopAnimation', ...ENGINE_ACTIONS.map(command => command.type)];
-export const ENTITY_TYPES = ['player', 'enemy', 'pickup', 'light', 'decoration'];
+export const ENTITY_TYPES = ['player', 'enemy', 'pickup', 'light', 'decoration', 'ramp'];
 const colorPattern = /^#[0-9a-f]{6}$/i;
 // Surface texture scaling: one texture tile covers `scale` times its pixel size in map
 // units, so 2 draws the artwork twice as large and 0.5 twice as fine.
@@ -190,6 +190,19 @@ export function cloneProjectForEdit(project, { deepGame = false, shareActors = f
 /** Shared object rules, used by map objects and by the objects inside a scene. */
 export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [] }) {
   assert(ENTITY_TYPES.includes(entity.type), 'Unknown entity type');
+  // A ramp carries the four numbers a mapper edits and derives everything else from them, so a
+  // ramp with no parameters (an old project, or a decoration switched to a ramp) is given the
+  // defaults rather than loaded as a solid block with no slope.
+  if (entity.type === 'ramp') {
+    const ramp = entity.ramp;
+    if (ramp !== undefined) {
+      assert(ramp && typeof ramp === 'object', 'Ramp parameters must be an object');
+      for (const key of ['slope', 'length', 'width']) assert(Number.isFinite(ramp[key]), `Ramp ${key} must be a number`);
+      assert(ramp.slope > 0 && ramp.slope < 90, 'Ramp slope must be between 0 and 90 degrees');
+      assert(ramp.length > 0 && ramp.width > 0, 'Ramp length and width must be positive');
+      assert(ramp.facing === 'left' || ramp.facing === 'right', 'Ramp facing must be left or right');
+    }
+  }
   number(entity.x, 'Entity X');
   number(entity.y, 'Entity Y');
   number(entity.angle, 'Entity angle', -3600, 3600);

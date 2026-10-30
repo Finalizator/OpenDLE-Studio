@@ -4,6 +4,7 @@ import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
+import { addRamp, normalizeRamp, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { bundleModel } from '/shared/gltf.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
 import { createSceneEditor } from './scene-editor.js';
@@ -305,8 +306,7 @@ async function refreshScene() {
           edit(next => {
             const elevation = Math.round((point.z - (sectorAt(mapSectors, position.x, position.y)?.floorHeight || 0)) / Number($('grid').value)) * Number($('grid').value);
             if (type === 'player') Object.assign(next.map.entities.find(entity => entity.type === 'player'), position, { elevation });
-            else next.map.entities.push({ id: newId('entity'), type, name: `${type[0].toUpperCase()}${type.slice(1)}`, ...position, elevation, angle: 0,
-              ...(type === 'light' ? { light: { color: '#ffbd72', intensity: 1, radius: 192 } } : {}) });
+            else next.map.entities.push(newEntityOfType(type, position, { elevation }));
           }, 'Object placed in 3D');
         } catch (error) { status(error.message, true); }
       },
@@ -768,6 +768,21 @@ function renderInspector() {
               checkbox('Loop animation', animation.loop, value => changeAnimation('loop', value)));
           }
         }
+        if (item.type === 'ramp') {
+          parent.append(make('h2', 'Ramp'));
+          const ramp = { ...RAMP_DEFAULTS, ...item.ramp };
+          const height = ramp.height ?? Math.round(ramp.length * Math.tan(ramp.slope * Math.PI / 180));
+          const changeRamp = change => edit(next => {
+            normalizeRamp(next.map.entities.find(entity => entity.id === item.id), change);
+          }, 'Ramp geometry changed');
+          field(parent, 'Angle (degrees)', input(ramp.slope, 'number', value => changeRamp({ slope: value })));
+          field(parent, 'Length (ground it covers)', input(ramp.length, 'number', value => changeRamp({ length: value })));
+          field(parent, 'Width (across)', input(ramp.width, 'number', value => changeRamp({ width: value })));
+          field(parent, 'Height (how far it rises)', input(height, 'number', value => changeRamp({ height: value })));
+          field(parent, 'Falls towards', select([['right', '+X (right)'], ['left', '-X (left)']], ramp.facing,
+            value => changeRamp({ facing: value })));
+          parent.append(make('p', 'The collider, the tilt it is drawn with and the height it sits at all follow these numbers, so the ramp you see is the ramp you slide on. Above 45.6 degrees the engine stops calling the surface ground, which is what makes it surfable. Angle and length, or angle and height: whichever you change last decides the other.', 'muted'));
+        }
         const physics = { body: 'none', shape: 'box', width: 24, height: 32, depth: 24, radius: 12, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true, ...item.physics };
         const changePhysics = (key, value) => {
           const config = { ...physics, [key]: value };
@@ -824,7 +839,13 @@ function renderInspector() {
         make('p', 'Use "This object" in conditions and actions. Scripts belong to this instance, not every object of its type.', 'muted'));
       parent.append(scripts);
       if (item.type !== 'player') {
-        field(parent, 'Type', select(ENTITY_TYPES.filter(type => type !== 'player'), item.type, value => update('type', value)));
+        field(parent, 'Type', select(ENTITY_TYPES.filter(type => type !== 'player'), item.type, value => edit(next => {
+          const entity = next.map.entities.find(entity => entity.id === item.id);
+          entity.type = value;
+          // An object switched to a ramp has no ramp parameters yet: give it a real one rather
+          // than a solid block that happens to be called a ramp.
+          if (value === 'ramp' && !entity.ramp) normalizeRamp(entity, RAMP_DEFAULTS);
+        }, `Type changed to ${value}`)));
         parent.append(button('Delete object', () => {
           if (count && !confirm(`Delete ${item.name} and its ${count} attached events? You can undo this change.`)) return;
           edit(next => removeEntity(next, item.id), 'Object deleted');
@@ -839,6 +860,18 @@ function renderInspector() {
  * Image assets a creator can pick for an action (sprays, decals, artwork): every asset
  * that is a picture, named so the list reads like the asset library.
  */
+/**
+ * A new scene object of a type, with whatever that type needs to be itself: a light gets its
+ * light, a ramp its four numbers and the geometry they imply. Placement and the 3D view both go
+ * through here so a ramp dropped in the map is the same object either way.
+ */
+function newEntityOfType(type, position, extra = {}) {
+  const entity = { id: newId('entity'), type, name: `${type[0].toUpperCase()}${type.slice(1)}`,
+    ...position, angle: 0, ...extra };
+  if (type === 'light') entity.light = { color: '#ffbd72', intensity: 1, radius: 192 };
+  if (type === 'ramp') normalizeRamp(entity, { ...RAMP_DEFAULTS, ...(entity.ramp || {}) });
+  return entity;
+}
 function imageAssetOptions() {
   return (project?.assets || []).filter(asset => !['sound', 'music', 'model', 'font'].includes(asset.kind))
     .map(asset => [asset.id, `${asset.name} (${asset.kind} ${asset.width}x${asset.height})`]);
@@ -1940,8 +1973,7 @@ canvas.addEventListener('pointerdown', guard(event => {
     const position = snap(point), type = $('entity-type').value;
     edit(next => {
       if (type === 'player') Object.assign(next.map.entities.find(entity => entity.type === 'player'), position);
-      else next.map.entities.push({ id: newId('entity'), type, name: `${type[0].toUpperCase()}${type.slice(1)}`, ...position, angle: 0,
-        ...(type === 'light' ? { light: { color: '#ffbd72', intensity: 1, radius: 192 } } : {}) });
+      else next.map.entities.push(newEntityOfType(type, position));
     }, `${type} placed`);
     return;
   }

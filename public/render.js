@@ -26,7 +26,7 @@ import { createSpriteIndex } from '/shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 import { viewBob, weaponBob } from '/shared/player-motion.js';
 
-export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc' };
+export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc', ramp: '#c98b4b' };
 // Imported models are shaded as physical surfaces instead of Doom's flat light
 // levels: the environment only adds reflections and a little fill, a hemisphere
 // light lifts the shadows predictably, the key light separates faces and the rim
