@@ -21,6 +21,7 @@ import { acsLibrariesFromWad, selectAcsLibraries } from './acs-libraries.js';
 import { unsupportedSpecials } from './line-specials.js';
 import { translationSpecs, parseTranslationTable } from './translation.js';
 import { parseCameraTextures } from './cameratextures.js';
+import { parseSurfaceAnimations, rangeNames } from './animdefs.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
 
@@ -69,6 +70,29 @@ export function importWadGame(wad, entry, options = {}) {
 function translationSuffix(specs) {
   const hash = [...specs.join(',')].reduce((value, character) => (value * 31 + character.charCodeAt(0)) >>> 0, 7);
   return `tr${hash.toString(36).slice(0, 6)}`;
+}
+
+/**
+ * Loads the artwork an ANIMDEFS animation names but the map does not place by itself.
+ *
+ * `assets.get` creates an asset for a picture the package ships; a name the package does not
+ * have throws, and a range stepping past the shipped frames simply stops there.
+ */
+function importSurfaceAnimationFrames(assets, sources, wad) {
+  const texts = [...sources.map(source => (typeof source === 'string' ? source : source?.source ?? source?.text)).filter(Boolean),
+    ...wad.lumps.filter(lump => lump.name === 'ANIMDEFS' && lump.size > 0 && lump.size <= 1024 * 1024)
+      .map(lump => new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)))];
+  if (!texts.length) return;
+  const parsed = parseSurfaceAnimations(texts);
+  for (const sequence of parsed.sequences) {
+    const names = sequence.range ? rangeNames(sequence.range) : sequence.frames.map(frame => frame.name);
+    for (const name of names) {
+      if (!assets.has(name)) continue;
+      for (const kind of [sequence.kind, sequence.kind === 'texture' ? 'flat' : 'texture']) {
+        try { assets.get(name, kind); break; } catch { /* the other namespace may have it */ }
+      }
+    }
+  }
 }
 
 /**
@@ -328,7 +352,12 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   const zdoomFormat = Boolean(source) || hexen;
   // A mod-only WAD has no palette of its own; its geometry, actors and sounds still
   // import and the artwork it cannot decode is reported instead of failing the import.
-  const assets = encodeImage ? createDoomAssets(wad, encodeImage, images, fontResources, { requirePalette: false }) : null;
+  const assets = encodeImage ? createDoomAssets(wad, encodeImage, images, fontResources,
+    { requirePalette: false, animationSources: animDefsSources }) : null;
+  // An animated surface needs every frame, and a map usually references only the first one:
+  // `TEALW1 Range TEALW4` puts three textures in the pack that nothing places. They are loaded
+  // here, the way an actor's own state frames are, so the animation has frames to show.
+  if (assets) importSurfaceAnimationFrames(assets, animDefsSources, wad);
   // ACS: the compiled BEHAVIOR lump is executed natively at Doom's 35 Hz, together
   // with every LOADACS library the game ships.
   const behaviorLump = mapLumps.find(lump => lump.name === 'BEHAVIOR');

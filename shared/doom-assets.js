@@ -1,3 +1,4 @@
+import { parseSurfaceAnimations, rangeNames } from './animdefs.js';
 import { LIMITS } from './limits.js';
 import { doomSound, encodeMusic } from './sound.js';
 import { decodeFON2 } from './doom-font.js';
@@ -157,7 +158,7 @@ export function composeTexture(definition, getPatch) {
   return result;
 }
 
-export function createDoomAssets(wad, encodeImage, images = new Map(), fontResources = new Map(), { requirePalette = true } = {}) {
+export function createDoomAssets(wad, encodeImage, images = new Map(), fontResources = new Map(), { requirePalette = true, animationSources = [] } = {}) {
   const lumpMap = new Map(wad.lumps.map(lump => [lump.name, lump]));
   const flats = new Set();
   let inFlats = false;
@@ -316,6 +317,9 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
     return chosen ? spriteFrame(prefix, chosen[4], kind) : null;
   }
   function materialSequences() {
+    // ANIMDEFS first, because it overrides the built-in ranges: a mod that re-times the
+    // water wants its timing, not Doom's.
+    const declared = animatedSurfaces();
     const sequences = [
       ['NUKAGE1', 'NUKAGE3', 'flat'], ['FWATER1', 'FWATER4', 'flat'], ['SWATER1', 'SWATER4', 'flat'],
       ['LAVA1', 'LAVA4', 'flat'], ['BLOOD1', 'BLOOD3', 'flat'], ['RROCK05', 'RROCK08', 'flat'],
@@ -324,7 +328,8 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
       ['FIREWALA', 'FIREWALL', 'texture'], ['GSTFONT1', 'GSTFONT3', 'texture'],
       ['FIRELAVA', 'FIRELAV3', 'texture'], ['FIREMAG1', 'FIREMAG3', 'texture'], ['FIREBLU1', 'FIREBLU2', 'texture'],
       ['ROCKRED1', 'ROCKRED3', 'texture'], ['BFALL1', 'BFALL4', 'texture'], ['SFALL1', 'SFALL4', 'texture'], ['WFALL1', 'WFALL4', 'texture'],
-    ].map(([start, end, kind]) => ({ start, end, kind, seconds: 8 / 35 }));
+    ].filter(([start]) => !declared.some(sequence => sequence.names[0] === start))
+      .map(([start, end, kind]) => ({ start, end, kind, seconds: 8 / 35 }));
     const lump = lumpMap.get('ANIMATED');
     if (lump) {
       const bytes = data(lump), view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -337,13 +342,52 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
         sequences.push({ start, end, kind, seconds: tics / 35 });
       }
     }
-    return sequences.flatMap(sequence => {
+    return [...declared, ...sequences.flatMap(sequence => {
       const order = sequence.kind === 'flat' ? [...flats] : [...definitions.keys()];
       const start = order.indexOf(sequence.start), end = order.indexOf(sequence.end);
       if (start < 0 || end < start || end - start > 255) return [];
       const names = order.slice(start, end + 1);
       const used = assets.filter(asset => asset.kind === sequence.kind && names.includes(asset.name));
       return used.length ? [{ ...sequence, names, used: used.map(asset => asset.id) }] : [];
+    })];
+  }
+  /**
+   * The surfaces an ANIMDEFS declares, resolved to the artwork this import actually has.
+   *
+   * A `range` names every lump between two names, so it is expanded against the imported
+   * names rather than trusting the two endpoints: `PSTAR01 Range PSTAR12` is twelve frames.
+   */
+  function expandRange({ from, to, tics }, pool, fallback = []) {
+    const exists = name => pool.some(asset => asset.name.toUpperCase() === name.toUpperCase())
+      || fallback.some(asset => asset.name.toUpperCase() === name.toUpperCase());
+    const frames = rangeNames({ from, to }).filter(exists).map(name => ({ name, tics }));
+    // Artwork the package never shipped (a range reaching past the last imported lump) still
+    // animates over what exists; if none of the names exist this returns nothing.
+    return frames.length ? frames : [{ name: from, tics }, { name: to, tics }];
+  }
+  function animatedSurfaces() {
+    const sources = [...animationSources.map(source => (typeof source === 'string' ? source : source?.source ?? source?.text)).filter(Boolean),
+      ...wad.lumps.filter(lump => lump.name === 'ANIMDEFS' && lump.size > 0 && lump.size <= 1024 * 1024)
+        .map(lump => new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)))];
+    if (!sources.length) return [];
+    const parsed = parseSurfaceAnimations(sources, { warn: message => warnings.add(message) });
+    const byKind = { texture: [], flat: [] };
+    for (const asset of assets) if (byKind[asset.kind]) byKind[asset.kind].push(asset);
+    return parsed.sequences.flatMap(sequence => {
+      // A package may file a wall texture under flats/ (Lullaby's TEALW1 is declared as a
+      // texture but ships in the flats namespace), so the declared kind is a preference, not a
+      // requirement, and the frame remembers which namespace it really came from.
+      const pool = byKind[sequence.kind] || [];
+      const fallback = byKind[sequence.kind === 'texture' ? 'flat' : 'texture'] || [];
+      const find = name => pool.find(entry => entry.name.toUpperCase() === name.toUpperCase())
+        || fallback.find(entry => entry.name.toUpperCase() === name.toUpperCase()) || null;
+      const frames = sequence.range ? expandRange(sequence.range, pool, fallback) : sequence.frames;
+      const resolved = frames.map(frame => ({ ...frame, asset: find(frame.name) })).filter(frame => frame.asset);
+      if (!resolved.length) return [];
+      const used = [];
+      for (const frame of resolved) if (!used.includes(frame.asset.id)) used.push(frame.asset.id);
+      return [{ kind: sequence.kind, names: resolved.map(frame => frame.name), kinds: resolved.map(frame => frame.asset.kind),
+        tics: resolved.map(frame => frame.tics), used, start: resolved[0].name, end: resolved[resolved.length - 1].name }];
     });
   }
   function atlas(name, patches, { offsets = false } = {}) {

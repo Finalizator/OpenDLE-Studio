@@ -2937,6 +2937,38 @@ The trace is not a heuristic: `test/trace-grid.test.js` compares it against the 
 sweep on 4,800 random rays over a lattice of rooms (including a sector too large to file in
 cells), and requires the two to agree exactly.
 
+### A surface animates because the mod says so, not because Doom does
+
+Doom's built-in animations are lump ranges: `NUKAGE1`-`NUKAGE3`, `FWATER1`-`FWATER4`, and whatever
+an `ANIMATED` lump adds, all at eight tics a frame. A PK3 replaces that with **ANIMDEFS**, and in
+Lullaby it is not decoration — its waterfalls (`TFALL1 Range TFALL4`), its teal walls
+(`TEALW1 Range TEALW4`) and its spinning stars (`PSTAR01 Range PSTAR12`) are three ANIMDEFS lines.
+None of them were read, so every one of those surfaces sat frozen on its first frame, which is
+exactly how it looked.
+
+`shared/animdefs.js` reads the picture forms — `pic`/`tics` blocks, `X Range Y`, `tics` on either,
+`optional`, and a single-picture entry — and reports the shader forms (`warp`, `warp2`, `fbm`,
+`noise`, `stripe`) by name instead of faking them: those move texels over a still image and need a
+shader, not a frame swap. `Switch` definitions are counted and skipped, because a switch is not an
+animation.
+
+Two details decide whether the animation is visible at all:
+
+- **`Range` covers every lump between the two names**, and it is expanded numerically
+  (`PSTAR01 Range PSTAR12` is twelve frames) rather than trusted as two endpoints.
+- **The frames have to be imported.** A map places `TEALW1` and nothing else, so `TEALW2`-`TEALW4`
+  were never loaded; the importer now loads every frame an animation names, the same way it loads
+  an actor's state frames. A texture declared as a *texture* but shipped under `flats/` (Lullaby's
+  teal walls are) resolves in either namespace.
+
+A clip steps at one rate, so per-frame `tics` are laid out as one tic per step with each frame
+repeated for its own duration; equal durations keep the compact form. The renderer already swaps a
+material's map per clip frame, and floors, ceilings and walls all draw through that cache.
+
+`test/animdefs.test.js` covers the grammar and the budgets; the real-package test now requires
+Lullaby's three animations to exist with the right timing (8 tics for the teal walls, 4 for the
+waterfall and the stars) and every frame present.
+
 ### A mod's things need the mod's actor table
 
 Importing Lullaby left **3,214 of MAP01's 4,602 things as grey boxes**: unnamed

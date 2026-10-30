@@ -567,6 +567,24 @@ test('a real mod imports its own things through its actor table instead of grey 
   assert.ok(entities.filter(entity => !entity.spriteAsset && !entity.modelAsset).length < 40,
     'almost every placed thing has artwork');
   assert.match(warnings.join('\n'), /marker things that draw nothing .* were not placed/);
+
+  // The mod declares its own surface animations in ANIMDEFS, and those surfaces are the ones
+  // the map is built from: a frozen waterfall or a still teal wall is a visible gap.
+  const byName = new Map(project.assets.map(asset => [asset.name.toUpperCase(), asset]));
+  for (const [start, end, tics] of [['TEALW1', 'TEALW4', 8], ['TFALL1', 'TFALL4', 4], ['PSTAR01', 'PSTAR12', 4]]) {
+    const assets = project.assets.filter(asset => asset.name.toUpperCase().startsWith(start.slice(0, -1)) && /\d+$/.test(asset.name));
+    if (!assets.length) continue;
+    // The same artwork can be filed as both a texture and a flat, so any asset with the name
+    // counts; what matters is that one of them is driven by a clip.
+    const candidates = new Set(assets.filter(asset => asset.name.toUpperCase() === start).map(asset => asset.id));
+    const mapping = project.materialAnimations.find(entry => candidates.has(entry.assetId));
+    assert.ok(mapping, `${start} is not animated`);
+    const clip = project.spriteClips.find(item => item.id === mapping.clipId);
+    assert.ok(clip.frames.length > 1, `${start} has one frame`);
+    assert.equal(Math.round(clip.seconds * 35), tics, `${start} timing`);
+    const last = byName.get(end);
+    if (last) assert.ok(clip.frames.includes(last.id), `${end} is not part of ${start}'s animation`);
+  }
 });
 
 test('supplied Furdoom and Ascent packages expose UDMF geometry import and actual texture images', async () => {

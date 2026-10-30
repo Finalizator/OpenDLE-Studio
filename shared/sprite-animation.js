@@ -340,14 +340,27 @@ export function installSpriteAnimations(project, assets) {
   }
   project.materialAnimations = [];
   for (const sequence of assets.materialSequences()) {
-    const frames = sequence.names.map(name => assets.get(name, sequence.kind));
+    // A clip steps at one fixed rate, so a surface whose frames last different tics (an
+    // ANIMDEFS block per picture) is laid out at one tic per step with each frame repeated
+    // for its own duration. Equal durations keep the compact form.
+    const tics = sequence.tics || [];
+    const uniform = !tics.length || tics.every(tics_ => tics_ === tics[0]);
+    const seconds = uniform ? (tics[0] || Math.round(sequence.seconds * 35)) / 35 : 1 / 35;
+    const frames = [];
+    for (let index = 0; index < sequence.names.length; index++) {
+      const assetId = assets.get(sequence.names[index], sequence.kinds?.[index] || sequence.kind);
+      const repeats = uniform ? 1 : Math.max(1, Math.min(255, Math.round(tics[index] || 1)));
+      if (!assetId) continue;
+      for (let repeat = 0; repeat < repeats; repeat++) frames.push(assetId);
+    }
+    if (!frames.length) continue;
     let id = `clip_material_${project.spriteClips.length}`;
     while (used.has(id)) id += '_';
     used.add(id);
-    project.spriteClips.push({ id, name: `${sequence.start} / surface`, frames, seconds: sequence.seconds, loop: true });
+    project.spriteClips.push({ id, name: `${sequence.start} / surface`, frames, seconds, loop: true });
     for (const assetId of sequence.used) {
       project.materialAnimations = project.materialAnimations.filter(entry => entry.assetId !== assetId);
-      project.materialAnimations.push({ assetId, clipId: id, offset: frames.indexOf(assetId) * sequence.seconds });
+      project.materialAnimations.push({ assetId, clipId: id, offset: frames.indexOf(assetId) * seconds });
     }
   }
   for (const entity of project.map.entities) {
