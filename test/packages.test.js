@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { deflateRawSync, crc32 } from 'node:zlib';
 import { PNG } from 'pngjs';
@@ -543,6 +543,32 @@ test('authenticated HTTP supports local/upload inspection, image batches and cla
   assert.equal(store.snapshot().revision, 0);
   assert.equal((await fetch(`${url}/api/import/package?images=nope`, { method: 'POST', headers: binary, body: bytes })).status, 400);
 });
+test('a real mod imports its own things through its actor table instead of grey placeholders', async () => {
+  // Lullaby places 3,214 things under its own editor numbers, most of them GZDoom's
+  // invisible light and sector-action markers. Mapping them through the actor table turned
+  // every one of those into a real decoration or gave it a sprite, and the markers stopped
+  // being drawn at all.
+  const root = new URL('../Projects/', import.meta.url).pathname;
+  const name = 'Lullaby/Lullaby.pk3';
+  if (!existsSync(join(root, name))) return;
+  const files = await readLocalPackage(root, name);
+  const basePath = join(root, 'freedoom2.wad');
+  // The app imports with the Projects folder as its root, which is how the mod's things reach
+  // gzdoom.pk3's engine actors (dynamic lights, fog, sector actions) as well as its own.
+  const { project, warnings } = importPackage(files, { map: 'auto', fullGame: true, projectsDir: root,
+    baseBytes: existsSync(basePath) ? readFileSync(basePath) : undefined });
+  const level = project.game.levels.find(item => item.id === 'MAP01');
+  const entities = level.data.map.entities;
+  const placeholders = entities.filter(entity => /^Doom thing /.test(entity.name || ''));
+  assert.ok(placeholders.length < 50, `${placeholders.length} things are still unnamed placeholders`);
+  const monsters = entities.filter(entity => entity.type === 'enemy');
+  assert.ok(monsters.length > 100, 'the level still has its monsters');
+  assert.ok(monsters.every(entity => entity.actorName && entity.health > 0), 'every monster knows its actor and health');
+  assert.ok(entities.filter(entity => !entity.spriteAsset && !entity.modelAsset).length < 40,
+    'almost every placed thing has artwork');
+  assert.match(warnings.join('\n'), /marker things that draw nothing .* were not placed/);
+});
+
 test('supplied Furdoom and Ascent packages expose UDMF geometry import and actual texture images', async () => {
   const root = new URL('../Projects/', import.meta.url).pathname;
   for (const [name, count] of [['Furdoom/furdoom_v0.1.1.pk3', 17], ['ascentoftitan-1-1', 12]]) {

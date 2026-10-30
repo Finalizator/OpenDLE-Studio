@@ -9,7 +9,7 @@ import { buildVanillaActors, importActors, applyDehacked, actorIndex, parseEdito
 import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile,
   unsupportedActorActions, actionSupported, WEAPON_ACTION_NAMES } from '../shared/actor-runtime.js';
 import { actorProjectileClips, installActorSpriteStates } from '../shared/sprite-animation.js';
-import { importActorSprites } from '../shared/wad.js';
+import { importActorSprites, importWadMap, readWad } from '../shared/wad.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createActorsPanel } from '../public/actors-panel.js';
 
@@ -570,4 +570,62 @@ test('actor state artwork is imported for spawned actors and drives their animat
   assert.equal(imp.spriteAsset, 'asset_FSPRA0', 'the editor sprite follows the actor');
   assert.equal(project.spriteClips.find(clip => clip.id === states.walk).loop, true);
   assert.equal(project.spriteClips.find(clip => clip.id === states.death).loop, false);
+});
+
+test('a mod thing is mapped through its DECORATE class, not left as a grey placeholder', () => {
+  // Lullaby places 3,214 things under its own editor numbers. Without reading the actor
+  // table when the map is mapped, every one of them was an unnamed placeholder with no
+  // artwork, and the invisible ones (dynamic lights, sector actions) drew grey boxes.
+  const wad = (lumps) => {
+    const directory = 12 + lumps.reduce((sum, [, data]) => sum + data.length, 0);
+    const buffer = Buffer.alloc(directory + lumps.length * 16);
+    buffer.write('PWAD'); buffer.writeUInt32LE(lumps.length, 4); buffer.writeUInt32LE(directory, 8);
+    let offset = 12;
+    lumps.forEach(([name, data], index) => {
+      data.copy(buffer, offset);
+      const entry = directory + index * 16;
+      buffer.writeUInt32LE(offset, entry); buffer.writeUInt32LE(data.length, entry + 4); buffer.write(name, entry + 8, 8);
+      offset += data.length;
+    });
+    return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+  };
+  const vertices = Buffer.alloc(16);
+  [[-128, -128], [128, -128], [128, 128], [-128, 128]].forEach(([x, y], i) => {
+    vertices.writeInt16LE(x, i * 4); vertices.writeInt16LE(y, i * 4 + 2);
+  });
+  const lines = Buffer.alloc(56);
+  for (let i = 0; i < 4; i++) {
+    lines.writeUInt16LE(i, i * 14); lines.writeUInt16LE((i + 1) % 4, i * 14 + 2);
+    lines.writeUInt16LE(65535, i * 14 + 12);
+  }
+  const sector = Buffer.alloc(26); sector.writeInt16LE(128, 2);
+  const things = Buffer.alloc(10 * 4);
+  // player start, a custom monster, a custom decoration, a GZDoom dynamic light
+  [[1, 0], [10003, 100], [10002, 200], [9500, 300]].forEach(([type, x], index) => {
+    things.writeUInt16LE(x, index * 10); things.writeUInt16LE(0, index * 10 + 2);
+    things.writeUInt16LE(type, index * 10 + 6); things.writeUInt16LE(7, index * 10 + 8);
+  });
+  const decorate = Buffer.from([
+    'actor ModImp 10003', '{', '  Health 80', '  Radius 20', '  Height 56', '  Monster',
+    '  States', '  {', '  Spawn:', '    POSS A 4 A_Look', '    Loop', '  See:',
+    '    POSS A 4 A_Chase', '    Loop', '  }', '}',
+    'actor ModCandle 10002', '{', '  Radius 16', '  Height 32', '  States', '  {',
+    '  Spawn:', '    POSS B 4', '    Loop', '  }', '}',
+    'actor ModLight 9500 : DynamicLight', '{', '  Radius 16', '  Height 16', '  +INVISIBLE', '}',
+  ].join('\n'), 'latin1');
+  const read = readWad(wad([['DECORATE', decorate], ['MAP01', Buffer.alloc(0)], ['THINGS', things],
+    ['LINEDEFS', lines], ['SIDEDEFS', Buffer.alloc(30)], ['VERTEXES', vertices], ['SECTORS', sector]]));
+  const { project, warnings } = importWadMap(read, 'MAP01');
+  const byDoomType = new Map(project.map.entities.map(entity => [entity.doomType, entity]));
+  const monster = byDoomType.get(10003);
+  assert.equal(monster.type, 'enemy');
+  assert.equal(monster.name, 'ModImp');
+  assert.equal(monster.health, 80);
+  assert.equal(monster.actorId, 'actor_modimp');
+  assert.equal(monster.actorName, 'ModImp');
+  const candle = byDoomType.get(10002);
+  assert.equal(candle.type, 'decoration', 'a decoration with no artwork of its own is still placed');
+  assert.equal(candle.name, 'ModCandle');
+  assert.equal(byDoomType.has(9500), false, 'an invisible dynamic light is not a grey box on the map');
+  assert.match(warnings.join('\n'), /1 marker things that draw nothing/);
 });

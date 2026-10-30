@@ -206,6 +206,27 @@ export function readWad(buffer, { allowNoMaps = false } = {}) {
   return { buffer, lumps, maps: [...new Set(maps)] };
 }
 
+/**
+ * What a placed actor is, from its own flags and the class it descends from.
+ *
+ * DECORATE and ZScript classes inherit their parents' flags, and the record keeps only the
+ * ones a class states itself, so the chain is walked. A light or sector-action marker draws
+ * nothing and reports `null`: placing a placeholder for it only buries the map in grey boxes.
+ */
+function actorRoleOf(actor, byName) {
+  const chain = [], flags = {};
+  for (let current = actor, depth = 0; current && depth < 12; depth++) {
+    chain.push(current);
+    for (const [flag, on] of Object.entries(current.flags || {})) if (on) flags[flag] = true;
+    current = current.parent ? byName.get(String(current.parent).toLowerCase()) || null : null;
+  }
+  const names = new Set(chain.map(item => String(item.name).toLowerCase()));
+  if (names.has('sectoraction') || names.has('dynamiclight') || names.has('teleportdest') || flags.INVISIBLE) return null;
+  if (flags.MONSTER || (flags.COUNTKILL && (actor.health || 0) > 0)) return 'enemy';
+  if (names.has('inventory') || names.has('pickup') || names.has('custominventory')) return 'pickup';
+  return 'decoration';
+}
+
 export function importWadMap(wad, mapName, { encodeImage, images, sounds = new Map(), menuDefinitions = [], hudDefinitions = [], fontResources, episodeInfo, music, actorSources = [], dehacked = [], languageSources = [], sndInfoSources = [], acsLibraries = [], loadacs = [], translationSources = [], animDefsSources = [], actors = true, deferActionGaps = false, options = {} } = {}) {
   const start = wad.lumps.findLastIndex(lump => lump.name === mapName);
   if (start < 0) throw new Error('Map not found');
@@ -351,7 +372,23 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     const a = project.map.vertices[Number(wall.a.slice(1))], b = project.map.vertices[Number(wall.b.slice(1))];
     return a.x !== b.x || a.y !== b.y;
   });
-  let playerFound = false, unknownThings = 0, lightCount = 0;
+  // The actor table is read before the things are mapped: a mod's own editor numbers say
+  // what each thing is and which sprite draws it, which is the difference between a mod's
+  // decorations and a screen of grey placeholder boxes.
+  const dehackedSources = [...dehacked];
+  for (const lump of wad.lumps) {
+    if (lump.name !== 'DEHACKED' || lump.size > 4 * 1024 * 1024) continue;
+    dehackedSources.push({ name: 'DEHACKED', text: new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)) });
+  }
+  for (const lump of wad.lumps) {
+    if (!['DECORATE', 'ZSCRIPT', 'MAPINFO', 'ZMAPINFO'].includes(lump.name) || lump.size > 4 * 1024 * 1024) continue;
+    actorSources.push({ name: lump.name, text: new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)) });
+  }
+  const actorWarnings = [];
+  if (actors) project.actors = importActors({ sources: actorSources, dehacked: dehackedSources, warnings: actorWarnings }).actors;
+  const actorNumbers = actorIndex(project.actors || []);
+
+  let playerFound = false, unknownThings = 0, invisibleThings = 0, lightCount = 0;
   project.map.entities = things.flatMap((record, index) => {
     const { type, flags } = record;
     // Bit 0x10 is "not in single player" in a Doom map and "dormant" in a Hexen one,
@@ -362,15 +399,31 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     if (type === 1 && playerFound) return [];
     if (isPlayer) playerFound = true;
     const mapping = doomThings[type];
-    const spriteAsset = !isPlayer && mapping ? assets?.sprite(mapping[0]) || null : null;
-    if (!isPlayer && !mapping) unknownThings++;
+    // A mod's things carry their identity in its actor table, not in the classic table: the
+    // editor number names the class, which names the sprite and the flags. That is also how a
+    // replaced vanilla monster gets its replacement's artwork instead of the original's.
+    const actor = !isPlayer ? actorNumbers.byDoomed.get(type) || null : null;
+    const prefix = actor?.spritePrefixes?.find(name => !/^TNT1$/i.test(name)) || null;
+    const artwork = mapping?.[0] || prefix;
+    const spriteAsset = !isPlayer && artwork ? assets?.sprite(artwork) || null : null;
+    const role = actor ? actorRoleOf(actor, actorNumbers.byName) : null;
+    // A class that says nothing about its role is a decoration, and the classic table still
+    // knows more than that: a lamp is a light whoever defines its class.
+    const classic = mapping?.[1] || null;
+    const kind = role === 'decoration' && classic ? classic : role || classic || 'decoration';
+    if (!isPlayer && !mapping && !actor) unknownThings++;
+    // An actor that draws nothing is not a thing the mapper can see: GZDoom's light and
+    // sector-action markers are marked invisible, and drawing a placeholder for each one
+    // buried a map under grey rectangles.
+    if (!isPlayer && actor && !prefix && !role) { invisibleThings++; return []; }
     const entity = {
-      id: `thing${index}`, name: isPlayer ? 'Player start' : `${mapping?.[0] || 'Doom thing'} ${type}`,
-      type: isPlayer ? 'player' : mapping?.[1] || 'decoration', doomType: type,
+      id: `thing${index}`, name: isPlayer ? 'Player start' : actor?.name || `${mapping?.[0] || 'Doom thing'} ${type}`,
+      type: isPlayer ? 'player' : kind, doomType: type,
       x: record.x, y: -record.y, angle: -record.angle, spriteAsset,
       ...(zdoomFormat ? { elevation: record.elevation, ...(record.tid ? { tid: record.tid } : {}) } : {}),
       ...(hexen && flags & 0x10 ? { dormant: true } : {}),
-      ...(mapping?.[1] === 'enemy' ? { ambush: Boolean(flags & 8) } : {}),
+      ...(kind === 'enemy' ? { ambush: Boolean(flags & 8) } : {}),
+      ...(actor ? { actorId: actor.id, actorName: actor.name, ...(kind === 'enemy' && actor.health > 0 ? { health: actor.health } : {}) } : {}),
       ...(!isPlayer ? { skillMask: flags & 7 } : {}),
     };
     if (entity.type === 'light' && lightCount++ < 16) entity.light = { color: '#ffbd72', intensity: 1, radius: 192 };
@@ -382,7 +435,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     'Eight-way sprite views, mirrored patches, gunfire wake-up and directional chase are imported. Action functions without an engine equivalent are reported by name instead of silently ignored. ACS map scripts run natively; ACS source-level features outside the compiled script module (custom ZScript functions) are not executed.',
     'Single-player skill flags are retained; New Game difficulty selects placement at runtime. Unknown thing types appear as colored placeholders.',
   ];
-  warnings.push(...scriptWarnings);
+  warnings.push(...scriptWarnings, ...actorWarnings);
   if (source) {
     warnings.push(`UDMF ${source.namespace} geometry imported natively. Original global/block properties are retained in importSource as an import snapshot, not live gameplay state. Later visual edits change native map data, not that snapshot.`);
     if (sectors.some(sector => sector.light < 0 || sector.light > 255)) warnings.push('UDMF lightlevel values outside 0-255 are clamped for the current renderer; original values are preserved in importSource.');
@@ -434,6 +487,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     project.assets = assets.assets;
   } else warnings.push('No image encoder supplied: imported geometry and sector lighting only, without textures or sprites.');
   if (unknownThings) warnings.push(`${unknownThings} unmapped things use placeholders.`);
+  if (invisibleThings) warnings.push(`${invisibleThings} marker things that draw nothing (dynamic lights, sector actions, teleport destinations) were not placed; their effect comes from the sector and line specials that use them.`);
   if (lightCount > 16) warnings.push(`${lightCount} lamp sprites imported; only the first 16 emit added point light. Sector lighting is preserved throughout.`);
   project.events = [];
   for (const [name, src] of sounds) {
@@ -448,20 +502,6 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   // package) and a DEHACKED lump (nearly every WAD does). They are compiled into
   // native actor records before the engine starter so generated rules know
   // whether real state machines exist.
-  const dehackedSources = [...dehacked];
-  for (const lump of wad.lumps) {
-    if (lump.name !== 'DEHACKED' || lump.size > 4 * 1024 * 1024) continue;
-    dehackedSources.push({ name: 'DEHACKED', text: new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)) });
-  }
-  for (const lump of wad.lumps) {
-    if (!['DECORATE', 'ZSCRIPT', 'MAPINFO', 'ZMAPINFO'].includes(lump.name) || lump.size > 4 * 1024 * 1024) continue;
-    actorSources.push({ name: lump.name, text: new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)) });
-  }
-  if (actors) {
-    const actorWarnings = [];
-    project.actors = importActors({ sources: actorSources, dehacked: dehackedSources, warnings: actorWarnings }).actors;
-    warnings.push(...actorWarnings);
-  }
   // LANGUAGE keyword strings: menus, level names and pickup messages reference
   // them by keyword, so the table is kept for the editor and the runtime.
   const languageTexts = [...languageSources].map(source => typeof source === 'string' ? source : source.text);
