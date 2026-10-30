@@ -799,14 +799,19 @@ function renderInspector() {
         parent.append(make('h2', 'Rapier physics'));
         field(parent, 'Rigid body', select(['none', 'fixed', 'dynamic', 'kinematic'], physics.body, value => changePhysics('body', value)));
         if (physics.body !== 'none') {
-          field(parent, 'Collider', select(['box', 'ball', 'capsule'], physics.shape, value => changePhysics('shape', value)));
+          // A model collider is the object's own mesh, which is how a ramp is solid.
+          const colliderShapes = item.modelAsset ? ['box', 'ball', 'capsule', 'model'] : ['box', 'ball', 'capsule'];
+          field(parent, 'Collider', select(colliderShapes, physics.shape, value => changePhysics('shape', value)));
           for (const key of physics.shape === 'box' ? ['width', 'height', 'depth'] : physics.shape === 'ball' ? ['radius'] : ['radius', 'height']) {
-            field(parent, `Collider ${key}`, input(physics[key], 'number', value => changePhysics(key, value)));
+            field(parent, physics.shape === 'model' ? `Fallback ${key} (if the mesh cannot be read)` : `Collider ${key}`,
+              input(physics[key], 'number', value => changePhysics(key, value)));
           }
           for (const key of ['mass', 'friction', 'restitution']) field(parent, key, input(physics[key], 'number', value => changePhysics(key, value)));
           parent.append(checkbox('Sensor / trigger (no blocking)', physics.sensor, value => changePhysics('sensor', value)),
             checkbox('Lock body rotation', physics.lockRotation, value => changePhysics('lockRotation', value)),
-            make('p', 'Colliders use primitive shapes, not the model mesh. Positions are map units; 64 units = 1 metre.', 'muted'));
+            make('p', physics.shape === 'model'
+              ? 'This collider is the object\'s model mesh, face by face, so the solid is the shape that is drawn. A non-convex model is approximated by the hull around it. Positions are map units; 64 units = 1 metre.'
+              : 'Boxes, balls and capsules are primitives; choose "model" to collide the object\'s own mesh instead. Positions are map units; 64 units = 1 metre.', 'muted'));
         }
         const area = item.area;
         const changeArea = (key, value) => {
