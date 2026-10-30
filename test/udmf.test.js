@@ -28,6 +28,8 @@ linedef { v1=3; v2=0; sidefront=0; }
 thing { x=0.25; y=-0.5; height=3.5; angle=90; type=1; }
 thing { x=20.25; y=0; type=2011; single=true; skill4=true; }
 thing { x=30; y=0; type=2012; single=false; skill4=true; }
+thing { x=40; y=0; height=16; type=2011; single=true; skill1=true; scalex=0.6; scaley=0.6; }
+thing { x=50; y=0; height=16; type=2011; single=true; skill1=true; scalex=2; scaley=0.5; }
 `;
 function map(text, extra = []) {
   const textBytes = Buffer.from(text), marker = 'CUSTOM';
@@ -77,7 +79,16 @@ test('native UDMF import retains fractional geometry, sector heights, side offse
   assert.equal(project.map.entities[0].angle, -90);
   assert.equal(project.map.entities[0].elevation, 3.5);
   assert.equal(project.map.entities[0].y, 0.5);
-  assert.equal(project.map.entities.length, 2);
+  // A map resizes things, and Doom draws them at that size: uniform scale is one number,
+  // unequal X and Y stay separate because a squashed prop is not the same prop.
+  const scaled = project.map.entities.find(entity => entity.x === 40);
+  assert.equal(scaled.spriteScale, 0.6);
+  assert.equal(scaled.spriteScaleX, undefined);
+  const squashed = project.map.entities.find(entity => entity.x === 50);
+  assert.equal(squashed.spriteScale, undefined);
+  assert.equal(squashed.spriteScaleX, 2);
+  assert.equal(squashed.spriteScaleY, 0.5);
+  assert.deepEqual(project.map.entities.filter(entity => entity.spriteScale || entity.spriteScaleX).length, 2);
   assert.equal(project.importSource.globals.custom_global, 'preserved');
   assert.equal(project.importSource.blocks.find(block => block.type === 'linedef').properties.arg0, 1);
   assert.ok(warnings.some(warning => warning.includes('sector.rotationfloor')));

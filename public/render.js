@@ -1482,11 +1482,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
         let assetId, flip;
         if (editor) { assetId = entity.spriteAsset; flip = false; }
         else { const view = spriteIndex.view(state, entity, state.player); assetId = view.assetId; flip = view.flip; }
-        const scale = entity.spriteScale || 1;
+        // A map can stretch a thing on one axis only, so the two are independent; a uniform
+        // `spriteScale` still covers everything that does not.
+        const scaleX = entity.spriteScaleX ?? entity.spriteScale ?? 1;
+        const scaleY = entity.spriteScaleY ?? entity.spriteScale ?? 1;
+        const scale = `${scaleX}:${scaleY}`;
         if (record.frame !== assetId || record.flip !== flip || record.scale !== scale) {
           const asset = assetMap.get(assetId);
           if (record.frame !== assetId) sprite.material.map = assetId ? imageTexture(assetId) : null;
-          sprite.scale.set((asset?.width || 24) * scale * (flip ? -1 : 1), (asset?.height || 40) * scale, 1);
+          sprite.scale.set((asset?.width || 24) * scaleX * (flip ? -1 : 1), (asset?.height || 40) * scaleY, 1);
           // The artwork's own left/top offsets place it: the sprite quad is kept centred
           // on its position and the offsets are applied to that position instead of to
           // `sprite.center`. Center-based offsets are a shader feature, and a sprite that
@@ -1496,11 +1500,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
           // An artwork without a vertical offset is bottom-anchored, which is what an
           // imported image gets: `offsetY || height` keeps that instead of centring it.
           const artworkOffsetY = asset ? asset.offsetY || asset.height || 40 : 40;
-          sprite.userData.shift = spriteAnchor({ width: Math.abs((asset?.width || 24) * scale),
-            height: (asset?.height || 40) * scale, offsetX: (asset?.offsetX || 0) * scale,
-            offsetY: artworkOffsetY * scale });
+          sprite.userData.shift = spriteAnchor({ width: Math.abs((asset?.width || 24) * scaleX),
+            height: (asset?.height || 40) * scaleY, offsetX: (asset?.offsetX || 0) * scaleX,
+            offsetY: artworkOffsetY * scaleY });
           sprite.userData.assetHeight = asset?.height || 40;
-          sprite.userData.offsetY = artworkOffsetY * scale;
+          sprite.userData.offsetY = artworkOffsetY * scaleY;
           sprite.userData.frame = assetId; sprite.userData.flip = flip;
           record.frame = assetId; record.flip = flip; record.scale = scale;
         }

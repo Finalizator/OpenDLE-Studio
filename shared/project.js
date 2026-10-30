@@ -252,6 +252,8 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
     }
   }
   if (entity.spriteScale !== undefined) number(entity.spriteScale, 'Sprite scale', .05, 16);
+  if (entity.spriteScaleX !== undefined) number(entity.spriteScaleX, 'Sprite scale X', .05, 16);
+  if (entity.spriteScaleY !== undefined) number(entity.spriteScaleY, 'Sprite scale Y', .05, 16);
   if (entity.elevation !== undefined) number(entity.elevation, 'Elevation', -32768, 32767);
   modelRef(entity.modelAsset);
   assert(entity.type !== 'player' || !entity.modelAsset, 'Assign world models to non-player objects');

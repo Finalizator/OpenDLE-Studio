@@ -24,6 +24,14 @@ import { parseCameraTextures } from './cameratextures.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
 
+/** The map's per-thing scale, as the entity fields the renderer reads. */
+function thingScale(record) {
+  const x = record.scaleX ?? 1, y = record.scaleY ?? 1;
+  if (x === 1 && y === 1) return {};
+  if (x === y) return { spriteScale: x };
+  return { spriteScaleX: x, spriteScaleY: y };
+}
+
 export function importWadGame(wad, entry, options = {}) {
   if (wad.maps.length > 128) throw new Error('A game exceeds the 128-level limit');
   entry ||= wad.maps.includes('MAP01') ? 'MAP01' : wad.maps.includes('E1M1') ? 'E1M1' : wad.maps[0];
@@ -443,6 +451,10 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       type: isPlayer ? 'player' : kind, doomType: type,
       x: record.x, y: -record.y, angle: -record.angle, spriteAsset,
       ...(zdoomFormat ? { elevation: record.elevation, ...(record.tid ? { tid: record.tid } : {}) } : {}),
+      // A resized thing is resized: a prop scaled to 0.6 in the map is drawn at 0.6, not full
+      // size. Uniform scaling uses the single field the editor exposes; unequal X and Y keep
+      // both, because a squashed lamp is not the lamp.
+      ...thingScale(record),
       ...(hexen && flags & 0x10 ? { dormant: true } : {}),
       ...(kind === 'enemy' ? { ambush: Boolean(flags & 8) } : {}),
       ...(actor ? { actorId: actor.id, actorName: actor.name, ...(kind === 'enemy' && actor.health > 0 ? { health: actor.health } : {}) } : {}),
