@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { createProject, validateProject, ENTITY_TYPES } from '../shared/project.js';
 import { addRamp, normalizeRamp, rampShape, RAMP_DEFAULTS } from '../shared/ramp.js';
 import { surfRampSurface } from '../shared/engine-script.js';
-import { STANDABLE_NORMAL_Z, tiltedUpNormal } from '../shared/source-motion.js';
 
 const surfaceOf = ramp => surfRampSurface(ramp);
 
@@ -26,13 +25,15 @@ test('editing the four numbers changes the geometry the engine uses', () => {
   let surface = surfaceOf(ramp);
   assert.ok(Math.abs(surface.highHeight - surface.lowHeight - 256 * Math.tan(50 * Math.PI / 180)) < .5,
     `rises ${(surface.highHeight - surface.lowHeight).toFixed(1)}`);
-  // And it is too steep to stand on, which is what makes it surfable.
-  assert.ok(tiltedUpNormal(ramp.modelTilt).y < STANDABLE_NORMAL_Z, 'a 50 degree ramp is not ground');
-  assert.equal(ramp.modelTilt.roll, -50, 'and it falls towards +x');
+  // A wedge carries no tilt: its steepness is the number that built it, and a surface that steep
+  // is not ground, which is what makes it surfable.
+  assert.equal(ramp.physics.shape, 'wedge');
+  assert.ok(ramp.ramp.slope > 45.573, 'a 50 degree ramp is not ground');
+  assert.equal(ramp.physics.wedge.facing, 'right', 'and it falls towards +x');
 
   // A walkable ramp at the same length is a different shape, not merely a different number.
   normalizeRamp(ramp, { slope: 30 });
-  assert.ok(tiltedUpNormal(ramp.modelTilt).y > STANDABLE_NORMAL_Z, 'a 30 degree ramp is ground');
+  assert.ok(ramp.ramp.slope < 45.573, 'a 30 degree ramp is ground');
   assert.ok(Math.abs(surfaceOf(ramp).highHeight - 256 * Math.tan(30 * Math.PI / 180)) < .5);
 
   // Length is the ground it covers, and it keeps the angle.
@@ -49,7 +50,7 @@ test('editing the four numbers changes the geometry the engine uses', () => {
   // Width is across the slope, and facing flips which way it falls.
   normalizeRamp(ramp, { width: 512, facing: 'left' });
   assert.equal(ramp.physics.depth, 512);
-  assert.equal(ramp.modelTilt.roll, 30, 'facing left tips the other way');
+  assert.equal(ramp.physics.wedge.facing, 'left', 'facing left falls the other way');
   assert.ok(surfaceOf(ramp).lowEdgeX < surfaceOf(ramp).highEdgeX, 'and falls towards -x now');
 });
 
@@ -58,12 +59,12 @@ test('the collider, the tilt and the height are always derived, never set by han
   const ramp = addRamp(project, { slope: 45, length: 200, width: 128 });
   const shape = rampShape({ slope: 45, length: 200, width: 128 });
   assert.equal(ramp.physics.body, 'fixed');
-  assert.equal(ramp.physics.shape, 'box');
-  assert.ok(Math.abs(ramp.physics.width - shape.alongSlope) < .01, 'the box is as long as the slope is');
-  assert.ok(Math.abs(ramp.physics.height - shape.thickness) < .01);
+  assert.equal(ramp.physics.shape, 'wedge');
+  assert.ok(Math.abs(ramp.physics.width - shape.run) < .01, 'the hull is as wide as the ground it covers');
+  assert.ok(Math.abs(ramp.physics.height - shape.rise) < .01, 'and as tall as it rises');
   assert.equal(ramp.physics.depth, 128);
-  assert.deepEqual(ramp.modelTilt, shape.tilt);
-  assert.ok(Math.abs(ramp.elevation - shape.elevation) < .01, 'seated on the floor');
+  assert.equal(ramp.modelTilt, undefined, 'nothing is tilted: the shape is the wedge');
+  assert.equal(ramp.elevation, 0, 'its base is the floor');
   // The surface still meets the floor at its low edge, so there is no lip to climb.
   assert.ok(Math.abs(surfaceOf(ramp).lowHeight) < .5, `low edge at ${surfaceOf(ramp).lowHeight}`);
 });

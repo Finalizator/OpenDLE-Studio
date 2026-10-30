@@ -246,6 +246,16 @@ export function installSprayScriptlet(project, { key = 'KeyT', assetId } = {}) {
  * projecting, which nothing has needed yet.
  */
 export function surfRampSurface(ramp) {
+  // A wedge states its own surface: run and rise are its collider, its base is on the floor.
+  const wedge = ramp.physics?.wedge;
+  if (ramp.physics?.shape === 'wedge' && wedge) {
+    const slope = Math.abs(wedge.slope) || 50, tan = Math.tan(slope * Math.PI / 180);
+    const run = ramp.physics.width, right = wedge.facing !== 'left';
+    const lowEdgeX = right ? ramp.x + run / 2 : ramp.x - run / 2;
+    const highEdgeX = right ? ramp.x - run / 2 : ramp.x + run / 2;
+    return { lowEdgeX, highEdgeX, lowHeight: 0, highHeight: ramp.physics.height,
+      heightAt: x => Math.max(0, (right ? lowEdgeX - x : x - lowEdgeX)) * tan };
+  }
   const roll = ramp.modelTilt?.roll ?? -50;
   const slope = Math.abs(roll);
   const phi = slope * Math.PI / 180;
@@ -280,36 +290,16 @@ function pointInsideSector(sector, x, y) {
 
 /** Adds a surf ramp to the map as an ordinary, editable scene object. */
 export function addSurfRamp(project, { x = 0, y = 0, angle = 0, slope = 50, facing = 'right', id,
-  lift = 0, seat = false, width, depth, thickness } = {}) {
-  const geometry = surfRampGeometry({ slope, facing, ...(width ? { width } : {}),
-    ...(depth ? { depth } : {}), ...(thickness ? { thickness } : {}) });
+  width, depth } = {}) {
   const used = new Set([...(project.map.entities || []).map(entity => entity.id)]);
-  let name = id || `surf_ramp_${(project.map.entities || []).filter(entity => entity.type === 'decoration').length + 1}`;
+  let name = id || `surf_ramp_${(project.map.entities || []).filter(entity => entity.type === 'ramp').length + 1}`;
   while (used.has(name)) name = `${name}_x`;
-  const ramp = {
-    // A ramp is its own type now: it carries `slope`/`length`/`width`/`height` and derives the
-    // collider, tilt and height from them, so it can be reshaped in the properties panel instead
-    // of being a rotated block of "decoration".
-    id: name, name: 'Surf ramp', type: 'ramp', x, y, angle,
-    ramp: { slope: geometry.slope, length: geometry.run, width: geometry.depth,
-      facing: geometry.facing, height: geometry.rise },
-    // `lift` raises the whole ramp, which is what puts its low edge in the air: a ramp that
-    // comes all the way down to the floor has nothing to launch off. The Momentum mapping guide
-    // does the same thing by cutting the ramp's lower edge above the bottom corner.
-    //
-    // `seat` drops it the other way, until the surf face meets the floor at its low end. The
-    // slab's lowest corner is on the floor and its face is a thickness above it, so an unseated
-    // ramp is a plank floating 20 units up that a player can walk underneath — which reads as a
-    // ramp you fall through. Seated, it is a wedge: solid from the floor to the slope.
-    elevation: geometry.elevation + lift - (seat ? geometry.lowHeight : 0),
-    // The collider follows this tilt: a tilted box is a ramp, and the drawn object and the
-    // thing the player collides with stay the same shape.
-    modelTilt: { pitch: 0, roll: geometry.roll },
-    physics: { body: 'fixed', shape: 'box', width: geometry.width, height: geometry.thickness,
-      depth: geometry.depth, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true },
-  };
-  project.map.entities = [...(project.map.entities || []), ramp];
-  return ramp;
+  // `width` is the ramp's length along its slope; the ramp type takes the ground it covers.
+  const radians = Math.abs(slope) * Math.PI / 180;
+  const entity = { id: name, name: 'Surf ramp', type: 'ramp', x, y, angle };
+  normalizeRamp(entity, { slope, facing, length: (width || 256) * Math.cos(radians), width: depth || 256 });
+  project.map.entities = [...(project.map.entities || []), entity];
+  return entity;
 }
 
 /**

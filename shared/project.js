@@ -256,7 +256,14 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
     assert(entity.type !== 'player', 'Player uses the built-in Rapier capsule controller');
     assert(['none', 'fixed', 'dynamic', 'kinematic'].includes(config.body), 'Invalid rigid-body type');
     if (config.body !== 'none') {
-      assert(['box', 'ball', 'capsule', 'cylinder', 'cone'].includes(config.shape), 'Invalid collider shape');
+      assert(['box', 'ball', 'capsule', 'cylinder', 'cone', 'wedge'].includes(config.shape), 'Invalid collider shape');
+      // A wedge's own numbers: how steep its face is and which edge is the ridge.
+      if (config.shape === 'wedge') {
+        object(config.wedge, 'Wedge');
+        assert(Number.isFinite(config.wedge?.slope) && config.wedge.slope > 0 && config.wedge.slope < 90,
+          'Wedge slope must be between 0 and 90 degrees');
+        assert(['left', 'right'].includes(config.wedge?.facing), 'Wedge facing must be left or right');
+      }
       for (const key of ['width', 'height', 'depth', 'radius']) number(config[key], `Collider ${key}`, .1, 4096);
       if (config.shape === 'capsule') assert(config.height >= config.radius * 2, 'Capsule height must be at least twice its radius');
       if (config.shape === 'ball') assert(config.height === config.radius * 2, 'Ball height must be twice its radius');

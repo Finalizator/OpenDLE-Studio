@@ -143,10 +143,13 @@ export function buildSurfTestMap(project) {
       radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true } });
 
   // Standing on the surf ramp, a little way down from its high edge, facing the way it falls.
-  const inset = 12;
+  // Far enough down the slope that the whole 12-unit capsule is on the face: the ridge is a sharp
+  // edge on a hull, and standing on it with part of the capsule past it caught the player on the
+  // end face instead of the slope. Started a little above the surface for the same reason.
+  const inset = 40;
   const startX = surfSurface.highEdgeX + inset;
   const start = project.map.entities.find(entity => entity.type === 'player');
-  Object.assign(start, { x: startX, y: -lane, angle: 0, elevation: surfSurface.heightAt(startX) + 2 });
+  Object.assign(start, { x: startX, y: -lane, angle: 0, elevation: surfSurface.heightAt(startX) + 8 });
   // On the floor at the bottom, where the slide ends.
   const cell = project.map.entities.find(entity => entity.type === 'pickup');
   if (cell) Object.assign(cell, { x: surfSurface.lowEdgeX + 60, y: 0, elevation: 0 });

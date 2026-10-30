@@ -100,10 +100,15 @@ export function normalizeRamp(entity, change = {}) {
   const round = value => Math.round(value * 100) / 100;
   entity.ramp = { slope: shape.slope, length: round(shape.length), width: round(width), facing,
     height: round(shape.rise) };
-  entity.modelTilt = shape.tilt;
-  entity.elevation = shape.elevation;
-  entity.physics = { body: 'fixed', shape: 'box', width: shape.alongSlope, height: shape.thickness,
-    depth: width, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true };
+  // A wedge, not a rotated box. A box is a *slab*: its lower edge reaches
+  // `thickness · sin(slope)` past the bottom of the surf face, buried under the floor where it
+  // still answers the character controller — which lifted the player into the air tens of units
+  // before they touched the ramp they could see. A hull has no geometry outside its own faces.
+  delete entity.modelTilt;
+  entity.elevation = 0;
+  entity.physics = { body: 'fixed', shape: 'wedge', width: shape.run, height: shape.rise,
+    depth: width, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true,
+    wedge: { slope: shape.slope, facing } };
   return entity;
 }
 

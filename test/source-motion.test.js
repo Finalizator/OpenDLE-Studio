@@ -130,8 +130,8 @@ test('the scriptlet can build a new, empty surf map with a surf ramp and a way b
   const surf = project.map.entities.find(entity => entity.id === surfId);
   const back = project.map.entities.find(entity => entity.id === backId);
   // Only the surf ramp is too steep to stand on, which is what makes it a surf ramp.
-  assert.ok(tiltedUpNormal(surf.modelTilt).y < STANDABLE_NORMAL_Z, 'the surf ramp is too steep to stand on');
-  assert.ok(tiltedUpNormal(back.modelTilt).y > STANDABLE_NORMAL_Z, 'the way back is walkable');
+  assert.ok(surf.ramp.slope > 45.573, 'the surf ramp is too steep to stand on');
+  assert.ok(back.ramp.slope < 45.573, 'the way back is walkable');
   const room = project.map.vertices;
   const minX = Math.min(...room.map(vertex => vertex.x)), maxX = Math.max(...room.map(vertex => vertex.x));
   const minY = Math.min(...room.map(vertex => vertex.y)), maxY = Math.max(...room.map(vertex => vertex.y));
@@ -162,7 +162,7 @@ test('the scriptlet can build a new, empty surf map with a surf ramp and a way b
     start.x < Math.max(startSurface.lowEdgeX, startSurface.highEdgeX), `player starts on the ramp at ${start.x}`);
   assert.ok(Math.abs(start.y - surf.y) < .01, 'in the ramp\'s lane');
   assert.ok(start.elevation > startSurface.heightAt(start.x) &&
-    start.elevation - startSurface.heightAt(start.x) < 12,
+    start.elevation - startSurface.heightAt(start.x) < 14,
     `player stands at ${start.elevation.toFixed(1)} on a surface at ${startSurface.heightAt(start.x).toFixed(1)}`);
   // The movement rules come with it.
   const sheet = project.eventSheets.find(item => item.name === SOURCE_MOVEMENT_SHEET);

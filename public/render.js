@@ -648,6 +648,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const config = entity.physics;
       if (!config || config.body === 'none' || config.sensor) return null;
       if (config.shape === 'box') return { width: config.width, height: config.height, depth: config.depth };
+      if (config.shape === 'wedge') return { width: config.width, height: config.height, depth: config.depth,
+        wedge: config.wedge?.facing === 'left' ? 'left' : 'right' };
       if (config.shape === 'capsule' || config.shape === 'cylinder' || config.shape === 'cone' || config.shape === 'ball') {
         const diameter = config.radius * 2;
         return { width: diameter, height: config.height || diameter, depth: diameter };
@@ -685,10 +687,32 @@ export async function createPreview(canvas, project, state, { editor = false } =
       if (previous) { textures.delete(previous.uuid); previous.dispose(); }
       material.needsUpdate = true;
     }
+    /** A wedge as a mesh, from the same six corners the collider is built from. */
+    function wedgeGeometry(box) {
+      const half = box.width / 2, halfDepth = box.depth / 2;
+      // 'right' falls towards +x, so its low edge is the +x one — the same convention the
+      // collider uses, which is the whole point of drawing one from the other.
+      const low = box.wedge === 'right' ? half : -half, high = -low;
+      const positions = new Float32Array([
+        low, 0, -halfDepth, high, 0, -halfDepth, high, box.height, -halfDepth,
+        low, 0, halfDepth, high, 0, halfDepth, high, box.height, halfDepth,
+      ]);
+      const uvs = new Float32Array(positions.length / 3 * 2);
+      for (let i = 0; i < positions.length / 3; i++) {
+        uvs[i * 2] = (positions[i * 3] - low) / Math.max(1, box.width);
+        uvs[i * 2 + 1] = positions[i * 3 + 1] / Math.max(1, box.height);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geometry.setIndex([0, 2, 5, 0, 5, 3, 0, 4, 1, 1, 4, 5, 1, 5, 2, 0, 3, 4]);
+      geometry.computeVertexNormals();
+      return geometry;
+    }
     function addColliderBox(entity) {
       if (colliderBoxes.has(entity.id)) return;
       const box = solidBoxFor(entity);
-      const geometry = new THREE.BoxGeometry(box.width, box.height, box.depth);
+      const geometry = box.wedge ? wedgeGeometry(box) : new THREE.BoxGeometry(box.width, box.height, box.depth);
       const material = withEffect(new THREE.MeshBasicNodeMaterial({ color: entityColors[entity.type] || '#a6a4bc' }));
       applyBoxTexture(material, entity, box);
       geometries.add(geometry); materials.add(material);
@@ -1302,7 +1326,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const box = solidBoxFor(entity);
         const floor = sectorIndex.at(entity.x, entity.y)?.floorHeight || 0;
         const bottom = entity.z ?? floor + (entity.elevation || 0);
-        entry.mesh.position.set(entity.x, bottom + box.height / 2, entity.y);
+        entry.mesh.position.set(entity.x, box.wedge ? bottom : bottom + box.height / 2, entity.y);
         // The collider's own orientation, tilt included, so the slope drawn is the slope
         // walked on.
         const [qx, qy, qz, qw] = modelOrientation(entity);

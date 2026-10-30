@@ -146,6 +146,24 @@ function solidActor(project, entity) {
   return actor;
 }
 
+/**
+ * The six corners of a wedge, as a convex hull Rapier collides with face by face.
+ *
+ * These are the corners of the shape a ramp is *drawn* as, which is the point: a rotated box was a
+ * slab whose lower edge reached past the bottom of the surf face, under the floor, and still
+ * answered the character controller. Local origin is the middle of the base, +Y up.
+ */
+function wedgeVertices(config) {
+  const halfWidth = config.width / 2 / PHYSICS_SCALE, halfDepth = config.depth / 2 / PHYSICS_SCALE;
+  const rise = Math.max(0, config.height) / PHYSICS_SCALE;
+  // 'right' falls towards +x, so its low edge is the +x one and the ridge is at -x.
+  const low = config.wedge?.facing === 'right' ? halfWidth : -halfWidth, high = -low;
+  return new Float32Array([
+    low, 0, -halfDepth, high, 0, -halfDepth, high, rise, -halfDepth,
+    low, 0, halfDepth, high, 0, halfDepth, high, rise, halfDepth,
+  ]);
+}
+
 export function createPhysics(project, state, R, triangulate) {
   const initialUnbodiedHeights = new Map(state.entities.filter(entity => entity.type !== 'player' &&
     (!entity.physics || entity.physics.body === 'none') && Number.isFinite(entity.z)).map(entity => [entity.id, entity.z]));
@@ -264,7 +282,9 @@ export function createPhysics(project, state, R, triangulate) {
     const bodyType = player || actor ? 'kinematic' : config.body;
     const descriptor = bodyType === 'dynamic' ? R.RigidBodyDesc.dynamic() : bodyType === 'fixed' ? R.RigidBodyDesc.fixed() : R.RigidBodyDesc.kinematicPositionBased();
     const bottom = floorAt(entity) + (entity.elevation || 0);
-    descriptor.setTranslation(entity.x / PHYSICS_SCALE, (bottom + height / 2 + (player ? .4 : 0)) / PHYSICS_SCALE, entity.y / PHYSICS_SCALE);
+    // A wedge's origin is its base on the floor; every other shape's is its centre.
+    const lift = config?.shape === 'wedge' ? 0 : height / 2 + (player ? .4 : 0);
+    descriptor.setTranslation(entity.x / PHYSICS_SCALE, (bottom + lift) / PHYSICS_SCALE, entity.y / PHYSICS_SCALE);
     descriptor.setRotation(rotation(entity));
     // The player capsule is re-oriented onto the surface it stands on, so its
     // rotation follows the up axis instead of being locked upright.
@@ -278,7 +298,9 @@ export function createPhysics(project, state, R, triangulate) {
       : config.shape === 'ball' ? R.ColliderDesc.ball(radius / PHYSICS_SCALE)
         : config.shape === 'cylinder' ? R.ColliderDesc.cylinder(height / 2 / PHYSICS_SCALE, radius / PHYSICS_SCALE)
           : config.shape === 'cone' ? R.ColliderDesc.cone(height / 2 / PHYSICS_SCALE, radius / PHYSICS_SCALE)
-            : R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, height / 2 / PHYSICS_SCALE, config.depth / 2 / PHYSICS_SCALE);
+            : config.shape === 'wedge' ? (R.ColliderDesc.convexHull(wedgeVertices(config)) || R.ColliderDesc.cuboid(
+              config.width / 2 / PHYSICS_SCALE, Math.max(height, 1) / 2 / PHYSICS_SCALE, config.depth / 2 / PHYSICS_SCALE))
+              : R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, height / 2 / PHYSICS_SCALE, config.depth / 2 / PHYSICS_SCALE);
     shape.setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setActiveCollisionTypes(R.ActiveCollisionTypes.ALL);
     if (actor) shape.setFriction(.6);
     else if (!player) {
