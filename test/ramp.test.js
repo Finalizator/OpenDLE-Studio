@@ -63,7 +63,7 @@ test('the collider, the tilt and the height are always derived, never set by han
   assert.ok(Math.abs(ramp.physics.width - shape.run) < .01, 'the hull is as wide as the ground it covers');
   assert.ok(Math.abs(ramp.physics.height - shape.rise) < .01, 'and as tall as it rises');
   assert.equal(ramp.physics.depth, 128);
-  assert.equal(ramp.modelTilt, undefined, 'nothing is tilted: the shape is the wedge');
+  assert.deepEqual(ramp.modelTilt, { pitch: 0, roll: 0 }, 'nothing is tilted: the shape is the wedge');
   assert.equal(ramp.elevation, 0, 'its base is the floor');
   // The surface still meets the floor at its low edge, so there is no lip to climb.
   assert.ok(Math.abs(surfaceOf(ramp).lowHeight) < .5, `low edge at ${surfaceOf(ramp).lowHeight}`);

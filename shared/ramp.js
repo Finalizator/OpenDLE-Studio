@@ -104,7 +104,9 @@ export function normalizeRamp(entity, change = {}) {
   // `thickness · sin(slope)` past the bottom of the surf face, buried under the floor where it
   // still answers the character controller — which lifted the player into the air tens of units
   // before they touched the ramp they could see. A hull has no geometry outside its own faces.
-  delete entity.modelTilt;
+  // A zero tilt, not a deleted one: the shape carries the slope, but every reader of `modelTilt`
+  // in the editor and the renderer expects the field to exist.
+  entity.modelTilt = { pitch: 0, roll: 0 };
   entity.elevation = 0;
   entity.physics = { body: 'fixed', shape: 'wedge', width: shape.run, height: shape.rise,
     depth: width, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true,
