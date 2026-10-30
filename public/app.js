@@ -732,7 +732,12 @@ function renderInspector() {
       if (item.type === 'enemy') field(parent, 'Initial health', input(item.health ?? 20, 'number', value => update('health', value)));
       if (item.type !== 'player') {
         if (item.doomType !== undefined) field(parent, 'Doom thing type', input(item.doomType, 'number', value => update('doomType', value)));
-        field(parent, 'Sprite image', assetSelect(item.spriteAsset, value => update('spriteAsset', value), ['sprite']));
+        // A ramp is a shape, so its picture is a material on that shape rather than a sprite —
+        // and any picture will do, including the wall textures and flats the asset library is
+        // mostly made of, because a surf ramp is usually textured like the room it is in.
+        field(parent, item.type === 'ramp' ? 'Ramp texture' : 'Sprite image',
+          assetSelect(item.spriteAsset, value => update('spriteAsset', value),
+            item.type === 'ramp' ? ['sprite', 'texture', 'flat', 'image'] : ['sprite']));
         field(parent, 'Sprite scale', input(item.spriteScale || 1, 'number', value => update('spriteScale', value)));
         if (project.spriteClips?.length) for (const name of ['stand', 'walk', 'attack', 'pain', 'death']) {
           field(parent, `Sprite / ${name}`, select([['', 'No animation'], ...project.spriteClips.map(clip => [clip.id, clip.name])],

@@ -655,11 +655,42 @@ export async function createPreview(canvas, project, state, { editor = false } =
       return null;
     }
     const colliderBoxes = new Map();
+    /**
+     * Give a collider box the object's texture, tiled to its size.
+     *
+     * A ramp is drawn as its collider, so a texture on it has to go on that box, not replace the
+     * object with a flat sprite — which is what assigning an image used to do: the ramp vanished
+     * and a billboard appeared where it had been. The texture is cloned per object so its repeat
+     * can follow this object's size without changing the tile for every other user of the asset.
+     */
+    function applyBoxTexture(material, entity, box) {
+      const assetId = entity.spriteAsset || '';
+      const signature = `${assetId}:${Math.round(box.width)}x${Math.round(box.depth)}`;
+      if (material.userData.mapSignature === signature) return;
+      material.userData.mapSignature = signature;
+      const previous = material.map;
+      const source = assetId ? imageTexture(assetId) : null;
+      if (!source) {
+        material.map = null;
+        if (previous) { textures.delete(previous.uuid); previous.dispose(); }
+        material.needsUpdate = true;
+        return;
+      }
+      const map = source.clone();
+      map.wrapS = THREE.RepeatWrapping; map.wrapT = THREE.RepeatWrapping;
+      map.repeat.set(Math.max(1, Math.round(box.width / 64)), Math.max(1, Math.round(box.depth / 64)));
+      map.needsUpdate = true;
+      textures.set(map.uuid, map);
+      material.map = map;
+      if (previous) { textures.delete(previous.uuid); previous.dispose(); }
+      material.needsUpdate = true;
+    }
     function addColliderBox(entity) {
       if (colliderBoxes.has(entity.id)) return;
       const box = solidBoxFor(entity);
       const geometry = new THREE.BoxGeometry(box.width, box.height, box.depth);
       const material = withEffect(new THREE.MeshBasicNodeMaterial({ color: entityColors[entity.type] || '#a6a4bc' }));
+      applyBoxTexture(material, entity, box);
       geometries.add(geometry); materials.add(material);
       const mesh = new THREE.Mesh(geometry, material);
       mesh.userData.selection = { kind: 'entity', id: entity.id };
@@ -725,6 +756,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // blocking volume, a wall of a test map. Drawing nothing left it invisible in play — a
       // ramp you cannot see is a ramp you walk into and call an invisible wall — so its
       // collider is drawn, tilted exactly as the collider is.
+      // A ramp is a shape, not a picture: it is always drawn as its collider, and a texture goes
+      // on that shape. Letting it fall through to the sprite path turned it into a flat billboard.
+      if (entity.type === 'ramp' && solidBoxFor(entity)) { addColliderBox(entity); return; }
       if (!entity.modelAsset && !entity.spriteAsset && solidBoxFor(entity)) { addColliderBox(entity); return; }
       if (!entity.modelAsset) { addSprite(entity); return; }
       if (modelAssets.has(entity.modelAsset)) { addModel(entity); return; }
@@ -1274,7 +1308,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const [qx, qy, qz, qw] = modelOrientation(entity);
         entry.mesh.quaternion.set(qx, qy, qz, qw);
         const light = Math.max(.03, (sectorIndex.at(entity.x, entity.y)?.light ?? 255) / 255);
-        entry.mesh.material.color.setRGB(light, light, light).multiply(new THREE.Color(entityColors[entity.type] || '#a6a4bc'));
+        applyBoxTexture(entry.mesh.material, entity, box);
+        const tint = entity.spriteAsset ? '#ffffff' : entityColors[entity.type] || '#a6a4bc';
+        entry.mesh.material.color.setRGB(light, light, light).multiply(new THREE.Color(tint));
       }
       for (let index = 0; index < spriteList.length; index++) {
         const record = spriteList[index], sprite = record.sprite;
