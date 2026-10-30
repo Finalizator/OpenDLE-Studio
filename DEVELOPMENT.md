@@ -2718,6 +2718,38 @@ far away. `Frame the room in this view` does the same thing from the 3D right-cl
 opening a different project clears the saved camera pose so a big map's camera cannot strand a small
 one.
 
+### Levels are layouts, and switching one is not a deep copy
+
+A campaign's levels are listed in the **Layouts** section of the project tree, marked with the one
+being edited; clicking one switches to it. They are layouts in every sense — the map tab, the
+objects bar, the 3D view and the inspector all follow the switch — and a project with a single map
+keeps the plain "Layout 1" entry instead.
+
+Switching **keeps the level you leave**. `selectGameLevel` writes the current map back into that
+level's entry before loading the other one, so uncommitted work is kept in the project and coming
+back returns it (verified: edit a pickup's X, switch away and back, the edit is still there).
+
+Two things made it feel frozen:
+
+- **Every level's map was deep-cloned on each switch.** `editGame` clones the whole game so the
+  edited copy never aliases the undo snapshot, and on an imported campaign that is hundreds of
+  megabytes: measured on a three-level, Lullaby-sized campaign, the clone alone was 1138 ms, the
+  switch 1777 ms and validation 347 ms — before any drawing. `cloneForLevelSwitch` copies only the
+  game container and the level objects, since `selectGameLevel` already clones the map data it
+  stores; the old snapshot still shares nothing it can change.
+- **The lists were unbounded.** An imported map has 4,600 objects and 13,220 sectors, and the
+  Objects bar, the project tree, the sector list and the asset browser built a DOM node for every
+  one of them — thousands of tiles, each image a data URI. They now draw a first page (600 objects,
+  300 sectors, 300 asset tiles) and say how many more there are; everything remains selectable on
+  the map or reachable through the filter and the project search.
+
+**Still open: a whole imported campaign does not fit in a browser tab.** Lullaby's four levels make
+a 122 MB project file, and loading it in the editor crashes the page — the parsed project plus a
+copy is more than a tab can hold, whatever the lists do. The fix is to keep only the active level
+in memory and fetch a level from the server when it is switched to (and store the other levels
+server-side), which is a change to how projects are loaded and saved rather than to the editor's
+listing.
+
 ### Grouping objects
 
 Objects can be selected together — Ctrl+click adds or removes one, in the map or in the Objects

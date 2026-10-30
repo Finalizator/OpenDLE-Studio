@@ -117,6 +117,10 @@ body.scene-dragging .asset-tile, body.scene-dragging .object-tile { cursor: grab
 summary { cursor: pointer; }
 .project-tree details { margin: 4px 0; }
 .project-tree summary { font-size: 11px; color: #ddd; padding: 3px 0; }
+.layout-levels { padding: 2px 0 4px; }
+.list-more { padding: 4px 7px; margin: 0; font-size: 9px; }
+.level-link[aria-current="true"] { background: #dedede; color: #333; font-weight: 600; }
+.level-link[aria-current="true"]::before { border-color: #87bd85; background: #87bd85; }
 .tree-link { display: block; text-align: left; width: calc(100% - 15px); margin: 1px 0 1px 15px; background: transparent; padding: 3px 5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tree-link::before { content: ""; display: inline-block; width: 8px; height: 8px; border: 1px solid #aaa; margin-right: 6px; }
 .tree-link[data-tab=map]::before { border-color: #87bd85; }

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { installGameMenu } from '../shared/game-menu.js';
-import { assembleGameLevels, selectGameLevel, nextGameLevel, parseLevelRoutes, gameLevelAssetIds } from '../shared/game-levels.js';
+import { assembleGameLevels, selectGameLevel, nextGameLevel, parseLevelRoutes, gameLevelAssetIds, cloneForLevelSwitch } from '../shared/game-levels.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { continueIntermission } from '../shared/intermission.js';
 import { importWad } from '../server/import.js';
@@ -193,4 +193,28 @@ test('a level loads the artwork its sprite clips animate', () => {
     frames: ['asset_BAL1A0'], seconds: 4 / 35, loop: true });
   assert.ok(gameLevelAssetIds(p).includes('asset_BAL1A0'),
     'projectile artwork is referenced from its clip, so the level has to carry it');
+});
+
+test('switching on a level-switch copy leaves the undo snapshot untouched', () => {
+  // The editor switches levels on a copy of the project so undo can go back to the level that was
+  // being edited. That copy only has to be private in the game container and the two levels
+  // involved: deep-cloning an imported campaign's maps was seconds of work per switch.
+  const project = game();
+  validateProject(project);
+  project.map.entities.find(entity => entity.type === 'player').x = 42;
+  const before = JSON.stringify({ active: project.game.active, x: project.map.entities.find(e => e.type === 'player').x });
+
+  const next = cloneForLevelSwitch(project);
+  selectGameLevel(next, 'MAP02');
+  assert.equal(next.game.active, 'MAP02');
+  assert.equal(next.map.entities.find(entity => entity.type === 'player').x, 20);
+  // The snapshot the editor keeps for undo is untouched: same active level, same edits in it.
+  assert.equal(JSON.stringify({ active: project.game.active, x: project.map.entities.find(e => e.type === 'player').x }), before);
+  // And the level that was left kept the unsaved edit, which is what makes switching back return it.
+  const left = next.game.levels.find(level => level.id === 'MAP01');
+  assert.equal(left.data.map.entities.find(entity => entity.type === 'player').x, 42);
+  // The copy is valid on its own, so it can be committed and saved.
+  assert.doesNotThrow(() => validateProject(next));
+  // The two projects do not share the level objects they changed.
+  assert.notEqual(next.game.levels[0], project.game.levels[0]);
 });

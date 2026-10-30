@@ -51,7 +51,7 @@ import { installIntermission } from '/shared/intermission.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen, changeSetting } from '/shared/game-settings.js';
 import { statusBarHidden } from '/shared/game-view.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
-import { selectGameLevel } from '/shared/game-levels.js';
+import { cloneForLevelSwitch, selectGameLevel } from '/shared/game-levels.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
 import * as gameSaves from './game-saves.js';
@@ -248,6 +248,7 @@ function render() {
       ...(project.game?.levels || []).map(level => new Option(`${level.id} — ${level.name}`, level.id, false, level.id === value)));
   }
   $('project-name').textContent = project.title;
+  renderLayoutTree();
   renderSceneObjects();
   // Undo, redo and edits made elsewhere change scene objects too, and the editor is
   // only re-drawn while it is the visible panel.
@@ -527,11 +528,42 @@ async function refreshProjects() {
     select.append(new Option(label, entry.id, false, entry.id === (projectId ?? library.active)));
   }
 }
-$('game-level').addEventListener('change', guard(() => {
-  const id = $('game-level').value;
-  editGame(next => selectGameLevel(next, id), `Editing ${id}; other level edits are retained.`);
-  selection = null; scriptScope = '$all'; render(); fitMap();
-}));
+/**
+ * Switch the level being edited.
+ *
+ * The level being left is written back into the campaign first (`selectGameLevel` stores the
+ * current map in its level entry), so uncommitted work in it is kept in the project rather than
+ * dropped — switching away and back returns what you had. The copy is shallow in every level but
+ * the two involved, because deep-cloning an imported campaign's maps is what made the switch feel
+ * frozen.
+ */
+function switchLevel(id) {
+  if (!project.game || id === project.game.active) return;
+  const leaving = project.game.active;
+  const next = cloneForLevelSwitch(project);
+  selectGameLevel(next, id);
+  selection = null; scriptScope = '$all'; scenePose = null;
+  commit(next, `Editing ${id}; ${leaving} kept with its unsaved edits.`);
+  fitMap();
+}
+/**
+ * The level list in the Layouts section: a campaign's levels are its layouts, so they belong
+ * where the layout is chosen rather than only in the game settings.
+ */
+function renderLayoutTree() {
+  const host = $('layout-levels');
+  const levels = project.game?.levels || [];
+  host.hidden = !levels.length;
+  $('layout-single').hidden = Boolean(levels.length);
+  host.replaceChildren(...levels.map(level => {
+    const entry = button(`${level.id} — ${level.name}`, () => switchLevel(level.id), 'tree-link level-link');
+    entry.dataset.levelId = level.id;
+    entry.setAttribute('aria-current', level.id === project.game.active ? 'true' : 'false');
+    entry.classList.toggle('selected', level.id === project.game.active);
+    return entry;
+  }));
+}
+$('game-level').addEventListener('change', guard(() => switchLevel($('game-level').value)));
 for (const [id, key] of [['game-next-level', 'next'], ['game-secret-level', 'secretNext'], ['game-entry-level', 'entry']])
   $(id).addEventListener('change', guard(() => {
     const value = $(id).value;
@@ -644,6 +676,13 @@ function openScript(ownerId = '$all') {
   showTab('events');
   render();
 }
+// Lists are capped: an imported map has thousands of objects and tens of thousands of sectors,
+// and building a DOM node for every one of them blocked the page for minutes on load and on every
+// level switch. The cap is on *drawing* the list, not on the data — everything is still there to
+// be selected, and the project search narrows what is drawn.
+const OBJECT_ROW_LIMIT = 600;
+const SECTOR_ROW_LIMIT = 300;
+const ASSET_TILE_LIMIT = 300;
 let entitiesSignature = '';
 function renderEntities() {
   // One pass over the rules for all owners: counting per object re-read the whole event
@@ -692,8 +731,8 @@ function renderEntities() {
         $('entities').append(tile);
       }
     }
-    for (const entity of project.map.entities) {
-      if (grouped.has(entity.id)) continue;
+    const listed = project.map.entities.filter(entity => !grouped.has(entity.id));
+    for (const entity of listed.slice(0, OBJECT_ROW_LIMIT)) {
       const count = counts.get(entity.id) || 0;
       $('entities').append(tileFor(entity));
       const tree = button(entity.name, event => selectObject(entity, event.ctrlKey || event.metaKey), 'tree-link');
@@ -704,8 +743,7 @@ function renderEntities() {
       script.dataset.scriptScope = entity.id;
       $('object-scripts').append(script);
     }
-    for (const entity of project.map.entities) {
-      if (!grouped.has(entity.id)) continue;
+    for (const entity of project.map.entities.filter(item => grouped.has(item.id))) {
       const count = counts.get(entity.id) || 0;
       const tree = button(entity.name, event => selectObject(entity, event.ctrlKey || event.metaKey), 'tree-link');
       tree.dataset.objectId = entity.id;
@@ -716,6 +754,9 @@ function renderEntities() {
       $('object-scripts').append(script);
     }
     $('object-scripts').append(button('+ New object script sheet', () => attachObjectScriptSheet(), 'tree-link'));
+    if (listed.length > OBJECT_ROW_LIMIT) {
+      $('entities').append(make('p', `+ ${listed.length - OBJECT_ROW_LIMIT} more objects — select them on the map, or narrow the list with the project search.`, 'muted list-more'));
+    }
   }
   // The highlight follows every click without rebuilding the lists.
   const selected = new Set(selectedEntityIds());
@@ -1884,7 +1925,11 @@ function renderAssets() {
     }
     if (!(project.scenes || []).length) parent.append(make('p', 'No scenes yet. Select an object or a sector, then capture it as a scene.', 'muted'));
   }
-  for (const asset of assets) {
+  // An imported game has thousands of assets, and building a tile with a decoded image for each
+  // one is a memory spike the page does not survive. Draw a first page of them; the filter and the
+  // search narrow the list, so nothing is unreachable.
+  const assetPage = assets.slice(0, ASSET_TILE_LIMIT);
+  for (const asset of assetPage) {
     const tile = make('div', undefined, 'asset-tile'), image = make('img');
     // The id makes drag and drop and the context menu exact instead of inferring which
     // asset a tile shows from its position in the filtered list.
@@ -1926,9 +1971,17 @@ function renderAssets() {
     parent.append(tile);
   }
   if (!assets.length) parent.append(make('p', 'No matching assets. Import a WAD or ordinary images to get started.', 'muted'));
-  $('sector-list').replaceChildren(...(project.map.sectors || []).map(sector => button(`${sector.id} / light ${sector.light}`, () => {
+  else if (assets.length > assetPage.length) {
+    parent.append(make('p', `+ ${assets.length - assetPage.length} more assets — use the filter or the search to reach them.`, 'muted list-more'));
+  }
+  const sectors = project.map.sectors || [];
+  const sectorRows = sectors.slice(0, SECTOR_ROW_LIMIT).map(sector => button(`${sector.id} / light ${sector.light}`, () => {
     selection = { kind: 'sector', id: sector.id }; renderInspector(); mapNeedsDraw = true;
-  })));
+  }));
+  if (sectors.length > SECTOR_ROW_LIMIT) {
+    sectorRows.push(make('p', `+ ${sectors.length - SECTOR_ROW_LIMIT} more sectors — pick them on the map.`, 'muted list-more'));
+  }
+  $('sector-list').replaceChildren(...sectorRows);
   const animationList = $('sprite-animation-list'); animationList.replaceChildren();
   for (const clip of project.spriteClips || []) {
     const details = make('details'), summary = make('summary', `${clip.name} / ${clip.frames.length} frames`);

@@ -1,4 +1,5 @@
 import { LIMITS } from './limits.js';
+import { cloneProjectForEdit } from './project.js';
 import { resolveMusicAsset, musicReport } from './music.js';
 import { resolveString } from './language.js';
 
@@ -47,6 +48,24 @@ export function gameLevelAssetIds(project) {
   }
   // Skies travel with every level: a script can ChangeSky to one no map thing names.
   return project.assets.filter(asset => ['sound', 'music', 'sky'].includes(asset.kind) || references.has(asset.id)).map(asset => asset.id);
+}
+
+/**
+ * A copy of the project whose level can be switched without disturbing the undo snapshot.
+ *
+ * `cloneProjectForEdit(project, { deepGame: true })` copies every level's whole map, which on an
+ * imported campaign is hundreds of megabytes and seconds of work — most of the pause a level
+ * switch caused. Switching only needs the game *container* to be private (so `active` can change)
+ * and the level being written to be private; `selectGameLevel` already clones the data it stores,
+ * so a shallow copy of the level list is enough.
+ */
+export function cloneForLevelSwitch(project) {
+  const next = cloneProjectForEdit(project, { shareActors: true });
+  if (project.game) {
+    next.game = { ...project.game, levels: project.game.levels.map(level => ({ ...level })) };
+    next.assets = [...(project.assets || [])];
+  }
+  return next;
 }
 
 export function selectGameLevel(project, id) {
