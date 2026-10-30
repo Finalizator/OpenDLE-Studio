@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { uniform, vec2, vec3, vec4, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, cross, normalize, length, clamp, mix } from 'three/tsl';
+import { uniform, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, cross, normalize, length, clamp, mix } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
@@ -24,6 +24,7 @@ import { gameLevelAssetIds } from '/shared/game-levels.js';
 import { skyAssetFor, skyRequestName } from '/shared/sky.js';
 import { createSpriteIndex } from '/shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
+import { createSurfaceBatcher, mergePiece } from '/shared/surface-batch.js';
 import { viewBob, weaponBob } from '/shared/player-motion.js';
 import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 
@@ -106,6 +107,13 @@ export async function createPreview(canvas, project, state, { editor = false } =
     position: uniform(position), color: uniform(lightColors[index]), radius: uniform(0),
   }));
   const effectTime = uniform(0), effectEnabled = uniform(1);
+  // Height at which ceilings are cut away: the editor raises it while the camera is
+  // below a room's ceiling so the room can be looked into from above. Far away means
+  // "draw every ceiling", which is what gameplay wants.
+  // Everything above the cut stays: a ceiling below the camera is cut away so the room
+  // it covers can be looked into from above. -1e30 draws every ceiling.
+  const ceilingCut = uniform(-1e30);
+  let ceilingsHidden = false;
   let shaderEffect = null;
   // Everything drawn behind an effect that samples the screen, so a plastic strip or a
   // pane of glass refracts the level instead of merely being see-through. It only costs
@@ -333,15 +341,21 @@ export async function createPreview(canvas, project, state, { editor = false } =
       scene.add(key, key.target, rim, rim.target);
       for (let i = 0; i < 16; i++) { const light = new THREE.PointLight('#ffffff', 0); scene.add(light); pointLights.push(light); }
     }
-    let worldGroup = null;
+    // Static world surfaces are merged into a few shared buffers instead of one mesh
+    // per wall face and per sector surface; see shared/surface-batch.js for why.
+    const batcher = createSurfaceBatcher();
+    const batchMaterials = new Map(), batchMeshes = new Map();
+    let collecting = null;
     let worldParts = [], worldPartKeys = new Map();
+    function releaseRecords(entry) {
+      if (!entry.records?.length) return;
+      for (const record of entry.records) batcher.remove(record);
+      entry.records.length = 0;
+    }
     function rebuildPart(entry) {
-      if (entry.group) {
-        scene.remove(entry.group);
-        entry.group.traverse(object => { if (object.geometry) { geometries.delete(object.geometry); object.geometry.dispose(); } });
-      }
-      entry.group = new THREE.Group(); scene.add(entry.group);
-      worldGroup = entry.group; entry.build(); worldGroup = null;
+      releaseRecords(entry);
+      collecting = entry.records;
+      try { entry.build(); } finally { collecting = null; }
     }
     // Editing moves one wall or one sector at a time; rebuilding every wall in the
     // map for each pointer move is what made live dragging stutter. Parts carry a
@@ -354,7 +368,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         previous.sectorIds = sectorIds; previous.build = build;
       } else {
         if (previous) disposePart(previous);
-        entry = { key, sectorIds, signature, build, group: null };
+        entry = { key, sectorIds, signature, build, records: [] };
         worldPartKeys.set(key, entry);
         rebuildPart(entry);
         rebuiltParts++;
@@ -363,34 +377,83 @@ export async function createPreview(canvas, project, state, { editor = false } =
       return entry;
     }
     function disposePart(entry) {
-      if (!entry.group) return;
-      scene.remove(entry.group);
-      entry.group.traverse(object => { if (object.geometry) { geometries.delete(object.geometry); object.geometry.dispose(); } });
-      entry.group = null;
+      releaseRecords(entry);
+      worldPartKeys.delete(entry.key);
     }
-    function mesh(buffer, material, destination = worldGroup || scene) {
+    /**
+     * Uploads every merged buffer whose quads changed. Called once per world build and
+     * once per rebuilt part, so a dragged wall costs one buffer copy, not a full rebuild.
+     */
+    function flushBatches() {
+      for (const piece of batcher.drain()) {
+        let mesh = batchMeshes.get(piece);
+        if (!piece.records.size) {
+          if (mesh) {
+            scene.remove(mesh);
+            geometries.delete(mesh.geometry); mesh.geometry.dispose();
+            batchMeshes.delete(piece);
+          }
+          continue;
+        }
+        const merged = mergePiece(piece);
+        if (!mesh) {
+          const geometry = new THREE.BufferGeometry();
+          geometries.add(geometry);
+          mesh = new THREE.Mesh(geometry, batchMaterials.get(piece.key));
+          materials.add(mesh.material);
+          scene.add(mesh);
+          batchMeshes.set(piece, mesh);
+        }
+        const geometry = mesh.geometry;
+        geometry.setAttribute('position', new THREE.BufferAttribute(merged.positions, 3));
+        geometry.setAttribute('uv', new THREE.BufferAttribute(merged.uvs, 2));
+        // Sector light is per vertex, so one material covers every light level and a
+        // merged buffer can hold surfaces from sectors of different brightness.
+        geometry.setAttribute('surfaceLight', new THREE.BufferAttribute(merged.lights, 1));
+        geometry.setIndex(new THREE.BufferAttribute(merged.index, 1));
+        geometry.computeBoundingSphere();
+        geometry.computeBoundingBox();
+        mesh.userData.selectionRanges = merged.ranges;
+      }
+    }
+    function mesh(buffer, material, destination = scene) {
       geometries.add(buffer); materials.add(material);
       const result = new THREE.Mesh(buffer, material);
       destination.add(result);
       return result;
     }
     const materialCache = new Map();
-    function material(assetId, level, color = '#ffffff', masked = false, oneSided = false) {
-      const key = `${assetId}/${level}/${color}/${masked}/${oneSided}`;
+    // Sector light is a per-vertex attribute rather than a per-material uniform: a map
+    // with a couple of hundred light levels would otherwise need a material per level
+    // per texture, and the renderer keeps a pipeline for every material it draws.
+    function material(assetId, color = '#ffffff', { masked = false, oneSided = false, ceiling = false } = {}) {
+      const key = `${assetId}/${color}/${masked}/${oneSided}/${ceiling}`;
       if (materialCache.has(key)) return materialCache.get(key);
       const result = withEffect(new THREE.MeshBasicNodeMaterial({
         map: imageTexture(assetId), color: assetId ? '#ffffff' : color,
-        side: oneSided ? THREE.FrontSide : THREE.DoubleSide, alphaTest: masked ? .5 : 0,
+        side: oneSided ? THREE.FrontSide : THREE.DoubleSide,
+        // A ceiling always keeps an alpha test: that is what cuts it away above the camera.
+        alphaTest: masked || ceiling ? .5 : 0,
       }));
       result.userData.assetId = assetId;
-      let illumination = vec3(Math.max(.03, level / 255));
+      result.userData.batchKey = key;
+      let illumination = varying(attribute('surfaceLight', 'float')).max(.03);
       for (const light of lightNodes) {
         const falloff = positionWorld.distance(light.position).div(light.radius.max(1)).oneMinus().max(0);
         illumination = illumination.add(light.color.mul(falloff.mul(falloff)));
       }
-      result.colorNode = vec4(materialColor.rgb.mul(illumination.min(vec3(2))), materialColor.a);
-      materials.add(result); materialCache.set(key, result);
+      const aboveCamera = positionWorld.y.greaterThan(ceilingCut).select(1, 0);
+      result.colorNode = vec4(materialColor.rgb.mul(illumination.min(vec3(2))),
+        ceiling ? materialColor.a.mul(aboveCamera) : materialColor.a);
+      materials.add(result); materialCache.set(key, result); batchMaterials.set(key, result);
       return result;
+    }
+    /** Records one surface for the merged buffers, keeping it owned by the part that built it. */
+    function surface(positions, uvs, indices, surfaceMaterial, light, selection) {
+      const record = { positions, uvs, indices, light: Math.max(.03, light / 255), selection };
+      batcher.add(surfaceMaterial.userData.batchKey, record);
+      if (collecting) collecting.push(record);
+      return record;
     }
     function plane(sector, height, assetId, ceiling) {
       for (const shape of sectorShapes(sector.rings)) {
@@ -407,13 +470,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
           positions.push(point.x, height, point.y);
           uv.push(...flatUv(point.x, point.y, { textureWidth, textureHeight, scale }));
         }
-        const buffer = new THREE.BufferGeometry();
-        buffer.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-        buffer.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); buffer.setIndex(indices);
-        buffer.computeBoundingSphere();
-        const surface = mesh(buffer, material(assetId, sector.light, ceiling ? '#6d7680' : project.environment.floor));
-        if (sector.id) surface.userData.selection = { kind: 'sector', id: sector.id, surface: ceiling ? 'ceilingHeight' : 'floorHeight' };
-        if (editor && ceiling) surface.visible = false;
+        surface(positions, uv, indices,
+          material(assetId, ceiling ? '#6d7680' : project.environment.floor, { ceiling }),
+          sector.light, sector.id ? { kind: 'sector', id: sector.id, surface: ceiling ? 'ceilingHeight' : 'floorHeight' } : null);
       }
     }
     let wallLines = [];
@@ -457,12 +516,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const coords = wallQuadUv({ length, bottom, top, referenceTop,
         offsetX: side?.offsetX || 0, offsetY: side?.offsetY || 0,
         textureWidth: asset?.width || 64, textureHeight: asset?.height || 64, scale: side?.textureScale || 1 });
-      const buffer = new THREE.BufferGeometry();
-      buffer.setAttribute('position', new THREE.Float32BufferAttribute([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], 3));
-      buffer.setAttribute('uv', new THREE.Float32BufferAttribute(coords, 2));
-      buffer.setIndex([0, 1, 2, 0, 2, 3]); buffer.computeBoundingSphere();
-      const surface = mesh(buffer, material(assetId, light, wall.color, masked, !editor));
-      surface.userData.selection = { kind: 'wall', id: wall.id };
+      surface([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], coords, [0, 1, 2, 0, 2, 3],
+        material(assetId, wall.color, { masked, oneSided: !editor }), light, { kind: 'wall', id: wall.id });
     }
     wallLines = wallSegments(project);
     for (const wall of wallLines) {
@@ -513,21 +568,25 @@ export async function createPreview(canvas, project, state, { editor = false } =
     }
     }
     buildStaticWorld();
+    flushBatches();
     // Three compiles a shader program the first time a material is drawn. Doors and
     // lifts reveal surfaces (the upper/lower/middle textures of the neighbouring
     // sector) that only exist once they move, so those materials get built and the
     // warm-up scene below compiles them during load instead of mid-game.
     const warmMaterials = new Set(), warmQuad = new THREE.PlaneGeometry(1, 1);
+    // Starved of the vertex attribute the merged buffers carry, the warm-up quad would
+    // shade black, so it gets one flat light value.
+    warmQuad.setAttribute('surfaceLight', new THREE.Float32BufferAttribute(new Float32Array(warmQuad.attributes.position.count).fill(1), 1));
     geometries.add(warmQuad);
-    function warmMaterial(assetId, level, color, masked) {
+    function warmMaterial(assetId, color, masked) {
       if (assetId && !textures.has(assetId)) return;
-      const surface = material(assetId, level, color, masked, true);
+      const surface = material(assetId, color, { masked, oneSided: true });
       if (warmMaterials.has(surface)) return;
       warmMaterials.add(surface);
       warmupScene.add(new THREE.Mesh(warmQuad, surface));
     }
     if (!editor) for (const surface of surfaceMaterials(geometry, wallLines, project.environment)) {
-      warmMaterial(surface.assetId, surface.level, surface.color, surface.masked);
+      warmMaterial(surface.assetId, surface.color, surface.masked);
     }
     // The sky is rebuilt from the environment rather than set up inline, because a
     // script can change it while the level runs (ACS ChangeSky).
@@ -1095,12 +1154,23 @@ export async function createPreview(canvas, project, state, { editor = false } =
         writeDataset('frameMs', elapsed.toFixed(2));
         writeDataset('frameMaxMs', frameStats.max.toFixed(2));
         writeDataset('frameStalls', frameStats.stalls);
+        // Splitting the frame into the scene update and the draw calls says which half
+        // to optimise: thousands of tiny draw calls and a slow update look alike from
+        // the total alone.
+        writeDataset('frameUpdateMs', frameUpdateMs.toFixed(2));
+        writeDataset('frameDrawMs', frameDrawMs.toFixed(2));
         writeDataset('worldRebuildMs', lastRebuildMs.toFixed(2));
         writeDataset('worldRebuilds', rebuilds);
         // Where the player is and how fast the movement model says they move, so a playtest can
         // be measured from outside the page instead of guessed at from a recording.
-        writeDataset('playerPosition', `${state.player.x.toFixed(1)},${state.player.y.toFixed(1)},${state.player.z.toFixed(1)}`);
+        writeDataset('playerPosition', `${state.player.x.toFixed(1)},${state.player.y.toFixed(1)},${(state.player.z ?? 0).toFixed(1)}`);
         writeDataset('playerSpeed', (state.speed ?? 0).toFixed(1));
+        // Draw calls and GPU object counts: the numbers that explain a slow frame when
+        // the triangle count looks small.
+        writeDataset('drawCalls', renderer.info.render.calls);
+        writeDataset('geometries', renderer.info.memory.geometries);
+        writeDataset('textures', renderer.info.memory.textures);
+        writeDataset('programs', renderer.info.programs?.length ?? 0);
       }
     }
     // The drawing buffer follows the Engine tweak instead of a fixed 800x450 frame,
@@ -1193,9 +1263,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
           if (sectorHeights.get(sector.id) !== key) { changed.add(sector.id); sectorHeights.set(sector.id, key); }
         }
         for (const entry of worldParts) if (entry.sectorIds.some(id => changed.has(id))) rebuildPart(entry);
+        flushBatches();
         worldRevision = state.worldRevision;
         lastRebuildMs = clock() - rebuildStarted; rebuilds++;
       }
+      ceilingCut.value = ceilingsHidden ? camera.position.y + 2 : -1e30;
       renderer.info.reset();
       if (!editor) {
         const detail = state.settings.lowDetail ? 2 : 1;
@@ -1564,7 +1636,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // buildStaticWorld keeps every part whose signature still matches, so a
       // single edited wall or sector costs one rebuild instead of the whole map.
       buildStaticWorld();
+      flushBatches();
       canvas.dataset.worldParts = `${rebuiltParts}/${worldParts.length}`;
+      canvas.dataset.batches = String(batchMeshes.size);
       sectorIndex = createSectorIndex(geometry);
       spriteIndex = createSpriteIndex(project);
       sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
@@ -1577,6 +1651,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       return true;
     }
     return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity,
+      /** Editor only: hide a ceiling once the camera is above it, so rooms open up. */
+      ceilings(visible) { ceilingsHidden = !visible; },
       spriteReport: () => ({ player: { x: Math.round(state.player.x), y: Math.round(state.player.y),
         z: Math.round((state.player.z ?? 0) * 10) / 10, pitch: Math.round((state.player.pitch || 0) * 1000) / 1000 },
       sprites: report.slice(), withoutArtwork: withoutArtwork.slice(), hiddenWithoutArtwork: unrenderable.size }),

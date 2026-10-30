@@ -1,5 +1,6 @@
 import * as THREE from '/vendor/three/three.module.js';
 import { createPreview } from './render.js';
+import { selectionAtTriangle } from '/shared/surface-batch.js';
 import { createRuntime, runtimeEntities } from '/shared/runtime.js';
 import { newId } from '/shared/project.js';
 import { sectorAt, sectorGeometry } from '/shared/sectors.js';
@@ -116,9 +117,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   let selected = null, action = null, speed = pose?.speed || 320, yaw = pose?.yaw ?? 0, pitch = pose?.pitch ?? -.65;
   let mode = 'move', showCeilings = false, ceilingTimer = 0;
   let vertexHeights = new Map();
-  let pickables = [],
-    surfaceMeshes = new Map(),
-    ceilingSurfaces = [];
+  let pickables = [];
   function collectVertexHeights() {
     const heights = new Map();
     for (const wall of project.map.walls) for (const side of [wall.right, wall.left]) {
@@ -129,18 +128,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     return heights;
   }
   function collectSceneHandles() {
-    pickables = []; surfaceMeshes = new Map(); ceilingSurfaces = [];
+    pickables = [];
     for (const child of scene.children) {
       if (child === handles || child === helperGroup || child === vertexGroup || child === roomOutline) continue;
       child.traverse(object => {
-        const selection = object.userData.selection;
-        if (!selection) return;
+        // The static world is drawn from merged buffers, so a world mesh names the wall
+        // or sector it belongs to per triangle instead of holding one selection itself.
+        if (!object.userData.selection && !object.userData.selectionRanges?.length) return;
         pickables.push(object);
-        if (selection.kind !== 'sector') return;
-        const key = `${selection.id}/${selection.surface || 'floorHeight'}`;
-        if (!surfaceMeshes.has(key)) surfaceMeshes.set(key, []);
-        surfaceMeshes.get(key).push(object);
-        if (selection.surface === 'ceilingHeight') ceilingSurfaces.push({ mesh: object, y: sectorById.get(selection.id)?.ceilingHeight ?? 0 });
       });
     }
   }
@@ -259,12 +254,34 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     return true;
   }
   function hits(group) { return ray.intersectObjects(group.children, true).filter(hit => visibleThrough(hit.object)); }
-  function selectionOf(object) {
+  /**
+   * What a raycast hit belongs to. A merged world mesh holds every wall and sector that
+   * shares its material, so the triangle the ray hit decides which one it was.
+   */
+  function selectionOf(hit) {
+    const object = hit?.object;
+    if (!object) return null;
+    const ranges = object.userData.selectionRanges;
+    const selection = ranges
+      ? selectionAtTriangle(ranges, hit.faceIndex)
+      : parentSelection(object);
+    // A ceiling cut away by the shader is still geometry to a raycast, so a click where
+    // the room is open must fall through to whatever is under it.
+    if (selection?.kind === 'sector' && selection.surface === 'ceilingHeight' && !ceilingDrawn(selection.id)) return null;
+    return selection;
+  }
+  function parentSelection(object) {
     for (let node = object; node; node = node.parent) if (node.userData.selection) return node.userData.selection;
     return null;
   }
+  /** The same rule the ceiling shader cut uses, so picking and drawing agree. */
+  function ceilingDrawn(id) {
+    if (showCeilings) return true;
+    const sector = sectorById.get(id);
+    return sector ? camera.position.y < sector.ceilingHeight - 2 : true;
+  }
   function worldHit() {
-    for (const hit of ray.intersectObjects(pickables, true)) if (visibleThrough(hit.object) && selectionOf(hit.object)) return hit;
+    for (const hit of ray.intersectObjects(pickables, true)) if (visibleThrough(hit.object) && selectionOf(hit)) return hit;
     return null;
   }
   function planePoint(height) {
@@ -568,7 +585,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     cast(event);
     for (const hit of ray.intersectObjects(pickables, true)) {
       if (!visibleThrough(hit.object)) continue;
-      const selection = selectionOf(hit.object);
+      const selection = selectionOf(hit);
       if (selection) return { hit, point: hit.point.clone(), selection };
     }
     return null;
@@ -722,9 +739,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       return;
     }
     const hit = hits(vertexGroup)[0] || worldHit();
-    const selection = hit ? { ...selectionOf(hit.object) } : null;
+    const selection = hit ? { ...selectionOf(hit) } : null;
     if (selection?.kind === 'sector') {
-      selection.surface = selectionOf(hit.object)?.surface || callbacks.surface();
+      selection.surface = selectionOf(hit)?.surface || callbacks.surface();
       callbacks.select(selection);
       if (mode === 'move') {
         action = { kind: 'surface', selection, axis: 'z', start: hit.point.clone(), x: event.clientX, y: event.clientY,
@@ -794,7 +811,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // A right click that stayed put is a context menu request, not a camera drag.
       if (!completed.moved) {
         cast(event);
-        callbacks.menu?.(event, worldHit() ? selectionOf(worldHit().object) : null);
+        const contextHit = worldHit();
+        callbacks.menu?.(event, contextHit ? selectionOf(contextHit) : null);
       }
       return;
     }
@@ -827,18 +845,23 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   });
   listen(canvas, 'keyup', event => keys.delete(event.code));
   listen(canvas, 'wheel', event => { event.preventDefault(); speed = THREE.MathUtils.clamp(speed * Math.exp(-event.deltaY * .001), 16, 8192); }, { passive: false });
-  listen(canvas, 'dblclick', event => { cast(event); const hit = worldHit(); const target = hit && selectionOf(hit.object); if (target?.kind === 'entity') callbacks.script(target.id); });
+  listen(canvas, 'dblclick', event => { cast(event); const hit = worldHit(); const target = hit && selectionOf(hit); if (target?.kind === 'entity') callbacks.script(target.id); });
 
+  // Ceilings are part of the merged world now, so they are cut away in the shader at the
+  // camera's height instead of being hidden one mesh at a time. The count is reported
+  // from the sectors themselves, which is also what the cut is decided on.
   function updateCeilings(dt, force = false) {
     ceilingTimer -= dt;
     if (!force && ceilingTimer > 0) return;
     ceilingTimer = .1;
-    let visible = 0;
-    for (const entry of ceilingSurfaces) {
-      entry.mesh.visible = showCeilings || camera.position.y < entry.y - 2;
-      if (entry.mesh.visible) visible++;
+    view.ceilings(showCeilings);
+    let visible = 0, total = 0;
+    for (const sector of sectors) {
+      if (sector.sky || sector.ceilingHeight <= sector.floorHeight) continue;
+      total++;
+      if (showCeilings || camera.position.y < sector.ceilingHeight - 2) visible++;
     }
-    canvas.dataset.ceilings = `${visible}/${ceilingSurfaces.length}`;
+    canvas.dataset.ceilings = `${visible}/${total}`;
   }
   updateCeilings(0, true);
 
