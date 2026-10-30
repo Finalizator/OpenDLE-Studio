@@ -4,7 +4,7 @@
 // produces can be inspected, changed or deleted like hand-written rules.
 
 import { installEngineScripts, installWallWalkDemo, installSprayScriptlet, installSourceMovementScriptlet,
-  addSurfRamp, surfRampGeometry, WALL_WALK_SHEET, SPRAY_SHEET, SOURCE_MOVEMENT_SHEET } from './engine-script.js';
+  addSurfRamp, surfRampGeometry, surfRampSurface, WALL_WALK_SHEET, SPRAY_SHEET, SOURCE_MOVEMENT_SHEET } from './engine-script.js';
 import { createProject } from './project.js';
 
 /** Removes the sheet and rules the wall-walking scriptlet installs. */
@@ -73,34 +73,26 @@ export function removeSourceMovement(project) {
 }
 
 /**
- * A flat, solid block to stand on: the high end of a surf map.
- *
- * It is an ordinary scene object with a fixed box collider and no tilt, so it is drawn and
- * collided with as the same block, and the player start's `elevation` puts them on top of it.
- */
-export function addPlatform(project, { x = 0, y = 0, width = 200, depth = 196, height = 96 } = {}) {
-  const used = new Set([...(project.map.entities || []).map(entity => entity.id)]);
-  let id = 'surf_platform';
-  while (used.has(id)) id = `${id}_x`;
-  const platform = {
-    id, name: 'Surf platform', type: 'decoration', x, y, angle: 0,
-    physics: { body: 'fixed', shape: 'box', width, height, depth, radius: 8, mass: 1,
-      friction: .7, restitution: 0, sensor: false, lockRotation: true },
-  };
-  project.map.entities = [...(project.map.entities || []), platform];
-  return platform.id;
-}
-
-/**
- * A new, empty project that is a surf map: one room, a raised ceiling, a player start and two
- * ramps facing each other.
+ * A new, empty project that is a surf map: one room, a tall ceiling, two parallel surf ramps and
+ * a player who starts on one of them and slides down it.
  *
  * Installing the movement rules into an imported WAD drops ramps into whatever geometry is
  * already there, which on a real map means two ramps jammed against a wall. A map built for
- * surfing is small and empty, so this replaces the whole project: the room is the default one,
- * raised to a 256-unit ceiling, and the ramps sit in the middle with open floor either side.
- * Everything it produces is ordinary — sectors, walls, scene objects — so it can be reshaped
- * like any other map.
+ * surfing is small and empty, so this replaces the whole project. Everything it produces is
+ * ordinary — sectors, walls, scene objects — so it can be reshaped like any other map.
+ *
+ * **Why the ramps are parallel and apart.** A surface steeper than 45.573 degrees is never
+ * ground, so it can only be started on or landed on: a player leaving a platform at the run
+ * speed flies straight over one, because the surface drops at 320·tan50 = 381 units a second and
+ * nothing pulls them after it. So the player starts on a ramp. Two earlier layouts put the two
+ * ramps' edges against each other — a V, then a ridge — and both were broken: a V is a groove
+ * narrower than the player's own body, so they jam in the bottom of it, and a ridge leaves a
+ * crack between two tilted boxes that a player strafing sideways drops through. Parallel ramps
+ * with open floor between them have neither problem.
+ *
+ * A real surf course chains many ramps down a long descent, because a 50 degree ramp is a
+ * one-way trip: you cannot walk back up one. The Momentum mapping guide starts at a 960 by 640
+ * brush per ramp; these are deliberately smaller so the ramp fits one room.
  */
 export function buildSurfTestMap(project) {
   // A fresh project is already a valid room with a player start and the editable engine
@@ -111,27 +103,26 @@ export function buildSurfTestMap(project) {
   for (const key of Object.keys(project)) delete project[key];
   Object.assign(project, fresh);
   const room = project.map.sectors[0];
-  // A 50 degree ramp of the default width rises 98 units, so the default 128-unit room would
-  // have the ramp poking through the ceiling.
-  room.ceilingHeight = 256;
+  // A 50 degree ramp of this size rises 196 units, and the player is 56 tall on top of that, so
+  // the default 128 unit ceiling would put them through the roof.
+  room.ceilingHeight = 384;
   room.light = 192;
-  const start = project.map.entities.find(entity => entity.type === 'player');
-  // A surf map is entered from height: a >45 degree slope cannot be walked onto, only landed
-  // on, so the player starts on a platform with a ramp descending from each end. Walk forward
-  // or back, step off the edge, and the ramp carries you down building speed.
   const geometry = surfRampGeometry();
-  const platform = { half: 100, height: geometry.topHeight };
-  Object.assign(start, { x: 0, y: 0, angle: 0, elevation: platform.height });
-  const platformId = addPlatform(project, {
-    x: 0, y: 0, width: platform.half * 2, depth: 196, height: platform.height });
+  const lane = 140;
   const created = [
-    // Descends from the platform's right edge towards +x.
-    addSurfRamp(project, { x: platform.half + geometry.run / 2, y: 0, angle: 0, roll: -50 }),
-    // And one from its left edge towards -x.
-    addSurfRamp(project, { x: -(platform.half + geometry.run / 2), y: 0, angle: 0, roll: 50 }),
+    addSurfRamp(project, { x: geometry.run / 2, y: -lane, angle: 0, roll: -50 }),
+    addSurfRamp(project, { x: geometry.run / 2, y: lane, angle: 0, roll: -50 }),
   ];
+  // Standing on the ramp, a third of the way down it, facing the way it falls. The height comes
+  // from the ramp's own top face — placing this by the ramp's *width* instead of its run, a
+  // different number once the ramp is tilted, put the player beside the ramp, falling past it —
+  // plus a margin, so a couple of units of disagreement about where the surface is leave them
+  // above it rather than inside it.
+  const surface = surfRampSurface(created[0]);
+  const startX = surface.lowEdgeX + (surface.highEdgeX - surface.lowEdgeX) * .72;
+  const start = project.map.entities.find(entity => entity.type === 'player');
+  Object.assign(start, { x: startX, y: -lane, angle: 0, elevation: surface.heightAt(startX) + 8 });
   project.sourceMovementRamps = created.map(ramp => ramp.id);
-  project.surfPlatform = platformId;
   installSourceMovementScriptlet(project, { ramps: 0 });
   project.title = 'Surf test map';
   return project;
@@ -155,8 +146,9 @@ const sourceMovement = {
   // geometry this project already has.
   build(project) { return buildSurfTestMap(project); },
   buildLabel: 'Build a new empty surf map',
-  buildDetail: 'Replaces the whole project with a new, empty room, two surf ramps and the movement '
-    + 'rules — the quickest way to try surfing. Undo restores what was open before.',
+  buildDetail: 'Replaces the whole project with a new, empty room, two parallel surf ramps and the '
+    + 'movement rules, and puts the player on one of them — the quickest way to try surfing. Undo '
+    + 'restores what was open before.',
   remove(project) { return removeSourceMovement(project); },
   installed(project) {
     const sheet = (project.eventSheets || []).find(sheet => sheet.name === SOURCE_MOVEMENT_SHEET);

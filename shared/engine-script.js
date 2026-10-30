@@ -229,13 +229,15 @@ export function installSprayScriptlet(project, { key = 'KeyT', assetId } = {}) {
  * A surf ramp is a box rotated about a horizontal axis: the top face is the ramp. A box
  * centred on the floor would be half buried, so the centre is lifted by exactly the drop from
  * its lowest corner to its face, which is what puts the bottom edge on the floor and leaves a
- * clean climbable ramp above it.
+ * clean ramp above it. The thickness is a third of a ramp's width rather than a sliver: a thin
+ * slab is one a fast player has less to hit, and surf maps keep the collision simple and solid
+ * for exactly this reason.
  *
- * The width defaults to 128 rather than a surf map's usual 256 because a 50 degree ramp rises
- * by `width * sin(50°)`, and 192 units of width would poke through a 128 unit ceiling — a ramp
- * that reaches outside the room is one the player stands on the ceiling next to.
+ * A 50 degree ramp of this size rises 196 units, so a map using it needs a ceiling well above
+ * the default 128 — a ramp that reaches through the ceiling is one the player stands on the
+ * ceiling next to.
  */
-export function surfRampGeometry({ width = 128, depth = 192, thickness = 16, angle = 50, roll = 50 } = {}) {
+export function surfRampGeometry({ width = 256, depth = 256, thickness = 32, angle = 50, roll = 50 } = {}) {
   const radians = Math.abs(angle) * Math.PI / 180;
   const centre = width / 2 * Math.sin(radians) + thickness / 2 * Math.cos(radians);
   return { width, depth, thickness, roll, elevation: centre - thickness / 2,
@@ -246,6 +248,36 @@ export function surfRampGeometry({ width = 128, depth = 192, thickness = 16, ang
     // player cannot step over, which is exactly how the first version of the test map stopped
     // the player at the join.
     topHeight: centre + thickness / 2 * Math.cos(radians) + width / 2 * Math.sin(radians) };
+}
+
+/**
+ * A surf ramp's top face as a line: where its low and high edges are along x, and its height at
+ * any x between them.
+ *
+ * Everything that has to meet a ramp exactly — a player start, a test that drops something onto
+ * it — reads this rather than repeating the trigonometry. The top face does not pass through the
+ * origin at the low edge: it is a slab `thickness` thick, so the surface sits
+ * `thickness · cos(angle)` above the floor at its low end and `topHeight` at its high end. A
+ * formula that forgets that offset placed the player inside the ramp, or outside it entirely.
+ *
+ * Ramps are placed with `angle` 0, so the slope runs along x; a rotated ramp would need its own
+ * ends projecting, which nothing has needed yet.
+ */
+export function surfRampSurface(ramp) {
+  const roll = ramp.modelTilt?.roll ?? 0;
+  const geometry = surfRampGeometry({ roll });
+  const radians = Math.abs(roll) * Math.PI / 180;
+  const tan = Math.tan(radians);
+  const half = geometry.run / 2;
+  // A positive roll rises towards +x, so its low edge is the -x one.
+  const lowEdgeX = roll > 0 ? ramp.x - half : ramp.x + half;
+  const highEdgeX = roll > 0 ? ramp.x + half : ramp.x - half;
+  const lowHeight = geometry.thickness * Math.cos(radians);
+  return {
+    lowEdgeX, highEdgeX, lowHeight, highHeight: geometry.topHeight,
+    // Rises towards the high edge, and keeps falling past the low one rather than turning back.
+    heightAt: x => lowHeight + (roll > 0 ? x - lowEdgeX : lowEdgeX - x) * tan,
+  };
 }
 
 /** Whether a point is inside a sector's outline, which decides where a ramp will fit. */
@@ -261,14 +293,17 @@ function pointInsideSector(sector, x, y) {
 }
 
 /** Adds a surf ramp to the map as an ordinary, editable scene object. */
-export function addSurfRamp(project, { x = 0, y = 0, angle = 0, roll = 50, id } = {}) {
+export function addSurfRamp(project, { x = 0, y = 0, angle = 0, roll = 50, id, lift = 0 } = {}) {
   const geometry = surfRampGeometry({ roll });
   const used = new Set([...(project.map.entities || []).map(entity => entity.id)]);
   let name = id || `surf_ramp_${(project.map.entities || []).filter(entity => entity.type === 'decoration').length + 1}`;
   while (used.has(name)) name = `${name}_x`;
   const ramp = {
     id: name, name: 'Surf ramp', type: 'decoration', x, y, angle,
-    elevation: geometry.elevation,
+    // `lift` raises the whole ramp, which is what puts its low edge in the air: a ramp that
+    // comes all the way down to the floor has nothing to launch off. The Momentum mapping guide
+    // does the same thing by cutting the ramp's lower edge above the bottom corner.
+    elevation: geometry.elevation + lift,
     // The collider follows this tilt: a tilted box is a ramp, and the drawn object and the
     // thing the player collides with stay the same shape.
     modelTilt: { pitch: 0, roll },

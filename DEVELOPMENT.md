@@ -2585,6 +2585,14 @@ quantity surf is built on. Measuring over the frame time instead of the simulate
 walking measure 1.17× too fast, which is the kind of error that only shows up as "it feels
 wrong".
 
+The correction is also deliberately **not** gated on a player tic having run in the same frame.
+Tics are on a 35 Hz clock and the collision world's sub-steps on a 60 Hz one, so waiting for both
+to land in one frame meant the movement was corrected far less often at a high frame rate: the
+same half second of the same ramp covered 85 units at 35 fps and 70 at 174. The test that covers
+this compares the distance travelled, not the reported speed — the reported speed is the velocity
+of the last sub-step that ran, so at a high frame rate it is up to two frames stale and reads low
+while accelerating.
+
 There is a third case, and it was the worst of the three. The controller only runs a substep
 once its 1/60 s accumulator fills, so at 174 frames a second **most frames simulate nothing**.
 A frame that simulated nothing has no speed to report, and saying "zero" there made the model
@@ -2605,6 +2613,16 @@ it, and the width defaults to 128 rather than a surf map's 256 because a 50° ra
 reaches outside the room is one the player stands on the ceiling next to, which is exactly the
 bug the first version had.
 
+**Jumping is the character controller's snap-to-ground, and Half-Life's jump is small enough to
+lose to it.** Snap-to-ground holds a walking player to a step-down instead of letting them bounce
+off it, by pulling them back down over up to `GROUND_SNAP` (4 units). Half-Life's jump is
+`sv_jumpvelocity` 160, which rises 2.7 units in the first 1/60 s sub-step — less than the snap —
+so the snap cancelled it, and the ground test then still reported the player as standing, which
+reset gravity. Jumping did nothing at all under the Source model while Doom's 4.7-unit first step
+worked, which is exactly the report "jump no longer works" after the surf scriptlet was installed.
+Two changes fix it: the snap is disabled for any sub-step where the player is rising, and a player
+with positive vertical speed is never considered grounded whatever the contact rays say.
+
 **A tilted box drawn is a collider seen.** Objects with a collider and no artwork were not drawn
 at all during play — the sprite path marks them `unrenderable` and nothing else took them — so the
 ramps in the built map were invisible in the preview and the map read as an empty room the player
@@ -2612,12 +2630,35 @@ could not leave. `render.js` now draws a collider box for any such object, tinte
 light and tilted with the same `modelOrientation` the collider uses, so what is on screen is what
 is being collided with.
 
-**A platform that feeds a ramp has one height, and it is not its centre.** The first built map
+**A platform that feeds a ramp has one height, and it is not its centre.** An earlier built map
 put the platform's centre at the ramp's centre height, which left a 10-unit lip at the join: a
 vertical step the controller cannot climb and the player walks into instead of down. The height
 that lines up is the ramp's **top face at its high edge** — `centre + (thickness/2)·cos θ +
-(width/2)·sin θ` — which `surfRampGeometry` now returns as `topHeight`, and `buildSurfTestMap`
-uses for the platform, the player start and its own collider.
+(width/2)·sin θ` — which `surfRampGeometry` returns as `topHeight`.
+
+**A ramp is not something you can walk onto, so the test map starts on one.** Measuring the
+platform layout in the running engine showed the player leaving the platform at the run speed and
+flying over the whole ramp: at 320 units a second the surface drops at 320·tan50 = 381 units a
+second, and nothing pulls them after it. That is Source behaving correctly, so the *map* had to
+change. Three layouts were tried and measured, and only the third works:
+
+| layout | what happened |
+| --- | --- |
+| platform + ramp either side | the player runs off the platform and flies over both ramps |
+| V: two ramps meeting at their low edges | the groove at the bottom is narrower than the capsule, so the player jams in it part-way down |
+| ridge: two ramps meeting at their high edges | a crack between two tilted boxes; a player strafing sideways drops through it to the floor |
+| **parallel ramps with floor between** | slides down either, lands, runs on — **zero penetration on every input combination** |
+
+`surfRampSurface` turns a ramp back into its top face — `lowEdgeX`, `highEdgeX`, `heightAt(x)` —
+so the map, and any test that drops something onto a ramp, reads the same numbers instead of
+repeating the trigonometry. Two placement bugs came from duplicating it: a ramp's run and its
+width are different numbers once it is tilted, and the top face does not pass through the origin
+at the low edge but `thickness·cos θ` above the floor. Both put the spawn *inside* or *beside* the
+ramp, which is what "I fell through the ramp" looks like.
+
+`addSurfRamp` takes a `lift`, which raises a whole ramp and so puts its low edge in the air — the
+same thing the Momentum mapping guide does by cutting a ramp's lower edge above its bottom corner.
+That is what a ramp to *launch* off needs; nothing in the built map uses it yet.
 
 The measured result of a slide down a 50° ramp with `sv_airaccelerate` at 100: **63 → 139
 units a second over 16 tics**, never touching ground. On a 30° ramp the player is grounded and

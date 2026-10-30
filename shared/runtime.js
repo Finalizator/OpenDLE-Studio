@@ -602,14 +602,21 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (canMove(player.x + dx, player.y, currentFloor)) player.x += dx;
     if (canMove(player.x, player.y + dy, currentFloor)) player.y += dy;
   }
-  if (sourceModel && tics) {
+  if (sourceModel) {
     // Adopt the speed the player really travelled at: pressed against a wall that is zero,
     // and sliding down a surf ramp it is the speed along the ramp, which is the whole point.
     // The physics world measures it, over the substeps it really ran. When it ran none — most
     // frames at a high frame rate — it has nothing to say, and the model keeps its own velocity
     // rather than being told it is standing still.
+    //
+    // This is deliberately not gated on a player tic having run: the world's sub-steps and the
+    // tics are on different clocks, and waiting for both to land in the same frame meant the
+    // movement was corrected far less often at a high frame rate — which made the player
+    // accelerate measurably slower the faster the game was drawn.
+    // Without a collision world the movement itself only happens on a tic, so there is nothing
+    // to measure on a frame that ran none.
     const measured = state.physics ? state.physics.playerVelocity
-      : measuredVelocity({ x: previousPosition.x, y: previousPosition.y }, { x: player.x, y: player.y }, (tics / TIC_RATE));
+      : (tics ? measuredVelocity({ x: previousPosition.x, y: previousPosition.y }, { x: player.x, y: player.y }, (tics / TIC_RATE)) : null);
     if (measured) {
       state.motion = clampHorizontal({ x: measured.x, y: measured.y, z: 0 }, sourceModel);
       state.momentum = { x: state.motion.x / TIC_RATE, y: state.motion.y / TIC_RATE, z: 0 };

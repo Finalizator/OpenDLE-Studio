@@ -9,7 +9,7 @@ import {
 import { createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createPhysics } from '../shared/physics.js';
-import { installSourceMovementScriptlet, surfRampGeometry, SOURCE_MOVEMENT_SHEET } from '../shared/engine-script.js';
+import { installSourceMovementScriptlet, surfRampGeometry, surfRampSurface, SOURCE_MOVEMENT_SHEET } from '../shared/engine-script.js';
 import { ENGINE_SCRIPTLETS, buildSurfTestMap, installScriptlet, removeScriptlet } from '../shared/scriptlets.js';
 
 await R.init();
@@ -124,34 +124,34 @@ test('the scriptlet can build a new, empty surf map with two ramps', () => {
   assert.equal(project.title, 'Surf test map');
   assert.equal(project.map.sectors.length, 1);
   assert.equal(project.map.entities.filter(entity => entity.type === 'player').length, 1);
-  // Raised above the default 128 units, because a 50 degree ramp of the default width rises 98
-  // and would otherwise poke through the ceiling.
-  assert.ok(project.map.sectors[0].ceilingHeight >= 196);
+  // Raised well above the default 128 units, because a 50 degree ramp of this size rises 196
+  // and the player is 56 tall on top of it.
+  assert.ok(project.map.sectors[0].ceilingHeight >= 252);
   const ramps = project.map.entities.filter(entity => project.sourceMovementRamps.includes(entity.id));
   assert.equal(ramps.length, 2);
   for (const ramp of ramps) {
     assert.ok(tiltedUpNormal(ramp.modelTilt).y < STANDABLE_NORMAL_Z, 'steep enough to surf');
     assert.ok(ramp.x > -384 && ramp.x < 384 && ramp.y > -256 && ramp.y < 256, 'inside the room');
   }
-  // A slope steeper than 45 degrees cannot be walked onto, only landed on, so the map starts
-  // the player on a platform whose top is level with the ramp's high edge. A platform at any
-  // other height leaves a lip, and the player stops dead against it.
-  const geometry = surfRampGeometry({ roll: -50 });
+  // A slope steeper than 45 degrees cannot be walked onto, only started on or landed on, so the
+  // player starts *on* one of the ramps, near the ridge where the two high edges meet. An
+  // earlier version started them beside a ramp instead of on it — the ramp's run and its width
+  // are different numbers once it is tilted — and they fell past it.
+  const surface = surfRampSurface(ramps.find(ramp => ramp.x > 0));
   const start = project.map.entities.find(entity => entity.type === 'player');
-  assert.ok(Math.abs(start.elevation - geometry.topHeight) < .01, `player stands at ${start.elevation}`);
-  const platform = project.map.entities.find(entity => entity.id === project.surfPlatform);
-  assert.ok(platform, 'the platform is a real object');
-  assert.equal(platform.physics.height, geometry.topHeight);
-  const rampHigh = ramps.find(ramp => ramp.x > 0);
-  assert.ok(Math.abs(rampHigh.x - geometry.run / 2 - platform.physics.width / 2) < .01,
-    'the ramp starts exactly at the platform edge');
+  const onRamp = start.x > Math.min(surface.lowEdgeX, surface.highEdgeX) &&
+    start.x < Math.max(surface.lowEdgeX, surface.highEdgeX);
+  assert.ok(onRamp, `player starts on the +x ramp at ${start.x}`);
+  const onSurface = surface.heightAt(start.x);
+  assert.ok(start.elevation > onSurface && start.elevation - onSurface < 12,
+    `player stands at ${start.elevation.toFixed(1)} on a surface at ${onSurface.toFixed(1)}`);
   // The movement rules come with it.
   const sheet = project.eventSheets.find(item => item.name === SOURCE_MOVEMENT_SHEET);
   assert.ok(sheet, 'the movement sheet is installed');
   assert.equal(project.events.filter(event => event.sheetId === sheet.id).length, 2);
 });
 
-test('running off the built map platform slides down the ramp at full speed', async t => {
+test('sliding from the built map ridge reaches full speed and lands on the floor', async t => {
   const project = buildSurfTestMap(createProject());
   const state = createRuntime(project, { screen: 'playing', gameMode: true });
   state.physics = createPhysics(project, state, R, triangulate);
@@ -166,8 +166,8 @@ test('running off the built map platform slides down the ramp at full speed', as
     lowest = Math.min(lowest, state.player.z);
     maxSpeed = Math.max(maxSpeed, Math.hypot(state.motion.x, state.motion.y));
   }
-  // The player crosses the platform at the Source run speed, leaves its edge onto the ramp and
-  // descends the whole height of it without ever being grounded.
+  // The player starts on the ramp, descends the whole height of it without ever being grounded,
+  // and arrives on the floor at speed — the slide a surf ramp is for.
   assert.ok(maxSpeed > 300, `reached ${maxSpeed.toFixed(0)} units a second`);
   assert.ok(airborne >= 10, `airborne for ${airborne} tics on the ramp`);
   assert.ok(startZ > 100 && lowest < 1, `descended from ${startZ.toFixed(0)} to ${lowest.toFixed(0)}`);
@@ -198,9 +198,14 @@ test('the run speed does not depend on the frame rate the game is drawn at', asy
   };
   const slow = run(35), fast = run(174);
   for (const [label, result] of [['35 fps', slow], ['174 fps', fast]]) {
-    assert.ok(result.fastest > 300, `reached ${result.fastest.toFixed(0)} units a second at ${label}`);
-    assert.ok(result.travelled > 80, `covered ${result.travelled.toFixed(0)} units in half a second at ${label}`);
+    assert.ok(result.fastest > 200, `reached ${result.fastest.toFixed(0)} units a second at ${label}`);
+    assert.ok(result.travelled > 60, `covered ${result.travelled.toFixed(0)} units in half a second at ${label}`);
   }
+  // And the two agree on where the player went, which is the ground truth. The reported speed
+  // is not compared: it is the velocity of the last substep that ran, so at a high frame rate it
+  // is up to two frames stale and reads low while accelerating.
+  assert.ok(Math.abs(slow.travelled - fast.travelled) < 8,
+    `travelled ${slow.travelled.toFixed(0)} against ${fast.travelled.toFixed(0)}`);
 });
 
 test('a frame without a physics substep reports no measured velocity', async t => {
@@ -219,9 +224,54 @@ test('a frame without a physics substep reports no measured velocity', async t =
   assert.ok(reported.some(velocity => velocity !== null), 'and a frame that ran one reports speed');
 });
 
+test('jumping under Half-Life movement leaves the ground, from the floor and from a solid block', async t => {
+  // Half-Life's jump is `sv_jumpvelocity` 160, which is 2.7 units of rise in one 1/60 s
+  // substep — less than the 4 units the character controller snaps to the ground over. The snap
+  // pulled the player straight back down and the ground test still reported them standing, so
+  // jumping did nothing at all under the Source model while Doom's faster jump worked.
+  for (const [label, prepare] of [
+    ['sector floor', () => {}],
+    ['solid block', project => {
+      // A 64 unit block under a 128 unit ceiling leaves the 56 unit capsule 8 units of headroom,
+      // which is a ceiling test rather than a jump test.
+      project.map.sectors[0].ceilingHeight = 256;
+      project.map.entities.push({ id: 'block', name: 'Block', type: 'decoration', x: 0, y: 0, angle: 0,
+        physics: { body: 'fixed', shape: 'box', width: 200, height: 64, depth: 200, radius: 8, mass: 1,
+          friction: .7, restitution: 0, sensor: false, lockRotation: true } });
+      // Over the block, not just above its height: the default start is off to one side.
+      Object.assign(project.map.entities.find(entity => entity.type === 'player'), { x: 0, elevation: 64 });
+    }],
+  ]) {
+    const project = createProject();
+    project.events = [];
+    prepare(project);
+    const state = createRuntime(project, { screen: 'playing', gameMode: true });
+    state.motionModel = 'source';
+    state.physics = createPhysics(project, state, R, triangulate);
+    t.after(() => state.physics.dispose());
+    // A few tics to settle onto whatever is under them.
+    for (let tic = 0; tic < 6; tic++) stepRuntime(project, state, 1 / 35, new Set());
+    const ground = state.player.z;
+    assert.equal(state.physics.grounded, true, `${label}: starts on the ground at ${ground.toFixed(1)}`);
+    stepRuntime(project, state, 1 / 35, new Set(['Space']), new Set(['Space']));
+    let peak = state.player.z;
+    for (let tic = 0; tic < 24; tic++) {
+      stepRuntime(project, state, 1 / 35, new Set());
+      peak = Math.max(peak, state.player.z);
+    }
+    // `sv_jumpvelocity² / 2g` at 160 and 600 is 21 units.
+    assert.ok(peak > ground + 12, `${label}: rose ${(peak - ground).toFixed(0)} units`);
+    assert.ok(Math.abs(state.player.z - ground) < 1, `${label}: came back down`);
+    assert.equal(state.physics.grounded, true, `${label}: landed`);
+  }
+});
+
 test('a surf ramp redirects a fall into speed along the ramp, and the player never touches ground', async t => {
   const project = createProject();
   project.events = [];
+  // A 50 degree ramp of this size is 216 units tall, so the default 128 unit ceiling would
+  // have it through the roof and the player teleported into the ceiling.
+  project.map.sectors[0].ceilingHeight = 384;
   const geometry = surfRampGeometry({ roll: 50 });
   project.map.entities.push({ id: 'ramp', name: 'Surf ramp', type: 'decoration', x: 40, y: 0, angle: 0,
     elevation: geometry.elevation, modelTilt: { pitch: 0, roll: 50 },
@@ -234,8 +284,9 @@ test('a surf ramp redirects a fall into speed along the ramp, and the player nev
   state.motionSettings = { ...state.motionSettings, airAccelerate: 100 };
   state.physics = createPhysics(project, state, R, triangulate);
   t.after(() => state.physics.dispose());
-  const surface = x => (x - (40 - geometry.run / 2)) * Math.tan(50 * Math.PI / 180);
-  state.physics.teleport('player', 45, 0, surface(45) + 4);
+  const surface = surfRampSurface(project.map.entities.find(entity => entity.id === 'ramp'));
+  const startZ = surface.heightAt(45) + 4;
+  state.physics.teleport('player', 45, 0, startZ);
   const speeds = [];
   for (let tic = 0; tic < 15; tic++) {
     stepRuntime(project, state, 1 / 35, new Set(['KeyW']));
@@ -245,12 +296,13 @@ test('a surf ramp redirects a fall into speed along the ramp, and the player nev
   // Speed builds rather than being absorbed: this is the mechanic surf is made of.
   assert.ok(speeds[0] < 40, `starts slow: ${speeds[0]}`);
   assert.ok(speeds.at(-1) > 100, `gains speed down the ramp: ${speeds.at(-1)}`);
-  assert.ok(state.player.z < surface(45) + 4, 'and the player actually descended');
+  assert.ok(state.player.z < startZ, 'and the player actually descended');
 });
 
 test('a standable slope is walked on with friction instead of surfed', async t => {
   const project = createProject();
   project.events = [];
+  project.map.sectors[0].ceilingHeight = 384;
   const geometry = surfRampGeometry({ roll: 30 });
   project.map.entities.push({ id: 'ramp', name: 'Gentle ramp', type: 'decoration', x: 40, y: 0, angle: 0,
     elevation: geometry.elevation, modelTilt: { pitch: 0, roll: 30 },
@@ -261,8 +313,8 @@ test('a standable slope is walked on with friction instead of surfed', async t =
   state.motionModel = 'source';
   state.physics = createPhysics(project, state, R, triangulate);
   t.after(() => state.physics.dispose());
-  const surface = x => (x - (40 - geometry.run / 2)) * Math.tan(30 * Math.PI / 180);
-  state.physics.teleport('player', 40, 0, surface(40) + 2);
+  const surface = surfRampSurface(project.map.entities.find(entity => entity.id === 'ramp'));
+  state.physics.teleport('player', 40, 0, surface.heightAt(40) + 2);
   let sawGround = false;
   for (let tic = 0; tic < 20; tic++) {
     stepRuntime(project, state, 1 / 35, new Set());

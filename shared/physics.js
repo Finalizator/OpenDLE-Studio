@@ -292,9 +292,11 @@ export function createPhysics(project, state, R, triangulate) {
   }
   createJoints();
   const spawn = state.entities.find(entity => entity.type === 'player'), playerId = spawn.id;
+  /** How far below the capsule a surface still counts as ground, in map units. */
+  const GROUND_SNAP = 4;
   const controller = world.createCharacterController(.005);
   controller.enableAutostep(24 / PHYSICS_SCALE, 12 / PHYSICS_SCALE, true);
-  controller.enableSnapToGround(4 / PHYSICS_SCALE);
+  controller.enableSnapToGround(GROUND_SNAP / PHYSICS_SCALE);
   controller.setApplyImpulsesToDynamicBodies(true);
   controller.setCharacterMass(80);
   controller.setMaxSlopeClimbAngle(Math.PI / 4);
@@ -424,7 +426,6 @@ export function createPhysics(project, state, R, triangulate) {
     }
     return origins;
   }
-  const GROUND_SNAP = 4;
   /** True while a surface is under the capsule, measured along the player's up axis. */
   function standingOnSurface() {
     const body = bodies.get(playerId);
@@ -567,6 +568,15 @@ export function createPhysics(project, state, R, triangulate) {
         verticalSpeed = grounded ? -.5
           : Math.max(-50, verticalSpeed - gravity / PHYSICS_SCALE * FIXED_STEP * (fell ? LEDGE_GRAVITY : 1));
         const fall = verticalSpeed * FIXED_STEP;
+        // Snap-to-ground keeps a walking player glued to a step-down instead of bouncing off
+        // it, but it also swallows a jump: it pulls the character back down over up to
+        // GROUND_SNAP units of the move, so a jump whose first substep rises less than that is
+        // cancelled the instant it starts. Half-Life's jump is 160 units/s, which is 2.7 units
+        // in a substep — under the snap distance — so jumping simply did nothing under the
+        // Source movement model. It is only ever what holds a player down, so a rising player
+        // does not get it.
+        if (verticalSpeed > 0) controller.disableSnapToGround();
+        else controller.enableSnapToGround(GROUND_SNAP / PHYSICS_SCALE);
         controller.computeColliderMovement(collider, {
           x: velocity.x / PHYSICS_SCALE * FIXED_STEP + axis.x * fall,
           y: velocity.y / PHYSICS_SCALE * FIXED_STEP + axis.y * fall,
@@ -593,6 +603,11 @@ export function createPhysics(project, state, R, triangulate) {
         // contact the rays cannot find, which left a player hanging in mid-air after a
         // gravity change, so an upright player has to satisfy both.
         grounded = axis.y > .999 ? controller.computedGrounded() && standingOnSurface() : standingOnSurface();
+        // A player on the way up is not on the ground, whatever the contact rays say. The
+        // ground test reaches GROUND_SNAP units below the capsule, which is more than a jump
+        // rises in its first substep (Half-Life's 160 units/s is 2.7), so without this the
+        // rise was read as still standing, gravity was reset, and the jump did nothing.
+        if (verticalSpeed > 0) grounded = false;
         const characterContacts = new Set();
         contactNormals.length = 0;
         for (let i = 0; i < controller.numComputedCollisions(); i++) {
