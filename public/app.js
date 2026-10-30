@@ -1212,6 +1212,39 @@ function entityOptions(excludePlayer = false, ownerId) {
   }
   return excludePlayer ? list.withoutPlayer : list.all;
 }
+/** The full owner list, cached so opening a second rule reuses one option template. */
+let ownerOptionCache = { entities: null, options: [] };
+function ownerOptionList() {
+  if (ownerOptionCache.entities !== project.map.entities) {
+    ownerOptionCache = { entities: project.map.entities, options: [['$scene', 'System / scene'], ...entityOptions()] };
+  }
+  return ownerOptionCache.options;
+}
+/**
+ * A rule's owner picker used to clone one option per object into every card. An imported
+ * campaign has thousands of objects and hundreds of rules, and every card starts
+ * collapsed, so that built millions of options nobody could see and froze the editor for
+ * minutes. Only the current owner is rendered up front; the full list is attached the
+ * first time the rule's settings are opened.
+ */
+function ownerPicker(details, ownerId, onchange) {
+  const current = ownerId && ownerId !== '$scene' ? project.map.entities.find(entity => entity.id === ownerId) : null;
+  const placeholder = ownerId && !current ? [[ownerId, ownerId]] : [];
+  const shown = ownerId ? [...placeholder, ...(current ? [[ownerId, `${current.name} (${current.type})`]] : [])] : [['$scene', 'System / scene']];
+  const element = select(shown, ownerId || '$scene', onchange, 'Event owner');
+  const fill = () => {
+    if (element.dataset.allOwners) return;
+    element.dataset.allOwners = 'true';
+    const chosen = element.value;
+    // Rebuilt rather than extended: the placeholder above would otherwise sit next to
+    // the same entry in the full list.
+    element.replaceChildren(optionTemplate(placeholder.length ? [...placeholder, ...ownerOptionList()] : ownerOptionList()).cloneNode(true));
+    element.value = chosen;
+  };
+  details.addEventListener('toggle', () => { if (details.open) fill(); });
+  element.addEventListener('focus', fill, { once: true });
+  return element;
+}
 /** Sheet options for the scope picker and the per-rule Sheet field. */
 let sheetOptionCache = { sheets: null, options: [] };
 function sheetOptions() {
@@ -1522,10 +1555,10 @@ function renderEvents() {
     field(meta, 'For each', select([['', 'None'], 'enemy', 'pickup', 'decoration'], event.forEachType || '', value => modify(item => {
       if (value) { item.forEachType = value; delete item.ownerId; } else delete item.forEachType;
     })));
-    field(meta, 'Owner', select([['$scene', 'System / scene'], ...entityOptions()], event.ownerId || '$scene', value => modify(item => {
+    field(meta, 'Owner', ownerPicker(meta, event.ownerId, value => modify(item => {
       if (value === '$scene') delete item.ownerId;
       else { item.ownerId = value; delete item.forEachType; }
-    }), 'Event owner'));
+    })));
     if (event.ownerId) meta.classList.add('event-owner-object');
     meta.append(
       checkbox('Enabled', event.enabled, value => modify(item => { item.enabled = value; })),

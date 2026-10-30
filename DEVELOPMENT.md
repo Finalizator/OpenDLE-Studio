@@ -2323,6 +2323,34 @@ playtest log names them once (`N object(s) have no artwork and are not drawn: ..
 because artwork that is *missing* is an import problem worth seeing. The editor still
 draws the placeholder, since the object has to stay selectable.
 
+### Static world surfaces are merged, not one mesh each
+
+A fragment of every wall quad and every floor/ceiling triangle used to be its own
+`Mesh`. An imported level therefore had 12,419 of them, and the frame cost was per
+*object*, not per pixel or per material: on a synthetic 4,096-sector grid the same
+25,000 triangles rendered at 85 ms/frame, and neither halving the resolution nor
+collapsing hundreds of materials into one changed that. Measured per object, the
+WebGPU backend (and its WebGL2 fallback) spends about 6.5 µs per drawable per frame.
+
+`shared/surface-batch.js` collects the same records the world builder already produced
+and merges them into pieces of 2,048 quads, one buffer set per material. The same grid
+now issues 12 buffers and draws in 0.2 ms; 3D load fell from 2.3 s to 0.44 s. Two
+things had to move with the merge:
+
+- **Sector light is a vertex attribute**, because one sector can no longer own a
+  material. `surfaceLight` is written per vertex and multiplied into the shaded colour
+  with a small floor so a dark sector still reads.
+- **Picking follows the triangle.** A merged mesh carries `userData.selectionRanges`,
+  and `selectionAtTriangle` binary-searches `hit.faceIndex` back to the wall or sector
+  that produced it, so clicking the world still selects the same thing as before. A
+  ceiling hidden by the `ceilingCut` uniform is skipped by the picker, since the cut
+  happens in the shader and the mesh stays in the ray set.
+
+Five tests in `test/surface-batch.test.js` pin the merge, the removal path (an emptied
+piece is reported so its GPU buffers are dropped), the piece cap, the triangle-to-
+selection mapping and the 32-bit index switch past 65,535 vertices. Visual parity was
+checked by rendering Doom II MAP01 before and after and comparing screenshots.
+
 ### Object-attached visual scripts
 
 The event editor combines a Construct-style conditions/actions table with
@@ -2743,12 +2771,31 @@ Two things made it feel frozen:
   300 sectors, 300 asset tiles) and say how many more there are; everything remains selectable on
   the map or reachable through the filter and the project search.
 
-**Still open: a whole imported campaign does not fit in a browser tab.** Lullaby's four levels make
-a 122 MB project file, and loading it in the editor crashes the page — the parsed project plus a
-copy is more than a tab can hold, whatever the lists do. The fix is to keep only the active level
-in memory and fetch a level from the server when it is switched to (and store the other levels
-server-side), which is a change to how projects are loaded and saved rather than to the editor's
-listing.
+### Large maps: measured limits
+
+The earlier note here was written from symptoms. Measuring a real imported level (Lullaby's MAP01
+shape: 55,365 walls, 13,220 sectors, 4,602 objects, 685 rules, 1,676 assets, a 64 MB project file)
+in the running engine changed the diagnosis:
+
+- **The renderer is fine.** In Play, that level draws at a 9.3 ms mean over 8,000 frames, with GPU
+  objects flat at 205 geometries and 243 textures. The heap sawtooths (up to ~850 MB, back to
+  ~280 MB when a major collection runs) but nothing grows, so the entity path does not leak.
+- **The editor now opens it in 2 s.** Fetch 1.27 s, validate 0.30 s, first render 0.21 s, framing
+  0.03 s. The 3D view builds in ~3 s and then runs at 30 ms/frame (8.3 ms update, 21.9 ms draw,
+  5,440 draw calls — the object sprites, one each; the world's own surfaces are batched).
+- **The freeze was not memory.** Every rule card cloned one `<option>` per object into its Owner
+  picker, and every rule starts collapsed: 685 rules × 4,603 objects = 3.15 million option nodes
+  that were never visible. `renderEvents` never returned, so the whole editor stopped responding
+  for minutes and the renderer was eventually killed. The picker now renders only the current
+  owner and attaches the full list when the rule's settings are first opened (the same lazy rule
+  the dialogs already followed), which is 0.18–0.31 s for all 685 cards.
+
+So a 64 MB single level is comfortably inside a browser tab — Chromium's heap limit in this webview
+is 4,192 MB, and the parsed project is 130 MB. What does not scale is *several* such levels resident
+at once: four levels of that size is ~500 MB of JSON plus the copies the editor keeps for undo and
+validation, and the clone-per-level-switch behaviour already had to be removed (above). The fix
+stands as written: keep the active level in the client and the others on the server, so switching
+fetches a level instead of holding every one.
 
 ### Grouping objects
 
@@ -3363,6 +3410,7 @@ Use an existing non-player entity's ID as `ownerId`. Omit it for a scene rule.
 - `public/event-sheet.js`: compact rows and searchable command/parameter dialogs.
 - `public/pointer-lock.js`: user-gesture pointer-lock requests and explicit errors.
 - `public/scene-editor.js`: fly camera, picking, edit handles and placement.
+- `shared/surface-batch.js`: merges static world quads into shared buffers and maps a picked triangle back to its wall or sector.
 - `shared/wad.js`, `shared/doom-assets.js`: bounded WAD geometry/image readers.
 - `shared/udmf.js`: bounded UDMF parser and native geometry record normalization.
 - `server/packages.js`: bounded PK3/directory reading, resource inspection and base-IWAD layering.
