@@ -133,10 +133,90 @@ test('the scriptlet can build a new, empty surf map with two ramps', () => {
     assert.ok(tiltedUpNormal(ramp.modelTilt).y < STANDABLE_NORMAL_Z, 'steep enough to surf');
     assert.ok(ramp.x > -384 && ramp.x < 384 && ramp.y > -256 && ramp.y < 256, 'inside the room');
   }
+  // A slope steeper than 45 degrees cannot be walked onto, only landed on, so the map starts
+  // the player on a platform whose top is level with the ramp's high edge. A platform at any
+  // other height leaves a lip, and the player stops dead against it.
+  const geometry = surfRampGeometry({ roll: -50 });
+  const start = project.map.entities.find(entity => entity.type === 'player');
+  assert.ok(Math.abs(start.elevation - geometry.topHeight) < .01, `player stands at ${start.elevation}`);
+  const platform = project.map.entities.find(entity => entity.id === project.surfPlatform);
+  assert.ok(platform, 'the platform is a real object');
+  assert.equal(platform.physics.height, geometry.topHeight);
+  const rampHigh = ramps.find(ramp => ramp.x > 0);
+  assert.ok(Math.abs(rampHigh.x - geometry.run / 2 - platform.physics.width / 2) < .01,
+    'the ramp starts exactly at the platform edge');
   // The movement rules come with it.
   const sheet = project.eventSheets.find(item => item.name === SOURCE_MOVEMENT_SHEET);
   assert.ok(sheet, 'the movement sheet is installed');
   assert.equal(project.events.filter(event => event.sheetId === sheet.id).length, 2);
+});
+
+test('running off the built map platform slides down the ramp at full speed', async t => {
+  const project = buildSurfTestMap(createProject());
+  const state = createRuntime(project, { screen: 'playing', gameMode: true });
+  state.physics = createPhysics(project, state, R, triangulate);
+  t.after(() => state.physics.dispose());
+  stepRuntime(project, state, 1 / 35, new Set());
+  state.motionSettings = { ...state.motionSettings, airAccelerate: 100 };
+  const startZ = state.player.z;
+  let airborne = 0, lowest = startZ, maxSpeed = 0;
+  for (let tic = 0; tic < 40; tic++) {
+    stepRuntime(project, state, 1 / 35, new Set(['KeyW']));
+    if (!state.physics.grounded) airborne++;
+    lowest = Math.min(lowest, state.player.z);
+    maxSpeed = Math.max(maxSpeed, Math.hypot(state.motion.x, state.motion.y));
+  }
+  // The player crosses the platform at the Source run speed, leaves its edge onto the ramp and
+  // descends the whole height of it without ever being grounded.
+  assert.ok(maxSpeed > 300, `reached ${maxSpeed.toFixed(0)} units a second`);
+  assert.ok(airborne >= 10, `airborne for ${airborne} tics on the ramp`);
+  assert.ok(startZ > 100 && lowest < 1, `descended from ${startZ.toFixed(0)} to ${lowest.toFixed(0)}`);
+});
+
+test('the run speed does not depend on the frame rate the game is drawn at', async t => {
+  // A frame that ran no physics substep has nothing to measure, so the movement model must keep
+  // its own velocity instead of being told it is standing still. Reporting 0 there made the
+  // player crawl: at 174 frames a second most frames run no substep, and each one wiped the
+  // speed the previous tic had built.
+  const run = framesPerSecond => {
+    const project = buildSurfTestMap(createProject());
+    const state = createRuntime(project, { screen: 'playing', gameMode: true });
+    state.physics = createPhysics(project, state, R, triangulate);
+    const clear = () => state.physics.dispose();
+    const frame = 1 / framesPerSecond;
+    stepRuntime(project, state, frame, new Set());
+    let fastest = 0;
+    const startX = state.player.x;
+    // Half a second, which is long enough to reach top speed and still be on the platform.
+    for (let drawn = 0; drawn < Math.round(framesPerSecond / 2); drawn++) {
+      stepRuntime(project, state, frame, new Set(['KeyW']));
+      fastest = Math.max(fastest, Math.hypot(state.motion.x, state.motion.y));
+    }
+    const travelled = state.player.x - startX;
+    clear();
+    return { fastest, travelled };
+  };
+  const slow = run(35), fast = run(174);
+  for (const [label, result] of [['35 fps', slow], ['174 fps', fast]]) {
+    assert.ok(result.fastest > 300, `reached ${result.fastest.toFixed(0)} units a second at ${label}`);
+    assert.ok(result.travelled > 80, `covered ${result.travelled.toFixed(0)} units in half a second at ${label}`);
+  }
+});
+
+test('a frame without a physics substep reports no measured velocity', async t => {
+  const project = buildSurfTestMap(createProject());
+  const state = createRuntime(project, { screen: 'playing', gameMode: true });
+  state.physics = createPhysics(project, state, R, triangulate);
+  t.after(() => state.physics.dispose());
+  // The controller only runs a substep once its 1/60 s accumulator fills, so at this frame
+  // length the first frames move nothing and must say so rather than claim speed zero.
+  const reported = [];
+  for (let frame = 0; frame < 6; frame++) {
+    state.physics.step(1 / 174, .22, 1, { forward: 0, strafe: 0 }, .06, false);
+    reported.push(state.physics.playerVelocity);
+  }
+  assert.ok(reported.includes(null), 'a frame that ran no substep reports null');
+  assert.ok(reported.some(velocity => velocity !== null), 'and a frame that ran one reports speed');
 });
 
 test('a surf ramp redirects a fall into speed along the ramp, and the player never touches ground', async t => {

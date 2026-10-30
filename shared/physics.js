@@ -206,8 +206,8 @@ export function createPhysics(project, state, R, triangulate) {
   let blocked = { x: 0, z: 0 };
   /** Normals of the surfaces the player ran into during the last `step`, in map space. */
   const contactNormals = [];
-  /** The speed the last `step` actually moved the player at, in map units a second. */
-  let achievedVelocity = { x: 0, y: 0, z: 0 };
+  /** The speed the last `step` moved the player at, or null when it ran no substep. */
+  let achievedVelocity = null;
   // The player's own up axis. Rapier capsules always grow along +Y, so walking on
   // a wall means rotating the character and moving along its plane, not the world's.
   let upMap = [...WORLD_UP];
@@ -488,7 +488,7 @@ export function createPhysics(project, state, R, triangulate) {
      * This is the honest reading of what the collision did: pressed against a wall it is zero,
      * and sliding down a surf ramp it is the speed along the ramp.
      */
-    get playerVelocity() { return { ...achievedVelocity }; },
+    get playerVelocity() { return achievedVelocity ? { ...achievedVelocity } : null; },
     get up() { return [...upMap]; },
     orientPlayer, probeSurfaces,
     saveState() {
@@ -622,19 +622,21 @@ export function createPhysics(project, state, R, triangulate) {
         accumulator -= FIXED_STEP;
       }
       sync();
+      achievedVelocity = null;
       if (startBody) {
         const now = bodies.get(playerId).translation();
         // The time actually simulated, not the frame time: the accumulator carries over, so a
         // frame can run two substeps of the fixed step while it only asked for 1/35 of a
         // second. Dividing by the frame time instead measured 1.17 times the real speed.
         const seconds = Math.max(0, startSubsteps + dt - accumulator);
-        achievedVelocity = seconds > 1e-9
-          ? {
-            x: (now.x - startBody.x) * PHYSICS_SCALE / seconds,
-            y: (now.z - startBody.z) * PHYSICS_SCALE / seconds,
-            z: (now.y - startBody.y) * PHYSICS_SCALE / seconds,
-          }
-          : { x: 0, y: 0, z: 0 };
+        // `null` when no substep ran this frame, which is most frames at a high frame rate.
+        // Reporting 0 instead made a movement model that adopts this velocity wipe its own
+        // speed on every such frame, and the player crawled at a fraction of the run speed.
+        if (seconds > 1e-9) achievedVelocity = {
+          x: (now.x - startBody.x) * PHYSICS_SCALE / seconds,
+          y: (now.z - startBody.z) * PHYSICS_SCALE / seconds,
+          z: (now.y - startBody.y) * PHYSICS_SCALE / seconds,
+        };
       }
     },
     teleport(id, x, y, z) {

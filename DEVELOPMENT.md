@@ -1687,7 +1687,8 @@ as fired. On Doom II MAP02 that is 86 -> 64 collections and a 159 -> 121 MiB hea
 steps, and 11% less simulation time.
 
 Opt-in counters (`canvas.dataset.perfCounters = 'on'`) expose `frameMs`,
-`frameMaxMs`, `frameStalls`, `worldRebuildMs` and `worldRebuilds`; `preview.perf()`
+`frameMaxMs`, `frameStalls`, `worldRebuildMs`, `worldRebuilds`, `playerPosition` and
+`playerSpeed`; `preview.perf()`
 returns the same numbers plus `slowFrame`, the breakdown of the worst frame:
 `update` and `draw` milliseconds, the last world rebuild, the geometry rebuild
 count, the pipeline/texture/geometry totals and the JS heap size (Chromium), so a
@@ -1696,6 +1697,11 @@ carries that breakdown, so a report says which phase was slow instead of only ho
 long it took. The render buffer also ignores changes of eight pixels or less, so a
 scrollbar appearing or a fractional layout cannot reallocate the drawing buffer
 every frame.
+
+`playerPosition` and `playerSpeed` exist so a movement change can be *measured* in the running
+preview instead of judged from a recording: hold a key from outside the page and read where the
+player went. The speed is the achieved one, read off the momentum — under Half-Life movement
+`state.motion` is the speed the model asks for, and it keeps asking while pressed into a wall.
 
 Remaining known hotspots, in order: HUD DOM updates for very large layouts,
 `syncWorld()` rebuilding a moving-sector trimesh on each world revision, sector
@@ -2579,6 +2585,17 @@ quantity surf is built on. Measuring over the frame time instead of the simulate
 walking measure 1.17× too fast, which is the kind of error that only shows up as "it feels
 wrong".
 
+There is a third case, and it was the worst of the three. The controller only runs a substep
+once its 1/60 s accumulator fills, so at 174 frames a second **most frames simulate nothing**.
+A frame that simulated nothing has no speed to report, and saying "zero" there made the model
+adopt zero: every quiet frame wiped the speed the previous tic had built, and the player crawled
+at a fraction of the run speed no matter what was held. `physics.playerVelocity` is therefore
+**`null`** on such a frame and the model keeps its own velocity. The bug is invisible at a fixed
+35 fps and obvious at a real frame rate, so the test that covers it
+(`the run speed does not depend on the frame rate the game is drawn at`) drives the same run at
+35 and at 174 fps and requires both to reach the 320 unit cap.
+
+
 **Ramps.** A surf ramp is a box rotated about a horizontal axis, which needed one engine
 change: a collider now follows `modelTilt`, so the thing you collide with and the thing you
 see are the same tilted box (`shared/source-motion.js:tiltQuaternion`). `surfRampGeometry`
@@ -2587,6 +2604,20 @@ it, and the width defaults to 128 rather than a surf map's 256 because a 50° ra
 `width × sin(50°)` and 192 units of width pokes through a 128-unit ceiling — a ramp that
 reaches outside the room is one the player stands on the ceiling next to, which is exactly the
 bug the first version had.
+
+**A tilted box drawn is a collider seen.** Objects with a collider and no artwork were not drawn
+at all during play — the sprite path marks them `unrenderable` and nothing else took them — so the
+ramps in the built map were invisible in the preview and the map read as an empty room the player
+could not leave. `render.js` now draws a collider box for any such object, tinted by its sector's
+light and tilted with the same `modelOrientation` the collider uses, so what is on screen is what
+is being collided with.
+
+**A platform that feeds a ramp has one height, and it is not its centre.** The first built map
+put the platform's centre at the ramp's centre height, which left a 10-unit lip at the join: a
+vertical step the controller cannot climb and the player walks into instead of down. The height
+that lines up is the ramp's **top face at its high edge** — `centre + (thickness/2)·cos θ +
+(width/2)·sin θ` — which `surfRampGeometry` now returns as `topHeight`, and `buildSurfTestMap`
+uses for the platform, the player start and its own collider.
 
 The measured result of a slide down a 50° ramp with `sv_airaccelerate` at 100: **63 → 139
 units a second over 16 tics**, never touching ground. On a 30° ramp the player is grounded and

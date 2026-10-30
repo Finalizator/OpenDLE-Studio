@@ -73,6 +73,25 @@ export function removeSourceMovement(project) {
 }
 
 /**
+ * A flat, solid block to stand on: the high end of a surf map.
+ *
+ * It is an ordinary scene object with a fixed box collider and no tilt, so it is drawn and
+ * collided with as the same block, and the player start's `elevation` puts them on top of it.
+ */
+export function addPlatform(project, { x = 0, y = 0, width = 200, depth = 196, height = 96 } = {}) {
+  const used = new Set([...(project.map.entities || []).map(entity => entity.id)]);
+  let id = 'surf_platform';
+  while (used.has(id)) id = `${id}_x`;
+  const platform = {
+    id, name: 'Surf platform', type: 'decoration', x, y, angle: 0,
+    physics: { body: 'fixed', shape: 'box', width, height, depth, radius: 8, mass: 1,
+      friction: .7, restitution: 0, sensor: false, lockRotation: true },
+  };
+  project.map.entities = [...(project.map.entities || []), platform];
+  return platform.id;
+}
+
+/**
  * A new, empty project that is a surf map: one room, a raised ceiling, a player start and two
  * ramps facing each other.
  *
@@ -97,14 +116,22 @@ export function buildSurfTestMap(project) {
   room.ceilingHeight = 256;
   room.light = 192;
   const start = project.map.entities.find(entity => entity.type === 'player');
-  Object.assign(start, { x: -260, y: 0, angle: 0 });
+  // A surf map is entered from height: a >45 degree slope cannot be walked onto, only landed
+  // on, so the player starts on a platform with a ramp descending from each end. Walk forward
+  // or back, step off the edge, and the ramp carries you down building speed.
   const geometry = surfRampGeometry();
-  const created = [];
-  for (const [index, side] of [1, -1].entries()) {
-    created.push(addSurfRamp(project, {
-      x: start.x + 260 + side * (geometry.run / 2 + 40), y: start.y, angle: 0, roll: side * 50 }));
-  }
+  const platform = { half: 100, height: geometry.topHeight };
+  Object.assign(start, { x: 0, y: 0, angle: 0, elevation: platform.height });
+  const platformId = addPlatform(project, {
+    x: 0, y: 0, width: platform.half * 2, depth: 196, height: platform.height });
+  const created = [
+    // Descends from the platform's right edge towards +x.
+    addSurfRamp(project, { x: platform.half + geometry.run / 2, y: 0, angle: 0, roll: -50 }),
+    // And one from its left edge towards -x.
+    addSurfRamp(project, { x: -(platform.half + geometry.run / 2), y: 0, angle: 0, roll: 50 }),
+  ];
   project.sourceMovementRamps = created.map(ramp => ramp.id);
+  project.surfPlatform = platformId;
   installSourceMovementScriptlet(project, { ramps: 0 });
   project.title = 'Surf test map';
   return project;

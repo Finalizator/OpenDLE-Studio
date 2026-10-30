@@ -579,6 +579,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     // Doom advances the bob timer every player tic, whether the player moves or not.
     state.bobTimer = (state.bobTimer || 0) + tics;
     state.bob = bobFor(state.momentum);
+    // How fast the player is actually travelling, which is what the bob and a playtest care
+    // about. Not `state.motion`: under Half-Life movement that is the speed the model *wants*,
+    // and it keeps asking for one while pressed into a wall. The momentum carries the speed the
+    // world last confirmed, so it reads zero there and does not flicker between tics.
+    const travelled = momentumSpeed(state.momentum);
+    state.speed = Math.hypot(travelled.x, travelled.y);
   }
   const velocity = sourceModel ? { ...state.motion } : momentumSpeed(state.momentum);
   const dx = velocity.x * dt, dy = velocity.y * dt, dz = velocity.z * dt;
@@ -599,11 +605,15 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   if (sourceModel && tics) {
     // Adopt the speed the player really travelled at: pressed against a wall that is zero,
     // and sliding down a surf ramp it is the speed along the ramp, which is the whole point.
-    // The physics world measures it, over the substeps it really ran.
-    const travelled = state.physics?.playerVelocity ?? measuredVelocity({ x: previousPosition.x, y: previousPosition.y },
-      { x: player.x, y: player.y }, (tics / TIC_RATE));
-    state.motion = clampHorizontal({ x: travelled.x, y: travelled.y, z: 0 }, sourceModel);
-    state.momentum = { x: state.motion.x / TIC_RATE, y: state.motion.y / TIC_RATE, z: 0 };
+    // The physics world measures it, over the substeps it really ran. When it ran none — most
+    // frames at a high frame rate — it has nothing to say, and the model keeps its own velocity
+    // rather than being told it is standing still.
+    const measured = state.physics ? state.physics.playerVelocity
+      : measuredVelocity({ x: previousPosition.x, y: previousPosition.y }, { x: player.x, y: player.y }, (tics / TIC_RATE));
+    if (measured) {
+      state.motion = clampHorizontal({ x: measured.x, y: measured.y, z: 0 }, sourceModel);
+      state.momentum = { x: state.motion.x / TIC_RATE, y: state.motion.y / TIC_RATE, z: 0 };
+    }
   }
   // Doom drops the momentum of an axis the player could not move along, so pushing at a
   // wall does not bank speed that is released when it opens. The physics world reports which

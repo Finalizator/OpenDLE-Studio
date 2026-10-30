@@ -239,7 +239,13 @@ export function surfRampGeometry({ width = 128, depth = 192, thickness = 16, ang
   const radians = Math.abs(angle) * Math.PI / 180;
   const centre = width / 2 * Math.sin(radians) + thickness / 2 * Math.cos(radians);
   return { width, depth, thickness, roll, elevation: centre - thickness / 2,
-    rise: width * Math.sin(radians), run: width * Math.cos(radians) };
+    rise: width * Math.sin(radians), run: width * Math.cos(radians),
+    // The height of the top face's *high* edge, which is where a platform that feeds the ramp
+    // has to be: the box's lowest corner is what touches the floor, so the walkable surface at
+    // the top end is a thickness above it. A platform built to the wrong height leaves a lip a
+    // player cannot step over, which is exactly how the first version of the test map stopped
+    // the player at the join.
+    topHeight: centre + thickness / 2 * Math.cos(radians) + width / 2 * Math.sin(radians) };
 }
 
 /** Whether a point is inside a sector's outline, which decides where a ramp will fit. */

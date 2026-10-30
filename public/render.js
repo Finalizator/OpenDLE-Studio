@@ -609,7 +609,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       delete canvas.dataset.skyError;
     }
     buildSky(project.environment);
-    const sprites = new Map(), spriteList = [];
+    const sprites = new Map(), spriteList = [], colliderBoxList = [];
     let spriteTemplate = null;
     // Sprites and models are created on demand so runtime spawns appear without a
     // rebuild; removed entities are hidden instead of disposed (their objects can
@@ -638,6 +638,34 @@ export async function createPreview(canvas, project, state, { editor = false } =
       trackScreen(sprite, material);
       scene.add(sprite); sprites.set(entity.id, sprite);
       spriteList.push({ id: entity.id, sprite, frame: undefined, flip: false, scale: 0, red: 0, green: 0, blue: 0 });
+    }
+    /**
+     * The box a solid object with no artwork should be drawn as, or null.
+     *
+     * The same three numbers the collider uses, so what is drawn is the thing that blocks.
+     */
+    function solidBoxFor(entity) {
+      const config = entity.physics;
+      if (!config || config.body === 'none' || config.sensor) return null;
+      if (config.shape === 'box') return { width: config.width, height: config.height, depth: config.depth };
+      if (config.shape === 'capsule' || config.shape === 'cylinder' || config.shape === 'cone' || config.shape === 'ball') {
+        const diameter = config.radius * 2;
+        return { width: diameter, height: config.height || diameter, depth: diameter };
+      }
+      return null;
+    }
+    const colliderBoxes = new Map();
+    function addColliderBox(entity) {
+      if (colliderBoxes.has(entity.id)) return;
+      const box = solidBoxFor(entity);
+      const geometry = new THREE.BoxGeometry(box.width, box.height, box.depth);
+      const material = withEffect(new THREE.MeshBasicNodeMaterial({ color: entityColors[entity.type] || '#a6a4bc' }));
+      geometries.add(geometry); materials.add(material);
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.userData.selection = { kind: 'entity', id: entity.id };
+      scene.add(mesh);
+      colliderBoxes.set(entity.id, mesh);
+      colliderBoxList.push({ id: entity.id, mesh });
     }
     function addModel(entity) {
       const loaded = modelAssets.get(entity.modelAsset);
@@ -693,6 +721,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
     const withoutArtwork = [];
     function addEntity(entity) {
       if (entity.panel) { addPanel(entity); return; }
+      // An object that only has a collider is a solid shape with no artwork: a surf ramp, a
+      // blocking volume, a wall of a test map. Drawing nothing left it invisible in play — a
+      // ramp you cannot see is a ramp you walk into and call an invisible wall — so its
+      // collider is drawn, tilted exactly as the collider is.
+      if (!entity.modelAsset && !entity.spriteAsset && solidBoxFor(entity)) { addColliderBox(entity); return; }
       if (!entity.modelAsset) { addSprite(entity); return; }
       if (modelAssets.has(entity.modelAsset)) { addModel(entity); return; }
       // In the editor an unloaded model means the project gained a model after the
@@ -728,6 +761,13 @@ export async function createPreview(canvas, project, state, { editor = false } =
         mixers.delete(model.mixer);
         const index = modelList.indexOf(model);
         if (index >= 0) modelList.splice(index, 1);
+      }
+      const box = colliderBoxes.get(id);
+      if (box) {
+        box.removeFromParent();
+        colliderBoxes.delete(id);
+        const index = colliderBoxList.findIndex(entry => entry.id === id);
+        if (index >= 0) colliderBoxList.splice(index, 1);
       }
       forgetPanel(id);
       unrenderable.delete(id);
@@ -965,6 +1005,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
         writeDataset('frameStalls', frameStats.stalls);
         writeDataset('worldRebuildMs', lastRebuildMs.toFixed(2));
         writeDataset('worldRebuilds', rebuilds);
+        // Where the player is and how fast the movement model says they move, so a playtest can
+        // be measured from outside the page instead of guessed at from a recording.
+        writeDataset('playerPosition', `${state.player.x.toFixed(1)},${state.player.y.toFixed(1)},${state.player.z.toFixed(1)}`);
+        writeDataset('playerSpeed', (state.speed ?? 0).toFixed(1));
       }
     }
     // The drawing buffer follows the Engine tweak instead of a fixed 800x450 frame,
@@ -1216,6 +1260,21 @@ export async function createPreview(canvas, project, state, { editor = false } =
         entry.mesh.position.set(entity.x, anchor + entity.panel.height / 2, entity.y);
         if (entity.rotation) entry.mesh.quaternion.fromArray(modelOrientation(entity));
         else entry.mesh.rotation.set(0, -entity.angle * Math.PI / 180, 0);
+      }
+      for (let index = 0; index < colliderBoxList.length; index++) {
+        const entry = colliderBoxList[index], entity = entityIndex.get(entry.id);
+        entry.mesh.visible = Boolean(entity);
+        if (!entity) continue;
+        const box = solidBoxFor(entity);
+        const floor = sectorIndex.at(entity.x, entity.y)?.floorHeight || 0;
+        const bottom = entity.z ?? floor + (entity.elevation || 0);
+        entry.mesh.position.set(entity.x, bottom + box.height / 2, entity.y);
+        // The collider's own orientation, tilt included, so the slope drawn is the slope
+        // walked on.
+        const [qx, qy, qz, qw] = modelOrientation(entity);
+        entry.mesh.quaternion.set(qx, qy, qz, qw);
+        const light = Math.max(.03, (sectorIndex.at(entity.x, entity.y)?.light ?? 255) / 255);
+        entry.mesh.material.color.setRGB(light, light, light).multiply(new THREE.Color(entityColors[entity.type] || '#a6a4bc'));
       }
       for (let index = 0; index < spriteList.length; index++) {
         const record = spriteList[index], sprite = record.sprite;

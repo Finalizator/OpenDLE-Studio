@@ -16,7 +16,10 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // Diagnostics describe the session, not the game; they are rebuilt on load. Leaving
   // them in the payload made restoring any save written after a decal or a grounded
   // actor fail with "unknown runtime field".
-  'groundCorrections', 'entityLookup']);
+  'groundCorrections', 'entityLookup',
+  // The speed the player is travelling at is read off the momentum every tic, so it is derived
+  // rather than part of the game state.
+  'speed']);
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.
