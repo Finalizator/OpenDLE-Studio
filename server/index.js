@@ -278,7 +278,10 @@ export function createApp({
   });
   app.all('/mcp', (req, res) => res.status(405).set('Allow', 'POST').json({ error: 'Use stateless Streamable HTTP POST' }));
   app.use('/api', (req, res) => res.status(404).json({ error: `Unknown API endpoint: ${req.method} ${req.originalUrl}. Check that the editor and running OpenDLE backend are up to date.` }));
-  app.use('/shared', express.static(resolve(root, 'shared')));
+  // App code must revalidate on every load: a browser holding an old module makes the
+  // editor show stale geometry with no visible sign that it is out of date.
+  const revalidate = (res) => res.set('Cache-Control', 'no-cache');
+  app.use('/shared', express.static(resolve(root, 'shared'), { setHeaders: revalidate }));
   app.use('/vendor/three', express.static(resolve(root, 'node_modules/three/build')));
   app.get('/vendor/rapier/rapier.mjs', (req, res) => res.sendFile(resolve(root, 'node_modules/@dimforge/rapier3d-compat/rapier.mjs')));
   for (const module of ['loaders/GLTFLoader.js', 'utils/BufferGeometryUtils.js', 'utils/SkeletonUtils.js', 'environments/RoomEnvironment.js']) {
@@ -286,7 +289,7 @@ export function createApp({
       readFileSync(resolve(root, 'node_modules/three/examples/jsm', module), 'utf8').replaceAll("from 'three'", "from '/vendor/three/three.module.js'")));
   }
   app.use('/vendor/three-addons', express.static(resolve(root, 'node_modules/three/examples/jsm')));
-  app.use(express.static(resolve(root, 'public')));
+  app.use(express.static(resolve(root, 'public'), { setHeaders: revalidate }));
   app.use((error, req, res, next) => {
     console.error(`${req.method} ${req.path}: ${error.message}`);
     if (res.headersSent) return next(error);
