@@ -3178,6 +3178,23 @@ your own config, saves, mouse look and sound, with whatever you pass passed thro
 GZDOOM=/usr/bin/gzdoom ./GZDoom.sh   # a different binary
 ```
 
+`./Lullaby.sh` is the same launcher with Danlex's **Lullaby** already loaded, because that is the
+map this engine is measured against and the one that needs the most care to run anywhere else:
+
+```
+./Lullaby.sh                         # title map, then the menu
+./Lullaby.sh -warp 1                 # straight into MAP01
+./Lullaby.sh -warp 2 -skill 4        # MAP02 on nightmare
+```
+
+Lullaby is not a standalone game: it is a **Doom 2** mapset that ships as a PK3 and needs GZDoom
+to read its UDMF maps (`Lullaby.TXT`: "Advanced engine needed: GZDoom", "Game: Doom 2", "May Not
+Run With: Old versions of GZDoom", tested on 4.3.3 / 4.5.0 / 4.10.0). So the script runs
+`gzdoom -iwad Doom2.wad -file Lullaby.pk3` — the base game for the resources, the PK3 for the
+maps and textures — and nothing else is needed. It warns instead of refusing if the binary looks
+older than 4.x, falls back to Freedoom Phase 2 (and says so) when no Doom 2 IWAD is present, and
+passes `GZDOOM_IWAD` / `GZDOOM_LULLABY` / `GZDOOM` through like `./GZDoom.sh` does.
+
 It is deliberately the opposite of `npm run gzdoom:run`, which drives a scripted scenario with
 the mouse turned off, its own throwaway config and a trace mod, so a run can be compared with
 OpenDLE. When a behaviour is in doubt, this is the one to play in.
