@@ -288,6 +288,26 @@ export async function createScene3dView(canvas) {
       billboards.add(quad);
       if (screenMaterials.has(material)) screenGroups.add(group);
       group.add(quad);
+    } else if (entity.physics?.shape === 'wedge') {
+      // A ramp is drawn as the wedge it collides as, from the same six corners. The group is
+      // Z-up here, so the ridge rises in local Z and the map's depth is local Y — the collider
+      // uses Y-up, and this is that shape stood on end.
+      const wedge = entity.physics;
+      const half = wedge.width / 2, halfDepth = wedge.depth / 2;
+      const low = wedge.wedge?.facing === 'right' ? half : -half, high = -low;
+      const rise = Math.max(.5, Number(wedge.height) || 0);
+      const positions = new Float32Array([
+        low, -halfDepth, 0, high, -halfDepth, 0, high, -halfDepth, rise,
+        low, halfDepth, 0, high, halfDepth, 0, high, halfDepth, rise,
+      ]);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setIndex([0, 2, 5, 0, 5, 3, 0, 4, 1, 1, 4, 5, 1, 5, 2, 0, 3, 4]);
+      geometry.computeVertexNormals();
+      const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+        color: '#c98b4b', transparent: true, opacity: .9, side: THREE.DoubleSide }));
+      mesh.userData.pickable = true;
+      group.add(mesh);
     } else {
       const height = nodeHeight(entity);
       const box = new THREE.Mesh(new THREE.BoxGeometry(24, 24, height),
