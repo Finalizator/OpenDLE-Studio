@@ -186,9 +186,9 @@ class OpenDLETrace : StaticEventHandler
 			tic, players[0].viewz, players[0].viewheight, camz, campos);
 
 		// A surface that moves because a scroller moved it shows up here and nowhere else: the
-		// geometry stays put, the sector heights stay put, and only the sidedef's texture
-		// offsets change. Logged as a delta from the first sample so a static map prints
-		// nothing at all.
+		// geometry stays put and only the sidedef's texture offsets change. Both sides and all
+		// three slots are watched, because a scroller may be applied to the back side or to an
+		// upper/lower texture and watching only the front middle missed it entirely.
 		if (scrollLines > 0 && Level.Lines.Size() > 0)
 		{
 			if (scrollBase.Size() == 0)
@@ -196,19 +196,32 @@ class OpenDLETrace : StaticEventHandler
 				for (int i = 0; i < scrollLines && i < Level.Lines.Size(); i++)
 				{
 					Line l = Level.Lines[i];
-					if (l == null || l.sidedef[0] == null) { scrollBase.Push(0.0); scrollBase.Push(0.0); continue; }
-					scrollBase.Push(l.sidedef[0].GetTextureXOffset(SIDE_MID));
-					scrollBase.Push(l.sidedef[0].GetTextureYOffset(SIDE_MID));
+					for (int sd = 0; sd < 2; sd++)
+					{
+						for (int sl = 0; sl < 3; sl++)
+						{
+							if (l == null || l.sidedef[sd] == null) { scrollBase.Push(0.0); scrollBase.Push(0.0); continue; }
+							scrollBase.Push(l.sidedef[sd].GetTextureXOffset(sl));
+							scrollBase.Push(l.sidedef[sd].GetTextureYOffset(sl));
+						}
+					}
 				}
 			}
 			for (int i = 0; i < scrollLines && i < Level.Lines.Size(); i++)
 			{
 				Line l = Level.Lines[i];
-				if (l == null || l.sidedef[0] == null) continue;
-				double dx = l.sidedef[0].GetTextureXOffset(SIDE_MID) - scrollBase[i * 2];
-				double dy = l.sidedef[0].GetTextureYOffset(SIDE_MID) - scrollBase[i * 2 + 1];
-				if (dx != 0.0 || dy != 0.0)
-					Console.Printf("ODT SCROLL %d line=%d dx=%.4f dy=%.4f\n", tic, i, dx, dy);
+				for (int sd = 0; sd < 2; sd++)
+				{
+					for (int sl = 0; sl < 3; sl++)
+					{
+						if (l == null || l.sidedef[sd] == null) continue;
+						int at = ((i * 2 + sd) * 3 + sl) * 2;
+						double dx = l.sidedef[sd].GetTextureXOffset(sl) - scrollBase[at];
+						double dy = l.sidedef[sd].GetTextureYOffset(sl) - scrollBase[at + 1];
+						if (dx != 0.0 || dy != 0.0)
+							Console.Printf("ODT SCROLL %d line=%d side=%d slot=%d dx=%.4f dy=%.4f\n", tic, i, sd, sl, dx, dy);
+					}
+				}
 			}
 		}
 
