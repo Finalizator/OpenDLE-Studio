@@ -546,6 +546,17 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       number(side.offsetX, 'Wall X offset');
       number(side.offsetY, 'Wall Y offset');
       if (side.textureScale !== undefined) assertTextureScale(side.textureScale, 'Wall texture scale');
+      if (side.slots !== undefined) {
+        object(side.slots, 'Wall texture slots');
+        for (const name of ['top', 'mid', 'bottom']) {
+          const slot = side.slots[name];
+          if (slot === undefined) continue;
+          object(slot, `Wall ${name} texture slot`);
+          number(slot.offsetX, `Wall ${name} texture X offset`);
+          number(slot.offsetY, `Wall ${name} texture Y offset`);
+          if (slot.textureScale !== undefined) assertTextureScale(slot.textureScale, `Wall ${name} texture scale`);
+        }
+      }
       for (const key of ['upper', 'middle', 'lower']) assetRef(side[key], 'Side material');
     }
     if (wall.flags !== undefined) number(wall.flags, 'Wall flags', 0, 65535);

@@ -169,3 +169,45 @@ test('all supplied Ascent and Furdoom UDMF maps import as native editable projec
     }
   }
 });
+
+test('a sidedef offsets each texture slot on its own, so a ring of walls can share one picture', () => {
+  // UDMF overrides each slot separately: `offsetx_mid` applies to the middle texture and
+  // `offsetx` to all three. Lullaby's title map gives all 78 of its ridge walls a different
+  // `offsetx_mid` — the picture laid out along the ring — and reading only the all-slot value
+  // pinned every wall to the same slice of it, so the ridge line visibly repeated one peak.
+  const document = parseUDMF(`namespace="zdoom";
+    vertex { x=0; y=0; } vertex { x=64; y=0; } vertex { x=64; y=64; } vertex { x=0; y=64; }
+    sector { heightfloor=0; heightceiling=128; texturefloor="-"; textureceiling="-"; }
+    sidedef { sector=0; offsetx=8; offsety=9; texturemiddle="-"; }
+    sidedef { sector=0; offsetx=8; offsety=9; offsetx_mid=-157; texturemiddle="-"; }
+    sidedef { sector=0; texturetop="-"; scalex=2; scalex_mid=0.5; scaley_mid=0.5; }
+    linedef { v1=0; v2=1; sidefront=0; }
+    linedef { v1=1; v2=2; sidefront=1; }
+    linedef { v1=2; v2=3; sidefront=2; }
+    linedef { v1=3; v2=0; sidefront=0; }`);
+  const sides = udmfRecords(document).sides;
+  // Without a slot override every slot keeps the sidedef-wide offset.
+  assert.deepEqual(sides[0].slots.mid, { offsetX: 8, offsetY: 9 });
+  assert.deepEqual(sides[0].slots.top, { offsetX: 8, offsetY: 9 });
+  // A slot override replaces it for that slot only.
+  assert.equal(sides[1].slots.mid.offsetX, -157);
+  assert.equal(sides[1].slots.mid.offsetY, 9);
+  assert.equal(sides[1].slots.bottom.offsetX, 8);
+  // A slot's own scale wins over the sidedef-wide one, and only where it is set.
+  assert.equal(sides[2].slots.mid.textureScale, 0.5);
+  assert.equal(sides[2].slots.top.textureScale, 2);
+  assert.equal(sides[2].slots.bottom.textureScale, 2);
+
+  // The imported wall keeps them, and a project carrying them still validates.
+  const { project } = importWadMap(map(`namespace="zdoom";
+    vertex { x=0; y=0; } vertex { x=64; y=0; } vertex { x=64; y=64; } vertex { x=0; y=64; }
+    sector { heightfloor=0; heightceiling=128; texturefloor="-"; textureceiling="-"; }
+    sidedef { sector=0; offsetx_mid=345; texturemiddle="-"; }
+    linedef { v1=0; v2=1; sidefront=0; }
+    linedef { v1=1; v2=2; sidefront=0; }
+    linedef { v1=2; v2=3; sidefront=0; }
+    linedef { v1=3; v2=0; sidefront=0; }
+    thing { x=32; y=32; type=1; }`), 'CUSTOM');
+  assert.equal(project.map.walls[0].right.slots.mid.offsetX, 345);
+  validateProject(project);
+});

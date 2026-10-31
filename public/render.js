@@ -580,7 +580,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     }
     function wallSignature(wall, sectors) {
       const side = value => value ? `${value.sectorId}/${value.upper || ''}/${value.middle || ''}/${value.lower || ''}` +
-        `/${value.offsetX || 0}/${value.offsetY || 0}/${value.textureScale || 1}` : '-';
+        `/${value.offsetX || 0}/${value.offsetY || 0}/${value.textureScale || 1}/${JSON.stringify(value.slots || null)}` : '-';
       const area = id => {
         const sector = id && sectors.get(id);
         return sector ? `${sector.floorHeight}/${sector.ceilingHeight}/${sector.light}/${sector.sky ? 1 : 0}` : '-';
@@ -626,14 +626,20 @@ export async function createPreview(canvas, project, state, { editor = false } =
         }
       });
     }
-    function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false, flip = false) {
+    function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false, flip = false, slot = 'mid') {
       if (top <= bottom) return;
       const length = Math.hypot(b.x - a.x, b.y - a.y), asset = assetMap.get(assetId);
+      // A sidedef can offset and scale each texture slot on its own; `offsetx_mid` on a UDMF
+      // map is how every wall of a ring gets its own slice of one picture. Fall back to the
+      // sidedef-wide values when the map (or a classic SIDEDEFS record) has only those.
+      const perSlot = side?.slots?.[slot];
+      const offsetX = perSlot ? perSlot.offsetX : (side?.offsetX || 0);
+      const offsetY = perSlot ? perSlot.offsetY : (side?.offsetY || 0);
+      const scale = perSlot ? (perSlot.textureScale ?? 1) : (side?.textureScale ?? 1);
       // Wall texture scale: one tile covers `scale` times its pixel size along the wall
       // and vertically, so the artwork's pixel density is per surface.
-      const coords = wallQuadUv({ length, bottom, top, referenceTop,
-        offsetX: side?.offsetX || 0, offsetY: side?.offsetY || 0,
-        textureWidth: asset?.width || 64, textureHeight: asset?.height || 64, scale: side?.textureScale || 1, flip });
+      const coords = wallQuadUv({ length, bottom, top, referenceTop, offsetX, offsetY,
+        textureWidth: asset?.width || 64, textureHeight: asset?.height || 64, scale, flip });
       surface([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], coords, [0, 1, 2, 0, 2, 3],
         material(assetId, wall.color, { masked, oneSided: !editor }), light, { kind: 'wall', id: wall.id });
     }
@@ -683,18 +689,20 @@ export async function createPreview(canvas, project, state, { editor = false } =
           // Every wall texture is alpha-tested, as GZDoom does: a mountain silhouette is a
           // picture with holes, and drawing it opaque paints the sky black.
           wallQuad(wall, a, b, floor, ceiling, side.middle, side, light,
-            wall.flags & 16 ? floor + (asset?.height || 128) : ceiling, true, flip);
+            wall.flags & 16 ? floor + (asset?.height || 128) : ceiling, true, flip, 'mid');
         } else {
           if (!(frontSector.sky && backSector.sky)) wallQuad(wall, a, b, Math.max(floor, backSector.ceilingHeight), ceiling,
-            side.upper, side, light, wall.flags & 8 ? ceiling : backSector.ceilingHeight + (assetMap.get(side.upper)?.height || 128), true, flip);
+            side.upper, side, light, wall.flags & 8 ? ceiling : backSector.ceilingHeight + (assetMap.get(side.upper)?.height || 128), true, flip, 'top');
           wallQuad(wall, a, b, floor, Math.min(ceiling, backSector.floorHeight), side.lower, side, light,
-            wall.flags & 16 ? ceiling : backSector.floorHeight, true, flip);
+            wall.flags & 16 ? ceiling : backSector.floorHeight, true, flip, 'bottom');
           if (side.middle) {
             const bottom = Math.max(floor, backSector.floorHeight), top = Math.min(ceiling, backSector.ceilingHeight);
             const height = assetMap.get(side.middle).height;
             const anchor = wall.flags & 16 ? bottom + height : top;
-            wallQuad(wall, a, b, Math.max(bottom, anchor - height - side.offsetY), Math.min(top, anchor - side.offsetY),
-              side.middle, side, light, anchor, true, flip);
+            const slot = side.slots?.mid;
+            const rowOffset = slot ? slot.offsetY : (side.offsetY || 0);
+            wallQuad(wall, a, b, Math.max(bottom, anchor - height - rowOffset), Math.min(top, anchor - rowOffset),
+              side.middle, side, light, anchor, true, flip, 'mid');
           }
         }
       }

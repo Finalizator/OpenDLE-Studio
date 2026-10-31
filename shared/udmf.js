@@ -143,6 +143,22 @@ export function udmfRecords(document) {
     checked(yKey);   // Y is validated too: a mod that scales non-uniformly still has to be in range.
     return value === 1 ? undefined : value;
   }
+  /**
+   * The offset and scale one sidedef texture slot is drawn with.
+   *
+   * UDMF overrides each slot separately: `offsetx_mid` applies to the middle texture and
+   * `offsetx` to all three. A map that lays one picture out along a ring uses this to give
+   * every wall its own slice — Lullaby's 78 ridge walls each carry a different `offsetx_mid`.
+   * Reading only the all-slot value reset all 78 to the same slice of the picture, so the
+   * ridge line visibly repeated the same peak instead of reading as one continuous range.
+   */
+  function sideSlot(p, name) {
+    const offsetX = number(p, `offsetx_${name}`, number(p, 'offsetx', 0));
+    const offsetY = number(p, `offsety_${name}`, number(p, 'offsety', 0));
+    // A slot's own scale wins; otherwise the sidedef-wide one applies, as UDMF says.
+    const textureScale = scale(p, `scalex_${name}`, `scaley_${name}`) ?? scale(p, 'scalex', 'scaley');
+    return { offsetX, offsetY, ...(textureScale === undefined ? {} : { textureScale }) };
+  }
   return {
     vertices: byType('vertex').map(p => ({ x: number(p, 'x'), y: number(p, 'y') })),
     sectors: byType('sector').map(p => ({
@@ -159,7 +175,8 @@ export function udmfRecords(document) {
     sides: byType('sidedef').map(p => ({ sector: index(p, 'sector'),
       offsetX: number(p, 'offsetx', 0), offsetY: number(p, 'offsety', 0),
       upper: texture(p, 'texturetop'), lower: texture(p, 'texturebottom'), middle: texture(p, 'texturemiddle'),
-      textureScale: scale(p, 'scalex_mid', 'scaley_mid') })),
+      textureScale: scale(p, 'scalex_mid', 'scaley_mid'),
+      slots: { top: sideSlot(p, 'top'), mid: sideSlot(p, 'mid'), bottom: sideSlot(p, 'bottom') } })),
     lines: byType('linedef').map(p => ({ a: index(p, 'v1'), b: index(p, 'v2'), right: index(p, 'sidefront', -1), left: index(p, 'sideback', -1),
       special: number(p, 'special', 0, { integer: true, min: 0, max: 65535 }),
       tag: number(p, 'id', 0, { integer: true, min: 0, max: 65535 }),

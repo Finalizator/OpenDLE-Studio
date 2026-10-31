@@ -439,6 +439,9 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       upper: material(record.upper, 'texture'), lower: material(record.lower, 'texture'),
       middle: material(record.middle, 'texture'),
       ...(record.textureScale ? { textureScale: record.textureScale } : {}),
+      // Per-slot offsets and scales, when the map sets them (UDMF only; a classic SIDEDEFS
+      // record has one offset for all three slots).
+      ...(record.slots ? { slots: record.slots } : {}),
     };
   }
   project.map.walls = lines.map((record, index) => {

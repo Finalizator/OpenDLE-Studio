@@ -2447,6 +2447,20 @@ their heights. Two bugs on that path were the reason imported scripts looked bro
 `SetActorPosition` read its arguments in push order (so an actor landed at `x = fog`), and the
 coordinates ACS passes are 16.16 fixed point while the world is in map units.
 
+**A sidedef offsets each texture slot on its own, and a ring of walls depends on it.** UDMF
+lets a sidedef carry `offsetx`/`offsety` for all three textures *and* `offsetx_top`,
+`offsetx_mid`, `offsetx_bottom` (and the matching `y` and `scale` fields) for one slot each. The
+importer read only the all-slot pair, so `offsetx_mid` was silently dropped. Lullaby's title map
+lays its mountain picture out along each ring by hand: all 78 ridge walls carry their own
+`offsetx_mid` — 73 distinct values, from −157 to 945 — and none carry `offsetx`. Every wall
+therefore started at `u = 0` and painted the same leftmost 79–158 pixels of a 1024-wide picture,
+and the ridge line read as the same small peak repeated around every ring: a clean 257 px
+periodic repeat on screen, where GZDoom's frame has no period at all. Each side now exposes
+`slots: { top, mid, bottom }` with that slot's effective offset and scale, the renderer reads the
+slot it is drawing, and a project saved before this change (no `slots`) keeps using the
+sidedef-wide values, so nothing else re-frames. The 78 walls now sample 73 different slices and
+the range reads as continuous.
+
 **How a picture's holes are made is a property of the picture, and it has to be measured at
 full size.** The studio decides between three modes from a texture's own alpha channel: no
 transparency at all is drawn opaque, a silhouette with a few anti-aliased edge pixels is
