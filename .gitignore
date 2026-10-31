@@ -52,3 +52,7 @@ Thumbs.db
 /Docs/photocraft-integration-plan.md
 /Docs/renderer-backends.md
 /tasklist.txt
+# Local GZDoom launchers: they point at this machine's paths, so they stay out of the
+# repository and are kept in the working copy only.
+/GZDoom.sh
+/Lullaby.sh
