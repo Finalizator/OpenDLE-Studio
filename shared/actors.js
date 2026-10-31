@@ -104,6 +104,10 @@ export function compileActorRecord(actor, { knownActors = new Map(), index = 0 }
     parent: actor.parent || null,
     doomedNum: actor.doomedNum ?? null,
     replaces: actor.replaces ? String(actor.replaces) : null,
+    // A class's own functions are kept: a state frame may call one by name
+    // (`PLAY A 1 Rotate;`), and the runtime executes the body it finds here.
+    functions: (actor.functions || []).map(entry => ({ name: entry.name, parameters: entry.parameters || '',
+      returns: entry.returns || 'void', source: entry.source || '' })).filter(entry => entry.name && entry.source),
     // Mods use `Health 0x7FFFFFFF` for invulnerable props and other extreme
     // values, so every property is clamped to a finite, engine-safe range.
     health: clamp(numberProp(properties, 'Health', 0), 0, 2147483647),

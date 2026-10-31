@@ -6,6 +6,8 @@ import yauzl from 'yauzl';
 import { PNG } from 'pngjs';
 import { readWad, importWadMap } from '../shared/wad.js';
 import { actorSourcesFromArchive, actorSourcesFromWad, loadGzdoomActors, sndInfoFromWad } from './actor-sources.js';
+import { importModelDefs } from '../shared/model-import.js';
+import { installActorSpriteStates } from '../shared/sprite-animation.js';
 import { mergeActorActionGaps, describeActorActionGaps } from '../shared/actor-runtime.js';
 import { acsLibrariesFromFiles, acsLibrariesFromWad } from '../shared/acs-libraries.js';
 import { validateProject } from '../shared/project.js';
@@ -247,9 +249,10 @@ export function inspectPackage(files) {
   const interpreterSupport = /(^|\/)(zscript|decorate|mapinfo|zmapinfo|gameinfo|language|dehacked)$|^(zscript|decorate)([./]|$)|\.(zc|zs|zsc|dec|deh|bex)$|(^|\/)language(\.[a-z]{2,3})?(\.txt)?$|(^|\/)mapinfo\//i;
   // LOADACS and acs/*.o are read now, so they are not "uninterpreted".
   // TEXTURES is composed now, so texture definitions are no longer listed here.
-  const unsupported = [...files.keys()].filter(name => /(^|\/)(gldefs|modeldef|cvarinfo)([./]|$)|^filter\//i.test(name) &&
+  // MODELDEF is read now, so only the kinds with no importer are reported.
+  const unsupported = [...files.keys()].filter(name => /(^|\/)(gldefs|cvarinfo)([./]|$)|^filter\//i.test(name) &&
     !imageKind(name) && !/^sbarinfo(?:\.txt)?$/i.test(name) && !interpreterSupport.test(name));
-  if (unsupported.length) warnings.push(`${unsupported.length} definition files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Dynamic lights, models and filter classes need separate runtime support; actor stats, states, MAPINFO editor numbers, LANGUAGE strings, DEHACKED patches, TEXTURES definitions, per-map ACS scripts and LOADACS libraries are imported.`);
+  if (unsupported.length) warnings.push(`${unsupported.length} definition files are not interpreted (examples: ${unsupported.slice(0, 8).join(', ')}). Dynamic lights and filter classes need separate runtime support; actor stats, states, models, MAPINFO editor numbers, LANGUAGE strings, DEHACKED patches, TEXTURES definitions, per-map ACS scripts and LOADACS libraries are imported.`);
   const actorFiles = [...files.keys()].filter(name => /(^|\/)(zscript|decorate)(\.(txt|zc|zs|zsc))?$|\.(zc|zs|zsc|dec)$/i.test(name));
   if (actorFiles.length) warnings.push(`${actorFiles.length} DECORATE/ZScript file(s) are imported as editable actor data (stats, flags, sounds, state machines). ZScript code beyond defaults and state blocks is not executed; map scripts call these actors through ACS_* actions.`);
   const maps = mapsIn(files);
@@ -257,7 +260,8 @@ export function inspectPackage(files) {
     warnings.push('Binary Hexen-format maps import natively: linedef specials run from the Hexen/ZDoom table with their five arguments and activation types, and things keep their tag, spawn height and dormant flag.');
   }
   if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry and line specials import natively, and each map\'s ACS module runs with the package\'s LOADACS libraries; advanced rendering (portals, slopes, translucent 3D floors) is still incomplete. Full GZDoom fidelity remains the target, not current capability.');
-  if ([...files.keys()].some(name => /^models\//.test(name))) warnings.push('Native model definitions are not imported yet.');
+  // MODELDEF blocks are imported with the actor they name; only a model format the
+  // importer cannot read is worth a line, and that is reported per file when it happens.
   if ([...files.keys()].some(name => /(^|\/)sndinfo(?:\.txt)?$/.test(name))) warnings.push('SNDINFO aliases and $random groups are imported so actor sound names resolve to lumps; per-sound volume, rolloff, limit and channel rules are not translated.');
   const images = [...files.keys()].filter(name => imageKind(name));
   if (!images.length) warnings.push('No images found in supported textures/flats/sprites/graphics/patches/hires namespaces. Brightmaps and other engine-specific namespaces are not imported.');
@@ -650,6 +654,18 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
     result.project.assets.push({ id: `music_${result.project.assets.length}`, name: path.slice(0, 100), kind: 'sound', music: true, src });
   }
   result.project.title = inspection.game.title?.slice(0, 100) || `${basename(selected.path || selected.marker).slice(0, 80)} - imported PK3`;
+  // MODELDEF: a mod's own meshes and the way they turn (ROTATING, Rotation-Vector,
+  // Rotation-Speed, RollOffset) are data, so they are imported with the actors.
+  const modelSources = [...files].filter(([name]) => /\.txt$/i.test(name))
+    .map(([, file]) => (file.data && file.size <= LIMITS.textBytes ? Buffer.from(file.data).toString('latin1') : null))
+    .filter(text => text && /(^|\s)model\s+[A-Za-z_]\w*\s*\{/i.test(text));
+  if (modelSources.length) {
+    const applied = importModelDefs(result.project, { sources: modelSources, files, warnings: result.warnings });
+    if (!applied.length) result.warnings.push('MODELDEF found, but no block matched an imported actor; those actors stay sprite-drawn.');
+    // The placed things were pointed at their actor's sprites before the models existed, so
+    // they are pointed again now that an actor can say "this frame is a mesh".
+    else installActorSpriteStates(result.project);
+  }
   validateProject(result.project);
   return { project: result.project, warnings: [...inspection.warnings, ...aliasWarnings, ...result.warnings],
     ...(result.actionGaps?.length ? { actionGaps: result.actionGaps } : {}),

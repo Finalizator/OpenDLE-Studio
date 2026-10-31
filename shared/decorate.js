@@ -452,6 +452,8 @@ export function resolveActorInheritance(definitions) {
       properties: { ...(parent?.properties || {}), ...definition.properties },
       flags: { ...(parent?.flags || {}), ...definition.flags },
       labels: new Map(parent ? [...parent.labels] : []),
+      // A class's own functions travel with it: a state frame can call one by name.
+      functions: [...(parent?.functions || []), ...(definition.functions || [])],
       ownLabels: new Set(definition.states.map(state => state.label)),
       source: definition.source,
       line: definition.line,

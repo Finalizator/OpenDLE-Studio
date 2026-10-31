@@ -2419,6 +2419,20 @@ still approximate and are reported per import: a solid 3D floor's surfaces are n
 the planes of the sector they sit in (that needs a stencil pass), and a translucent 3D floor is
 drawn opaque.
 
+**A mod's models are imported, not re-modelled.** MODELDEF and the ZScript that goes with it
+are data, so the importer reads them: `Model <Class> { Model 0 "Star.obj" ROTATING
+Rotation-Vector 0 0 1 Rotation-Speed 0.5 FrameIndex PLAY A 0 0 }` becomes a model asset on the
+actor, and `States { Spawn: PLAY A 1 Rotate; Loop; }` becomes a one-tic frame that calls the
+class's own `Rotate` function. `shared/obj-model.js` converts the `.obj` to a binary glTF the
+renderer already loads (map units, Z up, swapped into the engine's `(x, z, y)` world order and
+re-wound so faces stay outward), `shared/modeldef.js` parses the block, `shared/model-import.js`
+attaches the asset and the spin to the actor, and `shared/actor-functions.js` executes the
+function bodies — assignments such as `angle += 1` — so a decoration turns because its own code
+says so. A statement the interpreter cannot run is reported as an unsupported action rather than
+approximated. Two import bugs had made all of this dead: the ZScript parser matched only a
+lowercase `class` (Lullaby writes `Class`), and an inherited record dropped its parent's
+functions.
+
 **A surface that drifts is a thinker, not a recording.** `Ceiling_Waggle` (38) and
 `Floor_Waggle` (138) start a GZDoom plane thinker: the plane keeps its original distance, a
 scale swells to `amplitude / 64`, and it is then moved by `BobSin(accumulator) * scale` with

@@ -4,6 +4,7 @@ import { damagePlayer, floorAt, canSeePlayer, canSeeTarget, randomDamage, enemyH
 import { actorIndex, actorForThing, NATIVE_EFFECT_ACTORS } from './actors.js';
 import { actorProjectileClips, actorEffectClip, setSpriteState } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
+import { actorFunctionSource, runActorFunction } from './actor-functions.js';
 
 /**
  * Actor runtime.
@@ -177,6 +178,17 @@ export function runActions(project, state, entity, actor, actions, context = {})
   for (const action of actions || []) {
     const handler = ACTIONS[action.name];
     if (!handler) {
+      // A frame may call one of the actor's own functions (`PLAY A 1 Rotate;` with
+      // `void Rotate() { angle += 1; }`). Its body is executed as written.
+      const source = actorFunctionSource(actor, action.name);
+      if (source !== null) {
+        const result = runActorFunction(entity, source);
+        if (!result.ran) {
+          state.actorUnsupported ||= new Set();
+          if (state.actorUnsupported.size < 200) state.actorUnsupported.add(action.name);
+        }
+        continue;
+      }
       state.actorUnsupported ||= new Set();
       if (state.actorUnsupported.size < 200) state.actorUnsupported.add(action.name);
       continue;

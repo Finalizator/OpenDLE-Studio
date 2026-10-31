@@ -1,4 +1,5 @@
 import { SPRITE_ANIMATIONS } from './vanilla-animations.js';
+import { actorModelFor } from './model-import.js';
 
 const deathFrames = {
   POSS: 'HIJKL', SPOS: 'HIJKL', CPOS: 'HIJKLMN', TROO: 'IJKLM', SARG: 'IJKLMN',
@@ -283,6 +284,19 @@ export function applyActorSpriteStates(project, entity, actor) {
   if (first) {
     const names = spriteAssetNames(project);
     entity.spriteAsset = names.get(`${String(first.sprite).toUpperCase()}${first.letter}0`) || entity.spriteAsset;
+    // A MODELDEF actor shows a mesh on that frame instead of a picture. The mesh is in map
+    // units, so it is drawn at 1:1; the spin is the mod's own `ROTATING` declaration.
+    const modelAsset = actorModelFor(actor, first.sprite, first.letter);
+    if (modelAsset) {
+      entity.modelAsset = modelAsset;
+      entity.modelScale = 1;
+      entity.modelSpin = {
+        rotating: Boolean(actor.model.rotating),
+        rotationVector: actor.model.rotationVector,
+        rotationSpeed: actor.model.rotationSpeed,
+        rollOffset: actor.model.rollOffset,
+      };
+    }
   }
   return true;
 }

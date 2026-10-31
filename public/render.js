@@ -656,14 +656,16 @@ export async function createPreview(canvas, project, state, { editor = false } =
         backgroundScene.userData.skybox = sky;
         appliedSky = null;
       } else if (skyAsset && textures.has(skyAsset.id)) {
-        const heading = uniform(0), pitch = uniform(0), aspect = uniform(800 / 450);
+        const heading = uniform(0), pitch = uniform(0), aspect = uniform(800 / 450), scroll = uniform(0);
         const fieldOfView = uniform(Math.tan(35 * Math.PI / 180));
         const p = uv().mul(2).sub(1).mul(fieldOfView);
         const forward = vec3(cos(pitch).mul(cos(heading)), sin(pitch), cos(pitch).mul(sin(heading)));
         const right = vec3(sin(heading).negate(), 0, cos(heading));
         const ray = normalize(forward.add(right.mul(p.x).mul(aspect)).add(cross(right, forward).mul(p.y)));
         const doom = environment.skyMode === 'doom';
-        const u = atan(ray.z, ray.x).div(6.2831853).mul(doom ? 4 : 1);
+        // `sky1 = "<texture>", <speed>` slides the sky sideways; GZDoom turns the millisecond
+        // clock into an angle of `speed * ms * 90/256` degrees, so the same is done here.
+        const u = atan(ray.z, ray.x).add(scroll).div(6.2831853).mul(doom ? 4 : 1);
         const elevation = atan(ray.y, length(ray.xz));
         const v = doom ? clamp(tan(clamp(elevation, -1.4, 1.4)).mul(.65).add(.5), .001, .999) : elevation.div(Math.PI).add(.5);
         const backgroundMaterial = new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
@@ -671,7 +673,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // Keeping the sampler node lets ChangeSky swap the image without a rebuild.
         const skyTexture = texture(textures.get(skyAsset.id), vec2(u, v));
         backgroundMaterial.fragmentNode = skyTexture;
-        backgroundMaterial.userData.panoramaUniforms = { heading, pitch, aspect, fieldOfView };
+        backgroundMaterial.userData.panoramaUniforms = { heading, pitch, aspect, fieldOfView, scroll };
         mesh(new THREE.PlaneGeometry(2, 2), backgroundMaterial, backgroundScene);
         backgroundScene.userData.panorama = backgroundMaterial;
         backgroundScene.userData.skyTexture = skyTexture;
@@ -877,7 +879,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const mixer = new THREE.AnimationMixer(object); mixers.add(mixer);
       mixer.addEventListener('finished', () => state.animationFinished.add(entity.id));
       if (root.userData.samplesScreen) screenObjects.add(root);
-      const entry = { id: entity.id, assetId: entity.modelAsset, root, object, mixer, clips: loaded.animations, revision: -1, action: null, tinted, shade: -1 };
+      const entry = { id: entity.id, assetId: entity.modelAsset, root, object, mixer, clips: loaded.animations, revision: -1, action: null, tinted, shade: -1,
+        spin: entity.modelSpin || null,
+        spinAxis: entity.modelSpin ? new THREE.Vector3(...(entity.modelSpin.rotationVector || [0, 1, 0])).normalize() : null };
       models.set(entity.id, entry); modelList.push(entry);
     }
     // Panels: plastic strips, glass and screens are real translucent slabs, so they can
@@ -1482,6 +1486,12 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // model can be tilted or stood on its head without affecting its facing.
         if (entity.rotation || entity.modelTilt) entry.root.quaternion.fromArray(modelOrientation(entity));
         else entry.root.rotation.set(0, -entity.angle * Math.PI / 180, 0);
+        // MODELDEF `ROTATING`: the mesh turns inside its (possibly stationary) frame, around
+        // the axis the mod named, at the speed it named — degrees per tic, as in GZDoom.
+        if (entry.spin?.rotating) {
+          const degrees = (entry.spin.rollOffset || 0) + (entry.spin.rotationSpeed || 0) * state.time * 35;
+          entry.object.quaternion.setFromAxisAngle(entry.spinAxis, degrees * Math.PI / 180);
+        }
         applyModelTexture(entry, entity);
         // Doom light levels still tint a model, but a dark room must not erase it.
         const shade = Math.max(MODEL_LIGHTING.ambientFloor, (sector?.light ?? 255) / 255);
@@ -1634,6 +1644,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
           panorama.userData.panoramaUniforms.pitch.value = view.pitch;
           panorama.userData.panoramaUniforms.aspect.value = camera.aspect;
           panorama.userData.panoramaUniforms.fieldOfView.value = Math.tan(camera.fov * Math.PI / 360);
+          // GZDoom: `hw_sky1pos = fmod(mstime * speed, 1024) * (90 / 256)` degrees.
+          const speed = Number(project.environment.skyScroll) || 0;
+          panorama.userData.panoramaUniforms.scroll.value = speed
+            ? ((state.time * 1000 * speed * (90 / 256)) % 360) * Math.PI / 180 : 0;
         }
       }
       // The sky and the world, drawn in one go. Effects that read the screen run it into

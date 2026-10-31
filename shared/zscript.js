@@ -314,7 +314,9 @@ function splitClassBody(body) {
 export function parseZScript(text, { source = 'ZSCRIPT' } = {}) {
   const clean = stripComments(text);
   const actors = [], warnings = [], constants = {}, includes = [];
-  const classPattern = /(?:^|\n)\s*(?:abstract\s+|final\s+|native\s+|play\s+|ui\s+|internal\s+|protected\s+|private\s+|version\s*\([^)]*\)\s*)*class\s+([A-Za-z_]\w*)\s*(?::\s*([A-Za-z_]\w*)\s*)?/g;
+  // ZScript keywords are matched case-insensitively: Lullaby writes `Class RotStar`, and
+  // requiring lowercase silently skipped every actor the mod defines.
+  const classPattern = /(?:^|\n)\s*(?:abstract\s+|final\s+|native\s+|play\s+|ui\s+|internal\s+|protected\s+|private\s+|version\s*\([^)]*\)\s*)*class\s+([A-Za-z_]\w*)\s*(?::\s*([A-Za-z_]\w*)\s*)?/gi;
   let match;
   while ((match = classPattern.exec(clean))) {
     const name = match[1], parent = match[2] || null;
