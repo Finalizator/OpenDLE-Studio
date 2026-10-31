@@ -65,6 +65,8 @@ export function createAcsHud(host, project) {
     /** Draws the current messages; `view` is the game viewport in CSS pixels. */
     update(state, view) {
       const messages = state.acsMessages || [];
+      // One framebuffer pixel in CSS pixels, so a picture keeps its own resolution.
+      const deviceScale = view.deviceScale || 1;
       const live = new Set();
       for (const record of messages) {
         live.add(record);
@@ -87,11 +89,12 @@ export function createAcsHud(host, project) {
           const picture = record.font ? picturesByName.get(record.font.toUpperCase()) : null;
           if (picture) {
             layer.node.replaceChildren();
-            // GZDoom draws a one-picture font at a size that depends on its own resolution;
-            // the readable equivalent is a title band across the middle of the virtual
-            // screen, with the artwork's own aspect ratio.
-            const width = Math.max(16, virtualWidth * PICTURE_FIT);
-            Object.assign(layer.node.style, { width: `${width * scaleX}px`, height: `${width * picture.height / picture.width * scaleY}px`,
+            // A one-picture font is drawn at the picture's own pixel size, positioned by the
+            // hud coordinates — GZDoom's font drawing takes its scale from the font, not from
+            // the virtual screen. The size is therefore expressed in framebuffer pixels, which
+            // is what the artwork's pixels correspond to.
+            const width = picture.width * deviceScale;
+            Object.assign(layer.node.style, { width: `${width}px`, height: `${picture.height * deviceScale}px`,
               backgroundImage: `url("${picture.src}")`, backgroundSize: '100% 100%', imageRendering: 'pixelated' });
           } else {
             Object.assign(layer.node.style, { width: 'auto', height: 'auto', backgroundImage: 'none' });
@@ -120,15 +123,6 @@ export function createAcsHud(host, project) {
     },
   };
 }
-
-/**
- * How much of the virtual screen's width a one-picture message takes.
- *
- * GZDoom's own single-picture fonts are drawn at the texture's pixel size inside a virtual
- * screen, so their apparent size follows the window's resolution; a fixed fraction of the
- * title area reproduces what a title screen actually looks like at any preview size.
- */
-const PICTURE_FIT = .62;
 
 /** Doom's CR_ colours, in the order the constants number them. */
 const COLORS = ['#ffffff', '#a03020', '#d8c090', '#a0a0a0', '#00a000', '#a06030',

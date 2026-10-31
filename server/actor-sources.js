@@ -151,7 +151,8 @@ export function loadGzdoomActors(projectsDir) {
   const cached = gzdoomCache.get(found);
   if (cached && cached.mtime === stamp.mtimeMs && cached.size === stamp.size) return cached.result;
   const buffer = readFileSync(found);
-  const result = { ...actorSourcesFromArchive(buffer, { prefix: 'gzdoom.pk3:' }), available: true, path: found };
+  const result = { ...actorSourcesFromArchive(buffer, { prefix: 'gzdoom.pk3:' }), available: true, path: found,
+    fonts: gzdoomFonts(buffer) };
   // Vanilla monster and weapon sound names (`grunt/sight`, `weapons/pistol`) are
   // defined in the per-game filter files, not in the shared sndinfo.txt.
   const zip = zipEntries(buffer);
@@ -162,6 +163,27 @@ export function loadGzdoomActors(projectsDir) {
   }
   gzdoomCache.set(found, { mtime: stamp.mtimeMs, size: stamp.size, result });
   return result;
+}
+
+/**
+ * The fonts GZDoom itself ships: its menu fonts are not in a Doom 2 IWAD, so a MENUDEF that
+ * asks for `Font "BIGFONT"` has nothing to draw with until these are loaded from gzdoom.pk3.
+ * Each entry is the same FON2 layout the importer already decodes for a WAD's own fonts.
+ */
+function gzdoomFonts(buffer) {
+  const fonts = new Map();
+  let zip;
+  try { zip = zipEntries(buffer); } catch { return fonts; }
+  const wanted = /^(zb(?:ig|ig?)font\.lmp|zsmallfont\.lmp|smallfont\.lmp|bigfont\.lmp|confont\.lmp|indexfont\.lmp|.*\.fon2)$/i;
+  for (const entry of zip?.entries || []) {
+    const base = entry.name.split('/').pop() || '';
+    if (!wanted.test(base)) continue;
+    let data;
+    try { data = zipEntryData(zip, entry); } catch { continue; }
+    if (!data || data.length < 4 || data.toString('latin1', 0, 4) !== 'FON2') continue;
+    fonts.set(base.replace(/\.[a-z0-9]+$/i, '').toUpperCase(), new Uint8Array(data));
+  }
+  return fonts;
 }
 
 /**

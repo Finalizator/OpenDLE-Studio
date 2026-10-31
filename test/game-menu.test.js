@@ -335,6 +335,31 @@ test('volume/mute feed actual gain nodes, and browser music loops independently 
   audio.dispose();
 });
 
+test('a MENUDEF font names a real font and its colour becomes the text colour', () => {
+  // `Font "BIGFONT", "Cyan", "Cyan"` names both a font and a colour. The colour used to be
+  // dropped with a warning, so every row kept the artwork's own red.
+  const source = `ListMenu "MainMenu"\n{\n\tPosition 110,80\n\tFont "BIGFONT", "Cyan", "Cyan"\n` +
+    '\tTextItem "New Game", "n", "OptionsMenu"\n\tTextItem "Options", "o", "OptionsMenu"\n}\n';
+  const bigfont = { name: 'ZBIGFONT', type: 'bitmap', assetId: 'asset_font_ZBIGFONT', cellWidth: 17, cellHeight: 12,
+    columns: 16, chars: 'A', widths: [17], spaceWidth: 8 };
+  const assets = { has: () => false, get: () => null, atlas: null, font: name => (/^bigfont$/i.test(name) ? bigfont : null) };
+  const project = createProject();
+  installEngineScripts(project);
+  installGameMenu(project, assets, [{ name: 'menudef', source, resolve: () => null }]);
+  // A MENUDEF's Position is in the 320x200 menu space, so the rows land at 110 * sx.
+  const sx = project.hud.width / 320;
+  const items = project.hud.elements.filter(element => ['New Game', 'Options'].includes(element.text) && element.fontTint);
+  assert.equal(items.length, 2);
+  for (const item of items) {
+    const font = project.hud.fonts.find(entry => entry.id === item.fontId);
+    assert.equal(font?.name, 'ZBIGFONT', `${item.text} uses the MENUDEF font`);
+    assert.equal(item.fontTint, true);
+    assert.equal(item.color, '#00ffff');
+    assert.equal(item.x, 110 * sx, 'Position 110 from the MENUDEF');
+  }
+  assert.deepEqual(items.map(item => Math.round(item.y / (project.hud.height / 200))), [80, 96], 'Position 80, then line spacing');
+});
+
 test('menu modifiers, large MENUDEFs and unresolved submenus stay within the HUD element budget', () => {
   // `OptionMenu "OptionsMenu" protected` is how gzdoom.pk3 protects its own menus; reading the
   // modifier as the opening brace refused the file. The element cost of a menu is only known

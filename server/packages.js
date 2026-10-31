@@ -631,6 +631,9 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
       actorSources.push(...gzdoom.sources);
       dehackedSources.push(...gzdoom.dehacked);
       sndInfoSources.push(...(gzdoom.sndinfo || []));
+      // GZDoom's own fonts: a MENUDEF asking for BIGFONT is asking for one of these, and a
+      // Doom 2 IWAD does not carry it.
+      for (const [name, bytes] of gzdoom.fonts || []) if (!fontResources.has(name)) fontResources.set(name, bytes);
     }
   }
   const result = importWadMap(combined, selected.marker,

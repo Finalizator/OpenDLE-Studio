@@ -2384,16 +2384,26 @@ is right for a pause screen over gameplay but hides the map a title menu is draw
 dim instead of a wall, and the dim is skipped entirely on a title map, because that map *is*
 the menu's backdrop.
 
-**The menu font colour is part of MENUDEF.** `Font "BIGFONT", "Cyan", "Cyan"` was parsed for
-the font name and the colour dropped with a warning, so every row kept the artwork's own red.
-The colour is now a tint: the glyph atlas becomes a CSS mask and the element's colour the
-paint. GZDoom's own `BIGFONT` is not in a Doom 2 IWAD (it ships in gzdoom.pk3), so the imported
-small font is used at the right colour — the shape is Doom's menu font, the colour is the mod's.
+**The menu font is part of MENUDEF, and so is its colour.** `Font "BIGFONT", "Cyan", "Cyan"`
+was parsed for the font name, the colour was dropped with a warning, and `BIGFONT` itself
+resolved to nothing: a Doom 2 IWAD does not contain it, because GZDoom ships its own fonts in
+`gzdoom.pk3` (`ZBIGFONT`, a FON2 lump — the same format the importer already decodes for a
+WAD's own fonts). Those fonts are now read from an available `gzdoom.pk3` alongside the actor
+table, `BIGFONT`/`DBIGFONT` resolve to `ZBIGFONT`, and the colour is applied as a tint: the
+glyph atlas becomes a CSS mask and the element's colour the paint. So the rows are GZDoom's
+own big font, in the mod's cyan, at the position its MENUDEF gives.
+
+**One-picture messages are drawn at the picture's own size.** GZDoom's text drawing takes the
+glyph scale from the font, not from `SetHudSize` — the hud size maps the *position* — so a
+one-picture font occupies as many framebuffer pixels as the picture has, whatever the window is.
+That is why the logo fills most of a small preview and half of a 1080p one; the proportions in
+a GZDoom screenshot come from the resolution it was taken at, not from a different rule.
 
 What is still visibly different: the scene below the sky is black in our render where GZDoom
 shows mountains and the bed platform. That is the TITLEMAP's own lighting — its camera sector
 has light 0 — and our renderer lights each surface from its own sector, so the dark geometry
-reads as black.
+reads as black. `lightmode = 2` in the map's MAPINFO is what GZDoom applies there, and it is not
+read yet.
 
 ### Static world surfaces are merged, not one mesh each
 

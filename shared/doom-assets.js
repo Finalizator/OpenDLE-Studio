@@ -424,7 +424,10 @@ export function createDoomAssets(wad, encodeImage, images = new Map(), fontResou
   function font(name) {
     name = name.toUpperCase();
     if (fonts.has(name)) return fonts.get(name);
-    const candidates = name === 'BIGFONT' ? [name, 'DBIGFONT'] : name === 'SMALLFONT' ? [name, 'SMALLFNT'] : [name];
+    // GZDoom's own names for the fonts it ships: BIGFONT is the lump `ZBIGFONT`, and a mod's
+    // MENUDEF names the font, not the lump.
+    const candidates = name === 'BIGFONT' ? [name, 'ZBIGFONT', 'DBIGFONT']
+      : name === 'SMALLFONT' ? [name, 'SMALLFNT', 'ZSMALLFONT'] : [name];
     const key = candidates.find(key => fontResources.has(key) || lumpMap.has(key) &&
       doomName(data(lumpMap.get(key)).subarray(0, 4)) === 'FON2');
     if (!key) return null;

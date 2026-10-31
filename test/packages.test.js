@@ -568,6 +568,19 @@ test('a real mod imports its own things through its actor table instead of grey 
     'almost every placed thing has artwork');
   assert.match(warnings.join('\n'), /marker things that draw nothing .* were not placed/);
 
+  // `Font "BIGFONT", "Cyan", "Cyan"` asks for GZDoom's own big font, which is not in a Doom 2
+  // IWAD: it has to come from gzdoom.pk3 (the FON2 lump ZBIGFONT) or the rows fall back to a
+  // font the mod never asked for.
+  const mainMenu = project.hud.elements.filter(element => element.fontTint && ['New Game', 'Options', 'Load', 'Save', 'Exit'].includes(element.text));
+  assert.equal(mainMenu.length >= 5, true, 'the MENUDEF rows with a font colour are imported');
+  for (const item of mainMenu) {
+    const font = project.hud.fonts.find(entry => entry.id === item.fontId);
+    assert.ok(font, `${item.text} names a font that exists`);
+    assert.equal(item.color, '#00ffff', `${item.text} is cyan, as the MENUDEF asks`);
+  }
+  assert.ok(project.hud.fonts.some(font => /ZBIGFONT/i.test(font.name)),
+    'GZDoom\'s own big font was read from gzdoom.pk3');
+
   // The mod declares its own surface animations in ANIMDEFS, and those surfaces are the ones
   // the map is built from: a frozen waterfall or a still teal wall is a visible gap.
   const byName = new Map(project.assets.map(asset => [asset.name.toUpperCase(), asset]));

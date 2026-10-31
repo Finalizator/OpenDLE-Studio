@@ -2525,8 +2525,11 @@ function acsViewBox() {
   const scale = canvas.width ? box.width / canvas.width : 1;
   let reported = null;
   try { reported = JSON.parse(canvas.dataset.gameViewport || 'null'); } catch { reported = null; }
-  if (!reported) return { x: 0, y: 0, width: box.width, height: box.height };
-  return { x: reported.x * scale, y: reported.y * scale, width: reported.width * scale, height: reported.height * scale };
+  // `deviceScale` is how many framebuffer pixels one CSS pixel covers, which is the unit a
+  // one-picture font is drawn in.
+  const deviceScale = scale > 0 ? 1 / scale : 1;
+  if (!reported) return { x: 0, y: 0, width: box.width, height: box.height, deviceScale };
+  return { x: reported.x * scale, y: reported.y * scale, width: reported.width * scale, height: reported.height * scale, deviceScale };
 }
 
 function stopPreview() {
