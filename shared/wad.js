@@ -72,6 +72,22 @@ function translationSuffix(specs) {
   return `tr${hash.toString(36).slice(0, 6)}`;
 }
 
+/** Loads pictures named by a script's strings, which `SetFont` turns into one-picture fonts. */
+function importScriptPictureFonts(assets, program, limit = 64) {
+  let imported = 0;
+  for (const { module } of program.modules) {
+    for (const name of module?.strings || []) {
+      if (imported >= limit) return imported;
+      if (typeof name !== 'string' || !name || name.length > 64) continue;
+      if (!assets.has(name)) continue;
+      for (const kind of ['sprite', 'texture', 'flat']) {
+        try { assets.get(name, kind); imported++; break; } catch { /* try the next namespace */ }
+      }
+    }
+  }
+  return imported;
+}
+
 /**
  * Loads the artwork an ANIMDEFS animation names but the map does not place by itself.
  *
@@ -654,6 +670,11 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   }
   installDoomInventoryScripts(project);
   if (assets && project.actors?.length) importActorSprites(project, assets, warnings);
+  // A font name in a script is often a picture: GZDoom turns a name that is not a font
+  // definition into a one-picture font, which is how Lullaby draws its title logo. Those
+  // names live in the script's string table, so the artwork is loaded even though no map
+  // surface, HUD element or menu references it.
+  if (assets && mapScriptInfo?.program) importScriptPictureFonts(assets, mapScriptInfo.program);
   if (assets) installSpriteAnimations(project, assets);
   // Actor states are authoritative: a mod's own frame letters replace the classic
   // letter guesses for every placed thing that has an actor record.

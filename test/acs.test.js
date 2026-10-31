@@ -203,6 +203,51 @@ test('a ChangeSky in a map script reaches the runtime as a live sky change', () 
   assert.deepEqual(state.skyRequest, { name: 'SKY2', alt: 'SKY4' });
 });
 
+test('a HudMessage keeps its position, its one-picture font and its own lifetime', () => {
+  // Lullaby's title screen is exactly this: `SetFont("LULLABY")` names a picture, and a
+  // HudMessage paints it on a 350x270 hud at (175, 60) — the centre of the title band.
+  const asm = emitter();
+  asm.pushBytes(0).ins('SETFONT')                       // SetFont("LULLABY")
+    .push(350).push(270).pushBytes(0).ins('SETHUDSIZE')  // SetHudSize(350, 270, 0)
+    .ins('BEGINPRINT').push(1).ins('PRINTSTRING').ins('MOREHUDMESSAGE')
+    .pushBytes(3, 1, 0).push(175 * 65536).push(60 * 65536).push(5 * 65536).ins('OPTHUDMESSAGE')
+    .push(0).ins('ENDHUDMESSAGE').ins('TERMINATE');
+  const described = describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }], strings: ['LULLABY', 'A'] }));
+  const project = room(0, [], { withScripts: described.mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.acsMessages?.length, 1, 'the message reached the runtime');
+  const message = state.acsMessages[0];
+  assert.equal(message.font, 'LULLABY');
+  assert.equal(message.text, 'A');
+  assert.equal(message.x, 175);
+  assert.equal(message.y, 60);
+  assert.equal(message.hudWidth, 350);
+  assert.equal(message.hudHeight, 270);
+  assert.equal(message.hold, 5);
+  // A plain `print` is still the message line, not a positioned message.
+  assert.equal(state.message, '');
+});
+
+test('a HudMessage without OPTHUDMESSAGE still reads its six parameters', () => {
+  // Script 5 of Lullaby's TITLEMAP omits OPTHUDMESSAGE; the parameters are then simply the
+  // last six values pushed, and reading a "never set" optstart as an offset lost them.
+  const asm = emitter();
+  asm.ins('BEGINPRINT').push(0).ins('PRINTSTRING').ins('MOREHUDMESSAGE')
+    .pushBytes(0, 1, 0).push(175 * 65536).push(60 * 65536).pushBytes(0).ins('ENDHUDMESSAGE')
+    .ins('TERMINATE');
+  const described = describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }], strings: ['LOGO'] }));
+  const project = room(0, [], { withScripts: described.mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  const message = state.acsMessages[0];
+  assert.equal(message.x, 175);
+  assert.equal(message.y, 60);
+  assert.equal(message.hold, 0, 'no hold time means it stays');
+});
+
 test('arithmetic, map variables and loops follow ACS integer semantics', () => {
   // mapvar0 = 0; for (i = 0; i < 5; i++) mapvar0 += i;
   const asm = emitter();

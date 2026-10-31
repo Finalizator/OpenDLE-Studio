@@ -97,5 +97,14 @@ export function parseGameEpisodes(definitions, levelIds, { inferClassic = true }
     ][episode - 1], patch: `M_EPI${episode}`, noSkillMenu: false });
   }
   if (episodes.length > 32) throw new Error('Game exceeds 32 episode menu entries');
-  return { episodes, sources, warnings, levelIds: [...available] };
+  // gameinfo's menu dim, which a mod tunes for its own title art. Read here because the menu
+  // builder wants it before it lays out any screen.
+  let dimAmount = .6;
+  for (const { source } of sources) {
+    const match = /\bdimamount\s*=\s*([0-9.]+)/i.exec(source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' '));
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (Number.isFinite(value) && value >= 0 && value <= 1) dimAmount = value;
+  }
+  return { episodes, sources, warnings, levelIds: [...available], dimAmount };
 }

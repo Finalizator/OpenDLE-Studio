@@ -25,6 +25,7 @@ export function createHUDView(host, project, { editor = false, select, click, er
   const fonts = new Map(), faces = [], prefix = `OpenDLE_HUD_${++viewId}_`;
   // Per-frame lookups must not scan arrays: these are constant for the view.
   const menuIds = new Set(project.gameMenus?.elementIds || []);
+  const backdropId = project.gameMenus?.backdropId || null;
   const styleByName = new Map((hud.styles || []).map(style => [style.name, style]));
   const fontById = new Map(hud.fonts.map(font => [font.id, font]));
   // Which HUD elements can take focus. Asking the element list per node per frame made
@@ -102,7 +103,11 @@ export function createHUDView(host, project, { editor = false, select, click, er
       const boundVisibility = !element.visibilityBinding || (Boolean(hudBinding(element.visibilityBinding, state)) !== Boolean(element.visibilityInverted));
       const onMenu = state.gameScreen && state.gameScreen !== 'playing';
       const menuElement = menuIds.has(source.id);
-      const shown = (!element.parentId || visibility.get(element.parentId)) &&
+      // The menu's dimming panel is there to keep the world from competing with the menu
+      // text. A title map IS the menu's backdrop — GZDoom shows it undimmed — so the panel
+      // is skipped while that world is the one on screen.
+      const dimsBackdrop = !state.ambientWorld || element.id !== backdropId;
+      const shown = dimsBackdrop && (!element.parentId || visibility.get(element.parentId)) &&
         element.visible && boundVisibility && (editor || !element.statusbar || state.settings?.viewSize !== 11) && (!onMenu || menuElement) && (editor ||
         (element.display === 'always' || element.display === (cursor ? 'cursor' : 'game')));
       visibility.set(element.id, shown);
@@ -119,7 +124,7 @@ export function createHUDView(host, project, { editor = false, select, click, er
       // The visual key covers authored data plus the animated frame; the authored part
       // is computed once per element object (an edit clones them) instead of being
       // rebuilt, JSON included, several hundred times per frame.
-      const visualKey = `${visualKeyOf(source, hud)}\u0000${element.fontSize}\u0000${element.frame === undefined ? '' : Math.floor(element.frame)}`;
+      const visualKey = `${visualKeyOf(source, hud)}\u0000${element.fontSize}\u0000${element.fontTint ? element.color : ''}\u0000${element.frame === undefined ? '' : Math.floor(element.frame)}`;
       const asset = assets.get(element.assetId);
       if (visualKey !== entry.visualKey) {
         entry.visualKey = visualKey;
@@ -168,7 +173,7 @@ export function createHUDView(host, project, { editor = false, select, click, er
         }
       } else {
         const text = hudText(element, state), font = fontById.get(element.fontId);
-        const cache = `${text}\0${element.fontId}\0${element.fontSize}`;
+        const cache = `${text}\0${element.fontId}\0${element.fontSize}\0${element.fontTint ? element.color : ''}`;
         entry.text = text;
         if (cache !== entry.lastText) {
           entry.lastText = cache;
@@ -184,11 +189,21 @@ export function createHUDView(host, project, { editor = false, select, click, er
               Object.assign(glyph.style, { position: 'relative', width: `${advance * scale}px`, height: `${element.fontSize}px` });
               if (index >= 0) {
                 const ink = document.createElement('span');
+                const size = `${atlas.width * scale}px ${atlas.height * scale}px`;
+                const offset = `${-(index % font.columns) * font.cellWidth * scale}px `
+                  + `${-Math.floor(index / font.columns) * font.cellHeight * scale}px`;
+                // A MENUDEF font colour recolours the glyph, so there the atlas becomes a
+                // stencil and the element's colour becomes the paint; otherwise the artwork
+                // is drawn as it is.
+                const tint = element.fontTint ? element.color : null;
                 Object.assign(ink.style, { position: 'absolute', left: '0', top: '0',
-                  width: `${font.cellWidth * scale}px`, height: `${element.fontSize}px`,
-                  backgroundImage: `url("${atlas.src}")`, backgroundRepeat: 'no-repeat',
-                  backgroundSize: `${atlas.width * scale}px ${atlas.height * scale}px`,
-                  backgroundPosition: `${-(index % font.columns) * font.cellWidth * scale}px ${-Math.floor(index / font.columns) * font.cellHeight * scale}px` });
+                  width: `${font.cellWidth * scale}px`, height: `${element.fontSize}px` },
+                  tint
+                    ? { backgroundColor: tint, WebkitMaskImage: `url("${atlas.src}")`, maskImage: `url("${atlas.src}")`,
+                      WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
+                      WebkitMaskSize: size, maskSize: size, WebkitMaskPosition: offset, maskPosition: offset }
+                    : { backgroundImage: `url("${atlas.src}")`, backgroundRepeat: 'no-repeat',
+                      backgroundSize: size, backgroundPosition: offset });
                 glyph.append(ink);
               }
               content.append(glyph);

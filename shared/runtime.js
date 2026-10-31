@@ -35,7 +35,7 @@ import {
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
-import { createMapScripts } from './map-scripts.js';
+import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { BT } from './acs.js';
 import { clipFrame, setSpriteState } from './sprite-animation.js';
@@ -655,6 +655,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   }
   for (const id of state.worldTriggers.cross) state.scripts?.activate(state.walls.find(wall => wall.id === id), 'cross');
   state.scripts?.step(dt);
+  expireHudMessages(state);
   updateLevelStatistics(state);
   state.messageTime = Math.max(0, state.messageTime - dt);
   runRules('afterPhysics');

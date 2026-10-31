@@ -2353,30 +2353,47 @@ One wrinkle worth knowing: the renderer cannot resolve a sector while entities a
 added (`sectorOf` is still in its temporal dead zone during the first build), so records are
 stored without one and the sector is filled in when the report is built.
 
-### Documented gaps of the menu level
+### A title map is a screen, not a picture of one
 
-The imported TITLEMAP of a campaign is not just a picture behind the menu, and two parts of
-that were missing:
+Comparing the studio's menu with GZDoom's for the same map made the remaining gaps obvious:
+GZDoom shows a starfield, a painted **LULLABY** logo and cyan menu rows; ours showed a black
+rectangle with red text at the wrong size. Four separate things were missing, and each was a
+different kind of mistake.
 
-- **The world keeps running.** GZDoom plays the title level's ACS behind the menu, and the
-  Lullaby TITLEMAP uses it to point a camera at a security camera actor
-  (`ChangeCamera`, line special 237). The runtime now implements 237 (setting
-  `state.viewCamera`, with `tid 0` returning to the player) and marks a level as an ambient
-  world while the menu is up, so its scripts tick and the view renders from that camera
-  instead of the player's eyes — world-up, without view bob, with the heading negated
-  because entity angles are stored negated.
-- **`SetActorPosition` is silent.** A title map repositions an actor every tic, and every
-  one of those played `DSTELEPT`, which is the stuttering sound the menu had: a 1.07 s
-  teleport sound restarted every 28 ms. GZDoom's `SetActorPosition` plays nothing and leaves
-  only the fog, so the special now records `state.teleportFog` and no sound.
-- **A map may name its own sky.** `sky1 = "NEBUSKY4"` in MAPINFO is not one of the three
-  conventional `SKY1/2/3` names the importer only ever looked for. A declared sky now wins
-  over the convention, per level, and the artwork is found where the mod actually put it
-  (`graphics/NEBUSKY4`, which this importer files as a sprite).
+**The logo is a font.** Lullaby's TITLEMAP script does `SetFont(0)` where string 0 is
+`"LULLABY"`, then prints a single `"A"`. That is not a typo: ACS `SetFont` takes a *string
+index* and GZDoom answers a name that is not a font definition with `CreateSinglePicFont` — a
+font whose only glyph *is* the picture. The runtime resolved that string but threw the position
+away (`hudMessage` forwarded only the text), so nothing was ever drawn. HudMessages now keep
+their coordinates, hud size, colour, font, lifetime and id (an id replaces the message it
+names, which is how a counter redraws), the importer loads pictures named by a script's
+strings, and `public/acs-hud.js` draws them over the game view at GZDoom's coordinates.
 
-The title screen still looks dark: the map itself is dark by design and its "LULLABY" title
-is drawn by an ACS `HudMessage` (`SETFONT`/`SETHUDSIZE`/`BEGINPRINT`/`PRINTSTRING`), which is
-not rendered yet — a positioned-text gap, not a broken camera.
+Two smaller bugs fell out of that: `SETHUDSIZE` read its three values in call order instead of
+stack order, so `SetHudSize(350, 270)` became 270x0; and `ENDHUDMESSAGE` treated a *negative*
+`hudStart` — the "no OPTHUDMESSAGE" marker — as an offset, which lost every parameter of the
+scripts that omit it.
+
+**The camera was on the floor.** A title map films itself with a `SecurityCamera` actor, which
+is placed with a UDMF `height`. The view read the camera's `z` and `cameraHeight` but not its
+`elevation`, so the eye sat at the sector floor, inside the geometry it was meant to film.
+
+**A ListMenu has no backdrop.** The menu builder gave every page an opaque black panel, which
+is right for a pause screen over gameplay but hides the map a title menu is drawn over. A
+`ListMenu` now has no backdrop, the built-in pages use the game's `DimAmount` (0.8 here) as a
+dim instead of a wall, and the dim is skipped entirely on a title map, because that map *is*
+the menu's backdrop.
+
+**The menu font colour is part of MENUDEF.** `Font "BIGFONT", "Cyan", "Cyan"` was parsed for
+the font name and the colour dropped with a warning, so every row kept the artwork's own red.
+The colour is now a tint: the glyph atlas becomes a CSS mask and the element's colour the
+paint. GZDoom's own `BIGFONT` is not in a Doom 2 IWAD (it ships in gzdoom.pk3), so the imported
+small font is used at the right colour — the shape is Doom's menu font, the colour is the mod's.
+
+What is still visibly different: the scene below the sky is black in our render where GZDoom
+shows mountains and the bed platform. That is the TITLEMAP's own lighting — its camera sector
+has light 0 — and our renderer lights each surface from its own sector, so the dark geometry
+reads as black.
 
 ### Static world surfaces are merged, not one mesh each
 

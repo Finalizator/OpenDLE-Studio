@@ -163,6 +163,46 @@ export function scriptSummary(project) {
  * HUD message, finishing the level, and spawning projectiles with the actor
  * system already running.
  */
+/** ACS message colours, in the CR_ order the constant numbers use. */
+export const HUD_MESSAGE_COLORS = ['#ffffff', '#a03020', '#d8c090', '#a0a0a0', '#00a000', '#a06030',
+  '#f0d000', '#f00000', '#0000f0', '#f07000', '#ffffff', '#ffff00'];
+
+/**
+ * Records a HudMessage the way GZDoom queues them.
+ *
+ * `id` is what makes a message replaceable: a script that redraws a counter passes the same
+ * id every time, and the older copy is dropped instead of piling up. `holdTime` of 0 (or
+ * less) means it stays until something replaces it.
+ */
+function pushHudMessage(state, body) {
+  const list = state.acsMessages ||= [];
+  const record = {
+    id: Number.isFinite(body.id) ? body.id : -1,
+    text: String(body.text ?? '').slice(0, 4096),
+    x: Number.isFinite(body.x) ? body.x : 0.5,
+    y: Number.isFinite(body.y) ? body.y : 0.5,
+    color: Number.isFinite(body.color) ? body.color | 0 : 0,
+    hold: Number.isFinite(body.holdTime) && body.holdTime > 0 ? body.holdTime : 0,
+    type: Number.isFinite(body.type) ? body.type | 0 : 0,
+    bold: Boolean(body.bold),
+    font: typeof body.font === 'string' ? body.font : null,
+    hudWidth: Number.isFinite(body.width) && body.width > 0 ? body.width : 0,
+    hudHeight: Number.isFinite(body.height) && Math.abs(body.height) > 0 ? Math.abs(body.height) : 0,
+    start: state.time,
+  };
+  const previous = record.id >= 0 ? list.findIndex(entry => entry.id === record.id) : -1;
+  if (previous >= 0) list.splice(previous, 1);
+  list.push(record);
+  if (list.length > 32) list.splice(0, list.length - 32);
+}
+
+/** Drops the messages whose time is up; a menu screen keeps its title forever. */
+export function expireHudMessages(state) {
+  const list = state.acsMessages;
+  if (!list || !list.length) return;
+  state.acsMessages = list.filter(entry => !entry.hold || state.time - entry.start < entry.hold);
+}
+
 export function createMapScripts(project, state, callbacks = {}) {
   const program = programFor(project);
   const unsupportedSpecialsSeen = new Set();
@@ -195,7 +235,12 @@ export function createMapScripts(project, state, callbacks = {}) {
     // The VM hands over a HudMessage object (text, position, colour, hold time), not a
     // string. Passing it straight to message() stored the object and the overlay showed
     // "[object Object]" where a title map's title should be.
-    hudMessage: (body) => message(typeof body === 'string' ? body : body?.text),
+    hudMessage: (body) => {
+      // A plain print is the message overlay; a HudMessage carries a position, a font and a
+      // lifetime, which is what a title screen draws its logo with.
+      if (typeof body === 'string') { message(body); return; }
+      if (body && typeof body.text === 'string' && body.text) pushHudMessage(state, body);
+    },
     thingCount: options => countThings(options),
     skill: () => (state.settings?.difficulty || 1) - 1,
     skillName: () => ['I am too young to die', 'Hey, not too rough', 'Hurt me plenty', 'Ultra-Violence',

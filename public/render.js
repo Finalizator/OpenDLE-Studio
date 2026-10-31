@@ -1291,8 +1291,12 @@ export async function createPreview(canvas, project, state, { editor = false } =
       renderer.info.reset();
       if (!editor) {
         const detail = state.settings.lowDetail ? 2 : 1;
+        // The status bar belongs to gameplay: GZDoom draws the game view alone on a title
+        // map or behind a menu, and a title screen with a health bar on it is not a title
+        // screen.
+        const playing = state.gameScreen === 'playing';
         const view = gameView(project.hud || { width: 320, height: 200 }, state.settings,
-          canvas.width * detail, canvas.height, state.hud);
+          canvas.width * detail, canvas.height, state.hud && playing);
         const inset = view.inset;
         const viewX = view.x / detail, viewWidth = view.width / detail;
         renderer.setScissorTest(false);
@@ -1313,6 +1317,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const signature = `${view.x}/${view.y}/${view.width}/${view.height}/${inset}`;
         if (viewportSignature !== signature) { viewportSignature = signature; viewportJson = JSON.stringify(view); }
         writeDataset('hudInset', inset);
+        writeDataset('gameScreen', state.gameScreen || '');
+        writeDataset('ambientWorld', state.ambientWorld ? '1' : '0');
         writeDataset('gameViewport', viewportJson);
         const aspect = view.width / view.height;
         if (camera.aspect !== aspect || camera.fov !== state.settings.fov) {
@@ -1326,7 +1332,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
           if (frame.assetId && !frame.finished) selected = frame.assetId;
         }
         writeDataset('weaponFrame', selected || '');
-        for (const [id, overlay] of weaponOverlays) overlay.visible = id === selected;
+        // The gun is the player's, and a paused or title screen has no player to draw it for.
+        const showWeapon = state.gameScreen === 'playing' && state.playerStats.health > 0;
+        for (const [id, overlay] of weaponOverlays) overlay.visible = showWeapon && id === selected;
         const recoil = state.lastShot && state.time - state.lastShot.time < .12 ? 6 * (1 - (state.time - state.lastShot.time) / .12) : 0;
         // Doom swings the weapon with the player's speed: x on a cosine and y on a sine of the
         // bob timer, in psprite pixels, so a walk rocks the gun the way GZDoom's does.
@@ -1360,8 +1368,12 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // nothing at all.
         const spectator = state.viewCamera ? state.entities.find(entry => entry.id === state.viewCamera) : null;
         const up = upVector(state.player.up);
+        // A camera actor films from its own height above the floor: the map places it with a
+        // UDMF `height`, and reading only `z` put the eye on the floor, inside the geometry it
+        // was meant to look at.
         const eye = spectator
-          ? [spectator.x, spectator.y, (spectator.z ?? sectorOf(spectator)?.floorHeight ?? 0) + (spectator.cameraHeight || 0)]
+          ? [spectator.x, spectator.y,
+            (spectator.z ?? (sectorOf(spectator)?.floorHeight ?? 0) + (spectator.elevation || 0)) + (spectator.cameraHeight || 0)]
           : eyePosition(state.player, state.player.z ?? sectorOf(state.player)?.floorHeight ?? 0);
         // An object's angle is stored negated (Doom's Y axis is flipped for the world), so the
         // world-space heading is its negative — the same conversion the sprite facing uses.

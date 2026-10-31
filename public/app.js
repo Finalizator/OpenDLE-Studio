@@ -36,6 +36,7 @@ import { LIMITS } from '/shared/limits.js';
 const ARCHIVE_LIMIT = LIMITS.archiveBytes;
 import { createPlaytestLogger } from './playtest-log.js';
 import { createPlaceholderLog } from './placeholder-log.js';
+import { createAcsHud } from './acs-hud.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
@@ -78,7 +79,7 @@ let previewRenderer = null, previewLoading = false, mapSectors = [];
 let previewGeneration = 0;
 let audioPlayer = null, audioContext = null, hudWarningShown = false, musicReported = false;
 let settingsRevision = -1, settingsStorageKey = '';
-let hudView = null, previewProject = null, hudCursorActive = false;
+let hudView = null, acsHud = null, acsHost = null, previewProject = null, hudCursorActive = false;
 let saveIdentityVersion = -1, saveIdentityPromise = null, previewSaveIdentity = '', saveBusy = false;
 let lookDrag = null, draggedLook = false;
 let wadImport = null;
@@ -2511,6 +2512,23 @@ function reportFrameStalls(session) {
     slowFrame: perf.slowFrame ? { ...perf.slowFrame } : null,
   });
 }
+/**
+ * The game view inside the preview, in CSS pixels.
+ *
+ * The renderer reports its viewport in the canvas's own pixels, which differ from CSS pixels
+ * when low detail renders at half size, so the reported rectangle is scaled back. Without a
+ * report (before the first frame) the whole canvas is the view.
+ */
+function acsViewBox() {
+  const canvas = $('preview');
+  const box = canvas.getBoundingClientRect();
+  const scale = canvas.width ? box.width / canvas.width : 1;
+  let reported = null;
+  try { reported = JSON.parse(canvas.dataset.gameViewport || 'null'); } catch { reported = null; }
+  if (!reported) return { x: 0, y: 0, width: box.width, height: box.height };
+  return { x: reported.x * scale, y: reported.y * scale, width: reported.width * scale, height: reported.height * scale };
+}
+
 function stopPreview() {
   previewGeneration++;
   if (runtime) {
@@ -2535,7 +2553,8 @@ function stopPreview() {
   if (document.pointerLockElement === $('preview')) document.exitPointerLock();
   flushPlaceholders('game', true);
   $('play-dialog').close(); runtime = null; previewRenderer?.dispose(); previewRenderer = null; keys.clear(); pressed.clear();
-  hudView?.dispose(); hudView = null; previewProject = null; hudCursorActive = false;
+  hudView?.dispose(); hudView = null; acsHud?.dispose(); acsHud = null; acsHost?.remove(); acsHost = null;
+  previewProject = null; hudCursorActive = false;
   $('hud-cursor').setAttribute('aria-pressed', 'false');
   $('show-statusbar').hidden = true;
 }
@@ -2690,6 +2709,16 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       click: id => { if (runtime?.hudState.cursor && !runtime.bindingKey) runtime.hudState.clicked.add(id); },
       error: message => mouseStatus(message, true),
     });
+    // ACS HudMessages sit above the HUD and below the menu: a title screen draws its logo
+    // with one, and the menu is opened on top of it.
+    acsHud?.dispose();
+    acsHost?.remove();
+    acsHost = document.createElement('div');
+    acsHost.id = 'acs-overlay';
+    acsHost.setAttribute('aria-live', 'off');
+    acsHost.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:8900;overflow:hidden;';
+    $('preview-stage').append(acsHost);
+    acsHud = createAcsHud(acsHost, snapshot);
     $('preview-title').textContent = `${snapshot.title}${snapshot.game ? ` / ${snapshot.game.active}` : ''}`;
     watchPlaceholders();
     reportedStalls = 0;
@@ -2948,6 +2977,7 @@ function frame(now) {
       reportPlaytestFailures(runtime);
       reportFrameStalls(runtime);
       syncHUDCursor(); syncStatusBarButton(); hudView?.update(runtime);
+      acsHud?.update(runtime, acsViewBox());
       if (!musicReported && audioPlayer?.musicInfo) {
         const music = audioPlayer.musicInfo();
         if (music.playing || (music.hasMusicAssets && music.requested) || !music.hasMusicAssets) {

@@ -14,6 +14,23 @@ const cvars = { snd_sfxvolume: 'volume', snd_musicvolume: 'musicVolume', mouse_s
   detaillevel: 'lowDetail', screenblocks: 'viewSize' };
 export const menuScreen = name => aliases[name.toLowerCase()] || `mod_${name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}`;
 
+/**
+ * The colour a MENUDEF `Font` translation names.
+ *
+ * GZDoom translates a font's palette ranges; a plain tint is enough here because the fonts a
+ * mod selects for a menu are single-colour, and `untranslated` means "leave it alone".
+ */
+const FONT_COLORS = {
+  untranslated: null, brick: '#a03020', tan: '#d8c090', gray: '#a0a0a0', grey: '#a0a0a0',
+  green: '#00a000', brown: '#a06030', gold: '#f0d000', red: '#f00000', blue: '#0000f0',
+  orange: '#f07000', white: '#ffffff', yellow: '#ffff00', cyan: '#00ffff', black: '#101010',
+};
+
+function fontColor(name) {
+  if (!name) return null;
+  return FONT_COLORS[String(name).toLowerCase()] ?? null;
+}
+
 export function rebuildGameMenu(project, assets, definitions = [], warnings = [], episodeInfo) {
   episodeInfo ||= { episodes: project.gameMenus?.episodes || [], sources: project.gameMenus?.episodeSources || [],
     levelIds: project.game?.levels.map(level => level.id) || [] };
@@ -148,8 +165,12 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
     ...Object.values(project.map).filter(Array.isArray).flat(), ...hud.elements, ...hud.fonts, ...hud.animations].map(item => item.id));
   let sequence = 0;
   const id = () => { let value; do { value = `menu_${sequence++}`; } while (used.has(value)); used.add(value); return value; };
+  // GZDoom dims the world behind a menu instead of hiding it, and a title map is the menu's
+  // own backdrop, so it is dimmed by nothing at all. The alpha comes from gameinfo's
+  // DimAmount, which a mod tunes for exactly this.
+  const dim = Math.round(Math.max(0, Math.min(1, episodeInfo?.dimAmount ?? .6)) * 255).toString(16).padStart(2, '0');
   const backdrop = { ...hudElement(id(), 'panel', 'Game menu letterbox'), width: 0, height: 0, x: 0, y: 0,
-    anchors: { left: 0, right: 1, top: 0, bottom: 1 }, background: '#000000ff', z: 8999, visible: false };
+    anchors: { left: 0, right: 1, top: 0, bottom: 1 }, background: `#000000${dim}`, z: 8999, visible: false };
   hud.elements.push(backdrop);
   const frame = { ...hudElement(id(), 'panel', 'Game menu canvas'), width: hud.width, height: hud.height,
     anchors: { left: .5, right: .5, top: .5, bottom: .5 }, x: -hud.width / 2, y: -hud.height / 2,
@@ -209,11 +230,15 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
   const pages = new Set();
   const selectors = new Map(), adjustments = new Map();
   const classicSelector = assets?.has('M_SKULL1') ? { patch: 'M_SKULL1', second: assets.has('M_SKULL2') ? 'M_SKULL2' : null, x: -32, y: -5 } : null;
-  function page(name, title, back = 'settings', titlePatch, hideHeading = false) {
+  // A page's backdrop dims the world behind it; a menu that only lists rows (which is what a
+  // MENUDEF ListMenu is) has no backdrop of its own, and painting one black hid the title map
+  // the menu is drawn over.
+  function page(name, title, back = 'settings', titlePatch, hideHeading = false, backdrop = 'dim') {
     if (pages.has(name)) return;
     pages.add(name);
     element(name, 'panel', `${title} background`, 0, 0, 0, 0,
-      { background: '#000000ff', anchors: { left: 0, top: 0, right: 1, bottom: 1 } });
+      { background: backdrop === 'none' ? '#00000000' : `#000000${dim}`,
+        anchors: { left: 0, top: 0, right: 1, bottom: 1 } });
     const image = titlePatch && art(titlePatch);
     if (!hideHeading) element(name, image ? 'image' : 'text', `${title} heading`, image ? (320 - image.width) / 2 : 20, 8,
       image?.width || 280, image?.height || 18, { text: image ? '' : title, fontSize: 12 * sy, ...(image ? { assetId: image.id } : {}) });
@@ -312,7 +337,7 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
     { text: 'WASD: move\nMouse: look / fire\nSpace: jump / E: use\n1-9: weapons\nEscape: pause\nOptions: change controls and settings' });
   // Existing gameplay HUD is suppressed on menus without changing its authored state.
   project.gameMenus = { version: 1, presentation: 2, entry: 'title', screens: [...pages], sources: [],
-    episodes, episodeSources: episodeInfo.sources };
+    episodes, episodeSources: episodeInfo.sources, backdropId: backdrop.id };
   if (assets) installClassicOptions();
   translateDefinitions();
   installSelectors();
@@ -469,13 +494,14 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
           clearPage(pageName);
         }
         selectors.delete(pageName);
-        page(pageName, menu.name, null, null, menu.kind === 'listmenu');
+        page(pageName, menu.name, null, null, menu.kind === 'listmenu', 'none');
         let x = 86, y = 40, spacing = 16, activePage = pageName, pageNumber = 1;
-        let currentFont = menuFont;
+        let currentFont = menuFont, currentTint = null;
         const applyFont = item => {
           if (currentFont && ['text', 'button'].includes(item.type) && !item.assetId) {
             item.fontId = currentFont.id; item.fontSize = currentFont.cellHeight * sy;
             item.height = currentFont.cellHeight * sy;
+            if (currentTint) { item.fontTint = true; item.color = currentTint; }
           }
         };
         const row = () => {
@@ -500,8 +526,13 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
           else if (type === 'font') {
             if (!args[0]) throw new Error(`${definition.name}/${menu.name}: missing Font name`);
             currentFont = resolveFont(args[0], `${definition.name}/${menu.name}`);
-            if (args[1] && !/^untranslated$/i.test(args[1]))
-              warnings.push(`${definition.name}/${menu.name}: ${args[1]} font translation uses source palette; color-range translation is not implemented.`);
+            // `Font "BIGFONT", "Cyan", "Cyan"` asks for the font in a named colour; the first
+            // name is the normal colour and the second the selected one, which this engine
+            // draws with one tint because the selector already marks the row.
+            currentTint = fontColor(args[1]);
+            if (args[1] && !currentTint) {
+              warnings.push(`${definition.name}/${menu.name}: font colour ${args[1]} is not a known translation; using the artwork's own colours.`);
+            }
           }
           else if (type === 'selector') {
             const dx = Number(args[1]), dy = Number(args[2]);

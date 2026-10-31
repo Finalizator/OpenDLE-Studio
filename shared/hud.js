@@ -120,6 +120,9 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
     color(element.color); color(element.background);
     assert(['left', 'center', 'right'].includes(element.align), 'Unknown HUD text alignment');
     if (element.fontId) assert(hud.fonts.some(font => font.id === element.fontId), 'HUD element references an unknown font');
+    // A bitmap font's artwork has its own colours; a MENUDEF `Font` translation asks for a
+    // different one, which the view paints by tinting the glyph mask with `color`.
+    if (element.fontTint !== undefined) assert(typeof element.fontTint === 'boolean', 'HUD font tint must be boolean');
     if (element.styleClass) assert(hud.styles?.some(style => style.name === element.styleClass), 'Unknown HUD CSS class');
     if (element.assetId) {
       const asset = image(element.assetId);

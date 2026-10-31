@@ -943,7 +943,11 @@ function definePrinting() {
     define(code, '', (vm, script) => {
       const body = script.print || '';
       script.print = '';
-      const base = (script.hudStart ?? script.sp) - 6;
+      // `optstart` is where OPTHUDMESSAGE left the stack; without that opcode — which some
+      // scripts omit — the six parameters are simply the last six values pushed. A negative
+      // hudStart is the "never set" marker, not an offset.
+      const start = script.hudStart >= 0 ? script.hudStart : script.sp;
+      const base = start - 6;
       const read = depth => (base >= 0 ? script.stack[base + depth] | 0 : 0);
       const message = {
         type: read(0) & 0xff, id: read(1), color: read(2),
@@ -951,6 +955,9 @@ function definePrinting() {
         bold: code === P.ENDHUDMESSAGEBOLD, text: body,
         width: script.hudWidth || 0, height: script.hudHeight || 0,
         fade: (script.stack[(script.hudStart ?? script.sp)] | 0) / 65536,
+        // SetFont names a font, and a name that is only a picture is a one-picture font:
+        // that is how a mod draws a title logo without any font definition.
+        font: script.hudFontName ?? null, style: script.hudStyle ?? null,
       };
       vm.host.hudMessage(message);
       script.sp = Math.max(0, base);
@@ -959,12 +966,25 @@ function definePrinting() {
   }
   define(P.SETSTYLE, '', (vm, script) => { script.hudStyle = pop(vm, script); });
   define(P.SETSTYLEDIRECT, 'w', (vm, script, [style]) => { script.hudStyle = style; });
-  define(P.SETFONT, '', (vm, script) => { script.hudFont = pop(vm, script); });
-  define(P.SETFONTDIRECT, 'w', (vm, script, [font]) => { script.hudFont = font; });
+  // ACS `SetFont` takes a string-table index, not a font number: `PUSHBYTE 0; SETFONT`
+  // with string 0 = "LULLABY" asks for a font called LULLABY, which GZDoom satisfies with
+  // the picture of that name.
+  define(P.SETFONT, '', (vm, script) => {
+    const index = pop(vm, script);
+    script.hudFont = index;
+    script.hudFontName = vmString(vm, index) || null;
+  });
+  define(P.SETFONTDIRECT, 'w', (vm, script, [font]) => {
+    script.hudFont = font;
+    script.hudFontName = typeof font === 'string' ? font : vmString(vm, font) || null;
+  });
   define(P.SETHUDSIZE, '', (vm, script) => {
-    const height = pop(vm, script), width = pop(vm, script), block = pop(vm, script);
+    // Pushed in the order width, height, wraparound, so the stack pops them back to front:
+    // reading them in call order made every hud size a wrong one (350x270 arrived as 270x0).
+    const block = pop(vm, script), height = pop(vm, script), width = pop(vm, script);
     script.hudWidth = Math.abs(width);
-    script.hudHeight = block ? -Math.abs(height) : Math.abs(height);
+    script.hudHeight = Math.abs(height);
+    script.hudBlock = Boolean(block);
   });
 }
 
