@@ -1789,12 +1789,12 @@ export async function createPreview(canvas, project, state, { editor = false } =
           // `mstime` in **tics**. Feeding it seconds × 1000 (milliseconds) rolled the sky 35
           // times too fast, and the sign decides which way it turns: the dome rotates by
           // `-180 + x_offset`, so the sky slides against the increasing angle.
-          // MAPINFO's `sky1 = "SKY", speed` is not a per-tic speed: `g_mapinfo.cpp` stores
-          // `speed * (TICRATE / 1000)`, i.e. thousandths of a unit per second. Lullaby's 0.1 is
-          // 0.0035 per tic, which advances the sky 0.043 degrees a second — measured from four
-          // GZDoom frames four seconds apart, the sky does not visibly move at all. Using the
-          // raw 0.1 scrolled it 28 times too fast here.
-          const speed = (Number(project.environment.skyScroll) || 0) * (35 / 1000);
+          // MAPINFO's speed is in units per **millisecond**: `g_mapinfo.cpp` stores
+          // `speed * (TICRATE / 1000)` and `r_sky.cpp` advances it by `mstime`, so a speed of
+          // 0.1 moves the sky 0.1 * 35 = 3.5 texture units a second, i.e. 1.23 degrees. Counting
+          // ticks here is the same arithmetic written differently: ticks * speed == seconds * 35
+          // * speed. (Scaling by 35/1000 again made the sky 28 times too slow.)
+          const speed = Number(project.environment.skyScroll) || 0;
           const ticks = Math.floor(state.time * 35);
           const degrees = speed ? ((ticks * speed) % 1024) * (90 / 256) : 0;
           panorama.userData.panoramaUniforms.scroll.value = -degrees * Math.PI / 180;

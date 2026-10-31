@@ -2496,13 +2496,13 @@ ridge lines was empty here while GZDoom shows a moving nebula there. The shader 
 GZDoom's transform: `theta = atan2(tan(elevation), scale) - asin(shift / hypot(tan(elevation),
 scale))`, and `v = 1 - theta / 60deg`.
 
-**MAPINFO's sky speed is in thousandths of a unit per second.** `sky1 = "SKY", speed` is stored
-as `speed * (TICRATE / 1000)` (`g_mapinfo.cpp`), so Lullaby's `0.1` is 0.0035 per tic and moves
-the sky 0.043 degrees a second — 0.17 degrees in four seconds, which is nothing on screen. Read
-as a per-tic speed it scrolled the sky 28 times too fast here. Measured from four frames four
-seconds apart: GZDoom shifts the sky by 0 px, we shifted it by 39 px per interval before the
-correction and by 1 px after — the ridges stayed at 0 px in every case, because the mountain
-geometry never moves.
+**MAPINFO's sky speed is in units per millisecond.** `g_mapinfo.cpp` stores
+`speed * (TICRATE / 1000)` and `r_sky.cpp` advances it by `mstime`, so a speed of 0.1 moves the
+sky 3.5 texture units a second — 1.23 degrees. Counting ticks and multiplying by the raw speed is
+the same arithmetic (`ticks * speed == seconds * 35 * speed`); scaling by 35/1000 as well made the
+sky 28 times too slow. Measured from four GZDoom frames 2.9 s apart, the sky translates about
+80 px per interval at 3440 px across (0.72 deg/s); ours measures 20 px per 2 s at 1083 px across
+(0.94 deg/s).
 
 **A `uniform(0)` is an integer uniform.** The sky's heading, pitch and scroll were built with
 `uniform(0)`, so three.js inferred `int` and every value assigned — a scroll of 0.05 radians, a
