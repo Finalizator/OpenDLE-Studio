@@ -12,6 +12,7 @@ import {
 } from './editor-drop.js';
 import { overlayVolumes } from '/shared/areas.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
+import { samplePath } from '/shared/paths.js';
 
 const SELECT_COLOR = '#ffd34d', DROP_COLOR = '#7fe6ff';
 const AXIS_VECTORS = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 0, 1), z: new THREE.Vector3(0, 1, 0) };
@@ -29,7 +30,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   let entityById = new Map(project.map.entities.map(entity => [entity.id, entity]));
   const ray = new THREE.Raycaster(), pointer = new THREE.Vector2();
   const handles = new THREE.Group(), helperGroup = new THREE.Group(), vertexGroup = new THREE.Group();
-  scene.add(handles, helperGroup, vertexGroup);
+  // Paths are drawn as their curve, not as their waypoints: the line a traveller follows is the
+  // thing being authored, and the control points are what shape it.
+  const pathGroup = new THREE.Group();
+  scene.add(handles, helperGroup, vertexGroup, pathGroup);
   const resources = [], keys = new Set(), listeners = [];
   const own = resource => { resources.push(resource); return resource; };
 
@@ -105,6 +109,64 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       `${entity.id}:${entity.x},${entity.y},${entity.elevation || 0}:${entity.area ? `${entity.area.shape}/${entity.area.width}/${entity.area.height}/${entity.area.depth}/${entity.area.radius}` : ''}:${entity.physics && entity.physics.body !== 'none' ? `${entity.physics.body}/${entity.physics.shape}/${entity.physics.width}/${entity.physics.height}/${entity.physics.depth}/${entity.physics.radius}` : ''}`
     ).join('|');
   }
+  // One curve per path, rebuilt whenever the layout changes. The line is what the mapper
+  // shapes; the small cubes are the waypoints that shape it.
+  const PATH_COLOR = '#b18cff', PATH_SELECTED = '#ffffff';
+  const pathLineMaterial = own(new THREE.LineBasicMaterial({ color: PATH_COLOR, depthTest: false, transparent: true, opacity: .95 }));
+  const pathLineSelectedMaterial = own(new THREE.LineBasicMaterial({ color: PATH_SELECTED, depthTest: false }));
+  const pathPointGeometry = own(new THREE.BoxGeometry(6, 6, 6));
+  const pathPointMaterial = own(new THREE.MeshBasicMaterial({ color: PATH_COLOR, depthTest: false }));
+  const pathPointSelectedMaterial = own(new THREE.MeshBasicMaterial({ color: PATH_SELECTED, depthTest: false }));
+  let pathSignature = '';
+  /** A path's own update key: any change to a waypoint or its curvature invalidates it. */
+  function pathsSignature() {
+    return (project.paths || []).map(path => `${path.id}:${path.closed ? 1 : 0}:` +
+      path.points.map(point => `${point.id}@${point.x},${point.y},${point.z || 0},${point.curve ?? 1}`).join(';')).join('|') +
+      `#${selected?.kind === 'pathPoint' || selected?.kind === 'path' ? `${selected.kind}:${selected.id}` : ''}`;
+  }
+  /**
+   * Rebuilds the drawn paths.
+   *
+   * Sampled at the same density the engine uses for travel, so what the editor shows is what a
+   * walker will follow. Points are drawn in map space (x, height, y) to match the world, and the
+   * overlay ignores depth so a path inside a wall is still visible while it is being authored.
+   */
+  function rebuildPaths() {
+    const signature = pathsSignature();
+    if (signature === pathSignature) return;
+    pathSignature = signature;
+    for (const child of [...pathGroup.children]) {
+      pathGroup.remove(child);
+      if (child.geometry && child.geometry !== pathPointGeometry) child.geometry.dispose();
+    }
+    for (const path of project.paths || []) {
+      const samples = samplePath(path);
+      if (samples.length > 1) {
+        const positions = new Float32Array(samples.length * 3);
+        samples.forEach((sample, index) => {
+          positions[index * 3] = sample.x; positions[index * 3 + 1] = sample.z || 0; positions[index * 3 + 2] = sample.y;
+        });
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const line = new THREE.Line(geometry, selected?.kind === 'path' && selected.id === path.id ? pathLineSelectedMaterial : pathLineMaterial);
+        line.renderOrder = 207; line.frustumCulled = false;
+        pathGroup.add(line);
+      }
+      for (const point of path.points) {
+        const isSelected = selected?.kind === 'pathPoint' && selected.id === point.id && selected.pathId === path.id;
+        const marker = new THREE.Mesh(pathPointGeometry, isSelected ? pathPointSelectedMaterial : pathPointMaterial);
+        marker.position.set(point.x, point.z || 0, point.y);
+        marker.renderOrder = 208; marker.frustumCulled = false;
+        marker.userData.selection = { kind: 'pathPoint', id: point.id, pathId: path.id };
+        marker.userData.pathPoint = true;
+        pathGroup.add(marker);
+      }
+    }
+    pathGroup.visible = (project.paths || []).length > 0;
+    canvas.dataset.paths = String((project.paths || []).length);
+    canvas.dataset.pathPoints = String((project.paths || []).reduce((total, path) => total + path.points.length, 0));
+  }
+
   const vertexGeometry = own(new THREE.SphereGeometry(4, 8, 6));
   const vertexMaterial = own(new THREE.MeshBasicMaterial({ color: '#ffe89a', depthTest: false }));
   const vertexMarkers = [0, 1].map(() => {
@@ -130,7 +192,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   function collectSceneHandles() {
     pickables = [];
     for (const child of scene.children) {
-      if (child === handles || child === helperGroup || child === vertexGroup || child === roomOutline) continue;
+      if (child === handles || child === helperGroup || child === vertexGroup || child === roomOutline || child === pathGroup) continue;
       child.traverse(object => {
         // The static world is drawn from merged buffers, so a world mesh names the wall
         // or sector it belongs to per triangle instead of holding one selection itself.
@@ -152,9 +214,11 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     entityById = new Map(project.map.entities.map(entity => [entity.id, entity]));
     vertexHeights = collectVertexHeights();
     collectSceneHandles();
+    rebuildPaths();
   }
   vertexHeights = collectVertexHeights();
   collectSceneHandles();
+  rebuildPaths();
 
   const frustum = new THREE.Frustum(), projectionView = new THREE.Matrix4(), bounds = new THREE.Box3();
   const boundsSphere = new THREE.Sphere(), boundsCenter = new THREE.Vector3(), boundsSize = new THREE.Vector3();
@@ -392,6 +456,20 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     } else if (kind === 'vertex') {
       const vertex = vertexById.get(id); if (!vertex) { clearHandles(); return; }
       position = new THREE.Vector3(vertex.x, (vertexHeights.get(id) || 0) + 4, vertex.y);
+    } else if (kind === 'path' || kind === 'pathPoint') {
+      // A path is edited through its waypoints and its inspector, so it gets no axis gizmo:
+      // dragging a whole route with three coloured bars would move the map, not the curve.
+      rebuildPaths();
+      const path = (project.paths || []).find(item => item.id === (kind === 'path' ? id : selected.pathId));
+      const point = kind === 'pathPoint' ? path?.points.find(item => item.id === id) : null;
+      if (!path) { clearHandles(); return; }
+      const anchor = point || path.points[0];
+      if (!anchor) { clearHandles(); return; }
+      canvas.dataset.sceneSelection = `${kind}:${id}`;
+      hideReadout();
+      handles.position.set(anchor.x, anchor.z || 0, anchor.y);
+      selectionOutline.visible = false; clearHandles();
+      return;
     } else if (kind === 'wall') {
       const wall = wallById.get(id), a = vertexById.get(wall?.a), b = vertexById.get(wall?.b);
       if (!a || !b) { clearHandles(); return; }
@@ -727,6 +805,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const hit = worldHit(), point = hit?.point || planePoint(0);
       if (!point) { callbacks.error('Aim at a floor or the ground plane to place geometry'); return; }
       if (tool === 'entity') callbacks.place({ x: point.x, y: point.z, z: point.y });
+      else if (tool === 'path') callbacks.pathPoint?.({ x: point.x, y: point.z, z: point.y });
       else { action = { kind: 'room', start: point.clone(), end: point.clone() }; roomOutline.visible = true; }
       return;
     }
@@ -738,7 +817,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.transform = `transform:${axis}`;
       return;
     }
-    const hit = hits(vertexGroup)[0] || worldHit();
+    const hit = hits(pathGroup)[0] || hits(vertexGroup)[0] || worldHit();
     const selection = hit ? { ...selectionOf(hit) } : null;
     if (selection?.kind === 'sector') {
       selection.surface = selectionOf(hit)?.surface || callbacks.surface();
@@ -907,6 +986,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       for (const marker of vertexMarkers) {
         if (marker.userData.active) marker.visible = frustum.containsPoint(marker.position);
         if (marker.visible) markers++;
+      }
+      // Waypoint cubes keep a constant size on screen, so a path crossing a large room is still
+      // editable from a distance: 1.9·distance/height makes a 6-unit cube about eight pixels.
+      for (const marker of pathGroup.children) {
+        if (!marker.userData.pathPoint) continue;
+        marker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(marker.position) / rect.height));
       }
       updateSelectionOutline();
       updateCeilings(dt);

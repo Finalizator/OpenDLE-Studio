@@ -564,6 +564,14 @@ marker. Physics bodies stay at their authored positions while editing.
   plane. Positions/elevation snap to the selected grid. **Draw room:** drag
   a rectangle on a horizontal plane; the outline previews the rectangle.
   Like 2D, new rooms use floor 0 / ceiling 128 and remain separate sectors.
+- **Draw path:** click to drop waypoints; each click extends the route being
+  drawn and the curve through all of it is redrawn, so the shape is visible
+  while it is being built. Every waypoint carries its own **curve**: 0 is a
+  corner (straight in, straight out), 1 sweeps through, and the segment at each
+  end bends only as much as that end allows, so a corner never kinks. Escape or
+  changing the tool finishes the route. Click a violet waypoint cube in either
+  view to select it and edit its position or curvature in Properties; dragging
+  it moves the curve with it. See [Paths](#paths-a-curve-through-waypoints).
 - **Show ceilings** defaults off so interiors remain accessible from above;
   toggle it for the complete enclosed scene. Ceiling height handles work even
   while ceilings are hidden. Escape, blur or cancelled gestures discard an
@@ -580,6 +588,43 @@ mesh modeller, sloped-sector editor or rig/animation authoring tool. A completed
 edit reloads the scene's resources; large asset-heavy maps may briefly display
 a loading overlay. Draft project validation errors are reported without
 committing malformed geometry.
+
+### Paths: a curve through waypoints
+
+A path is a list of waypoints and the curve fitted through them, and it lives in the layout
+rather than on any one object (`project.paths`). Nothing about it is specific to walking: the
+same curve is a patrol route, a camera track, a timeline's motion, or the spine a ramp or a
+piece of procedural geometry is generated along, so it is authored once and referenced by id.
+
+- **Per-waypoint curvature.** Each point carries `curve`, 0 to 1. It is applied as a Hermite
+  tangent scale — the tangent at a point is half the span between its neighbours times its own
+  curvature — so `curve = 0` makes the two segments meeting there exactly straight, `curve = 1`
+  is uniform Catmull-Rom, and anything between bends proportionally. Two segments are never
+  worse than their ends allow, which is why a corner is straight rather than merely sharp.
+- **Every axis curves.** Height is interpolated by the same rule, so a route over a staircase is
+  a smooth climb and not a chord. Waypoints sit at `(x, y, z)` in map space with `y` on the floor
+  plane and `z` up, exactly like the map data around them.
+- **Closed paths.** `closed` adds the segment from the last waypoint back to the first, which is
+  what a patrol route or a looping orbit needs.
+- **Travel is by distance, not by segment.** [`pointAlong`](./shared/paths.js) takes `t` from 0
+  to 1 over the sampled arc length, so a walker keeps an even speed past waypoints that are spaced
+  unevenly. It returns the position and the heading in degrees, ready to drive an object's angle.
+- **One sampler, one density.** The editor, the game and any generated geometry all call
+  `samplePath`, twelve samples per segment by default. A route that looks curved in the editor is
+  the same curve in play, because it is the same function and the same number.
+
+The maths lives in [`shared/paths.js`](./shared/paths.js) with
+[`test/paths.test.js`](./test/paths.test.js) covering the parts that are easy to get subtly
+wrong: a two-point path stays straight at any curvature, a corner lies exactly on the chords,
+less curvature bends less, waypoints are hit exactly, height curves too, closed paths return to
+their first point, and travel is even across unevenly spaced points.
+
+Editing draws the sampled curve in both views — a 2D line over the map and a 3D line with
+waypoint cubes that keep a constant size on screen — and the waypoints are pickable in either, so
+the curve can be shaped from whichever view shows it best. A path with no `paths` key at all is a
+project that predates them and keeps working; the key is optional in the validator, required in
+shape once present (duplicate ids, out-of-range curvature and non-numeric coordinates are
+rejected).
 
 ### Editable Engine event sheets
 

@@ -1,4 +1,5 @@
 import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, ENTITY_TYPES } from '/shared/project.js';
+import { createPath, createPathPoint, samplePath, pathLength } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
@@ -76,6 +77,9 @@ let scriptScope = '$all';
 const collapsedGroups = new Set(), collapsedEvents = new Set();
 const openSpriteClips = new Set();
 let previewRenderer = null, previewLoading = false, mapSectors = [];
+// The path the Draw path tool is extending: the next click adds to it rather than starting a
+// second route on top of the first. Cleared when the tool changes or the path is finished.
+let activePathId = null;
 let previewGeneration = 0;
 let audioPlayer = null, audioContext = null, hudWarningShown = false, musicReported = false;
 let settingsRevision = -1, settingsStorageKey = '';
@@ -344,6 +348,7 @@ async function refreshScene() {
       remove: id => {
         try { edit(next => removeEntity(next, id), 'Object deleted'); } catch (error) { status(error.message, true); }
       },
+      pathPoint: point => addPathPoint(point),
       place: point => {
         try {
           const position = snap(point), type = $('entity-type').value;
@@ -391,6 +396,10 @@ function setSceneMode(mode) {
 }
 $('view-2d').addEventListener('click', () => setSceneMode('2d'));
 $('view-3d').addEventListener('click', () => setSceneMode('3d'));
+$('tool').addEventListener('change', () => {
+  if ($('tool').value !== 'path') finishPath();
+  else status('Draw path: click to place waypoints. Each one bends as the segment at its end allows; curve 0 is a corner.');
+});
 $('transform-mode').addEventListener('change', () => sceneEditor?.mode($('transform-mode').value));
 $('show-ceilings').addEventListener('change', () => sceneEditor?.ceilings($('show-ceilings').checked));
 $('show-areas').addEventListener('change', () => sceneEditor?.areas($('show-areas').checked));
@@ -831,6 +840,7 @@ function renderInspector() {
     if (project.importSource) parent.append(make('p', `Native UDMF import (${project.importSource.namespace}). Original map properties are retained as source provenance. Script execution and advanced map behavior are still incomplete.`, 'info'));
     return;
   }
+  if (selection.kind === 'path' || selection.kind === 'pathPoint') { renderPathInspector(); return; }
   const collection = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' }[selection.kind];
   const item = project.map[collection]?.find(value => value.id === selection.id);
   if (!item) { selection = null; renderInspector(); return; }
@@ -1030,6 +1040,73 @@ function renderInspector() {
   }
 }
 /**
+ * Properties of a path and of one of its waypoints.
+ *
+ * A path is a set of waypoints plus the curve through them, so this panel edits exactly those:
+ * the name, whether the route loops, and per waypoint its position and how sharply the curve
+ * passes through it. Curvature is offered as a slider because it is a feel, not a number.
+ */
+/** 0-1 curvature as a slider: a range input reports its value as text, so coerce it. */
+function curveSlider(value, onChange) {
+  const slider = input(value ?? 1, 'range', text => onChange(Number(text)));
+  slider.min = '0'; slider.max = '1'; slider.step = '0.05';
+  return slider;
+}
+function renderPathInspector() {
+  const parent = $('inspector');
+  parent.replaceChildren();
+  const path = (project.paths || []).find(item => item.id === (selection.kind === 'path' ? selection.id : selection.pathId));
+  if (!path) { selection = null; renderInspector(); return; }
+  const point = selection.kind === 'pathPoint' ? path.points.find(item => item.id === selection.id) : null;
+  if (selection.kind === 'pathPoint' && !point) { selection = { kind: 'path', id: path.id }; renderPathInspector(); return; }
+  $('selection-kind').textContent = selection.kind;
+  const changePath = (fn, message = 'Path changed') => edit(next => {
+    const target = next.paths.find(item => item.id === path.id);
+    if (!target) throw new Error('That path is no longer part of the map');
+    fn(target);
+  }, message);
+  const changePoint = (fn) => changePath(target => fn(target.points.find(item => item.id === point.id)), 'Waypoint changed');
+  if (point) {
+    const index = path.points.indexOf(point) + 1;
+    parent.append(make('h2', `Waypoint ${index} of ${path.name}`), make('p', point.id, 'muted'));
+    field(parent, 'X', input(Math.round(point.x), 'number', value => changePoint(target => { target.x = value; })));
+    field(parent, 'Y', input(Math.round(point.y), 'number', value => changePoint(target => { target.y = value; })));
+    field(parent, 'Height (Z)', input(Math.round(point.z || 0), 'number', value => changePoint(target => { target.z = value; })));
+    field(parent, 'Curve through this point', curveSlider(point.curve ?? 1, value => changePoint(target => { target.curve = value; })));
+    parent.append(make('p', 'Curve 0 makes a corner: the route goes straight in and straight out. Curve 1 sweeps through the waypoint. The segment at each end bends as much as *that* end allows, so a corner never kinks.', 'muted'),
+      button('Select the whole path', () => { selection = { kind: 'path', id: path.id }; render(); }),
+      button('Delete waypoint', () => {
+        changePath(target => { target.points = target.points.filter(item => item.id !== point.id); }, 'Waypoint deleted');
+        selection = { kind: 'path', id: path.id };
+        render();
+      }, 'danger'));
+    return;
+  }
+  parent.append(make('h2', path.name), make('p', `${path.points.length} waypoints · ${Math.round(pathLength(path))} units · ${path.id}`, 'muted'));
+  field(parent, 'Name', input(path.name, 'text', value => changePath(target => { target.name = value || 'Path'; })));
+  parent.append(checkbox('Closed loop', path.closed, value => changePath(target => { target.closed = value; }, value ? 'Path closed' : 'Path opened')),
+    make('p', 'A closed path comes back to its first waypoint and keeps going, which is what a patrol route needs.', 'muted'));
+  for (const [index, item] of path.points.entries()) {
+    const row = make('div', undefined, 'property-section');
+    row.append(make('strong', `${index + 1}. ${Math.round(item.x)}, ${Math.round(item.y)} @ ${Math.round(item.z || 0)}`));
+    field(row, 'Curve', curveSlider(item.curve ?? 1, value => changePath(target => { target.points[index].curve = value; }, 'Waypoint curvature changed')));
+    row.append(button('Select waypoint', () => { selection = { kind: 'pathPoint', id: item.id, pathId: path.id }; render(); }));
+    parent.append(row);
+  }
+  parent.append(button('Add waypoint at the end (or use Draw path)', () => {
+    const last = path.points.at(-1);
+    changePath(target => target.points.push(createPathPoint({ id: newId('p'),
+      x: (last?.x ?? 0) + 64, y: last?.y ?? 0, z: last?.z ?? 0, curve: 1 })), 'Waypoint added');
+  }));
+  parent.append(button('Delete path', () => {
+    edit(next => { next.paths = (next.paths || []).filter(item => item.id !== path.id); }, 'Path deleted');
+    if (activePathId === path.id) activePathId = null;
+    selection = null;
+    render();
+  }, 'danger'));
+}
+
+/**
  * Image assets a creator can pick for an action (sprays, decals, artwork): every asset
  * that is a picture, named so the list reads like the asset library.
  */
@@ -1213,6 +1290,11 @@ document.addEventListener('click', event => {
   if (!event.target.closest('#file-menu, #menu-toggle')) closeMenu();
 });
 document.addEventListener('keydown', event => { if (event.code === 'Escape' && !$('file-menu').hidden) { closeMenu(); $('menu-toggle').focus(); } });
+// Escape ends the route being drawn, which is how a mapper finishes a path without going back
+// to the toolbar; the tool stays on Draw path so the next click starts another one.
+document.addEventListener('keydown', event => {
+  if (event.code === 'Escape' && activePathId) finishPath();
+});
 
 // Rebuilt once per project, not once per rule: the event sheet asks for the object list
 // for every card (Owner, target and condition fields), and each rebuild allocated a
@@ -2090,6 +2172,43 @@ function snap(point) {
   const grid = Number($('grid').value);
   return { x: Math.round(point.x / grid) * grid, y: Math.round(point.y / grid) * grid };
 }
+/**
+ * Adds a waypoint to the path being drawn, starting one if none is open.
+ *
+ * The click position is snapped to the grid on x/y, and on z when it came from the map view:
+ * a waypoint placed on a ledge in 3D keeps the height it was clicked at, which is what makes a
+ * route over a staircase possible without typing numbers.
+ */
+function addPathPoint(point) {
+  const grid = Number($('grid').value);
+  const position = snap(point);
+  const height = point.z !== undefined ? point.z
+    : (sectorAt(mapSectors, position.x, position.y)?.floorHeight ?? 0);
+  let pathId = null, pointId = null;
+  try {
+    edit(next => {
+      next.paths ||= [];
+      let path = activePathId ? next.paths.find(item => item.id === activePathId) : null;
+      if (!path) {
+        path = createPath({ id: newId('path'), name: `Path ${next.paths.length + 1}` });
+        next.paths.push(path);
+      }
+      path.points.push(createPathPoint({ id: newId('p'), x: position.x, y: position.y,
+        z: Math.round(height / grid) * grid, curve: 1 }));
+      pathId = path.id; pointId = path.points.at(-1).id;
+    }, 'Waypoint added');
+  } catch (error) { status(error.message, true); return; }
+  activePathId = pathId;
+  selection = { kind: 'pathPoint', id: pointId, pathId };
+  render();
+  status(`Waypoint ${project.paths.find(path => path.id === pathId)?.points.length || 1} of ${project.paths.find(path => path.id === pathId)?.name || 'path'}. Keep clicking to shape the curve; change the tool to finish.`);
+}
+/** Ends the route being drawn, so the next click starts a new one. */
+function finishPath() {
+  if (!activePathId) return;
+  activePathId = null;
+  status('Path finished. Select a waypoint to change how sharply the curve passes through it.');
+}
 function fitMap() {
   if (sceneMode === '3d') { sceneEditor?.fit(); return; }
   const vertices = project.map.vertices;
@@ -2127,11 +2246,18 @@ function drawMap() {
   ctx.stroke();
   let display = project;
   if (drag?.kind === 'move') {
-    // Display-only overlay during a 2D drag: only the map changes.
+    // Display-only overlay during a 2D drag: only the map changes, and a waypoint drag only
+    // moves the path it belongs to.
     display = { ...project, map: structuredClone(project.map) };
-    const collection = drag.selection.kind === 'entity' ? display.map.entities : display.map.vertices;
-    const item = collection.find(item => item.id === drag.selection.id);
-    item.x += drag.end.x - drag.start.x; item.y += drag.end.y - drag.start.y;
+    const { kind, id, pathId } = drag.selection;
+    let item;
+    if (kind === 'pathPoint') {
+      display.paths = structuredClone(project.paths || []);
+      item = display.paths.find(path => path.id === pathId)?.points.find(point => point.id === id);
+    } else {
+      item = (kind === 'entity' ? display.map.entities : display.map.vertices).find(value => value.id === id);
+    }
+    if (item) { item.x += drag.end.x - drag.start.x; item.y += drag.end.y - drag.start.y; }
   }
   for (const wall of wallSegments(display)) {
     ctx.strokeStyle = selection?.id === wall.id ? '#ffffff' : wall.color;
@@ -2140,6 +2266,31 @@ function drawMap() {
     ctx.beginPath(); ctx.moveTo(wall.start.x, wall.start.y); ctx.lineTo(wall.end.x, wall.end.y); ctx.stroke();
   }
   ctx.setLineDash([]);
+  // Paths are drawn as the curve that will be walked, sampled by the same function the engine
+  // uses, so a waypoint's curvature reads the same here as it will in play.
+  for (const path of display.paths || []) {
+    const isSelected = selection?.kind === 'path' && selection.id === path.id;
+    const samples = samplePath(path);
+    if (samples.length > 1) {
+      ctx.strokeStyle = isSelected ? '#ffffff' : '#b18cff';
+      ctx.lineWidth = 2.5 / camera.zoom;
+      ctx.beginPath();
+      samples.forEach((sample, index) => index ? ctx.lineTo(sample.x, sample.y) : ctx.moveTo(sample.x, sample.y));
+      ctx.stroke();
+    }
+    for (const point of path.points) {
+      const active = selection?.kind === 'pathPoint' && selection.id === point.id && selection.pathId === path.id;
+      const size = (active ? 8 : 5) / camera.zoom;
+      ctx.fillStyle = active ? '#ffffff' : '#b18cff';
+      ctx.fillRect(point.x - size / 2, point.y - size / 2, size, size);
+      // A closed route shows where it rejoins, which is the whole difference between the two.
+      if (path.closed && path.points.length > 2) {
+        const first = path.points[0];
+        ctx.strokeStyle = '#b18cff'; ctx.lineWidth = 1 / camera.zoom;
+        ctx.beginPath(); ctx.arc(first.x, first.y, 10 / camera.zoom, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+  }
   if (camera.zoom > .18) for (const vertex of display.map.vertices) {
     const size = (selection?.id === vertex.id ? 7 : 4) / camera.zoom;
     ctx.fillStyle = selection?.id === vertex.id ? '#ffffff' : '#95abc0';
@@ -2215,6 +2366,12 @@ document.addEventListener('keydown', event => {
 });
 function hitTest(point) {
   const tolerance = 12 / camera.zoom;
+  // A waypoint is small and sits on top of the world, so it is tested before the objects
+  // underneath it; otherwise a route through a room could never be selected.
+  for (const path of project.paths || []) {
+    const hit = path.points.find(item => Math.hypot(item.x - point.x, item.y - point.y) < tolerance * .6);
+    if (hit) return { kind: 'pathPoint', id: hit.id, pathId: path.id };
+  }
   const entity = project.map.entities.find(item => Math.hypot(item.x - point.x, item.y - point.y) < tolerance);
   if (entity) return { kind: 'entity', id: entity.id };
   const vertex = project.map.vertices.find(item => Math.hypot(item.x - point.x, item.y - point.y) < tolerance * .7);
@@ -2239,6 +2396,7 @@ canvas.addEventListener('pointerdown', guard(event => {
     drag = { kind: 'pan', button: event.button, clientX: event.clientX, clientY: event.clientY, x: camera.x, y: camera.y,
       startX: event.clientX, startY: event.clientY, moved: false }; return;
   }
+  if ($('tool').value === 'path') { addPathPoint(point); return; }
   if ($('tool').value === 'room') { drag = { kind: 'room', start: snap(point), end: snap(point) }; return; }
   if ($('tool').value === 'entity') {
     const position = snap(point), type = $('entity-type').value;
@@ -2249,7 +2407,7 @@ canvas.addEventListener('pointerdown', guard(event => {
     return;
   }
   selection = hitTest(point);
-  if (selection && ['entity', 'vertex'].includes(selection.kind)) drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point) };
+  if (selection && ['entity', 'vertex', 'pathPoint'].includes(selection.kind)) drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point) };
   render();
 }));
 canvas.addEventListener('pointermove', event => {
@@ -2277,10 +2435,13 @@ canvas.addEventListener('pointerup', guard(event => {
   }
   if (finished.kind === 'move' && (finished.start.x !== finished.end.x || finished.start.y !== finished.end.y)) {
     edit(next => {
-      const collection = finished.selection.kind === 'entity' ? next.map.entities : next.map.vertices;
-      const item = collection.find(item => item.id === finished.selection.id);
+      const { kind, id, pathId } = finished.selection;
+      const item = kind === 'pathPoint'
+        ? next.paths?.find(path => path.id === pathId)?.points.find(point => point.id === id)
+        : (kind === 'entity' ? next.map.entities : next.map.vertices).find(value => value.id === id);
+      if (!item) throw new Error('That point is no longer part of the map');
       item.x += finished.end.x - finished.start.x; item.y += finished.end.y - finished.start.y;
-    }, 'Object moved');
+    }, finished.selection.kind === 'pathPoint' ? 'Waypoint moved' : 'Object moved');
   }
 }));
 canvas.addEventListener('pointercancel', () => { drag = null; mapNeedsDraw = true; });

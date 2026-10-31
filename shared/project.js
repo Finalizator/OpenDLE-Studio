@@ -12,6 +12,7 @@ import { MAX_SCENES, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
 import { MAX_JOINTS, validateJoint } from './joints.js';
 import { validatePanel } from './panel.js';
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
+import { MAX_PATHS, MAX_PATH_POINTS } from './paths.js';
 
 export const VERSION = 1;
 export const CONDITIONS = ['onStart', 'always', 'keyPressed', 'nearEntity', 'collisionStarted', 'collisionEnded', 'isTouching', 'playerGrounded', 'animationFinished', ...ENGINE_CONDITIONS.map(command => command.type)];
@@ -599,6 +600,35 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   assert(entities.filter(entity => entity.type === 'player').length === 1, 'A map must have exactly one player');
   // Scenes hold reusable objects and the events that script them; the objects keep
   // the same rules as map objects, but their identifiers live in the scene.
+  // Paths are waypoints and the curve between them. They belong to the layout rather than to
+  // any one object, because the same curve is a patrol route today and a generated ramp's
+  // spine tomorrow; whatever walks it only stores the path id.
+  if (project.paths !== undefined) {
+    array(project.paths, 'Paths', MAX_PATHS);
+    const pathIds = new Set();
+    for (const path of project.paths) {
+      object(path, 'Path');
+      identifier(path.id, 'Path ID');
+      assert(!pathIds.has(path.id), `Duplicate path ID: ${path.id}`);
+      pathIds.add(path.id);
+      text(path.name, 'Path name', 100);
+      assert(typeof path.closed === 'boolean', 'A path must say whether it is closed');
+      array(path.points, 'Path points', MAX_PATH_POINTS);
+      const pointIds = new Set();
+      for (const point of path.points) {
+        object(point, 'Path point');
+        identifier(point.id, 'Path point ID');
+        assert(!pointIds.has(point.id), `Duplicate ID in path ${path.name}: ${point.id}`);
+        pointIds.add(point.id);
+        number(point.x, 'Path point X');
+        number(point.y, 'Path point Y');
+        if (point.z !== undefined) number(point.z, 'Path point Z');
+        // Curvature is how much the route sweeps through this point: 0 is a corner, 1 a
+        // smooth pass. Anything outside that is clamped when sampling, so it is rejected here.
+        if (point.curve !== undefined) number(point.curve, 'Path point curvature', 0, 1);
+      }
+    }
+  }
   if (project.scenes !== undefined) {
     array(project.scenes, 'Scenes', MAX_SCENES);
     const sceneIds = new Set();
@@ -1076,6 +1106,9 @@ export function createProject() {
       ],
     },
     environment: { sky: '#172639', floor: '#272c34' },
+    // Curved routes are part of the layout from the start, so a walker, a camera or a
+    // generated ramp all have somewhere to hang: a list of waypoints and the curve through them.
+    paths: [],
     variables: { score: 0 },
     events: [
       { id: 'welcome', enabled: true, once: true, condition: { type: 'onStart' },
