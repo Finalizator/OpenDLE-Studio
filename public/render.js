@@ -5,6 +5,7 @@ import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv } from '/shared/uv.js';
+import { surfaceBrightness } from '/shared/light-levels.js';
 import { spriteAnchor } from '/shared/sprite-anchor.js';
 import { wallSegments } from '/shared/runtime.js';
 import { GLTFLoader } from '/vendor/three-addons/loaders/GLTFLoader.js';
@@ -54,6 +55,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
   renderer.setPixelRatio(1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.info.autoReset = false;
+  // The map's own lighting model (`lightmode` in MAPINFO), which decides how a sector's light
+  // number becomes a brightness. Doom's mode crushes it; the standard mode does not.
+  const lightMode = Number(project.environment.lightMode) || 0;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(project.environment.sky);
   const camera = new THREE.PerspectiveCamera(70, 800 / 450, 1, 40000);
@@ -450,7 +454,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
     }
     /** Records one surface for the merged buffers, keeping it owned by the part that built it. */
     function surface(positions, uvs, indices, surfaceMaterial, light, selection) {
-      const record = { positions, uvs, indices, light: Math.max(.03, light / 255), selection };
+      // Doom's lighting is not linear: a map that asks for `lightmode = 2` gets GZDoom's
+      // crushed curve, where light 136 is drawn at 87 rather than 136.
+      const record = { positions, uvs, indices, light: surfaceBrightness(light, lightMode), selection };
       batcher.add(surfaceMaterial.userData.batchKey, record);
       if (collecting) collecting.push(record);
       return record;
@@ -1481,7 +1487,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // walked on.
         const [qx, qy, qz, qw] = modelOrientation(entity);
         entry.mesh.quaternion.set(qx, qy, qz, qw);
-        const light = Math.max(.03, (sector?.light ?? 255) / 255);
+        const light = surfaceBrightness(sector?.light ?? 255, lightMode);
         applyBoxTexture(entry.mesh.material, entity, box);
         const tint = entity.spriteAsset ? '#ffffff' : entityColors[entity.type] || '#a6a4bc';
         entry.mesh.material.color.setRGB(light, light, light).multiply(new THREE.Color(tint));
@@ -1535,7 +1541,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
           anchor: Math.round(anchor * 100) / 100, z: entity.z, floor: sector.floorHeight, sector: sector.id,
           elevation: entity.elevation, drawnBottom: Math.round((sprite.position.y - height / 2) * 100) / 100,
         });
-        let red = Math.max(.03, (sector?.light ?? 255) / 255), green = red, blue = red;
+        let red = surfaceBrightness(sector?.light ?? 255, lightMode), green = red, blue = red;
         for (let light = 0; light < activeLights.length; light++) {
           const dx = sprite.position.x - lightPositions[light].x;
           const dy = sprite.position.y - lightPositions[light].y;

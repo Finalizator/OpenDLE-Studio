@@ -142,6 +142,9 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
     const route = routes.get(entry.id);
     const data = remap(levelData(project));
     applyLevelMusic(data, entry.id, route?.music, assets, warnings);
+    // The map's own lighting model travels with the level, the way its sky does: `lightmode = 2`
+    // is Doom's crushed brightness curve, which is the difference between a dark room and black.
+    if (route?.lightMode !== undefined) data.environment = { ...(data.environment || {}), lightMode: route.lightMode };
     // MAPINFO names and LANGUAGE keywords (`$TXT_MAP1`) resolve against the
     // project string table so the level list shows real names.
     const rawName = route?.name || entry.name || entry.id;
@@ -199,6 +202,10 @@ export function parseLevelRoutes(sources) {
       const id = match[1].replaceAll('"', '').toUpperCase(), route = { ...routes.get(id) };
       if (match[2]) route.name = match[2];
       const body = clean.slice(map.lastIndex, end - 1);
+      // `lightmode` is a number, not a name, so it is read on its own: Doom's own lighting is
+      // the difference between a dark room and a black one.
+      const lightMode = /\blightmode\s*=\s*(\d+)/i.exec(body);
+      if (lightMode) route.lightMode = Number(lightMode[1]);
       for (const field of body.matchAll(/\b(next|secretnext|music|sky1)\s*=\s*("[^"]*"|[a-zA-Z0-9_-]+)/gi)) {
         const value = field[2].replaceAll('"', '').toUpperCase();
         const key = field[1].toLowerCase();

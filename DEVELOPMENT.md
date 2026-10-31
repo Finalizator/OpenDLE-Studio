@@ -2399,11 +2399,12 @@ one-picture font occupies as many framebuffer pixels as the picture has, whateve
 That is why the logo fills most of a small preview and half of a 1080p one; the proportions in
 a GZDoom screenshot come from the resolution it was taken at, not from a different rule.
 
-What is still visibly different: the scene below the sky is black in our render where GZDoom
-shows mountains and the bed platform. That is the TITLEMAP's own lighting — its camera sector
-has light 0 — and our renderer lights each surface from its own sector, so the dark geometry
-reads as black. `lightmode = 2` in the map's MAPINFO is what GZDoom applies there, and it is not
-read yet.
+**A map's lighting model is part of the map.** `lightmode = 2` in MAPINFO selects Doom's own
+curve, where a sector's light number is not a linear brightness: GZDoom's `CalcLightLevel` takes
+light 136 down to 87, halves everything below 100, and leaves 192 and up alone.
+`shared/light-levels.js` implements that formula and the renderer now applies it per surface,
+sprite and collider box, so a map that asks for Doom lighting is drawn the way Doom draws it
+instead of with a linear ramp.
 
 ### Static world surfaces are merged, not one mesh each
 
