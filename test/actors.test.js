@@ -134,6 +134,47 @@ test('ZScript classes, defaults, inline frame bodies and inheritance are read wi
   assert.equal(actions.actions[0].named.fov, 360);
 });
 
+test('a ZScript class written in lowercase keeps its defaults', () => {
+  // GZDoom's own actors are spelled lowercase — `default { +NOGRAVITY }`, `States { ... }` —
+  // and requiring the capitalised section keywords dropped every default in them. That is how
+  // Lullaby's SecurityCamera lost `+NOGRAVITY` and fell out of the sky when the title map
+  // started, which read on screen as the whole scene sliding upwards.
+  const source = [
+    'class SecurityCamera : Actor',
+    '{',
+    '\tdefault',
+    '\t{',
+    '\t\t+NOBLOCKMAP ',
+    '\t\t+NOGRAVITY',
+    '\t\t+DONTSPLASH',
+    '\t\tRenderStyle "None";',
+    '\t\tCameraHeight 0;',
+    '\t}',
+    '',
+    '\tStates',
+    '\t{',
+    '\tSpawn:',
+    '\t\tTNT1 A 1;',
+    '\t\tStop;',
+    '\t}',
+    '}',
+  ].join('\n');
+  const camera = parseZScript(source).actors.find(actor => actor.name === 'SecurityCamera');
+  assert.equal(camera.flags.NOGRAVITY, true, 'the flag without a semicolon is read');
+  assert.equal(camera.flags.NOBLOCKMAP, true);
+  assert.equal(camera.flags.DONTSPLASH, true);
+  assert.equal(camera.properties.RenderStyle, 'None');
+  assert.equal(camera.properties.CameraHeight, 0);
+  assert.equal(camera.states.length, 1, 'the lowercase States block still yields a state table');
+  assert.equal(camera.states[0].label, 'Spawn');
+});
+
+test('two flags on one line are two flags', () => {
+  const source = 'class Bobbing : Actor { default { +FLOAT +NOGRAVITY } }';
+  const actor = parseZScript(source).actors.find(entry => entry.name === 'Bobbing');
+  assert.deepEqual(Object.keys(actor.flags).sort(), ['FLOAT', 'NOGRAVITY']);
+});
+
 test('inline frame bodies with statements report exactly what cannot run', () => {
   assert.deepEqual(frameBodyActions({ source: 'A_StartSound("fire");A_FireBullets(1,2,3,4)' }).actions.map(action => action.name),
     ['A_StartSound', 'A_FireBullets']);

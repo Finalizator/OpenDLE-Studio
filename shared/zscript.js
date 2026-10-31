@@ -99,6 +99,12 @@ function parseDefaults(body) {
     // Statements are separated by `;`, but flags such as `+FLOORCLIP` have none,
     // so a statement may still contain several newline-separated entries.
     for (const entry of statement.split('\n').map(line => line.trim()).filter(Boolean)) {
+      // `+FLOAT +NOGRAVITY` on one line is two flags, not one unparseable statement.
+      const parts = entry.split(/\s+/);
+      if (parts.length > 1 && parts.every(part => /^[+-][A-Za-z_]\w*$/.test(part))) {
+        for (const part of parts) parseDefaultEntry(part, properties, flags);
+        continue;
+      }
       parseDefaultEntry(entry, properties, flags);
     }
   }
@@ -272,7 +278,11 @@ function splitClassBody(body) {
   let index = 0;
   while (index < body.length) {
     const rest = body.slice(index);
-    const keywordMatch = /^\s*(Default|States|State)\s*\{/.exec(rest);
+    // ZScript keywords are case-insensitive here for the same reason the class one is:
+    // GZDoom's own actors are written lowercase (`default`, `States`), and requiring the
+    // capitalised spelling silently dropped every one of their defaults — which is how the
+    // title map's SecurityCamera lost `+NOGRAVITY` and fell out of the sky.
+    const keywordMatch = /^\s*(Default|States|State)\s*\{/i.exec(rest);
     if (keywordMatch) {
       const open = index + keywordMatch[0].length - 1;
       const close = matchBrace(body, open);

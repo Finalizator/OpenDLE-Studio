@@ -3252,6 +3252,14 @@ sector property. `shared/actor-runtime.js` (`stepThingGravity`) reads it, and th
 heights match GZDoom's trace exactly: tic 35 is z=1481 with speed −7, tic 70 is z=1117 with speed
 −14. `test/thing-gravity.test.js` pins those numbers.
 
+A flag the importer fails to read is a thing that falls. GZDoom's own actors are written
+lowercase — `default { +NOGRAVITY }`, `States { ... }` — and the section keywords used to be
+matched case-sensitively, so every default in gzdoom.pk3 was dropped. The title map's
+`SecurityCamera` therefore arrived without `NOGRAVITY` and dropped its 80 units of elevation on
+the first second of play, which reads on screen as the whole scene sliding upwards. Both keywords
+are matched case-insensitively now, and `test/actors.test.js` pins the lowercase form and two
+flags written on one line.
+
 Two rules keep it from interfering elsewhere. A thing whose actor cannot be resolved is left
 alone, because guessing would drop every prop on a map whose DECORATE could not be read. And a
 thing already at or below its floor is not corrected here — that is `settleGroundActors`, which
