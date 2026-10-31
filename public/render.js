@@ -142,6 +142,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
     position: uniform(position), color: uniform(lightColors[index]), radius: uniform(0),
   }));
   const effectTime = uniform(0), effectEnabled = uniform(1);
+  // Tics elapsed, for surfaces a map scrolls. The *speed* is baked per material (it comes from
+  // the line's special), so one shared clock drives every scroller in the level.
+  const scrollTics = uniform(0, 'float');
   // Height at which ceilings are cut away: the editor raises it while the camera is
   // below a room's ceiling so the room can be looked into from above. Far away means
   // "draw every ceiling", which is what gameplay wants.
@@ -479,14 +482,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // Sector light is a per-vertex attribute rather than a per-material uniform: a map
     // with a couple of hundred light levels would otherwise need a material per level
     // per texture, and the renderer keeps a pipeline for every material it draws.
-    function material(assetId, color = '#ffffff', { masked = false, oneSided = false, ceiling = false } = {}) {
+    function material(assetId, color = '#ffffff', { masked = false, oneSided = false, ceiling = false, scroll = null } = {}) {
       // A texture with soft alpha everywhere is a glow or a pane, not a silhouette: Doom's
       // shapes (and Lullaby's mountains) are cut with an alpha test, everything else is
       // blended. `masked` therefore only says the surface is not solid; the picture decides
       // how the holes are made.
       const alpha = (assetId && alphaModes.get(assetId)) || 'opaque';
       const blended = alpha === 'translucent' && !ceiling;
-      const key = `${assetId}/${color}/${masked}/${oneSided}/${ceiling}/${alpha}`;
+      const scrollKey = scroll ? `${scroll.u.toFixed(7)}/${scroll.v.toFixed(7)}` : '-';
+      const key = `${assetId}/${color}/${masked}/${oneSided}/${ceiling}/${alpha}/${scrollKey}`;
       if (materialCache.has(key)) return materialCache.get(key);
       const result = withEffect(new THREE.MeshBasicNodeMaterial({
         map: imageTexture(assetId), color: assetId ? '#ffffff' : color,
@@ -513,8 +517,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // linear space is what makes the displayed result `colour x light`.
       const shade = illumination.max(.03).pow(2.2);
       const aboveCamera = positionWorld.y.greaterThan(ceilingCut).select(1, 0);
-      result.colorNode = vec4(materialColor.rgb.mul(shade.min(vec3(2))),
-        ceiling ? materialColor.a.mul(aboveCamera) : materialColor.a);
+      // A scrolled surface samples the same picture at a moving coordinate, which is how Doom
+      // animates a wall: the geometry never moves, the texture slides across it.
+      const scrolled = scroll && assetId
+        ? texture(imageTexture(assetId), uv().add(vec2(scroll.u, scroll.v).mul(scrollTics)))
+        : null;
+      const colour = scrolled ?? materialColor;
+      result.colorNode = vec4(colour.rgb.mul(shade.min(vec3(2))),
+        ceiling ? colour.a.mul(aboveCamera) : colour.a);
       materials.add(result); materialCache.set(key, result); batchMaterials.set(key, result);
       return result;
     }
@@ -594,7 +604,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
         return sector ? `${sector.floorHeight}/${sector.ceilingHeight}/${sector.light}/${sector.sky ? 1 : 0}` : '-';
       };
       return `${wall.start.x},${wall.start.y}/${wall.end.x},${wall.end.y}/${wall.height}/${wall.assetId || ''}` +
-        `/${wall.color || ''}/${wall.solid ? 1 : 0}/${wall.flags || 0}/${side(wall.right)}/${side(wall.left)}` +
+        `/${wall.color || ''}/${wall.solid ? 1 : 0}/${wall.flags || 0}/${wall.special || 0}/${JSON.stringify(wall.args || null)}` +
+        `/${side(wall.right)}/${side(wall.left)}` +
         `/${area(wall.right?.sectorId)}/${area(wall.left?.sectorId)}`;
     }
     let rebuiltParts = 0;
@@ -634,6 +645,25 @@ export async function createPreview(canvas, project, state, { editor = false } =
         }
       });
     }
+    /**
+     * The texture speed a line's special gives its front sidedef, in UV units per tic.
+     *
+     * Boom's `Scroll_Texture_Left/Right/Up/Down` (100-103) are the wall scrollers GZDoom acts on:
+     * `maploader/specials.cpp` turns `args[0]` into `-args[0] / 64` units per tic on the front
+     * sidedef, rightwards scrolling taking the negative. It is not a no-op in GZDoom despite the
+     * `LS_NOP` placeholder in the line-special table, and Lullaby's title map scrolls every one
+     * of its 78 mountain walls with it — removing special 101 from the map stops the ridge line
+     * moving at all.
+     */
+    function scrollOf(wall, asset, slot) {
+      const special = wall.special;
+      if (!asset || !(special >= 100 && special <= 103)) return null;
+      const speed = (Number(wall.args?.[0]) || 0) / 64;
+      if (!speed) return null;
+      const u = (special === 100 ? speed : special === 101 ? -speed : 0) / (asset.width || 64);
+      const v = (special === 102 ? speed : special === 103 ? -speed : 0) / (asset.height || 64);
+      return u || v ? { u, v } : null;
+    }
     function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false, flip = false, slot = 'mid') {
       if (top <= bottom) return;
       const length = Math.hypot(b.x - a.x, b.y - a.y), asset = assetMap.get(assetId);
@@ -648,8 +678,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // and vertically, so the artwork's pixel density is per surface.
       const coords = wallQuadUv({ length, bottom, top, referenceTop, offsetX, offsetY,
         textureWidth: asset?.width || 64, textureHeight: asset?.height || 64, scale, flip });
+      // The scroller is attached to the line's *front* sidedef, so the back face never scrolls.
+      const scroll = side === wall.right ? scrollOf(wall, asset, slot) : null;
       surface([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], coords, [0, 1, 2, 0, 2, 3],
-        material(assetId, wall.color, { masked, oneSided: !editor }), light, { kind: 'wall', id: wall.id });
+        material(assetId, wall.color, { masked, oneSided: !editor, scroll }), light, { kind: 'wall', id: wall.id });
     }
     /**
      * The edge of a 3D floor: one quad per ring edge, between the control sector's planes.
@@ -1794,6 +1826,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const drawStarted = clock();
       renderCameraTextures(state);
       applySky(state);
+      // A map's scrollers advance one step per tic, so the clock is the level's tic count.
+      scrollTics.value = Math.max(0, (Number(state.time) || 0) * 35);
       if (backgroundScene.userData.skybox) backgroundScene.userData.skybox.position.copy(camera.position);
       else {
         const panorama = backgroundScene.userData.panorama;

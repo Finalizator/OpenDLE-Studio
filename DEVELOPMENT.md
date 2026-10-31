@@ -2457,6 +2457,24 @@ light`; the same bands measure 16.4 and 3.9 now. The gap that is left there is t
 area, not its brightness: our `CYAGRA2` strata are thin and bright where GZDoom's are broad and
 soft.
 
+**Boom's wall scrollers are not no-ops, and they are how the mountains move.** Line specials
+100-103 read as `LS_NOP` in GZDoom's line-special table, with a comment naming them
+`Scroll_Texture_Left/Right/Up/Down`, so the importer treated them as doing nothing. They are not
+no-ops: `maploader/specials.cpp` turns them into wall scrollers before the table is ever
+consulted, `args[0] / 64` units per tic applied to the line's **front** sidedef, and rightwards
+scrolling taking the negative. Lullaby's title map puts special 101 with `args[0] = 32` on all
+156 linedefs of its 78 mountain walls, so GZDoom slides that entire ridge line half a texture
+unit per tic while the geometry stands still. Stripping special 101 from every line in a copy of
+the mod stops the movement dead, which is how this was pinned down — four frames with a flat
+magenta sky, measuring the rock mask, moved `dx 0, gain 0%` without it and `-220 px` with it.
+
+The renderer now bakes each line's scroll speed into the material (so a batch of walls sharing a
+speed shares one material), samples the picture at `uv + speed * tics`, and drives them all from a
+single tic clock. Our own frames move `-165 px` over ten seconds with a 79 % match gain where the
+ridge used to be static. It also explains every failed earlier measurement: the scroller moves
+`side->textures[].TextureFx`, the animated offset, and not the sidedef's static `xOffset` that a
+`GetTextureXOffset` trace reads — so the values never change even while the surface slides.
+
 **A sidedef offsets each texture slot on its own, and a ring of walls depends on it.** UDMF
 lets a sidedef carry `offsetx`/`offsety` for all three textures *and* `offsetx_top`,
 `offsetx_mid`, `offsetx_bottom` (and the matching `y` and `scale` fields) for one slot each. The

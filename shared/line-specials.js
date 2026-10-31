@@ -93,14 +93,24 @@ export function specialLabel(special, format = 'zdoom') {
   return `${special} ${specialName(special, format)}`;
 }
 
-/** Specials that are defined as "do nothing" in GZDoom's own table. */
-const NOP_SPECIALS = new Set([0, 1, 5, 9, 16, 48, 50, 57, 58, 100, 101, 102, 103, 108, 118, 121, 122, 123, 124, 126,
+/**
+ * Specials that are defined as "do nothing" in GZDoom's own table.
+ *
+ * 100-103 are deliberately absent: those slots hold `LS_NOP` placeholders commented
+ * `Scroll_Texture_Left/Right/Up/Down`, but the map loader turns them into real wall scrollers
+ * (`maploader/specials.cpp`: `args[0] / 64` units per tic on the front sidedef) before the
+ * special table is ever consulted. Treating them as no-ops left every one of Lullaby's 78
+ * mountain walls standing still while GZDoom's slid past the camera.
+ */
+const NOP_SPECIALS = new Set([0, 1, 5, 9, 16, 48, 50, 57, 58, 108, 118, 121, 122, 123, 124, 126,
   141, 142, 143, 144, 145, 146, 147, 148, 149, 152, 153, 155, 156, 160, 161, 162, 163, 164, 165, 166, 167, 181, 182,
   190, 209, 210, 211, 222, 225]);
 
 /** Specials this runtime performs; used for import warnings and the editor. */
 export const SUPPORTED_SPECIALS = new Set([
   10, 11, 12, 13, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31, 32, 35, 36, 37, 40, 41, 42, 43, 44, 45, 47, 53, 55, 60, 61,
+  // Boom's wall scrollers: the plane is drawn with a moving texture coordinate.
+  100, 101, 102, 103,
   62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 73, 74, 75, 80, 81, 82, 83, 84, 85, 95, 96, 99, 105, 106, 109, 110, 111,
   112, 113, 114, 115, 116, 117, 119, 125, 130, 131, 132, 133, 134, 135, 136, 137, 139, 192, 196, 202, 206, 214, 226,
   228, 230,
