@@ -460,7 +460,8 @@ function fallbackMovement(state) {
  */
 function advanceScreenFade(state, dt) {
   const target = state.screenFade;
-  if (!target) { state.screenFadeNow = null; return; }
+  // No target means no fade is *in progress*; whatever the last one left on screen stays.
+  if (!target) return;
   state.fadeClock = (state.fadeClock || 0) + dt;
   const from = state.screenFadeFrom || { red: target.red, green: target.green, blue: target.blue, amount: 0 };
   const progress = target.seconds > 0 ? Math.min(1, state.fadeClock / target.seconds) : 1;
@@ -468,8 +469,10 @@ function advanceScreenFade(state, dt) {
   const now = { red: mix(from.red, target.red), green: mix(from.green, target.green),
     blue: mix(from.blue, target.blue), amount: mix(from.amount, target.amount) };
   state.screenFadeNow = now.amount > 0.002 ? now : null;
-  // A finished fade stops being a target, so a later `FadeTo` starts from black rather than
-  // from the colour it faded to minutes ago.
+  // A finished fade stops being a *target*, but what it left on screen stays: an instant
+  // `FadeTo` to black must hold until a later one takes it away, which is exactly what the
+  // title map does one second later. Clearing the picture here made the black vanish on the
+  // next frame and the fade-in start from nothing.
   if (progress >= 1) { state.screenFade = null; state.screenFadeFrom = null; }
 }
 

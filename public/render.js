@@ -549,7 +549,16 @@ export async function createPreview(canvas, project, state, { editor = false } =
     rebuiltParts = 0;
     worldParts = [];
     const sectorMap = new Map(geometry.map(sector => [sector.id, sector]));
+    // A 3D floor's control sector is a closet outside the level: it exists to give the floor
+    // its heights and textures, and GZDoom never draws it, because the player can never see
+    // into it. Drawing it puts the closet's walls on screen — Lullaby's sit 3000 units out and
+    // their red side textures read as long lines across the sky.
+    const controlSectors = new Set();
+    for (const sector of geometry) for (const floor of sector.threeDFloors || []) {
+      if (floor.controlId) controlSectors.add(floor.controlId);
+    }
     for (const sector of geometry) {
+      if (controlSectors.has(sector.id)) return;
       seen.add(`sector:${sector.id}`);
       worldPart(`sector:${sector.id}`, [sector.id], sectorSignature(sector), () => {
         if (sector.ceilingHeight <= sector.floorHeight) return;
@@ -613,6 +622,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
         }
         return;
       }
+      if (wall.right && !wall.left && controlSectors.has(wall.right.sectorId)) return;
+      if (wall.left && !wall.right && controlSectors.has(wall.left.sectorId)) return;
       for (const [side, back, a, b, flip] of [[wall.right, wall.left, wall.start, wall.end, false], [wall.left, wall.right, wall.end, wall.start, true]]) {
         if (!side) continue;
         const frontSector = sectorMap.get(side.sectorId), backSector = sectorMap.get(back?.sectorId);
