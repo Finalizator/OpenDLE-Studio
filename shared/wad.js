@@ -292,7 +292,11 @@ function actorRoleOf(actor, byName) {
     current = current.parent ? byName.get(String(current.parent).toLowerCase()) || null : null;
   }
   const names = new Set(chain.map(item => String(item.name).toLowerCase()));
-  if (names.has('sectoraction') || names.has('dynamiclight') || names.has('teleportdest') || flags.INVISIBLE) return null;
+  // Markers draw nothing. `TeleportDest`, `TeleportDest2`, `TeleportDest3` and `Waterzone` are
+  // all markers, so a prefix match is what keeps a map's 24 teleport destinations from being
+  // reported — and drawn — as twenty-four grey boxes in the sky.
+  const marker = [...names].some(name => /^(sectoraction|dynamiclight|teleportdest|waterzone|mapspot|interpolationpoint|pathfollower|movingcamera)$/.test(name));
+  if (marker || flags.INVISIBLE) return null;
   if (flags.MONSTER || (flags.COUNTKILL && (actor.health || 0) > 0)) return 'enemy';
   if (names.has('inventory') || names.has('pickup') || names.has('custominventory')) return 'pickup';
   return 'decoration';
