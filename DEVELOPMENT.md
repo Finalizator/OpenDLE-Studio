@@ -570,8 +570,8 @@ marker. Physics bodies stay at their authored positions while editing.
   corner (straight in, straight out), 1 sweeps through, and the segment at each
   end bends only as much as that end allows, so a corner never kinks. Escape or
   changing the tool finishes the route. Click a violet waypoint cube in either
-  view to select it and edit its position or curvature in Properties; dragging
-  it moves the curve with it. See [Paths](#paths-a-curve-through-waypoints).
+  view to select it and edit its position or curvature in Properties. See
+  [Paths](#paths-a-curve-through-waypoints).
 - **Show ceilings** defaults off so interiors remain accessible from above;
   toggle it for the complete enclosed scene. Ceiling height handles work even
   while ceilings are hidden. Escape, blur or cancelled gestures discard an
@@ -621,7 +621,17 @@ their first point, and travel is even across unevenly spaced points.
 
 Editing draws the sampled curve in both views — a 2D line over the map and a 3D line with
 waypoint cubes that keep a constant size on screen — and the waypoints are pickable in either, so
-the curve can be shaped from whichever view shows it best. A path with no `paths` key at all is a
+the curve can be shaped from whichever view shows it best. Two gestures move one:
+
+- **Grab a waypoint cube** in 3D and drag it: it slides on the horizontal plane it sits at, the
+  curve follows live, and the whole drag is one undo step.
+- **Select a waypoint** and it grows the same three coloured axis arrows an object has (red = map
+  X, blue = map Y, green = height), for the moves the first gesture cannot express — a single
+  axis, or a change of height. Dragging an arrow moves that waypoint only, and the value snaps to
+  the grid the same way vertices and objects do.
+
+The pointer's current drag is published as `canvas.dataset.action` (`transform:x`, `pathPoint`,
+`room`, …), which is how the two gestures above can be followed from outside the canvas. A path with no `paths` key at all is a
 project that predates them and keeps working; the key is optional in the validator, required in
 shape once present (duplicate ids, out-of-range curvature and non-numeric coordinates are
 rejected).

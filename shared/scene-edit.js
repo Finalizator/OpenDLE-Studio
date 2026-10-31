@@ -2,6 +2,18 @@ import { sectorAt, sectorGeometry } from './sectors.js';
 
 const wrapAngle = value => ((value % 360) + 540) % 360 - 180;
 
+/**
+ * The waypoint a `pathPoint` selection names, and the path it belongs to.
+ *
+ * A waypoint is not in `map.entities` or anywhere else the drag code already looks, so it is
+ * resolved by path id first: two paths may each have a point with the same id after a copy,
+ * and only the pair identifies one.
+ */
+function waypointOf(project, selection) {
+  const path = (project.paths || []).find(item => item.id === selection.pathId);
+  return { path, point: path?.points.find(point => point.id === selection.id) };
+}
+
 /** Yaw plus the model tilt a rotate drag asked for; a zero tilt is removed. */
 function applyRotation(item, origin, delta) {
   if (delta.angle) item.angle = (origin.angle || 0) + delta.angle;
@@ -13,6 +25,15 @@ function applyRotation(item, origin, delta) {
 
 export function transformSelection(project, selection, mode, delta, grid) {
   const snap = value => Math.round(value / grid) * grid;
+  if (selection.kind === 'pathPoint') {
+    if (mode !== 'move') throw new Error('Rotation and scale apply to objects only');
+    const { point } = waypointOf(project, selection);
+    if (!point) throw new Error('Selected waypoint no longer exists');
+    point.x = snap(point.x + (delta.x || 0));
+    point.y = snap(point.y + (delta.y || 0));
+    point.z = snap((point.z || 0) + (delta.z || 0));
+    return;
+  }
   const collections = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' };
   const item = project.map[collections[selection.kind]]?.find(item => item.id === selection.id);
   if (!item) throw new Error('Selected scene element no longer exists');
@@ -54,6 +75,19 @@ export function transformSelection(project, selection, mode, delta, grid) {
  */
 export function dragSelection(project, baseline, selection, mode, delta, grid) {
   const snap = value => Math.round(value / grid) * grid;
+  if (selection.kind === 'pathPoint') {
+    if (mode !== 'move') throw new Error('Rotation and scale apply to objects only');
+    const { point } = waypointOf(project, selection);
+    const origin = waypointOf(baseline, selection).point;
+    if (!point) throw new Error('Selected waypoint no longer exists');
+    if (!origin) throw new Error('The drag started from a project state that no longer exists');
+    point.x = delta.x ? snap(origin.x + delta.x) : origin.x;
+    point.y = delta.y ? snap(origin.y + delta.y) : origin.y;
+    // Height has no floor to stand on: a waypoint is wherever the route needs it, so a drag
+    // that never touched the vertical handle leaves it exactly where it was.
+    point.z = delta.z ? snap((origin.z || 0) + delta.z) : (origin.z || 0);
+    return;
+  }
   const collections = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' };
   const collection = collections[selection.kind];
   const item = project.map[collection]?.find(item => item.id === selection.id);

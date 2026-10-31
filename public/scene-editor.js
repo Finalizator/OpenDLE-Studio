@@ -456,18 +456,26 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     } else if (kind === 'vertex') {
       const vertex = vertexById.get(id); if (!vertex) { clearHandles(); return; }
       position = new THREE.Vector3(vertex.x, (vertexHeights.get(id) || 0) + 4, vertex.y);
-    } else if (kind === 'path' || kind === 'pathPoint') {
-      // A path is edited through its waypoints and its inspector, so it gets no axis gizmo:
-      // dragging a whole route with three coloured bars would move the map, not the curve.
+    } else if (kind === 'pathPoint') {
+      // A waypoint gets the same three axis arrows as an object, because dragging one is how a
+      // route is shaped: the arrows move that waypoint and the curve follows it. It has no
+      // bounding box of its own, so only the position below is used.
       rebuildPaths();
-      const path = (project.paths || []).find(item => item.id === (kind === 'path' ? id : selected.pathId));
-      const point = kind === 'pathPoint' ? path?.points.find(item => item.id === id) : null;
+      const path = (project.paths || []).find(item => item.id === selected.pathId);
+      const point = path?.points.find(item => item.id === id);
+      if (!point) { clearHandles(); return; }
+      hideReadout();
+      position = new THREE.Vector3(point.x, point.z || 0, point.y);
+    } else if (kind === 'path') {
+      // A whole path is edited through its waypoints and its inspector: three bars at one
+      // waypoint would suggest that dragging there moves the entire route.
+      rebuildPaths();
+      const path = (project.paths || []).find(item => item.id === id);
       if (!path) { clearHandles(); return; }
-      const anchor = point || path.points[0];
-      if (!anchor) { clearHandles(); return; }
       canvas.dataset.sceneSelection = `${kind}:${id}`;
       hideReadout();
-      handles.position.set(anchor.x, anchor.z || 0, anchor.y);
+      const anchor = path.points[0];
+      handles.position.set(anchor?.x ?? 0, anchor?.z || 0, anchor?.y ?? 0);
       selectionOutline.visible = false; clearHandles();
       return;
     } else if (kind === 'wall') {
@@ -829,6 +837,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       return;
     }
     callbacks.select(selection, { additive: Boolean(event.ctrlKey || event.metaKey) });
+    // A waypoint cube can be grabbed and dragged straight away, which is how a route is usually
+    // reshaped: pick it up where it is and drop it where it belongs. The axis arrows that appear
+    // on selection are for the moves this cannot express — height, and a single axis.
+    if (hit?.object.userData.pathPoint) {
+      const point = hit.object.position.clone();
+      action = { kind: 'pathPoint', selection: { ...selection }, x: event.clientX, y: event.clientY,
+        start: point, end: point.clone(), baseline: project, moved: false };
+    }
   });
   listen(canvas, 'pointermove', event => {
     lastPointer = { clientX: event.clientX, clientY: event.clientY };
@@ -843,6 +859,18 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (action.kind === 'room') {
       const point = planePoint(action.start.y);
       if (point) { action.end.copy(point); updateRoomOutline(action.start, action.end, action.start.y + 1); }
+      return;
+    }
+    if (action.kind === 'pathPoint') {
+      if (!action.moved && Math.hypot(event.clientX - action.x, event.clientY - action.y) < 4) return;
+      action.moved = true;
+      const point = planePoint(action.start.y);
+      if (!point) return;
+      action.end.copy(point);
+      const delta = { x: action.end.x - action.start.x, y: action.end.z - action.start.z, z: 0 };
+      liveDrag(action.selection, action.baseline, 'move', delta,
+        `Waypoint ${Math.round(action.end.x)}, ${Math.round(action.end.z)}`);
+      handles.position.copy(action.end);
       return;
     }
     if (action.kind === 'surface') {
@@ -904,8 +932,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       callbacks.liveFinish(`3D ${name} height ${completed.endHeight}`);
       return;
     }
+    if (completed.kind === 'pathPoint') {
+      hideReadout();
+      if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
+      callbacks.liveFinish(`3D waypoint moved to ${Math.round(completed.end.x)}, ${Math.round(completed.end.z)}`);
+      return;
+    }
     if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
-    callbacks.liveFinish(`3D ${mode}`);
+    callbacks.liveFinish(completed.selection?.kind === 'pathPoint' ? '3D waypoint moved' : `3D ${mode}`);
   });
   function cancel() {
     action = null; keys.clear(); roomOutline.visible = false;
@@ -1004,6 +1038,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // Screen positions of the gizmo and the selection box, so a drag can be
       // followed (and regression-tested) from the outside.
       canvas.dataset.handlesAt = handles.visible ? screenOf(handles.position) : '';
+      // What the pointer is doing right now: a drag kind ('transform', 'pathPoint', 'room'…),
+      // so an interaction can be followed from outside the canvas.
+      canvas.dataset.action = action ? `${action.kind}${action.axis ? `:${action.axis}` : ''}` : '';
       canvas.dataset.outlineAt = selectionOutline.visible ? screenOf(selectionOutline.position) : '';
     },
     ceilings(visible) { showCeilings = Boolean(visible); updateCeilings(0, true); },

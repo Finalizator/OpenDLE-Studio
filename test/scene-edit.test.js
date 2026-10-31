@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addRoom, createProject, validateProject } from '../shared/project.js';
 import { dragSelection, transformSelection } from '../shared/scene-edit.js';
+import { createPath } from '../shared/paths.js';
 
 const delta = (values = {}) => ({ x: 0, y: 0, z: 0, ...values });
 test('3D object movement snaps edited axes, preserves untouched axes and authored project validation', () => {
@@ -109,4 +110,38 @@ test('live drags refuse to invent selections that the baseline never had', () =>
   broken.map.walls = broken.map.walls.filter(item => item.id !== wall.id);
   assert.throws(() => dragSelection(project, broken, { kind: 'wall', id: wall.id }, 'move', { x: 16, y: 0, z: 0 }, 16),
     /drag started/);
+});
+
+test('a waypoint drags in three axes and leaves the other axes where they were', () => {
+  const project = createProject();
+  project.paths = [createPath({ id: 'path_1', name: 'Route',
+    points: [{ id: 'a', x: 160, y: -32, z: 0, curve: 1 }, { id: 'b', x: 320, y: 64, z: 16, curve: 1 }] })];
+  validateProject(project);
+  const selection = { kind: 'pathPoint', id: 'b', pathId: 'path_1' };
+  const baseline = structuredClone(project);
+  const point = () => project.paths[0].points[1];
+
+  // Horizontal drags snap to the grid on both map axes.
+  dragSelection(project, baseline, selection, 'move', { x: 17, y: -9, z: 0 }, 16);
+  assert.deepEqual([point().x, point().y, point().z], [336, 48, 16], 'snapped x/y, untouched height');
+
+  // The vertical handle moves only the height, and it snaps too.
+  dragSelection(project, baseline, selection, 'move', { x: 0, y: 0, z: 21 }, 16);
+  assert.deepEqual([point().x, point().y, point().z], [320, 64, 32], 'x/y restored from the baseline');
+
+  // Both at once, from the same baseline: a drag re-runs each frame, so it has to be absolute.
+  dragSelection(project, baseline, selection, 'move', { x: -64, y: 0, z: 16 }, 16);
+  assert.deepEqual([point().x, point().y, point().z], [256, 64, 32]);
+
+  transformSelection(project, selection, 'move', { x: 16, y: 0, z: 0 }, 16);
+  assert.equal(point().x, 272, 'incremental moves stack');
+  assert.throws(() => transformSelection(project, selection, 'rotate', { angle: 90 }, 16), /objects only/);
+  assert.throws(() => dragSelection(project, baseline, { kind: 'pathPoint', id: 'missing', pathId: 'path_1' }, 'move', { x: 16, y: 0, z: 0 }, 16),
+    /no longer exists/);
+  validateProject(project);
+  // A waypoint belongs to one path, so the same point id in another path is a different point.
+  project.paths.push(createPath({ id: 'path_2', name: 'Other', points: [{ id: 'a', x: 0, y: 0, z: 0, curve: 1 }] }));
+  const second = structuredClone(project);
+  dragSelection(project, second, { kind: 'pathPoint', id: 'a', pathId: 'path_2' }, 'move', { x: 32, y: 0, z: 0 }, 16);
+  assert.deepEqual([project.paths[1].points[0].x, project.paths[0].points[0].x], [32, 160], 'only the named path moved');
 });
