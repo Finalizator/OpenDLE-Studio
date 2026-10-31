@@ -569,8 +569,10 @@ marker. Physics bodies stay at their authored positions while editing.
   while it is being built. Every waypoint carries its own **curve**: 0 is a
   corner (straight in, straight out), 1 sweeps through, and the segment at each
   end bends only as much as that end allows, so a corner never kinks. Escape or
-  changing the tool finishes the route. Click a violet waypoint cube in either
-  view to select it and edit its position or curvature in Properties. See
+  **Escape or a right click finishes the route and returns the tool to Select** —
+  Draw path is a mode, and a mode the pointer cannot leave is a trap, so both ways
+  out end it whether or not a waypoint was placed. Click a violet waypoint cube in
+  either view to select it and edit its position or curvature in Properties. See
   [Paths](#paths-a-curve-through-waypoints).
 - **Show ceilings** defaults off so interiors remain accessible from above;
   toggle it for the complete enclosed scene. Ceiling height handles work even
@@ -625,6 +627,8 @@ the curve can be shaped from whichever view shows it best. Two gestures move one
 
 - **Grab a waypoint cube** in 3D and drag it: it slides on the horizontal plane it sits at, the
   curve follows live, and the whole drag is one undo step.
+- **Leave the mode** with Escape or a right click when the route is finished; the tool returns to
+  Select, so the next click selects instead of extending the route.
 - **Select a waypoint** and it grows the same three coloured axis arrows an object has (red = map
   X, blue = map Y, green = height), for the moves the first gesture cannot express — a single
   axis, or a change of height. Dragging an arrow moves that waypoint only, and the value snaps to
@@ -2293,7 +2297,7 @@ always lands on a floor, so hiding the entry behind a patch of sky would be absu
 It lists every `ENTITY_TYPES` entry — so a new object type appears there without
 touching the menu — and then **Path (waypoints)**, which starts a route at the clicked
 point and leaves the Draw path tool active, so the following clicks extend the same
-route. Objects land where the pointer is pointing rather than at the view centre.
+route until Escape or a right click ends it. Objects land where the pointer is pointing rather than at the view centre.
 
 An item with `submenu: [...]` opens a second panel beside itself on hover or focus
 (click on touch, ArrowRight from the keyboard), flips to the left edge when it would

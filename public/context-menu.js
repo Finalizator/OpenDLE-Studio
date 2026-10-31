@@ -57,7 +57,9 @@ function makeMenuItem(item, owner) {
     chevron.className = 'context-menu-chevron';
     chevron.textContent = '\u25b8';
     button.append(chevron);
-    button.addEventListener('pointerenter', () => owner.openSubmenu(item, button));
+    // The panel appears under the pointer that opened it, and a submenu that pops open because
+    // the cursor happened to be over its item is noise: wait for a real move.
+    button.addEventListener('pointerenter', () => { if (owner.hoverReady()) owner.openSubmenu(item, button); });
     button.addEventListener('focus', () => owner.openSubmenu(item, button));
     button.addEventListener('click', event => {
       event.preventDefault();
@@ -100,6 +102,9 @@ export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
   const list = (items || []).filter(Boolean);
   if (!list.length) return null;
   const state = { menu: null, children: [], anchor };
+  let pointerMoved = false;
+  const onFirstMove = () => { pointerMoved = true; document.removeEventListener('pointermove', onFirstMove, true); };
+  document.addEventListener('pointermove', onFirstMove, true);
   const build = (entries, label2, parentItem) => {
     const panel = document.createElement('div');
     panel.className = 'context-menu';
@@ -148,7 +153,7 @@ export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
     const first = panel.querySelector('.context-menu-item:not([disabled])');
     first?.focus({ preventScroll: true });
   };
-  const owner = { openSubmenu, submenuFor, closeSubmenus };
+  const owner = { openSubmenu, submenuFor, closeSubmenus, hoverReady: () => pointerMoved };
   const menu = build(list, label);
   if (!menu.querySelector('.context-menu-item')) return null;
   state.menu = menu;
@@ -225,6 +230,7 @@ export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
   ];
   for (const [target, type, handler, capture] of listeners) target.addEventListener(type, handler, capture);
   open.cleanup = () => {
+    document.removeEventListener('pointermove', onFirstMove, true);
     for (const [target, type, handler, capture] of listeners) target.removeEventListener(type, handler, capture);
   };
   return menu;

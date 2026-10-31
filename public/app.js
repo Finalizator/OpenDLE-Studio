@@ -349,6 +349,7 @@ async function refreshScene() {
         try { edit(next => removeEntity(next, id), 'Object deleted'); } catch (error) { status(error.message, true); }
       },
       pathPoint: point => addPathPoint(point),
+      clearTool: () => finishPath(),
       place: point => {
         try {
           const position = snap(point), type = $('entity-type').value;
@@ -397,7 +398,7 @@ function setSceneMode(mode) {
 $('view-2d').addEventListener('click', () => setSceneMode('2d'));
 $('view-3d').addEventListener('click', () => setSceneMode('3d'));
 $('tool').addEventListener('change', () => {
-  if ($('tool').value !== 'path') finishPath();
+  if ($('tool').value !== 'path') finishPath({ select: false });
   else status('Draw path: click to place waypoints. Each one bends as the segment at its end allows; curve 0 is a corner.');
 });
 $('transform-mode').addEventListener('change', () => sceneEditor?.mode($('transform-mode').value));
@@ -1290,10 +1291,11 @@ document.addEventListener('click', event => {
   if (!event.target.closest('#file-menu, #menu-toggle')) closeMenu();
 });
 document.addEventListener('keydown', event => { if (event.code === 'Escape' && !$('file-menu').hidden) { closeMenu(); $('menu-toggle').focus(); } });
-// Escape ends the route being drawn, which is how a mapper finishes a path without going back
-// to the toolbar; the tool stays on Draw path so the next click starts another one.
+// Escape leaves Draw path, which is how a mapper finishes a route without going back to the
+// toolbar. It works even before the first waypoint: the mode itself is what has to end.
 document.addEventListener('keydown', event => {
-  if (event.code === 'Escape' && activePathId) finishPath();
+  if (event.code !== 'Escape') return;
+  if (activePathId || $('tool').value === 'path') finishPath();
 });
 
 // Rebuilt once per project, not once per rule: the event sheet asks for the object list
@@ -2201,13 +2203,24 @@ function addPathPoint(point) {
   activePathId = pathId;
   selection = { kind: 'pathPoint', id: pointId, pathId };
   render();
-  status(`Waypoint ${project.paths.find(path => path.id === pathId)?.points.length || 1} of ${project.paths.find(path => path.id === pathId)?.name || 'path'}. Keep clicking to shape the curve; change the tool to finish.`);
+  status(`Waypoint ${project.paths.find(path => path.id === pathId)?.points.length || 1} of ${project.paths.find(path => path.id === pathId)?.name || 'path'}. Keep clicking to shape the curve; Escape or a right click finishes.`);
 }
 /** Ends the route being drawn, so the next click starts a new one. */
-function finishPath() {
-  if (!activePathId) return;
+/**
+ * Leaves Draw path: the route being extended is closed and the tool goes back to Select.
+ *
+ * Draw path is a mode, and a mode the pointer cannot escape is a trap — one left click anywhere
+ * kept adding waypoints. Escape and a right click both call this, and `select: false` is for the
+ * toolbar, where the tool has already changed to whatever the mapper picked.
+ */
+function finishPath({ select = true } = {}) {
+  const drawing = activePathId || $('tool').value === 'path';
   activePathId = null;
-  status('Path finished. Select a waypoint to change how sharply the curve passes through it.');
+  if (select && $('tool').value === 'path') $('tool').value = 'select';
+  if (!drawing) return;
+  status(select
+    ? 'Path finished, back to Select. Right-click or pick Draw path to start another route.'
+    : 'Path finished.');
 }
 function fitMap() {
   if (sceneMode === '3d') { sceneEditor?.fit(); return; }
@@ -2393,6 +2406,9 @@ canvas.addEventListener('pointerdown', guard(event => {
     if (entity) { selectObject(entity, true); return; }
   }
   if (event.button === 2 || event.button === 1) {
+    // A right click is the other way out of Draw path: it finishes the route and then does what
+    // a right click always does — pans, or opens the menu if the button never moved.
+    if (event.button === 2) finishPath();
     drag = { kind: 'pan', button: event.button, clientX: event.clientX, clientY: event.clientY, x: camera.x, y: camera.y,
       startX: event.clientX, startY: event.clientY, moved: false }; return;
   }

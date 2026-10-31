@@ -803,8 +803,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     canvas.focus();
     try { canvas.setPointerCapture(event.pointerId); } catch { /* capture is best effort */ }
     cast(event);
-    // The right button flies the camera; a right click that never moves opens the menu.
+    // The right button flies the camera; a right click that never moves opens the menu. Either
+    // way it gives up whatever drawing tool was armed, so a click cannot keep adding geometry.
     if (event.button === 2) {
+      callbacks.clearTool?.();
       action = { kind: 'fly', x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
       return;
     }

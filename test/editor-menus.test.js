@@ -48,3 +48,20 @@ test('a submenu is not closed by the pointer crossing the parent menu', () => {
     'hovering a parent item does not close the open submenu');
   assert.match(menu, /closeSubmenus\(1\)/, 'Escape and ArrowLeft still step out of it');
 });
+
+test('Draw path is a mode that Escape and a right click can leave', () => {
+  const app = memo('app.js');
+  // Leaving the tool returns to Select, so a later left click selects instead of adding a
+  // waypoint — the trap the tool had: click anywhere and the route grew.
+  assert.match(app, /function finishPath\(\{ select = true \} = \{\}\)/);
+  assert.match(app, /if \(select && \$\('tool'\)\.value === 'path'\) \$\('tool'\)\.value = 'select';/);
+  // The toolbar's own change handler must not drag the tool back to Select after the mapper
+  // picked something else.
+  assert.match(app, /finishPath\(\{ select: false \}\)/);
+  // Escape works even before the first waypoint: the mode itself has to end.
+  assert.match(app, /if \(activePathId \|\| \$\('tool'\)\.value === 'path'\) finishPath\(\);/);
+  // A right press leaves the mode in both views: the map's own pointerdown, and the 3D view
+  // through its callback.
+  assert.match(app, /if \(event\.button === 2\) finishPath\(\);/);
+  assert.match(memo('scene-editor.js'), /callbacks\.clearTool\?\.\(\)/);
+});
