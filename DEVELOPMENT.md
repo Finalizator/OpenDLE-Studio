@@ -2478,7 +2478,13 @@ shows its ridge bands sliding (62 px/s over 38 px per degree).
 
 The renderer bakes each line's scroll speed into its material (so a batch of walls sharing a speed
 shares one material) and, each frame, moves the **texture's own offset** of that material by
-`speed * tics`. Moving the offset rather than sampling at a shifted coordinate keeps the whole
+`speed * tics`. Two numbers on the canvas say whether a map's surfaces are moving at all:
+`dataset.scrollTics` is the tic clock, and `dataset.scrollTexels` the offset it has put on the
+first scrolled picture, so the ratio of the two is texels per tic. On the title map it measures
+`-0.4992` to `-0.5001`, against GZDoom's `-0.5000` from the trace above. The clock follows the
+level's own second counter, which is summed from frame deltas (clamped at 50 ms), so on a machine
+that cannot hold 35 fps the scroll runs proportionally slower — 33.5 tics per second at 30 fps,
+where GZDoom's fixed 35 tic steps would keep the pace. Moving the offset rather than sampling at a shifted coordinate keeps the whole
 standard map path — colour, alpha test, wrapping — reading the moved picture, which is what makes
 a silhouette cut from its picture's alpha move with the artwork. The arithmetic lives in
 [`shared/scrollers.js`](./shared/scrollers.js) rather than inside the renderer, because it is data

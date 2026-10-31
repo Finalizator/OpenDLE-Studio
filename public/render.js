@@ -668,6 +668,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const scroll = side === wall.right
         ? wallScroll(wall, { textureWidth: asset?.width, textureHeight: asset?.height, scale, slot })
         : null;
+      // The tiled width, so the offset can be reported in texels rather than in UV units.
+      if (scroll) scroll.texelWidth = (asset?.width || 64) * scale;
       surface([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], coords, [0, 1, 2, 0, 2, 3],
         material(assetId, wall.color, { masked, oneSided: !editor, scroll }), light, { kind: 'wall', id: wall.id });
     }
@@ -1820,6 +1822,13 @@ export async function createPreview(canvas, project, state, { editor = false } =
       for (const [scrolled, scroll] of scrolledTextures) {
         scrolled.offset.set(scroll.u * scrollerTics, scroll.v * scrollerTics);
       }
+      // Readable from the DOM (`canvas.dataset.scrollTics`): the tic clock a scroller runs on
+      // and the offset it has put on the first scrolled picture, which is the one number that
+      // says whether a map's moving surfaces are moving.
+      writeDataset('scrollTics', String(Math.round(scrollerTics)));
+      const firstScrolled = scrolledTextures.values().next().value;
+      writeDataset('scrollTexels', firstScrolled
+        ? (firstScrolled.u * firstScrolled.texelWidth * scrollerTics).toFixed(2) : '');
       if (backgroundScene.userData.skybox) backgroundScene.userData.skybox.position.copy(camera.position);
       else {
         const panorama = backgroundScene.userData.panorama;
