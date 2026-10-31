@@ -92,9 +92,11 @@ export function createAcsHud(host, project) {
             // A one-picture font is drawn at the picture's own pixel size, positioned by the
             // hud coordinates — GZDoom's font drawing takes its scale from the font, not from
             // the virtual screen. The size is therefore expressed in framebuffer pixels, which
-            // is what the artwork's pixels correspond to.
-            const width = picture.width * deviceScale;
-            Object.assign(layer.node.style, { width: `${width}px`, height: `${picture.height * deviceScale}px`,
+            // is what the artwork's pixels correspond to, and CSS lays the layer out in CSS
+            // pixels: on a 1.25x display the picture is 1/1.25 CSS pixels per artwork pixel,
+            // not 1.25 times as many.
+            Object.assign(layer.node.style, { width: `${picture.width / deviceScale}px`,
+              height: `${picture.height / deviceScale}px`,
               backgroundImage: `url("${picture.src}")`, backgroundSize: '100% 100%', imageRendering: 'pixelated' });
           } else {
             Object.assign(layer.node.style, { width: 'auto', height: 'auto', backgroundImage: 'none' });

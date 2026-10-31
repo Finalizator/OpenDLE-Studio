@@ -1425,6 +1425,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // movement read as movement rather than gliding. A camera does not bob.
         if (!spectator) eye[2] += viewBob(state.bob || 0, state.bobTimer || 0);
         camera.position.set(eye[0], eye[2], eye[1]);
+        // A title map films the scene from a camera actor; without this, the only clue that
+        // the view is not the player's is the picture itself being wrong.
+        writeDataset('viewCamera', spectator ? `${spectator.id}@${eye[0].toFixed(0)},${eye[1].toFixed(0)},${eye[2].toFixed(0)}` : 'player');
+        writeDataset('viewFov', `${camera.fov.toFixed(1)} vertical`);
         // Roll eases in: a gravity change should read as the world turning, not a cut.
         viewUp.lerp(targetUp.set(...(spectator ? [0, 1, 0] : [up[0], up[2], up[1]])), dt > 0 ? 1 - Math.exp(-12 * dt) : 1);
         if (viewUp.lengthSq() < 1e-8) viewUp.copy(targetUp); else viewUp.normalize();
