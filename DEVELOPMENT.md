@@ -2486,6 +2486,16 @@ it. The trace harness now prints the eye it films from (`ODT VIEW <tic> viewz=â€
 this is measured rather than guessed: on `TITLEMAP` the player's view sits at `viewz=49`
 (floor 8 + viewheight 41) until `ChangeCamera` moves it.
 
+**A Doom sky is a dome 60 degrees tall, not a sphere.** `SkyVertexDoom` lays the picture's
+rows over `maxSideAngle = 60` degrees, and `FSkyVertexBuffer::SetupMatrices` maps the picture
+onto that dome with a scale of `1 + ((texh - 200)/200) * 1.17` and a shift of `(200 - texh) * 57`
+on a dome 10000 units across. For Lullaby's 240-row sky that puts **row 197 on the horizon** and
+row 101 at 30 degrees â€” not its last row. Reading the strip's bottom row as the horizon sampled
+40 to 70 rows too far down, into the picture's black lower band, which is why the sky above the
+ridge lines was empty here while GZDoom shows a moving nebula there. The shader now inverts
+GZDoom's transform: `theta = atan2(tan(elevation), scale) - asin(shift / hypot(tan(elevation),
+scale))`, and `v = 1 - theta / 60deg`.
+
 **The field of view is measured differently on the two sides.** GZDoom's `fov` cvar is
 *horizontal* and its default is 90, which is 58.6 degrees vertically at 16:9; the studio's
 `fov` setting is used directly as three.js's vertical field, and its default is 70. A title

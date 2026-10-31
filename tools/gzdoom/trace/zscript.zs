@@ -15,12 +15,18 @@
 // spawn point and a budget: nothing is added to the map.
 version "4.14"
 
+// `side_t::ETexpart` is top=0, mid=1, bottom=2 (src/gamedata/r_defs.h); the enum is not
+// exposed to ZScript, so the slot is named here.
+const SIDE_MID = 1;
+
 class OpenDLETrace : StaticEventHandler
 {
 	int maxTics;
 	string scripted;
 	string watchClass;
 	int watchTid;
+	int scrollLines;
+	Array<double> scrollBase;
 
 	override void OnRegister()
 	{
@@ -32,6 +38,8 @@ class OpenDLETrace : StaticEventHandler
 		watchClass = watch ? watch.GetString() : "";
 		CVar tid = CVar.GetCVar('odt_tid');
 		watchTid = tid ? tid.GetInt() : 0;
+		CVar scroll = CVar.GetCVar('odt_scroll');
+		scrollLines = scroll ? scroll.GetInt() : 0;
 	}
 
 	override void WorldLoaded(WorldEvent e)
@@ -176,6 +184,33 @@ class OpenDLETrace : StaticEventHandler
 		}
 		Console.Printf("ODT VIEW %d viewz=%.3f viewheight=%.3f camz=%.3f campos=%s\n",
 			tic, players[0].viewz, players[0].viewheight, camz, campos);
+
+		// A surface that moves because a scroller moved it shows up here and nowhere else: the
+		// geometry stays put, the sector heights stay put, and only the sidedef's texture
+		// offsets change. Logged as a delta from the first sample so a static map prints
+		// nothing at all.
+		if (scrollLines > 0 && Level.Lines.Size() > 0)
+		{
+			if (scrollBase.Size() == 0)
+			{
+				for (int i = 0; i < scrollLines && i < Level.Lines.Size(); i++)
+				{
+					Line l = Level.Lines[i];
+					if (l == null || l.sidedef[0] == null) { scrollBase.Push(0.0); scrollBase.Push(0.0); continue; }
+					scrollBase.Push(l.sidedef[0].GetTextureXOffset(SIDE_MID));
+					scrollBase.Push(l.sidedef[0].GetTextureYOffset(SIDE_MID));
+				}
+			}
+			for (int i = 0; i < scrollLines && i < Level.Lines.Size(); i++)
+			{
+				Line l = Level.Lines[i];
+				if (l == null || l.sidedef[0] == null) continue;
+				double dx = l.sidedef[0].GetTextureXOffset(SIDE_MID) - scrollBase[i * 2];
+				double dy = l.sidedef[0].GetTextureYOffset(SIDE_MID) - scrollBase[i * 2 + 1];
+				if (dx != 0.0 || dy != 0.0)
+					Console.Printf("ODT SCROLL %d line=%d dx=%.4f dy=%.4f\n", tic, i, dx, dy);
+			}
+		}
 
 		// The spawned actor is watched by identity, so a map monster of the same class can
 		// never be mistaken for it.

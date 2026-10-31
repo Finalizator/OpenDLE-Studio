@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { uniform, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, cross, normalize, length, clamp, mix } from 'three/tsl';
+import { uniform, float, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, asin, cross, normalize, length, clamp, mix } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
@@ -775,10 +775,22 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const tiling = Math.max(1, Math.floor(1024 / (skyAsset.width || 1024)));
         const u = atan(ray.z, ray.x).add(scroll).div(6.2831853).mul(tiling);
         const elevation = atan(ray.y, length(ray.xz));
-        // Doom puts the sky's bottom row on the horizon and stretches the rest of the picture
-        // upward, so the nebula ends where the ground begins instead of crossing it.
+        // Doom's sky is a dome **60 degrees tall** — `SkyVertexDoom` walks `maxSideAngle = 60`
+        // and lays the picture's rows over it — and GZDoom maps the picture onto that dome with
+        // a scale of `1 + ((texh - 200) / 200) * 1.17` and a shift of `(200 - texh) * 57`
+        // (`FSkyVertexBuffer::SetupMatrices`, on a dome 10000 units across). For Lullaby's
+        // 240-row sky that puts **row 197 on the horizon**, not the last row: reading the
+        // strip's bottom row as the horizon sampled 40 rows further down than GZDoom does, into
+        // the picture's black lower band, which is why the sky above the ridges was empty here
+        // and full of moving nebula there.
+        const skyRows = skyAsset.height || 240;
+        const skyScale = 1 + ((skyRows - 200) / 200) * 1.17;
+        const skyShift = (200 - skyRows) * 57 / 10000;
+        const skySlope = tan(elevation);
+        const skyRadius = length(vec2(skySlope, skyScale));
+        const skyTheta = atan(skySlope, skyScale).sub(asin(clamp(float(skyShift).div(skyRadius), -1, 1)));
         const v = doom
-          ? clamp(elevation.negate().div(1.5707963).add(1), .001, .999)
+          ? clamp(skyTheta.div(1.0471976).oneMinus(), .001, .999)
           : elevation.div(Math.PI).add(.5);
         const backgroundMaterial = new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
         backgroundMaterial.vertexNode = vec4(positionGeometry.xy, 0, 1);

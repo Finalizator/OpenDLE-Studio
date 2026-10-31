@@ -8,3 +8,6 @@ server float odt_angle = 90;
 server int odt_face = 0;
 server string odt_spawn = "";
 server float odt_spawn_distance = 96;
+// How many linedefs to watch for texture-offset changes (0 = off). A scroller moves a
+// sidedef's offsets every tic, which is the measurement for "does this surface move".
+server int odt_scroll = 0;
