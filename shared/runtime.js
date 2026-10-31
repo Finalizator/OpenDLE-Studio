@@ -34,6 +34,7 @@ import {
 } from './gravity.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
+import { advancePlaneMotion } from './plane-motion.js';
 import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
@@ -485,6 +486,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   advanceHUD(project, hud, dt);
   stage('hud');
   advanceSectors(state, dt);
+  // Waggling planes and the 3D floors built on them move every frame, not only on an event.
+  advancePlaneMotion(state, dt);
   stage('sectors');
   const usedWall = !hud.cursor && state.playerStats.health > 0 && pressed.has('KeyE') ? useWall(state) : null;
   stage('use');

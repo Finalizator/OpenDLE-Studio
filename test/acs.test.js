@@ -626,3 +626,20 @@ test('scripts read and write the actor properties the engine tracks', () => {
   stepRuntime(project, state, 1 / 35, new Set());
   assert.equal(state.message.trim(), '42', `printed monster health: ${JSON.stringify(state.message)}`);
 });
+
+// A script that reads an actor's height and writes it back has to land on the same height:
+// ACS carries coordinates as 16.16 fixed point and SetActorPosition takes them that way.
+test('SetActorPosition takes the fixed-point coordinates a script pushes', () => {
+  const project = room(0, []);
+  project.map.entities.push({ id: 'bed', name: 'Bed', type: 'decoration', x: 0, y: 0, angle: 0, z: 59, elevation: 59, tid: 8 });
+  project.map.entities.push({ id: 'star', name: 'Star', type: 'decoration', x: 505, y: 54, angle: 0, z: 53, elevation: 53, tid: 9 });
+  validateProject(project);
+  const state = createRuntime(project);
+  const scripts = createMapScripts(project, state, {});
+  assert.equal(scripts.host.getActor(9, 'z'), 53 * 65536, 'a height comes back as fixed point');
+  scripts.host.setActorPosition(8, 505 * 65536, 54 * 65536, (53 + 5) * 65536, 0);
+  const bed = state.entities.find(entry => entry.tid === 8);
+  assert.equal(Math.round(bed.x), 505, 'x is 505 map units, not 505 << 16');
+  assert.equal(Math.round(bed.y), 54);
+  assert.equal(Math.round(bed.z), 58, 'the bed sits five units above the star');
+});

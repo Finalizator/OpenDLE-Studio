@@ -1056,7 +1056,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // when it moves; on a 13,000-sector level the uncached test was the frame's whole cost.
     const sectorOf = entity => entitySector(sectorIndex.sectors, entity);
     let spriteIndex = createSpriteIndex(project);
-    let sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
+    // A sector's own planes plus the 3D floors that ride on its control sectors: a waggle
+    // moves the control sector, so watching only the heights here would never rebuild.
+    const heightKey = sector => `${sector.floorHeight}/${sector.ceilingHeight}` +
+      (sector.threeDFloors || []).map(floor => `/${floor.top}/${floor.bottom}`).join('');
+    let sectorHeights = new Map(geometry.map(sector => [sector.id, heightKey(sector)]));
     let worldRevision = state.worldRevision, appliedResolution = '';
     // Everything below is scratch state reused by every frame: precomputed lookups,
     // pooled objects and cached DOM/style writes keep the loop allocation-light.
@@ -1319,7 +1323,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const rebuildStarted = clock();
         const changed = new Set();
         for (const sector of geometry) {
-          const key = `${sector.floorHeight}/${sector.ceilingHeight}`;
+          const key = heightKey(sector);
           if (sectorHeights.get(sector.id) !== key) { changed.add(sector.id); sectorHeights.set(sector.id, key); }
         }
         for (const entry of worldParts) if (entry.sectorIds.some(id => changed.has(id))) rebuildPart(entry);
@@ -1732,7 +1736,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       canvas.dataset.batches = String(batchMeshes.size);
       sectorIndex = createSectorIndex(geometry);
       spriteIndex = createSpriteIndex(project);
-      sectorHeights = new Map(geometry.map(sector => [sector.id, `${sector.floorHeight}/${sector.ceilingHeight}`]));
+      sectorHeights = new Map(geometry.map(sector => [sector.id, heightKey(sector)]));
       scene.background = new THREE.Color(project.environment.sky);
       // Objects that gained or lost their model swap representation, and new objects
       // appear without a reload. Runtime spawns are handled by the frame loop.

@@ -9,6 +9,7 @@
  * manipulation, level exits, and the ACS entry points.
  */
 
+import { startWaggle } from './plane-motion.js';
 import { moveSector, classicSpecialSupported } from './world-motion.js';
 import { resetMomentum } from './player-motion.js';
 import { doomSpecialName } from './doom-specials.js';
@@ -351,6 +352,12 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         movePlane(state, sector, 'ceilingHeight', sector.ceilingHeight + arg3, speed, {});
       }
       return 1;
+    case 38: case 138: { // Ceiling_Waggle / Floor_Waggle (tag, amplitude, frequency, delay, time)
+      // The map makes a surface drift forever; a title map waggles the control sectors of its
+      // 3D floors, so the platform the bed stands on floats.
+      return startWaggle(state, { tag: arg1, amplitude: arg2, speed: arg3, offset: arg4,
+        timer: arg5, ceiling: special === 38 }) ? 1 : 0;
+    }
     case 60: case 62: case 64: case 206: { // platforms: down/up cycles
       const down = special !== 64;
       for (const sector of sectors) {

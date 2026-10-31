@@ -1235,7 +1235,9 @@ function defineActors() {
     });
   }
   define(P.SETACTORPOSITION, '', (vm, script) => {
-    const x = pop(vm, script), y = pop(vm, script), z = pop(vm, script), fog = pop(vm, script), tid = pop(vm, script);
+    // Arguments sit on the stack in call order (tid, x, y, z, fog), so they are popped
+    // back to front. Reading them in push order moved an actor to x = fog and z = y.
+    const fog = pop(vm, script), z = pop(vm, script), y = pop(vm, script), x = pop(vm, script), tid = pop(vm, script);
     push(vm, script, vm.host.setActorPosition(tid, x, y, z, fog, script.activator));
   });
   define(P.SETACTORANGLE, '', (vm, script) => {

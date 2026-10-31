@@ -48,6 +48,7 @@ export function threeDFloorFromWall(wall, sectorsById) {
     solid: (type & 3) === TYPE_SOLID,
     // `flat` is a lump name in the import and an asset id by the time this runs, so the
     // control sector's own material fields are copied rather than re-resolved.
+    thin,
     bottom: thin ? control.ceilingHeight : control.floorHeight,
     top: control.ceilingHeight,
     bottomFlat: thin ? control.ceilingAsset : control.floorAsset,

@@ -209,6 +209,8 @@ export function createMapScripts(project, state, callbacks = {}) {
 
   const api = {
     program,
+    // Exposed so a test can call one host function the way the VM does.
+    host: null,
     vm: null,
     active: Boolean(program),
     errors: [],
@@ -333,6 +335,8 @@ export function createMapScripts(project, state, callbacks = {}) {
   };
 
   if (program) api.vm = createAcsVm(program, host);
+
+  api.host = host;
 
   function message(text) {
     if (!text || typeof text !== 'string') return;
@@ -555,7 +559,9 @@ export function createMapScripts(project, state, callbacks = {}) {
     switch (kind) {
       case 'x': return Math.round(entity.x * 65536);
       case 'y': return Math.round(entity.y * 65536);
-      case 'z': return Math.round(((entity.z ?? floorAt(state, entity)) + 32) * 65536);
+      // The actor's own Z, which is what `SetActorPosition` sets: a script that reads a
+      // height and writes it back must not drift by the offset a centre would introduce.
+      case 'z': return Math.round((entity.z ?? floorAt(state, entity)) * 65536);
       case 'floorZ': return Math.round((sector?.floorHeight ?? 0) * 65536);
       case 'ceilingZ': return Math.round((sector?.ceilingHeight ?? 0) * 65536);
       case 'angle': return Math.round(((entity.angle || 0) / 360) * 65536) & 0xffff;
@@ -568,6 +574,8 @@ export function createMapScripts(project, state, callbacks = {}) {
   function setActorPosition(tid, x, y, z, fog) {
     const entity = tid ? state.entities.find(candidate => candidate.tid === tid) : null;
     if (!entity) return 0;
+    // ACS coordinates are 16.16 fixed point; the world is in map units.
+    x /= 65536; y /= 65536; z /= 65536;
     entity.x = x; entity.y = y;
     if (entity.type === 'player') {
       state.player.x = x; state.player.y = y;

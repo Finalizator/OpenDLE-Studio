@@ -2419,6 +2419,19 @@ still approximate and are reported per import: a solid 3D floor's surfaces are n
 the planes of the sector they sit in (that needs a stencil pass), and a translucent 3D floor is
 drawn opaque.
 
+**A surface that drifts is a thinker, not a recording.** `Ceiling_Waggle` (38) and
+`Floor_Waggle` (138) start a GZDoom plane thinker: the plane keeps its original distance, a
+scale swells to `amplitude / 64`, and it is then moved by `BobSin(accumulator) * scale` with
+`BobSin(x) = sin(x * 180/32 degrees) * 8`, the accumulator advancing by `frequency / 64` per
+tic. Lullaby's title map waggles the control sectors of its five 3D floors, and its ACS then
+repositions the bed to `GetActorZ(star) + 5` every tic — so the star and the bed float without
+either of them being special-cased here. `shared/plane-motion.js` runs those thinkers at 35 Hz,
+carries whatever stands on a moving 3D floor, and re-reads each 3D floor's planes from its
+control sector, because a 3D floor *is* its control sector's planes rather than a copy of
+their heights. Two bugs on that path were the reason imported scripts looked broken:
+`SetActorPosition` read its arguments in push order (so an actor landed at `x = fog`), and the
+coordinates ACS passes are 16.16 fixed point while the world is in map units.
+
 ### Static world surfaces are merged, not one mesh each
 
 A fragment of every wall quad and every floor/ceiling triangle used to be its own
