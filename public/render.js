@@ -6,6 +6,7 @@ import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv } from '/shared/uv.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
+import { verticalFov } from '/shared/game-settings.js';
 import { spriteAnchor } from '/shared/sprite-anchor.js';
 import { wallSegments } from '/shared/runtime.js';
 import { GLTFLoader } from '/vendor/three-addons/loaders/GLTFLoader.js';
@@ -1514,8 +1515,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
         writeDataset('ambientWorld', state.ambientWorld ? '1' : '0');
         writeDataset('gameViewport', viewportJson);
         const aspect = view.width / view.height;
-        if (camera.aspect !== aspect || camera.fov !== state.settings.fov) {
-          camera.aspect = aspect; camera.fov = state.settings.fov; camera.updateProjectionMatrix();
+        // GZDoom's `fov` is horizontal; three.js takes a vertical angle.
+        const fieldOfView = verticalFov(state.settings.fov, aspect);
+        if (camera.aspect !== aspect || camera.fov !== fieldOfView) {
+          camera.aspect = aspect; camera.fov = fieldOfView; camera.updateProjectionMatrix();
         }
         let selected = project.environment.weaponAssets
           ? project.environment.weaponAssets[state.inventory.selectedWeapon] : project.environment.weaponAsset;
@@ -1582,7 +1585,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // A title map films the scene from a camera actor; without this, the only clue that
         // the view is not the player's is the picture itself being wrong.
         writeDataset('viewCamera', spectator ? `${spectator.id}@${eye[0].toFixed(0)},${eye[1].toFixed(0)},${eye[2].toFixed(0)}` : 'player');
-        writeDataset('viewFov', `${camera.fov.toFixed(1)} vertical`);
+        writeDataset('viewFov', `${Number(state.settings.fov).toFixed(1)} horizontal / ${camera.fov.toFixed(1)} vertical`);
         // Roll eases in: a gravity change should read as the world turning, not a cut.
         viewUp.lerp(targetUp.set(...(spectator ? [0, 1, 0] : [up[0], up[2], up[1]])), dt > 0 ? 1 - Math.exp(-12 * dt) : 1);
         if (viewUp.lengthSq() < 1e-8) viewUp.copy(targetUp); else viewUp.normalize();

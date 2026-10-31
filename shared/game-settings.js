@@ -8,7 +8,10 @@ export const GAME_SETTINGS = {
   muted: { value: false },
   sensitivity: { value: 1, min: .1, max: 5, step: .1 },
   invertY: { value: false },
-  fov: { value: 70, min: 50, max: 120, step: 5 },
+  // GZDoom's `fov` is a *horizontal* angle and its default is 90; keeping 90 here means a
+  // scene is framed the way GZDoom frames it. Three.js wants a vertical angle, so
+  // `verticalFov` converts it per aspect ratio.
+  fov: { value: 90, min: 50, max: 130, step: 5 },
   // Selectable internal render resolution; see shared/render-resolution.js.
   renderResolution: { value: 'display', options: RENDER_RESOLUTION_VALUES },
   resolution: { value: 1, min: .5, max: 1.5, step: .25 },
@@ -105,4 +108,18 @@ export function mappedKeys(keys, settings) {
   }
   for (const [key, physical] of Object.entries(settings.bindings)) if (keys.has(physical)) result.add(key);
   return result;
+}
+
+/**
+ * The vertical field of view three.js needs, from GZDoom's horizontal `fov`.
+ *
+ * GZDoom's `fov` cvar is the horizontal angle — 90 by default, and the number every screenshot
+ * of a map is framed with. Three.js takes a vertical angle, so using the value unchanged as the
+ * vertical field widened the picture by the aspect ratio: at 16:9 a 90 became a 90-degree
+ * vertical field where GZDoom shows 58.7, which shrank and lowered everything in the frame.
+ */
+export function verticalFov(horizontal, aspect) {
+  const h = Math.max(1, Math.min(179, Number(horizontal) || 90));
+  const a = Math.max(.01, Number(aspect) || 1);
+  return 2 * Math.atan(Math.tan(h * Math.PI / 360) / a) * 180 / Math.PI;
 }

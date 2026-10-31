@@ -2525,11 +2525,14 @@ never scrolled, however right the number fed to it was: measured from two frames
 apart, the best-fitting horizontal shift was 0 px. They are `uniform(0, 'float')` now, and the
 same measurement gives the shift the MAPINFO speed asks for.
 
-**The field of view is measured differently on the two sides.** GZDoom's `fov` cvar is
-*horizontal* and its default is 90, which is 58.6 degrees vertically at 16:9; the studio's
-`fov` setting is used directly as three.js's vertical field, and its default is 70. A title
-screen therefore reads as ~20% wider here than in GZDoom. This is a known difference, not a
-bug in the geometry: it was left alone because changing the default re-frames every preview.
+**GZDoom's `fov` is a horizontal angle, and so is the setting now.** GZDoom's cvar is
+*horizontal* with a default of 90; the studio's setting was used directly as three.js's vertical
+field, so at 16:9 a 90 became a 90-degree vertical field where GZDoom shows 58.7, and at 21:9
+where GZDoom shows 45.4. Everything in the frame was therefore about half the size it should be,
+which is why the ridge layers sat low and thin. `verticalFov(horizontal, aspect)` in
+`shared/game-settings.js` converts per aspect ratio, the game camera uses it, and the setting's
+default is 90 to match GZDoom's. A saved setting of 70 is now read as 70 horizontal — narrower
+than before — because that is what the number always meant.
 
 ### Static world surfaces are merged, not one mesh each
 
