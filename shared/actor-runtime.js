@@ -1174,6 +1174,8 @@ export function stepThingGravity(project, state, dt, { levelGravity = SV_GRAVITY
   for (let tic = 0; tic < tics; tic++) {
     for (const entity of state.entities) {
       if (entity.type === 'player' || entity.type === 'ramp') continue;
+      // A follower's height is the route's, so falling would fight the path it is walking.
+      if (entity.path?.id) { entity.fallSpeed = 0; continue; }
       // Rapier already drops the objects that have a body.
       if (entity.physics && entity.physics.body !== 'none') continue;
       const actor = actorOf(project, entity);

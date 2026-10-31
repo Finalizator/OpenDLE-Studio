@@ -1557,6 +1557,12 @@ export async function createPreview(canvas, project, state, { editor = false } =
           if (frame.assetId && !frame.finished) selected = frame.assetId;
         }
         writeDataset('weaponFrame', selected || '');
+        // A model that follows a route is placed by it, so the first follower's position and
+        // heading are how the walk is checked from outside: `canvas.dataset.pathFollower`.
+        const follower = (state.entities || []).find(item => item.path?.id && item.type !== 'player');
+        writeDataset('pathFollower', follower
+          ? `${Math.round(follower.x)},${Math.round(follower.y)},${Math.round(follower.z ?? 0)},${Math.round(follower.angle)}`
+          : '');
         // The gun is the player's, and a paused or title screen has no player to draw it for.
         const showWeapon = state.gameScreen === 'playing' && state.playerStats.health > 0;
         for (const [id, overlay] of weaponOverlays) overlay.visible = showWeapon && id === selected;

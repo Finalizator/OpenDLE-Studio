@@ -640,6 +640,35 @@ project that predates them and keeps working; the key is optional in the validat
 shape once present (duplicate ids, out-of-range curvature and non-numeric coordinates are
 rejected).
 
+### A model walks its route
+
+An object can be told to follow one of the layout's paths — pick it in **Properties → Follows a
+path**. The object stores only which route and how it travels (`entity.path`), so the same route
+drives as many models as you like, and editing the path re-shapes all of them.
+
+- **Speed** is in map units per second, unrelated to frame rate: the runtime advances a distance
+  along the curve, so a slow machine walks the same route more coarsely rather than more slowly.
+- **At the end**: *Loop round again*, *Go back and forth* or *Stop at the end*. All three are the
+  same arithmetic on the travelled distance — a loop wraps, a ping-pong reflects over a doubled
+  length, `once` clamps — so a back-and-forth route needs no remembered direction.
+- **Height comes from the route.** The curve's own `z` places the model, which is what carries it
+  up a staircase; gravity is switched off for a follower, because falling would fight the path.
+- **The model turns with it**, facing the curve's tangent, and **Facing offset** turns it on top
+  of that — imported models disagree about which way is forward, and a 90° offset is usually what
+  a GLB authored facing +z needs.
+- **Start at** (0–1 of the route) lets a second model set off from the far side of a loop instead
+  of on top of the first.
+
+Travel is measured in *three* dimensions, so climbing costs distance: a route up a staircase is
+longer than its footprint, and a follower therefore walks it at its stated ground speed.
+
+`shared/path-motion.js` holds the whole of it — `pathDistance` for the three end behaviours,
+`followPath` for where a follower stands and which way it faces, and `advancePathMotion` to step
+every follower in the level. The editor also publishes the first follower as
+`canvas.dataset.pathFollower` (`x,y,z,angle`) in play, which is how a walk is checked from outside
+without watching the screen: on a test route the object moved 255 units in four seconds at the
+default 64 units/s and its angle followed the curve.
+
 ### Editable Engine event sheets
 
 **New project** and a fresh server store include editable Engine sheets.

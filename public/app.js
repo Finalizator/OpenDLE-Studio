@@ -962,6 +962,34 @@ function renderInspector() {
             value => changeRamp({ facing: value })));
           parent.append(make('p', 'The collider, the tilt it is drawn with and the height it sits at all follow these numbers, so the ramp you see is the ramp you slide on. Above 45.6 degrees the engine stops calling the surface ground, which is what makes it surfable. Angle and length, or angle and height: whichever you change last decides the other.', 'muted'));
         }
+        // A model can be told to walk a route: the path is a layout object, so an object only
+        // stores which one and how it travels along it.
+        parent.append(make('h2', 'Follows a path'));
+        const paths = project.paths || [];
+        if (!paths.length) {
+          parent.append(make('p', 'No paths yet. Right-click the view and choose Create object — Path (waypoints), or pick Draw path in the toolbar.', 'muted'));
+        } else {
+          const follow = item.path || {};
+          const changeFollow = (key, value) => edit(next => {
+            const entity = next.map.entities.find(entity => entity.id === item.id);
+            const settings = { ...entity.path, [key]: value };
+            if (!settings.id) settings.id = paths[0].id;
+            entity.path = settings;
+          }, 'Path following changed');
+          field(parent, 'Path', select([['', 'Not following a path'], ...paths.map(path => [path.id, path.name])], follow.id || '', value => {
+            if (!value) { edit(next => { delete next.map.entities.find(entity => entity.id === item.id).path; }, 'Stopped following a path'); return; }
+            changeFollow('id', value);
+          }));
+          if (follow.id) {
+            field(parent, 'Speed (units per second)', input(follow.speed ?? 64, 'number', value => changeFollow('speed', value)));
+            field(parent, 'At the end', select([['loop', 'Loop round again'], ['pingpong', 'Go back and forth'], ['once', 'Stop at the end']],
+              follow.mode || 'loop', value => changeFollow('mode', value)));
+            field(parent, 'Start at (0-1 of the route)', input(follow.startAt ?? 0, 'number', value => changeFollow('startAt', value)));
+            field(parent, 'Facing offset (degrees)', input(follow.yawOffset ?? 0, 'number', value => changeFollow('yawOffset', value)));
+            parent.append(checkbox('Face the way it is going', follow.faceDirection !== false, value => changeFollow('faceDirection', value)),
+              make('p', 'The model is placed by the route, height included, and turns to follow it. Two objects on one route with different start points will not overlap. The route is edited with Draw path; this object only stores which one it walks.', 'muted'));
+          }
+        }
         const physics = { body: 'none', shape: 'box', width: 24, height: 32, depth: 24, radius: 12, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true, ...item.physics };
         const changePhysics = (key, value) => {
           const config = { ...physics, [key]: value };

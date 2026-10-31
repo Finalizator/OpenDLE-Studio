@@ -35,6 +35,7 @@ import {
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { advancePlaneMotion } from './plane-motion.js';
+import { advancePathMotion } from './path-motion.js';
 import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
@@ -126,6 +127,8 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     shaderEnabled: true,
     shaderUniforms: new Map(Object.entries(project.shaders?.find(shader => shader.id === project.environment.shaderId)?.uniforms || {})),
     sectorMotions: new Map(),
+    // How far each path follower has travelled: progress belongs to the run, not to the map.
+    pathMotions: new Map(),
     spriteAnimations: new Map(),
     weaponAnimations: new Map(),
     entitySamples: new Map(),
@@ -516,6 +519,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   advanceSectors(state, dt);
   // Waggling planes and the 3D floors built on them move every frame, not only on an event.
   advancePlaneMotion(state, dt);
+  // Objects that follow a route move after the planes and before gravity: their height comes from
+  // the curve, so nothing should then pull them back down to a floor they are not on.
+  advancePathMotion(project, state, dt);
   // Things the map left in the air fall under the map's own gravity, which is how Lullaby's
   // title map rains its stars. It runs after the planes so a star lands on the floor it sees.
   stepThingGravity(project, state, dt);

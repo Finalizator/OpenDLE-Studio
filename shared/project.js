@@ -13,6 +13,7 @@ import { MAX_JOINTS, validateJoint } from './joints.js';
 import { validatePanel } from './panel.js';
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
 import { MAX_PATHS, MAX_PATH_POINTS } from './paths.js';
+import { PATH_MODES } from './path-motion.js';
 
 export const VERSION = 1;
 export const CONDITIONS = ['onStart', 'always', 'keyPressed', 'nearEntity', 'collisionStarted', 'collisionEnded', 'isTouching', 'playerGrounded', 'animationFinished', ...ENGINE_CONDITIONS.map(command => command.type)];
@@ -202,7 +203,7 @@ export function cloneProjectForEdit(project, { deepGame = false, shareActors = f
  * check still runs on save, import, export and MCP changes.
  */
 /** Shared object rules, used by map objects and by the objects inside a scene. */
-export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [] }) {
+export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [], pathRef = null } = {}) {
   assert(ENTITY_TYPES.includes(entity.type), 'Unknown entity type');
   // A ramp carries the four numbers a mapper edits and derives everything else from them, so a
   // ramp with no parameters (an old project, or a decoration switched to a ramp) is given the
@@ -228,6 +229,20 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
       if (entity.modelTilt[key] === undefined) continue;
       number(entity.modelTilt[key], `Model tilt ${key}`, -3600, 3600);
     }
+  }
+  // Following a route: the object names a path in the layout and says how fast it travels, what
+  // it does at the end and whether it turns to face the way it is going.
+  if (entity.path !== undefined) {
+    const follow = entity.path;
+    object(follow, 'Object path');
+    identifier(follow.id, 'Object path id');
+    assert(!pathRef || pathRef(follow.id), `Object ${entity.id} follows a path that is not in the layout`);
+    if (follow.speed !== undefined) number(follow.speed, 'Object path speed', 0, 4096);
+    if (follow.mode !== undefined) assert(PATH_MODES.includes(follow.mode), 'Object path mode must be loop, pingpong or once');
+    if (follow.faceDirection !== undefined) assert(typeof follow.faceDirection === 'boolean', 'Object path facing must be boolean');
+    if (follow.startAt !== undefined) number(follow.startAt, 'Object path start', 0, 1);
+    if (follow.yawOffset !== undefined) number(follow.yawOffset, 'Object path facing offset', -360, 360);
+    assert(entity.type !== 'player', 'The player is driven by the controls, not by a path');
   }
   if (entity.health !== undefined) number(entity.health, 'Object health', 0, 1000000);
   if (entity.ambush !== undefined) assert(typeof entity.ambush === 'boolean', 'Object ambush must be boolean');
@@ -587,9 +602,10 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     groupIds.add(group.id);
     text(group.name, 'Object group name', 100);
   }
+  const pathIds = new Set((project.paths || []).map(path => path.id));
   for (const entity of entities) {
     unique(entity, 'Entity');
-    validateEntity(entity, { assetRef, clipRef, modelRef, assets });
+    validateEntity(entity, { assetRef, clipRef, modelRef, assets, pathRef: id => pathIds.has(id) });
     if (entity.groupId !== undefined) {
       assert(typeof entity.groupId === 'string' && groupIds.has(entity.groupId),
         `Object ${entity.id} is in an unknown group`);
