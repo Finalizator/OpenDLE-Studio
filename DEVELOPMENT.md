@@ -2496,6 +2496,14 @@ ridge lines was empty here while GZDoom shows a moving nebula there. The shader 
 GZDoom's transform: `theta = atan2(tan(elevation), scale) - asin(shift / hypot(tan(elevation),
 scale))`, and `v = 1 - theta / 60deg`.
 
+**MAPINFO's sky speed is in thousandths of a unit per second.** `sky1 = "SKY", speed` is stored
+as `speed * (TICRATE / 1000)` (`g_mapinfo.cpp`), so Lullaby's `0.1` is 0.0035 per tic and moves
+the sky 0.043 degrees a second — 0.17 degrees in four seconds, which is nothing on screen. Read
+as a per-tic speed it scrolled the sky 28 times too fast here. Measured from four frames four
+seconds apart: GZDoom shifts the sky by 0 px, we shifted it by 39 px per interval before the
+correction and by 1 px after — the ridges stayed at 0 px in every case, because the mountain
+geometry never moves.
+
 **A `uniform(0)` is an integer uniform.** The sky's heading, pitch and scroll were built with
 `uniform(0)`, so three.js inferred `int` and every value assigned — a scroll of 0.05 radians, a
 heading of 1.2 radians — truncated back to 0. The sky therefore never turned with the view and
