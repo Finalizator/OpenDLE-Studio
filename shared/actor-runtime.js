@@ -5,6 +5,7 @@ import { actorIndex, actorForThing, NATIVE_EFFECT_ACTORS } from './actors.js';
 import { actorProjectileClips, actorEffectClip, setSpriteState } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 import { actorFunctionSource, runActorFunction } from './actor-functions.js';
+import { floorHeightAt } from './three-d-floors.js';
 
 /**
  * Actor runtime.
@@ -1095,6 +1096,71 @@ export function stepActors(project, state, dt) {
       const runtime = actorStateOf(entity);
       if (runtime.index === null && runtime.initialised) continue;
       actorTic(project, state, entity);
+    }
+  }
+}
+
+/**
+ * Doom's gravity, in map units per tic squared.
+ *
+ * GZDoom computes it as `sv_gravity * sector.gravity * actor.gravity * 0.00125`
+ * (`AActor::GetGravity`), and `sv_gravity` is 800 by default, so an ordinary sector pulls
+ * a thing down by one unit per tic. Lullaby's title map sets `gravity = 0.2` on the sectors
+ * that hold its falling stars, which is why they drift down at a fifth of that rate.
+ */
+const SV_GRAVITY = 800;
+const GRAVITY_SCALE = 0.00125;
+
+/**
+ * Falls for things the map placed in the air.
+ *
+ * A thing with neither `NOGRAVITY` nor `FLOAT` falls in Doom, and that is the whole of
+ * Lullaby's meteor shower: its stars are ordinary map things dropped at an elevation, with
+ * the map's own gravity deciding how fast they come down. Only entities without a rigid
+ * body are moved here — Rapier already simulates the rest — and the fall stops on the
+ * sector floor (or the top of a solid 3D floor) exactly as `P_ZMovement` does.
+ */
+export function stepThingGravity(project, state, dt, { levelGravity = SV_GRAVITY } = {}) {
+  if (!project.actors?.length) return;
+  state.gravityClock = (state.gravityClock || 0) + dt * TIC_RATE;
+  const whole = Math.floor(state.gravityClock + 1e-6);
+  const tics = Math.min(whole, MAX_TICS_PER_STEP);
+  state.gravityClock -= whole;
+  for (let tic = 0; tic < tics; tic++) {
+    for (const entity of state.entities) {
+      if (entity.type === 'player' || entity.type === 'ramp') continue;
+      // Rapier already drops the objects that have a body.
+      if (entity.physics && entity.physics.body !== 'none') continue;
+      const actor = actorOf(project, entity);
+      if (!actor || actorFlag(actor, 'NOGRAVITY') || actorFlag(actor, 'FLOAT')) {
+        entity.fallSpeed = 0;
+        continue;
+      }
+      const sector = sectorAt(state.sectors, entity.x, entity.y);
+      const z = Number.isFinite(entity.z) ? entity.z : (sector?.floorHeight ?? 0) + (entity.elevation || 0);
+      // The floor is measured from where the thing is now, so a fall onto the top of a
+      // solid 3D floor lands on it instead of dropping through to the sector's own floor.
+      const ground = sector ? floorHeightAt(sector, z) : 0;
+      if (z <= ground) {
+        // Already standing (or buried, which `settleGroundActors` reports and fixes): the
+        // fall is over, but its height is not this pass's to correct.
+        entity.fallSpeed = 0;
+        continue;
+      }
+      // The map's thing may override the actor's own multiplier, as UDMF `gravity` does.
+      // Zero is a real value there — MAP01 gives some things none — so it is not a fallback.
+      const own = Number(entity.gravity ?? actor.gravity ?? 1);
+      if (!(own > 0)) { entity.fallSpeed = 0; continue; }
+      const sectorPull = sector?.gravity ?? 1;
+      if (!(sectorPull > 0)) { entity.fallSpeed = 0; continue; }
+      const pull = levelGravity * sectorPull * own * GRAVITY_SCALE;
+      // Doom moves the thing by its speed first and only then applies gravity for the next
+      // tic (`P_ZMovement` calls `AddZ(Vel.Z)` before `FallAndSink`), so the first tic of a
+      // fall does not move at all. The trace compares tic by tic, so the order matters.
+      const next = z + (entity.fallSpeed || 0);
+      // `P_ZMovement` snaps the thing to the floor and drops its vertical speed on impact.
+      entity.z = next <= ground ? ground : next;
+      entity.fallSpeed = next <= ground ? 0 : (entity.fallSpeed || 0) - pull;
     }
   }
 }

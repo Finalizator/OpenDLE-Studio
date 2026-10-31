@@ -104,6 +104,27 @@ export async function createPreview(canvas, project, state, { editor = false } =
     return result;
   }
   const materials = new Set(), geometries = new Set();
+  // Which wall textures are see-through, and how. Doom draws a picture's transparent pixels as
+  // holes (alpha test), while a texture that is *partly* transparent everywhere — Lullaby's sky
+  // glow, its panes of glass — is blended instead. Testing those away erases them completely.
+  const alphaModes = new Map();
+  function alphaModeFor(image) {
+    const width = 64, height = 64;
+    const surface = document.createElement('canvas');
+    surface.width = width; surface.height = height;
+    const context = surface.getContext('2d', { willReadFrequently: true });
+    context.drawImage(image, 0, 0, width, height);
+    const data = context.getImageData(0, 0, width, height).data;
+    let transparent = 0, partial = 0;
+    for (let at = 3; at < data.length; at += 4) {
+      if (data[at] === 255) continue;
+      transparent++;
+      if (data[at] !== 0) partial++;
+    }
+    if (!transparent) return 'opaque';
+    // A silhouette has a few anti-aliased edge pixels; a glow has thousands of them.
+    return partial > width * height * 0.01 ? 'translucent' : 'masked';
+  }
   const lightPositions = Array.from({ length: 16 }, () => new THREE.Vector3());
   const lightColors = Array.from({ length: 16 }, () => new THREE.Color(0));
   const lightRadii = new Float32Array(16);
@@ -265,6 +286,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
       texture.wrapS = THREE.RepeatWrapping; texture.wrapT = THREE.RepeatWrapping;
+      // Sprites are drawn by their own path and are silhouettes by definition.
+      if (asset.kind !== 'sprite') alphaModes.set(asset.id, alphaModeFor(texture.image));
       textures.set(asset.id, texture);
     }));
     // Camera textures: ANIMDEFS reserves a surface no image backs. Rendering its
@@ -431,13 +454,23 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // with a couple of hundred light levels would otherwise need a material per level
     // per texture, and the renderer keeps a pipeline for every material it draws.
     function material(assetId, color = '#ffffff', { masked = false, oneSided = false, ceiling = false } = {}) {
-      const key = `${assetId}/${color}/${masked}/${oneSided}/${ceiling}`;
+      // A texture with soft alpha everywhere is a glow or a pane, not a silhouette: Doom's
+      // shapes (and Lullaby's mountains) are cut with an alpha test, everything else is
+      // blended. `masked` therefore only says the surface is not solid; the picture decides
+      // how the holes are made.
+      const alpha = (assetId && alphaModes.get(assetId)) || 'opaque';
+      const blended = alpha === 'translucent' && !ceiling;
+      const key = `${assetId}/${color}/${masked}/${oneSided}/${ceiling}/${alpha}`;
       if (materialCache.has(key)) return materialCache.get(key);
       const result = withEffect(new THREE.MeshBasicNodeMaterial({
         map: imageTexture(assetId), color: assetId ? '#ffffff' : color,
         side: oneSided ? THREE.FrontSide : THREE.DoubleSide,
         // A ceiling always keeps an alpha test: that is what cuts it away above the camera.
-        alphaTest: masked || ceiling ? .5 : 0,
+        alphaTest: blended ? 0 : (masked || ceiling ? .5 : 0),
+        transparent: blended,
+        // Blended surfaces must not write depth: a glow in front of a mountain is drawn
+        // after it, and writing depth would erase the layers behind the next glow.
+        depthWrite: !blended,
       }));
       result.userData.assetId = assetId;
       result.userData.batchKey = key;
@@ -566,8 +599,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       wallSignature(wall, sectorMap), () => {
       if (!wall.right && !wall.left) {
         if (wall.solid) {
-          wallQuad(wall, wall.start, wall.end, 0, wall.height, wall.assetId, null, 255, wall.height);
-          wallQuad(wall, wall.end, wall.start, 0, wall.height, wall.assetId, null, 255, wall.height, false, true);
+          wallQuad(wall, wall.start, wall.end, 0, wall.height, wall.assetId, null, 255, wall.height, true);
+          wallQuad(wall, wall.end, wall.start, 0, wall.height, wall.assetId, null, 255, wall.height, true, true);
         }
         return;
       }
@@ -577,13 +610,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const floor = frontSector.floorHeight, ceiling = frontSector.ceilingHeight, light = frontSector.light;
         if (!backSector) {
           const asset = assetMap.get(side.middle);
+          // Every wall texture is alpha-tested, as GZDoom does: a mountain silhouette is a
+          // picture with holes, and drawing it opaque paints the sky black.
           wallQuad(wall, a, b, floor, ceiling, side.middle, side, light,
-            wall.flags & 16 ? floor + (asset?.height || 128) : ceiling, false, flip);
+            wall.flags & 16 ? floor + (asset?.height || 128) : ceiling, true, flip);
         } else {
           if (!(frontSector.sky && backSector.sky)) wallQuad(wall, a, b, Math.max(floor, backSector.ceilingHeight), ceiling,
-            side.upper, side, light, wall.flags & 8 ? ceiling : backSector.ceilingHeight + (assetMap.get(side.upper)?.height || 128), false, flip);
+            side.upper, side, light, wall.flags & 8 ? ceiling : backSector.ceilingHeight + (assetMap.get(side.upper)?.height || 128), true, flip);
           wallQuad(wall, a, b, floor, Math.min(ceiling, backSector.floorHeight), side.lower, side, light,
-            wall.flags & 16 ? ceiling : backSector.floorHeight, false, flip);
+            wall.flags & 16 ? ceiling : backSector.floorHeight, true, flip);
           if (side.middle) {
             const bottom = Math.max(floor, backSector.floorHeight), top = Math.min(ceiling, backSector.ceilingHeight);
             const height = assetMap.get(side.middle).height;

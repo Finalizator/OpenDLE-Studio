@@ -255,6 +255,7 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
   if (entity.spriteScaleX !== undefined) number(entity.spriteScaleX, 'Sprite scale X', .05, 16);
   if (entity.spriteScaleY !== undefined) number(entity.spriteScaleY, 'Sprite scale Y', .05, 16);
   if (entity.elevation !== undefined) number(entity.elevation, 'Elevation', -32768, 32767);
+  if (entity.gravity !== undefined) number(entity.gravity, 'Gravity multiplier', 0, 10);
   modelRef(entity.modelAsset);
   assert(entity.type !== 'player' || !entity.modelAsset, 'Assign world models to non-player objects');
   if (entity.modelScale !== undefined) number(entity.modelScale, 'Model scale', .001, 4096);
@@ -526,6 +527,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     assetRef(sector.floorAsset, 'Floor material');
     assetRef(sector.ceilingAsset, 'Ceiling material');
     if (sector.textureScale !== undefined) assertTextureScale(sector.textureScale, 'Surface texture scale');
+    if (sector.gravity !== undefined) number(sector.gravity, 'Sector gravity', 0, 10);
   }
   const sectorIds = new Set(sectors.map(sector => sector.id));
   for (const wall of walls) {

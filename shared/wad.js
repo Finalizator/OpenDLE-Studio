@@ -421,6 +421,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       floorAsset: material(floor, 'flat'), ceilingAsset: ceiling === 'F_SKY1' ? null : material(ceiling, 'flat'),
       sky: ceiling === 'F_SKY1', light: Math.max(0, Math.min(255, record.light)),
       special: record.special, tag: record.tag,
+      ...(record.gravity !== undefined && record.gravity !== 1 ? { gravity: record.gravity } : {}),
       ...(record.textureScale ? { textureScale: record.textureScale } : {}),
     };
   });
@@ -504,6 +505,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       type: isPlayer ? 'player' : kind, doomType: type,
       x: record.x, y: -record.y, angle: -record.angle, spriteAsset,
       ...(zdoomFormat ? { elevation: record.elevation, ...(record.tid ? { tid: record.tid } : {}) } : {}),
+      // A thing's own gravity multiplier (UDMF `gravity`), which the fall simulation reads.
+      ...(zdoomFormat && record.gravity !== undefined && record.gravity !== 1 ? { gravity: record.gravity } : {}),
       // A resized thing is resized: a prop scaled to 0.6 in the map is drawn at 0.6, not full
       // size. Uniform scaling uses the single field the editor exposes; unequal X and Y keep
       // both, because a squashed lamp is not the lamp.

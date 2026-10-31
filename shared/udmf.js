@@ -150,6 +150,9 @@ export function udmfRecords(document) {
       ceilingHeight: number(p, 'heightceiling', 0, { min: -32768, max: 32767 }),
       floor: texture(p, 'texturefloor'), ceiling: texture(p, 'textureceiling'),
       light: number(p, 'lightlevel', 160, { integer: true }),
+      // Doom's gravity is per sector: a map can make one room lighter on its feet, which is
+      // how a mod makes a shower of stars fall slowly instead of dropping like stones.
+      gravity: number(p, 'gravity', 1, { min: 0, max: 10 }),
       special: number(p, 'special', 0, { integer: true, min: 0 }), tag: number(p, 'id', 0, { integer: true, min: 0 }),
       textureScale: scale(p, 'xscale', 'yscale'),
     })),
@@ -172,6 +175,9 @@ export function udmfRecords(document) {
       // A thing can be scaled by x and y separately; a mod that resizes a prop usually does.
       scaleX: number(p, 'scalex', 1, { min: MIN_TEXTURE_SCALE, max: MAX_TEXTURE_SCALE }),
       scaleY: number(p, 'scaley', 1, { min: MIN_TEXTURE_SCALE, max: MAX_TEXTURE_SCALE }),
+      // A thing carries its own gravity multiplier (GZDoom reads `Gravity` as an actor
+      // property here), which is how a mod makes a meteor drift down instead of dropping.
+      gravity: number(p, 'gravity', 1, { min: 0, max: 10 }),
       flags: (bool(p, 'skill1') || bool(p, 'skill2') ? 1 : 0) | (bool(p, 'skill3') ? 2 : 0) |
         (bool(p, 'skill4') || bool(p, 'skill5') ? 4 : 0) | (bool(p, 'ambush', false) ? 8 : 0) | (bool(p, 'single') ? 0 : 16),
     })),

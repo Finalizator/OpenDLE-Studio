@@ -4,8 +4,8 @@ import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
-import { TIC_RATE, stepActors, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, initialiseActorEntities,
-  installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
+import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic,
+  initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
 import { HL2_MOVEMENT, clampHorizontal, horizontalStep, measuredVelocity } from './source-motion.js';
@@ -488,6 +488,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   advanceSectors(state, dt);
   // Waggling planes and the 3D floors built on them move every frame, not only on an event.
   advancePlaneMotion(state, dt);
+  // Things the map left in the air fall under the map's own gravity, which is how Lullaby's
+  // title map rains its stars. It runs after the planes so a star lands on the floor it sees.
+  stepThingGravity(project, state, dt);
   stage('sectors');
   const usedWall = !hud.cursor && state.playerStats.health > 0 && pressed.has('KeyE') ? useWall(state) : null;
   stage('use');

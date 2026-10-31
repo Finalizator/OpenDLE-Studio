@@ -3211,6 +3211,52 @@ at its `elevation` alone, while the game adds the sector floor under it. That is
 scene is a template placed somewhere later, so its coordinates are scene space, not map space —
 but it does mean an object in a raised sector sits lower there than it will in play.
 
+### A picture's transparency decides how it is drawn
+
+Doom textures carry two different kinds of transparency and they are not drawn the same way. A
+silhouette — a sprite, a tree, Lullaby's mountain ridge — is *cut*: pixels below half alpha are
+dropped, so the surface behind shows through the holes. A glow or a pane of glass is *blended*:
+the whole surface is drawn with its own alpha, so the colour behind it mixes in. Testing a blended
+texture away erases it completely, because no pixel in it reaches half alpha.
+
+The renderer therefore classifies every wall texture once, when it is loaded, by sampling the
+decoded image into a 64×64 canvas and counting partly transparent pixels. None at all is opaque,
+a handful (anti-aliased edges) is a mask, more than one per cent is a blend. `masked` on a surface
+then only means "this picture has holes"; the picture itself decides how they are made. Lullaby's
+`GRADIENT` is 98% partial alpha and `DARK_MTA` has six such pixels in 262,144 — the first is a
+blend, the second is a mask, and before the distinction existed both were cut away and the title
+screen's mountain range was invisible.
+
+Blended surfaces do not write depth. A glow that sits in front of a mountain is drawn after it,
+and writing depth would erase the layers a second glow further out was meant to light.
+
+### `dontdraw` is an automap flag in GZDoom, not a rendering one
+
+GZDoom reads `dontdraw` into `ML_DONTDRAW`, and the only places `ML_DONTDRAW` is consulted are
+`am_map.cpp` — the automap — and `Line_SetAutomapFlags`. The 3D view draws those lines like any
+other. This matters for Lullaby: every one of the 78 lines carrying its mountain texture is
+`dontdraw = true`, so skipping them, as "invisible" suggests, removes the entire mountain range
+from the title map. An importer that honours the flag for rendering is wrong; only the automap
+should.
+
+### Things in the air fall, at the map's own gravity
+
+`AActor::GetGravity` is `sv_gravity * sector.gravity * actor.gravity * 0.00125`, and with
+`sv_gravity` at its default 800 an ordinary thing falls one map unit per tic squared.
+`p_mobj.cpp` moves a thing by its current speed first and only then subtracts gravity
+(`AddZ(Vel.Z)` before `FallAndSink`), so the first tic of a fall does not move at all.
+
+Lullaby's title map is a shower of stars: 33 `Star` things dropped at elevations up to 3700, each
+one carrying `gravity = 0.2` or `0.3` in its own UDMF block — a per-thing multiplier rather than a
+sector property. `shared/actor-runtime.js` (`stepThingGravity`) reads it, and the tic-by-tic
+heights match GZDoom's trace exactly: tic 35 is z=1481 with speed −7, tic 70 is z=1117 with speed
+−14. `test/thing-gravity.test.js` pins those numbers.
+
+Two rules keep it from interfering elsewhere. A thing whose actor cannot be resolved is left
+alone, because guessing would drop every prop on a map whose DECORATE could not be read. And a
+thing already at or below its floor is not corrected here — that is `settleGroundActors`, which
+reports each correction it makes.
+
 ### Known issue: the walking jiggle, with the numbers
 
 While walking, the view shakes by about 0.4 map units. The cause is measured, not guessed: a

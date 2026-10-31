@@ -26,7 +26,8 @@ const legacyDiscarded = new Set(['rendererStatus']);
 const optional = new Set(['decalCounter', 'lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
   'scriptState', 'scriptWarning', 'damageAcc', 'musicRequest', 'skyRequest', 'gravity', 'airControl', 'scriptLog',
   'messageCount', 'buttons', 'prevButtons', 'actorClock', 'weaponClock', 'weaponSlot', 'weaponReady', 'playerMorph', 'cameraTextures',
-  'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock']);
+  // Falling things keep their own tic clock, like the actor and projectile machines.
+  'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock', 'gravityClock']);
 const fail = message => { throw new Error(`Invalid game save: ${message}`); };
 const plain = value => value !== null && typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
