@@ -2496,6 +2496,13 @@ ridge lines was empty here while GZDoom shows a moving nebula there. The shader 
 GZDoom's transform: `theta = atan2(tan(elevation), scale) - asin(shift / hypot(tan(elevation),
 scale))`, and `v = 1 - theta / 60deg`.
 
+**A `uniform(0)` is an integer uniform.** The sky's heading, pitch and scroll were built with
+`uniform(0)`, so three.js inferred `int` and every value assigned — a scroll of 0.05 radians, a
+heading of 1.2 radians — truncated back to 0. The sky therefore never turned with the view and
+never scrolled, however right the number fed to it was: measured from two frames ten seconds
+apart, the best-fitting horizontal shift was 0 px. They are `uniform(0, 'float')` now, and the
+same measurement gives the shift the MAPINFO speed asks for.
+
 **The field of view is measured differently on the two sides.** GZDoom's `fov` cvar is
 *horizontal* and its default is 90, which is 58.6 degrees vertically at 16:9; the studio's
 `fov` setting is used directly as three.js's vertical field, and its default is 70. A title

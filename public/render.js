@@ -761,7 +761,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
         backgroundScene.userData.skybox = sky;
         appliedSky = null;
       } else if (skyAsset && textures.has(skyAsset.id)) {
-        const heading = uniform(0), pitch = uniform(0), aspect = uniform(800 / 450), scroll = uniform(0);
+        // `float`, explicitly: `uniform(0)` infers an *int* from a whole number, and assigning
+        // 0.05 radians to an int uniform truncates it to 0 — the sky then never turned with the
+        // view or scrolled, however correct the number fed to it was.
+        const heading = uniform(0, 'float'), pitch = uniform(0, 'float'), aspect = uniform(800 / 450),
+          scroll = uniform(0, 'float');
         const fieldOfView = uniform(Math.tan(35 * Math.PI / 180));
         const p = uv().mul(2).sub(1).mul(fieldOfView);
         const forward = vec3(cos(pitch).mul(cos(heading)), sin(pitch), cos(pitch).mul(sin(heading)));
