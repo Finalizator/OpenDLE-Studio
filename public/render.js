@@ -109,10 +109,19 @@ export async function createPreview(canvas, project, state, { editor = false } =
   // glow, its panes of glass — is blended instead. Testing those away erases them completely.
   const alphaModes = new Map();
   function alphaModeFor(image) {
-    const width = 64, height = 64;
+    // The artwork's own pixels decide the mode, so the sample must not be smoothed: a
+    // silhouette has hard edges, and averaging them on the way down to a small canvas turns
+    // every edge pixel into partial alpha. Lullaby's mountains (0.002% partial at full size)
+    // then looked like a glow and were blended with the depth test off, which erased the
+    // ridges behind them.
+    const sourceWidth = image.naturalWidth || image.width || 0, sourceHeight = image.naturalHeight || image.height || 0;
+    if (!sourceWidth || !sourceHeight) return 'opaque';
+    const scale = Math.min(1, 256 / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(1, Math.round(sourceWidth * scale)), height = Math.max(1, Math.round(sourceHeight * scale));
     const surface = document.createElement('canvas');
     surface.width = width; surface.height = height;
     const context = surface.getContext('2d', { willReadFrequently: true });
+    context.imageSmoothingEnabled = false;
     context.drawImage(image, 0, 0, width, height);
     const data = context.getImageData(0, 0, width, height).data;
     let transparent = 0, partial = 0;
@@ -295,8 +304,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
       texture.wrapS = THREE.RepeatWrapping; texture.wrapT = THREE.RepeatWrapping;
-      // Sprites are drawn by their own path and are silhouettes by definition.
-      if (asset.kind !== 'sprite') alphaModes.set(asset.id, alphaModeFor(texture.image));
+      // Every picture is classified, sprites included: GZDoom drops the alpha test for a
+      // sprite texture that has partial alpha (`GetTranslucency`) and blends it instead, and
+      // Lullaby's falling stars are mostly glow.
+      alphaModes.set(asset.id, alphaModeFor(texture.image));
       textures.set(asset.id, texture);
     }));
     // Camera textures: ANIMDEFS reserves a surface no image backs. Rendering its
@@ -450,7 +461,31 @@ export async function createPreview(canvas, project, state, { editor = false } =
         geometry.computeBoundingSphere();
         geometry.computeBoundingBox();
         mesh.userData.selectionRanges = merged.ranges;
+        mesh.userData.meanRadius = mesh.material.transparent ? meanRadius(merged.positions) : 0;
       }
+      // Blended buffers are drawn in whatever order three.js happens to pick, and it picks
+      // by each buffer's origin — the same point for every one of them, since they are
+      // merged. Lullaby's title screen is rings of glow behind rings of black haze, so an
+      // arbitrary order lets the haze paint over glow it sits behind. Sorting the buffers
+      // by how far their surfaces are from the middle of the level restores the
+      // back-to-front order GZDoom draws these surfaces in.
+      const blended = [...batchMeshes.values()].filter(entry => entry.material.transparent);
+      blended.sort((a, b) => b.userData.meanRadius - a.userData.meanRadius);
+      blended.forEach((entry, index) => { entry.renderOrder = index; });
+    }
+    let levelCentre = null;
+    function meanRadius(positions) {
+      if (!levelCentre) {
+        let x = 0, z = 0, count = 0;
+        for (const sector of geometry) for (const ring of sector.rings || []) for (const vertex of ring) { x += vertex.x; z += vertex.y; count++; }
+        levelCentre = count ? { x: x / count, z: z / count } : { x: 0, z: 0 };
+      }
+      let total = 0, count = 0;
+      for (let at = 0; at < positions.length; at += 3) {
+        total += Math.hypot(positions[at] - levelCentre.x, positions[at + 2] - levelCentre.z);
+        count++;
+      }
+      return count ? total / count : 0;
     }
     function mesh(buffer, material, destination = scene) {
       geometries.add(buffer); materials.add(material);
@@ -475,7 +510,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         map: imageTexture(assetId), color: assetId ? '#ffffff' : color,
         side: oneSided ? THREE.FrontSide : THREE.DoubleSide,
         // A ceiling always keeps an alpha test: that is what cuts it away above the camera.
-        alphaTest: blended ? 0 : (masked || ceiling ? .5 : 0),
+        alphaTest: blended ? 0 : (masked || ceiling || alpha === 'masked' ? .5 : 0),
         transparent: blended,
         // Blended surfaces must not write depth: a glow in front of a mountain is drawn
         // after it, and writing depth would erase the layers behind the next glow.
@@ -775,7 +810,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
     }
     buildSky(project.environment);
     const sprites = new Map(), spriteList = [], colliderBoxList = [];
-    let spriteTemplate = null;
+    // One template per alpha mode: a sprite sheet with partial alpha is blended, a plain one
+    // stays alpha-tested, and the mode is baked into the material.
+    const spriteTemplates = new Map();
     // Sprites and models are created on demand so runtime spawns appear without a
     // rebuild; removed entities are hidden instead of disposed (their objects can
     // be reused when an id comes back).
@@ -792,13 +829,20 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const map = entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
       const color = asset ? '#ffffff' : entityColors[entity.type] || '#ffffff';
       if (!asset) placeholder(entity, 'billboard', entity.spriteAsset ? `sprite ${entity.spriteAsset} is not in the project` : 'no sprite assigned');
+      const style = { map, color, sizeAttenuation: true };
+      // GZDoom blends a sprite texture that has partial alpha instead of testing it away.
+      const spriteMode = (entity.spriteAsset && alphaModes.get(entity.spriteAsset)) || 'opaque';
+      const blendedSprite = spriteMode === 'translucent';
+      if (blendedSprite) Object.assign(style, { transparent: true, alphaTest: 0, depthWrite: false });
+      else Object.assign(style, { transparent: false, alphaTest: .5 });
       // A shadered sprite cannot share the pre-wrapped template material.
+      const template = spriteTemplates.get(spriteMode);
       const material = entity.shaderId
-        ? withEffectFor(new THREE.SpriteNodeMaterial({ map, color, alphaTest: .5, transparent: false, sizeAttenuation: true }), entity)
-        : spriteTemplate ? spriteTemplate.clone()
-          : withEffect(new THREE.SpriteNodeMaterial({ map, color, alphaTest: .5, transparent: false, sizeAttenuation: true }));
-      if (spriteTemplate) { material.map = map; material.color.set(color); }
-      materials.add(material); spriteTemplate ||= material;
+        ? withEffectFor(new THREE.SpriteNodeMaterial(style), entity)
+        : template ? template.clone() : withEffect(new THREE.SpriteNodeMaterial(style));
+      if (template) { material.map = map; material.color.set(color); }
+      else if (!entity.shaderId) spriteTemplates.set(spriteMode, material);
+      materials.add(material);
       const sprite = new THREE.Sprite(material);
       sprite.userData.selection = { kind: 'entity', id: entity.id };
       trackScreen(sprite, material);
@@ -1813,6 +1857,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       project = next;
       assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
       geometry = sectorGeometry(project);
+      levelCentre = null;
       const nextInputs = JSON.stringify([project.environment, project.shaders || []]);
       if (nextInputs !== worldInputs) {
         worldInputs = nextInputs;

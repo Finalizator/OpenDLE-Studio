@@ -2447,6 +2447,35 @@ their heights. Two bugs on that path were the reason imported scripts looked bro
 `SetActorPosition` read its arguments in push order (so an actor landed at `x = fog`), and the
 coordinates ACS passes are 16.16 fixed point while the world is in map units.
 
+**How a picture's holes are made is a property of the picture, and it has to be measured at
+full size.** The studio decides between three modes from a texture's own alpha channel: no
+transparency at all is drawn opaque, a silhouette with a few anti-aliased edge pixels is
+alpha-tested, and a picture that is partly transparent *everywhere* is blended. The first version
+sampled a 64x64 smoothed copy, which averages a hard edge into partial alpha: Lullaby's
+`DARK_MTA` mountains are 0.002% partial at their real 1024x256 but 4.5% partial once smoothed
+down, so the whole ridge line was classified as a glow. Drawn blended with the depth test open,
+the near ridge stopped occluding anything — the sky glow behind it showed *through* the rock and
+the layers collapsed into one black band. The sample is now taken without smoothing, at up to
+256 pixels, so `DARK_MTA` lands on 0% and is cut out, while `CYAGRA2` (80% partial) and
+`GRADIENT` (98%) stay blended.
+
+**A sprite sheet with partial alpha is blended, not cut out.** GZDoom's `hw_sprites.cpp` drops
+the alpha test when `texture->GetTranslucency()` is set and switches the sprite to
+source-alpha blending. Sprites here always used `alphaTest: .5`, so the falling stars' glow became
+a hard-edged saturated shape — the bright cyan blotches that filled the top of the title screen.
+Sprites are now classified like every other picture and each mode gets its own template
+material, because the mode is baked into the material rather than set per entity.
+
+**Merged blended buffers are ordered by how far their surfaces are from the middle of the
+level.** A merged buffer cannot be depth-sorted per surface, and three.js orders transparent
+objects by their origin — the same point for every batch, so the order was arbitrary. The title
+screen is rings of `CYAGRA2` glow behind rings of `GRADIENT` black haze, at the same heights; an
+arbitrary order lets the haze paint over glow it sits behind, which is why the ridge lines had no
+rim. `flushBatches` now measures each blended buffer's mean radius from the level's centre and
+assigns `renderOrder` farthest first, which is the back-to-front order GZDoom draws these
+surfaces in. It is an approximation: GZDoom sorts every translucent surface individually, so two
+rings at nearly the same radius can still be drawn in the wrong order here.
+
 ### Static world surfaces are merged, not one mesh each
 
 A fragment of every wall quad and every floor/ceiling triangle used to be its own
