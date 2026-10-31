@@ -662,6 +662,10 @@ drives as many models as you like, and editing the path re-shapes all of them.
 Travel is measured in *three* dimensions, so climbing costs distance: a route up a staircase is
 longer than its footprint, and a follower therefore walks it at its stated ground speed.
 
+A rigid body outranks the route: Rapier writes the object's position back from its collider every
+frame, so an object with one is pinned where the physics says, and Properties says so when both are
+set.
+
 `shared/path-motion.js` holds the whole of it — `pathDistance` for the three end behaviours,
 `followPath` for where a follower stands and which way it faces, and `advancePathMotion` to step
 every follower in the level. The editor also publishes the first follower as

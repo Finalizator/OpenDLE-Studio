@@ -988,6 +988,9 @@ function renderInspector() {
             field(parent, 'Facing offset (degrees)', input(follow.yawOffset ?? 0, 'number', value => changeFollow('yawOffset', value)));
             parent.append(checkbox('Face the way it is going', follow.faceDirection !== false, value => changeFollow('faceDirection', value)),
               make('p', 'The model is placed by the route, height included, and turns to follow it. Two objects on one route with different start points will not overlap. The route is edited with Draw path; this object only stores which one it walks.', 'muted'));
+            if (item.physics?.body && item.physics.body !== 'none') {
+              parent.append(make('p', 'This object also has a Rapier rigid body, and the body decides where it is — the route will not move it. Set the rigid body to none to see the walk.', 'info'));
+            }
           }
         }
         const physics = { body: 'none', shape: 'box', width: 24, height: 32, depth: 24, radius: 12, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true, ...item.physics };
