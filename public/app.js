@@ -4200,6 +4200,33 @@ function pickAssetForEntity(entity) {
 }
 
 /** Places the entity type chosen in the toolbar at a layout point. */
+/**
+ * The "Create object" submenu: every kind of thing that can be placed, plus a path.
+ *
+ * One list, used by both the 2D and the 3D view, so a right click offers the same choices
+ * wherever the mapper is looking. A path is not an object in `map.entities` (it is a route in
+ * `paths`), but it is placed the same way — click where it should start and keep clicking.
+ */
+function createObjectMenuItems(position) {
+  const place = type => guard(() => {
+    if (position) {
+      if (type === 'path') { startPathAt(position); return; }
+      $('entity-type').value = type;
+      placeLayoutObject(position);
+      return;
+    }
+    $('entity-type').value = type;
+  });
+  const items = ENTITY_TYPES.map(type => ({ label: type[0].toUpperCase() + type.slice(1), run: place(type) }));
+  items.push({ separator: true }, { label: 'Path (waypoints)', run: place('path') });
+  return items;
+}
+/** Starts a route at a point, so the next clicks extend it. */
+function startPathAt(position) {
+  $('tool').value = 'path';
+  activePathId = null;
+  addPathPoint(position);
+}
 function placeLayoutObject(position, elevation = 0) {
   const type = $('entity-type').value;
   edit(next => {
@@ -4306,6 +4333,7 @@ function mapCanvasMenu(event) {
       { label: 'Copy id', run: () => copyText(hit.id, hit.id) }, { separator: true });
   }
   items.push(
+    { label: 'Create object', submenu: createObjectMenuItems(position) },
     { label: `Place ${$('entity-type').value} here`, run: guard(() => placeLayoutObject(position)) },
     { label: 'Fit the map in the view', run: () => { fitMap(); mapNeedsDraw = true; } },
     { separator: true },
@@ -4318,17 +4346,31 @@ function mapViewMenu(event, picked) {
   const entity = picked?.kind === 'entity' ? project.map.entities.find(item => item.id === picked.id) : null;
   const sector = picked?.kind === 'sector' ? project.map.sectors.find(item => item.id === picked.id) : null;
   if (!entity && !sector) {
+    const centre = { x: Math.round(camera.x), y: Math.round(camera.y) };
+    // Where the pointer is pointing, which is where the mapper expects the new object to land;
+    // the view centre is only the fallback for a click that hit nothing at all.
+    const under = sceneEditor?.pointUnderPointer?.() || centre;
     contextMenu(event, [
-      { label: 'Frame the room in this view', run: () => { sceneEditor?.fit?.(); } },
+      { label: 'Create object', submenu: createObjectMenuItems({ x: Math.round(under.x), y: Math.round(under.y) }) },
       { separator: true },
+      { label: 'Frame the room in this view', run: () => { sceneEditor?.fit?.(); } },
       { label: `Place ${$('entity-type').value} at the view centre`, run: guard(() => {
-        placeLayoutObject({ x: Math.round(camera.x), y: Math.round(camera.y) });
+        placeLayoutObject(centre);
       }) },
       { label: 'Copy view coordinates', run: () => copyText(`${Math.round(camera.x)}, ${Math.round(camera.y)}`, `${Math.round(camera.x)}, ${Math.round(camera.y)}`) },
     ], { label: '3D view actions' });
     return;
   }
-  if (sector) { contextMenu(event, sectorMenuItems(sector), { label: `${sector.id} actions` }); return; }
+  if (sector) {
+    // A right click almost always lands on a floor or a wall, so the sector's own actions carry
+    // the same Create object submenu the empty view does: hunting for a patch of sky to right
+    // click on would be absurd.
+    const under = sceneEditor?.pointUnderPointer?.() || { x: camera.x, y: camera.y };
+    contextMenu(event, [...sectorMenuItems(sector), { separator: true },
+      { label: 'Create object', submenu: createObjectMenuItems({ x: Math.round(under.x), y: Math.round(under.y) }) }],
+    { label: `${sector.id} actions` });
+    return;
+  }
   // Right-clicking one of several selected objects keeps the set, so the menu can group it; only a
   // right-click on something outside the set starts a new selection.
   if (!selectedEntityIds().includes(entity.id)) {

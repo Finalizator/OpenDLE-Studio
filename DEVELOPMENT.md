@@ -2265,8 +2265,8 @@ and Home/End walk it.
 
 | where | what it offers |
 | --- | --- |
-| Layout 1 (2D) | actions for the object, sector, wall or vertex under the pointer, plus "place this object type here", fit the view and copy coordinates |
-| 3D view | the same object and sector actions for what the ray hit, or "place this object type at the view centre" |
+| Layout 1 (2D) | actions for the object, sector, wall or vertex under the pointer, plus **Create object**, "place this object type here", fit the view and copy coordinates |
+| 3D view | the same object and sector actions for what the ray hit, or **Create object** and "place this object type at the view centre" |
 | object tiles and the object list | select, edit its script, assign artwork, duplicate, capture as a scene object, delete |
 | asset tiles | assign to the selected object, use as weapon overlay/sky/level music, rename, copy name |
 | scene tiles and scene object rows | open the editor, place in the layout, rename, capture, delete |
@@ -2286,6 +2286,25 @@ A right click is told apart from a right **drag**: the layout pans on a right dr
 and the 3D view flies on one, so the menu only opens when the button never moved.
 That is why both views track `moved` on their drag state instead of using the
 `contextmenu` event.
+
+**Create object** is a submenu, and it is on every view menu: the 2D canvas, the 3D
+view's empty space, and the 3D sector menu as well — a right click in 3D almost
+always lands on a floor, so hiding the entry behind a patch of sky would be absurd.
+It lists every `ENTITY_TYPES` entry — so a new object type appears there without
+touching the menu — and then **Path (waypoints)**, which starts a route at the clicked
+point and leaves the Draw path tool active, so the following clicks extend the same
+route. Objects land where the pointer is pointing rather than at the view centre.
+
+An item with `submenu: [...]` opens a second panel beside itself on hover or focus
+(click on touch, ArrowRight from the keyboard), flips to the left edge when it would
+overflow the window, and `Escape` / ArrowLeft step back out of it before closing the
+menu. The child panels are part of the same open menu for dismissal purposes —
+otherwise pressing an item in one would close the menu before the item could run.
+
+The menu's `blur` listener is deliberately **not** captured. A `blur` fires on the
+element that loses focus and does not bubble, but a capturing listener on `window`
+still hears it: pressing an item moved focus, the menu heard its own item blur, and
+closed — the item never ran. Only a real window blur should close the menu.
 
 ### Model thumbnails
 
