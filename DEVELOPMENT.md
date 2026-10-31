@@ -2429,7 +2429,8 @@ re-wound so faces stay outward), `shared/modeldef.js` parses the block, `shared/
 attaches the asset and the spin to the actor, and `shared/actor-functions.js` executes the
 function bodies — assignments such as `angle += 1` — so a decoration turns because its own code
 says so. A statement the interpreter cannot run is reported as an unsupported action rather than
-approximated. Two import bugs had made all of this dead: the ZScript parser matched only a
+approximated. `Scale` and `Offset` from the block are applied too; a non-uniform scale is the one
+thing drawn at 1:1 and said so in the warnings. Two import bugs had made all of this dead: the ZScript parser matched only a
 lowercase `class` (Lullaby writes `Class`), and an inherited record dropped its parent's
 functions.
 

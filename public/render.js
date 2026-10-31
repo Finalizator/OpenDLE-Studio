@@ -1492,6 +1492,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
           const degrees = (entry.spin.rollOffset || 0) + (entry.spin.rotationSpeed || 0) * state.time * 35;
           entry.object.quaternion.setFromAxisAngle(entry.spinAxis, degrees * Math.PI / 180);
         }
+        // MODELDEF `Offset`: where the mesh sits relative to the actor's own origin.
+        if (entity.modelOffset) entry.object.position.set(entity.modelOffset[0], entity.modelOffset[1], entity.modelOffset[2]);
+        else if (entry.object.position.lengthSq() !== 0) entry.object.position.set(0, 0, 0);
         applyModelTexture(entry, entity);
         // Doom light levels still tint a model, but a dark room must not erase it.
         const shade = Math.max(MODEL_LIGHTING.ambientFloor, (sector?.light ?? 255) / 255);

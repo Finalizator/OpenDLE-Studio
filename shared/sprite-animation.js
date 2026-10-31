@@ -289,7 +289,14 @@ export function applyActorSpriteStates(project, entity, actor) {
     const modelAsset = actorModelFor(actor, first.sprite, first.letter);
     if (modelAsset) {
       entity.modelAsset = modelAsset;
-      entity.modelScale = 1;
+      // An OBJ is authored in map units, so it is drawn at 1:1; a MODELDEF `Scale` still
+      // multiplies it, and a non-uniform one is reported rather than silently half-applied.
+      const scale = actor.model.scale || [1, 1, 1];
+      entity.modelScale = scale.every(value => value === scale[0]) ? scale[0] : 1;
+      if (entity.modelScale !== 1 && !scale.every(value => value === scale[0])) {
+        (project.warnings ||= []).push(`${actor.name}: non-uniform model scale ${scale.join(' ')} is drawn at 1:1.`);
+      }
+      if (actor.model.offset?.some(value => value)) entity.modelOffset = actor.model.offset;
       entity.modelSpin = {
         rotating: Boolean(actor.model.rotating),
         rotationVector: actor.model.rotationVector,

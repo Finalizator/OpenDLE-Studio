@@ -127,3 +127,16 @@ test('a ZScript actor keeps its frame action, its loop and its function', () => 
   assert.equal(frames[1].targetIndex, 0);
   assert.equal(record.functions[0].source, 'angle += 1;');
 });
+
+test('a MODELDEF Offset and Scale are imported with the model', () => {
+  const scaled = MODELDEF.replace('FrameIndex PLAY A 0 0', 'Scale 2 2 2\n\tOffset 0 0 64\n\tFrameIndex PLAY A 0 0');
+  const [definition] = parseModelDefs([scaled]);
+  assert.deepEqual(definition.scale, [2, 2, 2]);
+  assert.deepEqual(definition.offset, [0, 0, 64]);
+  const project = { assets: [], actors: [{ id: 'actor_rotstar', name: 'RotStar' }] };
+  const files = new Map([['rotstar.obj', { size: OBJ.length, data: Buffer.from(OBJ, 'latin1') }]]);
+  importModelDefs(project, { sources: [scaled], files });
+  assert.deepEqual(project.actors[0].model.scale, [2, 2, 2]);
+  // GZDoom's Z offset is the engine's world Y, through the same swap the mesh went through.
+  assert.deepEqual(project.actors[0].model.offset, [0, 64, 0]);
+});
