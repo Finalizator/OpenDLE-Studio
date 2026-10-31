@@ -2301,6 +2301,13 @@ overflow the window, and `Escape` / ArrowLeft step back out of it before closing
 menu. The child panels are part of the same open menu for dismissal purposes —
 otherwise pressing an item in one would close the menu before the item could run.
 
+A submenu closes when one of its items is pressed, when another item with a submenu
+replaces it, on Escape, or when the menu closes — but **not** when the pointer passes
+over an ordinary item of the parent. That was tried and it is a trap: a panel clamped
+to the bottom of the window sits lower than the item that opened it, so the pointer
+travelling to an entry crosses the parent menu, the panel disappears, and the click
+lands on the canvas underneath instead.
+
 The menu's `blur` listener is deliberately **not** captured. A `blur` fires on the
 element that loses focus and does not bubble, but a capturing listener on `window`
 still hears it: pressing an item moved focus, the menu heard its own item blur, and

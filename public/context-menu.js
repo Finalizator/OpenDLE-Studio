@@ -68,7 +68,11 @@ function makeMenuItem(item, owner) {
     });
     return button;
   }
-  if (owner) button.addEventListener('pointerenter', () => owner.closeSubmenus());
+  // A submenu stays open until one of its items is pressed, another item with its own submenu
+  // replaces it, Escape steps out, or the menu closes. Closing it as the pointer passes over an
+  // ordinary item looks tidy and is a trap: the panel can sit lower than the item that opened
+  // it, so travelling to an entry crosses the parent menu and the panel vanishes from under the
+  // pointer that was about to press it.
   button.addEventListener('click', event => {
     event.preventDefault();
     event.stopPropagation();

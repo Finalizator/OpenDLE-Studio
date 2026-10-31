@@ -39,3 +39,12 @@ test('both view menus offer every object type plus a path from a right click', (
   assert.match(app, /function startPathAt\(position\)/);
   assert.match(app, /activePathId = null;\s*\n\s*addPathPoint\(position\);/);
 });
+
+test('a submenu is not closed by the pointer crossing the parent menu', () => {
+  const menu = memo('context-menu.js');
+  // Closing on hover looks tidy and loses the panel from under the pointer when it is clamped
+  // to the bottom of the window; the entries then cannot be pressed at all.
+  assert.equal(/pointerenter', \(\) => owner\.closeSubmenus/.test(menu), false,
+    'hovering a parent item does not close the open submenu');
+  assert.match(menu, /closeSubmenus\(1\)/, 'Escape and ArrowLeft still step out of it');
+});
