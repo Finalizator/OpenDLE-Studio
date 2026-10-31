@@ -2476,6 +2476,22 @@ assigns `renderOrder` farthest first, which is the back-to-front order GZDoom dr
 surfaces in. It is an approximation: GZDoom sorts every translucent surface individually, so two
 rings at nearly the same radius can still be drawn in the wrong order here.
 
+**A camera actor's eye is not its position.** GZDoom films from an actor at
+`Z() + GetCameraHeight()`, and `GetCameraHeight()` is the class's `CameraHeight` or, when it
+has none, **half its height** (`r_utility.cpp` uses that expression for every non-player
+camera; `actorinlines.h` defines it). A `SecurityCamera` is 16 tall, so the title map's eye is
+88, not the 80 the map places it at. Reading only the position put the whole scene eight units
+too low, which is why the ridge lines sat below the horizon in our frame while GZDoom's straddle
+it. The trace harness now prints the eye it films from (`ODT VIEW <tic> viewz=… campos=…`), so
+this is measured rather than guessed: on `TITLEMAP` the player's view sits at `viewz=49`
+(floor 8 + viewheight 41) until `ChangeCamera` moves it.
+
+**The field of view is measured differently on the two sides.** GZDoom's `fov` cvar is
+*horizontal* and its default is 90, which is 58.6 degrees vertically at 16:9; the studio's
+`fov` setting is used directly as three.js's vertical field, and its default is 70. A title
+screen therefore reads as ~20% wider here than in GZDoom. This is a known difference, not a
+bug in the geometry: it was left alone because changing the default re-frames every preview.
+
 ### Static world surfaces are merged, not one mesh each
 
 A fragment of every wall quad and every floor/ceiling triangle used to be its own

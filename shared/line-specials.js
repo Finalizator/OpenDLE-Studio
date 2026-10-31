@@ -15,6 +15,7 @@ import { resetMomentum } from './player-motion.js';
 import { doomSpecialName } from './doom-specials.js';
 import { floorAt, sectorFloorAt, soundEvent } from './combat.js';
 import { sectorAt } from './sectors.js';
+import { actorOf } from './actor-runtime.js';
 
 const SPECIAL_NAMES = [
    'NOP', 'NOP', 'Polyobj_RotateLeft', 'Polyobj_RotateRight', 'Polyobj_Move', 'NOP', 'Polyobj_MoveTimes8',
@@ -461,11 +462,16 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 237: { // ChangeCamera
       // `tid` is the camera actor; 0 hands the view back to the player. A title map films
       // the scene from a SecurityCamera while the player start sits out of sight.
-      if (!arg1) { state.viewCamera = null; return 1; }
+      if (!arg1) { state.viewCamera = null; state.viewCameraHeight = 0; return 1; }
       const camera = actorByTid(state, arg1);
       if (!camera) { if (arg2) state.viewCamera = null; return 0; }
+      // GZDoom films from an actor at `Z() + GetCameraHeight()`, and `GetCameraHeight` is the
+      // class's `CameraHeight` or, when it has none, half its height (`r_utility.cpp` uses it
+      // for every non-player camera). A `SecurityCamera` is 16 tall, so its eye sits 8 above
+      // the spot the map placed it rather than on it.
+      const eye = camera.cameraHeight ?? Math.round((actorOf(project, camera)?.height ?? 0) / 2);
       state.viewCamera = camera.id;
-      state.viewCameraHeight = camera.cameraHeight || 0;
+      state.viewCameraHeight = eye;
       return 1;
     }
     case 125: { // Thing_Move

@@ -446,7 +446,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         if (!mesh) {
           const geometry = new THREE.BufferGeometry();
           geometries.add(geometry);
-          mesh = new THREE.Mesh(geometry, batchMaterials.get(piece.key));
+          mesh = new THREE.Mesh(geometry, batchMaterials.get(piece.key.split('@')[0]));
           materials.add(mesh.material);
           scene.add(mesh);
           batchMeshes.set(piece, mesh);
@@ -461,31 +461,12 @@ export async function createPreview(canvas, project, state, { editor = false } =
         geometry.computeBoundingSphere();
         geometry.computeBoundingBox();
         mesh.userData.selectionRanges = merged.ranges;
-        mesh.userData.meanRadius = mesh.material.transparent ? meanRadius(merged.positions) : 0;
+        // Blended buffers are split into rings of radius (`blendedKey`), so their order in
+        // the key is their order in depth: a larger ring is farther away and has to be drawn
+        // first. Three.js cannot work this out itself, because every batch shares an origin.
+        const ring = piece.key.indexOf('@');
+        if (ring >= 0) mesh.renderOrder = -Number(piece.key.slice(ring + 1));
       }
-      // Blended buffers are drawn in whatever order three.js happens to pick, and it picks
-      // by each buffer's origin — the same point for every one of them, since they are
-      // merged. Lullaby's title screen is rings of glow behind rings of black haze, so an
-      // arbitrary order lets the haze paint over glow it sits behind. Sorting the buffers
-      // by how far their surfaces are from the middle of the level restores the
-      // back-to-front order GZDoom draws these surfaces in.
-      const blended = [...batchMeshes.values()].filter(entry => entry.material.transparent);
-      blended.sort((a, b) => b.userData.meanRadius - a.userData.meanRadius);
-      blended.forEach((entry, index) => { entry.renderOrder = index; });
-    }
-    let levelCentre = null;
-    function meanRadius(positions) {
-      if (!levelCentre) {
-        let x = 0, z = 0, count = 0;
-        for (const sector of geometry) for (const ring of sector.rings || []) for (const vertex of ring) { x += vertex.x; z += vertex.y; count++; }
-        levelCentre = count ? { x: x / count, z: z / count } : { x: 0, z: 0 };
-      }
-      let total = 0, count = 0;
-      for (let at = 0; at < positions.length; at += 3) {
-        total += Math.hypot(positions[at] - levelCentre.x, positions[at + 2] - levelCentre.z);
-        count++;
-      }
-      return count ? total / count : 0;
     }
     function mesh(buffer, material, destination = scene) {
       geometries.add(buffer); materials.add(material);
@@ -529,12 +510,45 @@ export async function createPreview(canvas, project, state, { editor = false } =
       materials.add(result); materialCache.set(key, result); batchMaterials.set(key, result);
       return result;
     }
+    /**
+     * A blended surface's buffer, by its distance from the middle of the level.
+     *
+     * Translucent surfaces have to be drawn back to front, and a merged buffer cannot be
+     * sorted per surface — three.js sorts transparent objects by their origin, which is the
+     * same point for every batch. Lullaby's title screen is rings of glow interleaved with
+     * rings of black haze, so an arbitrary order lets the haze paint over the glow it sits
+     * behind and the ridges lose their rim. Splitting by radius puts each surface in a
+     * buffer that is entirely nearer or entirely farther than its neighbours, and the
+     * buffers are then drawn farthest first.
+     */
+    const BLEND_RING = 192;
+    function blendedKey(key, record, surfaceMaterial) {
+      if (!surfaceMaterial.transparent) return key;
+      const positions = record.positions, centre = levelCentreOf();
+      let total = 0, count = 0;
+      for (let at = 0; at < positions.length; at += 3) {
+        total += Math.hypot(positions[at] - centre.x, positions[at + 2] - centre.z);
+        count++;
+      }
+      // `@`, not `#`: a material key carries a hex colour, and `#rrggbb` would be mistaken
+      // for the suffix.
+      return `${key}@${count ? Math.min(255, Math.floor(total / count / BLEND_RING)) : 0}`;
+    }
+    let levelCentre = null;
+    function levelCentreOf() {
+      if (!levelCentre) {
+        let x = 0, z = 0, count = 0;
+        for (const sector of geometry) for (const ring of sector.rings || []) for (const vertex of ring) { x += vertex.x; z += vertex.y; count++; }
+        levelCentre = count ? { x: x / count, z: z / count } : { x: 0, z: 0 };
+      }
+      return levelCentre;
+    }
     /** Records one surface for the merged buffers, keeping it owned by the part that built it. */
     function surface(positions, uvs, indices, surfaceMaterial, light, selection) {
       // Doom's lighting is not linear: a map that asks for `lightmode = 2` gets GZDoom's
       // crushed curve, where light 136 is drawn at 87 rather than 136.
       const record = { positions, uvs, indices, light: surfaceBrightness(light, lightMode), selection };
-      batcher.add(surfaceMaterial.userData.batchKey, record);
+      batcher.add(blendedKey(surfaceMaterial.userData.batchKey, record, surfaceMaterial), record);
       if (collecting) collecting.push(record);
       return record;
     }
@@ -1528,7 +1542,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // was meant to look at.
         const eye = spectator
           ? [spectator.x, spectator.y,
-            (spectator.z ?? (sectorOf(spectator)?.floorHeight ?? 0) + (spectator.elevation || 0)) + (spectator.cameraHeight || 0)]
+            (spectator.z ?? (sectorOf(spectator)?.floorHeight ?? 0) + (spectator.elevation || 0)) +
+              (state.viewCameraHeight ?? spectator.cameraHeight ?? 0)]
           : eyePosition(state.player, state.player.z ?? sectorOf(state.player)?.floorHeight ?? 0);
         // An object's angle is stored negated (Doom's Y axis is flipped for the world), so the
         // world-space heading is its negative — the same conversion the sprite facing uses.

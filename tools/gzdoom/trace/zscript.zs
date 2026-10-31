@@ -164,6 +164,18 @@ class OpenDLETrace : StaticEventHandler
 
 		Actor mo = players[0].mo;
 		if (mo != null) PrintActor("player", mo);
+		// The eye a title map films from is not the player: a `ChangeCamera` moves the view
+		// to another actor, and where that view *is* decides every screen position in the
+		// scene. `viewz` is the number the renderer actually uses.
+		String campos = "none";
+		double camz = 0.0;
+		if (players[0].camera != null)
+		{
+			campos = "" .. players[0].camera.GetClassName();
+			camz = players[0].camera.pos.z;
+		}
+		Console.Printf("ODT VIEW %d viewz=%.3f viewheight=%.3f camz=%.3f campos=%s\n",
+			tic, players[0].viewz, players[0].viewheight, camz, campos);
 
 		// The spawned actor is watched by identity, so a map monster of the same class can
 		// never be mistaken for it.
