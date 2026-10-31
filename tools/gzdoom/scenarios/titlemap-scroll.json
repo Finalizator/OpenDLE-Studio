@@ -1,0 +1,16 @@
+{
+  "name": "titlemap-scroll",
+  "description": "Reads the TITLEMAP's sidedef texture offsets tic by tic. A Boom wall scroller (specials 100-103) shows up here as an offset that advances exactly 0.5 texels per tic on all three slots of the front sidedef: 78 linedefs of Lullaby's title map do it, and that is how fast its mountains slide.",
+  "iwad": "Projects/Doom2.wad",
+  "files": [
+    "Projects/Lullaby/Lullaby.pk3"
+  ],
+  "map": "TITLEMAP",
+  "skill": 3,
+  "tics": 5,
+  "action": "idle",
+  "args": [
+    "+odt_scroll",
+    "800"
+  ]
+}

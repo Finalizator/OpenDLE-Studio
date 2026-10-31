@@ -5,6 +5,7 @@ import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv } from '/shared/uv.js';
+import { wallScroll, TICRATE } from '/shared/scrollers.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
 import { verticalFov } from '/shared/game-settings.js';
 import { spriteAnchor } from '/shared/sprite-anchor.js';
@@ -142,9 +143,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
     position: uniform(position), color: uniform(lightColors[index]), radius: uniform(0),
   }));
   const effectTime = uniform(0), effectEnabled = uniform(1);
-  // Tics elapsed, for surfaces a map scrolls. The *speed* is baked per material (it comes from
-  // the line's special), so one shared clock drives every scroller in the level.
-  const scrollTics = uniform(0, 'float');
+  // The pictures a map's scrollers slide, each with the speed its line gives it. A scrolled
+  // surface gets its own copy of the texture so its offset can move without dragging every
+  // other surface that samples the same artwork along with it.
+  const scrolledTextures = new Map();
   // Height at which ceilings are cut away: the editor raises it while the camera is
   // below a room's ceiling so the room can be looked into from above. Far away means
   // "draw every ceiling", which is what gameplay wants.
@@ -492,8 +494,16 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const scrollKey = scroll ? `${scroll.u.toFixed(7)}/${scroll.v.toFixed(7)}` : '-';
       const key = `${assetId}/${color}/${masked}/${oneSided}/${ceiling}/${alpha}/${scrollKey}`;
       if (materialCache.has(key)) return materialCache.get(key);
+      // Doom scrolls a wall by moving its texture offset (`xOffset`) and never its geometry, so
+      // the picture slides across the surface and the alpha test cuts the hole where the picture
+      // now is. Animating the texture's own offset keeps the whole standard map path — colour,
+      // alpha test, wrapping — reading the moved picture; the offset is the same value GZDoom's
+      // `GetTextureXOffset` reports, which on TITLEMAP advances by exactly 0.5 texels per tic.
+      // Each scrolled material gets its own copy of the picture so its offset moves alone.
+      let map = imageTexture(assetId);
+      if (scroll && map) { map = map.clone(); scrolledTextures.set(map, scroll); }
       const result = withEffect(new THREE.MeshBasicNodeMaterial({
-        map: imageTexture(assetId), color: assetId ? '#ffffff' : color,
+        map, color: assetId ? '#ffffff' : color,
         side: oneSided ? THREE.FrontSide : THREE.DoubleSide,
         // A ceiling always keeps an alpha test: that is what cuts it away above the camera.
         alphaTest: blended ? 0 : (masked || ceiling || alpha === 'masked' ? .5 : 0),
@@ -517,12 +527,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // linear space is what makes the displayed result `colour x light`.
       const shade = illumination.max(.03).pow(2.2);
       const aboveCamera = positionWorld.y.greaterThan(ceilingCut).select(1, 0);
-      // A scrolled surface samples the same picture at a moving coordinate, which is how Doom
-      // animates a wall: the geometry never moves, the texture slides across it.
-      const scrolled = scroll && assetId
-        ? texture(imageTexture(assetId), uv().add(vec2(scroll.u, scroll.v).mul(scrollTics)))
-        : null;
-      const colour = scrolled ?? materialColor;
+      const colour = materialColor;
       result.colorNode = vec4(colour.rgb.mul(shade.min(vec3(2))),
         ceiling ? colour.a.mul(aboveCamera) : colour.a);
       materials.add(result); materialCache.set(key, result); batchMaterials.set(key, result);
@@ -645,25 +650,6 @@ export async function createPreview(canvas, project, state, { editor = false } =
         }
       });
     }
-    /**
-     * The texture speed a line's special gives its front sidedef, in UV units per tic.
-     *
-     * Boom's `Scroll_Texture_Left/Right/Up/Down` (100-103) are the wall scrollers GZDoom acts on:
-     * `maploader/specials.cpp` turns `args[0]` into `-args[0] / 64` units per tic on the front
-     * sidedef, rightwards scrolling taking the negative. It is not a no-op in GZDoom despite the
-     * `LS_NOP` placeholder in the line-special table, and Lullaby's title map scrolls every one
-     * of its 78 mountain walls with it — removing special 101 from the map stops the ridge line
-     * moving at all.
-     */
-    function scrollOf(wall, asset, slot) {
-      const special = wall.special;
-      if (!asset || !(special >= 100 && special <= 103)) return null;
-      const speed = (Number(wall.args?.[0]) || 0) / 64;
-      if (!speed) return null;
-      const u = (special === 100 ? speed : special === 101 ? -speed : 0) / (asset.width || 64);
-      const v = (special === 102 ? speed : special === 103 ? -speed : 0) / (asset.height || 64);
-      return u || v ? { u, v } : null;
-    }
     function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false, flip = false, slot = 'mid') {
       if (top <= bottom) return;
       const length = Math.hypot(b.x - a.x, b.y - a.y), asset = assetMap.get(assetId);
@@ -679,7 +665,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const coords = wallQuadUv({ length, bottom, top, referenceTop, offsetX, offsetY,
         textureWidth: asset?.width || 64, textureHeight: asset?.height || 64, scale, flip });
       // The scroller is attached to the line's *front* sidedef, so the back face never scrolls.
-      const scroll = side === wall.right ? scrollOf(wall, asset, slot) : null;
+      const scroll = side === wall.right
+        ? wallScroll(wall, { textureWidth: asset?.width, textureHeight: asset?.height, scale, slot })
+        : null;
       surface([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], coords, [0, 1, 2, 0, 2, 3],
         material(assetId, wall.color, { masked, oneSided: !editor, scroll }), light, { kind: 'wall', id: wall.id });
     }
@@ -1827,7 +1815,11 @@ export async function createPreview(canvas, project, state, { editor = false } =
       renderCameraTextures(state);
       applySky(state);
       // A map's scrollers advance one step per tic, so the clock is the level's tic count.
-      scrollTics.value = Math.max(0, (Number(state.time) || 0) * 35);
+      // `state.time` is the level's own second counter, and it stops when the level pauses.
+      const scrollerTics = Math.max(0, (Number(state.time) || 0) * TICRATE);
+      for (const [scrolled, scroll] of scrolledTextures) {
+        scrolled.offset.set(scroll.u * scrollerTics, scroll.v * scrollerTics);
+      }
       if (backgroundScene.userData.skybox) backgroundScene.userData.skybox.position.copy(camera.position);
       else {
         const panorama = backgroundScene.userData.panorama;

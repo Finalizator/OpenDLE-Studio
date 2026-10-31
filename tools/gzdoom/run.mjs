@@ -55,29 +55,29 @@ function scenarioArgs(scenario, logPath) {
     // A demo carries its own map and its own input, so it replaces `+map`: the map named in
     // the header is loaded and the ticcmds in the body drive the player. This is the only
     // way to give GZDoom exact input — see tools/gzdoom/make-demo.mjs.
-    ...(scenario.demo ? ['-playdemo', demoPath(scenario.demo)] : [`+map ${scenario.map || 'MAP01'}`]),
+    ...(scenario.demo ? ['-playdemo', demoPath(scenario.demo)] : ['+map', scenario.map || 'MAP01']),
     // The window is on a real desktop, so the mouse and any gamepad would otherwise drive
     // the camera and the player: an "idle" trace came back with the view turning and the
     // player walking away. A trace has to be driven by the scenario alone.
-    '+set use_mouse 0', '+set use_joystick 0',
+    '+set', 'use_mouse', '0', '+set', 'use_joystick', '0',
     // An unfocused GZDoom waits between tics on purpose (src/d_net.cpp:
     // `!AppActive && vid_lowerinbackground`), so a spawned run would crawl.
-    '+set vid_lowerinbackground 0',
-    `+odt_tics ${scenario.tics ?? 140}`,
-    `+odt_angle ${scenario.angle ?? 90}`,
-    `+odt_action ${scenario.action || ''}`,
-    `+odt_watch ${scenario.watch || ''}`,
-    `+odt_tid ${scenario.tid ?? 0}`,
+    '+set', 'vid_lowerinbackground', '0',
+    '+odt_tics', String(scenario.tics ?? 140),
+    '+odt_angle', String(scenario.angle ?? 90),
+    '+odt_action', scenario.action || '',
+    '+odt_watch', scenario.watch || '',
+    '+odt_tid', String(scenario.tid ?? 0),
     // A summoned actor starts facing the crosshair, away from the player; this turns it
     // once so it can see them and start chasing, which is what a movement trace needs.
     // The tracer places the actor itself, in front of the player and facing them; `summon`
     // was tried first and rejected, because it aims at the crosshair and the resulting
     // position was not reproducible.
-    `+odt_face ${scenario.face ? 1 : 0}`,
-    `+odt_spawn ${scenario.spawnActor || ''}`,
-    `+odt_spawn_distance ${scenario.spawnDistance ?? 96}`,
+    '+odt_face', scenario.face ? '1' : '0',
+    '+odt_spawn', scenario.spawnActor || '',
+    '+odt_spawn_distance', String(scenario.spawnDistance ?? 96),
 
-    `+logfile "${logPath}"`,
+    '+logfile', logPath,
   ];
 }
 
@@ -100,6 +100,10 @@ export function commandLine(scenario, { windowed = true, logPath = join(state, '
     '-nosound',
     // Windowed by default so a trace run does not take over the desktop.
     ...(windowed ? ['-windowed'] : []),
+    // A scenario's own wads come before `+map`: GZDoom runs a `+command` the moment it meets
+    // it, so a map that only exists in a `-file` listed afterwards is not found and the run
+    // quietly starts somewhere else instead. `files` is where a scenario names its pwads.
+    ...(scenario.files || []).flatMap(file => ['-file', isAbsolute(file) ? file : resolve(root, file)]),
     ...scenarioArgs(scenario, logPath),
     ...(scenario.args || []),
   ];

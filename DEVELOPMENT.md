@@ -2468,12 +2468,38 @@ unit per tic while the geometry stands still. Stripping special 101 from every l
 the mod stops the movement dead, which is how this was pinned down — four frames with a flat
 magenta sky, measuring the rock mask, moved `dx 0, gain 0%` without it and `-220 px` with it.
 
-The renderer now bakes each line's scroll speed into the material (so a batch of walls sharing a
-speed shares one material), samples the picture at `uv + speed * tics`, and drives them all from a
-single tic clock. Our own frames move `-165 px` over ten seconds with a 79 % match gain where the
-ridge used to be static. It also explains every failed earlier measurement: the scroller moves
-`side->textures[].TextureFx`, the animated offset, and not the sidedef's static `xOffset` that a
-`GetTextureXOffset` trace reads — so the values never change even while the surface slides.
+**What GZDoom itself does, measured.** `node tools/gzdoom/run.mjs titlemap-scroll` reads
+`GetTextureXOffset` on every sidedef of the title map each tic (`tools/gzdoom/scenarios/
+titlemap-scroll.json`). It reports 78 linedefs — the same 78 the importer classifies — moving on
+the **front** side only, on **all three** slots, by exactly −0.5 texels per tic, which is
+`args[0] / 64` with `args[0] = 32`. At 35 tics per second that is 17.5 texels per second along the
+wall, or about 1.6°/s for a ring 600 units out: the same angular rate a 3440 px GZDoom capture
+shows its ridge bands sliding (62 px/s over 38 px per degree).
+
+The renderer bakes each line's scroll speed into its material (so a batch of walls sharing a speed
+shares one material) and, each frame, moves the **texture's own offset** of that material by
+`speed * tics`. Moving the offset rather than sampling at a shifted coordinate keeps the whole
+standard map path — colour, alpha test, wrapping — reading the moved picture, which is what makes
+a silhouette cut from its picture's alpha move with the artwork. The arithmetic lives in
+[`shared/scrollers.js`](./shared/scrollers.js) rather than inside the renderer, because it is data
+in and offsets out and so can be tested without a GPU. Two details of GZDoom's version that are
+easy to miss:
+
+- `args[1]` is which texture slots move. `specials.cpp` runs it through `SCROLLTYPE`, which
+  returns 7 — all three slots — for any value that is zero, negative, or carries bits outside
+  `top|mid|bottom`, and otherwise the value itself. So the usual `arg1 = 0` scrolls the lintel and
+  the sill along with the wall, and the renderer applies the scroller to whichever slot it is
+  drawing only if that slot is selected.
+- The speed is added to the texture *offset*, which a surface divides by `textureWidth * scale`.
+  It therefore has to be divided by the same tiled size; dividing by the texture's raw width alone
+  would slide a scaled wall at the wrong rate.
+
+**A scenario that names a map used to run MAP01 instead.** `tools/gzdoom/run.mjs` built its
+arguments as `"+map TITLEMAP"`, one string per pair; the harness spawns GZDoom directly, with no
+shell to split them, so the engine never saw a `+map` command at all and a pwad map fell back to
+its own first map. Every trace that named a non-default map quietly measured MAP01. Each `+command`
+and its value are now separate arguments, and a scenario can list its own pwads under `files` so
+they load before `+map` runs.
 
 **A sidedef offsets each texture slot on its own, and a ring of walls depends on it.** UDMF
 lets a sidedef carry `offsetx`/`offsety` for all three textures *and* `offsetx_top`,
