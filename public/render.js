@@ -505,8 +505,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const falloff = positionWorld.distance(light.position).div(light.radius.max(1)).oneMinus().max(0);
         illumination = illumination.add(light.color.mul(falloff.mul(falloff)));
       }
+      // Doom's light is a multiply on the *displayed* colour: its colormap scales palette entries,
+      // so light 87 draws a colour at 87/255 of what it would be at full light. Three.js samples a
+      // texture into linear space and converts back to sRGB on output, so multiplying the linear
+      // value by 87/255 comes out roughly twice as bright as Doom draws it (a surface at light 136
+      // measured 6.3 against GZDoom's 1.8 on the title screen). Raising the factor to 2.2 in
+      // linear space is what makes the displayed result `colour x light`.
+      const shade = illumination.max(.03).pow(2.2);
       const aboveCamera = positionWorld.y.greaterThan(ceilingCut).select(1, 0);
-      result.colorNode = vec4(materialColor.rgb.mul(illumination.min(vec3(2))),
+      result.colorNode = vec4(materialColor.rgb.mul(shade.min(vec3(2))),
         ceiling ? materialColor.a.mul(aboveCamera) : materialColor.a);
       materials.add(result); materialCache.set(key, result); batchMaterials.set(key, result);
       return result;

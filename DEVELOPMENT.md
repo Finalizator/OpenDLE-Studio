@@ -2447,6 +2447,16 @@ their heights. Two bugs on that path were the reason imported scripts looked bro
 `SetActorPosition` read its arguments in push order (so an actor landed at `x = fog`), and the
 coordinates ACS passes are 16.16 fixed point while the world is in map units.
 
+**A Doom light multiplies the colour you see, not the linear colour behind it.** Doom's colormap
+scales palette entries: light 87 draws a surface at 87/255 of its full-light colour. Three.js
+samples a texture into linear space and converts back to sRGB on output, so multiplying the linear
+value by 87/255 comes out about twice as bright as Doom draws it — measured on the title screen,
+the mountain band's mean green was 19.7 against GZDoom's 10.4, and the lower half 6.3 against 1.8.
+Raising the light factor to 2.2 in linear space is what makes the displayed result `colour x
+light`; the same bands measure 16.4 and 3.9 now. The gap that is left there is the glow band's
+area, not its brightness: our `CYAGRA2` strata are thin and bright where GZDoom's are broad and
+soft.
+
 **A sidedef offsets each texture slot on its own, and a ring of walls depends on it.** UDMF
 lets a sidedef carry `offsetx`/`offsety` for all three textures *and* `offsetx_top`,
 `offsetx_mid`, `offsetx_bottom` (and the matching `y` and `scale` fields) for one slot each. The
