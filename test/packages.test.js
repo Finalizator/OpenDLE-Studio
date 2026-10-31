@@ -564,7 +564,9 @@ test('a real mod imports its own things through its actor table instead of grey 
   const monsters = entities.filter(entity => entity.type === 'enemy');
   assert.ok(monsters.length > 100, 'the level still has its monsters');
   assert.ok(monsters.every(entity => entity.actorName && entity.health > 0), 'every monster knows its actor and health');
-  assert.ok(entities.filter(entity => !entity.spriteAsset && !entity.modelAsset).length < 40,
+  // Teleport destinations are kept for their tags and draw nothing, so they are not "things
+  // without artwork" — the assertion is about what the player can see.
+  assert.ok(entities.filter(entity => !entity.teleportDest && !entity.spriteAsset && !entity.modelAsset).length < 40,
     'almost every placed thing has artwork');
   assert.match(warnings.join('\n'), /marker things that draw nothing .* were not placed/);
 

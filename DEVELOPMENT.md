@@ -3211,6 +3211,40 @@ at its `elevation` alone, while the game adds the sector floor under it. That is
 scene is a template placed somewhere later, so its coordinates are scene space, not map space —
 but it does mean an object in a raised sector sits lower there than it will in play.
 
+### The sky's scale, speed and direction come from three numbers
+
+A Doom sky is a strip that wraps around the view: `xscale = texw < 1024 ? 1024 / texw : 1`
+(`SetupMatrices` in `hw_skydome.cpp`), so a 1024-wide sky covers the whole turn **once** and a
+256-wide one wraps four times. Tiling every sky four times made Lullaby's 1024-wide nebula look
+like a different, denser sky. Vertically the strip's bottom row belongs on the horizon — GZDoom
+translates and stretches the dome to put it there — so the nebula ends where the ground begins
+rather than crossing it.
+
+Scrolling is `hw_sky1pos = fmod(mstime * skyspeed1, 1024) * (90 / 256)` degrees, and `mstime` is
+in **tics**. Multiplying seconds by 1000 turned the roll 35 times too fast; the sign is negative
+because the dome is rotated by `-180 + x_offset`, so the sky slides against the increasing angle.
+Measured against a capture of GZDoom's own window, the nebula travels to the right; ours now does
+the same at the same rate.
+
+### A fade is a target and a clock, not a switch
+
+`FadeTo(red, green, blue, amount, seconds)` names where the screen tint should get to and how
+long it should take. Lullaby's title map fades to black, hands the view to a camera, ends its
+script, and fades back in five seconds later from a second script — so the runtime keeps the
+fade (`screenFade`, `screenFadeFrom`, `fadeClock`) and advances it every frame whatever the
+script is doing. Dropping the opcode made that whole opening sequence one hard cut: the title,
+scene and logo appeared instead of arriving.
+
+### Lullaby's shower repeats, and the map says how
+
+Each of the 33 falling stars owns a `Teleport` line (special 70) inside its own footprint and a
+`TeleportDest2` whose tag matches the line's first argument, sitting 3700 units directly above
+it. GZDoom teleports the star on the tic it reaches the floor, so it falls again: its own trace
+shows a drop lasting about 120 tics, then the star back at the top. Teleport destinations are
+therefore *not* among the markers the importer drops — they are kept as undrawn
+`teleportDest` entities so `stepThingGravity` can resolve one, and a thing that lands within its
+radius of a teleport line restarts at the destination.
+
 ### A picture's transparency decides how it is drawn
 
 Doom textures carry two different kinds of transparency and they are not drawn the same way. A

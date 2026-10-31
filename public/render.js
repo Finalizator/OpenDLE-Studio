@@ -243,6 +243,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
   const warmupScene = new THREE.Scene();
   const backgroundScene = new THREE.Scene(), backgroundCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const overlayScene = new THREE.Scene(), overlayCamera = new THREE.OrthographicCamera(0, 320, 200, 0, -1, 1);
+  // A script's `FadeTo` covers the world, the weapon and the sky, and sits under the menu:
+  // one quad in the overlay, in the same 320x200 space the weapon uses.
+  const fadeGeometry = new THREE.PlaneGeometry(320, 200);
+  const fadeMaterial = new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, fog: false });
+  const fadeMesh = new THREE.Mesh(fadeGeometry, fadeMaterial);
+  fadeMesh.position.set(160, 100, 1);
+  fadeMesh.renderOrder = 1000;
+  fadeMesh.visible = false;
+  overlayScene.add(fadeMesh);
   let disposed = false;
   const disposers = [];
   function dispose() {
@@ -698,11 +707,18 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const right = vec3(sin(heading).negate(), 0, cos(heading));
         const ray = normalize(forward.add(right.mul(p.x).mul(aspect)).add(cross(right, forward).mul(p.y)));
         const doom = environment.skyMode === 'doom';
-        // `sky1 = "<texture>", <speed>` slides the sky sideways; GZDoom turns the millisecond
-        // clock into an angle of `speed * ms * 90/256` degrees, so the same is done here.
-        const u = atan(ray.z, ray.x).add(scroll).div(6.2831853).mul(doom ? 4 : 1);
+        // A Doom sky is tiled around the view until it is at least 1024 pixels wide
+        // (`SetupMatrices` in hw_skydome.cpp: `xscale = texw < 1024 ? 1024 / texw : 1`), so a
+        // 1024-wide sky covers the whole turn once and a 256-wide one wraps four times. The
+        // sky is turned by `scroll`, which the caller derives from MAPINFO's `sky1` speed.
+        const tiling = Math.max(1, Math.floor(1024 / (skyAsset.width || 1024)));
+        const u = atan(ray.z, ray.x).add(scroll).div(6.2831853).mul(tiling);
         const elevation = atan(ray.y, length(ray.xz));
-        const v = doom ? clamp(tan(clamp(elevation, -1.4, 1.4)).mul(.65).add(.5), .001, .999) : elevation.div(Math.PI).add(.5);
+        // Doom puts the sky's bottom row on the horizon and stretches the rest of the picture
+        // upward, so the nebula ends where the ground begins instead of crossing it.
+        const v = doom
+          ? clamp(elevation.negate().div(1.5707963).add(1), .001, .999)
+          : elevation.div(Math.PI).add(.5);
         const backgroundMaterial = new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
         backgroundMaterial.vertexNode = vec4(positionGeometry.xy, 0, 1);
         // Keeping the sampler node lets ChangeSky swap the image without a rebuild.
@@ -1682,10 +1698,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
           panorama.userData.panoramaUniforms.pitch.value = view.pitch;
           panorama.userData.panoramaUniforms.aspect.value = camera.aspect;
           panorama.userData.panoramaUniforms.fieldOfView.value = Math.tan(camera.fov * Math.PI / 360);
-          // GZDoom: `hw_sky1pos = fmod(mstime * speed, 1024) * (90 / 256)` degrees.
+          // GZDoom: `hw_sky1pos = fmod(mstime * skyspeed1, 1024) * (90 / 256)` degrees, with
+          // `mstime` in **tics**. Feeding it seconds × 1000 (milliseconds) rolled the sky 35
+          // times too fast, and the sign decides which way it turns: the dome rotates by
+          // `-180 + x_offset`, so the sky slides against the increasing angle.
           const speed = Number(project.environment.skyScroll) || 0;
-          panorama.userData.panoramaUniforms.scroll.value = speed
-            ? ((state.time * 1000 * speed * (90 / 256)) % 360) * Math.PI / 180 : 0;
+          const ticks = Math.floor(state.time * 35);
+          const degrees = speed ? ((ticks * speed) % 1024) * (90 / 256) : 0;
+          panorama.userData.panoramaUniforms.scroll.value = -degrees * Math.PI / 180;
         }
       }
       // The sky and the world, drawn in one go. Effects that read the screen run it into
@@ -1713,6 +1733,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
         drawWorld();
         renderer.setRenderTarget(null);
         for (const object of hidden) object.visible = true;
+      }
+      // The fade a script asked for, unless the editor is showing the level without a game.
+      const fade = editor ? null : state.screenFadeNow;
+      const fadeVisible = Boolean(fade && fade.amount > 0.002);
+      if (fadeMesh.visible !== fadeVisible) fadeMesh.visible = fadeVisible;
+      if (fadeVisible) {
+        fadeMaterial.color.setRGB(fade.red / 255, fade.green / 255, fade.blue / 255);
+        fadeMaterial.opacity = Math.min(1, fade.amount);
       }
       renderer.clearDepth(); renderer.render(overlayScene, overlayCamera);
       renderer.setScissorTest(false);

@@ -310,6 +310,22 @@ export function createMapScripts(project, state, callbacks = {}) {
     },
     useInventory: name => checkInventory(name),
     levelInfo: kind => levelInfoNumber(kind),
+    /**
+     * `FadeTo` from a script: the screen tint and how long it takes to get there.
+     *
+     * The runtime owns the countdown, so a fade survives the script that asked for it ending
+     * immediately afterwards — which is exactly what a title map does (fade to black, hand
+     * the view to a camera, terminate, fade in later from a delay).
+     */
+    fadeTo: ({ red = 0, green = 0, blue = 0, amount = 0, seconds = 0 }) => {
+      const current = state.screenFadeNow;
+      state.screenFade = { red, green, blue, amount, seconds: Math.max(0, seconds) };
+      state.screenFadeFrom = current
+        ? { red: current.red, green: current.green, blue: current.blue, amount: current.amount }
+        : { red, green, blue, amount: 0 };
+      state.fadeClock = 0;
+      if (!seconds) state.screenFadeNow = amount > 0.002 ? { red, green, blue, amount } : null;
+    },
     changeLevel: map => callbacks.changeLevel?.(map),
     sectorBusy: tag => sectorsTagged(tag).some(sector => state.sectorMotions.has(`${sector.id}:floorHeight`) ||
       state.sectorMotions.has(`${sector.id}:ceilingHeight`)),

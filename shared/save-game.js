@@ -26,6 +26,10 @@ const legacyDiscarded = new Set(['rendererStatus']);
 const optional = new Set(['decalCounter', 'lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
   'scriptState', 'scriptWarning', 'damageAcc', 'musicRequest', 'skyRequest', 'gravity', 'airControl', 'scriptLog',
   'messageCount', 'buttons', 'prevButtons', 'actorClock', 'weaponClock', 'weaponSlot', 'weaponReady', 'playerMorph', 'cameraTextures',
+  // A script's screen fade and the things' fall clock outlive a single frame.
+  'screenFade', 'screenFadeFrom', 'screenFadeNow', 'fadeClock',
+  // Teleport lines are derived from the map, but they are cached on the state on first use.
+  'teleportLines',
   // Falling things keep their own tic clock, like the actor and projectile machines.
   'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock', 'gravityClock']);
 const fail = message => { throw new Error(`Invalid game save: ${message}`); };

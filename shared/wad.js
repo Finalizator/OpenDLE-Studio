@@ -292,10 +292,14 @@ function actorRoleOf(actor, byName) {
     current = current.parent ? byName.get(String(current.parent).toLowerCase()) || null : null;
   }
   const names = new Set(chain.map(item => String(item.name).toLowerCase()));
-  // Markers draw nothing. `TeleportDest`, `TeleportDest2`, `TeleportDest3` and `Waterzone` are
-  // all markers, so a prefix match is what keeps a map's 24 teleport destinations from being
-  // reported — and drawn — as twenty-four grey boxes in the sky.
-  const marker = [...names].some(name => /^(sectoraction|dynamiclight|teleportdest|waterzone|mapspot|interpolationpoint|pathfollower|movingcamera)$/.test(name));
+  // A teleport destination draws nothing either, but it is not a marker to throw away: a
+  // `Teleport` line names it by tag, and without the thing there is nowhere to send anything.
+  // Keeping it costs no artwork — it has none — and lets the special resolve its spot.
+  if ([...names].some(name => /^teleportdest/.test(name))) return 'teleportdest';
+  // Every other marker draws nothing. `Waterzone`, sector actions, dynamic lights and the
+  // rest are named by prefix because their effect comes from the sectors and lines that use
+  // them, not from the thing itself.
+  const marker = [...names].some(name => /^(sectoraction|dynamiclight|waterzone|mapspot|interpolationpoint|pathfollower|movingcamera)$/.test(name));
   if (marker || flags.INVISIBLE) return null;
   if (flags.MONSTER || (flags.COUNTKILL && (actor.health || 0) > 0)) return 'enemy';
   if (names.has('inventory') || names.has('pickup') || names.has('custominventory')) return 'pickup';
@@ -492,9 +496,11 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     const spriteAsset = !isPlayer && artwork ? assets?.sprite(artwork) || null : null;
     const role = actor ? actorRoleOf(actor, actorNumbers.byName) : null;
     // A class that says nothing about its role is a decoration, and the classic table still
-    // knows more than that: a lamp is a light whoever defines its class.
+    // knows more than that: a lamp is a light whoever defines its class. A teleport destination
+    // is a plain object as far as the project is concerned — it is kept for its tag, not drawn.
     const classic = mapping?.[1] || null;
-    const kind = role === 'decoration' && classic ? classic : role || classic || 'decoration';
+    const entityRole = role === 'teleportdest' ? 'decoration' : role;
+    const kind = entityRole === 'decoration' && classic ? classic : entityRole || classic || 'decoration';
     if (!isPlayer && !mapping && !actor) unknownThings++;
     // An actor that draws nothing is not a thing the mapper can see: GZDoom's light and
     // sector-action markers are marked invisible, and drawing a placeholder for each one
@@ -505,6 +511,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       type: isPlayer ? 'player' : kind, doomType: type,
       x: record.x, y: -record.y, angle: -record.angle, spriteAsset,
       ...(zdoomFormat ? { elevation: record.elevation, ...(record.tid ? { tid: record.tid } : {}) } : {}),
+      // A teleport destination is kept for its tag and its position, and is never drawn.
+      ...(role === 'teleportdest' ? { teleportDest: true } : {}),
       // A thing's own gravity multiplier (UDMF `gravity`), which the fall simulation reads.
       ...(zdoomFormat && record.gravity !== undefined && record.gravity !== 1 ? { gravity: record.gravity } : {}),
       // A resized thing is resized: a prop scaled to 0.6 in the map is drawn at 0.6, not full

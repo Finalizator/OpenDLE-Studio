@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { stepThingGravity } from '../shared/actor-runtime.js';
 import { TIC_RATE } from '../shared/actor-runtime.js';
+import { wallSegments } from '../shared/runtime.js';
 
 // Lullaby's title map rains stars: 33 `Star` things are dropped at elevations up to 3700 and
 // each carries `gravity = 0.2` or `0.3` in its UDMF block, which is GZDoom reading the
@@ -91,3 +92,26 @@ test('a thing whose actor cannot be resolved is left alone', () => {
   runTics(project, state, 70);
   assert.equal(star.z, undefined);
 });
+
+test('a thing that lands on a Teleport line starts its fall again', () => {
+  // Lullaby's shower is one drop per star, repeated: each star has a `Teleport` line inside its
+  // own footprint and a `TeleportDest2` with the same tag directly above it. GZDoom's trace
+  // shows a star falling for about 120 tics, reappearing at 3700 and starting again.
+  const { project, state, star } = titleMap({ elevation: 60 });
+  star.radius = 48;
+  star.elevation = 60;
+  // A line 8 units away, exactly as the map places them, and the destination above it.
+  project.map = {
+    vertices: [{ id: 'v0', x: 0, y: 8 }, { id: 'v1', x: 100, y: 8 }],
+    walls: [{ id: 'w0', a: 'v0', b: 'v1', special: 70, args: [7, 0, 0, 0, 0], flags: 0, height: 128,
+      right: null, left: null, solid: false }],
+    sectors: [], entities: [],
+  };
+  state.walls = wallSegments(project);
+  state.entities.push({ id: 'dest', name: 'TeleportDest2', type: 'decoration', doomType: 9044, tid: 7,
+    x: 50, y: 8, elevation: 400 });
+  runTics(project, state, 40);
+  assert.ok(star.z > 300, `the star went back up (${star.z})`);
+  assert.equal(star.x, 50, 'and sits on the destination');
+});
+

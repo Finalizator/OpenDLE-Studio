@@ -451,6 +451,28 @@ function fallbackMovement(state) {
   };
 }
 
+/**
+ * Moves a script's screen fade towards the colour and strength it asked for.
+ *
+ * `FadeTo` names a target and a duration, so the state is a pair of colours and a clock
+ * rather than one number: a fade interrupted by another starts from wherever it had got to,
+ * which is what GZDoom's `screen->Fade` does when two scripts overlap.
+ */
+function advanceScreenFade(state, dt) {
+  const target = state.screenFade;
+  if (!target) { state.screenFadeNow = null; return; }
+  state.fadeClock = (state.fadeClock || 0) + dt;
+  const from = state.screenFadeFrom || { red: target.red, green: target.green, blue: target.blue, amount: 0 };
+  const progress = target.seconds > 0 ? Math.min(1, state.fadeClock / target.seconds) : 1;
+  const mix = (a, b) => a + (b - a) * progress;
+  const now = { red: mix(from.red, target.red), green: mix(from.green, target.green),
+    blue: mix(from.blue, target.blue), amount: mix(from.amount, target.amount) };
+  state.screenFadeNow = now.amount > 0.002 ? now : null;
+  // A finished fade stops being a target, so a later `FadeTo` starts from black rather than
+  // from the colour it faded to minutes ago.
+  if (progress >= 1) { state.screenFade = null; state.screenFadeFrom = null; }
+}
+
 export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   dt = Math.max(0, Math.min(0.05, dt));
   const stepStarted = performance.now(), stepParts = (cacheFor(state).stepParts ||= {});
@@ -460,6 +482,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.sounds.length = 0;
   advanceHUD(project, state.hudState, dt, 'interface');
   runRules('interface');
+  // A script's `FadeTo` keeps running whatever the screen is doing: a title map fades to
+  // black, hands the view to a camera, ends its script, and fades back in five seconds later.
+  advanceScreenFade(state, dt);
   stage('interface');
   state.interfaceStarted = true;
   state.hudState.cursor = state.gameScreen !== 'playing' || state.hudState.cursor;

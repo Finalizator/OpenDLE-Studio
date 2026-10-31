@@ -192,6 +192,38 @@ test('ChangeSky hands both sky names to the host in source order', () => {
   assert.deepEqual(calls, [['SKY1', 'SKY2']]);
 });
 
+test('FadeTo reaches the host with its colour, strength and duration', () => {
+  // Lullaby's title map fades to black, switches camera, and fades back in over five seconds:
+  // `FadeTo(0, 0, 0, 1.0, 0)` then `FadeTo(0, 0, 0, 0.0, 5.0)`. Both are five operands, and
+  // the amounts are 16.16 fixed point.
+  const asm = emitter();
+  asm.pushBytes(0, 0, 0).push(65536).push(0).ins('FADETO')
+    .pushBytes(0, 0, 0, 0).push(327680).ins('FADETO').ins('TERMINATE');
+  const parsed = parseBehavior(behavior({ code: asm.code, scripts: [{ number: 1, type: 1, args: 0, address: 8 }] }));
+  const fades = [];
+  const vm = createAcsVm(parsed, { fadeTo: fade => fades.push(fade) });
+  startScript(vm, 1);
+  tickAcs(vm);
+  assert.deepEqual(fades, [
+    { red: 0, green: 0, blue: 0, amount: 1, seconds: 0 },
+    { red: 0, green: 0, blue: 0, amount: 0, seconds: 5 },
+  ]);
+});
+
+test('a script fade fades in over the seconds it asked for', () => {
+  const project = room(0, []);
+  const state = createRuntime(project, { screen: 'playing', gameMode: true });
+  state.screenFade = { red: 0, green: 0, blue: 0, amount: 0, seconds: 1 };
+  state.screenFadeFrom = { red: 0, green: 0, blue: 0, amount: 1 };
+  state.fadeClock = 0;
+  // Frames are clamped to 50 ms of simulation each, so half a second is seventeen of them.
+  for (let frame = 0; frame < 17; frame++) stepRuntime(project, state, 1 / 35, new Set());
+  assert.ok(state.screenFadeNow, 'halfway through, the screen is still tinted');
+  assert.ok(Math.abs(state.screenFadeNow.amount - 0.5) < 0.06, `half faded (${state.screenFadeNow.amount})`);
+  for (let frame = 0; frame < 40; frame++) stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.screenFadeNow, null, 'a finished fade leaves nothing over the picture');
+});
+
 test('a ChangeSky in a map script reaches the runtime as a live sky change', () => {
   const asm = emitter();
   asm.pushBytes(0).pushBytes(1).ins('CHANGESKY').ins('TERMINATE');

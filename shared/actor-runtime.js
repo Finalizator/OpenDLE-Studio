@@ -1101,6 +1101,51 @@ export function stepActors(project, state, dt) {
 }
 
 /**
+ * The spot a `Teleport` line under a landed thing sends it to, or null.
+ *
+ * Doom's `Teleport` (line special 70) names its destination by the *tag* of a
+ * `TeleportDest2` thing, and fires when an actor crosses the line. A falling star never
+ * crosses anything horizontally, but the mapper put the line inside its footprint, and
+ * GZDoom teleports it on the tic it reaches the floor — measured on TITLEMAP, a star falls
+ * for about 120 tics, reappears at its destination and starts again. The lines and their
+ * destinations are collected once, because this runs for every thing on every tic.
+ */
+function teleportLanding(state, entity) {
+  const radius = Number(entity.radius) || 16;
+  const lines = (state.teleportLines ||= collectTeleportLines(state));
+  if (!lines.length) return null;
+  for (const line of lines) {
+    if (distanceToSegment(entity.x, entity.y, line.a, line.b) > radius) continue;
+    const destination = state.entities.find(candidate => candidate.tid === line.tag &&
+      (candidate.doomType === 9044 || candidate.doomType === 14 || /^TeleportDest/i.test(candidate.name || '')));
+    if (!destination) continue;
+    const sector = sectorAt(state.sectors, destination.x, destination.y);
+    return { x: destination.x, y: destination.y,
+      z: (sector?.floorHeight ?? 0) + (destination.elevation || 0), angle: destination.angle };
+  }
+  return null;
+}
+
+function collectTeleportLines(state) {
+  const walls = state.walls || [];
+  const lines = [];
+  for (const wall of walls) {
+    if (wall.special !== 70 && wall.special !== 71) continue;
+    const tag = wall.args?.[0];
+    if (!tag || !wall.start || !wall.end) continue;
+    lines.push({ a: wall.start, b: wall.end, tag });
+  }
+  return lines.length > 64 ? lines.slice(0, 64) : lines;
+}
+
+function distanceToSegment(x, y, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared ? Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / lengthSquared)) : 0;
+  return Math.hypot(x - (a.x + dx * t), y - (a.y + dy * t));
+}
+
+/**
  * Doom's gravity, in map units per tic squared.
  *
  * GZDoom computes it as `sv_gravity * sector.gravity * actor.gravity * 0.00125`
@@ -1142,9 +1187,17 @@ export function stepThingGravity(project, state, dt, { levelGravity = SV_GRAVITY
       // solid 3D floor lands on it instead of dropping through to the sector's own floor.
       const ground = sector ? floorHeightAt(sector, z) : 0;
       if (z <= ground) {
-        // Already standing (or buried, which `settleGroundActors` reports and fixes): the
-        // fall is over, but its height is not this pass's to correct.
+        // Already standing, or buried — `settleGroundActors` reports and fixes a buried thing.
         entity.fallSpeed = 0;
+        // A thing that has just landed on a `Teleport` line goes back to its destination and
+        // falls again: Lullaby's shower is one drop per star, repeated for as long as the map
+        // is on screen, and the destination sits directly above the line it lands on.
+        const landing = teleportLanding(state, entity);
+        if (landing) {
+          entity.x = landing.x; entity.y = landing.y; entity.z = landing.z;
+          if (Number.isFinite(landing.angle)) entity.angle = landing.angle;
+          entity.fallSpeed = 0;
+        }
         continue;
       }
       // The map's thing may override the actor's own multiplier, as UDMF `gravity` does.

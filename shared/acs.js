@@ -1185,7 +1185,17 @@ function defineWorld() {
   define(P.REPLACETEXTURES, '', (vm, script) => { pop(vm, script); pop(vm, script); pop(vm, script); });
   define(P.SETFLOORTRIGGER, '', (vm, script) => { for (let index = 0; index < 8; index++) pop(vm, script); });
   define(P.SETCEILINGTRIGGER, '', (vm, script) => { for (let index = 0; index < 8; index++) pop(vm, script); });
-  define(P.FADETO, '', (vm, script) => { for (let index = 0; index < 5; index++) pop(vm, script); });
+  define(P.FADETO, '', (vm, script) => {
+    // `FadeTo(red, green, blue, amount, seconds)`: amount is 0..1 of the colour over the
+    // screen, and seconds is how long the change takes (0 is instant). A title map fades the
+    // picture to black, switches camera, then fades back in over five seconds — dropping the
+    // opcode made that whole transition a single hard cut.
+    const seconds = pop(vm, script), amount = pop(vm, script);
+    const blue = pop(vm, script), green = pop(vm, script), red = pop(vm, script);
+    const scale = value => Math.max(0, Math.min(255, Math.round(value / 65536 || value)));
+    vm.host.fadeTo({ red: scale(red), green: scale(green), blue: scale(blue),
+      amount: Math.max(0, Math.min(1, amount / 65536)), seconds: Math.max(0, seconds / 65536) });
+  });
   define(P.FADERANGE, '', (vm, script) => { for (let index = 0; index < 9; index++) pop(vm, script); });
   define(P.CANCELFADE, '', () => {});
   define(P.PLAYMOVIE, '', (vm, script) => { pop(vm, script); push(vm, script, -1); });
