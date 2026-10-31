@@ -461,7 +461,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       if (collecting) collecting.push(record);
       return record;
     }
-    function plane(sector, height, assetId, ceiling) {
+    function plane(sector, height, assetId, ceiling, { light = sector.light, color, selection } = {}) {
       for (const shape of sectorShapes(sector.rings)) {
         const outer = shape.outer.map(vertex => new THREE.Vector2(vertex.x, vertex.y));
         const holes = shape.holes.map(ring => ring.map(vertex => new THREE.Vector2(vertex.x, vertex.y)));
@@ -477,14 +477,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
           uv.push(...flatUv(point.x, point.y, { textureWidth, textureHeight, scale }));
         }
         surface(positions, uv, indices,
-          material(assetId, ceiling ? '#6d7680' : project.environment.floor, { ceiling }),
-          sector.light, sector.id ? { kind: 'sector', id: sector.id, surface: ceiling ? 'ceilingHeight' : 'floorHeight' } : null);
+          material(assetId, color ?? (ceiling ? '#6d7680' : project.environment.floor), { ceiling }),
+          light, selection ?? (sector.id ? { kind: 'sector', id: sector.id, surface: ceiling ? 'ceilingHeight' : 'floorHeight' } : null));
       }
     }
     let wallLines = [];
     function sectorSignature(sector) {
       return `${sector.floorHeight}/${sector.ceilingHeight}/${sector.floorAsset || ''}/${sector.ceilingAsset || ''}` +
-        `/${sector.textureScale || 1}/${sector.light}/${sector.sky ? 1 : 0}/${JSON.stringify(sector.rings)}`;
+        `/${sector.textureScale || 1}/${sector.light}/${sector.sky ? 1 : 0}/${JSON.stringify(sector.rings)}` +
+        `/${JSON.stringify(sector.threeDFloors || null)}`;
     }
     function wallSignature(wall, sectors) {
       const side = value => value ? `${value.sectorId}/${value.upper || ''}/${value.middle || ''}/${value.lower || ''}` +
@@ -512,6 +513,16 @@ export async function createPreview(canvas, project, state, { editor = false } =
         if (sector.ceilingHeight <= sector.floorHeight) return;
         plane(sector, sector.floorHeight, sector.floorAsset, false);
         if (!sector.sky) plane(sector, sector.ceilingHeight, sector.ceilingAsset, true);
+        // A 3D floor is two planes and an edge band copied from its control sector. They are
+        // drawn as ordinary two-sided surfaces rather than as ceilings, because the alpha
+        // test that hides a ceiling above the camera would cut a platform away as you walk
+        // under it.
+        for (const floor of sector.threeDFloors || []) {
+          const selection = { kind: 'sector', id: sector.id, surface: 'threeDFloor' };
+          plane(sector, floor.top, floor.topFlat, false, { light: floor.light, color: project.environment.floor, selection });
+          plane(sector, floor.bottom, floor.bottomFlat, false, { light: floor.light, color: '#6d7680', selection });
+          band(sector, floor);
+        }
       });
     }
     function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false, flip = false) {
@@ -524,6 +535,29 @@ export async function createPreview(canvas, project, state, { editor = false } =
         textureWidth: asset?.width || 64, textureHeight: asset?.height || 64, scale: side?.textureScale || 1, flip });
       surface([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], coords, [0, 1, 2, 0, 2, 3],
         material(assetId, wall.color, { masked, oneSided: !editor }), light, { kind: 'wall', id: wall.id });
+    }
+    /**
+     * The edge of a 3D floor: one quad per ring edge, between the control sector's planes.
+     *
+     * The texture is the special line's sidedef (middle by default), which is how a mapper
+     * gives a platform its side. Nothing is drawn without one, matching GZDoom, where a
+     * missing texture on a 3D floor side is simply not rendered.
+     */
+    function band(sector, floor) {
+      if (!floor.side || floor.top <= floor.bottom) return;
+      const asset = assetMap.get(floor.side);
+      for (const ring of sector.rings || []) {
+        for (let index = 0; index < ring.length; index++) {
+          const a = ring[index], b = ring[(index + 1) % ring.length];
+          const length = Math.hypot(b.x - a.x, b.y - a.y);
+          if (length < 1e-6) continue;
+          const coords = wallQuadUv({ length, bottom: floor.bottom, top: floor.top, referenceTop: floor.top,
+            textureWidth: asset?.width || 64, textureHeight: asset?.height || 64 });
+          surface([a.x, floor.bottom, a.y, b.x, floor.bottom, b.y, b.x, floor.top, b.y, a.x, floor.top, a.y],
+            coords, [0, 1, 2, 0, 2, 3], material(floor.side, '#9aa3ab'),
+            floor.light, { kind: 'sector', id: sector.id, surface: 'threeDFloor' });
+        }
+      }
     }
     wallLines = wallSegments(project);
     for (const wall of wallLines) {

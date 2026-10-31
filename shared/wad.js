@@ -12,6 +12,7 @@ import { importSBarInfo } from './sbarinfo.js';
 import { assembleGameLevels, parseLevelRoutes } from './game-levels.js';
 import { parseGameEpisodes } from './game-episodes.js';
 import { resolveMusicAsset, musicReport } from './music.js';
+import { applyThreeDFloors } from './three-d-floors.js';
 import { importActors, actorIndex } from './actors.js';
 import { unsupportedActorActions, mergeActorActionGaps, describeActorActionGaps, installActorProjectileSprites, usedActors, missileEffectActors } from './actor-runtime.js';
 import { buildStringTable, resolveString } from './language.js';
@@ -447,6 +448,9 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     const a = project.map.vertices[Number(wall.a.slice(1))], b = project.map.vertices[Number(wall.b.slice(1))];
     return a.x !== b.x || a.y !== b.y;
   });
+  // A `Sector_Set3DFloor` line is geometry the map is built from, so it is resolved here,
+  // before anything looks at the sectors, and the line stops being a special.
+  const threeDFloors = applyThreeDFloors(project.map);
   // The actor table is read before the things are mapped: a mod's own editor numbers say
   // what each thing is and which sprite draws it, which is the difference between a mod's
   // decorations and a screen of grey placeholder boxes.
@@ -528,7 +532,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     for (const block of source.blocks) for (const key of Object.keys(block.properties)) {
       if (!supported[block.type]?.includes(key)) unsupported.add(`${block.type}.${key}`);
     }
-    if (unsupported.size) warnings.push(`UDMF properties preserved but not simulated/rendered: ${[...unsupported].sort().join(', ')}. Specials, slopes, 3D floors, per-surface transforms and custom actor behavior require further native compatibility work.`);
+    if (unsupported.size) warnings.push(`UDMF properties preserved but not simulated/rendered: ${[...unsupported].sort().join(', ')}. Slopes, per-surface transforms and custom actor behavior require further native compatibility work.`);
     if (mapLumps.some(lump => lump.name === 'SCRIPTS')) warnings.push('This UDMF map ships ACS source (SCRIPTS); the compiled BEHAVIOR lump is what runs.');
     if (mapLumps.some(lump => lump.name === 'DIALOGUE')) warnings.push('This map ships a DIALOGUE lump; NPC conversations are imported as data but not played yet.');
   }
@@ -705,6 +709,13 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   if (assets) warnings.push(musicReport(mapName, musicTrack));
   warnings.push('Menus are editable HUD/events. MENUDEF support is partial: custom menu classes, arbitrary CVARs/commands and exact Nightmare respawn/fast states are not translated yet. Native browser save slots do not interoperate with GZDoom .zds saves. Full-game imports support native level selection and supported exits; scripted campaign behavior is not executed.');
   if (assets) warnings.push(...assets.warnings);
+  // A 3D floor is drawn from its control sector's planes. Clipping the sector's own
+  // planes away from it needs a stencil pass this renderer does not have yet, and a
+  // translucent 3D floor is drawn opaque, so say so where the map actually uses one.
+  const transparentFloors = threeDFloors.filter(floor => floor.floor.alpha < 255).length;
+  const nonSolidFloors = threeDFloors.filter(floor => !floor.floor.solid).length;
+  if (transparentFloors) warnings.push(`${transparentFloors} translucent 3D floor(s) are drawn opaque; translucency is not applied to 3D floor surfaces yet.`);
+  if (nonSolidFloors) warnings.push(`${nonSolidFloors} 3D floor(s) are non-solid in the map: they are drawn as surfaces, but nothing stands on them.`);
   const unsupported = [...new Set(project.map.entities.filter(entity => entity.type === 'pickup' &&
     [2022, 2023, 2024, 2025, 2026, 2045].includes(entity.doomType)).map(entity => entity.doomType))];
   if (unsupported.length) warnings.push(`Power-up effects are not imported for Doom thing types ${unsupported.join(', ')}; these objects remain visible until scripted.`);

@@ -256,7 +256,7 @@ export function inspectPackage(files) {
   if (maps.some(map => map.format === 'Hexen')) {
     warnings.push('Binary Hexen-format maps import natively: linedef specials run from the Hexen/ZDoom table with their five arguments and activation types, and things keep their tag, spawn height and dormant flag.');
   }
-  if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry and line specials import natively, and each map\'s ACS module runs with the package\'s LOADACS libraries; advanced rendering (portals, 3D floors, slopes) is still incomplete. Full GZDoom fidelity remains the target, not current capability.');
+  if (maps.some(map => map.format === 'UDMF')) warnings.push('UDMF geometry and line specials import natively, and each map\'s ACS module runs with the package\'s LOADACS libraries; advanced rendering (portals, slopes, translucent 3D floors) is still incomplete. Full GZDoom fidelity remains the target, not current capability.');
   if ([...files.keys()].some(name => /^models\//.test(name))) warnings.push('Native model definitions are not imported yet.');
   if ([...files.keys()].some(name => /(^|\/)sndinfo(?:\.txt)?$/.test(name))) warnings.push('SNDINFO aliases and $random groups are imported so actor sound names resolve to lumps; per-sound volume, rolloff, limit and channel rules are not translated.');
   const images = [...files.keys()].filter(name => imageKind(name));

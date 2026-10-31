@@ -1,4 +1,5 @@
 import { entitySector, sectorAt, sectorGeometry, sectorShapes } from './sectors.js';
+import { floorHeightAt } from './three-d-floors.js';
 import {
   PLAYER_CYLINDER, SURFACE_REACH, WORLD_UP, dot as dotMap, playerBasis, surfaceKind, upVector,
 } from './gravity.js';
@@ -92,6 +93,22 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
   const sectors = liveSectors || sectorGeometry(project), sectorMap = new Map(sectors.map(sector => [sector.id, sector]));
   for (const sector of sectors) {
     if (moving && moving.has(sector.id) !== dynamic) continue;
+    // A solid 3D floor collides as the two planes it is made of plus the band around its
+    // edge, whether or not the sector it lives in has any height of its own. A swimmable or
+    // non-solid one is only a surface: GZDoom lets you pass through it, and so does this.
+    for (const floor of (sector.threeDFloors || []).filter(entry => entry.solid)) {
+      for (const shape of sectorShapes(sector.rings)) {
+        const points = [...shape.outer, ...shape.holes.flat()];
+        for (const face of triangulate(shape.outer, shape.holes)) {
+          const [a, b, c] = face.map(index => points[index]);
+          triangle([a.x, floor.top, a.y], [b.x, floor.top, b.y], [c.x, floor.top, c.y]);
+          triangle([a.x, floor.bottom, a.y], [b.x, floor.bottom, b.y], [c.x, floor.bottom, c.y]);
+        }
+      }
+      for (const ring of sector.rings || []) {
+        for (let index = 0; index < ring.length; index++) wall(ring[index], ring[(index + 1) % ring.length], floor.bottom, floor.top);
+      }
+    }
     if (sector.ceilingHeight <= sector.floorHeight) continue;
     for (const shape of sectorShapes(sector.rings)) {
       const points = [...shape.outer, ...shape.holes.flat()];
@@ -236,7 +253,12 @@ export function createPhysics(project, state, R, triangulate) {
   const contactRay = new R.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
   // Called for every object that Rapier does not simulate, every frame. Most never move, so
   // the sector is remembered per object instead of re-tested against the level's rings.
-  function floorAt(entity) { return entitySector(mesh.sectors, entity)?.floorHeight || 0; }
+  // A solid 3D floor is a floor: an object above one rests on it rather than on the
+  // sector's own floor, which on a floating platform can be hundreds of units below.
+  function floorAt(entity) {
+    const sector = entitySector(mesh.sectors, entity);
+    return sector ? floorHeightAt(sector, entity.z) : 0;
+  }
   // Shortest-arc rotation from the capsule's +Y axis to `axis` (Rapier space).
   function capsuleRotation(axis) {
     if (axis.y > .999999) return { x: 0, y: 0, z: 0, w: 1 };

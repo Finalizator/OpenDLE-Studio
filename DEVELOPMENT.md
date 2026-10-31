@@ -2406,6 +2406,19 @@ light 136 down to 87, halves everything below 100, and leaves 192 and up alone.
 sprite and collider box, so a map that asks for Doom lighting is drawn the way Doom draws it
 instead of with a linear ramp.
 
+**A 3D floor is geometry the map is built from, not an action.** `Sector_Set3DFloor` (line
+special 160) tags the sectors that receive a floor and takes its planes from the *control* sector
+on the line's front side: GZDoom's `P_Add3DFloor` makes that sector's floor the bottom plane and
+its ceiling the top, which is why a mapper raises the control ceiling to lift a platform, and the
+line's own sidedef (middle, or upper/lower with flags 16/32) provides the edge texture. Lullaby's
+TITLEMAP uses five of these to float the platform the bed stands on, so the import now resolves
+them into `sector.threeDFloors`, the renderer draws both planes plus the edge band, and
+`collisionMesh` makes the solid ones something you can stand on — `floorHeightAt` returns the
+highest solid 3D floor at or below an object instead of the sector's own floor. Two things are
+still approximate and are reported per import: a solid 3D floor's surfaces are not clipped out of
+the planes of the sector they sit in (that needs a stencil pass), and a translucent 3D floor is
+drawn opaque.
+
 ### Static world surfaces are merged, not one mesh each
 
 A fragment of every wall quad and every floor/ceiling triangle used to be its own
