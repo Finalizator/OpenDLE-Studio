@@ -2476,6 +2476,10 @@ the **front** side only, on **all three** slots, by exactly −0.5 texels per ti
 wall, or about 1.6°/s for a ring 600 units out: the same angular rate a 3440 px GZDoom capture
 shows its ridge bands sliding (62 px/s over 38 px per degree).
 
+The trace watches floor and ceiling offsets too (`Scroll_Floor`/`Scroll_Ceiling` move a flat, not
+a wall): on the title map nothing moves them — `ODT FLAT` reports no change over the run — so
+those 78 linedefs are the whole of the movement in that map.
+
 The renderer bakes each line's scroll speed into its material (so a batch of walls sharing a speed
 shares one material) and, each frame, moves the **texture's own offset** of that material by
 `speed * tics`. Two numbers on the canvas say whether a map's surfaces are moving at all:

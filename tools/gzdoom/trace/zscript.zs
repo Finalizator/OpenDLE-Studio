@@ -27,6 +27,9 @@ class OpenDLETrace : StaticEventHandler
 	int watchTid;
 	int scrollLines;
 	Array<double> scrollBase;
+	// Floor and ceiling offsets, watched alongside the sidedefs: `Scroll_Floor` and
+	// `Scroll_Ceiling` move a plane's flat, not a wall's picture, and a map can do either.
+	Array<double> planeBase;
 
 	override void OnRegister()
 	{
@@ -232,6 +235,34 @@ class OpenDLETrace : StaticEventHandler
 		{
 			if (!statesDumped) { statesDumped = true; DumpStates(watched); }
 			PrintActor("watch", watched);
+		}
+
+		// A plane that a map scrolls moves the flat's offsets and nothing else.
+		if (scrollLines > 0 && Level.Sectors.Size() > 0)
+		{
+			int planes = Level.Sectors.Size();
+			if (planeBase.Size() == 0)
+			{
+				for (int i = 0; i < planes; i++)
+				{
+					for (int pl = 0; pl < 2; pl++)
+					{
+						planeBase.Push(Level.Sectors[i].GetXOffset(pl));
+						planeBase.Push(Level.Sectors[i].GetYOffset(pl));
+					}
+				}
+			}
+			for (int i = 0; i < planes; i++)
+			{
+				for (int pl = 0; pl < 2; pl++)
+				{
+					int at = (i * 2 + pl) * 2;
+					double dx = Level.Sectors[i].GetXOffset(pl) - planeBase[at];
+					double dy = Level.Sectors[i].GetYOffset(pl) - planeBase[at + 1];
+					if (dx != 0.0 || dy != 0.0)
+						Console.Printf("ODT FLAT %d sector=%d plane=%d dx=%.4f dy=%.4f\n", tic, i, pl, dx, dy);
+				}
+			}
 		}
 
 		if (tic >= maxTics) Console.Printf("ODT END tics=%d\n", maxTics);
