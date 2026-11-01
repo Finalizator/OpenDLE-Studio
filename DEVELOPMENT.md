@@ -2715,6 +2715,23 @@ element that loses focus and does not bubble, but a capturing listener on `windo
 still hears it: pressing an item moved focus, the menu heard its own item blur, and
 closed — the item never ran. Only a real window blur should close the menu.
 
+### Asset browser layout
+
+The asset browser is a column of three rows: the import buttons, the *Import as / Filter /
+Search* row, and everything below them. Only that third row scrolls
+(`.asset-browser-body` in [`public/style.css`](./public/style.css) is a grid of
+`auto auto minmax(0, 1fr)`) — with 2,219 assets, one scroll container meant the import buttons
+and the filter scrolled off the top, and changing the filter meant scrolling back up first.
+
+Inside it, the category list and the tiles are two columns that each scroll on their own
+(`#asset-folders` and `.asset-grid-column`): the list of types is short and always worth seeing,
+the grid of tiles is the long part. The help sections — sprite animations, import help and the
+sector list, interaction areas, scenes, model import — sit in the tile column *after* the tiles
+rather than pinned under them, so a collapsed 215 px dock is all tiles instead of a strip of tiles
+above a block of collapsed summaries: the help is reached by scrolling to the end of the list, as
+it always was. The hidden file inputs live outside the scrolling body, so a file picker cannot
+contribute a grid row.
+
 ### Model thumbnails
 
 The asset library shows a snapshot of each model instead of a "3D" placeholder.

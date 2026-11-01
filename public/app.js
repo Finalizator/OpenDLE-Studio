@@ -2479,6 +2479,11 @@ function renderAssetsIfChanged() {
 }
 function renderAssets() {
   const parent = $('asset-list');
+  // A different list starts at its top: the tiles scroll in their own column now, so a filter that
+  // brings back a hundred tiles would otherwise open at whatever pixel offset the previous, longer
+  // list was scrolled to. A re-render of the *same* list (a model thumbnail arriving) keeps its
+  // place, so reading the library is not interrupted.
+  const listChanged = assetsSignature() !== assetsRendered;
   parent.replaceChildren();
   const filter = $('asset-filter').value, search = $('asset-search').value.toLowerCase();
   $('asset-folders').replaceChildren(...[...$('asset-filter').options].map(option => {
@@ -2587,6 +2592,7 @@ function renderAssets() {
     animationList.append(details);
   }
   assetsRendered = assetsSignature();
+  if (listChanged) parent.parentElement.scrollTop = 0;
 }
 
 function resizeMap() {
