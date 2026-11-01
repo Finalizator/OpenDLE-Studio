@@ -801,6 +801,17 @@ first point. `waypointDistances` in `shared/paths.js` gives each waypoint's dist
 curve, `startPathTween` records the move and `advancePathTweens` steps it, with linear, ease-in,
 ease-out and ease-in-out curves.
 
+**Driving a route from a timeline** has a one-click recipe on the object that will drive it:
+Properties → **Drive this route on a timesheet (start to end)**. It builds the three parts that
+have to agree — a timeline named `<object> drives <route>`, a cue at 0 s carrying `followPath`
+from the first waypoint to the last (`toPoint: -1`, so it follows the route's own end and a closed
+route laps), and the `On start of layout` rule that starts the timeline — and opens the Timesheet
+tab on the new timeline. The trip takes `route length ÷ the object's path speed`, so a slow truck
+and a fast truck take the time they should. The same click also clears the object's own
+`entity.path`: a follower and a tween both place the object every frame, and the timeline is what
+should decide where it is. `driveRouteTimesheet` in `shared/timesheet-recipe.js` builds the data
+and is tested against `validateProject`, so the button itself is only the wiring.
+
 **Sounds** come from the asset library, not from a hard-coded list. `Audio: play imported sound`
 points at an asset id and the runtime maps it to the player's sound name, so WAV, OGG, Opus, FLAC
 and MP3 all work: `shared/sound.js` lists the signatures it accepts, and the audio player decodes

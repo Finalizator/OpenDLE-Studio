@@ -620,3 +620,11 @@ body.scene-dragging { cursor: grabbing; }
 .path-draft { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 8px; padding: 6px; background: #4a4636; border: 1px solid #8a8160; border-radius: 2px; }
 .path-draft-note { margin: 0; flex: 1 1 160px; color: #e6dcbb; font-size: 10px; line-height: 1.4; }
 .path-draft button { flex: 0 0 auto; }
+
+/* Editor tabs: eleven of them do not fit a narrow window, and a strip that silently scrolls
+   hides the last tabs — Timesheet among them. Two arrows say there is more, and the strip keeps
+   the current tab in view. */
+#header-tabs-scroll { min-width: 0; }
+.tab-scroll { flex: 0 0 auto; padding: 2px 4px; background: transparent; color: var(--muted); border: none; font-size: 13px; line-height: 1; }
+.tab-scroll:hover { background: #696969; color: var(--text); }
+.tab-scroll:disabled { opacity: .3; }

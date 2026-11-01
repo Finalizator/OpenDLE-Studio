@@ -41,6 +41,7 @@ import { createPlaceholderLog } from './placeholder-log.js';
 import { createAcsHud } from './acs-hud.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { createTimesheetPanel } from './timesheet-panel.js';
+import { driveRouteTimesheet } from '/shared/timesheet-recipe.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { upgradePickupReach } from '/shared/doom-hud.js';
@@ -1243,6 +1244,9 @@ function renderInspector() {
         field(parent, 'Light radius', input(light.radius, 'number', value => changeLight('radius', value)));
         if (!item.light) parent.append(button('Enable point light', () => update('light', light)));
       }
+      if (item.path?.id && (project.paths || []).some(path => path.id === item.path.id)) {
+        parent.append(button('Drive this route on a timesheet (start to end)', () => guard(() => driveRouteOnTimesheet(item))()));
+      }
       const scripts = make('div', undefined, 'property-section');
       const count = project.events.filter(event => event.ownerId === item.id).length;
       scripts.append(make('strong', 'Visual script'), make('p', `${count} attached events`, 'muted'),
@@ -1519,6 +1523,14 @@ function renderScriptlets() {
 
 function showTab(tab) {
   if (tab !== 'hud') hudEditor.stopPreview();
+  // Eleven tabs do not fit a narrow window: opening one by name has to bring it into view, or
+  // "Timesheet" can be selected and still be off the edge of the strip. Marking and scrolling
+  // happen before the early returns below, which is how the Asset dock's tab still lights up.
+  document.querySelectorAll('[data-tab]').forEach(element => element.classList.toggle('active', element.dataset.tab === tab));
+  // Scoped to the strip: the file bar carries `data-tab` links too, and scrolling one of those
+  // does nothing because it is not on screen.
+  const tabButton = document.querySelector(`.document-tabs [data-tab="${tab}"]`) || document.querySelector(`[data-tab="${tab}"]`);
+  tabButton?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   if (tab === 'assets') {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
@@ -1537,7 +1549,6 @@ function showTab(tab) {
     try { renderEngineTweaks(); }
     catch (error) { $('engine-tweaks-status').textContent = error.message; status(error.message, true); }
   }
-  document.querySelectorAll('[data-tab]').forEach(element => element.classList.toggle('active', element.dataset.tab === tab));
   if (tab === 'about') {
     $('engine-version').textContent = 'Loading OpenDLE: Studio version...';
     void loadEngineVersion().catch(error => status(`Could not read engine version: ${error.message}`, true));
@@ -1570,6 +1581,13 @@ $('world-layer').addEventListener('click', () => { selection = null; showTab('ma
 function closeMenu() {
   $('file-menu').hidden = true; $('menu-toggle').setAttribute('aria-expanded', 'false');
 }
+/** The editor tab strip scrolls; the arrows make that visible and reachable. */
+function scrollTabs(direction) {
+  const strip = document.querySelector('.document-tabs');
+  if (strip) strip.scrollBy({ left: direction * 180, behavior: 'smooth' });
+}
+$('tab-back').addEventListener('click', () => scrollTabs(-1));
+$('tab-forward').addEventListener('click', () => scrollTabs(1));
 $('menu-toggle').addEventListener('click', () => {
   $('file-menu').hidden = !$('file-menu').hidden;
   $('menu-toggle').setAttribute('aria-expanded', String(!$('file-menu').hidden));
@@ -4669,6 +4687,32 @@ function deleteSelectedPaths(primaryId) {
   if (activePathId && targets.includes(activePathId)) activePathId = null;
   selection = null; multiSelection = []; multiSelectionKind = null; lastPrimarySelection = null;
   render();
+}
+/**
+ * Builds the whole "drive this route once, from its first waypoint to its last" recipe.
+ *
+ * A timeline on its own is invisible until you know it exists, and a model driving a route needs
+ * three parts that have to agree: a cue at zero carrying a path action, and the event that starts
+ * the timeline. Doing it from the object that will drive means the author never has to find the
+ * Timesheet tab to begin with — it opens on the new timeline instead.
+ */
+function driveRouteOnTimesheet(entity) {
+  const path = (project.paths || []).find(item => item.id === entity.path?.id);
+  if (!path) throw new Error('Pick a path for this object first');
+  const { sheet, event, seconds } = driveRouteTimesheet({ entity, path, nextId: newId });
+  edit(next => {
+    (next.timesheets ||= []).push(sheet);
+    (next.events ||= []).push({ ...event, sheetId: next.eventSheets?.[0]?.id });
+    // The object stops walking the route on its own: two things placing it every frame would
+    // fight each other, and the timeline is what should decide where it is now.
+    const target = next.map.entities.find(candidate => candidate.id === entity.id);
+    if (target?.path) delete target.path;
+  }, `Timeline "${sheet.name}" created: it drives ${entity.name} along ${path.name} in ${seconds}s`);
+  showTab('timesheet');
+  timesheetPanel.select(sheet.id);
+  status(`Timeline "${sheet.name}": a cue at 0s drives ${entity.name} from the first waypoint to the last in ${seconds}s,`
+    + ' and the "Start …" event starts it when the layout starts. The object no longer follows the route on its own — the'
+    + ' timeline does that now. Press Play level to watch it.');
 }
 /** Deletes one waypoint, keeping the rest of the route. */
 function deletePathPoint(pathId, pointId) {

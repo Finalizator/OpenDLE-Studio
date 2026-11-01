@@ -191,3 +191,50 @@ test('cue detection splits a step that straddles the end of the loop', () => {
   advanceTimesheets(project, state, 5.5);
   assert.equal(state.timesheets.get('timeline').time, 1.5);
 });
+
+// The editor's "drive this route on a timesheet" button builds three parts that have to agree;
+// this checks them as data, which is what the button hands to `edit()`.
+test('the drive-a-route recipe writes a timeline, a cue and the event that starts it', async () => {
+  const { driveRouteTimesheet } = await import('../shared/timesheet-recipe.js');
+  const project = createProject();
+  project.events = [];
+  project.paths = [{ id: 'lap', name: 'Lap', closed: false, points: [
+    { id: 'p0', x: 0, y: 0, z: 0, curve: 0 }, { id: 'p1', x: 600, y: 0, z: 0, curve: 0 },
+    { id: 'p2', x: 600, y: 600, z: 0, curve: 0 }, { id: 'p3', x: 0, y: 600, z: 0, curve: 0 },
+  ] }];
+  const entity = project.map.entities.find(item => item.id === 'pickup');
+  entity.name = 'Truck';
+  entity.path = { id: 'lap', speed: 200 };
+  let sequence = 0;
+  const { sheet, event, seconds } = driveRouteTimesheet({ entity, path: project.paths[0], nextId: name => `${name}_${++sequence}` });
+  assert.equal(sheet.name, 'Truck drives Lap');
+  assert.equal(seconds, 9, '1800 units at 200 a second');
+  assert.equal(sheet.duration, 10);
+  assert.equal(sheet.cues.length, 1);
+  const [cue] = sheet.cues;
+  assert.equal(cue.time, 0);
+  assert.equal(cue.ownerId, entity.id, 'the cue names the object it drives');
+  assert.deepEqual(cue.actions, [{
+    type: 'followPath', entityId: entity.id, pathId: 'lap',
+    fromPoint: 0, toPoint: -1, seconds: 9, easing: 'linear', faceDirection: 'yes',
+  }]);
+  assert.equal(event.condition.type, 'onStart');
+  assert.deepEqual(event.actions, [{ type: 'startTimesheet', timesheetId: sheet.id, restart: 'yes', loop: 'same' }]);
+  // Spliced into a project the recipe validates, and running it moves the object the whole route.
+  // The editor clears the object's own follow at the same time: a follower and a tween would both
+  // place it every frame and fight over where it is.
+  delete entity.path;
+  project.timesheets = [sheet];
+  project.events = [event];
+  validateProject(project);
+  const state = createRuntime(project);
+  tick(project, state);
+  const start = { x: state.entities.find(item => item.id === entity.id).x, y: state.entities.find(item => item.id === entity.id).y };
+  for (let i = 0; i < 190; i++) tick(project, state);
+  const end = state.entities.find(item => item.id === entity.id);
+  // The route is a shape: the trip starts from where the object stands and ends one route away.
+  assert.ok(Math.abs(end.x - start.x) < 2, 'back to the first waypoint\'s column');
+  assert.ok(Math.abs(end.y - start.y - 600) < 2, 'one lap reached the last waypoint');
+  assert.throws(() => driveRouteTimesheet({ entity, path: { id: 'x', name: 'X', points: [] }, nextId: () => 'z' }),
+    /two waypoints/);
+});

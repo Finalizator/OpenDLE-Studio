@@ -160,6 +160,9 @@ export function createTimesheetPanel(nodes, {
       empty.append(
         element('p', 'muted', 'A timesheet is a timeline: tracks over one clock, with cues that run ordinary '
           + 'visual-script actions at the moment the clock reaches them. Nothing plays until an event starts it.'),
+        element('p', 'muted', 'Quickest way to make one: select an object that has a route in the 3D view and press '
+          + '"Drive this route on a timesheet (start to end)" in its Properties — that writes the timeline, the cue '
+          + 'and the start event for you.'),
         (() => { const button = element('button', 'primary', 'New timesheet'); button.type = 'button';
           button.addEventListener('click', addTimesheet); return button; })(),
       );
@@ -392,10 +395,18 @@ export function createTimesheetPanel(nodes, {
     const none = document.createElement('option');
     none.value = ''; none.textContent = 'No object (This object is unavailable)'; none.selected = !cue.ownerId;
     owner.append(none);
-    for (const [id, label] of commandContext(cue.ownerId).entities || []) {
+    const objects = commandContext(cue.ownerId).entities || [];
+    for (const [id, label] of objects) {
       const option = document.createElement('option');
       option.value = id; option.textContent = label; option.selected = id === cue.ownerId;
       owner.append(option);
+    }
+    // A cue can name an object the map no longer has; without an option for it the select would
+    // fall back to its first entry and quietly claim the cue targets nothing.
+    if (cue.ownerId && !objects.some(([id]) => id === cue.ownerId)) {
+      const missing = document.createElement('option');
+      missing.value = cue.ownerId; missing.textContent = `${cue.ownerId} (not in this layout)`; missing.selected = true;
+      owner.append(missing);
     }
     owner.addEventListener('change', () => patchCue(sheet, cue.id, { ownerId: owner.value || null },
       owner.value ? 'Cue target set' : 'Cue target cleared'));
