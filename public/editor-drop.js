@@ -148,12 +148,3 @@ export function addEntityWithModel(project, { id, x, y, elevation = 0, assetId, 
   project.map.entities.push(entity);
   return `${asset.name} placed as a ${type} at ${entity.x}, ${entity.y}`;
 }
-
-// Screen-space drag along a world axis, mirroring the axis handle behaviour:
-// project a reference axis of `length` world units and take the pointer's projection on it.
-export function axisDragAmount({ originX, originY, tipX, tipY, width, height, deltaX, deltaY, length = 50 }) {
-  const dx = (tipX - originX) * width / 2, dy = -(tipY - originY) * height / 2;
-  const screenLength = dx * dx + dy * dy;
-  if (!(screenLength > 1)) return -deltaY;
-  return (deltaX * dx + deltaY * dy) / screenLength * length;
-}

@@ -5,7 +5,7 @@ import { addRamp } from '../shared/ramp.js';
 import { cloneEntitiesForPaste } from '../shared/entity-groups.js';
 import { sectorGeometry } from '../shared/sectors.js';
 import {
-  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, describeSurfaceTarget,
+  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, resolveWallSide, sectorTarget, snapValue, wallPartAt, wallTarget,
 } from '../public/editor-drop.js';
 import { entityOrigin, liveProjectPlan, modelWorldBox } from '../shared/entity-visuals.js';
@@ -173,18 +173,7 @@ test('model selection boxes use the model bounds, scale, rotation and floor posi
   assert.deepEqual(entityOrigin({ x: 8, y: 16, z: 5, elevation: 24 }, 64), [8, 5, 16]);
 });
 
-test('axis drag maths projects pointer motion onto a world axis', () => {
-  const straight = alpha => axisDragAmount({ originX: 0, originY: 0, tipX: alpha, tipY: 0,
-    width: 800, height: 450, deltaX: 100, deltaY: 0 });
-  assert.equal(straight(1), 12.5);
-  assert.equal(straight(.5), 25);
-  assert.equal(axisDragAmount({ originX: 0, originY: 0, tipX: 0, tipY: .5,
-    width: 800, height: 450, deltaX: -100, deltaY: 0 }) + 0, 0);
-  assert.equal(axisDragAmount({ originX: 0, originY: 0, tipX: 0, tipY: .5,
-    width: 800, height: 450, deltaX: 0, deltaY: -45 }), 20);
-  // Degenerate axes (pointing straight at the camera) fall back to vertical screen motion.
-  assert.equal(axisDragAmount({ originX: .2, originY: .3, tipX: .2, tipY: .3,
-    width: 800, height: 450, deltaX: 40, deltaY: -32 }), 32);
+test('snapping rounds to the grid, and leaves things alone at grid zero', () => {
   assert.equal(snapValue(19, 16), 16); assert.equal(snapValue(-24, 16), -16); assert.equal(snapValue(19, 0), 19);
 });
 

@@ -659,13 +659,30 @@ runtime says which event is wrong rather than quietly never firing.
   box keeps showing the tool you picked. The 3D toolbar's Transform list is the same choice by
   another name and stays in step with it.
 - A zone gets **no tilt**: a tilted trigger volume would change nothing a rule tests, so its
-  Rotate gizmo shows only the two ground bars. Offering every mode to every object is how a tool
+  Rotate gizmo shows only the green ground ring. Offering every mode to every object is how a tool
   ends up silently doing nothing.
-- **Forming** resizes one side and nothing else. A size is all that changes, so the volume grows
-  symmetrically about the object: in 3D the bar drags that axis and the side grows by twice the
-  drag, and in 2D the selected footprint grows eight grips — a corner taking two sides, an edge one
-  — measured from the middle. Both are one undoable edit and snap to the grid, and a side can never
-  go below 8 units (you could not stand in it) or above 16 384.
+- **The gizmo is drawn the way Godot draws one** (`public/gizmo.js`): three arrows with cone heads
+  to move, a ring about each axis to turn, and a shaft with a box on the end to scale. X is red, Y
+  green and Z blue, the arms are a constant share of the viewport whatever the distance, and the
+  handle under the pointer lights up — without that, an arm aimed at the camera is a square you
+  cannot tell apart from the one beside it. Each handle also carries an **invisible pick volume**
+  much wider than the shape, because a one-pixel shaft is a shaft nobody can hit.
+- **Forming** resizes one side and nothing else, and its handles are **the faces of the volume**
+  rather than arrows: point at a side and it lights up, drag it and that face follows the pointer
+  while the opposite side gives way, so the size grows by twice the drag about the object's own
+  middle. It is the same idea as picking a wall in the world — the surface under the pointer is the
+  thing that moves. In 2D the selected footprint grows eight grips — a corner taking two sides, an
+  edge one — measured from the middle. Both are one undoable edit and snap to the grid, and a side
+  can never go below 8 units (you could not stand in it) or above 16 384. The size a drag grows
+  from is the one it **started** at: reading it back from the live project adds each frame's growth
+  to the next, which is how a small drag once turned a room-sized zone into a tower.
+- **How far a drag goes** is measured on a plane that faces the camera, not by projecting the
+  pointer's motion onto the axis's screen line (`shared/gizmo-math.js`). Projection divides by the
+  axis's *projected length*, so an axis pointing away from the camera — a few pixels long on screen
+  — multiplied a 20-pixel drag into thousands of units. On a facing plane the grabbed point tracks
+  the pointer, and an axis you are looking down simply becomes stiff to drag, which is what such an
+  axis should be. A ring is followed rather than measured: the pointer's angle around the gizmo is
+  the turn, signed by whether the ring's axis points towards or away from the camera.
 - **Rotation** turns the volume: containment rotates the player offset into the zone's own frame,
   and the box in the 3D view and the plate in the 2D view turn with it, so what you see is what
   fires. Round shapes on the ground are unaffected.
@@ -1984,8 +2001,8 @@ through.
    object faces: 180 pitch stands it on its head, 90 roll lays it on its side, and
    the box, the 3D view and the renderer all use the composed orientation
    (`modelOrientation` in `shared/entity-visuals.js`). In the 3D view the
-   **Rotate / tilt** gizmo turns the object with a horizontal handle, pitches it
-   with the vertical handle and rolls it with Shift + vertical.
+   **Rotate object** rings turn the object about the axis of the ring you grab:
+   the green ground ring is yaw, the red ring pitches, the blue one rolls.
    Models are parsed with the preview, so the first assignment reloads the 3D
    scene once; later edits apply in place, and swapping one model for another
    replaces just that object.

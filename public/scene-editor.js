@@ -6,17 +6,22 @@ import { newId } from '/shared/project.js';
 import { sectorAt, sectorGeometry } from '/shared/sectors.js';
 import { dragSelection } from '/shared/scene-edit.js';
 import {
-  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, axisDragAmount, describeSurfaceTarget,
+  addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, requireModelAsset, resolveWallSide, sectorTarget, snapValue,
   wallPartAt, wallTarget,
 } from './editor-drop.js';
-import { overlayVolumes } from '/shared/areas.js';
+import { areaVolume, overlayVolumes } from '/shared/areas.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
 import { samplePath } from '/shared/paths.js';
+import {
+  GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formSizeFromDrag,
+  rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
+} from '/shared/gizmo-math.js';
+import { buildFormFaces, buildGizmo, disposeHandles, paintHandles } from './gizmo.js';
 
 const SELECT_COLOR = '#ffd34d', DROP_COLOR = '#7fe6ff';
-const AXIS_VECTORS = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 0, 1), z: new THREE.Vector3(0, 1, 0) };
-const AXIS_LENGTH = 50;
+/** How long a gizmo arm should be on screen, as a share of the viewport's shorter side. */
+const GIZMO_ARM_FRACTION = .15;
 
 export async function createSceneEditor(canvas, project, callbacks, pose) {
   const state = createRuntime(project);
@@ -30,10 +35,15 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   let entityById = new Map(project.map.entities.map(entity => [entity.id, entity]));
   const ray = new THREE.Raycaster(), pointer = new THREE.Vector2();
   const handles = new THREE.Group(), helperGroup = new THREE.Group(), vertexGroup = new THREE.Group();
+  // Form resizes a volume by its own faces, which live at the volume's edges rather than on the
+  // object's origin, and are the volume's real size rather than a fixed screen size — so they are
+  // not part of the scaled `handles` group.
+  const faceGroup = new THREE.Group();
+  faceGroup.visible = false;
   // Paths are drawn as their curve, not as their waypoints: the line a traveller follows is the
   // thing being authored, and the control points are what shape it.
   const pathGroup = new THREE.Group();
-  scene.add(handles, helperGroup, vertexGroup, pathGroup);
+  scene.add(handles, helperGroup, vertexGroup, pathGroup, faceGroup);
   const resources = [], keys = new Set(), listeners = [];
   const own = resource => { resources.push(resource); return resource; };
 
@@ -181,6 +191,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   // Whether the selection is a volume (a zone, or an object with an interaction area), which is
   // what makes Form and volume scaling mean something.
   let hasVolume = false;
+  // What the gizmo is currently showing, so a live drag's re-select does not rebuild it every
+  // frame: the mode and the axes are the whole of it.
+  let handleAxes = [], handleSignature = '', faceSignature = '', hoverAxis = null;
   let vertexHeights = new Map();
   let pickables = [];
   function collectVertexHeights() {
@@ -195,7 +208,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   function collectSceneHandles() {
     pickables = [];
     for (const child of scene.children) {
-      if (child === handles || child === helperGroup || child === vertexGroup || child === roomOutline || child === pathGroup) continue;
+      if (child === handles || child === faceGroup || child === helperGroup || child === vertexGroup || child === roomOutline || child === pathGroup) continue;
       child.traverse(object => {
         // The static world is drawn from merged buffers, so a world mesh names the wall
         // or sector it belongs to per triangle instead of holding one selection itself.
@@ -387,6 +400,17 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     } else if (selection.kind === 'entity') {
       const entity = entityById.get(selection.id);
       if (entity) {
+        // A volume is what the object is — a zone has no artwork at all, and an object with an
+        // interaction area is defined by it — so its outline is the volume itself rather than a
+        // guess sized from a sprite it may not have.
+        const floor = sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0;
+        const volume = entity.area ? areaVolume(entity, floor) : null;
+        if (volume) {
+          box.set(
+            new THREE.Vector3(volume.center.x - volume.half.width, volume.center.z - volume.half.height, volume.center.y - volume.half.depth),
+            new THREE.Vector3(volume.center.x + volume.half.width, volume.center.z + volume.half.height, volume.center.y + volume.half.depth));
+          return box;
+        }
         // Anything that is actually drawn knows its own extent — a model from its
         // geometry, a sprite from its quad, which also carries the artwork's vertical
         // anchor. Only an object with nothing drawn falls back to a guess.
@@ -429,7 +453,63 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   }
 
   function clearHandles() {
-    for (const child of [...handles.children]) { handles.remove(child); child.geometry.dispose(); child.material.dispose(); }
+    disposeHandles([...handles.children]);
+    handleAxes = [];
+  }
+  /**
+   * Builds the gizmo for what is selected and what the tool is.
+   *
+   * Godot's three sets of handles, one per mode: arrows along the axes to move, a ring about each
+   * axis to turn, and a shaft with a box on the end to scale. They are rebuilt only when the mode
+   * or the axis list changes, because a live drag re-selects on every frame.
+   */
+  function buildHandles(axes) {
+    clearHandles();
+    handleAxes = [...axes];
+    for (const mesh of buildGizmo(mode, axes)) handles.add(mesh);
+    hideHover();
+  }
+  function hideHover() {
+    hoverAxis = null;
+    paintHandles([...handles.children], null);
+    canvas.dataset.gizmoHover = '';
+  }
+  /** The volume being formed, or null: Form needs a box, because it is its faces that are dragged. */
+  function formVolume() {
+    if (mode !== 'form' || !hasVolume || selected?.kind !== 'entity') return null;
+    const entity = entityById.get(selected.id);
+    if (!entity?.area) return null;
+    const volume = areaVolume(entity, sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0);
+    return volume?.shape === 'box' ? volume : null;
+  }
+  /**
+   * Puts the volume's faces where the volume is.
+   *
+   * A live form drag changes the size on every frame, so the plates are rebuilt from the volume
+   * signature rather than once when the selection changes — otherwise the plate under the pointer
+   * would stay the size it had when the drag began.
+   */
+  function syncFormFaces() {
+    const volume = formVolume();
+    if (!volume) {
+      if (faceGroup.children.length) { disposeHandles([...faceGroup.children]); }
+      faceGroup.visible = false;
+      faceSignature = '';
+      canvas.dataset.formFaces = '0';
+      return;
+    }
+    const entity = entityById.get(selected.id);
+    const signature = [entity.id, volume.half.width, volume.half.depth, volume.half.height,
+      volume.center.x, volume.center.z, volume.center.y, volume.angle].map(value => Number(value.toFixed ? value.toFixed(2) : value)).join('/');
+    if (signature !== faceSignature) {
+      disposeHandles([...faceGroup.children]);
+      faceSignature = signature;
+      for (const mesh of buildFormFaces(volume)) faceGroup.add(mesh);
+      canvas.dataset.formFaces = String(faceGroup.children.length);
+    }
+    faceGroup.position.set(volume.center.x, volume.center.z, volume.center.y);
+    faceGroup.rotation.set(0, -(Number(entity.angle) || 0) * Math.PI / 180, 0);
+    faceGroup.visible = true;
   }
   function updateVertexMarkers() {
     const shown = selected?.kind === 'vertex' ? [selected.id]
@@ -495,23 +575,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     hasOutline = !bounds.isEmpty();
     if (hasOutline) { bounds.getCenter(outlineCenter); bounds.getSize(outlineSize); }
     handles.position.copy(position);
+    syncFormFaces();
     const axes = axesFor(kind);
-    // Live drags re-select on every frame; rebuilding three geometries and
-    // materials each time is pointless when the axes did not change.
-    if (rebuildHandles || handles.children.filter(child => child.userData.axis).map(child => child.userData.axis).join() !== axes.join()) {
-      clearHandles();
-      for (const axis of axes) {
-        const mesh = new THREE.Mesh(new THREE.BoxGeometry(axis === 'x' ? AXIS_LENGTH : 6, axis === 'z' ? AXIS_LENGTH : 6, axis === 'y' ? AXIS_LENGTH : 6),
-          new THREE.MeshBasicMaterial({ color: axis === 'x' ? '#ef7777' : axis === 'y' ? '#7baaff' : '#85da85', depthTest: false }));
-        mesh.position.set(axis === 'x' ? AXIS_LENGTH / 2 : 0, axis === 'z' ? AXIS_LENGTH / 2 : 0, axis === 'y' ? AXIS_LENGTH / 2 : 0);
-        mesh.userData.axis = axis; mesh.renderOrder = 200; handles.add(mesh);
-      }
-      // The three bars meet at an empty corner, so the middle of the gizmo used to
-      // be a dead spot. This invisible sphere makes the whole gizmo grabbable.
-      const core = new THREE.Mesh(new THREE.SphereGeometry(9, 8, 6),
-        new THREE.MeshBasicMaterial({ colorWrite: false, depthTest: false, depthWrite: false }));
-      core.userData.axis = null; core.renderOrder = 201; handles.add(core);
-    }
+    const signature = `${mode}/${axes.join()}`;
+    if (rebuildHandles || signature !== handleSignature) { handleSignature = signature; buildHandles(axes); }
     canvas.dataset.sceneSelection = `${kind}:${id}${selected.surface ? `:${selected.surface}` : ''}`;
   }
   /**
@@ -524,73 +591,128 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   function areaSizeOf(id, axis) {
     const entity = project.map.entities.find(item => item.id === id);
     const area = entity?.area || {};
-    const value = axis === 'x' ? area.width : axis === 'y' ? area.depth : area.height;
-    return Number(value) || 128;
+    return Number(area[axisField(axis)]) || 128;
   }
   function applyEdit(fn, message, after) {
     try { callbacks.edit(fn, message); after?.(); } catch (error) { callbacks.error(error.message); cancel(); }
   }
 
-  function screenOf(point) {
+  function screenXY(point) {
     const rect = canvas.getBoundingClientRect(), projected = point.clone().project(camera);
-    return `${Math.round((projected.x * .5 + .5) * rect.width)},${Math.round((-.5 * projected.y + .5) * rect.height)}`;
+    return [(projected.x * .5 + .5) * rect.width, (-.5 * projected.y + .5) * rect.height];
+  }
+  function screenOf(point) {
+    const [x, y] = screenXY(point);
+    return `${Math.round(x)},${Math.round(y)}`;
+  }
+  const pointerXY = event => {
+    const rect = canvas.getBoundingClientRect();
+    return [event.clientX - rect.left, event.clientY - rect.top];
+  };
+  /** Paints the volume's faces, so the one under the pointer or in hand is the obvious one. */
+  function paintFaces(key = null) {
+    paintHandles([...faceGroup.children], key, { faces: true });
+    canvas.dataset.formHover = key || '';
   }
   /**
-   * Which bars the gizmo shows.
+   * Lights up the handle or the face under the pointer.
    *
-   * A zone is a volume, so in Rotate it has only the two ground bars (a tilted trigger volume
-   * would change nothing a rule tests), and in Form all three, each resizing one side. Everything
-   * else keeps the three-axis gizmo it has always had.
+   * Godot does this, and it is not decoration: an arrow pointing at the camera is a square you
+   * cannot tell apart from the one beside it until it tells you which axis it is.
    */
-  const axesFor = kind => {
-    if (kind === 'sector') return ['z'];
-    if (kind === 'vertex' || kind === 'wall') return ['x', 'y'];
-    if (hasVolume && mode === 'rotate') return ['x', 'y'];
-    return ['x', 'y', 'z'];
-  };
-  const axisLabel = axis => axis === 'x' ? 'X' : axis === 'y' ? 'Z' : 'Y';
+  function updateHover(event) {
+    if (!handles.visible && !faceGroup.visible) return;
+    cast(event);
+    const face = faceAt(event);
+    const faceKey = face ? `${face.axis}${face.side > 0 ? '+' : '-'}` : null;
+    paintFaces(faceKey);
+    const axis = face ? null : hits(handles)[0]?.object.userData.axis || null;
+    if (axis !== hoverAxis) { hoverAxis = axis; paintHandles([...handles.children], axis); }
+    canvas.dataset.gizmoHover = axis || faceKey || '';
+  }
   /**
-   * The axis a press should drag. The bars are thin, and the point where they
-   * meet has no geometry at all, so a press near the gizmo centre grabs the
-   * closest axis instead of doing nothing.
+   * Which handles the gizmo shows.
+   *
+   * A zone is a volume: in Rotate it gets only the ground ring, because a tilted trigger volume
+   * would change nothing a rule tests, and in Form it gets its own faces instead of arrows. A
+   * surface only moves vertically, and a waypoint only ever moves — so a tool that would do
+   * nothing draws nothing, rather than an arrow that turns out to be inert.
+   */
+  function axesFor(kind) {
+    if (kind === 'pathPoint') return mode === 'move' ? ['x', 'y', 'z'] : [];
+    if (kind === 'sector') return mode === 'move' ? ['y'] : [];
+    if (kind === 'vertex' || kind === 'wall') return mode === 'move' ? ['x', 'z'] : [];
+    if (mode === 'form' && formVolume()) return [];
+    if (mode === 'rotate' && hasVolume) return ['y'];
+    return ['x', 'y', 'z'];
+  }
+  /**
+   * The axis a press should drag.
+   *
+   * Godot's handles are thin and their middle is empty, so a press near the gizmo's centre grabs
+   * the axis whose line the pointer is closest to instead of doing nothing.
    */
   function axisAt(event) {
     const hit = hits(handles)[0];
-    if (hit) return hit.object.userData.axis || nearestAxis(event);
-    if (!handles.visible) return null;
+    if (hit?.object.userData.axis) return hit.object.userData.axis;
+    if (!handles.visible || !handleAxes.length) return null;
     const rect = canvas.getBoundingClientRect();
     const [sx, sy] = screenOf(handles.position).split(',').map(Number);
     const distance = Math.hypot(event.clientX - rect.left - sx, event.clientY - rect.top - sy);
-    return distance <= 12 ? nearestAxis(event) : null;
+    return distance <= 14 ? nearestAxis(event) : null;
   }
-  /** Which axis bar the pointer is closest to, for grabbing the gizmo centre. */
+  /** Which axis line the pointer is closest to, for grabbing the gizmo by its middle. */
   function nearestAxis(event) {
     const rect = canvas.getBoundingClientRect();
     const origin = handles.position.clone().project(camera);
     const ox = (origin.x * .5 + .5) * rect.width, oy = (-origin.y * .5 + .5) * rect.height;
     const px = event.clientX - rect.left, py = event.clientY - rect.top;
+    const span = GIZMO_LENGTH * handles.scale.x;
     let best = null;
-    for (const axis of axesFor(selected?.kind)) {
-      const tip = handles.position.clone().addScaledVector(AXIS_VECTORS[axis], AXIS_LENGTH * handles.scale.x).project(camera);
+    for (const axis of handleAxes) {
+      const tip = handles.position.clone().add(new THREE.Vector3(...axisDirection(axis)).multiplyScalar(span)).project(camera);
       const dx = (tip.x * .5 + .5) * rect.width - ox, dy = (-tip.y * .5 + .5) * rect.height - oy;
-      const length = Math.hypot(dx, dy) || 1;
-      const distance = Math.abs(dx * (py - oy) - dy * (px - ox)) / length;
+      const size = Math.hypot(dx, dy) || 1;
+      const distance = Math.abs(dx * (py - oy) - dy * (px - ox)) / size;
       if (!best || distance < best.distance) best = { axis, distance };
     }
-    return best?.axis || 'z';
+    return best?.axis || handleAxes[0] || null;
   }
-  const formatDistance = delta => {
-    const parts = [['x', delta.x], ['z', delta.y], ['y', delta.z]]
-      .filter(([, value]) => Math.abs(value) >= .01).map(([name, value]) => `${name} ${Math.round(value)}`);
-    return parts.length ? parts.join(', ') : '0';
-  };
+  /** The face of the formed volume under the pointer, if there is one. */
+  function faceAt(event) {
+    if (!faceGroup.visible) return null;
+    const hit = hits(faceGroup)[0];
+    return hit?.object.userData.face || null;
+  }
 
-  function axisDistance(start, axis, fromX, fromY, toX, toY) {
-    const rect = canvas.getBoundingClientRect();
-    const origin = start.clone().project(camera);
-    const tip = start.clone().addScaledVector(AXIS_VECTORS[axis], AXIS_LENGTH).project(camera);
-    return axisDragAmount({ originX: origin.x, originY: origin.y, tipX: tip.x, tipY: tip.y,
-      width: rect.width, height: rect.height, deltaX: toX - fromX, deltaY: toY - fromY, length: AXIS_LENGTH });
+  /** Where the view is pointing, which is what decides the plane a drag is measured on. */
+  function viewDirection() {
+    const direction = new THREE.Vector3();
+    camera.getWorldDirection(direction);
+    return direction.toArray();
+  }
+  /**
+   * What a drag along an axis needs, captured when the pointer goes down.
+   *
+   * `press` is where the pointer gripped the drag plane and `origin` is where that plane sits:
+   * both are kept, because the object moves while the plane it is measured on must not.
+   */
+  function axisDragStart(event, origin, axis) {
+    const normal = dragPlaneNormal(viewDirection());
+    const press = normal ? rayPlaneHit(origin.toArray(), normal, ray.ray.origin.toArray(), ray.ray.direction.toArray()) : null;
+    return { axis, origin: origin.toArray(), normal, press };
+  }
+  /**
+   * How far the pointer has travelled along the axis since it went down.
+   *
+   * Read off the drag plane, so the grabbed point follows the pointer exactly. When the axis is
+   * aimed straight at the camera there is no such plane, and the drag borrows the screen
+   * projection of the axis instead.
+   */
+  function dragAlong(event, drag) {
+    if (!drag.normal || !drag.press) return 0;
+    const hit = rayPlaneHit(drag.origin, drag.normal, ray.ray.origin.toArray(), ray.ray.direction.toArray());
+    return axisAmount(hit, drag.press, axisDirection(drag.axis));
   }
 
   // Vertical editing moves whole sector surfaces. Per-vertex (sloped floor/ceiling) heights are
@@ -847,11 +969,31 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       else { action = { kind: 'room', start: point.clone(), end: point.clone() }; roomOutline.visible = true; }
       return;
     }
+    // A face of the volume being formed is grabbed where it is drawn, the way a wall is: the
+    // plate covers the side, so the surface under the pointer is the side that moves.
+    const volume = formVolume();
+    const face = volume ? faceAt(event) : null;
+    if (face && selected) {
+      const center = new THREE.Vector3(volume.center.x, volume.center.z, volume.center.y);
+      action = { kind: 'transform', mode: 'form', axis: face.axis, side: face.side, selection: { ...selected },
+        x: event.clientX, y: event.clientY, origin: center.clone(), drag: axisDragStart(event, center, face.axis),
+        // The size the drag grows from is the one it started at: reading it back from the live
+        // project would add each frame's growth to the next, which is how a small drag used to
+        // turn a room-sized zone into a tower.
+        startSize: areaSizeOf(selected.id, face.axis),
+        baseline: project, moved: false };
+      paintFaces(`${face.axis}${face.side > 0 ? '+' : '-'}`);
+      canvas.dataset.transform = `form:${face.axis}${face.side > 0 ? '+' : '-'}`;
+      return;
+    }
     const axis = selected ? axisAt(event) : null;
     if (axis) {
       if (mode !== 'move' && selected.kind !== 'entity') { callbacks.error('Select an object to rotate or scale; geometry uses Move'); return; }
-      action = { kind: 'transform', axis, selection: { ...selected }, x: event.clientX, y: event.clientY,
-        start: handles.position.clone(), end: handles.position.clone(), baseline: project, moved: false, amount: 0 };
+      const origin = handles.position.clone();
+      action = { kind: 'transform', mode, axis, selection: { ...selected }, x: event.clientX, y: event.clientY,
+        origin, drag: axisDragStart(event, origin, axis), startSize: areaSizeOf(selected.id, axis),
+        reference: GIZMO_LENGTH * handles.scale.x,
+        turn: screenAngle(screenXY(origin), pointerXY(event)), baseline: project, moved: false };
       canvas.dataset.transform = `transform:${axis}`;
       return;
     }
@@ -861,7 +1003,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       selection.surface = selectionOf(hit)?.surface || callbacks.surface();
       callbacks.select(selection);
       if (mode === 'move') {
-        action = { kind: 'surface', selection, axis: 'z', start: hit.point.clone(), x: event.clientX, y: event.clientY,
+        action = { kind: 'surface', selection, axis: 'y', start: hit.point.clone(), x: event.clientX, y: event.clientY,
+          drag: axisDragStart(event, hit.point.clone(), 'y'),
           startHeight: sectorById.get(selection.id)?.[selection.surface] ?? hit.point.y, moved: false, endHeight: null, baseline: project };
       }
       return;
@@ -878,7 +1021,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   });
   listen(canvas, 'pointermove', event => {
     lastPointer = { clientX: event.clientX, clientY: event.clientY };
-    if (!action) return;
+    if (!action) { if (selected) updateHover(event); return; }
     if (action.kind === 'fly') {
       if (!action.moved && Math.hypot(event.clientX - action.startX, event.clientY - action.startY) >= 3) action.moved = true;
       yaw += (event.clientX - action.x) * .003;
@@ -906,7 +1049,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (action.kind === 'surface') {
       if (!action.moved && Math.hypot(event.clientX - action.x, event.clientY - action.y) < 4) return;
       action.moved = true;
-      const distance = axisDistance(action.start, 'z', action.x, action.y, event.clientX, event.clientY);
+      const distance = dragAlong(event, action.drag);
       const height = snapValue(action.startHeight + distance, callbacks.grid());
       action.endHeight = height;
       const name = action.selection.surface === 'ceilingHeight' ? 'Ceiling' : 'Floor';
@@ -917,46 +1060,42 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       liveDrag(action.selection, action.baseline, 'move', { x: 0, y: 0, z: height - action.startHeight }, `3D ${name.toLowerCase()} height ${height}`);
       return;
     }
-    const dragDelta = event.clientX - action.x - (event.clientY - action.y);
-    action.amount = dragDelta; action.moved = event.clientX !== action.x || event.clientY !== action.y;
-    if (!action.moved) return;
-    let delta;
-    if (mode === 'form' && hasVolume) {
-      // Form moves one face: the dragged bar pushes its side out and the opposite side stays, so
-      // the volume grows by twice the drag and its middle shifts by one drag.
-      const distance = axisDistance(action.start, action.axis, action.x, action.y, event.clientX, event.clientY);
-      // Signed: pushing a bar out grows its side, pulling it in shrinks one. The volume changes by
-      // twice the drag, because only the dragged face moves and the opposite one stays put.
-      const size = areaSizeOf(action.selection.id, action.axis) + 2 * distance;
-      const snapped = snapValue(size, callbacks.grid());
-      const key = action.axis === 'x' ? 'width' : action.axis === 'y' ? 'depth' : 'height';
-      showReadout(`${key} → ${snapped}`);
-      canvas.dataset.formSize = `${key}=${snapped}`;
-      action.formKey = key; action.formSize = snapped;
-      liveDrag(action.selection, action.baseline, 'form', { sizes: { [key]: snapped } }, `3D form ${key} ${snapped}`);
-      handles.position.copy(action.start).addScaledVector(AXIS_VECTORS[action.axis], distance / 2);
+    if (!action.moved && Math.hypot(event.clientX - action.x, event.clientY - action.y) < 2) return;
+    action.moved = true;
+    if (action.mode === 'form') {
+      // One face moves: its side grows and the opposite side gives way, so the face under the
+      // pointer stays under it. The object's own position is the middle of the volume, so this
+      // grows about the middle instead of dragging the object across the map.
+      const key = axisField(action.axis);
+      const size = snapValue(formSizeFromDrag(action.startSize, dragAlong(event, action.drag)), callbacks.grid());
+      showReadout(`${key} ${action.side > 0 ? '+' : '−'} → ${size}`);
+      canvas.dataset.formSize = `${key}=${size}`;
+      action.formKey = key; action.formSize = size;
+      liveDrag(action.selection, action.baseline, 'form', { sizes: { [key]: size } }, `3D form ${key} ${size}`);
       return;
     }
-    if (mode === 'move') {
-      const distance = axisDistance(action.start, action.axis, action.x, action.y, event.clientX, event.clientY);
-      action.end.copy(action.start).addScaledVector(AXIS_VECTORS[action.axis], distance);
-      delta = { x: action.end.x - action.start.x, y: action.end.z - action.start.z, z: action.end.y - action.start.y };
-      liveDrag(action.selection, action.baseline, 'move', delta, `3D move ${axisLabel(action.axis)} ${formatDistance(delta)}`);
-      handles.position.copy(action.end);
-    } else if (mode === 'rotate') {
-      // Horizontal handles turn the object; the vertical handle tilts the model, and
-      // Shift with it rolls, so a model can be laid on its side or stood on its head.
-      const amount = Math.round(dragDelta * .5);
-      const delta = action.axis === 'z'
-        ? (keys.has('ShiftLeft') || keys.has('ShiftRight') ? { roll: amount } : { pitch: amount })
-        : { angle: amount };
-      const label = delta.roll !== undefined ? `roll ${delta.roll}deg` : delta.pitch !== undefined ? `pitch ${delta.pitch}deg` : `yaw ${delta.angle}deg`;
-      liveDrag(action.selection, action.baseline, 'rotate', delta, `3D rotate ${label}`);
-    } else {
-      const factor = Math.exp(dragDelta * .01);
-      liveDrag(action.selection, action.baseline, 'scale', { scale: factor },
-        hasVolume ? `3D volume ${Math.round(factor * 100)}%` : `3D scale ${Math.round(factor * 100)}%`);
+    if (action.mode === 'move') {
+      const amount = dragAlong(event, action.drag);
+      const direction = axisDirection(action.axis);
+      const delta = { x: direction[0] * amount, y: direction[2] * amount, z: direction[1] * amount };
+      liveDrag(action.selection, action.baseline, 'move', delta,
+        `3D move ${axisByKey(action.axis)?.name} ${Math.round(amount)}`);
+      return;
     }
+    if (action.mode === 'rotate') {
+      // A ring is followed, not measured: the pointer's angle around the gizmo is the turn, which
+      // is what makes a ring grab feel like grabbing the ring.
+      const turn = ringDegrees({ axis: axisDirection(action.axis), viewDirection: viewDirection(),
+        from: action.turn, to: screenAngle(screenXY(action.origin), pointerXY(event)) });
+      const delta = ringDelta(action.axis, turn);
+      const label = delta.angle !== undefined ? `yaw ${Math.round(turn)}deg`
+        : delta.pitch !== undefined ? `pitch ${Math.round(turn)}deg` : `roll ${Math.round(turn)}deg`;
+      liveDrag(action.selection, action.baseline, 'rotate', delta, `3D rotate ${label}`);
+      return;
+    }
+    const factor = scaleFactorFromDrag({ amount: dragAlong(event, action.drag), reference: action.reference });
+    liveDrag(action.selection, action.baseline, 'scale', { scale: factor },
+      hasVolume ? `3D volume ${Math.round(factor * 100)}%` : `3D scale ${Math.round(factor * 100)}%`);
   });
   listen(canvas, 'pointerup', event => {
     const completed = action; action = null; keys.clear(); roomOutline.visible = false;
@@ -989,7 +1128,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
     if (completed.formKey) { hideReadout(); canvas.dataset.formSize = ''; }
     callbacks.liveFinish(completed.selection?.kind === 'pathPoint' ? '3D waypoint moved'
-      : completed.formKey ? `3D ${completed.formKey} ${completed.formSize}` : `3D ${mode}`);
+      : completed.formKey ? `3D ${completed.formKey} ${completed.formSize}` : `3D ${completed.mode || mode}`);
   });
   function cancel() {
     action = null; keys.clear(); roomOutline.visible = false;
@@ -1046,7 +1185,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     },
     mode(value) { mode = value; select(callbacks.selection()); },
     /** Does the selection have a volume? Form and volume scaling only apply when it does. */
-    hasVolume(value) { hasVolume = Boolean(value); },
+    hasVolume(value) { hasVolume = Boolean(value); select(callbacks.selection(), { rebuildHandles: false }); },
     /** Engine tweaks (render resolution, FOV, brightness) apply to the editor preview too. */
     settings(values) { Object.assign(state.settings, values || {}); },
     pose() { return { position: camera.position.clone(), yaw, pitch, speed }; },
@@ -1063,7 +1202,13 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         if (motionVector.lengthSq()) camera.position.addScaledVector(motionVector.normalize(), speed * Math.min(dt, .05) * (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 4 : 1));
       }
       camera.lookAt(lookTarget.copy(camera.position).add(direction(forwardVector)));
-      handles.scale.setScalar(Math.max(.2, camera.position.distanceTo(handles.position) * .98 / rect.height));
+      // A gizmo arm is about an eighth of the viewport, whatever the distance: the world size that
+      // projects to that is the perspective scale at the gizmo's depth. Dividing the distance by
+      // the canvas height instead — which is what this did — makes the gizmo shrink with the
+      // square of the viewport and leaves arrows a few pixels long and impossible to grab.
+      const eyeDistance = camera.position.distanceTo(handles.position);
+      const worldPerPixel = 2 * Math.tan((camera.fov * Math.PI / 180) / 2) * eyeDistance / rect.height;
+      handles.scale.setScalar(Math.max(.05, worldPerPixel * (GIZMO_ARM_FRACTION * Math.min(rect.width, rect.height)) / GIZMO_LENGTH));
       camera.updateMatrixWorld();
       projectionView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       frustum.setFromProjectionMatrix(projectionView);
@@ -1090,13 +1235,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // Screen positions of the gizmo and the selection box, so a drag can be
       // followed (and regression-tested) from the outside.
       canvas.dataset.handlesAt = handles.visible ? screenOf(handles.position) : '';
-      // Which bars the gizmo is showing, and where their tips are: the mode changes the axes a
-      // volume gets, and a bar can only be dragged where it is drawn.
-      const barAxes = handles.visible ? handles.children.filter(child => child.userData.axis).map(child => child.userData.axis) : [];
-      canvas.dataset.transformAxes = barAxes.join(',');
+      // Which handles the gizmo is showing, and where their tips are: the mode changes what a
+      // selection gets, and a handle can only be dragged where it is drawn.
+      const tipAxes = handles.visible ? [...new Set(handles.children.filter(child => child.userData.axis).map(child => child.userData.axis))] : [];
+      canvas.dataset.transformAxes = tipAxes.join(',');
       canvas.dataset.transformMode = mode;
-      canvas.dataset.gizmoTips = handles.visible ? barAxes.map(axis => `${axis}:${screenOf(handles.position.clone()
-        .addScaledVector(AXIS_VECTORS[axis], AXIS_LENGTH * handles.scale.x * .8))}`).join(';') : '';
+      canvas.dataset.formFaces = faceGroup.visible ? String(faceGroup.children.length) : '0';
+      canvas.dataset.gizmoTips = handles.visible ? tipAxes.map(axis => `${axis}:${screenOf(handles.position.clone()
+        .add(new THREE.Vector3(...axisDirection(axis)).multiplyScalar(GIZMO_LENGTH * handles.scale.x * .95)))}`).join(';') : '';
       // What the pointer is doing right now: a drag kind ('transform', 'pathPoint', 'room'…),
       // so an interaction can be followed from outside the canvas.
       canvas.dataset.action = action ? `${action.kind}${action.axis ? `:${action.axis}` : ''}` : '';

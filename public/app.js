@@ -408,7 +408,7 @@ function setSceneMode(mode) {
   $('view-2d').setAttribute('aria-pressed', String(mode === '2d'));
   $('view-3d').setAttribute('aria-pressed', String(mode === '3d'));
   $('scene-hint').textContent = mode === '3d'
-    ? 'Right-drag: look + WASD fly / Q E down-up / Shift faster / wheel speed. Left: select or draw. Colored axes: transform; in Rotate / tilt the vertical axis pitches the model and Shift rolls it.'
+    ? 'Right-drag: look + WASD fly / Q E down-up / Shift faster / wheel speed. Left: select or draw. Arrows move, rings turn, boxes scale; in Form the sides of the volume are the handles.'
     : 'Wheel: zoom / Right-drag: pan / Select wall, vertex or object to edit';
   if (mode === '2d') {
     scenePose = sceneEditor?.pose() || scenePose; sceneEditor?.dispose(); sceneEditor = null; sceneProject = null;
@@ -425,6 +425,9 @@ $('tool').addEventListener('change', () => {
   // controls can never disagree about what a drag will do.
   const wanted = toolTransform();
   if (wanted) { $('transform-mode').value = wanted; sceneEditor?.mode(wanted); }
+  // A placement tool is not a transform, so the two controls agree again rather than leaving the
+  // box saying "Select / move" while a drag still forms the volume.
+  else if ($('transform-mode').value !== 'move') { $('transform-mode').value = 'move'; sceneEditor?.mode('move'); }
 });
 /**
  * Which transforms make sense for what is selected.
