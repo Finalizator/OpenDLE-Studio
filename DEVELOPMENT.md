@@ -99,6 +99,15 @@ route's repeated sound or a texture used twice should be.
 
 The old one-file format is still read, so an installation that predates this is not stranded; the
 next save moves it into a folder and retires `projects/<id>.json`.
+
+**A saved project is self-contained.** Everything the project needs to load and play is in its
+folder: every asset payload is in `assets/` (and a `src` that is a URL or a `blob:` is refused by
+validation, so an asset cannot point elsewhere), and the audited Doom 2 import contains no
+absolute path, no URL and no file name anywhere in its document — the WAD it was imported from is
+never read again. `test/project-folder.test.js` pins that: no external reference survives the
+split, every payload is in exactly one place, and an asset that is not embedded is rejected. What
+a folder does not contain is the engine itself — `shared/`, `public/`, three.js and Rapier — which
+is what **Export playable app** packages.
 Opening a saved studio therefore never rewrites anything; the list is written on
 the first save, import or switch.
 

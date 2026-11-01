@@ -201,6 +201,41 @@ test('a studio project that was one JSON file moves into a folder and leaves no 
   assert.equal(existsSync(join(directory, 'projects', adopted.projectId, PROJECT_FILE)), true);
 });
 
+// Self-containment is a property, not a promise: everything a project needs is in its folder, and
+// nothing in the document points at a file, a URL or another asset.
+test('a saved project is self-contained: no external reference survives the split', () => {
+  const project = projectWithAssets();
+  project.actors = [{ id: 'DoomImp', name: 'DoomImp' }];
+  project.game = { levels: [{ id: 'MAP01', name: 'Entryway' }] };
+  const packed = packProject(project, { revision: 1 });
+  const text = JSON.stringify(packed.document);
+  // No URL, no absolute path, no file name of a payload in the document.
+  assert.equal(/https?:\/\//.test(text), false, 'no remote reference');
+  assert.equal(/(^|[^a-z])(\/[Hh]ome|\/mnt|\/usr|[A-Za-z]:\\\\)/.test(text), false, 'no absolute path');
+  const referenced = [...(packed.document.project.assets || []).map(asset => asset.file),
+    ...Object.values(packed.document.sections || {})].filter(Boolean);
+  const written = new Set(packed.files.map(file => file.path));
+  for (const path of referenced) {
+    assert.equal(written.has(path), true, `${path} is in the folder`);
+    assert.equal(path.startsWith('/') || path.includes('..'), false, `${path} stays inside the folder`);
+  }
+  // Every payload is accounted for: a data URL in the project, a file on disk, or neither (a URL
+  // the project points at, which validation refuses for every asset kind that carries bytes).
+  for (const asset of packed.document.project.assets) {
+    assert.equal(Boolean(asset.src) && Boolean(asset.file), false, `${asset.id} is in one place, not two`);
+    assert.equal(Boolean(asset.src) || Boolean(asset.file), true, `${asset.id} keeps its bytes`);
+  }
+});
+
+test('an asset whose bytes are not embedded is refused by validation', () => {
+  const project = projectWithAssets();
+  project.assets[2].src = 'https://example.test/troo.png';
+  assert.throws(() => validateProject(project), /embedded PNG/);
+  const sound = projectWithAssets();
+  sound.assets[0].src = 'blob:http://localhost/1234';
+  assert.throws(() => validateProject(sound), /embedded WAV\/OGG\/MP3/);
+});
+
 test('an exported folder zips and unpacks back to the same project', async () => {
   const project = projectWithAssets();
   const entries = projectZipEntries(project, { revision: 5 });
