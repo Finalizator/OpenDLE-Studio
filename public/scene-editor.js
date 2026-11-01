@@ -178,6 +178,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
 
   let selected = null, action = null, speed = pose?.speed || 320, yaw = pose?.yaw ?? 0, pitch = pose?.pitch ?? -.65;
   let mode = 'move', showCeilings = false, ceilingTimer = 0;
+  // Whether the selection is a volume (a zone, or an object with an interaction area), which is
+  // what makes Form and volume scaling mean something.
+  let hasVolume = false;
   let vertexHeights = new Map();
   let pickables = [];
   function collectVertexHeights() {
@@ -511,6 +514,19 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     }
     canvas.dataset.sceneSelection = `${kind}:${id}${selected.surface ? `:${selected.surface}` : ''}`;
   }
+  /**
+   * One side of the selected object's volume, in map units.
+   *
+   * A bar drags one side of the volume, so the size it grows from has to be the size the object
+   * had — read from the project, not from the handle, because the handle only knows where the
+   * middle is.
+   */
+  function areaSizeOf(id, axis) {
+    const entity = project.map.entities.find(item => item.id === id);
+    const area = entity?.area || {};
+    const value = axis === 'x' ? area.width : axis === 'y' ? area.depth : area.height;
+    return Number(value) || 128;
+  }
   function applyEdit(fn, message, after) {
     try { callbacks.edit(fn, message); after?.(); } catch (error) { callbacks.error(error.message); cancel(); }
   }
@@ -519,7 +535,19 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     const rect = canvas.getBoundingClientRect(), projected = point.clone().project(camera);
     return `${Math.round((projected.x * .5 + .5) * rect.width)},${Math.round((-.5 * projected.y + .5) * rect.height)}`;
   }
-  const axesFor = kind => kind === 'sector' ? ['z'] : kind === 'vertex' || kind === 'wall' ? ['x', 'y'] : ['x', 'y', 'z'];
+  /**
+   * Which bars the gizmo shows.
+   *
+   * A zone is a volume, so in Rotate it has only the two ground bars (a tilted trigger volume
+   * would change nothing a rule tests), and in Form all three, each resizing one side. Everything
+   * else keeps the three-axis gizmo it has always had.
+   */
+  const axesFor = kind => {
+    if (kind === 'sector') return ['z'];
+    if (kind === 'vertex' || kind === 'wall') return ['x', 'y'];
+    if (hasVolume && mode === 'rotate') return ['x', 'y'];
+    return ['x', 'y', 'z'];
+  };
   const axisLabel = axis => axis === 'x' ? 'X' : axis === 'y' ? 'Z' : 'Y';
   /**
    * The axis a press should drag. The bars are thin, and the point where they
@@ -893,6 +921,22 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     action.amount = dragDelta; action.moved = event.clientX !== action.x || event.clientY !== action.y;
     if (!action.moved) return;
     let delta;
+    if (mode === 'form' && hasVolume) {
+      // Form moves one face: the dragged bar pushes its side out and the opposite side stays, so
+      // the volume grows by twice the drag and its middle shifts by one drag.
+      const distance = axisDistance(action.start, action.axis, action.x, action.y, event.clientX, event.clientY);
+      // Signed: pushing a bar out grows its side, pulling it in shrinks one. The volume changes by
+      // twice the drag, because only the dragged face moves and the opposite one stays put.
+      const size = areaSizeOf(action.selection.id, action.axis) + 2 * distance;
+      const snapped = snapValue(size, callbacks.grid());
+      const key = action.axis === 'x' ? 'width' : action.axis === 'y' ? 'depth' : 'height';
+      showReadout(`${key} → ${snapped}`);
+      canvas.dataset.formSize = `${key}=${snapped}`;
+      action.formKey = key; action.formSize = snapped;
+      liveDrag(action.selection, action.baseline, 'form', { sizes: { [key]: snapped } }, `3D form ${key} ${snapped}`);
+      handles.position.copy(action.start).addScaledVector(AXIS_VECTORS[action.axis], distance / 2);
+      return;
+    }
     if (mode === 'move') {
       const distance = axisDistance(action.start, action.axis, action.x, action.y, event.clientX, event.clientY);
       action.end.copy(action.start).addScaledVector(AXIS_VECTORS[action.axis], distance);
@@ -909,7 +953,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const label = delta.roll !== undefined ? `roll ${delta.roll}deg` : delta.pitch !== undefined ? `pitch ${delta.pitch}deg` : `yaw ${delta.angle}deg`;
       liveDrag(action.selection, action.baseline, 'rotate', delta, `3D rotate ${label}`);
     } else {
-      liveDrag(action.selection, action.baseline, 'scale', { scale: Math.exp(dragDelta * .01) }, `3D scale ${Math.round(Math.exp(dragDelta * .01) * 100)}%`);
+      const factor = Math.exp(dragDelta * .01);
+      liveDrag(action.selection, action.baseline, 'scale', { scale: factor },
+        hasVolume ? `3D volume ${Math.round(factor * 100)}%` : `3D scale ${Math.round(factor * 100)}%`);
     }
   });
   listen(canvas, 'pointerup', event => {
@@ -941,7 +987,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       return;
     }
     if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
-    callbacks.liveFinish(completed.selection?.kind === 'pathPoint' ? '3D waypoint moved' : `3D ${mode}`);
+    if (completed.formKey) { hideReadout(); canvas.dataset.formSize = ''; }
+    callbacks.liveFinish(completed.selection?.kind === 'pathPoint' ? '3D waypoint moved'
+      : completed.formKey ? `3D ${completed.formKey} ${completed.formSize}` : `3D ${mode}`);
   });
   function cancel() {
     action = null; keys.clear(); roomOutline.visible = false;
@@ -996,7 +1044,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       rebuildOverlays();
       return true;
     },
-    mode(value) { mode = value; },
+    mode(value) { mode = value; select(callbacks.selection()); },
+    /** Does the selection have a volume? Form and volume scaling only apply when it does. */
+    hasVolume(value) { hasVolume = Boolean(value); },
     /** Engine tweaks (render resolution, FOV, brightness) apply to the editor preview too. */
     settings(values) { Object.assign(state.settings, values || {}); },
     pose() { return { position: camera.position.clone(), yaw, pitch, speed }; },
@@ -1040,6 +1090,13 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // Screen positions of the gizmo and the selection box, so a drag can be
       // followed (and regression-tested) from the outside.
       canvas.dataset.handlesAt = handles.visible ? screenOf(handles.position) : '';
+      // Which bars the gizmo is showing, and where their tips are: the mode changes the axes a
+      // volume gets, and a bar can only be dragged where it is drawn.
+      const barAxes = handles.visible ? handles.children.filter(child => child.userData.axis).map(child => child.userData.axis) : [];
+      canvas.dataset.transformAxes = barAxes.join(',');
+      canvas.dataset.transformMode = mode;
+      canvas.dataset.gizmoTips = handles.visible ? barAxes.map(axis => `${axis}:${screenOf(handles.position.clone()
+        .addScaledVector(AXIS_VECTORS[axis], AXIS_LENGTH * handles.scale.x * .8))}`).join(';') : '';
       // What the pointer is doing right now: a drag kind ('transform', 'pathPoint', 'room'…),
       // so an interaction can be followed from outside the canvas.
       canvas.dataset.action = action ? `${action.kind}${action.axis ? `:${action.axis}` : ''}` : '';

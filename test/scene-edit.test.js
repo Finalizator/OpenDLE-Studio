@@ -145,3 +145,41 @@ test('a waypoint drags in three axes and leaves the other axes where they were',
   dragSelection(project, second, { kind: 'pathPoint', id: 'a', pathId: 'path_2' }, 'move', { x: 32, y: 0, z: 0 }, 16);
   assert.deepEqual([project.paths[1].points[0].x, project.paths[0].points[0].x], [32, 160], 'only the named path moved');
 });
+
+test('a zone is formed side by side, scaled as a whole, and turned', () => {
+  const project = createProject();
+  project.map.entities.push({ id: 'zone_a', name: 'Guard room', type: 'zone', x: 0, y: 0, angle: 0,
+    area: { shape: 'box', width: 128, height: 128, depth: 128, radius: 64 } });
+  validateProject(project);
+  const selection = { kind: 'entity', id: 'zone_a' };
+  const zone = () => project.map.entities.find(entity => entity.id === 'zone_a');
+  const baseline = structuredClone(project);
+
+  // Form: one side at a time, from the drag baseline, snapped by the caller.
+  dragSelection(project, baseline, selection, 'form', { sizes: { width: 320 } }, 16);
+  assert.deepEqual([zone().area.width, zone().area.depth, zone().area.height], [320, 128, 128]);
+  dragSelection(project, baseline, selection, 'form', { sizes: { width: 320, height: 64 } }, 16);
+  assert.deepEqual([zone().area.width, zone().area.depth, zone().area.height], [320, 128, 64], 're-running is absolute');
+
+  // Scale: every dimension together, again from the baseline.
+  const fromForm = structuredClone(project);
+  dragSelection(project, fromForm, selection, 'scale', { scale: 2 }, 16);
+  assert.deepEqual([zone().area.width, zone().area.height, zone().area.depth], [640, 128, 256]);
+  dragSelection(project, fromForm, selection, 'scale', { scale: 0.5 }, 16);
+  assert.deepEqual([zone().area.width, zone().area.height, zone().area.depth], [160, 32, 64]);
+
+  // A zone cannot be made too small to stand in.
+  dragSelection(project, fromForm, selection, 'form', { sizes: { width: 1 } }, 16);
+  assert.equal(zone().area.width, 8);
+  validateProject(project);
+});
+
+test('form and scale refuse an object that has no volume', () => {
+  const project = createProject();
+  const pickup = project.map.entities.find(entity => entity.type !== 'player');
+  const selection = { kind: 'entity', id: pickup.id };
+  assert.throws(() => transformSelection(project, selection, 'form', { sizes: { width: 64 } }, 16), /Form applies/);
+  // Scale still means the sprite for an object without one, so it is not an error.
+  transformSelection(project, selection, 'scale', { scale: 2 }, 16);
+  assert.equal(pickup.spriteScale, 2);
+});

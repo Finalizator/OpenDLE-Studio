@@ -235,3 +235,24 @@ test('the zone conditions are offered as a zone picker, not a list of every obje
     /ENTITY_TYPES = \[[^\]]*'zone'\]/);
   assert.match(readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'), /<option>zone<\/option>/);
 });
+
+test('a rotated zone catches the player where its outline is drawn', () => {
+  const zone = { id: 'z', name: 'Z', type: 'zone', x: 0, y: 0, angle: 0,
+    area: { shape: 'box', width: 400, height: 128, depth: 40, radius: 20 } };
+  const long = areaVolume(zone, 0);
+  // A point just off the long axis falls outside the thin box.
+  const offAxis = { x: 0, y: 60, z: 12 };
+  assert.equal(areaContains(long, offAxis), false, 'a thin zone does not reach sideways');
+  // Turned 90 degrees the same box is thin the other way, so the point is inside and a point
+  // along the old long axis is outside.
+  zone.angle = 90;
+  const turned = areaVolume(zone, 0);
+  assert.equal(turned.angle, 90);
+  assert.equal(areaContains(turned, offAxis), true, 'the turned zone reaches it');
+  assert.equal(areaContains(turned, { x: 150, y: 0, z: 12 }), false, 'and no longer reaches along x');
+  // Round shapes on the ground are unaffected by yaw.
+  zone.angle = 45;
+  zone.area = { shape: 'sphere', width: 64, height: 128, depth: 64, radius: 64 };
+  assert.equal(areaContains(areaVolume(zone, 0), { x: 40, y: 40, z: 64 }), true);
+  void ZONE_AREA;
+});

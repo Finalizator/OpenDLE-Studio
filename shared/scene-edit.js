@@ -14,6 +14,44 @@ function waypointOf(project, selection) {
   return { path, point: path?.points.find(point => point.id === selection.id) };
 }
 
+/**
+ * The sizes a volume may be resized to, clamped so a zone cannot be inverted or made invisible.
+ * Eight units is half the player's width: anything smaller could never be stood in.
+ */
+const MIN_AREA_SIZE = 8;
+/** Upper bound for one side of a volume: past this a slipped drag is not a room any more. */
+const MAX_AREA_SIZE = 16384;
+const sizeOf = value => Math.min(MAX_AREA_SIZE, Math.max(MIN_AREA_SIZE, Math.round(Number(value) || MIN_AREA_SIZE)));
+
+/**
+ * Resizes the volume of an object that has one.
+ *
+ * `form` sets one side at a time — dragging the +x bar moves that face and leaves the opposite
+ * one where it is, which is how a mapper "forms" a room-shaped zone rather than scaling it about
+ * its middle. `scale` grows all three together, and for a zone both act on the area, because the
+ * area *is* the object: scaling a zone's sprite scale would change nothing anyone can see.
+ */
+function resizeVolume(item, mode, delta) {
+  if (!item.area) throw new Error('This object has no volume; Form and Scale need a zone or an interaction area');
+  const area = { ...item.area };
+  if (mode === 'form' && delta.sizes) {
+    for (const key of ['width', 'depth', 'height', 'radius']) {
+      if (delta.sizes[key] === undefined) continue;
+      area[key] = sizeOf(delta.sizes[key]);
+    }
+    item.area = area;
+    return true;
+  }
+  if (mode === 'scale' && Number.isFinite(Number(delta.scale))) {
+    const factor = Number(delta.scale);
+    for (const key of ['width', 'depth', 'height', 'radius']) area[key] = sizeOf((area[key] || MIN_AREA_SIZE) * factor);
+    if (area.shape === 'sphere') area.height = area.radius * 2;
+    item.area = area;
+    return true;
+  }
+  return false;
+}
+
 /** Yaw plus the model tilt a rotate drag asked for; a zero tilt is removed. */
 function applyRotation(item, origin, delta) {
   if (delta.angle) item.angle = (origin.angle || 0) + delta.angle;
@@ -39,6 +77,8 @@ export function transformSelection(project, selection, mode, delta, grid) {
   if (!item) throw new Error('Selected scene element no longer exists');
   if (mode !== 'move' && selection.kind !== 'entity') throw new Error('Rotation and scale apply to objects only');
   if (mode === 'rotate') { applyRotation(item, item, delta); return; }
+  if (item.area && resizeVolume(item, mode, delta)) return;
+  if (mode === 'form') throw new Error('Form applies to a zone or an object with an interaction area');
   if (mode === 'scale') {
     if (item.type === 'player') throw new Error('The player capsule has a fixed size');
     const key = item.modelAsset ? 'modelScale' : 'spriteScale';
@@ -96,6 +136,22 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
   if (!origin) throw new Error('The drag started from a project state that no longer exists');
   if (mode !== 'move' && selection.kind !== 'entity') throw new Error('Rotation and scale apply to objects only');
   if (mode === 'rotate') { applyRotation(item, origin, delta); return; }
+  // A volume is resized from the baseline the drag started from, so a re-run per frame lands on
+  // the same size instead of compounding.
+  if (origin.area && (mode === 'form' || mode === 'scale')) {
+    item.area = { ...origin.area };
+    if (mode === 'scale' && Number.isFinite(Number(delta.scale))) {
+      // The scale is relative to the size the drag started at, which is what makes it absolute.
+      const factor = Number(delta.scale);
+      const area = { ...origin.area };
+      for (const key of ['width', 'depth', 'height', 'radius']) area[key] = sizeOf((origin.area[key] || MIN_AREA_SIZE) * factor);
+      if (area.shape === 'sphere') area.height = area.radius * 2;
+      item.area = area;
+      return;
+    }
+    if (resizeVolume(item, mode, delta)) return;
+  }
+  if (mode === 'form') throw new Error('Form applies to a zone or an object with an interaction area');
   if (mode === 'scale') {
     if (item.type === 'player') throw new Error('The player capsule has a fixed size');
     const key = item.modelAsset ? 'modelScale' : 'spriteScale';

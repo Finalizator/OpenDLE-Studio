@@ -1759,6 +1759,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
         entry.mesh.scale.set(volume.shape === 'box' ? volume.half.width * 2 : volume.radius * 2,
           volume.half.height * 2,
           volume.shape === 'box' ? volume.half.depth * 2 : volume.radius * 2);
+        // The volume is tested in its own frame, so the box that stands for it turns with the
+        // object; a round shape on the ground looks the same either way.
+        entry.mesh.rotation.set(0, -(Number(entity.angle) || 0) * Math.PI / 180, 0);
       }
       for (let index = 0; index < colliderBoxList.length; index++) {
         const entry = colliderBoxList[index], entity = entityIndex.get(entry.id);

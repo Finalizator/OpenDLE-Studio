@@ -42,6 +42,9 @@ export function areaVolume(entity, floorHeight = 0) {
     shape: spec.shape, radius: spec.radius,
     center: { x: entity.x, y: entity.y, z: base + half.height },
     half,
+    // A zone can be turned, so the volume keeps its own yaw. Shapes that are round on the
+    // ground (sphere, capsule) are unaffected by it, and a box uses it to rotate the test.
+    angle: Number(entity.angle) || 0,
   };
 }
 
@@ -57,10 +60,17 @@ export function areaExtent(volume) {
  */
 export function areaContains(volume, player, cylinder = PLAYER_CYLINDER) {
   if (!volume || !player) return false;
+  // A turned box is tested in its own frame: the offset from the centre is rotated back by the
+  // volume's yaw, so the comparison stays a plain axis-aligned one and a rotated zone catches
+  // the player where its outline is drawn rather than where its box used to be.
+  const radians = (volume.angle || 0) * Math.PI / 180;
+  const dx = player.x - volume.center.x, dy = player.y - volume.center.y;
+  const cos = Math.cos(-radians), sin = Math.sin(-radians);
+  const local = { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
   const horizontal = volume.shape === 'box'
-    ? Math.abs(player.x - volume.center.x) <= volume.half.width + cylinder.radius &&
-      Math.abs(player.y - volume.center.y) <= volume.half.depth + cylinder.radius
-    : Math.hypot(player.x - volume.center.x, player.y - volume.center.y) <= volume.radius + cylinder.radius;
+    ? Math.abs(local.x) <= volume.half.width + cylinder.radius &&
+      Math.abs(local.y) <= volume.half.depth + cylinder.radius
+    : Math.hypot(dx, dy) <= volume.radius + cylinder.radius;
   if (!horizontal) return false;
   const playerBottom = (player.z || 0) - cylinder.halfHeight, playerTop = (player.z || 0) + cylinder.halfHeight;
   const { bottom, top } = areaExtent(volume);

@@ -290,6 +290,9 @@ function render() {
   $('undo').disabled = history.length === 0;
   $('redo').disabled = future.length === 0;
   renderEntities();
+  // Every path that changes the selection ends in render(), so the transform list is kept in
+  // step here rather than in each of them.
+  syncTransformModes();
   renderInspector();
   renderEvents();
   renderEnvironment();
@@ -336,6 +339,7 @@ async function refreshScene() {
         multiSelection = value?.kind === 'entity' ? [value.id] : [];
         lastPrimarySelection = value?.kind === 'entity' ? value.id : null;
         if (value?.kind === 'sector') $('sector-surface').value = value.surface || 'floorHeight';
+        syncTransformModes();
         renderInspector(); sceneEditor?.select(selection);
         renderEntities();
       },
@@ -371,6 +375,7 @@ async function refreshScene() {
     if (sceneMode !== '3d' || project !== snapshot) { scenePose = editor.pose(); editor.dispose(); return; }
     editor.settings(readEngineTweaks());
     sceneEditor = editor; sceneProject = snapshot;
+    syncTransformModes();
     sceneEditor.select(selection); sceneEditor.mode($('transform-mode').value); sceneEditor.ceilings($('show-ceilings').checked);
     sceneEditor.areas($('show-areas').checked); sceneEditor.physicsOverlay($('show-physics').checked);
     status('3D scene ready. Right-drag + WASD/QE flies. Select and drag a colored axis to edit.');
@@ -401,6 +406,29 @@ $('tool').addEventListener('change', () => {
   if ($('tool').value !== 'path') finishPath({ select: false });
   else status('Draw path: click to place waypoints. Each one bends as the segment at its end allows; curve 0 is a corner.');
 });
+/**
+ * Which transforms make sense for what is selected.
+ *
+ * A zone is a volume, so it is *formed* (one side at a time) and scaled as a whole, and its
+ * rotate only turns it on the ground — tilting a trigger volume would change nothing a rule
+ * checks. A model or sprite keeps the visual scale and the tilt. Offering every mode to every
+ * object is how a tool ends up silently doing nothing.
+ */
+function syncTransformModes() {
+  const mode = $('transform-mode');
+  const item = selection?.kind === 'entity' ? project.map.entities.find(entity => entity.id === selection.id) : null;
+  const volume = Boolean(item?.area);
+  const tilts = Boolean(item) && !volume;
+  for (const option of mode.options) {
+    if (option.value === 'form') option.hidden = !volume;
+    if (option.value === 'scale') option.textContent = volume ? 'Scale volume' : 'Scale visual';
+    if (option.value === 'rotate') option.textContent = tilts ? 'Rotate / tilt' : 'Rotate';
+  }
+  // A mode that is no longer offered falls back to Move rather than staying selected invisibly.
+  if (mode.value === 'form' && !volume) mode.value = 'move';
+  sceneEditor?.mode(mode.value);
+  sceneEditor?.hasVolume(Boolean(volume));
+}
 $('transform-mode').addEventListener('change', () => sceneEditor?.mode($('transform-mode').value));
 $('show-ceilings').addEventListener('change', () => sceneEditor?.ceilings($('show-ceilings').checked));
 $('show-areas').addEventListener('change', () => sceneEditor?.areas($('show-areas').checked));
@@ -2221,6 +2249,35 @@ function resizeMap() {
   if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; mapNeedsDraw = true; }
   return { width: rect.width, height: rect.height, ratio };
 }
+/** The eight grips of a zone footprint, in the zone's own frame: corners first, then edges. */
+function zoneGrips(halfWidth, halfDepth) {
+  return [
+    [-halfWidth, -halfDepth], [halfWidth, -halfDepth], [halfWidth, halfDepth], [-halfWidth, halfDepth],
+    [0, -halfDepth], [halfWidth, 0], [0, halfDepth], [-halfWidth, 0],
+  ];
+}
+/**
+ * Which grip of the selected zone the pointer is on, or null.
+ *
+ * Grips are tested in the zone's own frame, so a turned zone's corners are grabbed where they are
+ * drawn rather than where an axis-aligned box would have put them.
+ */
+function zoneGripAt(point, entity, tolerance) {
+  const area = { ...ZONE_AREA, ...entity.area };
+  const halfWidth = (area.shape === 'box' ? area.width : area.radius * 2) / 2;
+  const halfDepth = (area.shape === 'box' ? area.depth : area.radius * 2) / 2;
+  const radians = (Number(entity.angle) || 0) * Math.PI / 180;
+  const dx = point.x - entity.x, dy = point.y - entity.y;
+  const local = { x: dx * Math.cos(-radians) - dy * Math.sin(-radians), y: dx * Math.sin(-radians) + dy * Math.cos(-radians) };
+  const grips = zoneGrips(halfWidth, halfDepth);
+  for (let index = 0; index < grips.length; index++) {
+    if (Math.hypot(local.x - grips[index][0], local.y - grips[index][1]) <= tolerance) return index;
+  }
+  return null;
+}
+/** The sides a grip resizes: 0-3 corners take two, 4-7 edges take one. */
+const GRIP_SIDES = [['width', 'depth'], ['width', 'depth'], ['width', 'depth'], ['width', 'depth'],
+  ['depth'], ['width'], ['depth'], ['width']];
 function worldPoint(event) {
   const rect = canvas.getBoundingClientRect();
   return { x: (event.clientX - rect.left - rect.width / 2) / camera.zoom + camera.x,
@@ -2374,18 +2431,33 @@ function drawMap() {
       const halfWidth = (area.shape === 'box' ? area.width : area.radius * 2) / 2;
       const halfDepth = (area.shape === 'box' ? area.depth : area.radius * 2) / 2;
       const isSelected = marked.has(entity.id);
+      // The footprint is drawn in the object's own frame, because that is the frame the rule
+      // tests the player against.
+      ctx.save();
+      ctx.translate(entity.x, entity.y);
+      ctx.rotate((Number(entity.angle) || 0) * Math.PI / 180);
       ctx.fillStyle = isSelected ? 'rgba(92,225,198,0.42)' : 'rgba(92,225,198,0.20)';
-      ctx.fillRect(entity.x - halfWidth, entity.y - halfDepth, halfWidth * 2, halfDepth * 2);
+      ctx.fillRect(-halfWidth, -halfDepth, halfWidth * 2, halfDepth * 2);
       ctx.strokeStyle = isSelected ? '#ffffff' : entityColors.zone;
       ctx.lineWidth = 1.5 / camera.zoom;
       ctx.setLineDash([6 / camera.zoom, 4 / camera.zoom]);
-      ctx.strokeRect(entity.x - halfWidth, entity.y - halfDepth, halfWidth * 2, halfDepth * 2);
+      ctx.strokeRect(-halfWidth, -halfDepth, halfWidth * 2, halfDepth * 2);
       ctx.setLineDash([]);
+      if (isSelected) {
+        // Eight grips: a corner forms both sides, an edge forms one, which is the same "one side
+        // at a time" the 3D Form tool does.
+        const size = 8 / camera.zoom;
+        for (const [gx, gy] of zoneGrips(halfWidth, halfDepth)) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(gx - size / 2, gy - size / 2, size, size);
+        }
+      }
       if (camera.zoom > .25) {
         ctx.font = `${10 / camera.zoom}px system-ui`;
         ctx.fillStyle = entityColors.zone;
-        ctx.fillText(entity.name, entity.x - halfWidth, entity.y - halfDepth - 4 / camera.zoom);
+        ctx.fillText(entity.name, -halfWidth, -halfDepth - 4 / camera.zoom);
       }
+      ctx.restore();
       continue;
     }
     const isMarked = marked.has(entity.id);
@@ -2499,6 +2571,18 @@ canvas.addEventListener('pointerdown', guard(event => {
     }, `${type} placed`);
     return;
   }
+  // The grips of a selected zone resize it; they are drawn only while it is selected, so a press
+  // that lands on one is unambiguous.
+  const selectedZone = selection?.kind === 'entity' && project.map.entities.find(entity => entity.id === selection.id && entity.type === 'zone');
+  if (selectedZone) {
+    const grip = zoneGripAt(point, selectedZone, 10 / camera.zoom);
+    if (grip !== null) {
+      const area = { ...ZONE_AREA, ...selectedZone.area };
+      drag = { kind: 'form', selection: { ...selection }, grip, start: point, end: point, baseline: project,
+        sizes: { width: area.width, depth: area.depth } };
+      return;
+    }
+  }
   selection = hitTest(point);
   if (selection && ['entity', 'vertex', 'pathPoint'].includes(selection.kind)) drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point) };
   render();
@@ -2513,6 +2597,22 @@ canvas.addEventListener('pointermove', event => {
     if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 3) drag.moved = true;
     camera.x = drag.x - (event.clientX - drag.clientX) / camera.zoom;
     camera.y = drag.y - (event.clientY - drag.clientY) / camera.zoom;
+  } else if (drag.kind === 'form') {
+    // A grip moves its own side: the size grows by twice the distance from the middle in the
+    // zone's own frame, and the grid snaps it the way every other measurement does.
+    const zone = project.map.entities.find(entity => entity.id === drag.selection.id);
+    const radians = (Number(zone?.angle) || 0) * Math.PI / 180;
+    const dx = point.x - drag.start.x, dy = point.y - drag.start.y;
+    const local = { x: dx * Math.cos(-radians) - dy * Math.sin(-radians), y: dx * Math.sin(-radians) + dy * Math.cos(-radians) };
+    const sides = GRIP_SIDES[drag.grip] || [];
+    const grid = Number($('grid').value);
+    drag.sizes = {
+      ...(sides.includes('width') ? { width: Math.max(grid, Math.round((Math.abs(local.x) * 2) / grid) * grid) } : {}),
+      ...(sides.includes('depth') ? { depth: Math.max(grid, Math.round((Math.abs(local.y) * 2) / grid) * grid) } : {}),
+    };
+    const label = Object.entries(drag.sizes).map(([key, value]) => `${key} ${value}`).join(', ');
+    $('coordinates').textContent = `Zone ${label}`;
+    drag.end = point;
   } else drag.end = snap(point);
   mapNeedsDraw = true;
 });
@@ -2525,6 +2625,15 @@ canvas.addEventListener('pointerup', guard(event => {
   if (finished.kind === 'room') {
     const { start, end } = finished;
     edit(next => addRoom(next, { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: Math.abs(start.x - end.x), depth: Math.abs(start.y - end.y) }), 'Room added. Select shared walls and disable collision to make openings.');
+  }
+  if (finished.kind === 'form') {
+    const sides = finished.sizes || {};
+    if (!Object.keys(sides).length) return;
+    edit(next => {
+      const zone = next.map.entities.find(entity => entity.id === finished.selection.id);
+      zone.area = { ...zone.area, ...sides };
+    }, `Zone formed: ${Object.entries(sides).map(([key, value]) => `${key} ${value}`).join(', ')}`);
+    return;
   }
   if (finished.kind === 'move' && (finished.start.x !== finished.end.x || finished.start.y !== finished.end.y)) {
     edit(next => {

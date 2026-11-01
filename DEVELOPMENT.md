@@ -651,6 +651,19 @@ runtime says which event is wrong rather than quietly never firing.
 - A zone is **born with a room-sized volume** (`ZONE_AREA`, 128³), because an object that can be
   entered with no volume would be a rule that can never fire. The shape picker has no "None" for a
   zone for the same reason.
+- **The tools follow the object.** A zone is a volume, so the Transform list offers *Form* (resize
+  one side), *Scale volume* and *Rotate* — and no *tilt*, because a tilted trigger volume would
+  change nothing a rule tests, so its Rotate gizmo shows only the two ground bars. A model or
+  sprite keeps *Scale visual* and *Rotate / tilt*, and never shows Form. Offering every mode to
+  every object is how a tool ends up silently doing nothing.
+- **Forming** resizes one side and nothing else. A size is all that changes, so the volume grows
+  symmetrically about the object: in 3D the bar drags that axis and the side grows by twice the
+  drag, and in 2D the selected footprint grows eight grips — a corner taking two sides, an edge one
+  — measured from the middle. Both are one undoable edit and snap to the grid, and a side can never
+  go below 8 units (you could not stand in it) or above 16 384.
+- **Rotation** turns the volume: containment rotates the player offset into the zone's own frame,
+  and the box in the 3D view and the plate in the 2D view turn with it, so what you see is what
+  fires. Round shapes on the ground are unaffected.
 - No sprite or model fields are shown: anything assigned there would never be drawn, and a zone
   must not be reported in the grey-placeholder log as "missing artwork" either — it is not missing
   anything. The 2D map draws its footprint as a translucent plate with a dashed edge, the 3D
