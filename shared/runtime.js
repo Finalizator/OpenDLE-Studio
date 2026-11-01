@@ -36,6 +36,10 @@ import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile,
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { advancePlaneMotion } from './plane-motion.js';
 import { advancePathMotion } from './path-motion.js';
+import {
+  TIMESHEET_CUE_CONDITION, advanceTimesheets, advancePathTweens, startTimesheetRun, stopTimesheetRun,
+  setTimesheetPaused, cueDue, startPathTween, timesheetCueEvents, timesheetSignature,
+} from './timesheet.js';
 import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
@@ -129,6 +133,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     sectorMotions: new Map(),
     // How far each path follower has travelled: progress belongs to the run, not to the map.
     pathMotions: new Map(),
+    // Running timelines, and the moves a cue asked an object to make along a route.
+    timesheets: new Map(),
+    pathTweens: [],
     spriteAnimations: new Map(),
     weaponAnimations: new Map(),
     entitySamples: new Map(),
@@ -306,12 +313,21 @@ function nextRandom(state) {
  */
 const ruleTreeCache = new WeakMap();
 export function ruleTree(project) {
-  const events = project.events || [], sheets = project.eventSheets || [];
-  const cached = ruleTreeCache.get(events);
+  // Timeline cues are rules too: each one is compiled into an ordinary event whose condition
+  // asks whether the clock just crossed it, so the same runner, expressions and action set
+  // apply. `authored` is what the editor shows and edits; `events` is what runs.
+  const authored = project.events || [], sheets = project.eventSheets || [];
+  const timesheets = project.timesheets || [];
+  const cueEvents = timesheetCueEvents(timesheets);
+  const events = cueEvents.length ? [...authored, ...cueEvents] : authored;
+  const cached = ruleTreeCache.get(authored);
   // `count`/`last` catch a rule appended or removed in place, which tooling and tests
   // do without replacing the array; field edits need no invalidation because the tree
-  // holds references to the rule objects themselves.
+  // holds references to the rule objects themselves. A timeline edit replaces the
+  // `timesheets` array (the editor never mutates it in place), so its signature is enough.
+  const signature = timesheetSignature(timesheets);
   if (cached && cached.count === events.length && cached.last === events[events.length - 1] &&
+    cached.signature === signature && cached.authoredCount === authored.length &&
     cached.sheets === sheets && cached.sheetCount === sheets.length && sheetsUnchanged(cached.sheetState, sheets)) return cached;
   const children = new Map();
   for (const event of events) {
@@ -335,8 +351,9 @@ export function ruleTree(project) {
     if (!phases.has(phase)) phases.set(phase, []);
     phases.get(phase).push(event);
   }
-  const tree = { count: events.length, last: events[events.length - 1], sheets, sheetCount: sheets.length, sheetState, children, phases };
-  ruleTreeCache.set(events, tree);
+  const tree = { count: events.length, last: events[events.length - 1], authoredCount: authored.length,
+    signature, sheets, sheetCount: sheets.length, sheetState, children, phases };
+  ruleTreeCache.set(authored, tree);
   return tree;
 }
 
@@ -498,6 +515,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     state.hudState.clicked.clear(); return;
   }
   state.time += dt;
+  // Timelines run on the game's clock, so they pause with the game and a save keeps their place.
+  // Cues are executed later in the frame by the rule runner, which is why the due set outlives
+  // this call.
+  advanceTimesheets(project, state, dt);
   if (state.impacts.length) state.impacts = state.impacts.filter(effect => {
     // Trail particles drift while their animation plays.
     if (effect.vx || effect.vy || effect.vz) {
@@ -522,6 +543,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // Objects that follow a route move after the planes and before gravity: their height comes from
   // the curve, so nothing should then pull them back down to a floor they are not on.
   advancePathMotion(project, state, dt);
+  // Moves a cue asked for: an object travelling between two waypoints of a route over a set
+  // time. They run after the followers so a tween wins on an object that also follows a path.
+  advancePathTweens(project, state, dt);
   // Things the map left in the air fall under the map's own gravity, which is how Lullaby's
   // title map rains its stars. It runs after the planes so a star lands on the floor it sees.
   stepThingGravity(project, state, dt);
@@ -892,6 +916,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         return entity && canHearPlayer(state, entity);
       }
       if (condition.type === 'spriteState') return state.spriteAnimations.get(resolveEntityId(event, condition.entityId))?.name === condition.state;
+      // A timesheet cue: true only on the frame the timeline's clock crossed it. The cue's
+      // own rule carries no other condition, so this is the whole test.
+      if (condition.type === TIMESHEET_CUE_CONDITION) return cueDue(state, condition.timesheetId, condition.cueId);
       if (condition.type === 'entityDamaged') {
         const entity = findTarget(condition.entityId);
         // A thing without health can never lose any. Sampling it anyway would store
@@ -1185,6 +1212,35 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         }
         case 'damagePlayer': damagePlayer(state, action.damage, action.direction); break;
         case 'playSound': soundEvent(state, action.sound, action.volume, event.ownerId ? findTarget(event.ownerId) : undefined); break;
+        case 'playAssetSound': {
+          // The audio player looks sounds up by name, and decodes whatever the browser can —
+          // MP3, Ogg Vorbis, Opus, FLAC and WAV all arrive here as one asset kind.
+          const asset = (project.assets || []).find(item => item.id === action.assetId);
+          if (asset?.src) soundEvent(state, asset.name, action.volume);
+          break;
+        }
+        case 'startTimesheet': {
+          const loop = action.loop === 'yes' ? true : action.loop === 'no' ? false : null;
+          startTimesheetRun(project, state, action.timesheetId, { restart: action.restart !== 'no', loop });
+          break;
+        }
+        case 'stopTimesheet':
+          stopTimesheetRun(state, action.all === 'yes' ? 'all' : action.timesheetId);
+          break;
+        case 'setTimesheetPaused':
+          setTimesheetPaused(state, action.timesheetId, action.paused === 'yes');
+          break;
+        case 'followPath': {
+          const path = (project.paths || []).find(item => item.id === action.pathId);
+          const target = findTarget(action.entityId);
+          // A cue that names a route which has been deleted leaves the object alone rather than
+          // moving it to the origin, the same rule the path followers follow.
+          if (path && target && target.type !== 'player')
+            startPathTween(state, { entityId: target.id, pathId: path.id, fromPoint: action.fromPoint,
+              toPoint: action.toPoint, seconds: action.seconds, easing: action.easing,
+              faceDirection: action.faceDirection !== 'no' });
+          break;
+        }
         case 'facePlayer': {
           const entity = findTarget(action.entityId);
           if (entity) entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;

@@ -101,6 +101,22 @@ test('every Engine command has shared editor defaults and validates after adding
     }
     if (command.hudElement) value.elementId = project.hud.elements.find(element => element.interactive).id;
     if (command.hudAnimation) value.animationId = project.hud.animations[0].id;
+    // Timeline and route commands point at authored data, so the fixture grows it on demand.
+    if (command.timesheet) {
+      project.timesheets = [{ id: 'test_timeline', name: 'Test timeline', duration: 5, loop: false,
+        tracks: [{ id: 'track_1', name: 'Track 1' }], cues: [] }];
+      value.timesheetId = 'test_timeline';
+    }
+    if (command.path) {
+      project.paths = [{ id: 'test_path', name: 'Test path', closed: false, points: [
+        { id: 'a', x: 0, y: 0, z: 0, curve: 1 }, { id: 'b', x: 64, y: 0, z: 0, curve: 1 }] }];
+      value.pathId = 'test_path';
+      value.fromPoint = 0; value.toPoint = -1;
+    }
+    if (command.sound) {
+      project.assets.push({ id: 'sound_test', name: 'TESTSND', kind: 'sound', src: 'data:audio/wav;base64,AAAA' });
+      value.assetId = 'sound_test';
+    }
     const isCondition = ENGINE_CONDITIONS.includes(command);
     rule(project, isCondition ? value : { type: 'always' }, isCondition ? [{ type: 'showMessage', message: 'yes' }] : [value],
       { sheetId: project.eventSheets[0].id });

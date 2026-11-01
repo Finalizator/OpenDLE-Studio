@@ -1,13 +1,33 @@
+/**
+ * The container signatures a sound may arrive in.
+ *
+ * These are the formats a browser decodes without a plugin: WAV, Ogg (Vorbis or Opus — both are
+ * `OggS` streams), FLAC and MP3. `opus` shares the Ogg signature but keeps its own MIME type so
+ * the player reports the format the author actually used.
+ */
+const SOUND_SIGNATURES = {
+  wav: { mime: 'wav', test: (bytes, at) => at(82, 73, 70, 70) && bytes.length >= 44 && at(87, 65, 86, 69, 8) },
+  ogg: { mime: 'ogg', test: (bytes, at) => at(79, 103, 103, 83) && bytes.length >= 27 },
+  opus: { mime: 'ogg', test: (bytes, at) => at(79, 103, 103, 83) && bytes.length >= 27 },
+  flac: { mime: 'flac', test: (bytes, at) => at(102, 76, 97, 67) && bytes.length >= 42 },
+  mp3: { mime: 'mpeg', test: (bytes, at) => bytes.length >= 4 && (at(73, 68, 51) || bytes[0] === 255 && (bytes[1] & 224) === 224) },
+};
+/** Every extension `Import sounds` accepts. */
+export const SOUND_FORMATS = Object.keys(SOUND_SIGNATURES);
+
 export function encodeSound(bytes, format) {
-  const signature = (...values) => values.every((value, index) => bytes[index] === value);
-  const valid = format === 'wav' ? signature(82, 73, 70, 70) && bytes.length >= 44 &&
-    bytes[8] === 87 && bytes[9] === 65 && bytes[10] === 86 && bytes[11] === 69
-    : format === 'ogg' ? signature(79, 103, 103, 83) && bytes.length >= 27
-      : format === 'mp3' && bytes.length >= 4 && (signature(73, 68, 51) || bytes[0] === 255 && (bytes[1] & 224) === 224);
-  if (!valid || bytes.length > 8 * 1024 * 1024) throw new Error(`Invalid or oversized ${format} sound (maximum 8 MiB)`);
+  const signature = SOUND_SIGNATURES[format];
+  if (!signature) throw new Error(`Unsupported sound format ${format}: use ${SOUND_FORMATS.join(', ')}`);
+  const at = (...values) => {
+    // A trailing offset argument lets a signature be checked inside the header rather than at byte 0.
+    const offset = values.length === 5 ? values.pop() : 0;
+    return values.every((value, index) => bytes[offset + index] === value);
+  };
+  const valid = signature.test(bytes, at) && bytes.length <= 8 * 1024 * 1024;
+  if (!valid) throw new Error(`Invalid or oversized ${format} sound (maximum 8 MiB)`);
   let binary = '';
   for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-  return `data:audio/${format === 'mp3' ? 'mpeg' : format};base64,${btoa(binary)}`;
+  return `data:audio/${signature.mime};base64,${btoa(binary)}`;
 }
 
 export function encodeMusic(bytes, format) {

@@ -120,6 +120,21 @@ export const ENGINE_ACTIONS = [
     { name: 'sound', value: 'DSDOROPN', kind: 'string', optional: true },
   ] },
   { type: 'playSound', label: 'Audio: play embedded sound by name', fields: [{ name: 'sound', value: 'DSPISTOL', kind: 'string' }, numeric('volume', .7, 0, 1)] },
+  // An imported asset instead of a lump name: the audio player decodes whatever the browser
+  // supports, so a WAV, Ogg Vorbis, Opus, FLAC or MP3 file dropped into the asset library plays
+  // the same way an embedded Doom sound does.
+  { type: 'playAssetSound', label: 'Audio: play imported sound (WAV / OGG / Opus / FLAC / MP3)', sound: true,
+    fields: [numeric('volume', 1, 0, 1)] },
+  // Timelines. A timesheet never starts by itself: a rule has to ask for it, which keeps the
+  // rule "the map is data, events make things happen" true for time as well.
+  { type: 'startTimesheet', label: 'Timesheet: start', timesheet: true, fields: [
+    choice('restart', 'yes', ['yes', 'no']), { ...choice('loop', 'same', ['same', 'yes', 'no']), optional: true }] },
+  { type: 'stopTimesheet', label: 'Timesheet: stop', timesheet: true, fields: [choice('all', 'no', ['yes', 'no'])] },
+  { type: 'setTimesheetPaused', label: 'Timesheet: pause / resume', timesheet: true, fields: [choice('paused', 'yes', ['yes', 'no'])] },
+  // Motion along a route the map already has, between two of its waypoints.
+  { type: 'followPath', label: 'Path: move object between waypoints over time', target: true, path: true, fields: [
+    numeric('fromPoint', 0, 0, 4096), numeric('toPoint', -1, -1, 4096), numeric('seconds', 3, .05, 3600),
+    choice('easing', 'linear', ['linear', 'easeIn', 'easeOut', 'easeInOut']), choice('faceDirection', 'yes', ['yes', 'no'])] },
   { type: 'spawnEntity', label: 'Object: spawn a new object from a template', fields: [
     { name: 'templateId', kind: 'text', value: '' }, numeric('x', 0, -65536, 65536), numeric('y', 0, -65536, 65536),
     { ...numeric('z', 0, -65536, 65536), optional: true }, { ...numeric('angle', 0, -3600, 3600), optional: true },

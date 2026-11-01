@@ -49,6 +49,7 @@
       <button data-tab="logs">Logs</button>
       <button data-tab="tweaks">Engine tweaks</button>
       <button data-tab="scriptlets">Engine scriptlets</button>
+      <button data-tab="timesheet">Timesheet</button>
       <button data-tab="hud">HUD</button>
       <button data-tab="assets">Assets</button>
     </nav>
@@ -203,7 +204,7 @@
         <div id="sector-list" class="sector-list"></div>
         </details>
         <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
-        <input id="sound-file" type="file" accept=".wav,.ogg,.mp3" multiple hidden>
+        <input id="sound-file" type="file" accept=".wav,.ogg,.opus,.flac,.mp3" multiple hidden>
         <input id="model-file" type="file" accept=".glb,.gltf,.bbmodel,.bin,.png,.jpg,.jpeg,.webp" multiple hidden>
         <input id="model-directory" type="file" webkitdirectory multiple hidden>
         <details class="asset-help"><summary>Interaction areas and 3D overlays</summary><p class="info">Any object can carry an interaction area - a box, sphere or capsule volume around it - so "player entered the room" events need no trigger geometry. Choose a shape in Properties, then use <strong>Player: inside this object interaction area</strong> (true while standing in it) or <strong>Player: entered this object interaction area</strong> (fires once per entry). In the 3D view, <strong>Show areas</strong> draws those volumes as amber wireframes and <strong>Show physics</strong> draws colliders in cyan, with the player capsule in yellow; both are view-only.</p></details>
@@ -255,6 +256,13 @@
           <div id="log-detail" class="log-detail" role="region" aria-label="Playtest log records"></div>
         </div>
         <p class="muted">Records are appended while you play: uncaught errors, rejected promises, stopped ACS scripts, action functions without an engine equivalent, renderer and audio failures, and editor operations that failed. A recurring failure is stored once with a repeat count rather than once per frame. The folder keeps the 60 most recent sessions and caps each file, so logging can never fill the disk.</p>
+      </section>
+      <section id="timesheet-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1>Timesheet</h1><p>Timelines of cues that run visual-script actions when the clock reaches them.</p></div></div>
+        <div class="prose">
+          <p>A cue carries ordinary actions — set a global or a local variable, move an object along a route, play an imported sound, start another timeline — so a timeline needs no second scripting language. Nothing starts on its own: an event has to run <em>Timesheet: start</em>, and <strong>Add start event</strong> writes that one rule for you.</p>
+        </div>
+        <div id="timesheet-root"></div>
       </section>
       <section id="scriptlets-panel" class="panel" hidden>
         <div class="panel-heading"><div><h1>Engine scriptlets</h1><p>Ready-made rule sets that install as ordinary editable events.</p></div></div>

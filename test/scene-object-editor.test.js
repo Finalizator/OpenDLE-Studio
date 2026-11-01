@@ -254,7 +254,7 @@ test('scene object edits go through the project edit path so undo and validation
   assert.match(app, /showTab\('scene'\)/);
   assert.match(app, /renderSceneObjectTabs\(\)/);
   // The scene panel is part of the tab list, so switching tabs hides it again.
-  assert.match(app, /\['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'about', 'scene'\]/);
+  assert.match(app, /\['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'about', 'scene'\]/);
 });
 
 /* ------------------------------------------------------------------ assets */

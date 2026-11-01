@@ -40,6 +40,7 @@ import { createPlaytestLogger } from './playtest-log.js';
 import { createPlaceholderLog } from './placeholder-log.js';
 import { createAcsHud } from './acs-hud.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
+import { createTimesheetPanel } from './timesheet-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { upgradePickupReach } from '/shared/doom-hud.js';
@@ -179,6 +180,7 @@ const scriptsPanel = createScriptsPanel({
 const hudEditor = createHUDEditor($('hud-editor'), {
   project: () => project, edit, script: openHUDScript, error: message => status(message, true),
 });
+
 
 // Playtest failures are written to a log folder as they happen, because they are
 // invisible once the tab closes. Every error path in this file funnels through
@@ -321,6 +323,7 @@ function render() {
   if (!$('hud-panel').hidden) hudEditor.render();
   if (!$('actors-panel').hidden) actorsPanel.render();
   if (!$('scripts-panel').hidden) scriptsPanel.render();
+  if (!$('timesheet-panel').hidden) timesheetPanel.render();
   $('map-stats').textContent = `${project.map.vertices.length} vertices / ${project.map.walls.length} walls / ${project.map.entities.length} objects / ${project.map.sectors?.length || 0} sectors`;
   mapNeedsDraw = true;
   // Editing geometry in 3D must stay interactive: update the existing scene in
@@ -1392,7 +1395,7 @@ function showTab(tab) {
   if (tab === 'assets') {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
-  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'about', 'scene'])
+  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'about', 'scene'])
     $(name + '-panel').hidden = tab !== name;
   // The designer is only refreshed while its tab is visible, so opening the tab
   // has to build it once.
@@ -1402,6 +1405,7 @@ function showTab(tab) {
   if (tab === 'scripts') scriptsPanel.render();
   if (tab === 'logs') playtestLogPanel.render();
   if (tab === 'scriptlets') renderScriptlets();
+  if (tab === 'timesheet') timesheetPanel.render();
   if (tab === 'tweaks') {
     try { renderEngineTweaks(); }
     catch (error) { $('engine-tweaks-status').textContent = error.message; status(error.message, true); }
@@ -1693,6 +1697,48 @@ const actionLabels = [['showMessage', 'System: show message'], ['setVariable', '
   ['applyImpulse', 'Physics: apply impulse'], ['applyForce', 'Physics: apply force'], ['setVelocity', 'Physics: set velocity'],
   ['playAnimation', 'Model: play animation'], ['stopAnimation', 'Model: stop animation'],
   ...ENGINE_ACTIONS.map(command => [command.type, command.label])];
+
+/**
+ * The lists the command dialog needs, in one place: the event sheet and the timesheet panel both
+ * open the same action picker, so they must describe the project the same way.
+ */
+function commandLists(ownerId) {
+  return {
+    entities: entityOptions(false, ownerId),
+    zones: project.map.entities.filter(entity => entity.type === 'zone').map(entity => [entity.id, entity.name]),
+    variables: Object.keys(project.variables),
+    playerId: project.map.entities.find(entity => entity.type === 'player').id,
+    groups: (project.eventGroups || []).map(group => [group.id, group.name]),
+    walls: project.map.walls.map(wall => [wall.id, `${wall.id} / special ${wall.special || 0}`]),
+    sectors: (project.map.sectors || []).map(sector => [sector.id, sector.id]),
+    spriteClips: (project.spriteClips || []).map(clip => [clip.id, clip.name]),
+    images: imageAssetOptions(),
+    hudElements: (project.hud?.elements || []).map(element => [element.id, element.name]),
+    hudAnimations: (project.hud?.animations || []).map(clip => [clip.id, clip.name]),
+    timesheets: (project.timesheets || []).map(sheet => [sheet.id, sheet.name]),
+    paths: (project.paths || []).map(path => [path.id, path.name || path.id]),
+    sounds: (project.assets || []).filter(asset => asset.kind === 'sound').map(asset => [asset.id, asset.name]),
+    clips: id => {
+      const entity = project.map.entities.find(entity => id === '$self'
+        ? entity.id === ownerId : entity.id === id);
+      return project.assets?.find(asset => asset.id === entity?.modelAsset)?.animations || [];
+    },
+  };
+}
+const timesheetPanel = createTimesheetPanel({ root: $('timesheet-root') }, {
+  project: () => project,
+  edit,
+  status: message => status(message, true),
+  labels: actionLabels,
+  // A cue's own target object is the context its actions are built in, so `$self` and the
+  // object lists mean the same thing they mean inside that object's events.
+  defaults: (type, ownerId) => {
+    try { return defaultAction(type, ownerId); }
+    catch (error) { status(error.message, true); throw error; }
+  },
+  commandContext: ownerId => commandLists(ownerId),
+  contextMenu,
+});
 let eventsRendered = '';
 function eventsSignature() {
   // The rules and sheets are compared by *content*, not identity: every edit clones the
@@ -1907,17 +1953,7 @@ function renderEvents() {
         submit(value);
       }, remove, move, labels: kind === 'condition' ? conditionLabels : actionLabels,
         defaults: type => (kind === 'condition' ? defaultCondition : defaultAction)(type, context),
-        entities: entityOptions(false, context),
-        zones: project.map.entities.filter(entity => entity.type === 'zone').map(entity => [entity.id, entity.name]),
-        variables: Object.keys(project.variables),
-        playerId: project.map.entities.find(entity => entity.type === 'player').id,
-        groups: (project.eventGroups || []).map(group => [group.id, group.name]),
-        walls: project.map.walls.map(wall => [wall.id, `${wall.id} / special ${wall.special || 0}`]),
-        sectors: (project.map.sectors || []).map(sector => [sector.id, sector.id]),
-        spriteClips: (project.spriteClips || []).map(clip => [clip.id, clip.name]),
-        images: imageAssetOptions(),
-        hudElements: (project.hud?.elements || []).map(element => [element.id, element.name]),
-        hudAnimations: (project.hud?.animations || []).map(clip => [clip.id, clip.name]),
+        ...commandLists(context),
         clips: id => {
           const entity = project.map.entities.find(entity => id === '$self'
             ? event.forEachType ? entity.type === event.forEachType : entity.id === event.ownerId : entity.id === id);
@@ -1966,15 +2002,7 @@ function addScriptEvent(parentEvent) {
   const context = scriptContext(template), version = editVersion;
   openCommandDialog({
     kind: 'condition', labels: conditionLabels, defaults: type => defaultCondition(type, context),
-    entities: entityOptions(false, context), variables: Object.keys(project.variables),
-    playerId: project.map.entities.find(entity => entity.type === 'player').id,
-    groups: (project.eventGroups || []).map(group => [group.id, group.name]), clips: () => [],
-    walls: project.map.walls.map(wall => [wall.id, `${wall.id} / special ${wall.special || 0}`]),
-    sectors: (project.map.sectors || []).map(sector => [sector.id, sector.id]),
-    spriteClips: (project.spriteClips || []).map(clip => [clip.id, clip.name]),
-    images: imageAssetOptions(),
-    hudElements: (project.hud?.elements || []).map(element => [element.id, element.name]),
-    hudAnimations: (project.hud?.animations || []).map(clip => [clip.id, clip.name]),
+    ...commandLists(context), clips: () => [],
     submit: condition => {
       if (version !== editVersion) throw new Error('Project changed. Cancel and reopen the dialog.');
       edit(next => {

@@ -757,6 +757,53 @@ every follower in the level. The editor also publishes the first follower as
 without watching the screen: on a test route the object moved 255 units in four seconds at the
 default 64 units/s and its angle followed the curve.
 
+### Timesheets: a timeline an event starts
+
+**Timesheet** is the editor's video-editor timeline. A timesheet is tracks over one clock, and a
+cue is a labelled moment on a track that carries a list of ordinary visual-script actions. Nothing
+in the timeline is a second scripting language: a cue holds actions from the same catalogue the
+event sheet uses, so a cue can set a global or an object's local variable, move an object along a
+route, play an imported sound, or start another timeline — and every action keeps its tooltip,
+its validation and its editor.
+
+**Nothing plays by itself.** The runtime only advances a timesheet that a rule started, and the
+panel's **Add start event** writes that one rule (`On start of layout` → `Timesheet: start`) into
+the project's event sheet, where it is editable like any other rule. That keeps one rule for the
+whole engine: the layout is data, and events are what make things happen — including time.
+
+- **Cues are compiled, not interpreted.** `timesheetCueEvents` turns each cue into an ordinary
+  rule whose condition is the private `timesheetCue` condition (id, cue id). The rule tree merges
+  those generated rules with the project's own events and caches on a signature of the timelines,
+  so a cue runs through the same condition/action pipeline as a hand-written rule and can carry a
+  target object (`ownerId`), in which case `$self` means that object.
+- **A cue fires once per pass.** `cuesBetween` reports the cues in a step's half-open interval, so
+  a cue at 0 s fires as soon as the clock starts and a cue that lands exactly on the loop boundary
+  belongs to the step that ends there. A step that straddles the wrap is split, so nothing is
+  skipped when a frame is long.
+- **`stop` and `pause`** are actions too: `stopTimesheet` forgets the run, `setTimesheetPaused`
+  holds the clock where it is and resumes from there.
+- **Timelines are saved.** The run clock is part of the game save: reloading a saved game resumes
+  the timeline where it was, paused or playing.
+
+**Moving along a route between two waypoints** is a cue action of its own (`Path: move object
+between waypoints over time`). It records the object's own starting position and offsets it by the
+route's arc length between the two waypoints, so a route is a shape that several objects can
+travel in parallel, and a model that is already standing somewhere does not jump to the route's
+first point. `waypointDistances` in `shared/paths.js` gives each waypoint's distance along the
+curve, `startPathTween` records the move and `advancePathTweens` steps it, with linear, ease-in,
+ease-out and ease-in-out curves.
+
+**Sounds** come from the asset library, not from a hard-coded list. `Audio: play imported sound`
+points at an asset id and the runtime maps it to the player's sound name, so WAV, OGG, Opus, FLAC
+and MP3 all work: `shared/sound.js` lists the signatures it accepts, and the audio player decodes
+whatever the browser supports — `decodeAudioData` handles all five, which is why an MP3 drops into
+the same slot as a WAV without a conversion step.
+
+The panel itself (`public/timesheet-panel.js`) is only a view: drag a cue in time and across
+tracks, double-click the ruler to add one there, right-click for duplicate/move/delete, and edit
+the selected cue's actions in the inspector below the timeline with the event sheet's own dialog.
+Everything goes through the app's `edit`, so a timeline edit is one undo step.
+
 ### Editable Engine event sheets
 
 **New project** and a fresh server store include editable Engine sheets.

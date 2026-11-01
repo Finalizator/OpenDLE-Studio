@@ -114,6 +114,26 @@ export function pathLength(path, options) {
 }
 
 /**
+ * The distance along the route at each **waypoint**.
+ *
+ * A tween between two waypoints needs the arc length where those waypoints sit, and
+ * `samplePath` lays exactly `steps` samples on every segment, so waypoint `k` is sample
+ * `k * steps`. The last entry is the end of the route (the first point again for a closed path).
+ */
+export function waypointDistances(path, { steps = PATH_STEPS } = {}) {
+  const points = path?.points || [];
+  const lengths = sampleLengths(samplePath(path, { steps }));
+  const total = lengths[lengths.length - 1] || 0;
+  const per = Math.max(1, Math.round(steps));
+  const distances = [];
+  for (let index = 0; index < Math.max(1, points.length); index++) {
+    distances.push(lengths[Math.min(lengths.length - 1, index * per)] || 0);
+  }
+  if (distances.length) distances[distances.length - 1] = total;
+  return { distances, total };
+}
+
+/**
  * Where a traveller is after covering `t` of the path, `t` running 0 to 1 by distance.
  *
  * By *distance*, not by segment: a model walking a route must not sprint along a short
