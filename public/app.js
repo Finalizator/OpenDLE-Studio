@@ -3941,7 +3941,7 @@ async function importSoundFiles(files) {
     }
   });
   $('asset-filter').value = 'sound'; renderAssets();
-  status(`Imported ${imported.length} sounds. Matching sound names replace existing effects; use playSound actions in visual rules.`);
+  status(`Imported ${imported.length} sounds. A matching sound name replaces the imported WAD effect it came with; cues and rules play them with "Audio: play imported sound".`);
 }
 $('sound-file').addEventListener('change', guard(async event => {
   const files = [...event.target.files]; event.target.value = '';
