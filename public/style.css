@@ -125,6 +125,18 @@ summary { cursor: pointer; }
 .tree-link::before { content: ""; display: inline-block; width: 8px; height: 8px; border: 1px solid #aaa; margin-right: 6px; }
 .tree-link[data-tab=map]::before { border-color: #87bd85; }
 .tree-link.selected { background: #e5e5e5; color: #333; }
+/* Timesheets in the Project tree: a row reads like the layout list, with a cue count and a name
+   that turns into an input in place. */
+.timesheet-list { display: flex; flex-direction: column; }
+.timesheet-empty-note { font-size: 10px; margin: 2px 15px 4px; color: var(--muted); }
+.timesheet-row { display: flex; align-items: center; gap: 6px; }
+.timesheet-row::before { content: none; }
+.timesheet-glyph { font-size: 8px; color: #9fc7e8; flex-shrink: 0; }
+.timesheet-row.selected .timesheet-glyph { color: #2d6f9e; }
+.timesheet-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.timesheet-cue-count { font-size: 9px; color: var(--muted); background: #3d3d3d; border-radius: 8px; padding: 0 5px; }
+.timesheet-row.selected .timesheet-cue-count { background: #c9c9c9; color: #444; }
+.timesheet-rename { flex: 1; min-width: 0; font: inherit; font-size: 10px; padding: 1px 3px; background: #2f2f2f; color: #eee; border: 1px solid var(--accent); border-radius: 2px; }
 .layers-dock { flex: 0 1 40%; min-height: 145px; display: flex; flex-direction: column; border-top: 3px solid #333; overflow: hidden; }
 .layer-row { text-align: left; background: #e8e8e8; color: #383838; padding: 5px 15px; margin: 4px; }
 .layer-help { font-size: 9px; margin: 3px 8px; color: var(--muted); }

@@ -436,5 +436,22 @@ export function createTimesheetPanel(nodes, {
     /** The panel is rebuilt from the project, so `refresh` is the same thing said plainly. */
     refresh: render,
     select(id) { selectedId = id; selectedCue = null; render(); },
+    /** Which timeline the panel is showing, so an outside list can mark it. */
+    selectedId: () => current()?.id ?? null,
+    /** Creates a timeline and opens it. The Project tree makes its own rows with this. */
+    add(name) {
+      const sheet = { id: newId('timesheet'), name: name || `Timesheet ${timesheets().length + 1}`,
+        duration: 30, loop: false, tracks: [createTrack(0)], cues: [] };
+      selectedId = sheet.id; selectedCue = null;
+      change(next => { (next.timesheets ||= []).push(sheet); }, `Timesheet "${sheet.name}" added`);
+      return sheet.id;
+    },
+    rename(id, name) {
+      const sheet = timesheets().find(item => item.id === id);
+      const clean = String(name ?? '').trim();
+      if (!sheet || !clean || clean === sheet.name) return false;
+      patchSheet(sheet, { name: clean.slice(0, TIMESHEET_LIMITS.name) }, `Timeline renamed to "${clean}"`);
+      return true;
+    },
   };
 }

@@ -71,6 +71,9 @@ let project, token, revision = 0, dirty = false, selection = null, editVersion =
 // its own yet (a new project, an import that was never stored, a restored draft), which
 // is what decides whether Save updates the open project or stores a new one.
 let projectId = null;
+// The Project tree lists timelines, but the tree can be drawn before the timeline panel exists;
+// this flag is what stops the first render from reading a binding that has not been set yet.
+let timesheetPanelBuilt = false;
 // A temporary project is the stored copy of an import: it reopens next time but the next
 // import replaces it, so the badge says so instead of "Saved".
 let projectTemporary = false;
@@ -303,6 +306,7 @@ function render() {
   $('project-name').textContent = project.title;
   renderLayoutTree();
   renderSceneObjects();
+  renderTimesheetTree();
   // Undo, redo and edits made elsewhere change scene objects too, and the editor is
   // only re-drawn while it is the visible panel.
   if (!$('scene-panel').hidden) sceneObjectEditor?.render();
@@ -1898,6 +1902,8 @@ const timesheetPanel = createTimesheetPanel({ root: $('timesheet-root') }, {
   commandContext: ownerId => commandLists(ownerId),
   contextMenu,
 });
+timesheetPanelBuilt = true;
+renderTimesheetTree();
 let eventsRendered = '';
 function eventsSignature() {
   // The rules and sheets are compared by *content*, not identity: every edit clones the
@@ -4313,6 +4319,90 @@ function sceneObjectRow(scene) {
   row.setAttribute('aria-label', row.title);
   return row;
 }
+/**
+ * The Timesheets section of the Project tree.
+ *
+ * A timeline used to be reachable only through its own tab, so a project with three of them read
+ * as a project with none until you went looking. They are project content like a layout or a scene
+ * object, so they are listed beside them: a row opens the timeline, a double click renames it in
+ * place, and the button under the list makes a new one — every one of those goes through the
+ * timesheet panel, so the tab follows what the tree does.
+ */
+function renderTimesheetTree() {
+  const list = $('project-timesheets');
+  // The first render happens while the panel is still being constructed, and reading its binding
+  // before that would throw; the panel calls back here once it exists.
+  if (!list || !timesheetPanelBuilt) return;
+  const sheets = project?.timesheets || [];
+  list.replaceChildren();
+  if (!sheets.length) {
+    list.append(make('p', 'No timesheets yet. A timeline of cues an event starts — press + Timesheet.', 'muted timesheet-empty-note'));
+    return;
+  }
+  // Which row reads as open: the timeline the Timesheet tab is showing, and only while that tab is
+  // the one on screen — a highlight on the map would claim something the user cannot act on.
+  const current = $('timesheet-panel')?.hidden === false ? timesheetPanel.selectedId() : null;
+  for (const sheet of sheets) {
+    const row = button('', () => openTimesheet(sheet.id), 'tree-link timesheet-row');
+    row.dataset.timesheetId = sheet.id;
+    row.setAttribute('aria-current', sheet.id === current ? 'true' : 'false');
+    row.classList.toggle('selected', sheet.id === current);
+    row.title = `${sheet.name}: ${sheet.cues.length} cue${sheet.cues.length === 1 ? '' : 's'}, ${sheet.duration}s`
+      + ' — click to open, double-click to rename';
+    row.append(make('span', '\u25b6', 'timesheet-glyph'), make('span', sheet.name, 'timesheet-name'),
+      make('span', String(sheet.cues.length), 'timesheet-cue-count'));
+    // A second click on a row that is already open renames it, so the name is editable where it is
+    // read instead of in a dialog.
+    row.addEventListener('dblclick', event => { event.preventDefault(); renameTimesheetInline(row, sheet); });
+    list.append(row);
+  }
+}
+/** Opens a timeline in the Timesheet tab and points the panel at it. */
+function openTimesheet(id) {
+  showTab('timesheet');
+  timesheetPanel.select(id);
+  const sheet = (project.timesheets || []).find(item => item.id === id);
+  if (sheet) status(`Timeline "${sheet.name}": ${sheet.cues.length} cue(s) over ${sheet.duration}s. ${sheet.cues.length ? '' : 'Add a cue, then an action.'}`);
+  renderTimesheetTree();
+}
+/** Swaps one row's name for an input, and puts the row back afterwards. */
+function renameTimesheetInline(row, sheet) {
+  if (row.querySelector('input')) return;
+  const field = make('input', '', 'timesheet-rename');
+  field.type = 'text';
+  field.value = sheet.name;
+  field.maxLength = 60;
+  field.setAttribute('aria-label', `Rename ${sheet.name}`);
+  const label = row.querySelector('.timesheet-name');
+  if (label) { label.hidden = true; label.after(field); }
+  field.focus();
+  field.select();
+  let done = false;
+  const finish = (accept) => {
+    if (done) return;
+    done = true;
+    const value = field.value;
+    field.remove();
+    if (label) label.hidden = false;
+    if (accept) {
+      if (timesheetPanel.rename(sheet.id, value)) status(`Timeline renamed to "${String(value).trim().slice(0, 60)}"`);
+    }
+    renderTimesheetTree();
+  };
+  field.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    event.stopPropagation();
+  });
+  field.addEventListener('blur', () => finish(true));
+}
+$('new-timesheet').addEventListener('click', guard(() => {
+  const id = timesheetPanel.add();
+  showTab('timesheet');
+  timesheetPanel.select(id);
+  renderTimesheetTree();
+  status('Timeline created. Add a cue at the playhead, then an action, and start it from an event.');
+}));
 /** Keeps the Layouts section list in step with the project and the open scene. */
 function renderSceneObjects() {
   const list = $('scene-objects');

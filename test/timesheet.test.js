@@ -9,6 +9,7 @@ import {
   easingValue, startPathTween, advancePathTweens, TIMESHEET_CUE_CONDITION,
 } from '../shared/timesheet.js';
 import { waypointDistances } from '../shared/paths.js';
+import { readFileSync } from 'node:fs';
 
 const tick = (project, state, seconds = .05) => stepRuntime(project, state, seconds, new Set());
 const cues = () => [
@@ -362,4 +363,22 @@ test('the facing offset corrects a model whose own forward is off', () => {
   assert.ok(Math.abs(state.entities.find(item => item.id === 'pickup').angle - 270) < 1e-6, '0 - 90 is 270, wrapped');
   // The field is part of the action, so a project carrying one validates and round-trips.
   validateProject(project);
+});
+
+// The Project tree is DOM glue, so what can be pinned here is the wiring: a timeline is listed,
+// creatable, renameable and openable from the tree, and every one of those goes through the panel
+// that owns the project edits.
+test('the Project tree lists, creates, renames and opens timelines', () => {
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /function renderTimesheetTree\(\)/);
+  assert.match(app, /renderTimesheetTree\(\);\n  \/\/ Undo, redo/, 'the tree is redrawn with the project');
+  assert.match(app, /\$\('new-timesheet'\)\.addEventListener/, 'the tree makes timelines');
+  assert.match(app, /timesheetPanel\.add\(\)/, 'through the panel that owns the edit');
+  assert.match(app, /timesheetPanel\.rename\(sheet\.id, value\)/, 'and renames them the same way');
+  assert.match(app, /function openTimesheet\(id\)[\s\S]{0,120}showTab\('timesheet'\)/, 'a row opens the timeline tab');
+  assert.match(app, /addEventListener\('dblclick'[\s\S]{0,80}renameTimesheetInline/, 'a double click renames in place');
+  const panel = readFileSync(new URL('../public/timesheet-panel.js', import.meta.url), 'utf8');
+  assert.match(panel, /add\(name\)/, 'the panel exposes creating');
+  assert.match(panel, /rename\(id, name\)/, 'the panel exposes renaming');
+  assert.match(readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'), /id="project-timesheets"/);
 });

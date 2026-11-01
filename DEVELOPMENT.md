@@ -808,6 +808,12 @@ default 64 units/s and its angle followed the curve.
 
 ### Timesheets: a timeline an event starts
 
+Timelines are also listed in the **Project** tree, beside the layouts and scene objects: a row
+opens the Timesheet tab on that timeline, a double click renames it in place, and **+ Timesheet**
+makes one. The tree does not edit the project itself — it calls the panel (`add`, `rename`,
+`select`), so the tab and the list always show the same timeline, and the list is redrawn with
+every project edit.
+
 **Timesheet** is the editor's video-editor timeline. A timesheet is tracks over one clock, and a
 cue is a labelled moment on a track that carries a list of ordinary visual-script actions. Nothing
 in the timeline is a second scripting language: a cue holds actions from the same catalogue the
