@@ -345,7 +345,7 @@ async function refreshScene() {
     if (sceneEditor) scenePose = sceneEditor.pose();
     sceneEditor?.dispose(); sceneEditor = null; sceneProject = null;
     const editor = await createSceneEditor($('scene-3d'), snapshot, {
-      selection: () => selection,
+      selection: () => withSelectionGroup(selection),
       select: (value, options = {}) => {
         // Ctrl+click in the 3D view builds a set, the same as it does in the map and the list, so
         // objects can be grouped from the view the mapper is actually looking at.
@@ -360,7 +360,7 @@ async function refreshScene() {
         lastPrimarySelection = value?.kind === 'entity' ? value.id : null;
         if (value?.kind === 'sector') $('sector-surface').value = value.surface || 'floorHeight';
         syncTransformModes();
-        renderInspector(); sceneEditor?.select(selection);
+        renderInspector(); sceneEditor?.select(withSelectionGroup(selection));
         renderEntities();
       },
       edit, error: message => status(message, true),
@@ -399,7 +399,7 @@ async function refreshScene() {
     editor.settings(readEngineTweaks());
     sceneEditor = editor; sceneProject = snapshot;
     syncTransformModes();
-    sceneEditor.select(selection); sceneEditor.mode($('transform-mode').value); sceneEditor.ceilings($('show-ceilings').checked);
+    sceneEditor.select(withSelectionGroup(selection)); sceneEditor.mode($('transform-mode').value); sceneEditor.ceilings($('show-ceilings').checked);
     sceneEditor.areas($('show-areas').checked); sceneEditor.physicsOverlay($('show-physics').checked);
     status('3D scene ready. Right-drag + WASD/QE flies. Select and drag a colored axis to edit.');
   } catch (error) { status(`3D editor failed: ${error.message}`, true); }
@@ -771,6 +771,17 @@ function selectedEntityIds() {
   const ids = multiSelection.length ? multiSelection : (selection?.kind === 'entity' ? [selection.id] : []);
   return ids.filter(id => project.map.entities.some(entity => entity.id === id));
 }
+/**
+ * The selection as the view needs it: the primary object plus the rest of the set.
+ *
+ * A drag starts from this, so the objects that were Ctrl+clicked travel with the one that was
+ * grabbed. It is a copy — the app's own selection stays a single primary.
+ */
+function withSelectionGroup(value) {
+  if (value?.kind !== 'entity') return value;
+  const group = selectedEntityIds();
+  return group.length > 1 ? { ...value, group } : value;
+}
 function selectedEntities() {
   const ids = new Set(selectedEntityIds());
   return project.map.entities.filter(entity => ids.has(entity.id));
@@ -792,7 +803,7 @@ function selectObject(entity, additive = false) {
   lastPrimarySelection = selection?.id ?? null;
   showTab('map');
   renderInspector();
-  sceneEditor?.select(selection);
+  sceneEditor?.select(withSelectionGroup(selection));
   render();
 }
 function openScript(ownerId = '$all') {
@@ -1185,6 +1196,18 @@ function curveSlider(value, onChange) {
   return slider;
 }
 /**
+ * Selects a whole route, remembering where along it the editor's move arrows should stand: the
+ * waypoint the mapper came from, or the middle of the route when there is no such waypoint.
+ */
+function selectWholePath(pathId, pointId) {
+  const path = (project.paths || []).find(item => item.id === pathId);
+  const index = path && pointId ? path.points.findIndex(point => point.id === pointId) : -1;
+  const at = index >= 0 && path.points.length > 1 ? index / (path.points.length - 1) : .5;
+  selection = { kind: 'path', id: pathId, at };
+  render();
+}
+
+/**
  * The controls that start and stop extending a route.
  *
  * Draw path is a mode: while it is armed every click adds a waypoint, so it needs a button that
@@ -1201,7 +1224,7 @@ function pathDraftControls(path) {
     row.append(button('Continue adding waypoints', () => {
       activePathId = path.id;
       $('tool').value = 'path';
-      selection = { kind: 'path', id: path.id };
+      selection = { kind: 'path', id: path.id, at: .5 };
       render();
       status(`Adding waypoints to ${path.name}: click the map to place the next one. The panel button or Escape finishes.`);
     }));
@@ -1231,7 +1254,7 @@ function renderPathInspector() {
     field(parent, 'Curve through this point', curveSlider(point.curve ?? 1, value => changePoint(target => { target.curve = value; })));
     parent.append(make('p', 'Curve 0 makes a corner: the route goes straight in and straight out. Curve 1 sweeps through the waypoint. The segment at each end bends as much as *that* end allows, so a corner never kinks.', 'muted'),
       pathDraftControls(path),
-      button('Select the whole path', () => { selection = { kind: 'path', id: path.id }; render(); }),
+      button('Select the whole path', () => selectWholePath(path.id, point.id)),
       button('Delete waypoint', () => guard(() => deletePathPoint(path.id, point.id))(), 'danger'));
     return;
   }
@@ -2517,17 +2540,25 @@ function drawMap() {
   let display = project;
   if (drag?.kind === 'move') {
     // Display-only overlay during a 2D drag: only the map changes, and a waypoint drag only
-    // moves the path it belongs to.
-    display = { ...project, map: structuredClone(project.map) };
+    // moves the path it belongs to. A route or a set of objects slides as a whole, so the
+    // overlay shows all of them moving and not only the one that was grabbed.
+    display = { ...project, map: structuredClone(project.map), paths: structuredClone(project.paths || []) };
     const { kind, id, pathId } = drag.selection;
-    let item;
-    if (kind === 'pathPoint') {
-      display.paths = structuredClone(project.paths || []);
-      item = display.paths.find(path => path.id === pathId)?.points.find(point => point.id === id);
+    const shift = { x: drag.end.x - drag.start.x, y: drag.end.y - drag.start.y };
+    if (kind === 'path') {
+      const path = display.paths.find(item => item.id === id);
+      for (const point of path?.points || []) { point.x += shift.x; point.y += shift.y; }
+    } else if (kind === 'pathPoint') {
+      const item = display.paths.find(path => path.id === pathId)?.points.find(point => point.id === id);
+      if (item) { item.x += shift.x; item.y += shift.y; }
     } else {
-      item = (kind === 'entity' ? display.map.entities : display.map.vertices).find(value => value.id === id);
+      const group = kind === 'entity' ? selectedEntityIds() : [];
+      const ids = group.length > 1 && group.includes(id) ? group : [id];
+      for (const target of ids) {
+        const item = (kind === 'entity' ? display.map.entities : display.map.vertices).find(value => value.id === target);
+        if (item) { item.x += shift.x; item.y += shift.y; }
+      }
     }
-    if (item) { item.x += drag.end.x - drag.start.x; item.y += drag.end.y - drag.start.y; }
   }
   for (const wall of wallSegments(display)) {
     ctx.strokeStyle = selection?.id === wall.id ? '#ffffff' : wall.color;
@@ -2746,7 +2777,7 @@ canvas.addEventListener('pointerdown', guard(event => {
     }
   }
   selection = hitTest(point);
-  if (selection && ['entity', 'vertex', 'pathPoint'].includes(selection.kind)) drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point) };
+  if (selection && ['entity', 'vertex', 'pathPoint', 'path'].includes(selection.kind)) drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point) };
   render();
 }));
 canvas.addEventListener('pointermove', event => {
@@ -2816,14 +2847,31 @@ canvas.addEventListener('pointerup', guard(event => {
     return;
   }
   if (finished.kind === 'move' && (finished.start.x !== finished.end.x || finished.start.y !== finished.end.y)) {
+    const shift = { x: finished.end.x - finished.start.x, y: finished.end.y - finished.start.y };
+    const { kind, id, pathId } = finished.selection;
+    // A whole route slides as one, and so does a set of objects: the shift is the same for
+    // everything that was selected, so their arrangement is kept.
+    const group = kind === 'entity' ? selectedEntityIds() : [];
     edit(next => {
-      const { kind, id, pathId } = finished.selection;
-      const item = kind === 'pathPoint'
-        ? next.paths?.find(path => path.id === pathId)?.points.find(point => point.id === id)
-        : (kind === 'entity' ? next.map.entities : next.map.vertices).find(value => value.id === id);
-      if (!item) throw new Error('That point is no longer part of the map');
-      item.x += finished.end.x - finished.start.x; item.y += finished.end.y - finished.start.y;
-    }, finished.selection.kind === 'pathPoint' ? 'Waypoint moved' : 'Object moved');
+      if (kind === 'path') {
+        const path = next.paths?.find(item => item.id === id);
+        if (!path) throw new Error('That route is no longer part of the map');
+        for (const point of path.points) { point.x += shift.x; point.y += shift.y; }
+        return;
+      }
+      if (kind === 'pathPoint') {
+        const point = next.paths?.find(path => path.id === pathId)?.points.find(value => value.id === id);
+        if (!point) throw new Error('That point is no longer part of the map');
+        point.x += shift.x; point.y += shift.y;
+        return;
+      }
+      const ids = group.length > 1 && group.includes(id) ? group : [id];
+      for (const target of ids) {
+        const item = (kind === 'entity' ? next.map.entities : next.map.vertices).find(value => value.id === target);
+        if (!item) throw new Error('That point is no longer part of the map');
+        item.x += shift.x; item.y += shift.y;
+      }
+    }, kind === 'pathPoint' ? 'Waypoint moved' : kind === 'path' ? 'Route moved' : group.length > 1 ? `${group.length} objects moved` : 'Object moved');
   }
 }));
 canvas.addEventListener('pointercancel', () => { drag = null; mapNeedsDraw = true; });
@@ -4480,15 +4528,35 @@ function deletePath(id) {
 /** Deletes one waypoint, keeping the rest of the route. */
 function deletePathPoint(pathId, pointId) {
   edit(next => removePathPoint(next, pathId, pointId), 'Waypoint deleted');
-  selection = { kind: 'path', id: pathId };
-  render();
+  selectWholePath(pathId);
 }
-/** Delete means whatever is selected: an object, a route, or one waypoint of a route. */
+/** Delete means whatever is selected: an object (or the whole set), a route, or one waypoint. */
 function deleteSelectionObject(value) {
   if (value?.kind === 'path') { deletePath(value.id); return; }
   if (value?.kind === 'pathPoint') { deletePathPoint(value.pathId, value.id); return; }
-  if (value?.kind === 'entity') { deleteLayoutObject(value.id); return; }
+  if (value?.kind === 'entity') { deleteSelectedEntities(value.id); return; }
   throw new Error(`Nothing to delete for a ${value?.kind || 'empty'} selection`);
+}
+/**
+ * Deletes the objects that are selected together.
+ *
+ * A set is what Ctrl+click is for, so Delete has to mean the set: deleting only the object whose
+ * arrows happened to be on screen left the rest selected and looked like nothing had happened.
+ */
+function deleteSelectedEntities(primaryId) {
+  const ids = selectedEntityIds();
+  const targets = ids.includes(primaryId) && ids.length > 1 ? ids : [primaryId];
+  const player = targets.find(id => project.map.entities.find(entity => entity.id === id)?.type === 'player');
+  if (player) throw new Error('The layout must keep the player object');
+  const names = targets.map(id => project.map.entities.find(entity => entity.id === id)?.name || id);
+  const events = project.events.filter(event => targets.includes(event.ownerId)).length;
+  if (targets.length > 1 || events) {
+    const detail = [targets.length > 1 ? `${targets.length} objects` : names[0], events ? `${events} attached events` : ''].filter(Boolean).join(' and ');
+    if (!confirm(`Delete ${detail}? You can undo this change.`)) return;
+  }
+  edit(next => { for (const id of targets) removeEntity(next, id); }, targets.length > 1 ? `${targets.length} objects deleted` : 'Object deleted');
+  selection = null; multiSelection = []; lastPrimarySelection = null;
+  render();
 }
 
 function setSectorLight(sector) {

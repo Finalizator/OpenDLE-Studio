@@ -230,3 +230,37 @@ test('form and scale refuse an object that has no volume', () => {
   transformSelection(project, selection, 'scale', { scale: 2 }, 16);
   assert.equal(pickup.spriteScale, 2);
 });
+
+test('a whole route moves as one, keeping its shape', () => {
+  const project = createProject();
+  project.paths = [createPath({ id: 'route', points: [
+    { id: 'a', x: 100, y: 200, z: 0, curve: 1 }, { id: 'b', x: 173, y: 240, z: 16, curve: 1 },
+  ] })];
+  const baseline = structuredClone(project);
+  dragSelection(project, baseline, { kind: 'path', id: 'route' }, 'move', { x: 37, y: -21, z: 0 }, 16);
+  // The shift is snapped once, so the waypoints keep their offsets from each other exactly.
+  assert.deepEqual(project.paths[0].points.map(point => [point.x, point.y]), [[132, 184], [205, 224]]);
+  assert.throws(() => dragSelection(project, baseline, { kind: 'path', id: 'route' }, 'rotate', { angle: 45 }, 16),
+    /turned and resized through its waypoints/);
+});
+
+test('a multi-selection travels with the object that was dragged', () => {
+  const project = createProject();
+  const first = project.map.entities[0], second = project.map.entities[1];
+  first.x = 100; first.y = 200; second.x = 260; second.y = 340; second.elevation = 24;
+  const baseline = structuredClone(project);
+  // The set is carried by the same shift, not by snapping each member on its own: the offset
+  // between them is the whole point of selecting them together.
+  dragSelection(project, baseline, { kind: 'entity', id: first.id, group: [first.id, second.id] },
+    'move', { x: 48, y: 48, z: 0 }, 16);
+  // The grabbed object lands on the grid (100+48 rounds down to 144, 200+48 rounds up to 256)
+  // and the rest of the set follows by exactly that shift, keeping their offsets.
+  assert.deepEqual([first.x, first.y], [144, 256]);
+  assert.deepEqual([second.x, second.y], [304, 396]);
+  assert.equal(second.elevation, 24, 'height only moves when the drag asked for it');
+  // Dragging alone still moves one object.
+  const alone = structuredClone(project);
+  dragSelection(project, alone, { kind: 'entity', id: second.id }, 'move', { x: 16, y: 0, z: 0 }, 16);
+  assert.equal(first.x, 144);
+  assert.equal(second.x, 320);
+});

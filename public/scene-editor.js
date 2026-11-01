@@ -12,7 +12,7 @@ import {
 } from './editor-drop.js';
 import { areaVolume, areaYaw, overlayVolumes } from '/shared/areas.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
-import { samplePath } from '/shared/paths.js';
+import { samplePath, sampleLengths, pointAlong } from '/shared/paths.js';
 import {
   GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formDrag,
   rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
@@ -69,6 +69,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   })));
   selectionOutline.renderOrder = 205; selectionOutline.visible = false; selectionOutline.frustumCulled = false;
   helperGroup.add(selectionOutline);
+  // The rest of a multi-selection, drawn dimmer than the primary so the set is visible without
+  // competing with the object whose arrows the gizmo is on.
+  const groupOutlineGeometry = own(new THREE.BufferGeometry());
+  const groupOutline = new THREE.LineSegments(groupOutlineGeometry, own(new THREE.LineBasicMaterial({
+    color: SELECT_COLOR, depthTest: false, transparent: true, opacity: .38,
+  })));
+  groupOutline.renderOrder = 204; groupOutline.visible = false; groupOutline.frustumCulled = false;
+  helperGroup.add(groupOutline);
   const dropBoxGeometry = own(new THREE.EdgesGeometry(own(new THREE.BoxGeometry(1, 1, 1))));
   const dropOutline = new THREE.LineSegments(dropBoxGeometry, own(new THREE.LineBasicMaterial({ color: DROP_COLOR, depthTest: false })));
   dropOutline.renderOrder = 206; dropOutline.visible = false; dropOutline.frustumCulled = false;
@@ -410,6 +418,16 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         box.set(new THREE.Vector3(Math.min(a.x, b.x), front?.floorHeight ?? 0, Math.min(a.y, b.y)),
           new THREE.Vector3(Math.max(a.x, b.x), front?.ceilingHeight ?? wall.height ?? 128, Math.max(a.y, b.y)));
       }
+    } else if (selection.kind === 'path') {
+      const path = (project.paths || []).find(item => item.id === selection.id);
+      const points = path?.points || [];
+      if (points.length) {
+        // A route can be flat, so the box gets a little margin: an outline with no height would
+        // be invisible, and the route is what is highlighted, not a volume it fills.
+        const xs = points.map(point => point.x), ys = points.map(point => point.y), zs = points.map(point => point.z || 0);
+        box.set(new THREE.Vector3(Math.min(...xs) - 8, Math.min(...zs) - 8, Math.min(...ys) - 8),
+          new THREE.Vector3(Math.max(...xs) + 8, Math.max(...zs) + 8, Math.max(...ys) + 8));
+      }
     } else if (selection.kind === 'vertex') {
       const vertex = vertexById.get(selection.id);
       if (vertex) {
@@ -515,6 +533,25 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (points.length) outlineGeometry.computeBoundingSphere();
     selectionOutline.visible = points.length > 0;
   }
+  /**
+   * Highlights the objects that are selected along with the primary one.
+   *
+   * Ctrl+click builds a set, and without this the view showed only the object whose arrows were
+   * on screen — the others looked unselected even though a group, a copy or a delete would act on
+   * all of them.
+   */
+  function setGroupOutline(selection) {
+    const group = selection?.kind === 'entity' && Array.isArray(selection.group) ? selection.group : [];
+    const points = [];
+    for (const id of group) {
+      if (id === selection.id) continue;
+      boundsFor({ kind: 'entity', id }, bounds);
+      if (!bounds.isEmpty()) outlineBox(points, bounds);
+    }
+    groupOutlineGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points), 3));
+    if (points.length) groupOutlineGeometry.computeBoundingSphere();
+    groupOutline.visible = points.length > 0;
+  }
   /** `widthxheightxdepth` of the outline, or an empty string when nothing is highlighted. */
   function outlineSize() {
     if (!selectionOutline.visible) return '';
@@ -618,14 +655,43 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       if (vertex) marker.position.set(vertex.x, (vertexHeights.get(vertex.id) || 0) + 4, vertex.y);
     });
   }
+  /** The point a fraction of the way along a route, which is where its own arrows stand. */
+  function pathSpot(path, at) {
+    const t = Number.isFinite(at) ? Math.min(1, Math.max(0, at)) : .5;
+    return pointAlong(path, t) || { x: 0, y: 0, z: 0 };
+  }
+  /**
+   * How far along a route a picked point is, as 0..1 by arc length.
+   *
+   * The nearest sample decides it, so the arrows appear where the line was clicked and stay
+   * there while the route is dragged; the sample's own length rather than its index makes the
+   * fraction mean the same thing on a route with uneven segments.
+   */
+  function pathFraction(path, point) {
+    const samples = samplePath(path);
+    if (!samples.length) return .5;
+    const lengths = sampleLengths(samples), total = lengths[lengths.length - 1] || 0;
+    let best = 0, bestDistance = Infinity;
+    samples.forEach((sample, index) => {
+      const dx = sample.x - point.x, dy = (sample.z || 0) - point.y, dz = sample.y - point.z;
+      const distance = dx * dx + dy * dy + dz * dz;
+      if (distance < bestDistance) { bestDistance = distance; best = index; }
+    });
+    return total ? lengths[best] / total : .5;
+  }
   function select(selection, { rebuildHandles = true } = {}) {
     selected = selection;
+    // A route's line is painted white while it is selected and purple otherwise, and only a
+    // rebuild repaints it: selecting an object has to rebuild too, or the route stays lit up as
+    // though it were still the selection.
+    rebuildPaths();
     // The highlighted volume follows the selection, including when nothing is selected.
     if (showAreas || showPhysics) rebuildOverlays();
     updateVertexMarkers();
     canvas.dataset.sceneSelection = '';
     // Nothing is highlighted until the selection below says what shape to draw.
     setOutline([]);
+    setGroupOutline(null);
     if (!selected) { clearHandles(); return; }
     const { kind, id } = selected;
     let position;
@@ -647,17 +713,15 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       hideReadout();
       position = new THREE.Vector3(point.x, point.z || 0, point.y);
     } else if (kind === 'path') {
-      // A whole path is edited through its waypoints and its inspector: three bars at one
-      // waypoint would suggest that dragging there moves the entire route.
-      rebuildPaths();
+      // The route as a whole is moved by its own arrows, which stand where the line was picked
+      // (`selection.at`, a fraction along it) so they appear under the pointer rather than at a
+      // waypoint the mapper never touched. The waypoints keep their own arrows for shaping it.
       const path = (project.paths || []).find(item => item.id === id);
       if (!path) { clearHandles(); return; }
       canvas.dataset.sceneSelection = `${kind}:${id}`;
       hideReadout();
-      const anchor = path.points[0];
-      handles.position.set(anchor?.x ?? 0, anchor?.z || 0, anchor?.y ?? 0);
-      selectionOutline.visible = false; clearHandles();
-      return;
+      const spot = pathSpot(path, selected.at);
+      position = new THREE.Vector3(spot.x, spot.z || 0, spot.y);
     } else if (kind === 'wall') {
       const wall = wallById.get(id), a = vertexById.get(wall?.a), b = vertexById.get(wall?.b);
       if (!a || !b) { clearHandles(); return; }
@@ -669,6 +733,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         sector[selected.surface || 'floorHeight'], (sector.bounds.minY + sector.bounds.maxY) / 2);
     }
     setOutline(outlineFor(selected));
+    setGroupOutline(selected);
     handles.position.copy(position);
     syncFormArrows();
     const axes = axesFor(kind);
@@ -735,7 +800,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    * nothing draws nothing, rather than an arrow that turns out to be inert.
    */
   function axesFor(kind) {
-    if (kind === 'pathPoint') return mode === 'move' ? ['x', 'y', 'z'] : [];
+    if (kind === 'pathPoint' || kind === 'path') return mode === 'move' ? ['x', 'y', 'z'] : [];
     if (kind === 'sector') return mode === 'move' ? ['y'] : [];
     if (kind === 'vertex' || kind === 'wall') return mode === 'move' ? ['x', 'z'] : [];
     if (mode === 'form' && formVolume()) return [];
@@ -1095,6 +1160,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     }
     const hit = hits(pathGroup)[0] || hits(vertexGroup)[0] || worldHit();
     const selection = hit ? { ...selectionOf(hit) } : null;
+    // A route's arrows belong where its line was clicked, so the pick records that place as a
+    // fraction of the route rather than a fixed point that the route would leave behind.
+    if (selection?.kind === 'path' && hit?.point) {
+      const path = (project.paths || []).find(item => item.id === selection.id);
+      if (path) selection.at = pathFraction(path, hit.point);
+    }
     if (selection?.kind === 'sector') {
       selection.surface = selectionOf(hit)?.surface || callbacks.surface();
       callbacks.select(selection);
@@ -1363,6 +1434,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.action = action ? `${action.kind}${action.axis ? `:${action.axis}` : ''}` : '';
       // How many segments the outline is made of: zero when nothing is highlighted.
       canvas.dataset.outlineSegments = selectionOutline.visible ? String((outlineGeometry.getAttribute('position')?.count || 0) / 2) : '0';
+      // How many objects are in the set, and the segments drawn for the ones after the primary.
+      canvas.dataset.selectionGroup = String(selected?.group?.length || 0);
+      canvas.dataset.groupOutlineSegments = groupOutline.visible ? String((groupOutlineGeometry.getAttribute('position')?.count || 0) / 2) : '0';
       // The outline's own size, so what a selection box covers can be read from outside the
       // canvas — a box that is flat in one axis is a billboard being measured, not an object.
       canvas.dataset.outlineBox = outlineSize();

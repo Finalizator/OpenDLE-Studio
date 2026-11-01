@@ -93,6 +93,19 @@ export function transformSelection(project, selection, mode, delta, grid) {
     point.z = snap((point.z || 0) + (delta.z || 0));
     return;
   }
+  if (selection.kind === 'path') {
+    if (mode !== 'move') throw new Error('A route is turned and resized through its waypoints');
+    const path = (project.paths || []).find(item => item.id === selection.id);
+    const origin = (baseline?.paths || []).find(item => item.id === selection.id);
+    if (!path) throw new Error('Selected route no longer exists');
+    if (!origin) throw new Error('The drag started from a project state that no longer exists');
+    // The whole route moves as one: the *shift* is snapped, not each waypoint, or a route whose
+    // points sit off the grid would be reshaped every time it was moved.
+    const shift = { x: delta.x ? snap(delta.x) : 0, y: delta.y ? snap(delta.y) : 0, z: delta.z ? snap(delta.z) : 0 };
+    path.points = origin.points.map(point => ({ ...point,
+      x: point.x + shift.x, y: point.y + shift.y, z: (point.z || 0) + shift.z }));
+    return;
+  }
   const collections = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' };
   const item = project.map[collections[selection.kind]]?.find(item => item.id === selection.id);
   if (!item) throw new Error('Selected scene element no longer exists');
@@ -125,13 +138,44 @@ export function transformSelection(project, selection, mode, delta, grid) {
     }
   } else {
     const oldFloor = selection.kind === 'entity' ? sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0 : 0;
+    const before = { x: item.x, y: item.y, elevation: item.elevation || 0 };
     if (delta.x) item.x = snap(item.x + delta.x);
     if (delta.y) item.y = snap(item.y + delta.y);
     if (selection.kind === 'entity') {
       const newFloor = sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0;
       const elevation = (item.elevation || 0) + oldFloor - newFloor;
       item.elevation = delta.z ? snap(elevation + delta.z) : elevation;
+      moveGroupBy(project, selection, { x: item.x - before.x, y: item.y - before.y,
+        elevation: (item.elevation || 0) - before.elevation });
     }
+  }
+}
+
+/**
+ * Carries the rest of a multi-selection along with the object that was dragged.
+ *
+ * The set travels by the same *shift*, not by its own snapped positions: snapping each member
+ * separately would pull them together or apart by up to half a grid step on every drag, and the
+ * arrangement between them is the whole point of selecting them together.
+ */
+function moveWithSelection(project, origin, primary, selection) {
+  moveGroupBy(project, selection, { x: primary.x - origin.x, y: primary.y - origin.y,
+    elevation: (primary.elevation || 0) - (origin.elevation || 0) });
+}
+/** The same shift for the rest of the set, given the primary's own travel. */
+function moveGroupBy(project, selection, shift) {
+  const group = Array.isArray(selection.group) ? selection.group : [];
+  if (group.length < 2) return;
+  if (!shift.x && !shift.y && !shift.elevation) return;
+  for (const id of group) {
+    if (id === selection.id) continue;
+    const entity = project.map.entities.find(candidate => candidate.id === id);
+    if (!entity) continue;
+    entity.x += shift.x;
+    entity.y += shift.y;
+    // Height only moves when the drag asked for it, so a set dragged across a step keeps its own
+    // elevations instead of inheriting the primary's.
+    if (shift.elevation) entity.elevation = (entity.elevation || 0) + shift.elevation;
   }
 }
 
@@ -155,6 +199,19 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
     // Height has no floor to stand on: a waypoint is wherever the route needs it, so a drag
     // that never touched the vertical handle leaves it exactly where it was.
     point.z = delta.z ? snap((origin.z || 0) + delta.z) : (origin.z || 0);
+    return;
+  }
+  if (selection.kind === 'path') {
+    if (mode !== 'move') throw new Error('A route is turned and resized through its waypoints');
+    const path = (project.paths || []).find(entry => entry.id === selection.id);
+    const origin = (baseline?.paths || []).find(entry => entry.id === selection.id);
+    if (!path) throw new Error('Selected route no longer exists');
+    if (!origin) throw new Error('The drag started from a project state that no longer exists');
+    // The whole route moves as one: the *shift* is snapped, not each waypoint, or a route whose
+    // points sit off the grid would be reshaped every time it was moved.
+    const shift = { x: delta.x ? snap(delta.x) : 0, y: delta.y ? snap(delta.y) : 0, z: delta.z ? snap(delta.z) : 0 };
+    path.points = origin.points.map(point => ({ ...point,
+      x: point.x + shift.x, y: point.y + shift.y, z: (point.z || 0) + shift.z }));
     return;
   }
   const collections = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' };
@@ -223,5 +280,6 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
     const newFloor = sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0;
     const elevation = (origin.elevation || 0) + oldFloor - newFloor;
     item.elevation = delta.z ? snap(elevation + delta.z) : elevation;
+    moveWithSelection(project, origin, item, selection);
   }
 }

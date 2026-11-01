@@ -829,6 +829,18 @@ click landed on in 3D, so a route up a staircase is drawn by clicking the steps.
 - **The route itself is clickable in 3D**, not only its waypoint cubes: the line carries the
   path's selection and its pick radius follows the viewing distance, so a route far away is still
   a few pixels wide to the pointer.
+- **A picked route has its own move arrows**, standing where the line was clicked — the pick turns
+  into a fraction along the route (`selection.at`), so the arrows stay under the pointer and follow
+  the route when it moves. Dragging one slides every waypoint by the same shift, so the shape is
+  kept; the waypoints' own arrows are still the way to bend it. A route also gets an outline box
+  around its waypoints, so a picked route is visible even where the line is thin.
+- **Only the selection is lit up.** The route's line is repainted on every selection change, not
+  only when a route is selected: a selected line used to stay white after an object was clicked,
+  because nothing rebuilt it.
+- **Delete and drag mean the set.** Ctrl+click builds a set; each member after the primary gets a
+  dimmer outline of its own, dragging one carries the rest by the same shift (never by snapping
+  each member separately, which would reshape the arrangement), and Delete removes the whole set
+  in one undo step.
 - **Delete means the selection.** The Delete key and the 3D view's Delete both work on an object,
   a whole route or a single waypoint.
 
