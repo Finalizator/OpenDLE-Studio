@@ -837,10 +837,15 @@ click landed on in 3D, so a route up a staircase is drawn by clicking the steps.
 - **Only the selection is lit up.** The route's line is repainted on every selection change, not
   only when a route is selected: a selected line used to stay white after an object was clicked,
   because nothing rebuilt it.
-- **Delete and drag mean the set.** Ctrl+click builds a set; each member after the primary gets a
-  dimmer outline of its own, dragging one carries the rest by the same shift (never by snapping
-  each member separately, which would reshape the arrangement), and Delete removes the whole set
-  in one undo step.
+- **Delete and drag mean the set.** Ctrl+click builds a set; every member is outlined as brightly
+  as the primary (a faint box does not say what a group, a copy or a delete will act on — the
+  arrows already say which one is in hand), dragging one carries the rest by the same shift, and
+  Delete removes the whole set in one undo step.
+- **The set moves absolutely, from the drag's baseline.** A live drag re-runs `dragSelection` on
+  every pointer move, and the draft it runs on already holds the previous frame's move — so the
+  rest of the set is placed at `baseline + shift`, never at `current + shift`. Adding to the
+  current place compounded the shift frame after frame, which is how the neighbours of the object
+  in hand shot off across the level while it moved a sensible distance.
 - **Delete means the selection.** The Delete key and the 3D view's Delete both work on an object,
   a whole route or a single waypoint.
 

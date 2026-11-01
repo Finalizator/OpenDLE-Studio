@@ -258,6 +258,21 @@ test('a multi-selection travels with the object that was dragged', () => {
   assert.deepEqual([first.x, first.y], [144, 256]);
   assert.deepEqual([second.x, second.y], [304, 396]);
   assert.equal(second.elevation, 24, 'height only moves when the drag asked for it');
+  // A live drag re-runs against a draft that already holds the previous frame's move, so every
+  // step must solve absolute positions: adding to the current place made the rest of the set
+  // accelerate away — the object in hand moved a little and its neighbours shot off.
+  const live = structuredClone(project);
+  const liveBaseline = structuredClone(project);
+  for (const step of [16, 32, 48]) {
+    dragSelection(live, liveBaseline, { kind: 'entity', id: first.id, group: [first.id, second.id] },
+      'move', { x: step, y: 0, z: 0 }, 16);
+  }
+  const moved = live.map.entities.find(entity => entity.id === first.id);
+  const follow = live.map.entities.find(entity => entity.id === second.id);
+  const baseFirst = liveBaseline.map.entities.find(entity => entity.id === first.id);
+  const baseSecond = liveBaseline.map.entities.find(entity => entity.id === second.id);
+  assert.equal(moved.x - baseFirst.x, 48);
+  assert.equal(follow.x - baseSecond.x, 48, 'the rest of the set travels exactly as far as the object in hand');
   // Dragging alone still moves one object.
   const alone = structuredClone(project);
   dragSelection(project, alone, { kind: 'entity', id: second.id }, 'move', { x: 16, y: 0, z: 0 }, 16);

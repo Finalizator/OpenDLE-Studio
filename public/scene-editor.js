@@ -69,11 +69,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   })));
   selectionOutline.renderOrder = 205; selectionOutline.visible = false; selectionOutline.frustumCulled = false;
   helperGroup.add(selectionOutline);
-  // The rest of a multi-selection, drawn dimmer than the primary so the set is visible without
-  // competing with the object whose arrows the gizmo is on.
+  // The rest of a multi-selection, outlined as brightly as the primary: a faint box is no use at
+  // telling a mapper what a group, a copy or a delete is about to act on, and the arrows already
+  // say which one of them is in hand.
   const groupOutlineGeometry = own(new THREE.BufferGeometry());
   const groupOutline = new THREE.LineSegments(groupOutlineGeometry, own(new THREE.LineBasicMaterial({
-    color: SELECT_COLOR, depthTest: false, transparent: true, opacity: .38,
+    color: SELECT_COLOR, depthTest: false,
   })));
   groupOutline.renderOrder = 204; groupOutline.visible = false; groupOutline.frustumCulled = false;
   helperGroup.add(groupOutline);

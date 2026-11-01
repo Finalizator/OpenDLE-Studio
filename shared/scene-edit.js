@@ -138,14 +138,14 @@ export function transformSelection(project, selection, mode, delta, grid) {
     }
   } else {
     const oldFloor = selection.kind === 'entity' ? sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0 : 0;
-    const before = { x: item.x, y: item.y, elevation: item.elevation || 0 };
+    const before = { x: item.x, y: item.y, elevation: item.elevation || 0, entity: item };
     if (delta.x) item.x = snap(item.x + delta.x);
     if (delta.y) item.y = snap(item.y + delta.y);
     if (selection.kind === 'entity') {
       const newFloor = sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0;
       const elevation = (item.elevation || 0) + oldFloor - newFloor;
       item.elevation = delta.z ? snap(elevation + delta.z) : elevation;
-      moveGroupBy(project, selection, { x: item.x - before.x, y: item.y - before.y,
+      moveGroupBy(project, { map: { entities: [before.entity] } }, selection, { x: item.x - before.x, y: item.y - before.y,
         elevation: (item.elevation || 0) - before.elevation });
     }
   }
@@ -158,24 +158,32 @@ export function transformSelection(project, selection, mode, delta, grid) {
  * separately would pull them together or apart by up to half a grid step on every drag, and the
  * arrangement between them is the whole point of selecting them together.
  */
-function moveWithSelection(project, origin, primary, selection) {
-  moveGroupBy(project, selection, { x: primary.x - origin.x, y: primary.y - origin.y,
+function moveWithSelection(project, baseline, origin, primary, selection) {
+  moveGroupBy(project, baseline, selection, { x: primary.x - origin.x, y: primary.y - origin.y,
     elevation: (primary.elevation || 0) - (origin.elevation || 0) });
 }
-/** The same shift for the rest of the set, given the primary's own travel. */
-function moveGroupBy(project, selection, shift) {
+/**
+ * The same shift for the rest of the set, given the primary's own travel.
+ *
+ * Positions come from the *baseline*, never from the object's current place: a live drag re-runs
+ * this on every pointer move, and the draft it runs on already holds the previous frame's move.
+ * Adding to that compounded the shift frame after frame, which is how a member of the set shot
+ * off into the distance while the object in hand moved sensibly.
+ */
+function moveGroupBy(project, baseline, selection, shift) {
   const group = Array.isArray(selection.group) ? selection.group : [];
   if (group.length < 2) return;
   if (!shift.x && !shift.y && !shift.elevation) return;
   for (const id of group) {
     if (id === selection.id) continue;
     const entity = project.map.entities.find(candidate => candidate.id === id);
-    if (!entity) continue;
-    entity.x += shift.x;
-    entity.y += shift.y;
+    const base = baseline?.map?.entities?.find(candidate => candidate.id === id);
+    if (!entity || !base) continue;
+    entity.x = base.x + shift.x;
+    entity.y = base.y + shift.y;
     // Height only moves when the drag asked for it, so a set dragged across a step keeps its own
     // elevations instead of inheriting the primary's.
-    if (shift.elevation) entity.elevation = (entity.elevation || 0) + shift.elevation;
+    entity.elevation = (base.elevation || 0) + (shift.elevation || 0);
   }
 }
 
@@ -280,6 +288,6 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
     const newFloor = sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0;
     const elevation = (origin.elevation || 0) + oldFloor - newFloor;
     item.elevation = delta.z ? snap(elevation + delta.z) : elevation;
-    moveWithSelection(project, origin, item, selection);
+    moveWithSelection(project, baseline, origin, item, selection);
   }
 }
