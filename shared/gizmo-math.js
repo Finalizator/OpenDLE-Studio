@@ -114,26 +114,39 @@ export function ringDelta(axisKey, degrees) {
 }
 
 /**
- * The size a side reaches when a grabbed face is dragged.
+ * What a face drag does to a volume, worked out on one axis.
+ *
+ * Everything here is in the axis's own coordinate: `centre` is the volume's middle on that axis,
+ * `size` the length of the side being dragged, `amount` the pointer's travel along the positive
+ * direction, `side` which of the two faces was grabbed.
+ *
+ * The **grabbed face snaps to the grid and everything else is derived from it**. That is the whole
+ * point: snapping the middle and the size separately leaves the face that is supposed to stay put
+ * moving in half-grid steps, which reads as a jiggle while the other face is dragged.
  *
  * `amount` is measured along the positive axis, so a drag on the negative side comes back
- * negative; the side it belongs to turns that round. Without it, pulling the left face outwards
- * would shrink the volume — a face that only worked in one direction.
- *
- * By default only the grabbed face moves: the side grows by the drag, and the volume's middle
- * travels with it (see `formCentreShift`) so the face opposite stays exactly where it was. Holding
- * Shift makes it a symmetric grow — both faces move, the middle does not.
+ * negative; `side` turns it round, because pulling a left face further left has to grow the
+ * volume. By default only the grabbed face moves — the opposite one stays exactly where it was and
+ * the middle travels half the drag. `symmetric` (Shift) moves both faces and leaves the middle
+ * alone. Round volumes have no second face, so they use the positive side.
  */
-export const formSizeFromDrag = (start, amount, side = 1, symmetric = false) =>
-  start + amount * side * (symmetric ? 2 : 1);
-
-/**
- * How far the volume's middle travels along the positive axis during a one-sided drag.
- *
- * The grabbed face has moved by the drag and the opposite one must not move at all, so the middle
- * goes half way. Symmetric growth leaves the middle alone.
- */
-export const formCentreShift = (amount, symmetric = false) => (symmetric ? 0 : amount / 2);
+export function formDrag({ centre, size, amount, side = 1, symmetric = false, grid = 0, min = 8, max = 16384 }) {
+  const half = size / 2;
+  const grabbed = centre + side * half;
+  const opposite = centre - side * half;
+  const travel = grabbed + amount;
+  const snapped = grid > 0 ? Math.round(travel / grid) * grid : travel;
+  // Measured with `side` rather than as a plain distance, so dragging a face through the volume
+  // stops at the smallest it may be instead of flipping it and growing again.
+  const wanted = symmetric ? Math.abs(snapped - centre) * 2 : (snapped - opposite) * side;
+  // Whole units first: rounding the size *after* the middle is derived from it would move the
+  // pinned face by the rounding error, which is half of the jiggle this replaced.
+  const nextSize = Math.round(Math.min(max, Math.max(min, wanted)));
+  // Where the middle has to be for the face that was not grabbed to stay put; symmetric growth
+  // leaves it alone.
+  const nextCentre = symmetric ? centre : opposite + side * nextSize / 2;
+  return { size: nextSize, centre: nextCentre, shift: nextCentre - centre };
+}
 
 /** A scale multiplier for a drag, where one gizmo length doubles the size. */
 export const scaleFactorFromDrag = ({ amount, reference }) =>

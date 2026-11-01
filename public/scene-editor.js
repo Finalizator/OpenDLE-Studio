@@ -14,8 +14,8 @@ import { areaVolume, areaYaw, overlayVolumes } from '/shared/areas.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
 import { samplePath } from '/shared/paths.js';
 import {
-  GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formCentreShift,
-  formSizeFromDrag, rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
+  GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formDrag,
+  rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
 } from '/shared/gizmo-math.js';
 import { buildFaceArrows, buildGizmo, disposeHandles, handleKey, paintHandles } from './gizmo.js';
 
@@ -604,6 +604,20 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     const area = entity?.area || {};
     return Number(area[axisField(axis)]) || 128;
   }
+  /**
+   * Where a volume's middle sits on one axis, and how long its side is.
+   *
+   * Sideways the object's own position *is* the middle. Vertically it is the floor, so the middle
+   * is half a side above the elevation — which is why a one-sided drag has to treat the two axes
+   * differently when it comes to putting the result back.
+   */
+  function volumeAxis(id, axis) {
+    const entity = project.map.entities.find(item => item.id === id);
+    const size = areaSizeOf(id, axis);
+    if (axis === 'x') return { centre: entity.x || 0, size };
+    if (axis === 'z') return { centre: entity.y || 0, size };
+    return { centre: (entity.elevation || 0) + size / 2, size };
+  }
   function applyEdit(fn, message, after) {
     try { callbacks.edit(fn, message); after?.(); } catch (error) { callbacks.error(error.message); cancel(); }
   }
@@ -988,10 +1002,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const center = new THREE.Vector3(volume.center.x, volume.center.z, volume.center.y);
       action = { kind: 'transform', mode: 'form', axis: face.axis, side: face.side, selection: { ...selected },
         x: event.clientX, y: event.clientY, origin: center.clone(), drag: axisDragStart(event, center, face.axis),
-        // The size the drag grows from is the one it started at: reading it back from the live
-        // project would add each frame's growth to the next, which is how a small drag used to
-        // turn a room-sized zone into a tower.
-        startSize: areaSizeOf(selected.id, face.axis),
+        // The volume the drag started from: reading it back from the live project would add each
+        // frame's growth to the next, which is how a small drag used to turn a room-sized zone
+        // into a tower.
+        startAxis: volumeAxis(selected.id, face.axis),
         baseline: project, moved: false };
       paintFaces(face.key);
       canvas.dataset.transform = `form:${face.key}`;
@@ -1002,7 +1016,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       if (mode !== 'move' && selected.kind !== 'entity') { callbacks.error('Select an object to rotate or scale; geometry uses Move'); return; }
       const origin = handles.position.clone();
       action = { kind: 'transform', mode, axis, selection: { ...selected }, x: event.clientX, y: event.clientY,
-        origin, drag: axisDragStart(event, origin, axis), startSize: areaSizeOf(selected.id, axis),
+        origin, drag: axisDragStart(event, origin, axis), startAxis: volumeAxis(selected.id, axis),
         reference: GIZMO_LENGTH * handles.scale.x,
         turn: screenAngle(screenXY(origin), pointerXY(event)), baseline: project, moved: false };
       canvas.dataset.transform = `transform:${axis}`;
@@ -1081,16 +1095,19 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const symmetric = event.shiftKey;
       // A round volume has no sides to tell apart, so its arrows fall back to the positive one.
       const side = action.side || 1;
-      // Measured along the positive axis, so the side the grabbed face is on turns the drag round:
-      // pulling a left face further left has to grow the volume, not shrink it.
-      const size = snapValue(formSizeFromDrag(action.startSize, amount, side, symmetric), callbacks.grid());
+      // The grabbed face snaps; the face opposite it is then held exactly where it is, which is
+      // why the middle is *derived* and never snapped again.
+      const next = formDrag({ centre: action.startAxis.centre, size: action.startAxis.size, amount, side,
+        symmetric, grid: callbacks.grid() });
+      // The size is not rounded again: `formDrag` put the grabbed face on the grid, and rounding
+      // the size a second time would move the face that is supposed to be pinned.
+      const size = next.size;
       const direction = axisDirection(action.axis);
-      // A volume's origin is its middle on the ground but its *floor* vertically, so "the other
-      // face stays put" means different things per axis: sideways the middle travels half the
-      // drag, upwards the bottom does not travel at all and the height takes the whole drag.
+      // Sideways the shift is the middle's own travel. Vertically the stored number is the floor,
+      // so it moves by the shift less the half-side the size gained.
       const offset = action.axis === 'y'
-        ? { x: 0, y: 0, z: side > 0 ? (symmetric ? -amount : 0) : amount }
-        : { x: direction[0] * formCentreShift(amount, symmetric), y: direction[2] * formCentreShift(amount, symmetric), z: 0 };
+        ? { x: 0, y: 0, z: next.shift - (size - action.startAxis.size) / 2 }
+        : { x: direction[0] * next.shift, y: direction[2] * next.shift, z: 0 };
       showReadout(`${key} ${action.side ? (action.side > 0 ? '+' : '−') : ''} → ${size}${symmetric ? ' (both sides)' : ''}`);
       canvas.dataset.formSize = `${key}=${size}`;
       canvas.dataset.formBoth = symmetric ? 'on' : 'off';

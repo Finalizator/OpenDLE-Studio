@@ -13,7 +13,7 @@ import {
   cloneEntitiesForPaste, entityGroups, groupEntities, groupOf, leaveGroup, membersOf, ungroup,
 } from '/shared/entity-groups.js';
 import { requestMouseLock } from './pointer-lock.js';
-import { formCentreShift, formSizeFromDrag } from '/shared/gizmo-math.js';
+import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
 import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
 import { recoverProject } from './project-recovery.js';
@@ -2672,10 +2672,12 @@ canvas.addEventListener('pointermove', event => {
     for (const key of ['width', 'depth']) {
       const sign = drag.sides?.[key] || 0;
       if (!sizing.includes(key) || !sign) continue;
-      const amount = (key === 'width' ? local.x : local.y) * sign;
-      drag.sizes[key] = Math.max(grid, Math.round(formSizeFromDrag(drag.startSizes[key], amount, 1, symmetric) / grid) * grid);
-      const travel = formCentreShift(amount, symmetric) * sign;
-      if (key === 'width') shift.x = travel; else shift.y = travel;
+      // The grip that was grabbed snaps to the grid; the middle is derived so the opposite edge
+      // stays exactly where it is.
+      const next = formDrag({ centre: 0, size: drag.startSizes[key], amount: key === 'width' ? local.x : local.y,
+        side: sign, symmetric, grid });
+      drag.sizes[key] = Math.round(next.size);
+      if (key === 'width') shift.x = next.shift; else shift.y = next.shift;
     }
     // The travel is in the zone's frame, so it is turned back into map space before it is used.
     drag.offset = { x: shift.x * Math.cos(radians) - shift.y * Math.sin(radians),
@@ -2703,8 +2705,10 @@ canvas.addEventListener('pointerup', guard(event => {
     edit(next => {
       const zone = next.map.entities.find(entity => entity.id === finished.selection.id);
       zone.area = { ...zone.area, ...sides };
-      zone.x = snap({ x: finished.origin.x + offset.x, y: finished.origin.y + offset.y }).x;
-      zone.y = snap({ x: finished.origin.x + offset.x, y: finished.origin.y + offset.y }).y;
+      // Applied exactly, never snapped: the grip that was dragged snapped to the grid, so rounding
+      // the zone's position again would move the edge that is meant to stay put.
+      zone.x = Math.round(finished.origin.x + offset.x);
+      zone.y = Math.round(finished.origin.y + offset.y);
     }, `Zone formed: ${Object.entries(sides).map(([key, value]) => `${key} ${value}`).join(', ')}`);
     return;
   }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   GIZMO_AXES, GIZMO_LENGTH, angleDegrees, axisAmount, axisField, axisPressPoint, dragPlaneNormal,
-  formCentreShift, formSizeFromDrag, normalize, rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
+  formDrag, normalize, rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
 } from '../shared/gizmo-math.js';
 
 // A pointer ray from a camera at `eye` through `point`: enough of a camera to test the drag maths
@@ -80,20 +80,58 @@ test('rings turn with the pointer, and the axis decides which way', () => {
   assert.deepEqual(ringDelta('z', 30), { roll: 30 });
 });
 
-test('form and scale turn a drag into a size', () => {
-  // By default only the grabbed face moves: the side grows by the drag, and the middle goes half
-  // way so the opposite face stays put.
-  assert.equal(formSizeFromDrag(128, 64), 192);
-  assert.equal(formCentreShift(64), 32);
-  assert.equal(formSizeFromDrag(128, -64), 64);
-  // Holding Shift grows both faces: twice the drag, and the middle stays where it is.
-  assert.equal(formSizeFromDrag(128, 64, 1, true), 256);
-  assert.equal(formCentreShift(64, true), 0);
-  // A face on the negative side pulls the other way on the axis, and still has to grow when it is
-  // dragged away from the volume — one-sided or symmetric.
-  assert.equal(formSizeFromDrag(128, -64, -1), 192);
-  assert.equal(formSizeFromDrag(128, -64, -1, true), 256);
-  assert.equal(formSizeFromDrag(128, 64, -1), 64);
+test('a face drag snaps the grabbed face and pins the other one', () => {
+  // A 128-wide volume from 64 to 192, dragging the +x face outwards.
+  const out = formDrag({ centre: 128, size: 128, amount: 64, side: 1, grid: 16 });
+  assert.equal(out.size, 192);
+  assert.equal(out.centre, 128 + 32, 'the middle travels half the drag');
+  assert.equal(out.centre + out.size / 2, 192 + 64, 'the grabbed face follows the pointer');
+  assert.equal(out.centre - out.size / 2, 64, 'the opposite face has not moved');
+
+  // The same drag on the -x face grows the volume the other way, and still pins +x.
+  const mirrored = formDrag({ centre: 128, size: 128, amount: -64, side: -1, grid: 16 });
+  assert.equal(mirrored.size, 192);
+  assert.equal(mirrored.centre - mirrored.size / 2, 64 - 64);
+  assert.equal(mirrored.centre + mirrored.size / 2, 192);
+
+  // The opposite face is pinned for every step of a drag, not just the ends: this is the wobble
+  // that snapping the middle and the size separately produced.
+  const pinned = new Set();
+  for (let amount = 20; amount <= 180; amount += 3) {
+    const step = formDrag({ centre: 128, size: 128, amount, side: 1, grid: 16 });
+    pinned.add(Math.round((step.centre - step.size / 2) * 1000) / 1000);
+  }
+  assert.deepEqual([...pinned], [64]);
+
+  // The grabbed face lands on the grid, and the size is a whole number (rounding it after the
+  // middle is derived is what leaves a few units of creep).
+  for (let amount = 20; amount <= 180; amount += 3) {
+    const step = formDrag({ centre: 128, size: 128, amount, side: 1, grid: 16 });
+    assert.equal((step.centre + step.size / 2) % 16, 0);
+    assert.ok(Number.isInteger(step.size), String(step.size));
+  }
+  // An odd starting size still pins the opposite face exactly: the size is rounded before the
+  // middle is taken from it.
+  for (const size of [127, 95, 33]) {
+    for (let amount = 10; amount <= 90; amount += 7) {
+      const step = formDrag({ centre: 200, size, amount, side: 1, grid: 16 });
+      assert.equal(step.centre - step.size / 2, 200 - size / 2, `size ${size} amount ${amount}`);
+    }
+  }
+
+  // Shift moves both faces and leaves the middle alone.
+  const both = formDrag({ centre: 128, size: 128, amount: 64, side: 1, grid: 16, symmetric: true });
+  assert.equal(both.size, 256);
+  assert.equal(both.centre, 128);
+  assert.equal(both.shift, 0);
+
+  // A volume can never be dragged thinner than 8 units, and the pinned face still holds.
+  const tiny = formDrag({ centre: 128, size: 128, amount: -200, side: 1, grid: 16 });
+  assert.equal(tiny.size, 8);
+  assert.equal(tiny.centre - tiny.size / 2, 64);
+});
+
+test('scale turns a drag into a factor', () => {
   // One gizmo length of drag doubles a size, and a size can never reach nothing.
   assert.equal(scaleFactorFromDrag({ amount: 100, reference: 100 }), 2);
   assert.equal(scaleFactorFromDrag({ amount: -50, reference: 100 }), .5);

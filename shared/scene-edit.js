@@ -150,12 +150,14 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
     item.area = { ...origin.area };
     // One face dragged on its own takes the middle with it, so the opposite face stays where it
     // is; `offset` is how far the middle travels, in map units.
+    // Applied exactly, never snapped: the drag snapped the *face* it was given, so rounding the
+    // middle again would move the face that is supposed to be held still.
     const offset = delta.offset;
     const moveWith = () => {
       if (!offset) return;
-      item.x = snap(origin.x + (Number(offset.x) || 0));
-      item.y = snap(origin.y + (Number(offset.y) || 0));
-      item.elevation = snap((origin.elevation || 0) + (Number(offset.z) || 0));
+      item.x = Math.round(origin.x + (Number(offset.x) || 0));
+      item.y = Math.round(origin.y + (Number(offset.y) || 0));
+      item.elevation = Math.round((origin.elevation || 0) + (Number(offset.z) || 0));
     };
     if (mode === 'scale' && Number.isFinite(Number(delta.scale))) {
       // The scale is relative to the size the drag started at, which is what makes it absolute.

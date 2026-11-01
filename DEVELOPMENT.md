@@ -675,6 +675,12 @@ runtime says which event is wrong rather than quietly never firing.
   side grows by the drag and the volume's middle travels half of it. Hold **Shift** to grow both
   faces instead: the size changes by twice the drag and the middle does not move. The readout says
   `(both sides)` while Shift is held.
+- **The grabbed face snaps and everything else is derived from it** (`formDrag` in
+  `shared/gizmo-math.js`): the size is a whole number, then the middle is taken from the pinned
+  face. Snapping the middle and the size separately, or rounding the size after the middle was
+  worked out, leaves the face that is meant to be held still drifting — a few units per step, which
+  reads as a jiggle while the other face is dragged. For the same reason the middle is applied
+  exactly and never snapped again.
 - The middle and the floor are not the same thing, so the two axes travel differently: sideways the
   entity's own position *is* the middle, and upwards the entity's elevation is the *floor* — a
   one-sided drag of the top face therefore leaves elevation alone and the height takes the whole
