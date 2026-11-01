@@ -1,7 +1,7 @@
 import { createRuntime } from './runtime.js';
 import { HL2_MOVEMENT } from './source-motion.js';
 import { selectGameLevel } from './game-levels.js';
-import { validatePhysicsState } from './physics.js';
+import { validatePhysicsState, physicsEntityIds } from './physics.js';
 import { gameSettings } from './game-settings.js';
 import { KEYS, WEAPONS } from './player-state.js';
 import { WORLD_UP } from './gravity.js';
@@ -206,6 +206,12 @@ function validateRuntime(project, state, baseline) {
   const numberMap = (map, label) => {
     for (const [key, value] of map) if (typeof key !== 'string' || typeof value !== 'number' || Number.isNaN(value)) fail(`invalid ${label}`);
   };
+  // Saves written before damage sampling skipped things without health hold `undefined` samples.
+  // A sample is only the last health seen, so dropping the unusable ones restores the game and
+  // the condition simply waits for the next change.
+  if (state.entitySamples instanceof Map)
+    for (const [key, value] of state.entitySamples)
+      if (typeof value !== 'number' || Number.isNaN(value)) state.entitySamples.delete(key);
   for (const key of ['entitySamples', 'shaderUniforms']) numberMap(state[key], key);
   numberMap(state.hudState.statSamples, 'HUD stat samples');
   const objectMap = (map, allowed, fields, label) => {
@@ -300,11 +306,7 @@ export function restoreGameSave(project, record, identity) {
   const settings = gameSettings(restored.settings);
   const runtime = createRuntime(selected, { settings });
   validateRuntime(selected, restored, runtime);
-  if (record.physicsData !== null) {
-    const bodyIds = new Set(restored.entities.filter(entity => entity.type === 'player' ||
-      entity.physics && entity.physics.body !== 'none').map(entity => entity.id));
-    validatePhysicsState(record.physicsData, bodyIds);
-  }
+  if (record.physicsData !== null) validatePhysicsState(record.physicsData, physicsEntityIds(selected, restored.entities));
   Object.assign(runtime, restored);
   if (project.game && record.levelId !== project.game.active) selectGameLevel(project, record.levelId);
   return { runtime, physicsData: record.physicsData === null ? null : structuredClone(record.physicsData) };

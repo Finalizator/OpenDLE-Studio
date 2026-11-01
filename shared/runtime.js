@@ -894,7 +894,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (condition.type === 'spriteState') return state.spriteAnimations.get(resolveEntityId(event, condition.entityId))?.name === condition.state;
       if (condition.type === 'entityDamaged') {
         const entity = findTarget(condition.entityId);
-        if (!entity) return false;
+        // A thing without health can never lose any. Sampling it anyway would store
+        // `undefined`, which the save format has to reject as a non-numeric sample.
+        if (!entity || !Number.isFinite(entity.health)) return false;
         const key = `${keyOf()}:${entity.id}`, old = state.entitySamples.get(key) ?? entity.health;
         state.entitySamples.set(key, entity.health);
         return entity.health < old;

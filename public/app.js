@@ -1425,6 +1425,16 @@ document.addEventListener('keydown', event => {
   if (event.code !== 'Escape') return;
   if (activePathId || toolMode() === 'path') finishPath();
 });
+// Delete removes the selected object in the layout, as it does in the 3D view. Walls, sectors
+// and vertices have no safe removal yet, so they are left alone rather than half-deleted.
+document.addEventListener('keydown', event => {
+  if (event.code !== 'Delete' && event.code !== 'Backspace') return;
+  // The 3D view listens on its own canvas for this key, so it must not delete twice.
+  if (sceneMode === '3d' || (runtime && $('play-dialog').open) || selection?.kind !== 'entity') return;
+  if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  event.preventDefault();
+  guard(() => deleteLayoutObject(selection.id))();
+});
 
 // Rebuilt once per project, not once per rule: the event sheet asks for the object list
 // for every card (Owner, target and condition fields), and each rebuild allocated a
@@ -2538,6 +2548,9 @@ function drawMap() {
 // pasting reproduces what the mapper built rather than a pile of look-alikes.
 let clipboardEntities = null;
 let pointerMapPoint = null;
+// The last press in client pixels, which is where a picker opened from a menu should appear.
+const pointerClient = { x: 40, y: 40 };
+document.addEventListener('pointerdown', event => { pointerClient.x = event.clientX; pointerClient.y = event.clientY; }, true);
 function copySelectedEntities() {
   const entities = selectedEntities();
   if (!entities.length) return false;
@@ -2569,12 +2582,21 @@ function pasteEntities() {
   return true;
 }
 document.addEventListener('keydown', event => {
-  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
-  if (event.code !== 'KeyC' && event.code !== 'KeyV') return;
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
   const target = event.target;
-  // Typing in a field is the browser's clipboard, not the editor's.
+  // Typing in a field is the browser's clipboard and undo, not the editor's.
   if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
   if (runtime && $('play-dialog').open) return;
+  // Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) are the undo and redo every other editor offers, and
+  // they go through the toolbar buttons so the history is touched in one place only.
+  if (event.code === 'KeyZ' || event.code === 'KeyY') {
+    const button = $(event.code === 'KeyY' || event.shiftKey ? 'redo' : 'undo');
+    if (button.disabled) return;
+    event.preventDefault();
+    button.click();
+    return;
+  }
+  if (event.shiftKey || event.code !== 'KeyC' && event.code !== 'KeyV') return;
   if (event.code === 'KeyC') { if (copySelectedEntities()) event.preventDefault(); return; }
   if (pasteEntities()) event.preventDefault();
 });
@@ -3000,6 +3022,8 @@ function stopPreview() {
   previewProject = null; hudCursorActive = false;
   $('hud-cursor').setAttribute('aria-pressed', 'false');
   $('show-statusbar').hidden = true;
+  // The preview is gone, so its last instruction ("gameplay is paused") would be a lie.
+  status('Preview stopped. Back to the editor.');
 }
 function mouseStatus(message, error = false) {
   $('mouse-status').textContent = message;
@@ -4465,10 +4489,20 @@ function importNodeDocument(document, options = {}) {
   return imported;
 }
 
+/**
+ * A zero-size rect at the pointer, so a picker opens where the click happened.
+ *
+ * Neither canvas anchors it well: the 2D map is hidden in the 3D view, so the last press is
+ * tracked instead of using an element.
+ */
+function pointerAnchor() {
+  return { left: pointerClient.x, top: pointerClient.y, right: pointerClient.x, bottom: pointerClient.y, width: 0, height: 0 };
+}
+
 /** Picks artwork for the layout object under the pointer, sprites and models together. */
 function pickAssetForEntity(entity) {
   openAssetPicker({
-    anchor: $('map-canvas'),
+    anchor: pointerAnchor(),
     title: `Artwork for ${entity.name}`,
     assets: project.assets || [],
     kinds: [...PICTURE_KINDS, ...MODEL_KINDS],

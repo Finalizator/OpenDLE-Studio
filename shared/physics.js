@@ -166,6 +166,19 @@ function solidActor(project, entity) {
 }
 
 /**
+ * The state entities that get a Rapier body, decided exactly as `createPhysics` decides it.
+ *
+ * A save is validated against this set before it is applied, so it has to include the imported
+ * actors that are solid without carrying a physics config of their own.
+ */
+export function physicsEntityIds(project, entities) {
+  const ids = new Set();
+  for (const entity of entities)
+    if (entity.type === 'player' || entity.physics || solidActor(project, entity)) ids.add(entity.id);
+  return ids;
+}
+
+/**
  * The six corners of a wedge, as a convex hull Rapier collides with face by face.
  *
  * These are the corners of the shape a ramp is *drawn* as, which is the point: a rotated box was a

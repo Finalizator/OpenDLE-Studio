@@ -1224,6 +1224,12 @@ too — each monster's state-machine position and inventory — so a restored fi
 continues instead of resetting. The weapon machine is re-entered at its Ready
 state and the unsupported-action diagnostics are rebuilt rather than saved. Saving requires an active,
 living game, and overwriting an occupied slot requires an in-game confirmation.
+Damage sampling only records a thing that really has health, so a map with lights,
+pickups or decorations — none of which carry health — never writes an unusable
+sample; a save written before that guard drops such entries on load instead of
+refusing the whole slot. The physics snapshot is checked against the same body set
+`createPhysics` builds, which includes the imported solid actors that block the
+player without a physics config of their own.
 Loading restores the saved map and runtime rather than restarting the level or
 only restoring inventory. Saves use IndexedDB, not localStorage; browser storage
 failures are displayed on the menu and in editor status. They survive closing
@@ -3523,6 +3529,13 @@ the floor point under the cursor in 3D. The copy gets a new id and a name that i
 player start is refused because a level has exactly one. `cloneEntityForPaste` in
 `public/editor-drop.js` is the tested part; the key handler only decides when to call it, and it
 stays out of the way while a field has focus or the game preview is running.
+
+**Ctrl+Z**, **Ctrl+Shift+Z** (and **Ctrl+Y**) undo and redo, like **Delete** / **Backspace**
+removing the selected object. They click the toolbar buttons rather than touching the history
+themselves, so the history is still only changed in one place, and they do nothing while a field
+has focus or the preview is open. The 3D view keeps its own Delete listener on its canvas, so the
+layout handler steps aside while that view is showing. Walls, sectors and vertices have no safe
+removal yet and are deliberately left alone.
 
 ### A body's centre is not its base
 

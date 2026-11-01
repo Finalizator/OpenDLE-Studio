@@ -4,7 +4,7 @@ import R from '@dimforge/rapier3d-compat';
 import { ShapeUtils, Vector2 } from 'three';
 import { createProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
-import { createPhysics, pairKey, FIXED_STEP } from '../shared/physics.js';
+import { createPhysics, pairKey, FIXED_STEP, physicsEntityIds } from '../shared/physics.js';
 import { assembleGameLevels, selectGameLevel } from '../shared/game-levels.js';
 import { captureGameSave, restoreGameSave, gameSaveIdentity } from '../shared/save-game.js';
 import * as saves from '../public/game-saves.js';
@@ -156,6 +156,40 @@ test('corrupt and incompatible records fail explicitly, including structurally w
     assert.throws(() => restoreGameSave(project, record, 'id'), /Invalid (game|physics) save/);
   }
   assert.equal({}.polluted, undefined);
+});
+
+test('damage sampling records only real health, so a save with healthless things still loads', () => {
+  const { project, state } = fixture();
+  const thing = { ...project.map.entities[1], health: undefined };
+  project.events = [{ id: 'damaged', conditions: [{ type: 'entityDamaged', entityId: thing.id }], actions: [] }];
+  stepRuntime(project, state, .05, new Set());
+  assert.equal(state.entitySamples.has(`damaged:${thing.id}`), false, 'a thing without health is never sampled');
+  assert.ok(![...state.entitySamples.values()].some(value => typeof value !== 'number'));
+  // A save that still carries an unusable sample from an older build restores, dropping the entry.
+  const record = json(captureGameSave(project, state, 'id'));
+  field(record.snapshot, 'entitySamples')[1].value.push([`damaged:${thing.id}`, { type: 'undefined' }]);
+  resign(record);
+  const restored = restoreGameSave(project, record, 'id').runtime;
+  assert.equal(restored.entitySamples.has(`damaged:${thing.id}`), false);
+});
+
+test('a save round trips when imported actors are solid without a physics config of their own', t => {
+  const { project, state } = fixture();
+  project.actors = [{ id: 'actor_imp', name: 'DoomImp', doomedNum: 3001, flags: {}, radius: 20, height: 56 }];
+  project.map.entities.push({ id: 'imp', name: 'DoomImp', type: 'enemy', x: 40, y: 40, angle: 0,
+    doomType: 3001, actorId: 'actor_imp', actorName: 'DoomImp', health: 60 });
+  state.entities = createRuntime(project).entities;
+  state.physics = createPhysics(project, state, R, triangulate);
+  t.after(() => state.physics.dispose());
+  const saved = state.physics.saveState();
+  assert.ok(saved.bodies.some(body => body.id === 'imp'), 'a solid imported actor gets a body');
+  assert.equal(physicsEntityIds(project, state.entities).has('imp'), true);
+  const record = json(captureGameSave(project, state, 'id'));
+  const { runtime, physicsData } = restoreGameSave(project, record, 'id');
+  runtime.physics = createPhysics(project, runtime, R, triangulate);
+  t.after(() => runtime.physics.dispose());
+  runtime.physics.restoreState(physicsData);
+  assert.deepEqual(runtime.physics.saveState().bodies.map(body => body.id).sort(), saved.bodies.map(body => body.id).sort());
 });
 
 test('physics snapshot restores midair player, dynamic rigid bodies, velocities, forces and substeps after initialization', t => {
