@@ -13,7 +13,7 @@ const engineRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Server modules that only use Node built-ins plus bundled engine code. Everything else
 // (the studio HTTP server, MCP tools and importers) needs npm packages and is excluded.
-const SERVER_MODULES = ['browser.js', 'export-launcher.js', 'store.js', 'version.js'];
+const SERVER_MODULES = ['browser.js', 'export-launcher.js', 'store.js', 'project-folder.js', 'version.js'];
 const THREE_BUILD_FILES = ['three.core.js', 'three.module.js', 'three.tsl.js', 'three.webgpu.js'];
 const THREE_ADDON_SEEDS = [
   'environments/RoomEnvironment.js',

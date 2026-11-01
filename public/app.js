@@ -3067,7 +3067,9 @@ async function saveProject() {
   if (!dirty) persistDraft();
   render();
   await refreshProjects();
+  const folder = result.saved?.file;
   status(dirty ? 'Earlier snapshot saved; newer edits are still unsaved'
+    : folder ? `Project saved as a folder (${folder} plus ${result.saved.assets} asset file(s)); it reopens next time as "${project.title}"`
     : `Project saved to the local server; it reopens next time as "${project.title}"`);
 }
 async function reloadProject(initial = false) {
@@ -3847,14 +3849,25 @@ $('restore').addEventListener('click', guard(() => {
   catch (error) { throw new Error(`The browser draft is not valid JSON (${error.message}). Export or clear it before restoring.`); }
   replace(parsed, 'Browser draft restored; save to keep it on the server');
 }));
-$('export').addEventListener('click', () => {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(project, null, project.game ? 0 : 2)], { type: 'application/json' }));
-  const link = make('a'); link.href = url; link.download = `${project.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.opendle.json`; link.click();
-  // The blob URL keeps the whole project document alive until it is revoked.
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  status('Project exported');
-});
+// Export is the project folder, zipped: `project.json` and one file per model, texture, sprite
+// and sound. A single JSON held those as base64, which made a document nobody could open, diff or
+// repair by hand — and the files are what an author actually wants to keep.
+$('export').addEventListener('click', guard(async () => {
+  $('export').disabled = true;
+  status('Packing the project folder (document plus its asset files)...');
+  try {
+    const { response } = await requestWithSession('/api/export/project', {}, token);
+    if (!response.ok) throw new Error(`Export failed (HTTP ${response.status})`);
+    const blob = await response.blob();
+    const name = /filename="([^"]+)"/.exec(response.headers.get('content-disposition') || '')?.[1]
+      || `${project.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.opendle.zip`;
+    const url = URL.createObjectURL(blob);
+    const link = make('a'); link.href = url; link.download = name; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    const files = Number(response.headers.get('x-opendle-assets') || 0);
+    status(`Project exported: ${name} — project.json and ${files} asset file(s), ${(blob.size / 1048576).toFixed(1)} MiB.`);
+  } finally { $('export').disabled = false; }
+}));
 $('export-build').addEventListener('click', guard(async () => {
   $('export-build').disabled = true;
   status('Packaging a standalone desktop build (engine files, project data and launch scripts)...');
@@ -3870,12 +3883,27 @@ $('export-build').addEventListener('click', guard(async () => {
   } finally { $('export-build').disabled = false; }
 }));
 $('open').addEventListener('click', () => $('project-file').click());
+/**
+ * Opens a project from a file: an exported folder zip, or the older single JSON document.
+ *
+ * The zip is unpacked by the server, because a folder is exactly what the studio saves and the
+ * browser has no business holding a second implementation of that format.
+ */
 $('project-file').addEventListener('change', guard(async event => {
   const file = event.target.files[0];
   event.target.value = '';
   if (!file) return;
   if (file.size > ARCHIVE_LIMIT) throw new Error(`Project exceeds the ${ARCHIVE_LIMIT / 1048576} MiB file limit`);
-  const next = validateProject(JSON.parse(await file.text()));
+  let next;
+  if (/\.zip$/i.test(file.name)) {
+    status(`Unpacking ${file.name}...`);
+    const { response } = await requestWithSession('/api/project/unpack', {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: await file.arrayBuffer(),
+    }, token);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `The project archive could not be read (HTTP ${response.status})`);
+    next = validateProject(payload.project);
+  } else next = validateProject(JSON.parse(await file.text()));
   if (!confirm('Open this project? You can undo this change.')) return;
   replace(next, 'Project opened');
   await adoptDocument();

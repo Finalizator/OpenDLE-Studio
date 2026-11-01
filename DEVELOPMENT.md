@@ -78,18 +78,33 @@ under `data/`, one file each, with a small list beside them:
 | path | contents |
 | --- | --- |
 | `data/projects.json` | stored projects and the `active` one the studio reopens |
-| `data/projects/<id>.json` | one stored project |
+| `data/projects/<id>/project.json` | one stored project: the document, with a `file` where an asset's bytes were |
+| `data/projects/<id>/assets/*` | that project's models, images, sounds, music and fonts |
+| `data/projects/<id>.json` | the single file older installations wrote (still read, replaced on save) |
 | `data/project.json` | the single project file of an older installation |
 
 The `<id>` is a file-safe slug of the project title (`Imported WAD game` →
 `imported-wad-game`), so an installation that still has the old single
 `data/project.json` keeps it as the first entry rather than moving or losing it.
+
+**A project is a folder, not one file.** Everything that is not the document — 2218 sprites,
+textures, flats, sounds and music in the Doom 2 import — lives in `assets/`, one file per unique
+payload, named after the asset and a hash of its bytes (`assets/pistol-fire-d118cfa3.wav`).
+`server/project-folder.js` is the only place that knows the difference: it splits a project into
+the document and its files on the way to disk, and puts the bytes back as the data URLs the
+renderer, the audio player and a portable build all expect on the way in. A save writes only the
+payloads it has not written before (the hash is in the name) and removes the files nothing names,
+so replacing one texture does not double the folder. Identical bytes are one file, which is what a
+route's repeated sound or a texture used twice should be.
+
+The old one-file format is still read, so an installation that predates this is not stranded; the
+next save moves it into a folder and retires `projects/<id>.json`.
 Opening a saved studio therefore never rewrites anything; the list is written on
 the first save, import or switch.
 
 Anything that replaces the whole document — **Import WAD + assets**, **Quick
 import game**, a package import, **Open project** — is stored **immediately** in a
-temporary slot (`data/projects/temporary.json`, listed as `temporary`) and becomes
+temporary slot (`data/projects/temporary/project.json`, listed as `temporary`) and becomes
 the active project, so the next start opens it instead of whatever was saved
 previously even if the user never pressed Save. There is only one temporary slot:
 importing another game (or reimporting the same one) replaces it instead of
@@ -1176,6 +1191,21 @@ remain native engine primitives.
 - Shared schema/default metadata drives editor command fields and validation.
   MCP/DeepSeek can install the starter, add/update sheets, add/update rules
   and replace projects, using the same validation and portable JSON.
+
+### Export and open: the folder, zipped
+
+**Export project** downloads `<title>.opendle.zip`: `project.json` and the same `assets/` files the
+studio saves. It used to be one `.opendle.json` with every texture and sound base64'd inside it,
+which is a document nothing can open, diff or repair; a zip of real files unzips into something a
+person can look at, and `Open project` takes that zip back (`POST /api/project/unpack` unpacks it
+on the server, so there is one implementation of the format, not two).
+
+The routes are `GET /api/export/project` (zip, `X-Opendle-Assets` carries the file count) and
+`POST /api/project/unpack` (raw zip bytes → the project with its assets inlined). Both need the
+session token. `server/project-archive.js` reads the archive: bounded by entry count and expanded
+size, normalised paths, and only `project.json` and the files it names are read. The packing side
+lives in `server/project-folder.js` and ships inside a portable build; the reading side needs
+`yauzl` and stays in the studio.
 
 ### Object-local variables and event expressions
 

@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
+import { ASSET_DIRECTORY, PROJECT_FILE, documentBytes, isFolderDocument, packProject, readFolderFile, unpackProject } from './project-folder.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { upgradePickupReach } from '../shared/doom-hud.js';
@@ -15,10 +16,23 @@ export function projectSlug(title) {
   return slug || 'project';
 }
 
+/**
+ * Reads a saved project, in any of the formats this studio has written.
+ *
+ * - the first format was the bare project;
+ * - the second put `{ project, revision }` in one file, assets inlined as data URLs;
+ * - the current one is a folder: the same document, with each asset's bytes in a file beside it.
+ *
+ * The first two still open, so an installation that predates the folder is not stranded.
+ */
 function readSaved(file) {
   const saved = JSON.parse(readFileSync(file, 'utf8'));
   // Version 1 files are a bare project from the first saved format.
   if (saved.version === 1) return { project: saved, revision: 0 };
+  if (isFolderDocument(saved)) {
+    const directory = dirname(file);
+    return unpackProject(saved, path => readFolderFile(directory, path));
+  }
   if (!Number.isSafeInteger(saved.revision) || saved.revision < 0) throw new Error('Saved project revision is invalid');
   return { project: saved.project, revision: saved.revision };
 }
@@ -107,12 +121,42 @@ export class ProjectStore {
     renameSync(`${indexFile}.tmp`, indexFile);
   }
 
+  /**
+   * Writes a project as a folder: the document, and one file per asset payload.
+   *
+   * An asset file is named after its content, so a save only writes the payloads it has not
+   * written before and two assets with the same bytes share one file. Files this save no longer
+   * names are removed, which is what keeps a folder from growing every time a texture is replaced.
+   */
   writeProject(entry, project, revision) {
     if (!this.directory) { this.documents.set(entry.id, { project: structuredClone(project), revision }); return; }
-    const file = this.fileFor(entry);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(`${file}.tmp`, JSON.stringify({ project, revision }, null, 2), { mode: 0o600 });
+    const previous = this.fileFor(entry);
+    // Everything new is written into a folder of its own, including a project that used to be
+    // one big JSON file: the next save moves it rather than writing that format again.
+    entry.file = join('projects', entry.id, PROJECT_FILE);
+    const file = this.fileFor(entry), directory = dirname(file);
+    const assets = join(directory, ASSET_DIRECTORY);
+    mkdirSync(assets, { recursive: true });
+    const { document, files } = packProject(project, { revision });
+    const written = new Set();
+    for (const payload of files) {
+      written.add(payload.path);
+      const target = join(directory, payload.path);
+      if (!existsSync(target)) writeFileSync(target, payload.bytes, { mode: 0o600 });
+    }
+    for (const name of readdirSync(assets)) {
+      if (!written.has(`${ASSET_DIRECTORY}/${name}`)) rmSync(join(assets, name), { force: true });
+    }
+    writeFileSync(`${file}.tmp`, documentBytes(document), { mode: 0o600 });
     renameSync(`${file}.tmp`, file);
+    // A studio project that used to be one JSON file (`projects/<id>.json`) leaves no copy of the
+    // old 137 MiB format behind. A game's own seed file (`data/project.json` in a portable build)
+    // is not ours to delete: it is the file the package shipped.
+    const legacy = previous !== file && basename(previous) === `${entry.id}.json` && existsSync(previous);
+    if (legacy) rmSync(previous, { force: true });
+    // The folder as the project list names it (`projects/<id>/project.json`), which is what a
+    // message should say: the absolute path of this machine is not the user's business.
+    return { file: entry.file, assets: files.length };
   }
 
   /** Stored projects, newest first, plus which one is open. */
@@ -180,7 +224,7 @@ export class ProjectStore {
     const id = temporary ? TEMPORARY_ID : projectSlug(title);
     let entry = this.index.projects.find(candidate => candidate.id === id);
     if (!entry) {
-      entry = { id, title: title || project.title || 'Project', file: join('projects', `${id}.json`),
+      entry = { id, title: title || project.title || 'Project', file: join('projects', id, PROJECT_FILE),
         updatedAt: null, ...(temporary ? { temporary: true } : {}) };
       this.index.projects.push(entry);
     }
@@ -191,9 +235,9 @@ export class ProjectStore {
     this.index.active = entry.id;
     this.project = structuredClone(project);
     this.revision = revision;
-    this.writeProject(entry, this.project, revision);
+    const written = this.writeProject(entry, this.project, revision);
     this.saveIndex();
-    return this.snapshot();
+    return { ...this.snapshot(), saved: written };
   }
 
   update(project, revision) {
@@ -211,24 +255,28 @@ export class ProjectStore {
     if (entry.temporary) entry = this.promote(entry, project);
     entry.title = project.title || entry.title;
     entry.updatedAt = new Date().toISOString();
-    this.writeProject(entry, project, this.revision + 1);
+    const written = this.writeProject(entry, project, this.revision + 1);
     this.project = structuredClone(project);
     this.revision++;
     this.saveIndex();
-    return this.snapshot();
+    return { ...this.snapshot(), saved: written };
   }
 
   /** Moves a temporary project into its own entry and removes the temporary slot. */
   promote(entry, project) {
     const id = projectSlug(project.title || entry.title);
     if (id === entry.id) { delete entry.temporary; return entry; }
-    const promoted = { id, title: project.title || entry.title, file: join('projects', `${id}.json`), updatedAt: new Date().toISOString() };
+    const promoted = { id, title: project.title || entry.title, file: join('projects', id, PROJECT_FILE), updatedAt: new Date().toISOString() };
     const existing = this.index.projects.findIndex(candidate => candidate.id === id);
     if (existing >= 0) this.index.projects[existing] = promoted;
     else this.index.projects.push(promoted);
     this.index.projects = this.index.projects.filter(candidate => candidate.id !== entry.id);
-    // The temporary copy is the same document, so it must not linger next to it.
-    if (this.directory) rmSync(this.fileFor(entry), { force: true });
+    // The temporary copy is the same document, so it must not linger next to it — folder and all.
+    if (this.directory) {
+      const file = this.fileFor(entry);
+      rmSync(file, { force: true });
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
     this.documents.delete(entry.id);
     this.index.active = id;
     return promoted;

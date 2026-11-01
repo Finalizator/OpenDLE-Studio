@@ -326,7 +326,13 @@ test('an extracted build serves the game with Node.js only', async t => {
     body: JSON.stringify({ project: { ...snapshot.project, title: 'Saved in the build' }, revision: 0 }),
   })).json();
   assert.equal(saved.revision, 1);
-  assert.equal(JSON.parse(readFileSync(join(gameRoot, 'data', 'project.json'), 'utf8')).project.title, 'Saved in the build');
+  // A save in the build writes a project folder (document plus asset files), the same format the
+  // studio writes, so the entry's own file is where the saved title lives.
+  const index = JSON.parse(readFileSync(join(gameRoot, 'data', 'projects.json'), 'utf8'));
+  const entry = index.projects.find(candidate => candidate.id === saved.projectId);
+  const document = JSON.parse(readFileSync(join(gameRoot, 'data', entry.file), 'utf8'));
+  assert.equal(document.project.title, 'Saved in the build');
+  assert.equal(document.format, 'project-folder');
 
   const page = await fetch(url);
   assert.equal(page.status, 200);

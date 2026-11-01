@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { ProjectStore } from './store.js';
+import { ProjectStore, projectSlug } from './store.js';
 import { LIMITS } from '../shared/limits.js';
 import { applyTool, toolDefinitions } from './tools.js';
 import { proposeChanges } from './deepseek.js';
@@ -15,7 +15,9 @@ import { openLocalBrowser } from './browser.js';
 import { readEngineVersion } from './version.js';
 import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, inspectPackage, importPackage } from './packages.js';
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
-import { createPortableBuild } from './export-build.js';
+import { createPortableBuild, createZipArchive } from './export-build.js';
+import { projectZipEntries } from './project-folder.js';
+import { readProjectArchive } from './project-archive.js';
 import { loadGzdoomActors } from './actor-sources.js';
 import { createPlaytestLogStore, DEFAULT_LOG_DIRECTORY, DEFAULT_PLACEHOLDER_DIRECTORY } from './playtest-logs.js';
 import { isLogId, normalizeLogEntry, LOG_LIMITS } from '../shared/playtest-log.js';
@@ -261,6 +263,27 @@ export function createApp({
   app.post('/api/projects/open', (req, res) => res.json(store.open(String(req.body?.id ?? ''))));
   app.post('/api/project/adopt', (req, res) => res.json(store.adopt(req.body?.project, req.body?.title,
     { temporary: req.body?.temporary === true })));
+  // Export is the same folder the studio saves: the document plus the asset files it names, so a
+  // model, a texture and a sound leave as themselves rather than as base64 in one JSON blob.
+  app.get('/api/export/project', (req, res) => {
+    const snapshot = store.snapshot();
+    const entries = projectZipEntries(snapshot.project, { revision: snapshot.revision });
+    const bytes = createZipArchive(entries, new Date());
+    const slug = projectSlug(snapshot.project.title || 'project');
+    res.set({ 'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${slug}.opendle.zip"`,
+      'Content-Length': String(bytes.length),
+      'X-Opendle-Assets': String(entries.length - 1) }).send(bytes);
+  });
+  // Opening an exported folder: the client posts the zip's bytes and gets the project back with
+  // its assets inlined, which is the document the editor works with.
+  app.post('/api/project/unpack', express.raw({ type: 'application/octet-stream', limit: archiveLimit }), async (req, res, next) => {
+    try {
+      if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Send the project archive as bytes' });
+      const unpacked = await readProjectArchive(req.body);
+      res.json(unpacked);
+    } catch (error) { next(error); }
+  });
   let aiBusy = false;
   app.post('/api/ai', async (req, res) => {
     if (aiBusy) return res.status(429).json({ error: 'An AI request is already running' });
