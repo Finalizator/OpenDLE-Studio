@@ -298,6 +298,22 @@ test('Freedoom shelf bonuses are collected from the lower floor without jumping 
   assert.equal(s.playerStats.health, 42);
   assert.ok(s.entities.some(e => e.id === 'thing7'), 'next bonus is not collected from too far away');
 });
+// The Doom 2 staircase in MAP01: 8-unit steps onto landings narrower than the capsule, with
+// the upper corridor under a lower ceiling. A capsule cannot shape-cast over a landing that
+// narrow, and the player used to stop dead at the foot of the last step, where Doom walks on.
+const doom2 = new URL('../Projects/Doom2.wad', import.meta.url);
+test('the MAP01 staircase is walked to the top instead of stopping at its narrowest landing', { skip: !existsSync(doom2) }, t => {
+  const { project: p } = importWad(readFileSync(doom2), 'MAP01');
+  p.map.entities = p.map.entities.filter(e => e.type !== 'enemy');
+  // Play mode, because that is where the Doom movement model and its momentum live.
+  const s = createRuntime(p, { settings: { difficulty: 3, viewSize: 11, fov: 90 }, screen: 'playing', gameMode: true });
+  s.physics = createPhysics(p, s, R, triangulate);
+  t.after(() => s.physics.dispose());
+  tick(p, s, 8);
+  tick(p, s, 130, ['KeyW']);
+  assert.ok(s.player.y < -1290, `player walked past the step at y -1280 (stopped at ${s.player.y.toFixed(1)})`);
+  assert.ok(s.player.z >= 55, `player stands on the 56-unit corridor floor (was ${s.player.z.toFixed(1)})`);
+});
 test('missiles advance over time, select flight frames and leave a finite impact animation rather than disappearing', { skip: !existsSync(freedoom) }, () => {
   const { project: p } = importWad(readFileSync(freedoom), 'MAP01'), s = createRuntime(p);
   tick(p, s);

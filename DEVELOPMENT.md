@@ -827,6 +827,16 @@ replaces — writing the name through the shared table changed the undo snapshot
 the rename impossible to undo. The layout row keeps its id visible and renames only the name: the
 id is what the campaign, the saves and the rules refer to.
 
+**Undo depth is a memory budget, not a step count.** `historyLimit` used to hand a campaign
+three steps and a plain map forty, which meant that editing a layout in the imported game threw
+away most of what the user had just done — an editor snapshot of the campaign measures 0.09 MB,
+because `cloneProjectForEdit` shares the actors and the game, but it only *copied* the 24 MB game
+when the edit touched it. [`shared/undo-depth.js`](./shared/undo-depth.js) weighs what a snapshot
+really keeps (`snapshotWeight` counts the records it copied and the asset *array*, not the shared
+tables) and converts that into steps against a 48 MiB budget, clamped to 3–40. An edit that has to
+deep-copy the game (`deepGame`) is the expensive case and is capped at `UNDO_DEEP_GAME_STEPS`,
+while everything else, in a campaign as much as in a map, gets the depth its weight allows.
+
 **The asset table is shared, so an asset edit replaces its entry.** Copying the assets costs about
 15 ms per edit on the imported game (they are the megabytes), so `cloneProjectForEdit` hands the
 next project the same asset objects and only copies the array. The price is a rule: an edit that
@@ -873,6 +883,14 @@ things happen — including time.
   holds the clock where it is and resumes from there.
 - **Timelines are saved.** The run clock is part of the game save: reloading a saved game resumes
   the timeline where it was, paused or playing.
+- **A runtime field has to be declared before it can be saved.** `captureGameSave` packs every
+  state field except the ones in `omitted`, and `restoreGameSave` refuses any field that is
+  neither in a fresh runtime nor listed as `optional`, so a field invented lazily during play made
+  the save that contained it unloadable ("unknown runtime field pathCompleted"). Derived and
+  transient fields belong in `omitted` (a path tween's sampler, a lightning flash, the teleport
+  fog, the tic counter); real state that a save should keep belongs in `optional` (a boss's
+  `bossDefeated` latch, an ACS caption). `test/save-game.test.js` pins that a save taken while
+  those effects were running still loads.
 
 **Which way a moved object faces** depends on what it is, because the two kinds disagree about
 where "forward" is. A sprite's forward is the engine's — Doom's 0° is east and the frames are drawn
@@ -2339,6 +2357,12 @@ continuous force. Position action Z is an **absolute world height**, while
 Properties elevation is relative to the containing sector floor. Omitting Z
 on teleport places the object on its destination floor plus authored elevation.
 The player capsule is radius 12, total height 56, with up to 24-unit autosteps.
+A step is decided by the map, not only by what the capsule can shape-cast over: when a walking
+player's move is refused, `stepUpOnto` in [`shared/physics.js`](./shared/physics.js) walks the
+lines that move crosses within the capsule's reach, nearest first, and takes the first one whose
+far side is a floor no more than one step higher with room under its ceiling and no one-sided wall
+in between — Doom's `P_TryMove`, and the reason a landing narrower than the capsule no longer
+stops the player dead (MAP01's staircase has three such landings under a lower corridor ceiling).
 World colliders use sector floors, non-sky ceilings, solid walls and portal
 height differences; explicitly omitted `wallsOnly` surfaces remain omitted.
 Maps without sectors retain a bounded flat legacy ground plane.

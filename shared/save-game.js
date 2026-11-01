@@ -17,6 +17,13 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // them in the payload made restoring any save written after a decal or a grounded
   // actor fail with "unknown runtime field".
   'groundCorrections', 'entityLookup',
+  // Transient work the engine rebuilds rather than state the game is in. Every one of these is
+  // created lazily — when a path is followed, a sky flashes, a teleport leaves fog, a camera line
+  // is looked through, a surface waggles — so a save taken after any of them carried a field the
+  // loader did not know and refused the whole file ("unknown runtime field pathCompleted"). A saved
+  // game that cannot be loaded is the worst failure this format has, so the list is explicit here
+  // and a test plays a state with all of them set.
+  'pathCompleted', 'pathSampler', 'viewCameraHeight', 'teleportFog', 'lightning', 'waggles',
   // The speed the player is travelling at is read off the momentum every tic, so it is derived
   // rather than part of the game state.
   'speed']);
@@ -24,6 +31,9 @@ const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.
 const optional = new Set(['decalCounter', 'lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
+  // A boss death is a latch the game keeps, and an ACS HudMessage is a caption with a hold time, so
+  // both are carried rather than dropped — unlike the transients above.
+  'bossDefeated', 'acsMessages',
   'scriptState', 'scriptWarning', 'damageAcc', 'musicRequest', 'skyRequest', 'gravity', 'airControl', 'scriptLog',
   'messageCount', 'buttons', 'prevButtons', 'actorClock', 'weaponClock', 'weaponSlot', 'weaponReady', 'playerMorph', 'cameraTextures',
   // A script's screen fade and the things' fall clock outlive a single frame.

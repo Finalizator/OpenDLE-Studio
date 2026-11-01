@@ -78,6 +78,35 @@ test('JSON round trip preserves collections, nonfinite timers, inventory, script
   assert.ok(result.runtime.inventory.keys.has('blueCard'), 'save is a detached snapshot');
 });
 
+// Every one of these is created lazily — following a path, a sky flash, teleport fog, looking
+// through a camera line, a surface waggle, an ACS caption, a boss death — and each of them used to
+// make a save unreadable with "unknown runtime field ...", which is the one failure a save format
+// must never have. The state is patched directly because provoking all seven in one level is a lot
+// of map: what is under test is the field list, not how the field was produced.
+test('a save taken while transient effects were running still loads', () => {
+  const { project, state } = fixture();
+  Object.assign(state, {
+    pathCompleted: ['crate'],
+    pathSampler: new Map([['p', { samples: [] }]]),
+    viewCameraHeight: 41,
+    teleportFog: { x: 1, y: 2, z: 3 },
+    lightning: 1,
+    waggles: [{ sectorIds: ['room'], property: 'floorHeight', original: new Map([['room', 0]]), tics: 3 }],
+    bossDefeated: true,
+    acsMessages: [{ text: 'Hold the line', start: 0, hold: 4 }],
+  });
+  const record = json(captureGameSave(project, state, 'id'));
+  const { runtime } = restoreGameSave(project, record, 'id');
+  // What the game is in is carried; what one frame was doing is rebuilt.
+  assert.equal(runtime.bossDefeated, true, 'a boss latch survives');
+  assert.deepEqual(runtime.acsMessages, [{ text: 'Hold the line', start: 0, hold: 4 }], 'a caption keeps its hold time');
+  for (const transient of ['pathCompleted', 'pathSampler', 'viewCameraHeight', 'teleportFog', 'lightning', 'waggles']) {
+    assert.equal(runtime[transient], undefined, `${transient} is not part of a save`);
+  }
+  // And the level goes on playing from it.
+  assert.doesNotThrow(() => stepRuntime(project, runtime, 1 / 60, new Set(), new Set()));
+});
+
 test('a save made before the player gravity axis existed still restores with world-up', () => {
   const { project, state } = fixture();
   const record = captureGameSave(project, state, 'id');

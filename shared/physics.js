@@ -170,6 +170,78 @@ export function colliderRotation(entity) {
 // full-height capsule plus the character controller's query offset could not enter it.
 const PLAYER_CAPSULE_HEIGHT = 55;
 
+/** Doom's `maxStepHeight`: the highest floor a walking player climbs without jumping. */
+const STEP_HEIGHT = 24;
+
+/**
+ * Doom's step-up, answered from the map instead of from the collision mesh.
+ *
+ * A capsule has to shape-cast over a step to climb it, which fails when the landing is
+ * narrower than the capsule, when two risers meet in a corner, or when the step leads under a
+ * lower ceiling — MAP01's staircase has all three, and the player came to a stop at the foot
+ * of a step Doom walks up. The map already knows the answer, so ask it the way `P_TryMove`
+ * does: nothing one-sided may be crossed, the floor may rise by at most one step, and the
+ * player has to fit under the destination ceiling. Doom also lets a player's box overlap a
+ * step, so the move is carried to just past the line the floor was measured beyond.
+ *
+ * Returns true when the capsule was put onto the step and the movement has to be recomputed.
+ */
+function stepUpOnto(state, world, body, collider, move, corrected, controller, query) {
+  const horizontal = Math.hypot(move.x, move.z);
+  // Only a refused move is worth a second look; a step the capsule could take is already taken.
+  if (!(horizontal > 1e-6) || Math.hypot(corrected.x, corrected.z) > horizontal * .5) return false;
+  if (!state.sectors || !state.walls) return false;
+  const position = body.translation();
+  const feet = position.y * PHYSICS_SCALE - PLAYER_CAPSULE_HEIGHT / 2;
+  const from = { x: position.x * PHYSICS_SCALE, y: position.z * PHYSICS_SCALE };
+  const dx = move.x * PHYSICS_SCALE, dy = move.z * PHYSICS_SCALE, length = Math.hypot(dx, dy);
+  // Reach past the capsule's own surface: the step the player stands against is what the
+  // destination sector begins behind.
+  const reach = PLAYER_CYLINDER.radius + 2;
+  const probe = { x: from.x + dx / length * reach, y: from.y + dy / length * reach };
+  // Every line the walk crosses within the capsule's reach, nearest first. The first one whose
+  // far side is a floor the player can stand on is the step, and crossing it is where that
+  // floor begins — the player only has to get that far to stand on it.
+  const crossings = [];
+  for (const wall of state.walls) {
+    const crossing = crossesSegment(from, probe, wall);
+    if (crossing !== null) crossings.push({ wall, distance: crossing * reach });
+  }
+  crossings.sort((a, b) => a.distance - b.distance);
+  for (const { wall, distance } of crossings) {
+    // A one-sided wall is not a step, and nothing behind it can be walked to either.
+    if (!wall.left || !wall.right) return false;
+    const target = Math.max(horizontal, distance + 1);
+    const to = { x: from.x + dx / length * target, y: from.y + dy / length * target };
+    const sector = sectorAt(state.sectors, to.x, to.y);
+    if (!sector) continue;
+    const rise = sector.floorHeight - feet;
+    if (!(rise > .5) || rise > STEP_HEIGHT) continue;
+    if (sector.ceilingHeight - sector.floorHeight < PLAYER_CAPSULE_HEIGHT) continue;
+    const lifted = { x: position.x, y: position.y + rise / PHYSICS_SCALE, z: position.z };
+    body.setTranslation(lifted, true);
+    world.propagateModifiedBodyPositionsToColliders();
+    controller.computeColliderMovement(collider,
+      { x: dx / length * target / PHYSICS_SCALE, y: move.y, z: dy / length * target / PHYSICS_SCALE },
+      query.flags, query.groups, query.filter);
+    if (Math.hypot(controller.computedMovement().x, controller.computedMovement().z) > horizontal * .5) return true;
+    // The step leads nowhere the player fits: put the capsule back and look further along.
+    body.setTranslation(position, true);
+    world.propagateModifiedBodyPositionsToColliders();
+  }
+  return false;
+}
+
+/** Where the segment `a`→`b` crosses a wall's line, as a fraction of the segment, or null. */
+function crossesSegment(a, b, wall) {
+  const dx = b.x - a.x, dy = b.y - a.y, sx = wall.end.x - wall.start.x, sy = wall.end.y - wall.start.y;
+  const cross = dx * sy - dy * sx;
+  if (Math.abs(cross) < 1e-9) return null;
+  const qx = wall.start.x - a.x, qy = wall.start.y - a.y;
+  const t = (qx * sy - qy * sx) / cross, u = (qx * dy - qy * dx) / cross;
+  return t > 1e-6 && t <= 1 && u >= 0 && u <= 1 ? t : null;
+}
+
 /**
  * The actor an entity stands in for, if that actor is solid enough to block the player.
  *
@@ -396,7 +468,7 @@ export function createPhysics(project, state, R, triangulate) {
   /** True between a jump and the top of its arc, so only a jump ignores the ground. */
   let jumping = false;
   const controller = world.createCharacterController(.005);
-  controller.enableAutostep(24 / PHYSICS_SCALE, 12 / PHYSICS_SCALE, true);
+  controller.enableAutostep(STEP_HEIGHT / PHYSICS_SCALE, 12 / PHYSICS_SCALE, true);
   controller.enableSnapToGround(GROUND_SNAP / PHYSICS_SCALE);
   controller.setApplyImpulsesToDynamicBodies(true);
   controller.setCharacterMass(80);
@@ -689,11 +761,16 @@ export function createPhysics(project, state, R, triangulate) {
         // does not get it.
         if (verticalSpeed > 0) controller.disableSnapToGround();
         else controller.enableSnapToGround(GROUND_SNAP / PHYSICS_SCALE);
-        controller.computeColliderMovement(collider, {
+        const move = {
           x: velocity.x / PHYSICS_SCALE * FIXED_STEP + axis.x * fall,
           y: velocity.y / PHYSICS_SCALE * FIXED_STEP + axis.y * fall,
           z: velocity.z / PHYSICS_SCALE * FIXED_STEP + axis.z * fall,
-        }, R.QueryFilterFlags.EXCLUDE_SENSORS, undefined, candidate => candidate.parent()?.handle !== body.handle);
+        };
+        const query = { flags: R.QueryFilterFlags.EXCLUDE_SENSORS, groups: undefined,
+          filter: candidate => candidate.parent()?.handle !== body.handle };
+        controller.computeColliderMovement(collider, move, query.flags, query.groups, query.filter);
+        // A walking player takes the step the map allows, whatever the capsule could cast over.
+        if (grounded && axis.y > .999) stepUpOnto(state, world, body, collider, move, controller.computedMovement(), controller, query);
         const corrected = controller.computedMovement(), position = body.translation();
         body.setNextKinematicTranslation({ x: position.x + corrected.x, y: position.y + corrected.y, z: position.z + corrected.z });
         // A wall is the controller being asked to move and given (almost) nothing, while the
@@ -702,8 +779,7 @@ export function createPhysics(project, state, R, triangulate) {
         // substep when its accumulator fills: at 100 frames a second most frames move the
         // capsule nowhere, and reading that as a wall reset the player's momentum ten times
         // in three seconds, so it never reached walking speed.
-        const requested = { x: velocity.x / PHYSICS_SCALE * FIXED_STEP + axis.x * fall,
-          z: velocity.z / PHYSICS_SCALE * FIXED_STEP + axis.z * fall };
+        const requested = { x: move.x, z: move.z };
         const climbed = Math.abs(corrected.x * axis.x + corrected.y * axis.y + corrected.z * axis.z) > STEP_TOLERANCE;
         const stoppedX = !climbed && Math.abs(requested.x) > BLOCK_TOLERANCE && Math.abs(corrected.x) < Math.abs(requested.x) * BLOCK_FRACTION;
         const stoppedZ = !climbed && Math.abs(requested.z) > BLOCK_TOLERANCE && Math.abs(corrected.z) < Math.abs(requested.z) * BLOCK_FRACTION;

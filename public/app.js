@@ -5,6 +5,7 @@ import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
+import { undoDepthFor, UNDO_DEEP_GAME_STEPS } from '/shared/undo-depth.js';
 import { hasModelFacing } from '/shared/entity-visuals.js';
 import { addRamp, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { bundleModel } from '/shared/gltf.js';
@@ -522,7 +523,11 @@ $('sector-surface').addEventListener('change', () => {
   if (selection?.kind === 'sector') { selection.surface = $('sector-surface').value; sceneEditor?.select(selection); }
 });
 function historyLimit(candidate) {
-  return candidate.game ? 3 : (candidate.assets?.length || 0) ? 10 : 40;
+  return undoDepthFor(candidate);
+}
+/** How many steps an edit may keep: a campaign edit deep-copies the game, so it keeps few. */
+function editHistoryLimit(candidate, deepGame) {
+  return deepGame ? Math.min(UNDO_DEEP_GAME_STEPS, undoDepthFor(candidate)) : undoDepthFor(candidate);
 }
 /**
  * Dragging geometry must be live: the scene editor applies the move on every
@@ -579,7 +584,7 @@ function renderLive(message) {
   }
   render();
 }
-function commit(next, message = 'Project updated') {
+function commit(next, message = 'Project updated', limit = historyLimit(next)) {
   // A ramp's mesh is generated from its numbers, so any edit may have changed what it should be.
   syncRampModels(next);
   validateProject(next, { fast: true });
@@ -587,8 +592,7 @@ function commit(next, message = 'Project updated') {
   // old reference is already a valid snapshot; cloning it again cost a second
   // full copy of large campaigns on every edit.
   history.push(project);
-  const maxHistory = Math.max(historyLimit(project), historyLimit(next));
-  if (history.length > maxHistory) history.shift();
+  while (history.length > Math.max(1, limit)) history.shift();
   future = [];
   project = next;
   dirty = true;
@@ -604,7 +608,7 @@ function edit(fn, message, { deepGame = false, cloneActors = false } = {}) {
   const next = cloneProjectForEdit(project, { deepGame, shareActors: !cloneActors });
   try {
     fn(next);
-    commit(next, message);
+    commit(next, message, editHistoryLimit(next, deepGame));
   } catch (error) {
     render();
     throw error;
