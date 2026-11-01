@@ -774,10 +774,23 @@ event sheet uses, so a cue can set a global or an object's local variable, move 
 route, play an imported sound, or start another timeline — and every action keeps its tooltip,
 its validation and its editor.
 
-**Nothing plays by itself.** The runtime only advances a timesheet that a rule started, and the
-panel's **Add start event** writes that one rule (`On start of layout` → `Timesheet: start`) into
-the project's event sheet, where it is editable like any other rule. That keeps one rule for the
-whole engine: the layout is data, and events are what make things happen — including time.
+**Nothing plays by itself.** The runtime only advances a timesheet that a rule started
+(`On start of layout` → `Timesheet: start`, written in the Events tab or by the object's
+"drive this route on a timesheet" recipe). The panel does not write that rule: a button that
+posted an event somewhere else in the project was easy to press twice and hard to find again, so
+starting a timeline stays the event sheet's job, where the rule is visible and deletable like any
+other. That keeps one rule for the whole engine: the layout is data, and events are what make
+things happen — including time.
+
+- **A timeline is deletable without leaving rubble.** `removeTimesheet` in `shared/timesheet.js`
+  drops `startTimesheet` / `stopTimesheet` / `setTimesheetPaused` actions that name the timeline
+  from every rule and every other timeline's cues before removing it, because a project that names
+  a timeline it does not have is invalid. A rule whose actions were *only* that one goes too — it
+  existed to start this timeline and has nothing left to say — unless it owns sub-events, which
+  makes it a parent rather than a start button. The panel's message says what went with it.
+- **Every rule has a visible delete.** The × on a rule's header row deletes that rule and its
+  sub-events (right-click → *Delete this rule and its sub-events* is the same), so a rule added by
+  accident does not look permanent.
 
 - **Cues are compiled, not interpreted.** `timesheetCueEvents` turns each cue into an ordinary
   rule whose condition is the private `timesheetCue` condition (id, cue id). The rule tree merges

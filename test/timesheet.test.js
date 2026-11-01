@@ -4,6 +4,7 @@ import { createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import {
   createTrack, createTimesheet, createCue, validateTimesheet, cuesBetween, advanceTimesheets,
+  removeTimesheet, timesheetReferences,
   startTimesheetRun, stopTimesheetRun, setTimesheetPaused, timesheetCueEvents, timesheetSignature,
   easingValue, startPathTween, advancePathTweens, TIMESHEET_CUE_CONDITION,
 } from '../shared/timesheet.js';
@@ -237,4 +238,55 @@ test('the drive-a-route recipe writes a timeline, a cue and the event that start
   assert.ok(Math.abs(end.y - start.y - 600) < 2, 'one lap reached the last waypoint');
   assert.throws(() => driveRouteTimesheet({ entity, path: { id: 'x', name: 'X', points: [] }, nextId: () => 'z' }),
     /two waypoints/);
+});
+
+// A rule that starts a timeline names it, and a project that names a timeline it does not have is
+// invalid — so deleting a timeline has to take those actions with it.
+test('deleting a timeline releases the rules and cues that named it', () => {
+  const project = createProject();
+  project.timesheets = [
+    { id: 'intro', name: 'Intro', duration: 5, loop: false, tracks: [createTrack(0)], cues: [
+      { id: 'a', name: 'A', trackId: 'track_1', time: 0, ownerId: null,
+        actions: [{ type: 'startTimesheet', timesheetId: 'outro', restart: 'yes', loop: 'same' }] }] },
+    { id: 'outro', name: 'Outro', duration: 5, loop: false, tracks: [createTrack(0)], cues: [] },
+  ];
+  project.events = [
+    { id: 'start', enabled: true, once: true, condition: { type: 'onStart' },
+      actions: [{ type: 'startTimesheet', timesheetId: 'outro', restart: 'yes', loop: 'same' },
+        { type: 'setVariable', variable: 'score', value: 1 }] },
+    { id: 'halt', enabled: true, once: false, condition: { type: 'always' },
+      actions: [{ type: 'stopTimesheet', timesheetId: 'outro', all: 'no' }, { type: 'stopTimesheet', all: 'yes' }] },
+  ];
+  validateProject(project);
+  assert.equal(timesheetReferences(project, 'outro').actions.length, 3);
+  const result = removeTimesheet(project, 'outro');
+  assert.equal(result.actions, 3);
+  assert.equal(result.rules, 0, 'both rules still say something else');
+  assert.deepEqual(project.timesheets.map(sheet => sheet.id), ['intro']);
+  assert.deepEqual(project.events[0].actions.map(action => action.type), ['setVariable'], 'the rest of the rule stays');
+  assert.deepEqual(project.events[1].actions.map(action => action.all || action.timesheetId), ['yes'], 'stop all names no timeline');
+  assert.deepEqual(project.timesheets[0].cues[0].actions, [], 'a cue that started it forgets it too');
+  validateProject(project);
+  assert.equal(removeTimesheet(project, 'outro'), null, 'deleting it twice is not an error');
+});
+
+// The accidental "start this timeline" rule used to survive its timeline, empty and unfindable:
+// deleting the timeline now takes a rule whose only job was starting it.
+test('deleting a timeline takes the rule that only started it', () => {
+  const project = createProject();
+  project.timesheets = [{ id: 'lap', name: 'Lap', duration: 5, loop: false, tracks: [createTrack(0)], cues: [] }];
+  project.events = [
+    { id: 'start_lap', enabled: true, once: true, condition: { type: 'onStart' },
+      actions: [{ type: 'startTimesheet', timesheetId: 'lap', restart: 'yes', loop: 'same' }] },
+    { id: 'parent', enabled: true, once: true, condition: { type: 'onStart' },
+      actions: [{ type: 'startTimesheet', timesheetId: 'lap', restart: 'yes', loop: 'same' }] },
+    { id: 'child', parentId: 'parent', enabled: true, once: false, condition: { type: 'always' }, actions: [] },
+  ];
+  validateProject(project);
+  const result = removeTimesheet(project, 'lap');
+  assert.equal(result.actions, 2);
+  assert.equal(result.rules, 1, 'the rule that owns a sub-event stays, emptied');
+  assert.deepEqual(project.events.map(event => event.id), ['parent', 'child']);
+  assert.deepEqual(project.events[0].actions, [], 'its start action is gone');
+  validateProject(project);
 });

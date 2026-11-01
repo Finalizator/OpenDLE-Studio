@@ -191,6 +191,12 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.6 "Segoe UI",
 .event-card:has(.event-owner-object) { border-left-color: #8ca78a; }
 .event-meta { padding: 5px 2px; font-size: 10px; background: #333; min-width: 0; }
 .event-meta summary { cursor: pointer; color: #aaa; font-size: 10px; overflow-wrap: anywhere; }
+/* Deleting a rule is reachable without opening the details, but stays out of the way otherwise.
+   It sits in the card's own corner: the rule number's cell is only as wide as the drag grip, so a
+   button in the summary's flow would be drawn under the conditions block and swallow no clicks. */
+.event-card > .event-delete { position: absolute; top: 1px; right: 2px; z-index: 3; padding: 0 4px;
+  font-size: 11px; line-height: 14px; opacity: 0; }
+.event-card:hover > .event-delete, .event-card > .event-delete:focus-visible { opacity: 1; }
 .event-meta[open] { grid-column: 1 / -1; padding: 10px; display: flex; gap: 8px; flex-wrap: wrap; border-bottom: 1px solid #777; }
 .event-meta[open] summary { width: 100%; }
 .event-meta[open] ~ .event-conditions { grid-column: 2; }

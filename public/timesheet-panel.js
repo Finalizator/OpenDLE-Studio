@@ -1,4 +1,4 @@
-import { createTrack, TIMESHEET_LIMITS, TIMESHEET_TRACK_COLORS } from '/shared/timesheet.js';
+import { createTrack, removeTimesheet, TIMESHEET_LIMITS, TIMESHEET_TRACK_COLORS } from '/shared/timesheet.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
 
 /**
@@ -6,8 +6,12 @@ import { commandRow, openCommandDialog } from './event-sheet.js';
  *
  * A cue is not a special kind of rule — it compiles into one (`shared/timesheet.js`) — so this
  * panel's job is only to place them on a timeline and let the same action dialog the event sheet
- * uses fill them in. Nothing here starts a timeline: a cue runs when a rule started it, which the
- * panel says out loud and offers as a one-click event.
+ * uses fill them in. Nothing here starts a timeline: a cue runs when a rule started it.
+ *
+ * The panel deliberately does not write that rule. A button that silently added an event somewhere
+ * else in the project was easy to press twice and impossible to find again; starting a timeline is
+ * the event sheet's job, and the editor's "drive this route on a timesheet" recipe writes the rule
+ * where the author can see it.
  */
 
 const element = (tag, className, text) => {
@@ -55,7 +59,14 @@ export function createTimesheetPanel(nodes, {
   function deleteTimesheet(sheet) {
     if (!confirm(`Delete the timeline "${sheet.name}" and its ${sheet.cues.length} cue(s)? You can undo this change.`)) return;
     selectedId = null; selectedCue = null;
-    change(next => { next.timesheets = (next.timesheets || []).filter(item => item.id !== sheet.id); }, 'Timesheet deleted');
+    let released = 0, rules = 0;
+    change(next => {
+      const result = removeTimesheet(next, sheet.id);
+      released = result?.actions || 0;
+      rules = result?.rules || 0;
+    }, 'Timesheet deleted');
+    // `change` renders and sets its own message first; the counts only exist once the edit ran.
+    if (released) status(`Timeline "${sheet.name}" deleted · ${released} action(s) that named it removed${rules ? `, and ${rules} rule(s) that only started it` : ''}`);
   }
 
   function addCue(sheet, time = playhead, trackId = sheet.tracks[0]?.id) {
@@ -133,24 +144,6 @@ export function createTimesheetPanel(nodes, {
     });
   }
 
-  /**
-   * Creates the rule that starts this timeline.
-   *
-   * A timeline never starts by itself, which is easy to forget after building one — so the panel
-   * writes the one event that makes it play, and says where it went.
-   */
-  function addStarterEvent(sheet) {
-    const id = newId('start_timeline');
-    selectedId = sheet.id;
-    change(next => {
-      (next.events ||= []).push({
-        id, name: `Start "${sheet.name}"`, enabled: true, once: true, sheetId: next.eventSheets?.[0]?.id,
-        condition: { type: 'onStart' },
-        actions: [{ type: 'startTimesheet', timesheetId: sheet.id, restart: 'yes', loop: 'same' }],
-      });
-    }, `Event "${sheet.name}" added: it starts the timeline on start`);
-  }
-
   function render() {
     const root = nodes.root;
     root.replaceChildren();
@@ -159,7 +152,8 @@ export function createTimesheetPanel(nodes, {
       const empty = element('div', 'timesheet-empty');
       empty.append(
         element('p', 'muted', 'A timesheet is a timeline: tracks over one clock, with cues that run ordinary '
-          + 'visual-script actions at the moment the clock reaches them. Nothing plays until an event starts it.'),
+          + 'visual-script actions at the moment the clock reaches them. Nothing plays until an event starts it, and '
+          + 'that rule belongs to the Events tab (On start of layout → Timesheet: start) where you can see and delete it.'),
         element('p', 'muted', 'Quickest way to make one: select an object that has a route in the 3D view and press '
           + '"Drive this route on a timesheet (start to end)" in its Properties — that writes the timeline, the cue '
           + 'and the start event for you.'),
@@ -203,9 +197,6 @@ export function createTimesheetPanel(nodes, {
     loopLabel.append(loop, document.createTextNode(' Loop'));
     const cue = element('button', 'primary', 'Cue at playhead');
     cue.type = 'button'; cue.addEventListener('click', () => addCue(sheet, playhead));
-    const starter = element('button', '', 'Add start event');
-    starter.type = 'button'; starter.title = 'Adds an event that starts this timeline when the layout starts';
-    starter.addEventListener('click', () => addStarterEvent(sheet));
     const zoomOut = element('button', '', '\u2212');
     zoomOut.type = 'button'; zoomOut.title = 'Zoom out';
     zoomOut.addEventListener('click', () => { pixelsPerSecond = Math.max(12, Math.round(pixelsPerSecond * .75)); render(); });
@@ -215,7 +206,7 @@ export function createTimesheetPanel(nodes, {
     bar.append(element('label', 'timesheet-field', 'Timesheet'), picker, add, remove,
       (() => { const label = element('label', 'timesheet-field', 'Name'); label.append(name); return label; })(),
       (() => { const label = element('label', 'timesheet-field', 'Duration (s)'); label.append(duration); return label; })(),
-      loopLabel, cue, starter,
+      loopLabel, cue,
       (() => { const group = element('span', 'timesheet-zoom'); group.append(element('span', 'muted', 'Zoom'), zoomOut, zoomIn); return group; })());
     return bar;
   }

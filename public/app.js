@@ -2008,6 +2008,13 @@ function renderEvents() {
     const summary = make('summary');
     summary.append(grip());
     summary.append(make('span', `${String(index + 1).padStart(2, '0')}  ${eventScope(event) === 'object' ? 'Object' : 'Game'}${event.once ? ' · Once' : ''}${event.enabled ? '' : ' · Disabled'}`));
+    // Deleting a rule used to live only inside the collapsed details, which left a stray rule (an
+    // accidental "start this timeline") looking permanent. The × is the same delete, one hover
+    // away — pinned to the card's corner because the rule number's own cell is only as wide as the
+    // grip, so a button in the flow would sit under the conditions block and never get the click.
+    const remove = button('×', () => edit(next => removeEventBranch(next, event.id), 'Rule deleted'), 'event-delete');
+    remove.title = 'Delete this rule and its sub-events';
+    remove.setAttribute('aria-label', `Delete rule ${index + 1}`);
     meta.append(summary);
     field(meta, 'Rule name', input(event.name || event.id, 'text', value => modify(item => { item.name = value; })));
     field(meta, 'Sheet', select(unfiledSheetOptions(),
@@ -2107,7 +2114,7 @@ function renderEvents() {
         },
       });
     }
-    card.append(meta, conditions, actions);
+    card.append(meta, conditions, actions, remove);
     const depth = eventDepth(project.events, event);
     card.style.marginLeft = `${depth * 22}px`;
     card.classList.toggle('disabled', !event.enabled);

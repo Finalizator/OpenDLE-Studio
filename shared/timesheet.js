@@ -194,6 +194,56 @@ export function setTimesheetPaused(state, timesheetId, paused) {
   return true;
 }
 
+/** The action types that name a timeline; `stopTimesheet` may also say "all" and name none. */
+const SHEET_ACTIONS = new Set(['startTimesheet', 'stopTimesheet', 'setTimesheetPaused']);
+
+const namesSheet = (action, timesheetId) => Boolean(action) && SHEET_ACTIONS.has(action.type) && action.timesheetId === timesheetId;
+
+/**
+ * Everything that points at one timeline, in rules and in other timelines' cues.
+ *
+ * A rule that starts a timeline names it, and a project that names a timeline it does not have is
+ * invalid — which is why deleting a timeline has to know about its references instead of leaving
+ * them behind for the validator.
+ */
+export function timesheetReferences(project, timesheetId) {
+  const actions = [];
+  for (const event of project.events || []) for (const action of event.actions || []) if (namesSheet(action, timesheetId)) actions.push(action);
+  for (const sheet of project.timesheets || [])
+    for (const cue of sheet.cues || []) for (const action of cue.actions || []) if (namesSheet(action, timesheetId)) actions.push(action);
+  return { actions };
+}
+
+/**
+ * Deletes a timeline from a draft project, releasing what referenced it.
+ *
+ * Any action that named this timeline is dropped, the same way deleting a route drops the actions
+ * that walked it. A rule whose actions were *only* that one goes with it — a rule that existed to
+ * start this timeline has nothing left to say, and leaving it behind is the "stray start I cannot
+ * remove" the editor used to produce. A rule that does anything else, or that owns sub-events,
+ * keeps its place. Both counts come back so the editor can say what the delete took with it.
+ * Returns null when the timeline is already gone.
+ */
+export function removeTimesheet(project, timesheetId) {
+  const sheet = (project.timesheets || []).find(item => item.id === timesheetId);
+  if (!sheet) return null;
+  const { actions } = timesheetReferences(project, timesheetId);
+  const drop = list => (list || []).filter(action => !namesSheet(action, timesheetId));
+  const emptied = new Set();
+  for (const event of project.events || []) {
+    const before = (event.actions || []).length;
+    event.actions = drop(event.actions);
+    if (before && !event.actions.length) emptied.add(event.id);
+  }
+  for (const other of project.timesheets) for (const cue of other.cues || []) cue.actions = drop(cue.actions);
+  // A rule that owns sub-events is a parent, not a start button, so it survives.
+  const parents = new Set((project.events || []).map(event => event.parentId).filter(Boolean));
+  const before = (project.events || []).length;
+  project.events = (project.events || []).filter(event => !emptied.has(event.id) || parents.has(event.id));
+  project.timesheets = project.timesheets.filter(item => item.id !== timesheetId);
+  return { sheet, actions: actions.length, rules: before - project.events.length };
+}
+
 /**
  * Advances every running timesheet by `dt` seconds and marks the cues the clock crossed.
  *
