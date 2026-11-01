@@ -2823,6 +2823,12 @@ as 70 horizontal — narrower than before — because that is what the number al
 setting has a slider in **Engine tweaks** with a readout of the vertical angle and the width a
 16:9 and a 21:9 window end up with, and changing it applies to a preview that is already running.
 
+**Fullscreen fills the screen.** The preview stage kept the canvas at 16:9, and an auto-sized
+grid row makes `height: 100%` indefinite, so the ratio won: a 2000 px wide screen got a 1125 px
+tall canvas inside a 1010 px window and the bottom of the status bar sat below the fold. The
+canvas now takes the screen's own size, which is what GZDoom does and what a field of view that
+widens at the sides is for.
+
 ### The weapon stands on the status bar, not the screen edge
 
 A psprite is placed inside the **view window**, and the classic status bar takes the bottom 32 of
