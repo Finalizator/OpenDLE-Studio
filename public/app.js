@@ -711,9 +711,11 @@ function renderLayoutTree() {
     entry.dataset.levelId = level.id;
     entry.setAttribute('aria-current', level.id === project.game.active ? 'true' : 'false');
     entry.classList.toggle('selected', level.id === project.game.active);
-    // The id stays: it is what the campaign routes, saves and rules refer to. The name is the
-    // part a person reads and renames, so it is its own span.
-    entry.append(make('span', level.id, 'level-id'), make('span', level.name, 'tree-rename-target'));
+    // The id stays: it is what the campaign routes, saves and rules refer to. The name is the part a
+    // person reads and renames, so it is its own span — and an imported level whose name is still
+    // its id is not said twice.
+    if (level.name !== level.id) entry.append(make('span', level.id, 'level-id'));
+    entry.append(make('span', level.name, 'tree-rename-target'));
     entry.title = `${level.id}: click to edit this layout, double-click the name to rename it`;
     entry.setAttribute('aria-label', `${level.id} — ${level.name}`);
     entry.addEventListener('dblclick', event => { event.preventDefault(); renameLayoutInline(entry, level); });
