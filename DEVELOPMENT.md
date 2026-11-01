@@ -2829,16 +2829,19 @@ tall canvas inside a 1010 px window and the bottom of the status bar sat below t
 canvas now takes the screen's own size, which is what GZDoom does and what a field of view that
 widens at the sides is for.
 
-### The weapon stands on the status bar, not the screen edge
+### A weapon's wrist runs behind the status bar
 
-A psprite is placed inside the **view window**, and the classic status bar takes the bottom 32 of
-the 200 units — so a weapon's feet sit on the top of the bar, and vanilla Doom shows the whole
-pistol above it. The overlay scene covers the whole canvas instead, and the placement read the
-imported patch offset as `32 - offsetY`, which cancelled exactly the bar the offset already
-accounted for: `PISGA0` is 62 rows tall with `offsetY = -106`, i.e. its feet on row 168 of 200,
-but `200 - (32 + 106) - 31` put its centre on row 31, so the status bar covered its lower half.
-The offset is the distance from the top of the view window (`-offsetY`), and a weapon imported
-without offsets is anchored to `200 - reserveBottom - height` instead of the canvas bottom.
+Doom draws psprites inside the **view window**, which is 168 of the 200 units tall when the status
+bar is showing, and whatever falls below that window is covered by the bar. A patch's offsets
+describe that: `PISGA0` is 62 rows tall with its anchor 106 rows down, so its last row lands on row
+168 — the wrist is *cut off* by the bar, not resting on it. Standing the sprite on top of the bar
+instead leaves the wrist floating in mid-air with a gap under it, which is what the first attempt
+at "weapons hidden by the HUD" produced.
+
+That report was really about the canvas, not the weapon: fullscreen kept the canvas at 16:9, so a
+2000 px screen got a 1125 px tall canvas in a 1010 px window, the HUD laid itself out against the
+canvas and the bar was drawn across the middle of the visible picture with only a sliver of gun
+above it. Filling the screen fixed the picture; the sprite anchor was right as it was.
 
 ### Static world surfaces are merged, not one mesh each
 

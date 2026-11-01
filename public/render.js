@@ -1233,14 +1233,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const mat = new THREE.MeshBasicMaterial({ map: imageTexture(weapon.id), transparent: true, depthTest: false, depthWrite: false });
       const overlay = mesh(new THREE.PlaneGeometry(weapon.width, weapon.height), mat, overlayScene);
       const left = weapon.offsetX === undefined ? 160 - weapon.width / 2 : -weapon.offsetX;
-      // A psprite stands on the bottom of the **view window**, which ends where the status bar
-      // starts, so the 32 units the bar takes are not part of its space. The patch offsets an
-      // import carries already describe that placement (`PISGA0` is 106 rows down and 62 rows
-      // tall, which puts its feet on row 168 of 200); reading them as "top from the screen top"
-      // instead dropped the weapon a whole bar lower, so the bar cut it in half. A weapon
-      // imported without offsets sits on the bar directly.
-      const bar = project.hud?.reserveBottom ?? 32;
-      const top = weapon.offsetY === undefined ? 200 - bar - weapon.height : -weapon.offsetY;
+      // A psprite hangs from the top of the view window and its wrist runs **past** the bottom of
+      // it: Doom draws the weapon inside the 168-of-200 view window and lets the status bar
+      // cover whatever falls below, which is why the hand is cut off by the bar instead of
+      // resting on it. The patch offsets describe that — `PISGA0` is 62 rows tall with the
+      // anchor 106 rows down, so its last row lands on row 168 — and standing the sprite *on*
+      // the bar instead leaves the wrist floating in mid-air above it. A weapon with no offsets
+      // of its own is anchored the same way, to the bottom of the 200.
+      const top = weapon.offsetY === undefined ? 200 - weapon.height : 32 - weapon.offsetY;
       overlay.position.set(left + weapon.width / 2, 200 - top - weapon.height / 2, 0);
       weaponOverlays.set(weaponId, overlay);
     }
