@@ -174,6 +174,35 @@ test('a zone is formed side by side, scaled as a whole, and turned', () => {
   validateProject(project);
 });
 
+test('a one-sided form drag takes the volume with it, so the opposite face stays', () => {
+  const project = createProject();
+  project.map.entities.push({ id: 'zone_a', name: 'Guard room', type: 'zone', x: 320, y: 0, elevation: 32, angle: 0,
+    area: { shape: 'box', width: 128, height: 128, depth: 128, radius: 64 } });
+  validateProject(project);
+  const selection = { kind: 'entity', id: 'zone_a' };
+  const zone = () => project.map.entities.find(entity => entity.id === 'zone_a');
+  const baseline = structuredClone(project);
+  const edges = () => [zone().x - zone().area.width / 2, zone().x + zone().area.width / 2];
+
+  // Sideways the entity's position is the middle, so pulling the +x face 64 units out grows the
+  // side by 64 and moves the middle by half of it.
+  const before = edges();
+  dragSelection(project, baseline, selection, 'form', { sizes: { width: 192 }, offset: { x: 32 } }, 16);
+  assert.deepEqual(edges(), [before[0], before[1] + 64], 'the face that was not grabbed did not move');
+  assert.equal(zone().area.width, 192);
+
+  // Symmetric growth — the same drag with Shift — keeps the middle and moves both faces.
+  const both = structuredClone(project);
+  dragSelection(project, both, selection, 'form', { sizes: { width: 256 } }, 16);
+  assert.equal(zone().x, 352);
+  assert.deepEqual([zone().x - 128, zone().x + 128], [224, 480]);
+
+  // Vertically the elevation is the floor, not the middle: growing the height leaves it alone.
+  dragSelection(project, both, selection, 'form', { sizes: { height: 256 } }, 16);
+  assert.equal(zone().elevation, 32);
+  validateProject(project);
+});
+
 test('form and scale refuse an object that has no volume', () => {
   const project = createProject();
   const pickup = project.map.entities.find(entity => entity.type !== 'player');

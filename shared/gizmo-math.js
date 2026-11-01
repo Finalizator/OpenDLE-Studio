@@ -120,10 +120,20 @@ export function ringDelta(axisKey, degrees) {
  * negative; the side it belongs to turns that round. Without it, pulling the left face outwards
  * would shrink the volume — a face that only worked in one direction.
  *
- * Only the grabbed face moves: the object's own position is its middle, so the opposite face
- * gives way by the same amount and the face under the pointer tracks it exactly.
+ * By default only the grabbed face moves: the side grows by the drag, and the volume's middle
+ * travels with it (see `formCentreShift`) so the face opposite stays exactly where it was. Holding
+ * Shift makes it a symmetric grow — both faces move, the middle does not.
  */
-export const formSizeFromDrag = (start, amount, side = 1) => start + 2 * amount * side;
+export const formSizeFromDrag = (start, amount, side = 1, symmetric = false) =>
+  start + amount * side * (symmetric ? 2 : 1);
+
+/**
+ * How far the volume's middle travels along the positive axis during a one-sided drag.
+ *
+ * The grabbed face has moved by the drag and the opposite one must not move at all, so the middle
+ * goes half way. Symmetric growth leaves the middle alone.
+ */
+export const formCentreShift = (amount, symmetric = false) => (symmetric ? 0 : amount / 2);
 
 /** A scale multiplier for a drag, where one gizmo length doubles the size. */
 export const scaleFactorFromDrag = ({ amount, reference }) =>

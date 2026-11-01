@@ -14,8 +14,8 @@ import { areaVolume, areaYaw, overlayVolumes } from '/shared/areas.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
 import { samplePath } from '/shared/paths.js';
 import {
-  GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formSizeFromDrag,
-  rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
+  GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formCentreShift,
+  formSizeFromDrag, rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
 } from '/shared/gizmo-math.js';
 import { buildFaceArrows, buildGizmo, disposeHandles, handleKey, paintHandles } from './gizmo.js';
 
@@ -1074,17 +1074,29 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (!action.moved && Math.hypot(event.clientX - action.x, event.clientY - action.y) < 2) return;
     action.moved = true;
     if (action.mode === 'form') {
-      // One face moves: its side grows and the opposite side gives way, so the face under the
-      // pointer stays under it. The object's own position is the middle of the volume, so this
-      // grows about the middle instead of dragging the object across the map.
+      // One face moves and the opposite one stays where it is, so the volume's middle travels
+      // half the drag. Shift is the other way round: both faces move and the middle does not.
       const key = axisField(action.axis);
+      const amount = dragAlong(event, action.drag);
+      const symmetric = event.shiftKey;
+      // A round volume has no sides to tell apart, so its arrows fall back to the positive one.
+      const side = action.side || 1;
       // Measured along the positive axis, so the side the grabbed face is on turns the drag round:
       // pulling a left face further left has to grow the volume, not shrink it.
-      const size = snapValue(formSizeFromDrag(action.startSize, dragAlong(event, action.drag), action.side), callbacks.grid());
-      showReadout(`${key} ${action.side > 0 ? '+' : '−'} → ${size}`);
+      const size = snapValue(formSizeFromDrag(action.startSize, amount, side, symmetric), callbacks.grid());
+      const direction = axisDirection(action.axis);
+      // A volume's origin is its middle on the ground but its *floor* vertically, so "the other
+      // face stays put" means different things per axis: sideways the middle travels half the
+      // drag, upwards the bottom does not travel at all and the height takes the whole drag.
+      const offset = action.axis === 'y'
+        ? { x: 0, y: 0, z: side > 0 ? (symmetric ? -amount : 0) : amount }
+        : { x: direction[0] * formCentreShift(amount, symmetric), y: direction[2] * formCentreShift(amount, symmetric), z: 0 };
+      showReadout(`${key} ${action.side ? (action.side > 0 ? '+' : '−') : ''} → ${size}${symmetric ? ' (both sides)' : ''}`);
       canvas.dataset.formSize = `${key}=${size}`;
+      canvas.dataset.formBoth = symmetric ? 'on' : 'off';
       action.formKey = key; action.formSize = size;
-      liveDrag(action.selection, action.baseline, 'form', { sizes: { [key]: size } }, `3D form ${key} ${size}`);
+      liveDrag(action.selection, action.baseline, 'form', { sizes: { [key]: size }, offset },
+        `3D form ${key} ${size}${symmetric ? ' (both sides)' : ''}`);
       return;
     }
     if (action.mode === 'move') {
@@ -1139,7 +1151,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       return;
     }
     if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
-    if (completed.formKey) { hideReadout(); canvas.dataset.formSize = ''; }
+    if (completed.formKey) { hideReadout(); canvas.dataset.formSize = ''; canvas.dataset.formBoth = ''; }
     callbacks.liveFinish(completed.selection?.kind === 'pathPoint' ? '3D waypoint moved'
       : completed.formKey ? `3D ${completed.formKey} ${completed.formSize}` : `3D ${completed.mode || mode}`);
   });

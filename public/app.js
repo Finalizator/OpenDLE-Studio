@@ -13,6 +13,7 @@ import {
   cloneEntitiesForPaste, entityGroups, groupEntities, groupOf, leaveGroup, membersOf, ungroup,
 } from '/shared/entity-groups.js';
 import { requestMouseLock } from './pointer-lock.js';
+import { formCentreShift, formSizeFromDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
 import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
 import { recoverProject } from './project-recovery.js';
@@ -2629,8 +2630,15 @@ canvas.addEventListener('pointerdown', guard(event => {
     const grip = zoneGripAt(point, selectedZone, 10 / camera.zoom);
     if (grip !== null) {
       const area = { ...ZONE_AREA, ...selectedZone.area };
+      const halfWidth = (area.shape === 'box' ? area.width : area.radius * 2) / 2;
+      const halfDepth = (area.shape === 'box' ? area.depth : area.radius * 2) / 2;
+      const [gx, gy] = zoneGrips(halfWidth, halfDepth)[grip];
+      // Which way each side of this grip points, so a drag outwards grows that side whichever
+      // grip was taken.
       drag = { kind: 'form', selection: { ...selection }, grip, start: point, end: point, baseline: project,
-        sizes: { width: area.width, depth: area.depth } };
+        origin: { x: selectedZone.x, y: selectedZone.y },
+        sides: { width: Math.sign(gx), depth: Math.sign(gy) },
+        startSizes: { width: area.width, depth: area.depth } };
       return;
     }
   }
@@ -2649,20 +2657,31 @@ canvas.addEventListener('pointermove', event => {
     camera.x = drag.x - (event.clientX - drag.clientX) / camera.zoom;
     camera.y = drag.y - (event.clientY - drag.clientY) / camera.zoom;
   } else if (drag.kind === 'form') {
-    // A grip moves its own side: the size grows by twice the distance from the middle in the
-    // zone's own frame, and the grid snaps it the way every other measurement does.
+    // A grip moves its own side, in the zone's own frame: by default only that side moves and the
+    // opposite one stays, so the footprint's middle travels half the drag. Shift grows both sides
+    // about the middle instead. The grid snaps the new size the way every other measurement does.
     const zone = project.map.entities.find(entity => entity.id === drag.selection.id);
     const radians = (Number(zone?.angle) || 0) * Math.PI / 180;
     const dx = point.x - drag.start.x, dy = point.y - drag.start.y;
     const local = { x: dx * Math.cos(-radians) - dy * Math.sin(-radians), y: dx * Math.sin(-radians) + dy * Math.cos(-radians) };
-    const sides = GRIP_SIDES[drag.grip] || [];
+    const sizing = GRIP_SIDES[drag.grip] || [];
     const grid = Number($('grid').value);
-    drag.sizes = {
-      ...(sides.includes('width') ? { width: Math.max(grid, Math.round((Math.abs(local.x) * 2) / grid) * grid) } : {}),
-      ...(sides.includes('depth') ? { depth: Math.max(grid, Math.round((Math.abs(local.y) * 2) / grid) * grid) } : {}),
-    };
+    const symmetric = event.shiftKey;
+    const shift = { x: 0, y: 0 };
+    drag.sizes = { ...drag.startSizes };
+    for (const key of ['width', 'depth']) {
+      const sign = drag.sides?.[key] || 0;
+      if (!sizing.includes(key) || !sign) continue;
+      const amount = (key === 'width' ? local.x : local.y) * sign;
+      drag.sizes[key] = Math.max(grid, Math.round(formSizeFromDrag(drag.startSizes[key], amount, 1, symmetric) / grid) * grid);
+      const travel = formCentreShift(amount, symmetric) * sign;
+      if (key === 'width') shift.x = travel; else shift.y = travel;
+    }
+    // The travel is in the zone's frame, so it is turned back into map space before it is used.
+    drag.offset = { x: shift.x * Math.cos(radians) - shift.y * Math.sin(radians),
+      y: shift.x * Math.sin(radians) + shift.y * Math.cos(radians) };
     const label = Object.entries(drag.sizes).map(([key, value]) => `${key} ${value}`).join(', ');
-    $('coordinates').textContent = `Zone ${label}`;
+    $('coordinates').textContent = `Zone ${label}${symmetric ? ' (both sides)' : ''}`;
     drag.end = point;
   } else drag.end = snap(point);
   mapNeedsDraw = true;
@@ -2680,9 +2699,12 @@ canvas.addEventListener('pointerup', guard(event => {
   if (finished.kind === 'form') {
     const sides = finished.sizes || {};
     if (!Object.keys(sides).length) return;
+    const offset = finished.offset || { x: 0, y: 0 };
     edit(next => {
       const zone = next.map.entities.find(entity => entity.id === finished.selection.id);
       zone.area = { ...zone.area, ...sides };
+      zone.x = snap({ x: finished.origin.x + offset.x, y: finished.origin.y + offset.y }).x;
+      zone.y = snap({ x: finished.origin.x + offset.x, y: finished.origin.y + offset.y }).y;
     }, `Zone formed: ${Object.entries(sides).map(([key, value]) => `${key} ${value}`).join(', ')}`);
     return;
   }

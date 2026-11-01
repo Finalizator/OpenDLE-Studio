@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   GIZMO_AXES, GIZMO_LENGTH, angleDegrees, axisAmount, axisField, axisPressPoint, dragPlaneNormal,
-  formSizeFromDrag, normalize, rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
+  formCentreShift, formSizeFromDrag, normalize, rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
 } from '../shared/gizmo-math.js';
 
 // A pointer ray from a camera at `eye` through `point`: enough of a camera to test the drag maths
@@ -81,14 +81,19 @@ test('rings turn with the pointer, and the axis decides which way', () => {
 });
 
 test('form and scale turn a drag into a size', () => {
-  // One face moves, so the opposite one moves the same amount: the side grows by twice the drag
-  // and the face in hand stays under the pointer.
-  assert.equal(formSizeFromDrag(128, 64), 256);
-  assert.equal(formSizeFromDrag(128, -64), 0);
+  // By default only the grabbed face moves: the side grows by the drag, and the middle goes half
+  // way so the opposite face stays put.
+  assert.equal(formSizeFromDrag(128, 64), 192);
+  assert.equal(formCentreShift(64), 32);
+  assert.equal(formSizeFromDrag(128, -64), 64);
+  // Holding Shift grows both faces: twice the drag, and the middle stays where it is.
+  assert.equal(formSizeFromDrag(128, 64, 1, true), 256);
+  assert.equal(formCentreShift(64, true), 0);
   // A face on the negative side pulls the other way on the axis, and still has to grow when it is
-  // dragged away from the volume.
-  assert.equal(formSizeFromDrag(128, -64, -1), 256);
-  assert.equal(formSizeFromDrag(128, 64, -1), 0);
+  // dragged away from the volume — one-sided or symmetric.
+  assert.equal(formSizeFromDrag(128, -64, -1), 192);
+  assert.equal(formSizeFromDrag(128, -64, -1, true), 256);
+  assert.equal(formSizeFromDrag(128, 64, -1), 64);
   // One gizmo length of drag doubles a size, and a size can never reach nothing.
   assert.equal(scaleFactorFromDrag({ amount: 100, reference: 100 }), 2);
   assert.equal(scaleFactorFromDrag({ amount: -50, reference: 100 }), .5);

@@ -77,7 +77,15 @@ export function transformSelection(project, selection, mode, delta, grid) {
   if (!item) throw new Error('Selected scene element no longer exists');
   if (mode !== 'move' && selection.kind !== 'entity') throw new Error('Rotation and scale apply to objects only');
   if (mode === 'rotate') { applyRotation(item, item, delta); return; }
-  if (item.area && resizeVolume(item, mode, delta)) return;
+  if (item.area && resizeVolume(item, mode, delta)) {
+    // The same one-sided rule as a live drag: the middle follows the face that moved.
+    if (delta.offset) {
+      item.x = snap(item.x + (Number(delta.offset.x) || 0));
+      item.y = snap(item.y + (Number(delta.offset.y) || 0));
+      item.elevation = snap((item.elevation || 0) + (Number(delta.offset.z) || 0));
+    }
+    return;
+  }
   if (mode === 'form') throw new Error('Form applies to a zone or an object with an interaction area');
   if (mode === 'scale') {
     if (item.type === 'player') throw new Error('The player capsule has a fixed size');
@@ -140,6 +148,15 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
   // the same size instead of compounding.
   if (origin.area && (mode === 'form' || mode === 'scale')) {
     item.area = { ...origin.area };
+    // One face dragged on its own takes the middle with it, so the opposite face stays where it
+    // is; `offset` is how far the middle travels, in map units.
+    const offset = delta.offset;
+    const moveWith = () => {
+      if (!offset) return;
+      item.x = snap(origin.x + (Number(offset.x) || 0));
+      item.y = snap(origin.y + (Number(offset.y) || 0));
+      item.elevation = snap((origin.elevation || 0) + (Number(offset.z) || 0));
+    };
     if (mode === 'scale' && Number.isFinite(Number(delta.scale))) {
       // The scale is relative to the size the drag started at, which is what makes it absolute.
       const factor = Number(delta.scale);
@@ -147,9 +164,10 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
       for (const key of ['width', 'depth', 'height', 'radius']) area[key] = sizeOf((origin.area[key] || MIN_AREA_SIZE) * factor);
       if (area.shape === 'sphere') area.height = area.radius * 2;
       item.area = area;
+      moveWith();
       return;
     }
-    if (resizeVolume(item, mode, delta)) return;
+    if (resizeVolume(item, mode, delta)) { moveWith(); return; }
   }
   if (mode === 'form') throw new Error('Form applies to a zone or an object with an interaction area');
   if (mode === 'scale') {
