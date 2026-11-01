@@ -173,3 +173,66 @@ export function pathBounds(path) {
   }
   return bounds;
 }
+
+/**
+ * What still points at a route: the objects that walk it, and every action that moves something
+ * along it — an event action or a timeline cue action.
+ *
+ * A project that references a path it does not have is invalid, which is why deleting a route
+ * has to know about its references before removing it rather than after.
+ */
+export function pathReferences(project, pathId) {
+  const followers = (project.map?.entities || []).filter(entity => entity.path?.id === pathId);
+  const actions = [];
+  for (const event of project.events || []) for (const action of event.actions || []) actions.push(action);
+  for (const sheet of project.timesheets || []) for (const cue of sheet.cues || []) for (const action of cue.actions || []) actions.push(action);
+  return { followers, actions: actions.filter(action => action?.type === 'followPath' && action.pathId === pathId) };
+}
+
+/**
+ * Deletes a route from a draft project, releasing what referenced it.
+ *
+ * Followers simply stop following; an action that moved something along the route is dropped,
+ * because a route action without a route has nothing to say. Both counts come back so the editor
+ * can say what the delete took with it. Returns null when the path is already gone.
+ */
+export function removePath(project, pathId) {
+  const path = (project.paths || []).find(item => item.id === pathId);
+  if (!path) return null;
+  const { followers, actions } = pathReferences(project, pathId);
+  for (const entity of project.map?.entities || []) if (entity.path?.id === pathId) delete entity.path;
+  const drop = list => (list || []).filter(action => !(action?.type === 'followPath' && action.pathId === pathId));
+  for (const event of project.events || []) event.actions = drop(event.actions);
+  for (const sheet of project.timesheets || []) for (const cue of sheet.cues || []) cue.actions = drop(cue.actions);
+  project.paths = (project.paths || []).filter(item => item.id !== pathId);
+  return { path, followers: followers.length, actions: actions.length };
+}
+
+/**
+ * Deletes one waypoint from a draft project. A route keeps at least two: one point is not a route,
+ * and a walker has nowhere to go, so the last two are refused instead of quietly leaving rubble.
+ */
+export function removePathPoint(project, pathId, pointId) {
+  const path = (project.paths || []).find(item => item.id === pathId);
+  if (!path) throw new Error('That path no longer exists');
+  if (!path.points.some(point => point.id === pointId)) throw new Error('That waypoint no longer exists');
+  const remaining = path.points.length - 1;
+  if (remaining < 2) throw new Error('A path needs at least two waypoints; delete the path instead');
+  path.points = path.points.filter(point => point.id !== pointId);
+  // Actions name waypoints by index, and an index past the end is invalid — so a shorter route
+  // has to bring them back inside it, or the project stops validating (`-1` means "the last one"
+  // and stays right by itself).
+  const last = remaining - 1, clamp = value => (typeof value === 'number' && value > last ? last : value);
+  forEachPathAction(project, pathId, action => {
+    action.fromPoint = clamp(action.fromPoint);
+    action.toPoint = clamp(action.toPoint);
+  });
+  return { path, remaining };
+}
+
+/** Every action, in events and in timeline cues, that points at one route. */
+function forEachPathAction(project, pathId, visit) {
+  const seen = (list) => (list || []).filter(action => action?.type === 'followPath' && action.pathId === pathId).forEach(visit);
+  for (const event of project.events || []) seen(event.actions);
+  for (const sheet of project.timesheets || []) for (const cue of sheet.cues || []) seen(cue.actions);
+}

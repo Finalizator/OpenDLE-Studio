@@ -34,6 +34,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   let vertexById = new Map(project.map.vertices.map(vertex => [vertex.id, vertex]));
   let entityById = new Map(project.map.entities.map(entity => [entity.id, entity]));
   const ray = new THREE.Raycaster(), pointer = new THREE.Vector2();
+  // A route is drawn as a line, and a line has no width to hit: without a threshold the only
+  // clickable part of a path would be its waypoint cubes.
+  ray.params.Line.threshold = 12;
   const handles = new THREE.Group(), helperGroup = new THREE.Group(), vertexGroup = new THREE.Group();
   // Form resizes a volume by its own faces, which live at the volume's edges rather than on the
   // object's origin, and are the volume's real size rather than a fixed screen size — so they are
@@ -43,6 +46,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   // Paths are drawn as their curve, not as their waypoints: the line a traveller follows is the
   // thing being authored, and the control points are what shape it.
   const pathGroup = new THREE.Group();
+  // Where the routes are, so the pick radius for a line can follow the viewing distance.
+  const pathCentre = new THREE.Vector3();
   scene.add(handles, helperGroup, vertexGroup, pathGroup, faceGroup);
   const resources = [], keys = new Set(), listeners = [];
   const own = resource => { resources.push(resource); return resource; };
@@ -165,6 +170,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         const line = new THREE.Line(geometry, selected?.kind === 'path' && selected.id === path.id ? pathLineSelectedMaterial : pathLineMaterial);
         line.renderOrder = 207; line.frustumCulled = false;
+        line.userData.selection = { kind: 'path', id: path.id };
         pathGroup.add(line);
       }
       for (const point of path.points) {
@@ -178,6 +184,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       }
     }
     pathGroup.visible = (project.paths || []).length > 0;
+    const points = (project.paths || []).flatMap(path => path.points);
+    if (points.length) {
+      pathCentre.set(points.reduce((sum, point) => sum + point.x, 0) / points.length,
+        points.reduce((sum, point) => sum + (point.z || 0), 0) / points.length,
+        points.reduce((sum, point) => sum + point.y, 0) / points.length);
+    }
     canvas.dataset.paths = String((project.paths || []).length);
     canvas.dataset.pathPoints = String((project.paths || []).reduce((total, path) => total + path.points.length, 0));
   }
@@ -331,6 +343,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
     camera.updateMatrixWorld(); scene.updateMatrixWorld();
     ray.setFromCamera(pointer, camera);
+    // A line has no width, so a fixed threshold makes a route a hair-thin target: the pick
+    // radius follows how far the view is from the route, which keeps it a few pixels wide at any
+    // zoom instead of needing a pixel-perfect click.
+    ray.params.Line.threshold = Math.max(8, camera.position.distanceTo(pathCentre) * .012);
   }
   function visibleThrough(object) {
     for (let node = object; node; node = node.parent) if (!node.visible) return false;
@@ -1019,10 +1035,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     canvas.focus();
     try { canvas.setPointerCapture(event.pointerId); } catch { /* capture is best effort */ }
     cast(event);
-    // The right button flies the camera; a right click that never moves opens the menu. Either
-    // way it gives up whatever drawing tool was armed, so a click cannot keep adding geometry.
+    // The right button flies the camera; a right click that never moves opens the menu and gives
+    // up whatever drawing tool was armed. Looking around must not: placing a waypoint, turning the
+    // view to see where the next one goes and clicking again is how a route is drawn.
     if (event.button === 2) {
-      callbacks.clearTool?.();
       action = { kind: 'fly', x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
       return;
     }
@@ -1187,6 +1203,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (completed.kind === 'fly') {
       // A right click that stayed put is a context menu request, not a camera drag.
       if (!completed.moved) {
+        callbacks.clearTool?.();
         cast(event);
         const contextHit = worldHit();
         callbacks.menu?.(event, contextHit ? selectionOf(contextHit) : null);
@@ -1226,7 +1243,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   listen(canvas, 'keydown', event => {
     if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'].includes(event.code)) { event.preventDefault(); keys.add(event.code); }
     if (event.code === 'Escape') cancel();
-    if (event.code === 'Delete' && selected?.kind === 'entity') callbacks.remove(selected.id);
+    if (event.code === 'Delete' && selected) callbacks.remove({ ...selected });
   });
   listen(canvas, 'keyup', event => keys.delete(event.code));
   listen(canvas, 'wheel', event => { event.preventDefault(); speed = THREE.MathUtils.clamp(speed * Math.exp(-event.deltaY * .001), 16, 8192); }, { passive: false });

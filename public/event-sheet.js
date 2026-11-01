@@ -113,7 +113,13 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
         };
         // A picker that shows a choice has to submit it: an untouched select would otherwise
         // leave the field unset, and the rule would run against nothing.
-        if (field.options && draft[field.name] === undefined && input.value !== '') draft[field.name] = input.value;
+        if (field.options && !draft[field.name]) {
+          // A select paints its first option even when the draft has no value that matches one,
+          // so a fresh "Route" or "Sound" field looked filled in while holding nothing — Done then
+          // built an action that pointed at no path at all. Choose the option that is on screen.
+          if (input.selectedIndex < 0 && input.options[0]?.value) input.value = input.options[0].value;
+          if (input.value !== '') draft[field.name] = input.value;
+        }
         input.addEventListener('input', update);
         input.addEventListener('change', () => { update(); if (field.name === 'entityId' && draft.type === 'playAnimation') {
           draft.clip = clips(draft.entityId)[0]; render();

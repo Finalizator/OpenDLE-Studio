@@ -804,6 +804,34 @@ tracks, double-click the ruler to add one there, right-click for duplicate/move/
 the selected cue's actions in the inspector below the timeline with the event sheet's own dialog.
 Everything goes through the app's `edit`, so a timeline edit is one undo step.
 
+### Drawing, picking and deleting a route
+
+A path is drawn by clicking: **Draw path** in the toolbar, or right-click → **Create object → Path
+(waypoints)**. While the mode is armed every left click appends a waypoint, at the height the
+click landed on in 3D, so a route up a staircase is drawn by clicking the steps.
+
+- **Looking around does not end the mode.** Right-drag flies or pans the camera and only a right
+  *click* — one that never moved — finishes the route and opens the menu. A mapper places a
+  waypoint, turns the view to see where the next one goes and clicks again; ending the mode on the
+  drag made the next click select the floor instead of extending the route.
+- **The panel carries the way out.** While the mode is armed the route's Properties show
+  **Finish path — stop adding waypoints** (Escape does the same); after it ends they show
+  **Continue adding waypoints**, which arms the mode again *on that route*, so a finished route can
+  be extended rather than replaced.
+- **The route itself is clickable in 3D**, not only its waypoint cubes: the line carries the
+  path's selection and its pick radius follows the viewing distance, so a route far away is still
+  a few pixels wide to the pointer.
+- **Delete means the selection.** The Delete key and the 3D view's Delete both work on an object,
+  a whole route or a single waypoint.
+
+Deleting has to clear what names the route, because a project that references a path it does not
+have is invalid — the delete would otherwise be rolled back with an error and appear to do nothing.
+`removePath` in `shared/paths.js` does it in one step: followers simply stop following, and every
+`followPath` action in the events and in the timeline cues is dropped; the counts come back so the
+status line can say what went with it. `removePathPoint` keeps a route at two waypoints or more and
+brings any action that named a now-missing waypoint index back inside the shorter route (`-1`,
+"the last waypoint", stays right by itself).
+
 ### Editable Engine event sheets
 
 **New project** and a fresh server store include editable Engine sheets.

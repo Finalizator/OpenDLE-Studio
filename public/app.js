@@ -1,5 +1,5 @@
 import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, ENTITY_TYPES } from '/shared/project.js';
-import { createPath, createPathPoint, samplePath, pathLength } from '/shared/paths.js';
+import { createPath, createPathPoint, samplePath, pathLength, pathReferences, removePath, removePathPoint } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
@@ -1181,6 +1181,30 @@ function curveSlider(value, onChange) {
   slider.min = '0'; slider.max = '1'; slider.step = '0.05';
   return slider;
 }
+/**
+ * The controls that start and stop extending a route.
+ *
+ * Draw path is a mode: while it is armed every click adds a waypoint, so it needs a button that
+ * ends it as plainly as the toolbar starts it. The same pair lets a route that was finished
+ * earlier be extended again, which is what a mapper expects from "keep adding to this path".
+ */
+function pathDraftControls(path) {
+  const drawing = activePathId === path.id;
+  const row = make('div', undefined, 'path-draft');
+  if (drawing) {
+    row.append(make('p', `Adding waypoints to ${path.name}: click the map to place the next one (height included in 3D).`, 'path-draft-note'),
+      button('Finish path — stop adding waypoints', () => finishPath(), 'primary'));
+  } else {
+    row.append(button('Continue adding waypoints', () => {
+      activePathId = path.id;
+      $('tool').value = 'path';
+      selection = { kind: 'path', id: path.id };
+      render();
+      status(`Adding waypoints to ${path.name}: click the map to place the next one. The panel button or Escape finishes.`);
+    }));
+  }
+  return row;
+}
 function renderPathInspector() {
   const parent = $('inspector');
   parent.replaceChildren();
@@ -1203,15 +1227,13 @@ function renderPathInspector() {
     field(parent, 'Height (Z)', input(Math.round(point.z || 0), 'number', value => changePoint(target => { target.z = value; })));
     field(parent, 'Curve through this point', curveSlider(point.curve ?? 1, value => changePoint(target => { target.curve = value; })));
     parent.append(make('p', 'Curve 0 makes a corner: the route goes straight in and straight out. Curve 1 sweeps through the waypoint. The segment at each end bends as much as *that* end allows, so a corner never kinks.', 'muted'),
+      pathDraftControls(path),
       button('Select the whole path', () => { selection = { kind: 'path', id: path.id }; render(); }),
-      button('Delete waypoint', () => {
-        changePath(target => { target.points = target.points.filter(item => item.id !== point.id); }, 'Waypoint deleted');
-        selection = { kind: 'path', id: path.id };
-        render();
-      }, 'danger'));
+      button('Delete waypoint', () => guard(() => deletePathPoint(path.id, point.id))(), 'danger'));
     return;
   }
-  parent.append(make('h2', path.name), make('p', `${path.points.length} waypoints · ${Math.round(pathLength(path))} units · ${path.id}`, 'muted'));
+  parent.append(make('h2', path.name), make('p', `${path.points.length} waypoints · ${Math.round(pathLength(path))} units · ${path.id}`, 'muted'),
+    pathDraftControls(path));
   field(parent, 'Name', input(path.name, 'text', value => changePath(target => { target.name = value || 'Path'; })));
   parent.append(checkbox('Closed loop', path.closed, value => changePath(target => { target.closed = value; }, value ? 'Path closed' : 'Path opened')),
     make('p', 'A closed path comes back to its first waypoint and keeps going, which is what a patrol route needs.', 'muted'));
@@ -1222,17 +1244,12 @@ function renderPathInspector() {
     row.append(button('Select waypoint', () => { selection = { kind: 'pathPoint', id: item.id, pathId: path.id }; render(); }));
     parent.append(row);
   }
-  parent.append(button('Add waypoint at the end (or use Draw path)', () => {
+  parent.append(button('Add waypoint 64 units on (quick extend)', () => {
     const last = path.points.at(-1);
     changePath(target => target.points.push(createPathPoint({ id: newId('p'),
       x: (last?.x ?? 0) + 64, y: last?.y ?? 0, z: last?.z ?? 0, curve: 1 })), 'Waypoint added');
   }));
-  parent.append(button('Delete path', () => {
-    edit(next => { next.paths = (next.paths || []).filter(item => item.id !== path.id); }, 'Path deleted');
-    if (activePathId === path.id) activePathId = null;
-    selection = null;
-    render();
-  }, 'danger'));
+  parent.append(button('Delete path', () => guard(() => deletePath(path.id))(), 'danger'));
 }
 
 /**
@@ -1458,15 +1475,16 @@ document.addEventListener('keydown', event => {
   if (event.code !== 'Escape') return;
   if (activePathId || toolMode() === 'path') finishPath();
 });
-// Delete removes the selected object in the layout, as it does in the 3D view. Walls, sectors
-// and vertices have no safe removal yet, so they are left alone rather than half-deleted.
+// Delete removes whatever is selected, as it does in the 3D view. Walls, sectors and vertices
+// have no safe removal yet, so they are left alone rather than half-deleted.
 document.addEventListener('keydown', event => {
   if (event.code !== 'Delete' && event.code !== 'Backspace') return;
   // The 3D view listens on its own canvas for this key, so it must not delete twice.
-  if (sceneMode === '3d' || (runtime && $('play-dialog').open) || selection?.kind !== 'entity') return;
+  if (sceneMode === '3d' || (runtime && $('play-dialog').open)) return;
+  if (!['entity', 'path', 'pathPoint'].includes(selection?.kind)) return;
   if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
   event.preventDefault();
-  guard(() => deleteLayoutObject(selection.id))();
+  guard(() => deleteSelectionObject(selection))();
 });
 
 // Rebuilt once per project, not once per rule: the event sheet asks for the object list
@@ -2450,8 +2468,12 @@ function finishPath({ select = true } = {}) {
   activePathId = null;
   if (select && toolMode() === 'path') $('tool').value = 'select';
   if (!drawing) return;
+  // The panel offers "Continue adding waypoints" only while nothing is being drawn, so it has to
+  // be rebuilt when the mode ends — otherwise the finish button would stay on screen swapped out
+  // for a mode that is already over.
+  render();
   status(select
-    ? 'Path finished, back to Select. Right-click or pick Draw path to start another route.'
+    ? 'Path finished, back to Select. "Continue adding waypoints" in Properties adds to the same route.'
     : 'Path finished.');
 }
 function fitMap() {
@@ -2686,9 +2708,8 @@ canvas.addEventListener('pointerdown', guard(event => {
     if (entity) { selectObject(entity, true); return; }
   }
   if (event.button === 2 || event.button === 1) {
-    // A right click is the other way out of Draw path: it finishes the route and then does what
-    // a right click always does — pans, or opens the menu if the button never moved.
-    if (event.button === 2) finishPath();
+    // A right click is the other way out of Draw path, but only once it turns out to be a click:
+    // panning the view to see where the next waypoint goes must not end the route.
     drag = { kind: 'pan', button: event.button, clientX: event.clientX, clientY: event.clientY, x: camera.x, y: camera.y,
       startX: event.clientX, startY: event.clientY, moved: false }; return;
   }
@@ -2772,7 +2793,7 @@ canvas.addEventListener('pointerup', guard(event => {
   drag = null;
   mapNeedsDraw = true;
   if (!finished) return;
-  if (finished.kind === 'pan' && finished.button === 2 && !finished.moved) { mapCanvasMenu(event); return; }
+  if (finished.kind === 'pan' && finished.button === 2 && !finished.moved) { finishPath(); mapCanvasMenu(event); return; }
   if (finished.kind === 'room') {
     const { start, end } = finished;
     edit(next => addRoom(next, { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: Math.abs(start.x - end.x), depth: Math.abs(start.y - end.y) }), 'Room added. Select shared walls and disable collision to make openings.');
@@ -4432,6 +4453,39 @@ function deleteLayoutObject(id) {
   edit(next => removeEntity(next, id), 'Object deleted');
   if (selection?.id === id) selection = null;
   render();
+}
+
+/**
+ * Deletes a route, releasing the objects that walk it and dropping the actions that used it.
+ *
+ * The references are cleared in the same edit (`removePath`), because a project that names a path
+ * it no longer has does not validate — which is why deleting a route anything followed used to do
+ * nothing but report an error.
+ */
+function deletePath(id) {
+  const path = (project.paths || []).find(item => item.id === id);
+  if (!path) throw new Error('That path no longer exists');
+  const { followers, actions } = pathReferences(project, id);
+  const detail = [followers.length ? `${followers.length} object${followers.length === 1 ? '' : 's'} stopped following it` : '',
+    actions.length ? `${actions.length} action${actions.length === 1 ? '' : 's'} removed` : ''].filter(Boolean).join(', ');
+  if (detail && !confirm(`Delete "${path.name}"? ${detail}. You can undo this change.`)) return;
+  edit(next => removePath(next, id), `Path "${path.name}" deleted${detail ? ` (${detail})` : ''}`);
+  if (activePathId === id) activePathId = null;
+  if (selection?.id === id || selection?.pathId === id) selection = null;
+  render();
+}
+/** Deletes one waypoint, keeping the rest of the route. */
+function deletePathPoint(pathId, pointId) {
+  edit(next => removePathPoint(next, pathId, pointId), 'Waypoint deleted');
+  selection = { kind: 'path', id: pathId };
+  render();
+}
+/** Delete means whatever is selected: an object, a route, or one waypoint of a route. */
+function deleteSelectionObject(value) {
+  if (value?.kind === 'path') { deletePath(value.id); return; }
+  if (value?.kind === 'pathPoint') { deletePathPoint(value.pathId, value.id); return; }
+  if (value?.kind === 'entity') { deleteLayoutObject(value.id); return; }
+  throw new Error(`Nothing to delete for a ${value?.kind || 'empty'} selection`);
 }
 
 function setSectorLight(sector) {

@@ -65,8 +65,14 @@ test('Draw path is a mode that Escape and a right click can leave', () => {
   assert.match(app, /if \(toolMode\(\) !== 'path'\) finishPath\(\{ select: false \}\)/);
   // Escape works even before the first waypoint: the mode itself has to end.
   assert.match(app, /if \(activePathId \|\| toolMode\(\) === 'path'\) finishPath\(\);/);
-  // A right press leaves the mode in both views: the map's own pointerdown, and the 3D view
-  // through its callback.
-  assert.match(app, /if \(event\.button === 2\) finishPath\(\);/);
+  // A right *click* leaves the mode in both views — the map when the pan turns out to be a click,
+  // the 3D view through its callback — and looking around with the right button does not, because
+  // a mapper places a waypoint, turns the view and expects to keep drawing.
+  assert.match(app, /if \(finished\.kind === 'pan' && finished\.button === 2 && !finished\.moved\) \{ finishPath\(\); mapCanvasMenu\(event\); return; \}/);
+  assert.doesNotMatch(app, /if \(event\.button === 2\) finishPath\(\);/);
   assert.match(memo('scene-editor.js'), /callbacks\.clearTool\?\.\(\)/);
+  assert.match(memo('scene-editor.js'), /if \(!completed\.moved\) \{\s*callbacks\.clearTool\?\.\(\);/);
+  // The route line is pickable in 3D, not only its waypoint cubes.
+  assert.match(memo('scene-editor.js'), /ray\.params\.Line\.threshold = Math\.max\(8, camera\.position\.distanceTo\(pathCentre\) \* \.012\)/);
+  assert.match(memo('scene-editor.js'), /line\.userData\.selection = \{ kind: 'path', id: path\.id \};/);
 });
