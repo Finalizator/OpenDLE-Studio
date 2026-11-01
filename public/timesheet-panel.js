@@ -446,6 +446,11 @@ export function createTimesheetPanel(nodes, {
       change(next => { (next.timesheets ||= []).push(sheet); }, `Timesheet "${sheet.name}" added`);
       return sheet.id;
     },
+    /** Deletes a timeline, asking first: the panel's own Delete button goes through here too. */
+    remove(id) {
+      const sheet = timesheets().find(item => item.id === id);
+      if (sheet) deleteTimesheet(sheet);
+    },
     rename(id, name) {
       const sheet = timesheets().find(item => item.id === id);
       const clean = String(name ?? '').trim();

@@ -371,12 +371,28 @@ test('the facing offset corrects a model whose own forward is off', () => {
 test('the Project tree lists, creates, renames and opens timelines', () => {
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(app, /function renderTimesheetTree\(\)/);
-  assert.match(app, /renderTimesheetTree\(\);\n  \/\/ Undo, redo/, 'the tree is redrawn with the project');
+  // `render()` is what every edit ends in, so the tree is listed among its steps and follows the
+  // timeline the panel is showing when that tab is open.
+  assert.match(app, /renderTimesheetTree\(\);\n  \/\/ Undo, a rename from the tree/, 'the tree is redrawn with the project');
+  assert.match(app, /if \(timesheetPanelBuilt && \$\('timesheet-panel'\)\?\.hidden === false\) timesheetPanel\.render\(\)/,
+    'and the visible timeline follows an undo or a rename');
   assert.match(app, /\$\('new-timesheet'\)\.addEventListener/, 'the tree makes timelines');
   assert.match(app, /timesheetPanel\.add\(\)/, 'through the panel that owns the edit');
-  assert.match(app, /timesheetPanel\.rename\(sheet\.id, value\)/, 'and renames them the same way');
+  assert.match(app, /timesheetPanel\.rename\(sheet\.id,/, 'and renames them the same way');
   assert.match(app, /function openTimesheet\(id\)[\s\S]{0,120}showTab\('timesheet'\)/, 'a row opens the timeline tab');
   assert.match(app, /addEventListener\('dblclick'[\s\S]{0,80}renameTimesheetInline/, 'a double click renames in place');
+  // Right click anywhere in the tree does something: the rows that had no menu answered with
+  // nothing, which read as broken. Layouts and timelines get their own, scene objects and objects
+  // keep the ones they had.
+  assert.match(app, /function projectTreeMenu\(event\)/, 'the tree has a context menu');
+  assert.match(app, /project-tree'\)\?\.addEventListener\('contextmenu', projectTreeMenu\)/, 'installed on the tree');
+  assert.match(app, /if \(row\.dataset\.timesheetId\)[\s\S]{0,400}Open timeline/, 'a timeline row offers its actions');
+  assert.match(app, /if \(row\.dataset\.levelId\)[\s\S]{0,400}Copy layout id/, 'so does a layout row');
+  // Double click to rename is generic, so layouts, scenes and timelines behave the same way.
+  assert.match(app, /function beginInlineRename\(row, \{/, 'one rename helper');
+  assert.match(app, /function renameLayoutInline\(row, level\)[\s\S]{0,600}editGame\(/, 'a layout rename is a campaign edit, so undo can reach it');
+  assert.match(app, /renameLayoutInline\(entry, level\)/, 'level rows rename in place');
+  assert.match(app, /renameSceneInline\(row, scene\)/, 'scene object rows rename in place');
   const panel = readFileSync(new URL('../public/timesheet-panel.js', import.meta.url), 'utf8');
   assert.match(panel, /add\(name\)/, 'the panel exposes creating');
   assert.match(panel, /rename\(id, name\)/, 'the panel exposes renaming');

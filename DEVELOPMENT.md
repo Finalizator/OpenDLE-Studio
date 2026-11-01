@@ -811,8 +811,21 @@ default 64 units/s and its angle followed the curve.
 Timelines are also listed in the **Project** tree, beside the layouts and scene objects: a row
 opens the Timesheet tab on that timeline, a double click renames it in place, and **+ Timesheet**
 makes one. The tree does not edit the project itself — it calls the panel (`add`, `rename`,
-`select`), so the tab and the list always show the same timeline, and the list is redrawn with
-every project edit.
+`select`, `remove`), so the tab and the list always show the same timeline, and the list is redrawn
+with every project edit.
+
+**The tree answers a right click on every row.** Rows used to have a menu only where a list had
+been wired up, so a layout or a timeline answered with nothing and the tree looked broken where it
+was merely unhandled: a layout row now offers *Edit*, *Rename…* and *Copy layout id*, a timeline
+row *Open*, *Rename…* and *Delete timeline*, and the object and scene rows keep the menus they had.
+
+**A name in the tree renames where it is read**: `beginInlineRename` in
+[`public/app.js`](./public/app.js) swaps the row's text for an input (Enter accepts, Escape
+cancels, clicking away accepts), and layouts, scene objects and timelines all use it. A layout's
+rename goes through `editGame`, because a plain edit shares the campaign with the project it
+replaces — writing the name through the shared table changed the undo snapshot as well and made
+the rename impossible to undo. The layout row keeps its id visible and renames only the name: the
+id is what the campaign, the saves and the rules refer to.
 
 **Timesheet** is the editor's video-editor timeline. A timesheet is tracks over one clock, and a
 cue is a labelled moment on a track that carries a list of ordinary visual-script actions. Nothing

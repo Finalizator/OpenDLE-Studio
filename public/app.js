@@ -307,6 +307,9 @@ function render() {
   renderLayoutTree();
   renderSceneObjects();
   renderTimesheetTree();
+  // Undo, a rename from the tree or a delete has to reach the timeline that is on screen; the panel
+  // is only rebuilt when its tab is the visible one, like the scene editor.
+  if (timesheetPanelBuilt && $('timesheet-panel')?.hidden === false) timesheetPanel.render();
   // Undo, redo and edits made elsewhere change scene objects too, and the editor is
   // only re-drawn while it is the visible panel.
   if (!$('scene-panel').hidden) sceneObjectEditor?.render();
@@ -704,10 +707,16 @@ function renderLayoutTree() {
   host.hidden = !levels.length;
   $('layout-single').hidden = Boolean(levels.length);
   host.replaceChildren(...levels.map(level => {
-    const entry = button(`${level.id} — ${level.name}`, () => switchLevel(level.id), 'tree-link level-link');
+    const entry = button('', () => switchLevel(level.id), 'tree-link level-link');
     entry.dataset.levelId = level.id;
     entry.setAttribute('aria-current', level.id === project.game.active ? 'true' : 'false');
     entry.classList.toggle('selected', level.id === project.game.active);
+    // The id stays: it is what the campaign routes, saves and rules refer to. The name is the
+    // part a person reads and renames, so it is its own span.
+    entry.append(make('span', level.id, 'level-id'), make('span', level.name, 'tree-rename-target'));
+    entry.title = `${level.id}: click to edit this layout, double-click the name to rename it`;
+    entry.setAttribute('aria-label', `${level.id} — ${level.name}`);
+    entry.addEventListener('dblclick', event => { event.preventDefault(); renameLayoutInline(entry, level); });
     return entry;
   }));
 }
@@ -4311,11 +4320,13 @@ function sceneObjectRow(scene) {
   const row = button('', () => openSceneObject(scene.id), 'scene-object-row');
   row.dataset.sceneId = scene.id;
   const parentCount = scene.entities.filter(entity => entity.parentId).length;
-  row.append(make('span', '◆', 'node-glyph node-glyph-scene'), make('span', scene.name, 'node-name'),
+  row.append(make('span', '◆', 'node-glyph node-glyph-scene'), make('span', scene.name, 'node-name tree-rename-target'),
     make('span', `${scene.entities.length}`, 'scene-object-count'));
+  row.addEventListener('dblclick', event => { event.preventDefault(); renameSceneInline(row, scene); });
   row.title = `${scene.name}: ${scene.entities.length} object${scene.entities.length === 1 ? '' : 's'}`
     + `${scene.events?.length ? `, ${scene.events.length} event${scene.events.length === 1 ? '' : 's'}` : ''}`
-    + `${parentCount ? `, ${parentCount} grouped node${parentCount === 1 ? '' : 's'}` : ''}`;
+    + `${parentCount ? `, ${parentCount} grouped node${parentCount === 1 ? '' : 's'}` : ''}`
+    + ' — double-click the name to rename it';
   row.setAttribute('aria-label', row.title);
   return row;
 }
@@ -4365,29 +4376,46 @@ function openTimesheet(id) {
   if (sheet) status(`Timeline "${sheet.name}": ${sheet.cues.length} cue(s) over ${sheet.duration}s. ${sheet.cues.length ? '' : 'Add a cue, then an action.'}`);
   renderTimesheetTree();
 }
-/** Swaps one row's name for an input, and puts the row back afterwards. */
-function renameTimesheetInline(row, sheet) {
-  if (row.querySelector('input')) return;
-  const field = make('input', '', 'timesheet-rename');
+/**
+ * Swaps the text of one tree row for an input, and puts the row back afterwards.
+ *
+ * The Project tree names its rows the way a file manager does: read the name, double click it, type
+ * a better one. One helper so a layout, a scene object and a timeline all behave the same way —
+ * Enter accepts, Escape cancels, clicking elsewhere accepts, and the caller's `apply` is where the
+ * project edit actually happens.
+ */
+function beginInlineRename(row, { label, value, maxLength = 100, apply }) {
+  if (!row || row.querySelector('input')) return null;
+  const field = make('input', '', 'tree-rename');
   field.type = 'text';
-  field.value = sheet.name;
-  field.maxLength = 60;
-  field.setAttribute('aria-label', `Rename ${sheet.name}`);
-  const label = row.querySelector('.timesheet-name');
-  if (label) { label.hidden = true; label.after(field); }
+  field.value = value ?? '';
+  field.maxLength = maxLength;
+  field.setAttribute('aria-label', `Rename ${label ?? value ?? 'row'}`);
+  const target = row.querySelector('.timesheet-name, .tree-rename-target') ||
+    [...row.childNodes].find(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+  if (target && target.nodeType === Node.TEXT_NODE) {
+    const span = make('span', target.textContent.trim(), 'tree-rename-target');
+    target.replaceWith(span);
+    span.hidden = true;
+    span.after(field);
+  } else if (target) {
+    target.hidden = true;
+    target.after(field);
+  } else row.append(field);
   field.focus();
   field.select();
   let done = false;
   const finish = (accept) => {
     if (done) return;
     done = true;
-    const value = field.value;
+    const typed = field.value.trim().slice(0, maxLength);
     field.remove();
-    if (label) label.hidden = false;
-    if (accept) {
-      if (timesheetPanel.rename(sheet.id, value)) status(`Timeline renamed to "${String(value).trim().slice(0, 60)}"`);
+    const restore = row.querySelector('.tree-rename-target') || target;
+    if (restore) restore.hidden = false;
+    if (accept && typed) {
+      try { apply(typed); } catch (error) { status(error.message, true); }
     }
-    renderTimesheetTree();
+    render();
   };
   field.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); finish(true); }
@@ -4395,6 +4423,39 @@ function renameTimesheetInline(row, sheet) {
     event.stopPropagation();
   });
   field.addEventListener('blur', () => finish(true));
+  return field;
+}
+/** Renames a timeline from its row in the Project tree. */
+function renameTimesheetInline(row, sheet) {
+  beginInlineRename(row, {
+    label: sheet.name, value: sheet.name, maxLength: 60,
+    apply: name => { if (!timesheetPanel.rename(sheet.id, name)) status('That name did not change', true); },
+  });
+}
+/** Renames a layout — a campaign level's name, which the level list and its pickers read. */
+function renameLayoutInline(row, level) {
+  beginInlineRename(row, {
+    label: `${level.id} — ${level.name}`, value: level.name, maxLength: 100,
+    // `editGame`, because a plain edit shares the campaign with the project it replaces: writing the
+    // level's name through a shared table would change the undo snapshot as well and make the
+    // rename impossible to undo.
+    apply: name => editGame(next => {
+      const target = (next.game?.levels || []).find(item => item.id === level.id);
+      if (!target) throw new Error('That layout is no longer in the campaign');
+      target.name = name;
+    }, `Layout ${level.id} renamed to "${name}"`),
+  });
+}
+/** Renames a scene object from its row in the Project tree. */
+function renameSceneInline(row, scene) {
+  beginInlineRename(row, {
+    label: scene.name, value: scene.name, maxLength: 100,
+    apply: name => edit(next => {
+      const target = (next.scenes || []).find(item => item.id === scene.id);
+      if (!target) throw new Error('That scene object no longer exists');
+      target.name = name;
+    }, `Scene object renamed to "${name}"`),
+  });
 }
 $('new-timesheet').addEventListener('click', guard(() => {
   const id = timesheetPanel.add();
@@ -5317,6 +5378,45 @@ function sceneInspectorAction(action) {
   menu?.querySelectorAll('button')[wanted]?.click();
 }
 
+/**
+ * Right click anywhere in the Project tree does something.
+ *
+ * A row used to have a menu only if its list had been wired up, so a layout row or a timeline row
+ * answered with nothing — the tree looked broken where it was only unhandled. Each row kind now
+ * offers what it can actually do; rows with a richer menu of their own (objects, scene objects) are
+ * left to it, and the empty space keeps the section actions.
+ */
+function projectTreeMenu(event) {
+  if (event.defaultPrevented) return;
+  const row = event.target.closest('.level-link, .timesheet-row');
+  if (!row) return;
+  event.preventDefault();
+  if (row.dataset.timesheetId) {
+    const sheet = (project.timesheets || []).find(item => item.id === row.dataset.timesheetId);
+    if (!sheet) return;
+    contextMenu(event, [
+      { label: 'Open timeline', run: () => openTimesheet(sheet.id) },
+      { label: 'Rename\u2026', run: () => renameTimesheetInline(row, sheet) },
+      { separator: true },
+      { label: `Cue count: ${sheet.cues.length}`, disabled: true },
+      { separator: true },
+      { label: 'Delete timeline', danger: true, run: guard(() => timesheetPanel.remove(sheet.id)) },
+    ], { label: `${sheet.name} actions` });
+    return;
+  }
+  if (row.dataset.levelId) {
+    const level = (project.game?.levels || []).find(item => item.id === row.dataset.levelId);
+    if (!level) return;
+    contextMenu(event, [
+      { label: `Edit ${level.id}`, run: () => switchLevel(level.id), disabled: level.id === project.game.active },
+      { label: 'Rename\u2026', run: () => renameLayoutInline(row, level) },
+      { separator: true },
+      { label: 'Copy layout id', run: () => copyText(level.id, level.id) },
+    ], { label: `${level.id} actions` });
+    return;
+  }
+}
+
 function installContextMenus() {
   $('asset-list').addEventListener('contextmenu', event => {
     const tile = event.target.closest('.asset-tile');
@@ -5358,6 +5458,7 @@ function installContextMenus() {
     ], { label: `${sector.id} actions` });
   });
   emptyAreaMenus();
+  document.querySelector('.project-tree')?.addEventListener('contextmenu', projectTreeMenu);
   $('scene-objects').addEventListener('contextmenu', event => {
     const row = event.target.closest('.scene-object-row');
     if (!row?.dataset.sceneId) return;

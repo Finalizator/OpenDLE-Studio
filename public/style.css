@@ -136,7 +136,14 @@ summary { cursor: pointer; }
 .timesheet-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .timesheet-cue-count { font-size: 9px; color: var(--muted); background: #3d3d3d; border-radius: 8px; padding: 0 5px; }
 .timesheet-row.selected .timesheet-cue-count { background: #c9c9c9; color: #444; }
-.timesheet-rename { flex: 1; min-width: 0; font: inherit; font-size: 10px; padding: 1px 3px; background: #2f2f2f; color: #eee; border: 1px solid var(--accent); border-radius: 2px; }
+.tree-rename { flex: 1; min-width: 0; font: inherit; font-size: 10px; padding: 1px 3px; background: #2f2f2f; color: #eee; border: 1px solid var(--accent); border-radius: 2px; }
+/* A layout row reads "MAP07 — Entryway": the id is what the project routes, the name is what a
+   person edits, so the id is quiet and the name is the rename target. */
+.level-link { display: flex; align-items: center; gap: 5px; }
+.level-link::before { content: none; }
+.level-id { color: var(--muted); flex-shrink: 0; }
+.level-link.selected .level-id { color: #666; }
+.tree-rename-target { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .layers-dock { flex: 0 1 40%; min-height: 145px; display: flex; flex-direction: column; border-top: 3px solid #333; overflow: hidden; }
 .layer-row { text-align: left; background: #e8e8e8; color: #383838; padding: 5px 15px; margin: 4px; }
 .layer-help { font-size: 9px; margin: 3px 8px; color: var(--muted); }
