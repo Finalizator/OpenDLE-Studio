@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { uniform, float, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, asin, cross, normalize, length, clamp, mix } from 'three/tsl';
+import { uniform, float, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, asin, cross, normalize, length, clamp, mix, fract } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { validateShaders } from '/shared/shaders.js';
@@ -26,6 +26,7 @@ import { areaVolume, areaYaw } from '/shared/areas.js';
 import { gameView, viewNeedsScissor } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
 import { skyAssetFor, skyRequestName } from '/shared/sky.js';
+import { skyDomeMapping } from '/shared/sky-dome.js';
 import { createSpriteIndex } from '/shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 import { createSurfaceBatcher, mergePiece } from '/shared/surface-batch.js';
@@ -819,21 +820,27 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const u = atan(ray.z, ray.x).add(scroll).div(6.2831853).mul(tiling);
         const elevation = atan(ray.y, length(ray.xz));
         // Doom's sky is a dome **60 degrees tall** — `SkyVertexDoom` walks `maxSideAngle = 60`
-        // and lays the picture's rows over it — and GZDoom maps the picture onto that dome with
-        // a scale of `1 + ((texh - 200) / 200) * 1.17` and a shift of `(200 - texh) * 57`
-        // (`FSkyVertexBuffer::SetupMatrices`, on a dome 10000 units across). For Lullaby's
-        // 240-row sky that puts **row 197 on the horizon**, not the last row: reading the
-        // strip's bottom row as the horizon sampled 40 rows further down than GZDoom does, into
-        // the picture's black lower band, which is why the sky above the ridges was empty here
-        // and full of moving nebula there.
+        // and lays the picture's rows over it. Where the picture sits on that dome depends on
+        // its height: `FSkyVertexBuffer::SetupMatrices` has a branch per size, and a stock
+        // 128-row sky takes the `texh < 200` one, which drops the dome 1250 units and squashes
+        // it to `texh / 230`. `skyDomeMapping` holds that table, so the numbers here are read
+        // from GZDoom instead of remembered. With the 200..240 branch (the only one written
+        // before) a 128-row sky sat 4100 units too high and sampled its dark upper band where
+        // the mountains belong, which is the flat black sky seen through windows.
         const skyRows = skyAsset.height || 240;
-        const skyScale = 1 + ((skyRows - 200) / 200) * 1.17;
-        const skyShift = (200 - skyRows) * 57 / 10000;
+        // A tiled sky is GZDoom's `LEVEL_FORCETILEDSKY` map flag, which the importer does not
+        // carry; a stock Doom level leaves it off.
+        const dome = skyDomeMapping(skyRows);
+        const skyScale = dome.scale, skyShift = dome.shift;
         const skySlope = tan(elevation);
         const skyRadius = length(vec2(skySlope, skyScale));
         const skyTheta = atan(skySlope, skyScale).sub(asin(clamp(float(skyShift).div(skyRadius), -1, 1)));
+        // A picture shorter than the dome covers repeats, as GZDoom's `CLAMP_NONE` does.
+        const wrapped = () => skyTheta.div(1.0471976).oneMinus().mul(dome.textureScale).fract();
         const v = doom
-          ? clamp(skyTheta.div(1.0471976).oneMinus(), .001, .999)
+          ? dome.textureScale === 1
+            ? clamp(skyTheta.div(1.0471976).oneMinus(), .001, .999)
+            : clamp(wrapped(), .001, .999)
           : elevation.div(Math.PI).add(.5);
         const backgroundMaterial = new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
         backgroundMaterial.vertexNode = vec4(positionGeometry.xy, 0, 1);
@@ -1226,7 +1233,14 @@ export async function createPreview(canvas, project, state, { editor = false } =
       const mat = new THREE.MeshBasicMaterial({ map: imageTexture(weapon.id), transparent: true, depthTest: false, depthWrite: false });
       const overlay = mesh(new THREE.PlaneGeometry(weapon.width, weapon.height), mat, overlayScene);
       const left = weapon.offsetX === undefined ? 160 - weapon.width / 2 : -weapon.offsetX;
-      const top = weapon.offsetY === undefined ? 200 - weapon.height : 32 - weapon.offsetY;
+      // A psprite stands on the bottom of the **view window**, which ends where the status bar
+      // starts, so the 32 units the bar takes are not part of its space. The patch offsets an
+      // import carries already describe that placement (`PISGA0` is 106 rows down and 62 rows
+      // tall, which puts its feet on row 168 of 200); reading them as "top from the screen top"
+      // instead dropped the weapon a whole bar lower, so the bar cut it in half. A weapon
+      // imported without offsets sits on the bar directly.
+      const bar = project.hud?.reserveBottom ?? 32;
+      const top = weapon.offsetY === undefined ? 200 - bar - weapon.height : -weapon.offsetY;
       overlay.position.set(left + weapon.width / 2, 200 - top - weapon.height / 2, 0);
       weaponOverlays.set(weaponId, overlay);
     }
@@ -1655,7 +1669,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // A title map films the scene from a camera actor; without this, the only clue that
         // the view is not the player's is the picture itself being wrong.
         writeDataset('viewCamera', spectator ? `${spectator.id}@${eye[0].toFixed(0)},${eye[1].toFixed(0)},${eye[2].toFixed(0)}` : 'player');
-        writeDataset('viewFov', `${Number(state.settings.fov).toFixed(1)} horizontal / ${camera.fov.toFixed(1)} vertical`);
+        writeDataset('viewFov', `${Number(state.settings.fov).toFixed(1)} set / ${camera.fov.toFixed(1)} vertical / `
+          + `${(2 * Math.atan(Math.tan(camera.fov * Math.PI / 360) * camera.aspect) * 180 / Math.PI).toFixed(1)} horizontal`);
         // Roll eases in: a gravity change should read as the world turning, not a cut.
         viewUp.lerp(targetUp.set(...(spectator ? [0, 1, 0] : [up[0], up[2], up[1]])), dt > 0 ? 1 - Math.exp(-12 * dt) : 1);
         if (viewUp.lengthSq() < 1e-8) viewUp.copy(targetUp); else viewUp.normalize();

@@ -1213,7 +1213,10 @@ images report their asset name rather than rendering an untextured white sprite.
 the imported game's title menu first, then New game and skill selection.
 Escape or **Pause / options** opens an in-game menu without advancing gameplay;
 Resume keeps the same runtime, while New game starts the campaign entry or
-selected episode from scratch. Stop preview / Quit returns to the editor.
+selected episode from scratch. Stop preview / Quit returns to the editor. Stopping while the
+preview is still loading restores the Play buttons and says so, and the leftover start is
+discarded rather than left to stop the next preview: both used to leave the toolbar disabled —
+or the replacement preview black — for the rest of the session.
 
 Save game / Load game pages are native editable HUD and interface events,
 including original `M_SAVEG` / `M_LOADG` patches and dynamic MENUDEF
@@ -2773,14 +2776,19 @@ this is measured rather than guessed: on `TITLEMAP` the player's view sits at `v
 (floor 8 + viewheight 41) until `ChangeCamera` moves it.
 
 **A Doom sky is a dome 60 degrees tall, not a sphere.** `SkyVertexDoom` lays the picture's
-rows over `maxSideAngle = 60` degrees, and `FSkyVertexBuffer::SetupMatrices` maps the picture
-onto that dome with a scale of `1 + ((texh - 200)/200) * 1.17` and a shift of `(200 - texh) * 57`
-on a dome 10000 units across. For Lullaby's 240-row sky that puts **row 197 on the horizon** and
-row 101 at 30 degrees — not its last row. Reading the strip's bottom row as the horizon sampled
-40 to 70 rows too far down, into the picture's black lower band, which is why the sky above the
-ridge lines was empty here while GZDoom shows a moving nebula there. The shader now inverts
-GZDoom's transform: `theta = atan2(tan(elevation), scale) - asin(shift / hypot(tan(elevation),
-scale))`, and `v = 1 - theta / 60deg`.
+rows over `maxSideAngle = 60` degrees, and `FSkyVertexBuffer::SetupMatrices` decides where the
+picture sits on that dome — with **a branch per picture height**, which is the part that was
+missing. Only the `200..240` branch existed: a scale of `1 + ((texh - 200)/200) * 1.17` and a
+shift of `(200 - texh) * 57` on a dome 10000 units across. Every stock Doom sky is **128 rows**,
+and for that size GZDoom takes the `texh < 200` branch instead: the dome is moved **down 1250
+units** and squashed to `texh / 230`. Reading a 128-row sky with the 240 branch lifted it 4100
+units, so the horizon sampled the picture's bottom row and everything above it sampled the dark
+upper band — the flat black sky seen through barred windows, measured as a single colour
+`#131313` across the whole opening. `shared/sky-dome.js` now carries the whole table, the shader
+inverts the same transform (`theta = atan2(tan(elevation), scale) - asin(shift /
+hypot(tan(elevation), scale))`, `v = 1 - theta / 60deg`), a picture shorter than the dome covers
+repeats the way `CLAMP_NONE` does, and Lullaby's 240-row sky still puts **row 197 on the
+horizon** — pinned by `test/sky-dome.test.js` alongside the 128-row rows.
 
 **MAPINFO's sky speed is in units per millisecond.** `g_mapinfo.cpp` stores
 `speed * (TICRATE / 1000)` and `r_sky.cpp` advances it by `mstime`, so a speed of 0.1 moves the
@@ -2797,14 +2805,34 @@ never scrolled, however right the number fed to it was: measured from two frames
 apart, the best-fitting horizontal shift was 0 px. They are `uniform(0, 'float')` now, and the
 same measurement gives the shift the MAPINFO speed asks for.
 
-**GZDoom's `fov` is a horizontal angle, and so is the setting now.** GZDoom's cvar is
-*horizontal* with a default of 90; the studio's setting was used directly as three.js's vertical
-field, so at 16:9 a 90 became a 90-degree vertical field where GZDoom shows 58.7, and at 21:9
-where GZDoom shows 45.4. Everything in the frame was therefore about half the size it should be,
-which is why the ridge layers sat low and thin. `verticalFov(horizontal, aspect)` in
-`shared/game-settings.js` converts per aspect ratio, the game camera uses it, and the setting's
-default is 90 to match GZDoom's. A saved setting of 70 is now read as 70 horizontal — narrower
-than before — because that is what the number always meant.
+**GZDoom's `fov` is a horizontal angle of a 4:3 view, and so is the setting now.** GZDoom's
+cvar is *horizontal* with a default of 90; the studio's setting was used directly as three.js's
+vertical field, so at 16:9 a 90 became a 90-degree vertical field where GZDoom shows 73.7, and at
+21:9 the same 73.7. Everything in the frame was therefore about the wrong size, which is why the
+ridge layers sat low and thin.
+
+The conversion cannot divide by the window's real aspect, which is what the first attempt did: it
+pinned the *horizontal* angle at 90 and closed the vertical angle as the window widened, so
+fullscreen — the widest window most players use — showed the least of the world, and the report
+was "fullscreen FOV has changed becoming too small". GZDoom anchors the number to a 4:3 view
+(`hw_entrypoint.cpp`: `fovratio = ratio >= 1.3 ? 1.3333 : ratio`) and `VREyeInfo::GetProjection`
+derives `fovy = 2*atan(tan(fov/2) / fovratio)` while the camera keeps the real aspect, so a wider
+window shows more at the sides. `verticalFov(horizontal, aspect)` in `shared/game-settings.js`
+implements that, and the setting's default is 90 to match GZDoom's. A saved setting of 70 is read
+as 70 horizontal — narrower than before — because that is what the number always meant. The
+setting has a slider in **Engine tweaks** with a readout of the vertical angle and the width a
+16:9 and a 21:9 window end up with, and changing it applies to a preview that is already running.
+
+### The weapon stands on the status bar, not the screen edge
+
+A psprite is placed inside the **view window**, and the classic status bar takes the bottom 32 of
+the 200 units — so a weapon's feet sit on the top of the bar, and vanilla Doom shows the whole
+pistol above it. The overlay scene covers the whole canvas instead, and the placement read the
+imported patch offset as `32 - offsetY`, which cancelled exactly the bar the offset already
+accounted for: `PISGA0` is 62 rows tall with `offsetY = -106`, i.e. its feet on row 168 of 200,
+but `200 - (32 + 106) - 31` put its centre on row 31, so the status bar covered its lower half.
+The offset is the distance from the top of the view window (`-offsetY`), and a weapon imported
+without offsets is anchored to `200 - reserveBottom - height` instead of the canvas bottom.
 
 ### Static world surfaces are merged, not one mesh each
 

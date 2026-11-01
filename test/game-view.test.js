@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gameView, statusBarHidden, viewNeedsScissor } from '../shared/game-view.js';
-import { gameSettings, validateSetting } from '../shared/game-settings.js';
+import { gameSettings, validateSetting, verticalFov } from '../shared/game-settings.js';
 
 test('screen size reserves the classic status bar and centers reduced game viewports', () => {
   const hud = { width: 320, height: 200, reserveBottom: 32, scaleMode: 'fit' };
@@ -47,4 +47,25 @@ test('a full-buffer view never asks for a scissor rectangle', () => {
   // A reduced screen size, or a status bar inset, is a real sub-viewport and needs one.
   assert.equal(viewNeedsScissor(gameView(hud, { viewSize: 5 }, 1083, 609), 1083, 609), true);
   assert.equal(viewNeedsScissor(gameView(hud, gameSettings(), 1083, 609), 1083, 609), true);
+});
+
+test('a wide window shows more world instead of closing the vertical field of view', () => {
+  // GZDoom anchors `fov` to a 4:3 view: `fovratio = ratio >= 1.3 ? 4/3 : ratio` in
+  // hw_entrypoint.cpp, and GetProjection divides by it. A 90 was 73.7 degrees vertically
+  // whatever the window shape, and the extra width added to the horizontal instead — dividing
+  // by the real aspect narrowed the frame as the window widened, which is what fullscreen
+  // looked "too small" for.
+  const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < .05, `${actual} is not ${expected}`);
+  close(verticalFov(90, 4 / 3), 73.74);
+  close(verticalFov(90, 16 / 9), 73.74);
+  close(verticalFov(90, 21 / 9), 73.74);
+  close(verticalFov(70, 16 / 9), 55.41);
+  // A taller-than-4:3 window keeps the horizontal angle and grows the vertical one.
+  close(verticalFov(90, 1), 90);
+  close(verticalFov(90, .75), 106.26);
+  // The horizontal the camera ends up showing, at 16:9, is the same 4:3 angle widened.
+  const horizontal = aspect => 2 * Math.atan(Math.tan(verticalFov(90, aspect) * Math.PI / 360) * aspect) * 180 / Math.PI;
+  close(horizontal(4 / 3), 90);
+  close(horizontal(16 / 9), 106.26);
+  close(horizontal(2000 / 951), 115.25);
 });

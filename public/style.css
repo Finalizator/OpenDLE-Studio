@@ -267,6 +267,8 @@ body.row-dragging .drag-grip { cursor: grabbing; }
 .variable-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .variable-row span { flex: 1; }
 .variable-row input { width: 120px; }
+#engine-setting-fields label { margin: 10px 0; }
+#engine-setting-fields .setting-readout { display: block; margin-top: 3px; color: var(--text); font-size: 10px; }
 footer { grid-column: 1 / -1; grid-row: 3; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 3px 8px; background: #3b3b3b; color: var(--muted); font-size: 9px; }
 #status { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #status.error, #import-status.error { color: #ffb5ab; }

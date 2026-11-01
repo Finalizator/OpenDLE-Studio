@@ -52,7 +52,7 @@ import { openAssetPicker, PICTURE_KINDS, MODEL_KINDS } from './asset-picker.js';
 import { captureModelPreview } from './model-thumbnail.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
 import { installIntermission } from '/shared/intermission.js';
-import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen, changeSetting } from '/shared/game-settings.js';
+import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen, changeSetting, verticalFov } from '/shared/game-settings.js';
 import { statusBarHidden } from '/shared/game-view.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
 import { cloneForLevelSwitch, selectGameLevel } from '/shared/game-levels.js';
@@ -1273,12 +1273,28 @@ function saveEngineTweaks(changes) {
 $('engine-jumping').addEventListener('change', guard(() => {
   saveEngineTweaks({ jumping: $('engine-jumping').checked });
 }));
+/**
+ * What a field-of-view setting means on screen, in the words the picture uses.
+ *
+ * The number is GZDoom's: the horizontal angle of a 4:3 view. A wider window keeps the vertical
+ * angle and shows more at the sides, so the readout names both, which is the only way to tell a
+ * narrow setting from a wide window.
+ */
+function fovReadout(value) {
+  const horizontal = Number(value) || 90;
+  const vertical = verticalFov(horizontal, 4 / 3);
+  const wide = amount => 2 * Math.atan(Math.tan(vertical * Math.PI / 360) * amount) * 180 / Math.PI;
+  return `${horizontal}° horizontal at 4:3 — ${vertical.toFixed(1)}° vertical, `
+    + `${wide(16 / 9).toFixed(0)}° across a 16:9 window and ${wide(21 / 9).toFixed(0)}° across 21:9`;
+}
+
 function renderEngineTweaks() {
   const tweaks = readEngineTweaks();
   $('engine-jumping').checked = tweaks.jumping;
   const fields = $('engine-setting-fields'); fields.replaceChildren();
   for (const [key, label] of [['masterVolume', 'Overall sound level (0 = silent, 1 = full)'], ['muted', 'Mute preview audio'],
-    ['renderResolution', 'Render resolution'], ['fov', 'Field of view'], ['resolution', 'Render scale'], ['brightness', 'Brightness'],
+    ['renderResolution', 'Render resolution'], ['fov', 'Field of view — horizontal degrees of a 4:3 view'],
+    ['resolution', 'Render scale'], ['brightness', 'Brightness'],
     ['bunnyhop', 'Simulated bunnyhop (speed gain while chaining jumps)'], ['bunnyhopGain', 'Bunnyhop speed gain per chained jump']]) {
     const wrapper = make('label', label), spec = GAME_SETTINGS[key];
     if (spec.options) {
@@ -1291,6 +1307,19 @@ function renderEngineTweaks() {
       select.value = tweaks[key];
       select.addEventListener('change', guard(() => saveEngineTweaks({ [key]: select.value })));
       wrapper.append(select);
+    } else if (key === 'fov') {
+      // A slider, because the angle is something you tune by looking at the picture, and a
+      // readout, because "90" alone says nothing about what the window shows.
+      const input = document.createElement('input');
+      input.type = 'range'; input.id = 'engine-fov';
+      input.min = spec.min; input.max = spec.max; input.step = spec.step; input.value = tweaks.fov;
+      input.setAttribute('aria-label', label);
+      const readout = document.createElement('output');
+      readout.className = 'setting-readout'; readout.htmlFor = 'engine-fov';
+      readout.textContent = fovReadout(tweaks.fov);
+      input.addEventListener('input', () => { readout.textContent = fovReadout(input.value); });
+      input.addEventListener('change', guard(() => saveEngineTweaks({ fov: Number(input.value) })));
+      wrapper.append(input, readout);
     } else {
       const input = document.createElement('input');
       input.type = typeof spec.value === 'boolean' ? 'checkbox' : 'number'; input.setAttribute('aria-label', label);
@@ -3022,6 +3051,11 @@ function stopPreview() {
   previewProject = null; hudCursorActive = false;
   $('hud-cursor').setAttribute('aria-pressed', 'false');
   $('show-statusbar').hidden = true;
+  // Stopping while the preview is still loading leaves the start's own `finally` unreached — it
+  // is waiting on the renderer, which just went away — so the toolbar is restored here.
+  // Without this, Play level and Play game stayed disabled for the rest of the session.
+  previewLoading = false;
+  $('play').disabled = false; $('play-game').disabled = false; $('play-level').disabled = false;
   // The preview is gone, so its last instruction ("gameplay is paused") would be a lie.
   status('Preview stopped. Back to the editor.');
 }
@@ -3226,7 +3260,13 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     mouseStatus('Mouse is free. Click the view or Capture mouse. If the browser blocks capture, use drag-look or open this URL in a desktop browser.');
     if (runtime.saveStatus) status(runtime.saveStatus, true);
     else status(`${preview.rendererStatus?.backend || 'GPU'} preview ready${preview.rendererStatus?.fallbackReason ? ` — ${preview.rendererStatus.fallbackReason}` : ''}`);
-  } catch (error) { if (replacingPreview || !runtime) stopPreview(); throw error; }
+  } catch (error) {
+    // A start the user cancelled is not a failure, and it must not tear down the preview that
+    // replaced it: the generation has moved on, so this start no longer owns anything.
+    if (generation !== previewGeneration) return;
+    if (replacingPreview || !runtime) stopPreview();
+    throw error;
+  }
   finally { previewLoading = false; $('play').disabled = false; $('play-game').disabled = false; $('play-level').disabled = false; }
 }
 function saveSlotLabels(slots) {
