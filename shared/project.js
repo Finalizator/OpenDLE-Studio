@@ -284,6 +284,10 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
   modelRef(entity.modelAsset);
   assert(entity.type !== 'player' || !entity.modelAsset, 'Assign world models to non-player objects');
   if (entity.modelScale !== undefined) number(entity.modelScale, 'Model scale', .001, 4096);
+  // Which way the model's own forward points, in degrees from the engine's +X: a glTF authored
+  // facing +Z is 90. The object's angle is then the direction the model's nose actually follows,
+  // which is what a route turns.
+  if (entity.modelFacing !== undefined) number(entity.modelFacing, 'Model facing', -360, 360);
   if (entity.animation !== undefined) {
     object(entity.animation, 'Animation');
     const model = assets.find(asset => asset.id === entity.modelAsset);

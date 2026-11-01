@@ -1,10 +1,11 @@
 import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, ENTITY_TYPES } from '/shared/project.js';
-import { createPath, createPathPoint, samplePath, pathLength, pointAlong, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint } from '/shared/paths.js';
+import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
+import { hasModelFacing } from '/shared/entity-visuals.js';
 import { addRamp, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { bundleModel } from '/shared/gltf.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
@@ -41,7 +42,7 @@ import { createPlaceholderLog } from './placeholder-log.js';
 import { createAcsHud } from './acs-hud.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { createTimesheetPanel } from './timesheet-panel.js';
-import { driveRouteTimesheet } from '/shared/timesheet-recipe.js';
+import { alignModelToRoute, driveRouteTimesheet } from '/shared/timesheet-recipe.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { upgradePickupReach } from '/shared/doom-hud.js';
@@ -742,12 +743,14 @@ function button(text, fn, className) {
   element.addEventListener('click', guard(fn));
   return element;
 }
-function input(value, type, fn, label) {
+function input(value, type, fn, label, { raw = false } = {}) {
   const element = make('input');
   element.type = type;
   element.value = value;
   if (label) element.setAttribute('aria-label', label);
-  element.addEventListener('change', guard(() => fn(type === 'number' ? Number(element.value) : element.value)));
+  // A number field normally reports a number, because `Number('')` is 0 and a cleared field would
+  // silently mean zero. A field where blank and zero differ asks for `raw` and gets the text.
+  element.addEventListener('change', guard(() => fn(type === 'number' && !raw ? Number(element.value) : element.value)));
   return element;
 }
 // Option lists are cloned from a template instead of being rebuilt node by node: the
@@ -1132,6 +1135,43 @@ function renderInspector() {
         }), ['model']));
         if (item.modelAsset) {
           field(parent, 'Model scale (map units / glTF unit)', input(item.modelScale ?? 32, 'number', value => update('modelScale', value)));
+          // Which way the file's own forward points. With a facing declared, the object's angle is
+          // the direction the nose follows — so a route drives the truck straight instead of
+          // dragging it sideways, which is what a model drawn facing +Z does by default.
+          const facing = item.modelFacing;
+          // Blank means "not declared" and zero means "the file already faces east" — the two are
+          // different, because a declared facing (even 0) is what makes a route turn the nose.
+          const setFacing = value => edit(next => {
+            const entity = next.map.entities.find(entity => entity.id === item.id);
+            if (String(value).trim() === '') { delete entity.modelFacing; return; }
+            const clean = Number(value);
+            if (!Number.isFinite(clean)) { delete entity.modelFacing; return; }
+            const wrapped = ((clean % 360) + 360) % 360;
+            // Rounding after the wrap keeps -66.9 from coming back as -66.89999999999998: the
+            // remainder of a negative number is where the floating-point tail creeps in.
+            entity.modelFacing = Math.round((wrapped > 180 ? wrapped - 360 : wrapped) * 10) / 10;
+          }, 'Model facing changed');
+          field(parent, 'Model facing (degrees)', input(facing ?? '', 'number', value => setFacing(value), null, { raw: true }));
+          parent.append(make('p', facing === undefined
+            ? 'Set this when the model file\'s own forward is not east: the orange arrow shows the direction the nose follows, so turn the model with Rotate until the body lines up, then read the angle here. Until it is set, the model keeps the pose you gave it and turns with the route.'
+            : `The model\'s nose follows the object\'s angle; a route turns it exactly. Measured from east, so a file drawn facing north is 90. The orange arrow is drawn while this object is selected.`, 'info'));
+          // The shortcut that turns a posed model into a faced one: the route's own heading is the
+          // reference, and the difference to the current angle is the file's forward.
+          const route = (project.paths || []).find(candidate => candidate.id === item.path?.id);
+          if (route) {
+            const alignment = alignModelToRoute(item, route);
+            if (alignment) {
+              parent.append(button('Line this model up with its route', () => {
+                edit(next => {
+                  const entity = next.map.entities.find(entity => entity.id === item.id);
+                  entity.modelFacing = alignment.facing;
+                  entity.angle = alignment.angle;
+                  if (entity.path) delete entity.path.yawOffset;
+                }, `${item.name} now faces its route (facing ${alignment.facing}°, angle ${alignment.angle}°)`);
+              }));
+              parent.append(make('p', `This turns ${item.name} onto the route without moving it: the route heads ${alignment.heading}° and the model was drawn at ${alignment.was}°, so a facing of ${alignment.facing}° is what makes the two agree.`, 'info'));
+            }
+          }
           // Yaw is the object's own facing; pitch and roll stand the model up, on its
           // side (roll 90) or on its head (pitch 180) without turning the object.
           const tilt = item.modelTilt || { pitch: 0, roll: 0 };
@@ -2787,19 +2827,10 @@ function drawMap() {
     if (isMarked) { ctx.beginPath(); ctx.arc(entity.x, entity.y, 12 / camera.zoom, 0, Math.PI * 2); ctx.stroke(); }
     // Which way the player start looks is part of the map and nothing else says it: the marker is a
     // heading arrow with a head, so a start facing north cannot be mistaken for one facing east.
-    if (entity.type === 'player') {
-      const angle = entity.angle * Math.PI / 180;
-      const reach = 26 / camera.zoom, head = 9 / camera.zoom, spread = Math.PI * .82;
-      const tipX = entity.x + Math.cos(angle) * reach, tipY = entity.y + Math.sin(angle) * reach;
-      ctx.strokeStyle = entityColors.player; ctx.fillStyle = entityColors.player;
-      ctx.lineWidth = 2 / camera.zoom;
-      ctx.beginPath(); ctx.moveTo(entity.x, entity.y); ctx.lineTo(tipX, tipY); ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(tipX, tipY);
-      ctx.lineTo(tipX + Math.cos(angle + spread) * head, tipY + Math.sin(angle + spread) * head);
-      ctx.lineTo(tipX + Math.cos(angle - spread) * head, tipY + Math.sin(angle - spread) * head);
-      ctx.closePath(); ctx.fill();
-    }
+    // A model that declared its facing gets the same arrow, because the angle is then the direction
+    // its nose points, and that is the line the author is checking against a route.
+    if (entity.type === 'player') drawFacingArrow(ctx, entity, entityColors.player, camera.zoom);
+    else if (hasModelFacing(entity)) drawFacingArrow(ctx, entity, '#ff9d5c', camera.zoom);
     if (camera.zoom > .25) {
       ctx.font = `${10 / camera.zoom}px system-ui`; ctx.fillText(entity.name, entity.x + 12 / camera.zoom, entity.y + 4 / camera.zoom);
     }
@@ -2809,6 +2840,25 @@ function drawMap() {
     ctx.strokeRect(drag.start.x, drag.start.y, drag.end.x - drag.start.x, drag.end.y - drag.start.y);
   }
   ctx.restore();
+}
+/**
+ * A heading arrow with a head, in map space.
+ *
+ * The 2D view draws objects as dots, so which way one faces would otherwise only be visible in 3D —
+ * and a heading is exactly what a route depends on.
+ */
+function drawFacingArrow(ctx, entity, colour, zoom) {
+  const angle = (Number(entity.angle) || 0) * Math.PI / 180;
+  const reach = 26 / zoom, head = 9 / zoom, spread = Math.PI * .82;
+  const tipX = entity.x + Math.cos(angle) * reach, tipY = entity.y + Math.sin(angle) * reach;
+  ctx.strokeStyle = colour; ctx.fillStyle = colour;
+  ctx.lineWidth = 2 / zoom;
+  ctx.beginPath(); ctx.moveTo(entity.x, entity.y); ctx.lineTo(tipX, tipY); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(tipX + Math.cos(angle + spread) * head, tipY + Math.sin(angle + spread) * head);
+  ctx.lineTo(tipX + Math.cos(angle - spread) * head, tipY + Math.sin(angle - spread) * head);
+  ctx.closePath(); ctx.fill();
 }
 // Ctrl+C / Ctrl+V on the selected objects. The copy is the whole object — properties, texture or
 // model, physics, ramp numbers, script variables — and a copied group comes back as a group, so
@@ -4912,7 +4962,7 @@ function deleteSelectedPaths(primaryId) {
 function driveRouteOnTimesheet(entity) {
   const path = (project.paths || []).find(item => item.id === entity.path?.id);
   if (!path) throw new Error('Pick a path for this object first');
-  const { sheet, event, seconds } = driveRouteTimesheet({ entity, path, nextId: newId });
+  const { sheet, event, seconds, alignment } = driveRouteTimesheet({ entity, path, nextId: newId, alignToRoute: true });
   edit(next => {
     (next.timesheets ||= []).push(sheet);
     (next.events ||= []).push({ ...event, sheetId: next.eventSheets?.[0]?.id });
@@ -4920,21 +4970,24 @@ function driveRouteOnTimesheet(entity) {
     // fight each other, and the timeline is what should decide where it is now.
     const target = next.map.entities.find(candidate => candidate.id === entity.id);
     if (target?.path) delete target.path;
-  }, `Timeline "${sheet.name}" created: it drives ${entity.name} along ${path.name} in ${seconds}s`);
+    // How the model looked is kept, and the angle now means where its nose points, so the drive
+    // matches the editor instead of dragging the pose sideways.
+    if (alignment) { target.modelFacing = alignment.facing; target.angle = alignment.angle; }
+  }, alignment
+    ? `Timeline "${sheet.name}" created: it drives ${entity.name} along ${path.name} in ${seconds}s, and the model now faces the route (facing ${alignment.facing}°)`
+    : `Timeline "${sheet.name}" created: it drives ${entity.name} along ${path.name} in ${seconds}s`);
   showTab('timesheet');
   timesheetPanel.select(sheet.id);
-  const facing = yawOffset ? ` The model keeps the ${yawOffset}° facing offset it had on its route.` : '';
-  // A model keeps the pose it was given and turns with the road, so a model posed away from the
-  // first leg will drive at that angle — worth saying now rather than after pressing Play.
-  const startHeading = pointAlong(path, 0)?.angle ?? 0;
-  const posed = Math.round(((entity.angle - startHeading) % 360 + 360) % 360);
-  const drift = Math.min(posed, 360 - posed);
-  const warning = drift > 15 && !yawOffset
-    ? ` Its pose is ${drift}° away from the route's first leg; it keeps that pose and turns with the road, so set the cue's Facing offset if it should be squared up.`
-    : '';
+  // Saying what makes the drive match the pose is the point: a model posed by eye used to drive
+  // at whatever angle the pose was authored at, and nothing warned.
+  const detail = alignment
+    ? ` Its facing is now declared as ${alignment.facing}°, so its nose follows the route exactly — how it looks is how it drives.`
+    : entity.modelAsset
+      ? ' Its facing was already declared, so its nose follows the route exactly.'
+      : '';
   status(`Timeline "${sheet.name}": a cue at 0s drives ${entity.name} from the first waypoint to the last in ${seconds}s,`
     + ' and the "Start …" event starts it when the layout starts. The object no longer follows the route on its own — the'
-    + ` timeline does that now.${facing}${warning}`);
+    + ` timeline does that now.${detail}`);
 }
 /** Deletes one waypoint, keeping the rest of the route. */
 function deletePathPoint(pathId, pointId) {

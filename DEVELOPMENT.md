@@ -874,9 +874,35 @@ route heading is what made a pre-adjusted truck drive sideways, so a model **kee
 given and is turned by however much the route bends** (`tweenAngle` in `shared/timesheet.js`,
 `facingAngle` in `shared/path-motion.js`). A model whose own axis is still wrong takes one number —
 **Facing offset (degrees)** — on the object's route following and on the `followPath` action; the
-"drive this route on a timesheet" recipe carries that offset into the cue it writes. The recipe
-also says so when the model is posed more than 15° away from the route's first leg, because that
-pose is what will drive.
+"drive this route on a timesheet" recipe carries that offset into the cue it writes.
+
+**Model facing** is the better answer to the same problem, and the one to reach for first. The
+model's Properties carry **Model facing (degrees)**: how far the file's own forward is turned from
+the engine's +X, so a glTF exported facing +Z reads 90. Declaring it changes what the object's
+angle *means* — from then on the angle is the direction the nose points, and the renderer draws the
+body at `angle − facing` (`modelOrientation` in `shared/entity-visuals.js`, and the two per-frame
+paths in `public/render.js`). A route then turns a faced model exactly, the same rule a sprite
+follows, because there is no unknown left to bend around. Until a facing is declared, a model keeps
+the pose the author gave it, so every project that never sets one behaves as it always did.
+
+Two things make the number findable rather than guessed:
+
+- **An arrow** at the model's feet, in the 2D map and in the 3D view, pointing along the object's
+  angle — the direction the nose follows once a facing is declared, so "does the body sit along
+  this line?" is the check. It is drawn for every model that declares a facing (`#ff9d5c`, the
+  player start's arrow is `#70ddba`) at a constant size on screen, and the 3D view publishes it on
+  the canvas dataset (`modelFacing`, `facingAt`, `facingDrawn`) so a build can be checked without
+  eyeballing it.
+- **"Line this model up with its route"**, in Properties, which needs the object to have a route.
+  The model was turned until it looked right, so the gap between the route's heading and its angle
+  *is* the file's forward: `alignModelToRoute` in `shared/timesheet-recipe.js` writes that gap as
+  the facing and puts the angle on the route, which leaves the model drawn exactly where it was
+  (measured: zero pixels change) and makes the drive match what the author saw. The "drive this
+  route on a timesheet" recipe does the same thing for a model that has no facing yet, and drops
+  the hand-set facing offset it would otherwise double up with.
+
+A faced model is trusted over the recipe's own arithmetic: if a facing is already declared, the
+recipe leaves it and the angle alone.
 
 **Moving along a route between two waypoints** is a cue action of its own (`Path: move object
 between waypoints over time`). It records the object's own starting position and offsets it by the

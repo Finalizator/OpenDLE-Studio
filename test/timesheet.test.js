@@ -398,3 +398,56 @@ test('the Project tree lists, creates, renames and opens timelines', () => {
   assert.match(panel, /rename\(id, name\)/, 'the panel exposes renaming');
   assert.match(readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'), /id="project-timesheets"/);
 });
+
+// The reported bug: a truck posed by eye so it looked right next to its route drove sideways. The
+// pose that looks right already carries the file's own forward, so declaring it as the facing keeps
+// the look and makes the angle mean "where the nose points" — which the route can then follow.
+test('a posed model is lined up with its route without moving it', async () => {
+  const { alignModelToRoute, driveRouteTimesheet } = await import('../shared/timesheet-recipe.js');
+  const { modelOrientation } = await import('../shared/entity-visuals.js');
+  // East, then north: the route heads 90° as it leaves the first waypoint.
+  const path = { id: 'up', name: 'Up', closed: false, points: [
+    { id: 'a', x: 0, y: 0, z: 0, curve: 0 }, { id: 'b', x: 0, y: 600, z: 0, curve: 0 },
+  ] };
+  // The author turned the model 20° short of the route and, looking at it, called that right.
+  const entity = { id: 'truck', name: 'Truck', modelAsset: 'truck.glb', angle: 70, x: 0, y: 0 };
+  const alignment = alignModelToRoute(entity, path);
+  assert.equal(alignment.heading, 90, 'the route heads north out of its first waypoint');
+  assert.equal(alignment.facing, 90 - 70, 'the gap between the route and the pose is the file\'s forward');
+  assert.equal(alignment.angle, 90, 'the angle moves onto the route');
+  // What the author saw is what they now get: the model is drawn in exactly the same place.
+  const looked = modelOrientation({ angle: 70 });
+  const now = modelOrientation({ angle: alignment.angle, modelFacing: alignment.facing });
+  for (let i = 0; i < 4; i++) assert.ok(Math.abs(looked[i] - now[i]) < 1e-9, 'the model did not jump');
+  // A route with nowhere to go has no direction to face.
+  assert.equal(alignModelToRoute(entity, { id: 'dot', points: [{ id: 'a', x: 0, y: 0, z: 0 }] }), null);
+
+  // The recipe applies it, and the cue carries no yaw offset: the facing is already exact.
+  let sequence = 0;
+  const posed = { ...entity, path: { id: 'up', speed: 100, yawOffset: 20 } };
+  const { alignment: applied, yawOffset } = driveRouteTimesheet({
+    entity: posed, path, nextId: name => `${name}_${++sequence}`, alignToRoute: true,
+  });
+  assert.equal(yawOffset, 0, 'the old hand-set offset is not applied on top of an exact facing');
+  assert.equal(applied.facing, 20);
+  // Without the option nothing is re-posed, so existing projects keep behaving as they did.
+  assert.equal(driveRouteTimesheet({ entity: posed, path, nextId: name => `${name}_${++sequence}` }).alignment, null);
+  // A model that already declared its facing is trusted, even if its angle is not on the route.
+  const declared = { ...entity, modelFacing: 12, path: { id: 'up' } };
+  assert.equal(driveRouteTimesheet({ entity: declared, path, nextId: name => `${name}_${++sequence}`, alignToRoute: true }).alignment, null);
+
+  // And the whole thing is valid project data, which is the point of building it here.
+  const project = createProject();
+  const truck = project.map.entities.find(item => item.id === 'pickup');
+  truck.angle = alignment.was;
+  truck.path = { id: 'up', speed: 100 };
+  project.paths = [path];
+  project.events = [];
+  const built = driveRouteTimesheet({ entity: { ...truck, modelAsset: 'truck_model' }, path, nextId: name => `${name}_${++sequence}`, alignToRoute: true });
+  truck.modelFacing = built.alignment.facing;
+  truck.angle = built.alignment.angle;
+  delete truck.path;
+  project.timesheets = [built.sheet];
+  project.events = [built.event];
+  assert.doesNotThrow(() => validateProject(project));
+});

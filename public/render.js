@@ -1726,7 +1726,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         // Yaw, model tilt and a physics rotation all compose into one quaternion, so a
         // model can be tilted or stood on its head without affecting its facing.
         if (entity.rotation || entity.modelTilt) entry.root.quaternion.fromArray(modelOrientation(entity));
-        else entry.root.rotation.set(0, -entity.angle * Math.PI / 180, 0);
+        else entry.root.rotation.set(0, -((entity.angle || 0) - (entity.modelFacing || 0)) * Math.PI / 180, 0);
         // MODELDEF `ROTATING`: the mesh turns inside its (possibly stationary) frame, around
         // the axis the mod named, at the speed it named — degrees per tic, as in GZDoom.
         if (entry.spin?.rotating) {
@@ -1769,7 +1769,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
         const anchor = entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0);
         entry.mesh.position.set(entity.x, anchor + entity.panel.height / 2, entity.y);
         if (entity.rotation) entry.mesh.quaternion.fromArray(modelOrientation(entity));
-        else entry.mesh.rotation.set(0, -entity.angle * Math.PI / 180, 0);
+        else entry.mesh.rotation.set(0, -((entity.angle || 0) - (entity.modelFacing || 0)) * Math.PI / 180, 0);
       }
       for (let index = 0; index < zoneList.length; index++) {
         const entry = zoneList[index], entity = entityIndex.get(entry.id);

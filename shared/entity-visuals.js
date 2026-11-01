@@ -64,10 +64,13 @@ function multiplyQuaternion(a, b) {
  * Where a model points: the object's yaw, then the optional model tilt, then the
  * physics rotation when a rigid body owns the object. Objects face the camera's map
  * with the negated Y angle, exactly like the renderer has always rotated them, so a
- * project without tilt or physics produces the same quaternion as before.
+ * project without tilt, facing or physics produces the same quaternion as before.
  */
 export function modelOrientation(entity) {
-  const yaw = -((Number(entity?.angle) || 0) * Math.PI / 360);
+  // `modelFacing` is how far the file's own forward is turned from the engine's +X, in degrees:
+  // a glTF exported facing +Z reports 90 here. Subtracting it puts the model's nose on the
+  // object's angle, which is what makes a path turn the truck instead of dragging it sideways.
+  const yaw = -((Number(entity?.angle) || 0) - (Number(entity?.modelFacing) || 0)) * Math.PI / 360;
   let quaternion = entity?.rotation
     ? [entity.rotation.x, entity.rotation.y, entity.rotation.z, entity.rotation.w]
     : [0, Math.sin(yaw), 0, Math.cos(yaw)];
@@ -148,23 +151,32 @@ export function entityOrigin(entity, floorHeight = 0) {
 }
 
 /**
- * Where the player start's facing arrow goes, and which way it points.
+ * Where a facing arrow goes, and which way it points — the player start's, or a faced model's.
  *
- * The start is a point on the map with an angle and no artwork, so the editor draws that angle
- * itself: a flat arrow at the player's feet (`y` is up in the scene, `z` is the map's `y`), turned
+ * The arrow is a flat one at the thing's feet (`y` is up in the scene, `z` is the map's `y`), turned
  * the same way a model is (`rotation.y = -angle`, because a map angle turns anticlockwise seen from
- * above while the scene's yaw turns clockwise). A level always has exactly one start, so this is
- * the only place that decides it.
+ * above while the scene's yaw turns clockwise), lifted clear of the floor so it is not buried in it.
  */
-export function playerStartPose(player, floorHeight = 0, { lift = 2 } = {}) {
-  const angle = Number(player?.angle) || 0;
+export function facingArrowPose(entity, floorHeight = 0, { lift = 2 } = {}) {
+  const angle = Number(entity?.angle) || 0;
   return {
-    x: Number(player?.x) || 0,
-    y: (Number(floorHeight) || 0) + (Number(player?.elevation) || 0) + lift,
-    z: Number(player?.y) || 0,
-    // `-0` would print as a negative zero in a dataset and compare unequal to 0; a start facing
+    x: Number(entity?.x) || 0,
+    y: (Number(floorHeight) || 0) + (Number(entity?.elevation) || 0) + lift,
+    z: Number(entity?.y) || 0,
+    // `-0` would print as a negative zero in a dataset and compare unequal to 0; a thing facing
     // east is exactly zero.
     yaw: angle ? -angle * Math.PI / 180 : 0,
     angle,
   };
+}
+
+/**
+ * The player start's arrow: the same one, because a start is a point with an angle and no artwork,
+ * and a level always has exactly one start, so this is the only place that decides it.
+ */
+export const playerStartPose = facingArrowPose;
+
+/** True when an object has told the engine which way its model's forward points. */
+export function hasModelFacing(entity) {
+  return entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
 }

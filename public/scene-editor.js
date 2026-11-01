@@ -11,7 +11,7 @@ import {
   wallPartAt, wallTarget,
 } from './editor-drop.js';
 import { areaVolume, areaYaw, overlayVolumes } from '/shared/areas.js';
-import { playerStartPose } from '/shared/entity-visuals.js';
+import { facingArrowPose, hasModelFacing, playerStartPose } from '/shared/entity-visuals.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
 import { samplePath, sampleLengths, pointAlong } from '/shared/paths.js';
 import {
@@ -119,6 +119,24 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   playerMarker.renderOrder = 208;
   playerMarker.visible = false;
   helperGroup.add(playerMarker);
+
+  // A model that declared its facing gets the same arrow, in its own colour: the arrow is the
+  // direction the nose follows, so an author can see whether the body lines up with it — which is
+  // exactly the check that tells them the facing value is right. One marker per faced model, made
+  // when it is first needed: the declaration is opt-in, so there are only ever a few.
+  const facingMarkers = [];
+  function facingMarkerAt(index) {
+    if (facingMarkers[index]) return facingMarkers[index];
+    const marker = playerMarker.clone();
+    marker.traverse(node => {
+      if (node.material && node.material.color) node.material = node.material.clone();
+      if (node.material?.color) node.material.color.set('#ff9d5c');
+    });
+    marker.visible = false;
+    helperGroup.add(marker);
+    facingMarkers[index] = marker;
+    return marker;
+  }
 
   // Interaction areas and colliders are wireframes over the world: they show what a
   // "player entered area" event and the physics body actually cover.
@@ -689,6 +707,39 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     faceGroup.rotation.set(0, areaYaw(entity), 0);
     faceGroup.visible = true;
   }
+  /**
+   * The facing arrows of the models that declared one.
+   *
+   * Only a model with `modelFacing` has an arrow — for every other object the gizmo's axes already
+   * say what its angle means, and an arrow on everything would be noise. The arrow points along the
+   * object's angle, which is the direction the nose follows once a facing is declared, so the check
+   * the author makes is "does the body sit along this line?".
+   */
+  function updateFacingMarkers(rect, frustum) {
+    let shown = 0;
+    const posed = selected?.kind === 'entity' ? entityById.get(selected.id) : null;
+    for (const entity of entityById.values()) {
+      if (!entity?.modelAsset || !hasModelFacing(entity)) continue;
+      const pose = facingArrowPose(entity, sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0);
+      const marker = facingMarkerAt(shown++);
+      marker.position.set(pose.x, pose.y, pose.z);
+      marker.rotation.y = pose.yaw;
+      marker.visible = frustum.containsPoint(marker.position);
+      // Constant size on screen, the way the player start's arrow is: a model across a big room
+      // still reads, and a row of trucks does not bury the map in arrows.
+      marker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(marker.position) / rect.height));
+      if (entity === posed) {
+        canvas.dataset.modelFacing = String(Math.round(Number(entity.modelFacing) || 0));
+        canvas.dataset.facingAt = `${Math.round(pose.x)},${Math.round(pose.z)}`;
+        canvas.dataset.facingDrawn = String(marker.visible);
+      }
+    }
+    for (let index = shown; index < facingMarkers.length; index++) facingMarkers[index].visible = false;
+    if (!posed || !posed.modelAsset || !hasModelFacing(posed)) {
+      canvas.dataset.modelFacing = ''; canvas.dataset.facingAt = ''; canvas.dataset.facingDrawn = '';
+    }
+  }
+
   /**
    * Where the player start stands and which way it looks.
    *
@@ -1479,6 +1530,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         marker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(marker.position) / rect.height));
       }
       updatePlayerMarker(rect, frustum);
+      updateFacingMarkers(rect, frustum);
       updateCeilings(dt);
       view.render(state);
       canvas.dataset.camera = camera.position.toArray().map(value => value.toFixed(2)).join(',');

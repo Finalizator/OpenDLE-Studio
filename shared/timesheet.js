@@ -339,7 +339,11 @@ const wrap360 = value => ((value % 360) + 360) % 360;
  * forward still needs a correction.
  */
 export function tweenAngle(entity, tween, heading) {
-  const route = entity?.modelAsset
+  // A declared facing makes the model's nose the object's angle, so the angle is simply the route's
+  // — exact, and the same rule a sprite follows. Without one, an imported model keeps the pose the
+  // author gave it and is turned by how much the road bends.
+  const declared = entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
+  const route = entity?.modelAsset && !declared
     ? (Number(tween.authoredAngle) || 0) + (heading - (tween.startHeading ?? heading))
     : heading;
   return wrap360(route + (Number(tween.yawOffset) || 0));

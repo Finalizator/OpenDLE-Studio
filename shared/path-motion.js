@@ -27,8 +27,9 @@ const wrap360 = value => ((value % 360) + 360) % 360;
  * own forward is off is corrected once with the facing offset instead of by re-posing it on every
  * leg, which was why a truck that looked right in the editor drove sideways in play.
  */
-function facingAngle(entity, motion, heading, yawOffset) {
-  const route = entity?.modelAsset
+export function facingAngle(entity, motion, heading, yawOffset) {
+  const declared = entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
+  const route = entity?.modelAsset && !declared
     ? (Number(motion.authoredAngle) || 0) + (heading - (motion.startHeading ?? heading))
     : heading;
   return wrap360(route + (Number(yawOffset) || 0));

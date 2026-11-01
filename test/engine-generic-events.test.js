@@ -114,6 +114,21 @@ test('tilt is validated and ignored by projects that do not use it', () => {
   assert.throws(() => validateProject(project), /Model tilt must be an object/);
 });
 
+test('a declared model facing is validated and stays optional', () => {
+  const project = bareRoom();
+  assert.doesNotThrow(() => validateProject(project), 'projects that never set a facing still load');
+  for (const facing of [0, 90, -270, 360]) {
+    project.map.entities[1].modelFacing = facing;
+    assert.doesNotThrow(() => validateProject(project), `${facing} is a facing`);
+  }
+  project.map.entities[1].modelFacing = 'north';
+  assert.throws(() => validateProject(project), /Model facing/);
+  project.map.entities[1].modelFacing = 400;
+  assert.throws(() => validateProject(project), /Model facing/);
+  delete project.map.entities[1].modelFacing;
+  assert.doesNotThrow(() => validateProject(project));
+});
+
 test('a sub-event of a for-each rule runs once per instance, not once per object', async () => {
   const { createProject, validateProject } = await import('../shared/project.js');
   const { createRuntime, stepRuntime } = await import('../shared/runtime.js');
