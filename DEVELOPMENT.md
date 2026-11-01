@@ -667,15 +667,19 @@ runtime says which event is wrong rather than quietly never firing.
   handle under the pointer lights up — without that, an arm aimed at the camera is a square you
   cannot tell apart from the one beside it. Each handle also carries an **invisible pick volume**
   much wider than the shape, because a one-pixel shaft is a shaft nobody can hit.
-- **Forming** resizes one side and nothing else, and its handles are **the faces of the volume**
-  rather than arrows: point at a side and it lights up, drag it and that face follows the pointer
-  while the opposite side gives way, so the size grows by twice the drag about the object's own
-  middle. It is the same idea as picking a wall in the world — the surface under the pointer is the
-  thing that moves. In 2D the selected footprint grows eight grips — a corner taking two sides, an
-  edge one — measured from the middle. Both are one undoable edit and snap to the grid, and a side
-  can never go below 8 units (you could not stand in it) or above 16 384. The size a drag grows
-  from is the one it **started** at: reading it back from the live project adds each frame's growth
-  to the next, which is how a small drag once turned a room-sized zone into a tower.
+- **Forming** resizes one side and nothing else, and it is drawn as **an arrow standing on each
+  face of the volume**, pointing out of it. Drag an arrow and that side follows the pointer while
+  the opposite side gives way, so the size grows by twice the drag about the object's own middle.
+  The arrows are the handles — filling the faces was the first attempt and it was wrong from both
+  ends: inside a large volume the plates covered the whole view, and a plate never said which way
+  it moved. A drag is measured along the positive axis, so the side the grabbed arrow belongs to
+  turns it round; without that, pulling the left side outwards shrank the volume instead of growing
+  it — a face that only worked in one direction. In 2D the selected footprint grows eight grips —
+  a corner taking two sides, an edge one — measured from the middle. Both are one undoable edit and
+  snap to the grid, and a side can never go below 8 units (you could not stand in it) or above
+  16 384. The size a drag grows from is the one it **started** at: reading it back from the live
+  project adds each frame's growth to the next, which is how a small drag once turned a
+  room-sized zone into a tower.
 - **How far a drag goes** is measured on a plane that faces the camera, not by projecting the
   pointer's motion onto the axis's screen line (`shared/gizmo-math.js`). Projection divides by the
   axis's *projected length*, so an axis pointing away from the camera — a few pixels long on screen

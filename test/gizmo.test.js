@@ -85,6 +85,10 @@ test('form and scale turn a drag into a size', () => {
   // and the face in hand stays under the pointer.
   assert.equal(formSizeFromDrag(128, 64), 256);
   assert.equal(formSizeFromDrag(128, -64), 0);
+  // A face on the negative side pulls the other way on the axis, and still has to grow when it is
+  // dragged away from the volume.
+  assert.equal(formSizeFromDrag(128, -64, -1), 256);
+  assert.equal(formSizeFromDrag(128, 64, -1), 0);
   // One gizmo length of drag doubles a size, and a size can never reach nothing.
   assert.equal(scaleFactorFromDrag({ amount: 100, reference: 100 }), 2);
   assert.equal(scaleFactorFromDrag({ amount: -50, reference: 100 }), .5);

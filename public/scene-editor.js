@@ -17,7 +17,7 @@ import {
   GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formSizeFromDrag,
   rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
 } from '/shared/gizmo-math.js';
-import { buildFormFaces, buildGizmo, disposeHandles, paintHandles } from './gizmo.js';
+import { buildFaceArrows, buildGizmo, disposeHandles, handleKey, paintHandles } from './gizmo.js';
 
 const SELECT_COLOR = '#ffd34d', DROP_COLOR = '#7fe6ff';
 /** How long a gizmo arm should be on screen, as a share of the viewport's shorter side. */
@@ -488,19 +488,19 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     return volume?.shape === 'box' ? volume : null;
   }
   /**
-   * Puts the volume's faces where the volume is.
+   * Puts an arrow on each face of the volume being formed.
    *
-   * A live form drag changes the size on every frame, so the plates are rebuilt from the volume
-   * signature rather than once when the selection changes — otherwise the plate under the pointer
-   * would stay the size it had when the drag began.
+   * A live form drag changes the size on every frame, so the arrows are rebuilt from the volume
+   * signature rather than once when the selection changes — otherwise the arrow under the pointer
+   * would stay on the face the volume had when the drag began.
    */
-  function syncFormFaces() {
+  function syncFormArrows() {
     const volume = formVolume();
     if (!volume) {
-      if (faceGroup.children.length) { disposeHandles([...faceGroup.children]); }
+      if (faceGroup.children.length) disposeHandles([...faceGroup.children]);
       faceGroup.visible = false;
       faceSignature = '';
-      canvas.dataset.formFaces = '0';
+      canvas.dataset.formArrows = '0';
       return;
     }
     const entity = entityById.get(selected.id);
@@ -509,8 +509,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (signature !== faceSignature) {
       disposeHandles([...faceGroup.children]);
       faceSignature = signature;
-      for (const mesh of buildFormFaces(volume)) faceGroup.add(mesh);
-      canvas.dataset.formFaces = String(faceGroup.children.length);
+      for (const mesh of buildFaceArrows(volume)) faceGroup.add(mesh);
+      canvas.dataset.formArrows = String(faceGroup.children.length);
     }
     faceGroup.position.set(volume.center.x, volume.center.z, volume.center.y);
     faceGroup.rotation.set(0, areaYaw(entity), 0);
@@ -586,7 +586,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     hasOutline = !bounds.isEmpty();
     if (hasOutline) { bounds.getCenter(outlineCenter); bounds.getSize(outlineSize); }
     handles.position.copy(position);
-    syncFormFaces();
+    syncFormArrows();
     const axes = axesFor(kind);
     const signature = `${mode}/${axes.join()}`;
     if (rebuildHandles || signature !== handleSignature) { handleSignature = signature; buildHandles(axes); }
@@ -620,9 +620,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     const rect = canvas.getBoundingClientRect();
     return [event.clientX - rect.left, event.clientY - rect.top];
   };
-  /** Paints the volume's faces, so the one under the pointer or in hand is the obvious one. */
+  /** Paints the face arrows, so the side under the pointer or in hand is the obvious one. */
   function paintFaces(key = null) {
-    paintHandles([...faceGroup.children], key, { faces: true });
+    paintHandles([...faceGroup.children], key);
     canvas.dataset.formHover = key || '';
   }
   /**
@@ -635,7 +635,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (!handles.visible && !faceGroup.visible) return;
     cast(event);
     const face = faceAt(event);
-    const faceKey = face ? `${face.axis}${face.side > 0 ? '+' : '-'}` : null;
+    const faceKey = face ? face.key : null;
     paintFaces(faceKey);
     const axis = face ? null : hits(handles)[0]?.object.userData.axis || null;
     if (axis !== hoverAxis) { hoverAxis = axis; paintHandles([...handles.children], axis); }
@@ -689,11 +689,11 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     }
     return best?.axis || handleAxes[0] || null;
   }
-  /** The face of the formed volume under the pointer, if there is one. */
+  /** The side of the volume being formed that the pointer is over, if any. */
   function faceAt(event) {
     if (!faceGroup.visible) return null;
     const hit = hits(faceGroup)[0];
-    return hit?.object.userData.face || null;
+    return hit ? { ...hit.object.userData.face, key: handleKey(hit.object) } : null;
   }
 
   /** Where the view is pointing, which is what decides the plane a drag is measured on. */
@@ -993,8 +993,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         // turn a room-sized zone into a tower.
         startSize: areaSizeOf(selected.id, face.axis),
         baseline: project, moved: false };
-      paintFaces(`${face.axis}${face.side > 0 ? '+' : '-'}`);
-      canvas.dataset.transform = `form:${face.axis}${face.side > 0 ? '+' : '-'}`;
+      paintFaces(face.key);
+      canvas.dataset.transform = `form:${face.key}`;
       return;
     }
     const axis = selected ? axisAt(event) : null;
@@ -1078,7 +1078,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // pointer stays under it. The object's own position is the middle of the volume, so this
       // grows about the middle instead of dragging the object across the map.
       const key = axisField(action.axis);
-      const size = snapValue(formSizeFromDrag(action.startSize, dragAlong(event, action.drag)), callbacks.grid());
+      // Measured along the positive axis, so the side the grabbed face is on turns the drag round:
+      // pulling a left face further left has to grow the volume, not shrink it.
+      const size = snapValue(formSizeFromDrag(action.startSize, dragAlong(event, action.drag), action.side), callbacks.grid());
       showReadout(`${key} ${action.side > 0 ? '+' : '−'} → ${size}`);
       canvas.dataset.formSize = `${key}=${size}`;
       action.formKey = key; action.formSize = size;
@@ -1251,7 +1253,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const tipAxes = handles.visible ? [...new Set(handles.children.filter(child => child.userData.axis).map(child => child.userData.axis))] : [];
       canvas.dataset.transformAxes = tipAxes.join(',');
       canvas.dataset.transformMode = mode;
-      canvas.dataset.formFaces = faceGroup.visible ? String(faceGroup.children.length) : '0';
+      canvas.dataset.formArrows = faceGroup.visible ? String(faceGroup.children.length) : '0';
+      // Face arrows stand on the volume rather than around the object, so they are not in the
+      // scaled gizmo group: each one keeps the gizmo's on-screen size by scaling itself.
+      if (faceGroup.visible) for (const mesh of faceGroup.children) mesh.scale.setScalar(handles.scale.x);
       canvas.dataset.gizmoTips = handles.visible ? tipAxes.map(axis => `${axis}:${screenOf(handles.position.clone()
         .add(new THREE.Vector3(...axisDirection(axis)).multiplyScalar(GIZMO_LENGTH * handles.scale.x * .95)))}`).join(';') : '';
       // What the pointer is doing right now: a drag kind ('transform', 'pathPoint', 'room'…),

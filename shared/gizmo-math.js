@@ -116,10 +116,14 @@ export function ringDelta(axisKey, degrees) {
 /**
  * The size a side reaches when a grabbed face is dragged.
  *
- * Only the grabbed face moves — the object's own position is its middle, so the opposite face
- * moves the same amount the other way, and the face under the pointer tracks it exactly.
+ * `amount` is measured along the positive axis, so a drag on the negative side comes back
+ * negative; the side it belongs to turns that round. Without it, pulling the left face outwards
+ * would shrink the volume — a face that only worked in one direction.
+ *
+ * Only the grabbed face moves: the object's own position is its middle, so the opposite face
+ * gives way by the same amount and the face under the pointer tracks it exactly.
  */
-export const formSizeFromDrag = (start, amount) => start + 2 * amount;
+export const formSizeFromDrag = (start, amount, side = 1) => start + 2 * amount * side;
 
 /** A scale multiplier for a drag, where one gizmo length doubles the size. */
 export const scaleFactorFromDrag = ({ amount, reference }) =>

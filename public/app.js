@@ -408,7 +408,7 @@ function setSceneMode(mode) {
   $('view-2d').setAttribute('aria-pressed', String(mode === '2d'));
   $('view-3d').setAttribute('aria-pressed', String(mode === '3d'));
   $('scene-hint').textContent = mode === '3d'
-    ? 'Right-drag: look + WASD fly / Q E down-up / Shift faster / wheel speed. Left: select or draw. Arrows move, rings turn, boxes scale; in Form the sides of the volume are the handles.'
+    ? 'Right-drag: look + WASD fly / Q E down-up / Shift faster / wheel speed. Left: select or draw. Arrows move, rings turn, boxes scale; in Form an arrow stands on each side of the volume and drags that side.'
     : 'Wheel: zoom / Right-drag: pan / Select wall, vertex or object to edit';
   if (mode === '2d') {
     scenePose = sceneEditor?.pose() || scenePose; sceneEditor?.dispose(); sceneEditor = null; sceneProject = null;
