@@ -279,3 +279,23 @@ test('a multi-selection travels with the object that was dragged', () => {
   assert.equal(first.x, 144);
   assert.equal(second.x, 320);
 });
+
+test('routes selected together travel together, and never compound', () => {
+  const project = createProject();
+  project.paths = [
+    createPath({ id: 'a', points: [{ id: 'a1', x: 0, y: 0, z: 0, curve: 1 }, { id: 'a2', x: 100, y: 0, z: 0, curve: 1 }] }),
+    createPath({ id: 'b', points: [{ id: 'b1', x: 0, y: 500, z: 0, curve: 1 }, { id: 'b2', x: 100, y: 500, z: 0, curve: 1 }] }),
+  ];
+  const baseline = structuredClone(project);
+  const selection = { kind: 'path', id: 'a', group: ['a', 'b'] };
+  for (const step of [16, 32, 48]) dragSelection(project, baseline, selection, 'move', { x: step, y: 0, z: 0 }, 16);
+  const [a, b] = project.paths;
+  assert.deepEqual(a.points.map(point => point.x), [48, 148], 'the grabbed route lands on the grid');
+  assert.deepEqual(b.points.map(point => point.x), [48, 148], 'and the other route sets off by the same shift');
+  assert.deepEqual(b.points.map(point => point.y), [500, 500], 'without drifting sideways');
+  // A lone route still drags alone.
+  const alone = structuredClone(project);
+  dragSelection(project, alone, { kind: 'path', id: 'b' }, 'move', { x: 16, y: 0, z: 0 }, 16);
+  assert.deepEqual(project.paths[0].points.map(point => point.x), [48, 148]);
+  assert.deepEqual(project.paths[1].points.map(point => point.x), [64, 164]);
+});

@@ -100,7 +100,7 @@ test('the editor deletes whatever is selected, and says how to leave Draw path',
   const app = memo('app.js');
   // Delete means the selected thing, wherever the selection came from: the map or the 3D view.
   assert.match(app, /function deleteSelectionObject\(value\) \{/);
-  assert.match(app, /if \(value\?\.kind === 'path'\) \{ deletePath\(value\.id\); return; \}/);
+  assert.match(app, /if \(value\?\.kind === 'path'\) \{ deleteSelectedPaths\(value\.id\); return; \}/);
   assert.match(app, /if \(value\?\.kind === 'pathPoint'\) \{ deletePathPoint\(value\.pathId, value\.id\); return; \}/);
   assert.match(app, /if \(\!\['entity', 'path', 'pathPoint'\]\.includes\(selection\?\.kind\)\) return;/);
   // The 3D view hands over the whole selection, never a bare id: a handler that expected an id
@@ -113,6 +113,15 @@ test('the editor deletes whatever is selected, and says how to leave Draw path',
   assert.match(app, /if \(entity && multiSelection\.length > 1 && multiSelection\.includes\(entity\.id\)\) \{/);
   assert.match(app, /selectObject\(entity, false, \{ keepSet: true \}\);/);
   assert.match(app, /if \(pressed\?\.kind === 'entity' && multiSelection\.length > 1 && multiSelection\.includes\(pressed\.id\)\) \{/);
+  // Routes are a set of their own: Ctrl+click adds one, the arrows move them all, Delete removes
+  // every one of them, and a set is one kind (objects or routes) because the actions differ.
+  assert.match(app, /let multiSelectionKind = null;/);
+  assert.match(app, /function selectedPathIds\(\) \{/);
+  assert.match(app, /function selectPath\(pathId, additive = false,/);
+  assert.match(app, /at = \.5, keepSet = false \}/);
+  assert.match(app, /function deleteSelectedPaths\(primaryId\) \{/);
+  assert.match(app, /if \(value\?\.kind === 'path' && options\.additive\) \{/);
+  assert.match(app, /if \(hit\?\.kind === 'pathPoint'\) \{/);
   assert.match(app, /const target = typeof value === 'string' \? \{ kind: 'entity', id: value \} : value;/);
   // The route inspector offers the way out of the mode and the way back into it.
   assert.match(app, /button\('Finish path — stop adding waypoints', \(\) => finishPath\(\), 'primary'\)/);

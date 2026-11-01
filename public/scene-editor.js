@@ -550,12 +550,13 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    * all of them.
    */
   function setGroupOutline(selection) {
-    const group = selection?.kind === 'entity' && Array.isArray(selection.group) ? selection.group : [];
+    const kind = ['entity', 'path'].includes(selection?.kind) ? selection.kind : null;
+    const group = kind && Array.isArray(selection.group) ? selection.group : [];
     const points = [];
     const centres = [];
     for (const id of group) {
       if (id === selection.id) continue;
-      boundsFor({ kind: 'entity', id }, bounds);
+      boundsFor({ kind, id }, bounds);
       if (bounds.isEmpty()) continue;
       outlineBox(points, bounds);
       centres.push(bounds.getCenter(new THREE.Vector3()));
@@ -1464,11 +1465,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.groupMarkers = String(groupMarkers.visible ? groupMarkers.children.length : 0);
       // Where everything in the set stands right now, so a drag's effect on the whole set can be
       // followed from outside the canvas while the pointer is still down.
-      const setIds = selected?.kind === 'entity' && Array.isArray(selected.group) && selected.group.length > 1
-        ? selected.group : (selected?.kind === 'entity' ? [selected.id] : []);
+      const setIds = Array.isArray(selected?.group) && selected.group.length > 1
+        ? selected.group : (['entity', 'path'].includes(selected?.kind) ? [selected.id] : []);
       canvas.dataset.selectionPositions = setIds.map(id => {
         const entity = entityById.get(id);
-        return entity ? `${id}:${Math.round(entity.x)},${Math.round(entity.y)}` : `${id}:?`;
+        if (entity) return `${id}:${Math.round(entity.x)},${Math.round(entity.y)}`;
+        // A route is a chain of waypoints: the first one is enough to say where the route went.
+        const point = (project.paths || []).find(path => path.id === id)?.points?.[0];
+        return point ? `${id}:${Math.round(point.x)},${Math.round(point.y)}` : `${id}:?`;
       }).join('|');
       // The outline's own size, so what a selection box covers can be read from outside the
       // canvas — a box that is flat in one axis is a billboard being measured, not an object.

@@ -355,6 +355,16 @@ async function refreshScene() {
           sceneEditor?.select(withSelectionGroup(selection));
           return;
         }
+        if (value?.kind === 'path' && options.additive) {
+          selectPath(value.id, true, { at: value.at });
+          sceneEditor?.select(withSelectionGroup(selection));
+          return;
+        }
+        if (value?.kind === 'path' && multiSelectionKind === 'path' && multiSelection.length > 1 && multiSelection.includes(value.id)) {
+          selectPath(value.id, false, { at: value.at, keepSet: true });
+          sceneEditor?.select(withSelectionGroup(selection));
+          return;
+        }
         if (entity && multiSelection.length > 1 && multiSelection.includes(entity.id)) {
           // The press landed on a member of the set: keep the set, so the next drag carries all
           // of it, and let the object under the pointer take the arrows.
@@ -363,8 +373,9 @@ async function refreshScene() {
           return;
         }
         selection = value;
-        multiSelection = value?.kind === 'entity' ? [value.id] : [];
-        lastPrimarySelection = value?.kind === 'entity' ? value.id : null;
+        multiSelection = ['entity', 'path'].includes(value?.kind) ? [value.id] : [];
+        multiSelectionKind = ['entity', 'path'].includes(value?.kind) ? value.kind : null;
+        lastPrimarySelection = ['entity', 'path'].includes(value?.kind) ? value.id : null;
         if (value?.kind === 'sector') $('sector-surface').value = value.surface || 'floorHeight';
         syncTransformModes();
         renderInspector(); sceneEditor?.select(withSelectionGroup(selection));
@@ -768,15 +779,31 @@ function checkbox(text, value, fn) {
 // inspector and the 3D gizmo follow; `multiSelection` is the whole set, and any change of primary
 // by other code drops the extras on the next render so the two can never disagree.
 let multiSelection = [];
+// What the ids in `multiSelection` are: objects or routes. A set is one kind, because the arrows,
+// the outline and the delete all mean different things for each.
+let multiSelectionKind = null;
 let lastPrimarySelection = undefined;
 function syncMultiSelection() {
-  const primary = selection?.kind === 'entity' ? selection.id : null;
-  if (primary !== lastPrimarySelection) { multiSelection = primary ? [primary] : []; lastPrimarySelection = primary; }
+  const kind = ['entity', 'path'].includes(selection?.kind) ? selection.kind : null;
+  const primary = kind ? selection.id : null;
+  if (primary !== lastPrimarySelection || kind !== multiSelectionKind) {
+    multiSelection = primary ? [primary] : [];
+    multiSelectionKind = kind;
+    lastPrimarySelection = primary;
+  }
 }
 function selectedEntityIds() {
   syncMultiSelection();
+  if (multiSelectionKind !== 'entity') return [];
   const ids = multiSelection.length ? multiSelection : (selection?.kind === 'entity' ? [selection.id] : []);
   return ids.filter(id => project.map.entities.some(entity => entity.id === id));
+}
+/** The routes that are selected together, the same idea as `selectedEntityIds`. */
+function selectedPathIds() {
+  syncMultiSelection();
+  if (multiSelectionKind !== 'path') return [];
+  const ids = multiSelection.length ? multiSelection : (selection?.kind === 'path' ? [selection.id] : []);
+  return ids.filter(id => (project.paths || []).some(path => path.id === id));
 }
 /**
  * The selection as the view needs it: the primary object plus the rest of the set.
@@ -785,9 +812,15 @@ function selectedEntityIds() {
  * grabbed. It is a copy — the app's own selection stays a single primary.
  */
 function withSelectionGroup(value) {
-  if (value?.kind !== 'entity') return value;
-  const group = selectedEntityIds();
-  return group.length > 1 ? { ...value, group } : value;
+  if (value?.kind === 'entity') {
+    const group = selectedEntityIds();
+    return group.length > 1 ? { ...value, group } : value;
+  }
+  if (value?.kind === 'path') {
+    const group = selectedPathIds();
+    return group.length > 1 ? { ...value, group } : value;
+  }
+  return value;
 }
 function selectedEntities() {
   const ids = new Set(selectedEntityIds());
@@ -800,6 +833,7 @@ function selectObject(entity, additive = false, { keepSet = false } = {}) {
     // how "start dragging a multi-selection" quietly became "drag one object".
     selection = { kind: 'entity', id: entity.id };
     lastPrimarySelection = entity.id;
+    multiSelectionKind = 'entity';
     showTab('map');
     renderInspector();
     sceneEditor?.select(withSelectionGroup(selection));
@@ -812,13 +846,46 @@ function selectObject(entity, additive = false, { keepSet = false } = {}) {
     multiSelection = multiSelection.includes(entity.id)
       ? multiSelection.filter(id => id !== entity.id)
       : [...multiSelection, entity.id];
-    if (!multiSelection.length) { selection = null; lastPrimarySelection = null; render(); return; }
+    if (!multiSelection.length) { selection = null; lastPrimarySelection = null; multiSelectionKind = null; render(); return; }
     if (!multiSelection.includes(selection?.id)) selection = { kind: 'entity', id: multiSelection[0] };
   } else {
     multiSelection = [entity.id];
     selection = { kind: 'entity', id: entity.id };
   }
+  multiSelectionKind = 'entity';
   lastPrimarySelection = selection?.id ?? null;
+  showTab('map');
+  renderInspector();
+  sceneEditor?.select(withSelectionGroup(selection));
+  render();
+}
+/**
+ * Selects a route, optionally adding it to a set of routes.
+ *
+ * A set is one kind, so Ctrl+clicking a route starts a route set the way Ctrl+clicking an object
+ * starts an object set: moving, outlining and deleting a route mean something different from
+ * doing it to an object.
+ */
+function selectPath(pathId, additive = false, { at = .5, keepSet = false } = {}) {
+  syncMultiSelection();
+  if (!additive && keepSet && multiSelectionKind === 'path' && multiSelection.length > 1 && multiSelection.includes(pathId)) {
+    selection = { kind: 'path', id: pathId, at };
+    multiSelectionKind = 'path';
+    lastPrimarySelection = pathId;
+  } else if (additive && multiSelectionKind === 'path' && multiSelection.length) {
+    multiSelection = multiSelection.includes(pathId)
+      ? multiSelection.filter(id => id !== pathId)
+      : [...multiSelection, pathId];
+    if (!multiSelection.length) { selection = null; lastPrimarySelection = null; multiSelectionKind = null; render(); return; }
+    if (!multiSelection.includes(selection?.id)) selection = { kind: 'path', id: multiSelection[0], at };
+    multiSelectionKind = 'path';
+    lastPrimarySelection = selection?.id ?? null;
+  } else {
+    multiSelection = [pathId];
+    multiSelectionKind = 'path';
+    selection = { kind: 'path', id: pathId, at };
+    lastPrimarySelection = pathId;
+  }
   showTab('map');
   renderInspector();
   sceneEditor?.select(withSelectionGroup(selection));
@@ -1221,8 +1288,7 @@ function selectWholePath(pathId, pointId) {
   const path = (project.paths || []).find(item => item.id === pathId);
   const index = path && pointId ? path.points.findIndex(point => point.id === pointId) : -1;
   const at = index >= 0 && path.points.length > 1 ? index / (path.points.length - 1) : .5;
-  selection = { kind: 'path', id: pathId, at };
-  render();
+  selectPath(pathId, false, { at });
 }
 
 /**
@@ -2564,8 +2630,11 @@ function drawMap() {
     const { kind, id, pathId } = drag.selection;
     const shift = { x: drag.end.x - drag.start.x, y: drag.end.y - drag.start.y };
     if (kind === 'path') {
-      const path = display.paths.find(item => item.id === id);
-      for (const point of path?.points || []) { point.x += shift.x; point.y += shift.y; }
+      const routes = selectedPathIds();
+      for (const target of routes.length > 1 && routes.includes(id) ? routes : [id]) {
+        const path = display.paths.find(item => item.id === target);
+        for (const point of path?.points || []) { point.x += shift.x; point.y += shift.y; }
+      }
     } else if (kind === 'pathPoint') {
       const item = display.paths.find(path => path.id === pathId)?.points.find(point => point.id === id);
       if (item) { item.x += shift.x; item.y += shift.y; }
@@ -2758,6 +2827,14 @@ canvas.addEventListener('pointerdown', guard(event => {
     const hit = hitTest(point);
     const entity = hit?.kind === 'entity' ? project.map.entities.find(item => item.id === hit.id) : null;
     if (entity) { selectObject(entity, true); return; }
+    // A route in the map is picked by one of its waypoints, so Ctrl+clicking a waypoint adds the
+    // whole route to the set rather than one point of it.
+    if (hit?.kind === 'pathPoint') {
+      const path = (project.paths || []).find(item => item.id === hit.pathId);
+      const index = path ? path.points.findIndex(point2 => point2.id === hit.id) : -1;
+      selectPath(hit.pathId, true, { at: index >= 0 && path.points.length > 1 ? index / (path.points.length - 1) : .5 });
+      return;
+    }
   }
   if (event.button === 2 || event.button === 1) {
     // A right click is the other way out of Draw path, but only once it turns out to be a click:
@@ -2795,6 +2872,17 @@ canvas.addEventListener('pointerdown', guard(event => {
     }
   }
   const pressed = hitTest(point);
+  if (pressed?.kind === 'pathPoint' && multiSelectionKind === 'path' && multiSelection.length > 1
+    && multiSelection.includes(pressed.pathId)) {
+    // Dragging any route of the set moves all of them; the press picks the route up whole.
+    const path = (project.paths || []).find(item => item.id === pressed.pathId);
+    const index = path ? path.points.findIndex(item => item.id === pressed.id) : -1;
+    selection = { kind: 'path', id: pressed.pathId, at: index >= 0 && path.points.length > 1 ? index / (path.points.length - 1) : .5 };
+    lastPrimarySelection = pressed.pathId;
+    drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point) };
+    render();
+    return;
+  }
   if (pressed?.kind === 'entity' && multiSelection.length > 1 && multiSelection.includes(pressed.id)) {
     // Starting a drag on any member of the set moves the whole set, so the press keeps the set
     // rather than making the object under the pointer the only selection.
@@ -2884,7 +2972,12 @@ canvas.addEventListener('pointerup', guard(event => {
       if (kind === 'path') {
         const path = next.paths?.find(item => item.id === id);
         if (!path) throw new Error('That route is no longer part of the map');
-        for (const point of path.points) { point.x += shift.x; point.y += shift.y; }
+        const routes = selectedPathIds();
+        for (const target of routes.length > 1 && routes.includes(id) ? routes : [id]) {
+          const route = next.paths?.find(item => item.id === target);
+          if (!route) continue;
+          for (const point of route.points) { point.x += shift.x; point.y += shift.y; }
+        }
         return;
       }
       if (kind === 'pathPoint') {
@@ -2899,7 +2992,9 @@ canvas.addEventListener('pointerup', guard(event => {
         if (!item) throw new Error('That point is no longer part of the map');
         item.x += shift.x; item.y += shift.y;
       }
-    }, kind === 'pathPoint' ? 'Waypoint moved' : kind === 'path' ? 'Route moved' : group.length > 1 ? `${group.length} objects moved` : 'Object moved');
+    }, kind === 'pathPoint' ? 'Waypoint moved'
+      : kind === 'path' ? `${Math.max(1, selectedPathIds().length)} route${selectedPathIds().length > 1 ? 's' : ''} moved`
+      : group.length > 1 ? `${group.length} objects moved` : 'Object moved');
   }
 }));
 canvas.addEventListener('pointercancel', () => { drag = null; mapNeedsDraw = true; });
@@ -4553,6 +4648,28 @@ function deletePath(id) {
   if (selection?.id === id || selection?.pathId === id) selection = null;
   render();
 }
+/**
+ * Deletes the routes that are selected together, in one edit.
+ *
+ * Like deleting a set of objects: Ctrl+click is for acting on several things at once, so Delete
+ * must mean all of them rather than the one whose arrows happen to be on screen.
+ */
+function deleteSelectedPaths(primaryId) {
+  const ids = selectedPathIds();
+  const targets = ids.includes(primaryId) && ids.length > 1 ? ids : [primaryId];
+  const names = targets.map(id => (project.paths || []).find(path => path.id === id)?.name || id);
+  if (targets.length > 1 && !confirm(`Delete ${targets.length} routes (${names.join(', ')})? You can undo this change.`)) return;
+  let released = 0, dropped = 0;
+  edit(next => {
+    for (const id of targets) {
+      const result = removePath(next, id);
+      if (result) { released += result.followers; dropped += result.actions; }
+    }
+  }, targets.length > 1 ? `${targets.length} routes deleted` : `Path "${names[0]}" deleted`);
+  if (activePathId && targets.includes(activePathId)) activePathId = null;
+  selection = null; multiSelection = []; multiSelectionKind = null; lastPrimarySelection = null;
+  render();
+}
 /** Deletes one waypoint, keeping the rest of the route. */
 function deletePathPoint(pathId, pointId) {
   edit(next => removePathPoint(next, pathId, pointId), 'Waypoint deleted');
@@ -4560,7 +4677,7 @@ function deletePathPoint(pathId, pointId) {
 }
 /** Delete means whatever is selected: an object (or the whole set), a route, or one waypoint. */
 function deleteSelectionObject(value) {
-  if (value?.kind === 'path') { deletePath(value.id); return; }
+  if (value?.kind === 'path') { deleteSelectedPaths(value.id); return; }
   if (value?.kind === 'pathPoint') { deletePathPoint(value.pathId, value.id); return; }
   if (value?.kind === 'entity') { deleteSelectedEntities(value.id); return; }
   throw new Error(`Nothing to delete for a ${value?.kind || 'empty'} selection`);

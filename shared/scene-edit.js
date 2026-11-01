@@ -220,6 +220,16 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
     const shift = { x: delta.x ? snap(delta.x) : 0, y: delta.y ? snap(delta.y) : 0, z: delta.z ? snap(delta.z) : 0 };
     path.points = origin.points.map(point => ({ ...point,
       x: point.x + shift.x, y: point.y + shift.y, z: (point.z || 0) + shift.z }));
+    // The rest of a route set travels with it, from the baseline like everything else here.
+    const group = Array.isArray(selection.group) ? selection.group : [];
+    for (const id of group.length > 1 ? group : []) {
+      if (id === selection.id) continue;
+      const other = (project.paths || []).find(entry => entry.id === id);
+      const base = (baseline?.paths || []).find(entry => entry.id === id);
+      if (!other || !base) continue;
+      other.points = base.points.map(point => ({ ...point,
+        x: point.x + shift.x, y: point.y + shift.y, z: (point.z || 0) + shift.z }));
+    }
     return;
   }
   const collections = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' };
