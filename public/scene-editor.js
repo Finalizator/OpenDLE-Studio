@@ -78,6 +78,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   })));
   groupOutline.renderOrder = 204; groupOutline.visible = false; groupOutline.frustumCulled = false;
   helperGroup.add(groupOutline);
+  // A box around a monster is a handful of pixels when the view is zoomed out, which is exactly
+  // when a mapper needs to see what a group or a delete will act on — so each member of the set
+  // also gets a marker that keeps a constant size on screen, like a waypoint's.
+  const groupMarkerGeometry = own(new THREE.BoxGeometry(6, 6, 6));
+  const groupMarkerMaterial = own(new THREE.MeshBasicMaterial({ color: SELECT_COLOR, depthTest: false }));
+  const groupMarkers = new THREE.Group();
+  groupMarkers.visible = false; groupMarkers.renderOrder = 209;
+  helperGroup.add(groupMarkers);
   const dropBoxGeometry = own(new THREE.EdgesGeometry(own(new THREE.BoxGeometry(1, 1, 1))));
   const dropOutline = new THREE.LineSegments(dropBoxGeometry, own(new THREE.LineBasicMaterial({ color: DROP_COLOR, depthTest: false })));
   dropOutline.renderOrder = 206; dropOutline.visible = false; dropOutline.frustumCulled = false;
@@ -544,14 +552,24 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   function setGroupOutline(selection) {
     const group = selection?.kind === 'entity' && Array.isArray(selection.group) ? selection.group : [];
     const points = [];
+    const centres = [];
     for (const id of group) {
       if (id === selection.id) continue;
       boundsFor({ kind: 'entity', id }, bounds);
-      if (!bounds.isEmpty()) outlineBox(points, bounds);
+      if (bounds.isEmpty()) continue;
+      outlineBox(points, bounds);
+      centres.push(bounds.getCenter(new THREE.Vector3()));
     }
     groupOutlineGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points), 3));
     if (points.length) groupOutlineGeometry.computeBoundingSphere();
     groupOutline.visible = points.length > 0;
+    for (const child of [...groupMarkers.children]) groupMarkers.remove(child);
+    for (const centre of centres) {
+      const marker = new THREE.Mesh(groupMarkerGeometry, groupMarkerMaterial);
+      marker.position.copy(centre); marker.renderOrder = 209; marker.frustumCulled = false;
+      groupMarkers.add(marker);
+    }
+    groupMarkers.visible = centres.length > 0;
   }
   /** `widthxheightxdepth` of the outline, or an empty string when nothing is highlighted. */
   function outlineSize() {
@@ -1410,6 +1428,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         if (!marker.userData.pathPoint) continue;
         marker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(marker.position) / rect.height));
       }
+      // The same trick for the members of a multi-selection, so the set is visible at any zoom.
+      for (const marker of groupMarkers.children) {
+        marker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(marker.position) / rect.height));
+      }
       updateCeilings(dt);
       view.render(state);
       canvas.dataset.camera = camera.position.toArray().map(value => value.toFixed(2)).join(',');
@@ -1438,6 +1460,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // How many objects are in the set, and the segments drawn for the ones after the primary.
       canvas.dataset.selectionGroup = String(selected?.group?.length || 0);
       canvas.dataset.groupOutlineSegments = groupOutline.visible ? String((groupOutlineGeometry.getAttribute('position')?.count || 0) / 2) : '0';
+      canvas.dataset.groupMarkers = String(groupMarkers.visible ? groupMarkers.children.length : 0);
       // The outline's own size, so what a selection box covers can be read from outside the
       // canvas — a box that is flat in one axis is a billboard being measured, not an object.
       canvas.dataset.outlineBox = outlineSize();

@@ -841,6 +841,10 @@ click landed on in 3D, so a route up a staircase is drawn by clicking the steps.
   as the primary (a faint box does not say what a group, a copy or a delete will act on — the
   arrows already say which one is in hand), dragging one carries the rest by the same shift, and
   Delete removes the whole set in one undo step.
+- **Each member also gets a marker that keeps its size on screen.** A box around a monster is a
+  few pixels when the view is zoomed out — which is exactly when the set matters — so every member
+  after the primary carries a gold cube scaled like a waypoint's, the same trick the route markers
+  use (`1.9·distance/height` keeps it about eight pixels at any zoom).
 - **The set moves absolutely, from the drag's baseline.** A live drag re-runs `dragSelection` on
   every pointer move, and the draft it runs on already holds the previous frame's move — so the
   rest of the set is placed at `baseline + shift`, never at `current + shift`. Adding to the
