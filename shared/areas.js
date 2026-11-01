@@ -6,6 +6,11 @@ import { PLAYER_CYLINDER } from './gravity.js';
 
 export const AREA_SHAPES = ['box', 'sphere', 'capsule'];
 export const DEFAULT_AREA = { shape: 'box', width: 96, height: 96, depth: 96, radius: 48 };
+/**
+ * A zone is a volume with no artwork, so its area is the object: it is born room-sized rather
+ * than the size of a sprite, and every zone carries one (there is nothing else to carry).
+ */
+export const ZONE_AREA = { shape: 'box', width: 128, height: 128, depth: 128, radius: 64 };
 // The player's capsule, so an area reacts to the body and not to a single point.
 export { PLAYER_CYLINDER };
 
@@ -88,6 +93,8 @@ export function areaEntered(entries, key, inside) {
 
 /** Default area for a new object, sized from its sprite or collider when possible. */
 export function suggestedArea(entity) {
+  // A zone's whole purpose is its volume, so it starts at one instead of at nothing.
+  if (entity?.type === 'zone') return { ...ZONE_AREA, ...entity.area };
   const physics = entity?.physics;
   if (physics && physics.body && physics.body !== 'none') {
     return { shape: physics.shape === 'ball' ? 'sphere' : physics.shape === 'capsule' ? 'capsule' : 'box',

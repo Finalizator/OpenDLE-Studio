@@ -18,7 +18,9 @@ import { PATH_MODES } from './path-motion.js';
 export const VERSION = 1;
 export const CONDITIONS = ['onStart', 'always', 'keyPressed', 'nearEntity', 'collisionStarted', 'collisionEnded', 'isTouching', 'playerGrounded', 'animationFinished', ...ENGINE_CONDITIONS.map(command => command.type)];
 export const ACTIONS = ['showMessage', 'setVariable', 'addVariable', 'teleport', 'removeEntity', 'setEntityPosition', 'rotateEntity', 'applyImpulse', 'applyForce', 'setVelocity', 'playAnimation', 'stopAnimation', ...ENGINE_ACTIONS.map(command => command.type)];
-export const ENTITY_TYPES = ['player', 'enemy', 'pickup', 'light', 'decoration', 'ramp'];
+// `zone` is a volume with no artwork: it exists to be entered, so an event can ask "is the
+// player in the guard room" without standing a visible object in the doorway.
+export const ENTITY_TYPES = ['player', 'enemy', 'pickup', 'light', 'decoration', 'ramp', 'zone'];
 const colorPattern = /^#[0-9a-f]{6}$/i;
 // Surface texture scaling: one texture tile covers `scale` times its pixel size in map
 // units, so 2 draws the artwork twice as large and 0.5 twice as fine.

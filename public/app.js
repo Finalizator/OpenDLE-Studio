@@ -42,7 +42,7 @@ import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { upgradePickupReach } from '/shared/doom-hud.js';
-import { suggestedArea } from '/shared/areas.js';
+import { suggestedArea, ZONE_AREA } from '/shared/areas.js';
 import { captureScene, instantiateScene, sceneIsEmpty, newScene } from '/shared/scenes.js';
 import { createSceneObjectEditor } from './scene-object-editor.js';
 import { contextMenu } from './context-menu.js';
@@ -904,7 +904,14 @@ function renderInspector() {
       parent.append(make('h3', 'Object-local variables'));
       renderVariables(parent, item.variables || {}, variables => update('variables', variables));
       if (item.type === 'enemy') field(parent, 'Initial health', input(item.health ?? 20, 'number', value => update('health', value)));
+      // A zone has no artwork to assign: its whole identity is the volume further down, so the
+      // sprite and model fields would be noise, and anything assigned there is never drawn.
+      if (item.type === 'zone') {
+        parent.append(make('p', 'A zone is invisible in play and translucent in the editor. Rules can ask "Player: inside a zone" or "Player: entered a zone"; the volume below is what those rules test, so what you see is exactly what fires.', 'info'));
+      }
       if (item.type !== 'player') {
+        if (item.type === 'zone') { /* no artwork, no collider: the volume below is the object */ }
+        else {
         if (item.doomType !== undefined) field(parent, 'Doom thing type', input(item.doomType, 'number', value => update('doomType', value)));
         // A ramp is a shape, so its picture is a material on that shape rather than a sprite —
         // and any picture will do, including the wall textures and flats the asset library is
@@ -946,6 +953,7 @@ function renderInspector() {
             parent.append(checkbox('Auto-play animation', animation.autoPlay, value => changeAnimation('autoPlay', value)),
               checkbox('Loop animation', animation.loop, value => changeAnimation('loop', value)));
           }
+        }
         }
         if (item.type === 'ramp') {
           parent.append(make('h2', 'Ramp'));
@@ -1022,8 +1030,12 @@ function renderInspector() {
           if (config.shape === 'sphere') config.height = config.radius * 2;
           update('area', config);
         };
-        parent.append(make('h2', 'Interaction area'));
-        field(parent, 'Shape', select([['', 'None'], ['box', 'Box'], ['sphere', 'Sphere'], ['capsule', 'Capsule']], area?.shape || '', value => {
+        // A zone cannot lose its volume: the volume is the object, so the shape picker has no
+        // "None" and a zone is never left as an object that can be asked about but not entered.
+        const isZone = item.type === 'zone';
+        parent.append(make('h2', isZone ? 'Zone volume' : 'Interaction area'));
+        field(parent, 'Shape', select(isZone ? [['box', 'Box'], ['sphere', 'Sphere'], ['capsule', 'Capsule']]
+          : [['', 'None'], ['box', 'Box'], ['sphere', 'Sphere'], ['capsule', 'Capsule']], area?.shape || '', value => {
           if (!value) { edit(next => { delete next.map.entities.find(entity => entity.id === item.id).area; }, 'Interaction area removed'); return; }
           const next = { ...suggestedArea(item), ...area, shape: value };
           if (value === 'sphere') next.height = next.radius * 2;
@@ -1032,7 +1044,9 @@ function renderInspector() {
         if (area?.shape) {
           const keys = area.shape === 'box' ? ['width', 'height', 'depth'] : area.shape === 'sphere' ? ['radius'] : ['radius', 'height'];
           for (const key of keys) field(parent, `${key[0].toUpperCase()}${key.slice(1)}`, input(area[key], 'number', value => changeArea(key, value)));
-          parent.append(make('p', 'Volume above the floor, using the collider shapes. A Player: inside this object interaction area condition is true while the player stands in it; Player: entered this object interaction area fires once per entry.', 'muted'));
+          parent.append(make('p', isZone
+            ? 'The volume above the floor that "Player: inside a zone" and "Player: entered a zone" test. It is drawn translucently in both views while editing and not at all in play.'
+            : 'Volume above the floor, using the collider shapes. A Player: inside this object interaction area condition is true while the player stands in it; Player: entered this object interaction area fires once per entry.', 'muted'));
         }
       } else {
         parent.append(make('p', project.playerControl === 'events'
@@ -1152,6 +1166,9 @@ function newEntityOfType(type, position, extra = {}) {
     ...position, angle: 0, ...extra };
   if (type === 'light') entity.light = { color: '#ffbd72', intensity: 1, radius: 192 };
   if (type === 'ramp') normalizeRamp(entity, { ...RAMP_DEFAULTS, ...(entity.ramp || {}) });
+  // A zone is nothing but its volume, so it is given one at birth: an object that can be
+  // entered with no volume would be a rule that can never fire.
+  if (type === 'zone') entity.area = { ...ZONE_AREA };
   return entity;
 }
 function imageAssetOptions() {
@@ -1441,6 +1458,12 @@ function defaultCondition(type, ownerId) {
       if (!command.groupId) throw new Error('Add an event group first');
     }
     if (engineCommand(type).target && !['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(type)) command.entityId = healthTarget(ownerId);
+    // A zone rule starts pointed at a zone, or the picker would open showing one and submit none.
+    if (engineCommand(type).zone) {
+      const zone = project.map.entities.find(entity => entity.type === 'zone');
+      if (!zone) throw new Error('Create a zone first: right-click the view and choose Create object — Zone');
+      command.zoneId = zone.id;
+    }
     defaultObjectVariable(command, ownerId);
     defaultShaderTarget(command);
     if (engineCommand(type).variable) {
@@ -1765,7 +1788,9 @@ function renderEvents() {
         submit(value);
       }, remove, move, labels: kind === 'condition' ? conditionLabels : actionLabels,
         defaults: type => (kind === 'condition' ? defaultCondition : defaultAction)(type, context),
-        entities: entityOptions(false, context), variables: Object.keys(project.variables),
+        entities: entityOptions(false, context),
+        zones: project.map.entities.filter(entity => entity.type === 'zone').map(entity => [entity.id, entity.name]),
+        variables: Object.keys(project.variables),
         playerId: project.map.entities.find(entity => entity.type === 'player').id,
         groups: (project.eventGroups || []).map(group => [group.id, group.name]),
         walls: project.map.walls.map(wall => [wall.id, `${wall.id} / special ${wall.special || 0}`]),
@@ -2342,6 +2367,27 @@ function drawMap() {
   }
   const marked = new Set(selectedEntityIds());
   for (const entity of display.map.entities) {
+    // A zone is a volume with no artwork, so in the map it is drawn as its footprint — a
+    // translucent plate with a dashed edge — rather than as the dot every other object gets.
+    if (entity.type === 'zone') {
+      const area = { ...ZONE_AREA, ...entity.area };
+      const halfWidth = (area.shape === 'box' ? area.width : area.radius * 2) / 2;
+      const halfDepth = (area.shape === 'box' ? area.depth : area.radius * 2) / 2;
+      const isSelected = marked.has(entity.id);
+      ctx.fillStyle = isSelected ? 'rgba(92,225,198,0.42)' : 'rgba(92,225,198,0.20)';
+      ctx.fillRect(entity.x - halfWidth, entity.y - halfDepth, halfWidth * 2, halfDepth * 2);
+      ctx.strokeStyle = isSelected ? '#ffffff' : entityColors.zone;
+      ctx.lineWidth = 1.5 / camera.zoom;
+      ctx.setLineDash([6 / camera.zoom, 4 / camera.zoom]);
+      ctx.strokeRect(entity.x - halfWidth, entity.y - halfDepth, halfWidth * 2, halfDepth * 2);
+      ctx.setLineDash([]);
+      if (camera.zoom > .25) {
+        ctx.font = `${10 / camera.zoom}px system-ui`;
+        ctx.fillStyle = entityColors.zone;
+        ctx.fillText(entity.name, entity.x - halfWidth, entity.y - halfDepth - 4 / camera.zoom);
+      }
+      continue;
+    }
     const isMarked = marked.has(entity.id);
     ctx.fillStyle = entityColors[entity.type];
     ctx.strokeStyle = isMarked ? '#ffffff' : entityColors[entity.type];
@@ -4278,8 +4324,7 @@ function placeLayoutObject(position, elevation = 0) {
   const type = $('entity-type').value;
   edit(next => {
     if (type === 'player') Object.assign(next.map.entities.find(entity => entity.type === 'player'), position);
-    else next.map.entities.push({ id: newId('entity'), type, name: `${type[0].toUpperCase()}${type.slice(1)}`, ...position, elevation, angle: 0,
-      ...(type === 'light' ? { light: { color: '#ffbd72', intensity: 1, radius: 192 } } : {}) });
+    else next.map.entities.push(newEntityOfType(type, { ...position }, { elevation }));
   }, `${type} placed`);
 }
 

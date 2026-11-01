@@ -1,9 +1,10 @@
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import {
-  AREA_SHAPES, DEFAULT_AREA, PLAYER_CYLINDER, areaBounds, areaContains, areaEntered, areaSpec, areaVolume,
+  AREA_SHAPES, DEFAULT_AREA, PLAYER_CYLINDER, ZONE_AREA, areaBounds, areaContains, areaEntered, areaSpec, areaVolume,
   overlayVolumes, physicsVolume, suggestedArea,
 } from '../shared/areas.js';
 import { captureScene, instantiateScene, sceneOrigin, MAX_SCENE_ENTITIES } from '../shared/scenes.js';
@@ -174,4 +175,63 @@ test('scenes reject empty capture, the player and oversized captures', () => {
   const many = Array.from({ length: MAX_SCENE_ENTITIES + 1 }, (_, index) => ({ ...project.map.entities[1], id: `many_${index}` }));
   project.map.entities.push(...many);
   assert.throws(() => captureScene(project, many.map(entity => entity.id)), /at most/);
+});
+
+test('a zone is a volume: an object with no artwork that events can ask about', () => {
+  const project = createProject();
+  const player = project.map.entities.find(entity => entity.type === 'player');
+  // A zone's birth state: the volume is the object, so it is created with one.
+  const zone = { id: 'zone_guard', name: 'Guard room', type: 'zone', x: player.x, y: player.y, angle: 0, area: { ...ZONE_AREA } };
+  project.map.entities.push(zone);
+  validateProject(project);
+  assert.equal(zone.spriteAsset, undefined, 'a zone has no artwork to draw');
+
+  project.events = [
+    { id: 'event_in_zone', name: 'in zone', enabled: true, once: false, condition: { type: 'playerInZone', zoneId: zone.id },
+      conditions: [], actions: [{ type: 'setGameSetting', setting: 'brightness', value: 1.5 }] },
+    { id: 'event_entered_zone', name: 'entered zone', enabled: true, once: false, condition: { type: 'playerEnteredZone', zoneId: zone.id },
+      conditions: [], actions: [{ type: 'setGameSetting', setting: 'brightness', value: 1.2 }] },
+  ];
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, .016, new Set());
+  assert.equal(state.settings.brightness, 1.2, 'entering fires the entry action');
+  state.player.x += 4000;
+  stepRuntime(project, state, .016, new Set());
+  state.settings.brightness = 1;
+  state.player.x -= 4000;
+  stepRuntime(project, state, .016, new Set());
+  assert.equal(state.settings.brightness, 1.2, 'leaving and re-entering fires again');
+});
+
+test('a zone condition names a zone, and says so when it cannot', () => {
+  const project = createProject();
+  const player = project.map.entities.find(entity => entity.type === 'player');
+  project.map.entities.push({ id: 'zone_a', name: 'Zone A', type: 'zone', x: player.x, y: player.y, angle: 0, area: { ...ZONE_AREA } });
+  project.events = [{ id: 'missing', name: 'missing zone', enabled: true, once: false, condition: { type: 'playerInZone', zoneId: 'zone_gone' },
+    conditions: [], actions: [] }];
+  validateProject(project);
+  let state = createRuntime(project);
+  assert.throws(() => stepRuntime(project, state, .016, new Set()), /no longer exists/);
+
+  // Pointing a zone rule at an ordinary object is a mistake worth reporting, not a silent false.
+  project.events[0].condition = { type: 'playerInZone', zoneId: project.map.entities[1].id };
+  project.events[0].name = 'not a zone';
+  validateProject(project);
+  state = createRuntime(project);
+  assert.throws(() => stepRuntime(project, state, .016, new Set()), /is a pickup/);
+});
+
+test('the zone conditions are offered as a zone picker, not a list of every object', () => {
+  const engine = readFileSync(new URL('../shared/engine-script.js', import.meta.url), 'utf8');
+  assert.match(engine, /type: 'playerInZone', label: 'Player: inside a zone', zone: true/);
+  assert.match(engine, /type: 'playerEnteredZone', label: 'Player: entered a zone', zone: true/);
+  const sheet = readFileSync(new URL('../public/event-sheet.js', import.meta.url), 'utf8');
+  assert.match(sheet, /definition\.zone \? \[\{ name: 'zoneId', label: 'Zone', options: zones \}\]/);
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /zones: project\.map\.entities\.filter\(entity => entity\.type === 'zone'\)/);
+  // The object type exists and is offered where objects are created.
+  assert.match(readFileSync(new URL('../shared/project.js', import.meta.url), 'utf8'),
+    /ENTITY_TYPES = \[[^\]]*'zone'\]/);
+  assert.match(readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'), /<option>zone<\/option>/);
 });

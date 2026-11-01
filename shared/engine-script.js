@@ -41,6 +41,9 @@ export const ENGINE_CONDITIONS = [
   { type: 'playerAirborne', label: 'Player: is on the ground / airborne', fields: [choice('state', 'airborne', ['airborne', 'grounded'])] },
   { type: 'playerInArea', label: 'Player: inside this object interaction area', target: true, fields: [] },
   { type: 'playerEnteredArea', label: 'Player: entered this object interaction area', target: true, fields: [] },
+  // Zones are volumes with no artwork, picked from the zone list rather than from every object.
+  { type: 'playerInZone', label: 'Player: inside a zone', zone: true, fields: [] },
+  { type: 'playerEnteredZone', label: 'Player: entered a zone', zone: true, fields: [] },
   { type: 'entityDamaged', label: 'Object: health decreased', target: true, fields: [] },
   { type: 'entityAlive', label: 'Object: is alive (health above zero)', target: true, fields: [] },
   { type: 'distanceBetween', label: 'Objects: compare distance between two objects', target: true, fields: [

@@ -250,6 +250,8 @@ an object (`entityId`); `$self` is available inside object rules.
 | is on the ground / airborne | `playerAirborne` | — | state |
 | inside this object interaction area | `playerInArea` | yes | — |
 | entered this object interaction area | `playerEnteredArea` | yes | — |
+| inside a zone | `playerInZone` | zone | — |
+| entered a zone | `playerEnteredZone` | zone | — |
 | health decreased | `entityDamaged` | yes | — |
 | is alive (health above zero) | `entityAlive` | yes | — |
 | compare distance between two objects | `distanceBetween` | yes | otherId, operator, distance |
@@ -378,6 +380,6 @@ an object (`entityId`); `$self` is available inside object rules.
 | playAnimation | `playAnimation` | yes | — |
 | stopAnimation | `stopAnimation` | yes | — |
 
-Object types usable with **For each**: `player`, `enemy`, `pickup`, `light`, `decoration`.
+Object types usable with **For each**: `player`, `enemy`, `pickup`, `light`, `decoration`, `ramp`, `zone`.
 
 Object-type commands that need a wall, sector, HUD element or sprite clip validate those references too; a rule that points at a deleted object fails validation with a specific message instead of silently doing nothing.

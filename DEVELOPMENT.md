@@ -640,6 +640,27 @@ project that predates them and keeps working; the key is optional in the validat
 shape once present (duplicate ids, out-of-range curvature and non-numeric coordinates are
 rejected).
 
+### Zones: a volume with no artwork
+
+A **zone** is an object type whose whole identity is a volume. It draws nothing in play and a
+translucent box in the editor, and two rules ask about it: **Player: inside a zone** and
+**Player: entered a zone**. The picker lists zones only, so a rule cannot be pointed at a wall by
+mistake — and if a saved rule names something that is not a zone, or names none at all, the
+runtime says which event is wrong rather than quietly never firing.
+
+- A zone is **born with a room-sized volume** (`ZONE_AREA`, 128³), because an object that can be
+  entered with no volume would be a rule that can never fire. The shape picker has no "None" for a
+  zone for the same reason.
+- No sprite or model fields are shown: anything assigned there would never be drawn, and a zone
+  must not be reported in the grey-placeholder log as "missing artwork" either — it is not missing
+  anything. The 2D map draws its footprint as a translucent plate with a dashed edge, the 3D
+  editor draws the volume itself, and the zone is only visible while editing.
+- It is a normal object otherwise: movable, groupable, scriptable, and it can follow a path.
+
+The conditions share their maths with the older interaction-area ones — a zone *is* an
+interaction area, and the difference is the picker and the wording — so both end in the same
+`areaContains` test against the player cylinder.
+
 ### A model walks its route
 
 An object can be told to follow one of the layout's paths — pick it in **Properties → Follows a

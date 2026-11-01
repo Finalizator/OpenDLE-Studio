@@ -40,7 +40,7 @@ export function commandRow(command, labels, objectName, open, { inverted = false
   return row;
 }
 
-export function openCommandDialog({ kind, labels, command, defaults, entities, playerId, variables, groups, clips, walls = [], sectors = [], spriteClips = [], images = [], hudElements = [], hudAnimations = [], submit, remove, move }) {
+export function openCommandDialog({ kind, labels, command, defaults, entities, zones = [], playerId, variables, groups, clips, walls = [], sectors = [], spriteClips = [], images = [], hudElements = [], hudAnimations = [], submit, remove, move }) {
   const dialog = document.createElement('dialog'); dialog.className = 'command-dialog';
   dialog.setAttribute('aria-label', `${command ? 'Edit' : 'Add'} ${kind}`);
   const heading = document.createElement('h2'), search = document.createElement('input'), content = document.createElement('div');
@@ -79,7 +79,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, p
     } else {
       const label = document.createElement('h3'); label.textContent = labels.find(([type]) => type === draft.type)?.[1] || draft.type;
       content.append(label);
-      for (const field of commandFields(draft, { entities, playerId, variables, groups, clips, walls, sectors, spriteClips, images, hudElements, hudAnimations })) {
+      for (const field of commandFields(draft, { entities, zones, playerId, variables, groups, clips, walls, sectors, spriteClips, images, hudElements, hudAnimations })) {
         const label = document.createElement('label'); label.textContent = field.label || field.name;
         const valueType = field.value ? isExpression(draft[field.name]) ? 'expression' : typeof draft[field.name] : null;
         if (field.value) {
@@ -109,6 +109,9 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, p
             : field.numeric ? (input.value.trim() === '' ? NaN : Number(input.value))
             : field.name === 'loop' ? input.value === 'true' : input.value;
         };
+        // A picker that shows a choice has to submit it: an untouched select would otherwise
+        // leave the field unset, and the rule would run against nothing.
+        if (field.options && draft[field.name] === undefined && input.value !== '') draft[field.name] = input.value;
         input.addEventListener('input', update);
         input.addEventListener('change', () => { update(); if (field.name === 'entityId' && draft.type === 'playAnimation') {
           draft.clip = clips(draft.entityId)[0]; render();
@@ -134,7 +137,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, p
   render(); dialog.showModal(); (stage === 'parameters' ? content.querySelector('input,select') : search)?.focus();
 }
 
-export function commandFields(command, { entities, playerId, variables, groups, clips, walls, sectors, spriteClips, images = [], hudElements, hudAnimations }) {
+export function commandFields(command, { entities, zones = [], playerId, variables, groups, clips, walls, sectors, spriteClips, images = [], hudElements, hudAnimations }) {
   const definition = engineCommand(command.type);
   if (definition) {
     return [
@@ -145,6 +148,8 @@ export function commandFields(command, { entities, playerId, variables, groups, 
       ...(definition.spriteClip ? [{ name: 'clipId', label: 'Sprite clip', options: spriteClips }] : []),
       ...(definition.wall ? [{ name: 'wallId', label: 'Linedef', options: walls }] : []),
       ...(definition.sector ? [{ name: 'sectorId', label: 'Sector', options: sectors }] : []),
+      // A zone condition picks from the zones, so a rule cannot be pointed at a wall by mistake.
+      ...(definition.zone ? [{ name: 'zoneId', label: 'Zone', options: zones }] : []),
       ...(definition.target ? [{ name: 'entityId', label: 'Object', options: ['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(command.type) ? entities : entities.filter(([id]) => id !== playerId) }] : []),
       ...(definition.variable ? [{ name: 'variable', options: variables }] : []),
       ...(definition.group ? [{ name: 'groupId', label: 'Group', options: groups }] : []),

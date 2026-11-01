@@ -22,6 +22,7 @@ import { liveProjectPlan, modelOrientation, modelWorldBox, entityOrigin } from '
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
+import { areaVolume } from '/shared/areas.js';
 import { gameView, viewNeedsScissor } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
 import { skyAssetFor, skyRequestName } from '/shared/sky.js';
@@ -31,7 +32,7 @@ import { createSurfaceBatcher, mergePiece } from '/shared/surface-batch.js';
 import { viewBob, weaponBob } from '/shared/player-motion.js';
 import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 
-export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc', ramp: '#c98b4b' };
+export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc', ramp: '#c98b4b', zone: '#5ce1c6' };
 // Imported models are shaded as physical surfaces instead of Doom's flat light
 // levels: the environment only adds reflections and a little fill, a hemisphere
 // light lifts the shadows predictably, the key light separates faces and the rim
@@ -935,6 +936,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
       return null;
     }
     const colliderBoxes = new Map();
+    // Zones: translucent volumes in the editor, nothing in play.
+    const zoneMeshes = new Map(), zoneList = [];
     /**
      * Give a collider box the object's texture, tiled to its size.
      *
@@ -983,6 +986,29 @@ export async function createPreview(canvas, project, state, { editor = false } =
       geometry.setIndex(WEDGE_INDICES);
       geometry.computeVertexNormals();
       return geometry;
+    }
+    /**
+     * A zone: a volume that exists to be entered.
+     *
+     * In play it is nothing at all — drawing it would defeat the point of an invisible trigger
+     * area, and it must not be reported as artwork-less either, because it is not missing
+     * anything. In the editor it is a translucent box exactly the size of the volume the event
+     * tests, so what you see is what "entered the zone" checks.
+     */
+    function addZone(entity) {
+      if (zoneMeshes.has(entity.id)) return;
+      const material = withEffect(new THREE.MeshBasicNodeMaterial({
+        color: entityColors.zone, transparent: true, opacity: .18,
+        side: THREE.DoubleSide, depthWrite: false,
+      }));
+      materials.add(material);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), material);
+      geometries.add(mesh.geometry);
+      mesh.userData.selection = { kind: 'entity', id: entity.id };
+      mesh.renderOrder = 209;
+      scene.add(mesh);
+      zoneMeshes.set(entity.id, mesh);
+      zoneList.push({ id: entity.id, mesh });
     }
     function addColliderBox(entity) {
       if (colliderBoxes.has(entity.id)) return;
@@ -1100,6 +1126,8 @@ export async function createPreview(canvas, project, state, { editor = false } =
     const withoutArtwork = [];
     function addEntity(entity) {
       if (entity.panel) { addPanel(entity); return; }
+      // A zone is a volume, not a thing: no artwork in play, a translucent box while editing.
+      if (entity.type === 'zone') { if (editor) addZone(entity); return; }
       // An object that only has a collider is a solid shape with no artwork: a surf ramp, a
       // blocking volume, a wall of a test map. Drawing nothing left it invisible in play — a
       // ramp you cannot see is a ramp you walk into and call an invisible wall — so its
@@ -1147,6 +1175,13 @@ export async function createPreview(canvas, project, state, { editor = false } =
         mixers.delete(model.mixer);
         const index = modelList.indexOf(model);
         if (index >= 0) modelList.splice(index, 1);
+      }
+      const zone = zoneMeshes.get(id);
+      if (zone) {
+        zone.removeFromParent();
+        zoneMeshes.delete(id);
+        const index = zoneList.findIndex(entry => entry.id === id);
+        if (index >= 0) zoneList.splice(index, 1);
       }
       const box = colliderBoxes.get(id);
       if (box) {
@@ -1713,6 +1748,17 @@ export async function createPreview(canvas, project, state, { editor = false } =
         entry.mesh.position.set(entity.x, anchor + entity.panel.height / 2, entity.y);
         if (entity.rotation) entry.mesh.quaternion.fromArray(modelOrientation(entity));
         else entry.mesh.rotation.set(0, -entity.angle * Math.PI / 180, 0);
+      }
+      for (let index = 0; index < zoneList.length; index++) {
+        const entry = zoneList[index], entity = entityIndex.get(entry.id);
+        entry.mesh.visible = Boolean(entity);
+        if (!entity) continue;
+        const floor = sectorOf(entity)?.floorHeight || 0;
+        const volume = areaVolume(entity, floor);
+        entry.mesh.position.set(entity.x, volume.center.z, entity.y);
+        entry.mesh.scale.set(volume.shape === 'box' ? volume.half.width * 2 : volume.radius * 2,
+          volume.half.height * 2,
+          volume.shape === 'box' ? volume.half.depth * 2 : volume.radius * 2);
       }
       for (let index = 0; index < colliderBoxList.length; index++) {
         const entry = colliderBoxList[index], entity = entityIndex.get(entry.id);

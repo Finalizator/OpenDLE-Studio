@@ -21,7 +21,7 @@ import { createScene3dView } from './scene-3d-view.js';
 
 /** Icons are text glyphs, one per object type, so the tree needs no image assets. */
 const TYPE_GLYPHS = { scene: 'S', enemy: 'E', pickup: 'P', light: 'L', decoration: 'D', player: 'O' };
-const TYPE_LABELS = { scene: 'Scene', enemy: 'Enemy', pickup: 'Pickup', light: 'Light', decoration: 'Decoration' };
+const TYPE_LABELS = { scene: 'Scene', enemy: 'Enemy', pickup: 'Pickup', light: 'Light', decoration: 'Decoration', ramp: 'Ramp', zone: 'Zone' };
 const GRID = 32;
 /** Godot's inspector groups; a row is only shown when the object has that data. */
 const CATEGORIES = ['Transform', 'Node', 'Visual', 'Panel', 'Model', 'Physics', 'Joints', 'Light', 'Interaction area', 'Script'];

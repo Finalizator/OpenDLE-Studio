@@ -856,17 +856,28 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         if (!state.physics) return condition.state !== 'airborne';
         return condition.state === 'airborne' ? !state.physics.grounded : state.physics.grounded;
       }
-      if (condition.type === 'playerInArea' || condition.type === 'playerEnteredArea') {
-        const entity = findTarget(condition.entityId);
-        if (!entity) return false;
-        const volume = areaVolume(entity, sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0);
-        if (!volume) {
-          throw new Error(`Event "${event.name || event.id}" tests an interaction area on ${entity.name}, which has none`);
+      if (['playerInArea', 'playerEnteredArea', 'playerInZone', 'playerEnteredZone'].includes(condition.type)) {
+        // A zone is found by its own id field; the older area conditions name any object. Both
+        // end in the same volume test, because a zone is only an object whose whole purpose is
+        // its volume — the difference is the picker and the message when it is misconfigured.
+        const zone = condition.type.endsWith('Zone');
+        if (zone && !condition.zoneId) {
+          throw new Error(`Event "${event.name || event.id}" watches a zone but names none; reopen the condition and pick one`);
         }
-        const floor = sectorAt(state.sectors, state.player.x, state.player.y)?.floorHeight ?? 0;
+        const entity = findTarget(zone ? condition.zoneId : condition.entityId);
+        const label = zone ? 'zone' : 'interaction area on';
+        if (!entity) {
+          if (zone) throw new Error(`Event "${event.name || event.id}" is about a zone that no longer exists`);
+          return false;
+        }
+        if (zone && entity.type !== 'zone') {
+          throw new Error(`Event "${event.name || event.id}" watches ${entity.name} as a zone, but that object is a ${entity.type}`);
+        }
+        const volume = areaVolume(entity, sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0);
+        if (!volume) throw new Error(`Event "${event.name || event.id}" tests ${label} ${entity.name}, which has none`);
         const centre = playerCentre(state.player);
         const inside = areaContains(volume, { x: centre[0], y: centre[1], z: centre[2] });
-        if (condition.type === 'playerInArea') return inside;
+        if (condition.type === 'playerInArea' || condition.type === 'playerInZone') return inside;
         return areaEntered(state.areaEntries ||= new Set(), event.id, inside);
       }
       if (condition.type === 'playerReachesEntity') {
