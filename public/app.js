@@ -4860,6 +4860,9 @@ async function start() {
   const session = await response.json(); token = session.token;
   $('ai-state').textContent = session.deepseekConfigured ? session.model : 'Not configured';
   $('ask-ai').disabled = !session.deepseekConfigured;
+  // A disabled button that cannot say why it is disabled is a dead end, so it carries the fix.
+  $('ask-ai').title = session.deepseekConfigured ? '' :
+    'DeepSeek is not configured. Set DEEPSEEK_API_KEY in the local .env file and restart the server.';
   await reloadProject(true);
   await refreshProjects();
   // The version is part of every playtest log header, so read it before any play.
