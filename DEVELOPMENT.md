@@ -694,6 +694,11 @@ runtime says which event is wrong rather than quietly never firing.
   could not stand in it) or above 16 384. The size a drag grows from is the one it **started** at:
   reading it back from the live project adds each frame's growth to the next, which is how a small
   drag once turned a room-sized zone into a tower.
+- One pointer handler starts **every** transform drag — an object, a wall, a sector, a waypoint —
+  so the volume lookup those drags share answers neutrally for anything that has no volume
+  (`volumeAxis` in `shared/scene-edit.js`). Looking a wall up among the objects threw, and a wall
+  arrow stopped being draggable at all; the gizmo's build signature is also forgotten when the
+  handles are cleared, or the next wall looks like it already has one and draws nothing.
 - **How far a drag goes** is measured on a plane that faces the camera, not by projecting the
   pointer's motion onto the axis's screen line (`shared/gizmo-math.js`). Projection divides by the
   axis's *projected length*, so an axis pointing away from the camera — a few pixels long on screen

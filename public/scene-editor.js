@@ -4,7 +4,7 @@ import { selectionAtTriangle } from '/shared/surface-batch.js';
 import { createRuntime, runtimeEntities } from '/shared/runtime.js';
 import { newId } from '/shared/project.js';
 import { sectorAt, sectorGeometry } from '/shared/sectors.js';
-import { dragSelection } from '/shared/scene-edit.js';
+import { dragSelection, volumeAxis } from '/shared/scene-edit.js';
 import {
   addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, requireModelAsset, resolveWallSide, sectorTarget, snapValue,
@@ -460,6 +460,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   function clearHandles() {
     disposeHandles([...handles.children]);
     handleAxes = [];
+    // The signature describes what is *built*, so clearing forgets it: keeping it would make the
+    // next selection of the same kind believe its gizmo was still there and draw nothing.
+    handleSignature = '';
   }
   /**
    * Builds the gizmo for what is selected and what the tool is.
@@ -589,7 +592,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     syncFormArrows();
     const axes = axesFor(kind);
     const signature = `${mode}/${axes.join()}`;
-    if (rebuildHandles || signature !== handleSignature) { handleSignature = signature; buildHandles(axes); }
+    const missing = axes.length > 0 && handles.children.length === 0;
+    if (rebuildHandles || missing || signature !== handleSignature) { handleSignature = signature; buildHandles(axes); }
     canvas.dataset.sceneSelection = `${kind}:${id}${selected.surface ? `:${selected.surface}` : ''}`;
   }
   /**
@@ -603,20 +607,6 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     const entity = project.map.entities.find(item => item.id === id);
     const area = entity?.area || {};
     return Number(area[axisField(axis)]) || 128;
-  }
-  /**
-   * Where a volume's middle sits on one axis, and how long its side is.
-   *
-   * Sideways the object's own position *is* the middle. Vertically it is the floor, so the middle
-   * is half a side above the elevation — which is why a one-sided drag has to treat the two axes
-   * differently when it comes to putting the result back.
-   */
-  function volumeAxis(id, axis) {
-    const entity = project.map.entities.find(item => item.id === id);
-    const size = areaSizeOf(id, axis);
-    if (axis === 'x') return { centre: entity.x || 0, size };
-    if (axis === 'z') return { centre: entity.y || 0, size };
-    return { centre: (entity.elevation || 0) + size / 2, size };
   }
   function applyEdit(fn, message, after) {
     try { callbacks.edit(fn, message); after?.(); } catch (error) { callbacks.error(error.message); cancel(); }
@@ -1005,7 +995,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         // The volume the drag started from: reading it back from the live project would add each
         // frame's growth to the next, which is how a small drag used to turn a room-sized zone
         // into a tower.
-        startAxis: volumeAxis(selected.id, face.axis),
+        startAxis: volumeAxis(project, selected.id, face.axis),
         baseline: project, moved: false };
       paintFaces(face.key);
       canvas.dataset.transform = `form:${face.key}`;
@@ -1016,7 +1006,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       if (mode !== 'move' && selected.kind !== 'entity') { callbacks.error('Select an object to rotate or scale; geometry uses Move'); return; }
       const origin = handles.position.clone();
       action = { kind: 'transform', mode, axis, selection: { ...selected }, x: event.clientX, y: event.clientY,
-        origin, drag: axisDragStart(event, origin, axis), startAxis: volumeAxis(selected.id, axis),
+        origin, drag: axisDragStart(event, origin, axis), startAxis: volumeAxis(project, selected.id, axis),
         reference: GIZMO_LENGTH * handles.scale.x,
         turn: screenAngle(screenXY(origin), pointerXY(event)), baseline: project, moved: false };
       canvas.dataset.transform = `transform:${axis}`;

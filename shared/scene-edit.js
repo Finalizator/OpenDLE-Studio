@@ -1,4 +1,5 @@
 import { sectorAt, sectorGeometry } from './sectors.js';
+import { axisField } from './gizmo-math.js';
 
 const wrapAngle = value => ((value % 360) + 540) % 360 - 180;
 
@@ -50,6 +51,26 @@ function resizeVolume(item, mode, delta) {
     return true;
   }
   return false;
+}
+
+/**
+ * Where a volume's middle sits on one axis, and how long its side is.
+ *
+ * Sideways an object's own position *is* the middle of its volume; vertically that position is the
+ * floor, so the middle is half a side above the elevation. That is why a one-sided drag has to put
+ * its result back differently on each axis.
+ *
+ * Anything that is not an object with a volume — a wall, a sector, a waypoint — gets a neutral
+ * answer instead of an exception: the same pointer handler starts every transform drag, and a wall
+ * arrow used to stop being draggable because this looked the wall up among the objects.
+ */
+export function volumeAxis(project, id, axis) {
+  const entity = project.map.entities.find(item => item.id === id);
+  const size = Number(entity?.area?.[axisField(axis)]) || 128;
+  if (!entity) return { centre: 0, size };
+  if (axis === 'x') return { centre: Number(entity.x) || 0, size };
+  if (axis === 'z') return { centre: Number(entity.y) || 0, size };
+  return { centre: (Number(entity.elevation) || 0) + size / 2, size };
 }
 
 /** Yaw plus the model tilt a rotate drag asked for; a zero tilt is removed. */

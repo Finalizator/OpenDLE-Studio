@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addRoom, createProject, validateProject } from '../shared/project.js';
-import { dragSelection, transformSelection } from '../shared/scene-edit.js';
+import { dragSelection, transformSelection, volumeAxis } from '../shared/scene-edit.js';
 import { createPath } from '../shared/paths.js';
 
 const delta = (values = {}) => ({ x: 0, y: 0, z: 0, ...values });
@@ -172,6 +172,24 @@ test('a zone is formed side by side, scaled as a whole, and turned', () => {
   dragSelection(project, fromForm, selection, 'form', { sizes: { width: 1 } }, 16);
   assert.equal(zone().area.width, 8);
   validateProject(project);
+});
+
+test('a volume axis reads the middle of an object, and shrugs at anything else', () => {
+  const project = createProject();
+  project.map.entities.push({ id: 'zone_a', name: 'Guard room', type: 'zone', x: 320, y: -64, elevation: 32, angle: 0,
+    area: { shape: 'box', width: 128, height: 256, depth: 96, radius: 64 } });
+  // Sideways the position is the middle; upwards the elevation is the floor, so the middle is
+  // half a height above it.
+  assert.deepEqual(volumeAxis(project, 'zone_a', 'x'), { centre: 320, size: 128 });
+  assert.deepEqual(volumeAxis(project, 'zone_a', 'z'), { centre: -64, size: 96 });
+  assert.deepEqual(volumeAxis(project, 'zone_a', 'y'), { centre: 32 + 128, size: 256 });
+
+  // A wall, a sector and an id that is not there all have no volume. They must still answer: the
+  // same pointer handler starts a wall drag, and looking the wall up among the objects threw.
+  const wall = project.map.walls[0];
+  assert.deepEqual(volumeAxis(project, wall.id, 'x'), { centre: 0, size: 128 });
+  assert.deepEqual(volumeAxis(project, project.map.sectors[0].id, 'y'), { centre: 0, size: 128 });
+  assert.deepEqual(volumeAxis(project, 'nothing_here', 'z'), { centre: 0, size: 128 });
 });
 
 test('a one-sided form drag takes the volume with it, so the opposite face stays', () => {
