@@ -845,6 +845,11 @@ click landed on in 3D, so a route up a staircase is drawn by clicking the steps.
   few pixels when the view is zoomed out — which is exactly when the set matters — so every member
   after the primary carries a gold cube scaled like a waypoint's, the same trick the route markers
   use (`1.9·distance/height` keeps it about eight pixels at any zoom).
+- **Pressing a member keeps the set.** A press that landed on one of the selected objects used
+  to collapse the selection to that object, so "start dragging the set" quietly became "drag one
+  object" — and the rest only appeared selected again after the drag ended. A press inside the
+  current set now keeps it (Ctrl still toggles a member in or out) and the object under the
+  pointer takes the arrows, in the map and in the 3D view alike.
 - **The set moves absolutely, from the drag's baseline.** A live drag re-runs `dragSelection` on
   every pointer move, and the draft it runs on already holds the previous frame's move — so the
   rest of the set is placed at `baseline + shift`, never at `current + shift`. Adding to the

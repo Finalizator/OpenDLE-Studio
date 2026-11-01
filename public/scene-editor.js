@@ -1450,6 +1450,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // Face arrows stand on the volume rather than around the object, so they are not in the
       // scaled gizmo group: each one keeps the gizmo's on-screen size by scaling itself.
       if (faceGroup.visible) for (const mesh of faceGroup.children) mesh.scale.setScalar(handles.scale.x);
+      canvas.dataset.gizmoOrigin = handles.visible ? screenOf(handles.position) : '';
       canvas.dataset.gizmoTips = handles.visible ? tipAxes.map(axis => `${axis}:${screenOf(handles.position.clone()
         .add(new THREE.Vector3(...axisDirection(axis)).multiplyScalar(GIZMO_LENGTH * handles.scale.x * .95)))}`).join(';') : '';
       // What the pointer is doing right now: a drag kind ('transform', 'pathPoint', 'room'…),
@@ -1461,6 +1462,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.selectionGroup = String(selected?.group?.length || 0);
       canvas.dataset.groupOutlineSegments = groupOutline.visible ? String((groupOutlineGeometry.getAttribute('position')?.count || 0) / 2) : '0';
       canvas.dataset.groupMarkers = String(groupMarkers.visible ? groupMarkers.children.length : 0);
+      // Where everything in the set stands right now, so a drag's effect on the whole set can be
+      // followed from outside the canvas while the pointer is still down.
+      const setIds = selected?.kind === 'entity' && Array.isArray(selected.group) && selected.group.length > 1
+        ? selected.group : (selected?.kind === 'entity' ? [selected.id] : []);
+      canvas.dataset.selectionPositions = setIds.map(id => {
+        const entity = entityById.get(id);
+        return entity ? `${id}:${Math.round(entity.x)},${Math.round(entity.y)}` : `${id}:?`;
+      }).join('|');
       // The outline's own size, so what a selection box covers can be read from outside the
       // canvas — a box that is flat in one axis is a billboard being measured, not an object.
       canvas.dataset.outlineBox = outlineSize();

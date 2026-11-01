@@ -107,6 +107,12 @@ test('the editor deletes whatever is selected, and says how to leave Draw path',
   // string looked up an object called "[object Object]" and refused to delete anything.
   assert.match(memo('scene-editor.js'), /callbacks\.remove\(\{ \.\.\.selected \}\);/);
   assert.match(app, /remove: value => \{/);
+  // Pressing a member of the set keeps the set: a press that collapsed it made "start dragging a
+  // multi-selection" mean "drag the object under the pointer".
+  assert.match(app, /if \(\!additive && keepSet && multiSelection\.length > 1 && multiSelection\.includes\(entity\.id\)\) \{/);
+  assert.match(app, /if \(entity && multiSelection\.length > 1 && multiSelection\.includes\(entity\.id\)\) \{/);
+  assert.match(app, /selectObject\(entity, false, \{ keepSet: true \}\);/);
+  assert.match(app, /if \(pressed\?\.kind === 'entity' && multiSelection\.length > 1 && multiSelection\.includes\(pressed\.id\)\) \{/);
   assert.match(app, /const target = typeof value === 'string' \? \{ kind: 'entity', id: value \} : value;/);
   // The route inspector offers the way out of the mode and the way back into it.
   assert.match(app, /button\('Finish path — stop adding waypoints', \(\) => finishPath\(\), 'primary'\)/);

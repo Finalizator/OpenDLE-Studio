@@ -352,7 +352,14 @@ async function refreshScene() {
         const entity = value?.kind === 'entity' ? project.map.entities.find(item => item.id === value.id) : null;
         if (entity && options.additive) {
           selectObject(entity, true);
-          sceneEditor?.select(selection);
+          sceneEditor?.select(withSelectionGroup(selection));
+          return;
+        }
+        if (entity && multiSelection.length > 1 && multiSelection.includes(entity.id)) {
+          // The press landed on a member of the set: keep the set, so the next drag carries all
+          // of it, and let the object under the pointer take the arrows.
+          selectObject(entity, false, { keepSet: true });
+          sceneEditor?.select(withSelectionGroup(selection));
           return;
         }
         selection = value;
@@ -786,8 +793,19 @@ function selectedEntities() {
   const ids = new Set(selectedEntityIds());
   return project.map.entities.filter(entity => ids.has(entity.id));
 }
-function selectObject(entity, additive = false) {
+function selectObject(entity, additive = false, { keepSet = false } = {}) {
   syncMultiSelection();
+  if (!additive && keepSet && multiSelection.length > 1 && multiSelection.includes(entity.id)) {
+    // Pressing a member of the set keeps the set: collapsing to the object under the pointer is
+    // how "start dragging a multi-selection" quietly became "drag one object".
+    selection = { kind: 'entity', id: entity.id };
+    lastPrimarySelection = entity.id;
+    showTab('map');
+    renderInspector();
+    sceneEditor?.select(withSelectionGroup(selection));
+    render();
+    return;
+  }
   if (additive && multiSelection.length) {
     // Ctrl+click toggles this object in the set and keeps the first one primary, so the
     // inspector does not jump around while a set is being built.
@@ -2776,7 +2794,17 @@ canvas.addEventListener('pointerdown', guard(event => {
       return;
     }
   }
-  selection = hitTest(point);
+  const pressed = hitTest(point);
+  if (pressed?.kind === 'entity' && multiSelection.length > 1 && multiSelection.includes(pressed.id)) {
+    // Starting a drag on any member of the set moves the whole set, so the press keeps the set
+    // rather than making the object under the pointer the only selection.
+    selection = { kind: 'entity', id: pressed.id };
+    lastPrimarySelection = pressed.id;
+    drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point) };
+    render();
+    return;
+  }
+  selection = pressed;
   if (selection && ['entity', 'vertex', 'pathPoint', 'path'].includes(selection.kind)) drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point) };
   render();
 }));
