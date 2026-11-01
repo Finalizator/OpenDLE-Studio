@@ -8,7 +8,7 @@ import {
   addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, resolveWallSide, sectorTarget, snapValue, wallPartAt, wallTarget,
 } from '../public/editor-drop.js';
-import { entityOrigin, liveProjectPlan, modelWorldBox } from '../shared/entity-visuals.js';
+import { entityOrigin, liveProjectPlan, modelWorldBox, spriteWorldBox, spritePlacement } from '../shared/entity-visuals.js';
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const MODEL = `data:model/gltf+json;base64,${Buffer.from(JSON.stringify({
@@ -171,6 +171,44 @@ test('model selection boxes use the model bounds, scale, rotation and floor posi
   assert.ok(Math.abs(physics.min[0] + 2) < 1e-9 && Math.abs(physics.max[2] - 1) < 1e-9, JSON.stringify(physics));
   assert.deepEqual(entityOrigin({ x: 8, y: 16, elevation: 24 }, 64), [8, 88, 16]);
   assert.deepEqual(entityOrigin({ x: 8, y: 16, z: 5, elevation: 24 }, 64), [8, 5, 16]);
+});
+
+test('a sprite is placed by its artwork size and its own offsets, flip included', () => {
+  const entity = { x: 100, y: 200, elevation: 8 };
+  const asset = { width: 40, height: 56, offsetY: 56 };
+  const placement = spritePlacement(entity, asset, 32);
+  assert.equal(placement.drawWidth, 40);
+  assert.equal(placement.height, 56);
+  // The card is centred on its size and shifted so the artwork's anchor (its feet) lands on the
+  // object: 20 across, and 28 up from the bottom of a 56-tall card.
+  assert.deepEqual(placement.centre, { x: 120, y: 32 + 8 + 28, z: 200 });
+  // A mirrored frame draws the card backwards; the object's size is unchanged.
+  assert.equal(spritePlacement(entity, asset, 32, { flip: true }).drawWidth, -40);
+  // Sprites can be stretched on one axis; the anchor follows the stretched height.
+  const stretched = spritePlacement({ ...entity, spriteScale: 2 }, asset, 32);
+  assert.equal(stretched.height, 112);
+  assert.deepEqual(stretched.centre, { x: 140, y: 32 + 8 + 56, z: 200 });
+  // Without artwork the card falls back to a 24x40 placeholder that is bottom anchored.
+  const bare = spritePlacement({ x: 0, y: 0 }, null, 0);
+  assert.equal(bare.height, 40);
+  assert.deepEqual(bare.centre, { x: 12, y: 20, z: 0 });
+  // An authored Z wins over the floor, exactly like every other object.
+  assert.equal(spritePlacement({ x: 0, y: 0, z: 96 }, asset, 0).centre.y, 96 + 28);
+});
+
+test('a sprite selection box stands still, because a billboard card has no depth of its own', () => {
+  // The card is 40 wide and 56 tall, centred where it is drawn.
+  const box = spriteWorldBox({ x: 100, y: 64, z: -50 }, 40, 56);
+  assert.deepEqual(box.min, [80, 36, -70]);
+  assert.deepEqual(box.max, [120, 92, -30]);
+  // A mirrored frame has a negative width (the card is flipped, not resized): the box is the
+  // same size, because the object's footprint does not change when its artwork does.
+  assert.deepEqual(spriteWorldBox({ x: 0, y: 0, z: 0 }, -40, 56), spriteWorldBox({ x: 0, y: 0, z: 0 }, 40, 56));
+  // Depth equals width — the footprint of a card that turns to face the camera — so the box is
+  // never flat, which is what made a selected monster look like a slanted sheet.
+  const depth = box.max[2] - box.min[2];
+  assert.equal(depth, box.max[0] - box.min[0]);
+  assert.ok(depth > 0);
 });
 
 test('snapping rounds to the grid, and leaves things alone at grid zero', () => {

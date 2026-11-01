@@ -103,6 +103,11 @@ test('the editor deletes whatever is selected, and says how to leave Draw path',
   assert.match(app, /if \(value\?\.kind === 'path'\) \{ deletePath\(value\.id\); return; \}/);
   assert.match(app, /if \(value\?\.kind === 'pathPoint'\) \{ deletePathPoint\(value\.pathId, value\.id\); return; \}/);
   assert.match(app, /if \(\!\['entity', 'path', 'pathPoint'\]\.includes\(selection\?\.kind\)\) return;/);
+  // The 3D view hands over the whole selection, never a bare id: a handler that expected an id
+  // string looked up an object called "[object Object]" and refused to delete anything.
+  assert.match(memo('scene-editor.js'), /callbacks\.remove\(\{ \.\.\.selected \}\);/);
+  assert.match(app, /remove: value => \{/);
+  assert.match(app, /const target = typeof value === 'string' \? \{ kind: 'entity', id: value \} : value;/);
   // The route inspector offers the way out of the mode and the way back into it.
   assert.match(app, /button\('Finish path — stop adding waypoints', \(\) => finishPath\(\), 'primary'\)/);
   assert.match(app, /button\('Continue adding waypoints', \(\) => \{/);

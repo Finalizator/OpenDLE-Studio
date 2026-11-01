@@ -515,6 +515,20 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (points.length) outlineGeometry.computeBoundingSphere();
     selectionOutline.visible = points.length > 0;
   }
+  /** `widthxheightxdepth` of the outline, or an empty string when nothing is highlighted. */
+  function outlineSize() {
+    if (!selectionOutline.visible) return '';
+    const position = outlineGeometry.getAttribute('position');
+    if (!position?.count) return '';
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (let index = 0; index < position.count; index++) {
+      for (let axis = 0; axis < 3; axis++) {
+        const value = position.getComponent(index, axis);
+        min[axis] = Math.min(min[axis], value); max[axis] = Math.max(max[axis], value);
+      }
+    }
+    return [0, 1, 2].map(axis => Math.round((max[axis] - min[axis]) * 10) / 10).join('x');
+  }
   function clearDropPreview() {
     dropOutline.visible = false; dropMarker.visible = false;
     canvas.dataset.dropPreview = '';
@@ -1349,6 +1363,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.action = action ? `${action.kind}${action.axis ? `:${action.axis}` : ''}` : '';
       // How many segments the outline is made of: zero when nothing is highlighted.
       canvas.dataset.outlineSegments = selectionOutline.visible ? String((outlineGeometry.getAttribute('position')?.count || 0) / 2) : '0';
+      // The outline's own size, so what a selection box covers can be read from outside the
+      // canvas — a box that is flat in one axis is a billboard being measured, not an object.
+      canvas.dataset.outlineBox = outlineSize();
     },
     ceilings(visible) { showCeilings = Boolean(visible); updateCeilings(0, true); },
     /** Where a scene placed from the asset browser should land: the view target. */

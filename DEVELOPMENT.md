@@ -711,6 +711,14 @@ runtime says which event is wrong rather than quietly never firing.
   use), a wall's own face, a room's own boundary. It used to be a unit box scaled over the
   selection's bounds, which is the same shape only for an object — a diagonal wall got a box the
   size of the room, and a room with a bay in it got a box that covered the bay.
+- **A sprite's box is its footprint and height, not its card.** A billboard always faces the
+  camera, so its own world box is flat, leans with the view, and is the unit box until the first
+  frame has placed it — a selected monster used to get a slanted sheet instead of a box around it.
+  `spritePlacement` (in `shared/entity-visuals.js`) says where the card is drawn and how big it is,
+  from the entity and the artwork, and both the renderer's per-frame placement and
+  `boundsOfEntity` use it, so the box is right the moment an object is selected and stands still
+  while the camera turns. `canvas.dataset.outlineBox` publishes the highlighted box's size
+  (`41x55x41` for an imported ZombieMan: width, height, and a depth equal to the width).
 - **Rotation** turns the volume: containment rotates the player offset into the zone's own frame,
   and the box in the 3D view and the plate in the 2D view turn with it, so what you see is what
   fires. Round shapes on the ground are unaffected.

@@ -8,7 +8,6 @@ import { wallQuadUv, flatUv } from '/shared/uv.js';
 import { wallScroll, TICRATE } from '/shared/scrollers.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
 import { verticalFov } from '/shared/game-settings.js';
-import { spriteAnchor } from '/shared/sprite-anchor.js';
 import { wallSegments } from '/shared/runtime.js';
 import { GLTFLoader } from '/vendor/three-addons/loaders/GLTFLoader.js';
 import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js';
@@ -18,7 +17,7 @@ import { createPhysics } from '/shared/physics.js';
 import { eyePosition, upVector, viewDirection } from '/shared/gravity.js';
 import { restoreCulling, restoreVisibility, revealForWarmup, uncullDrawables } from '/shared/render-warmup.js';
 import { skyView } from '/shared/sky-view.js';
-import { liveProjectPlan, modelOrientation, modelWorldBox, entityOrigin } from '/shared/entity-visuals.js';
+import { liveProjectPlan, modelOrientation, modelWorldBox, entityOrigin, spriteWorldBox, spritePlacement } from '/shared/entity-visuals.js';
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
@@ -1219,8 +1218,16 @@ export async function createPreview(canvas, project, state, { editor = false } =
       }
       const model = models.get(id);
       if (model) return new THREE.Box3().setFromObject(model.root);
-      const sprite = sprites.get(id);
-      if (sprite) { sprite.updateMatrixWorld(true); return new THREE.Box3().setFromObject(sprite); }
+      if (sprites.has(id)) {
+        // A sprite is a card that always faces the camera, so its own world box is flat, leans
+        // with the view and is the unit box until the first frame has placed it. The card's
+        // placement comes from the entity and the artwork instead — the same numbers it is drawn
+        // with — so the box is the object's footprint and its height from the moment it is selected.
+        const sector = sectorIndex.at(entity.x, entity.y);
+        const placement = spritePlacement(entity, assetMap.get(entity.spriteAsset), sector?.floorHeight || 0);
+        const box = spriteWorldBox(placement.centre, placement.drawWidth, placement.height);
+        return new THREE.Box3(new THREE.Vector3(...box.min), new THREE.Vector3(...box.max));
+      }
       return null;
     }
     for (const entity of project.map.entities) if (editor || entity.type !== 'player') addEntity(entity);
@@ -1811,30 +1818,26 @@ export async function createPreview(canvas, project, state, { editor = false } =
         if (record.frame !== assetId || record.flip !== flip || record.scale !== scale) {
           const asset = assetMap.get(assetId);
           if (record.frame !== assetId) sprite.material.map = assetId ? imageTexture(assetId) : null;
-          sprite.scale.set((asset?.width || 24) * scaleX * (flip ? -1 : 1), (asset?.height || 40) * scaleY, 1);
-          // The artwork's own left/top offsets place it: the sprite quad is kept centred
-          // on its position and the offsets are applied to that position instead of to
-          // `sprite.center`. Center-based offsets are a shader feature, and a sprite that
-          // silently falls back to the default centre is drawn half-sunk in the floor —
-          // which is exactly how imported monsters looked.
+          // The artwork's own left/top offsets place it: the sprite quad is kept centred on its
+          // position and the offsets are applied to that position instead of to `sprite.center`.
+          // Center-based offsets are a shader feature, and a sprite that silently falls back to
+          // the default centre is drawn half-sunk in the floor — how imported monsters looked.
           sprite.center.set(.5, .5);
-          // An artwork without a vertical offset is bottom-anchored, which is what an
-          // imported image gets: `offsetY || height` keeps that instead of centring it.
-          const artworkOffsetY = asset ? asset.offsetY || asset.height || 40 : 40;
-          sprite.userData.shift = spriteAnchor({ width: Math.abs((asset?.width || 24) * scaleX),
-            height: (asset?.height || 40) * scaleY, offsetX: (asset?.offsetX || 0) * scaleX,
-            offsetY: artworkOffsetY * scaleY });
           sprite.userData.assetHeight = asset?.height || 40;
-          sprite.userData.offsetY = artworkOffsetY * scaleY;
           sprite.userData.frame = assetId; sprite.userData.flip = flip;
           record.frame = assetId; record.flip = flip; record.scale = scale;
         }
+        // Size and place the card from the one shared rule, so the box the editor draws around an
+        // object is the card that is actually drawn.
         const sector = sectorOf(entity);
+        const placement = spritePlacement(entity, assetMap.get(assetId), sector?.floorHeight || 0, { flip });
         const anchor = entity.z ?? (sector?.floorHeight || 0) + (entity.elevation || 0);
-        const height = sprite.scale.y;
-        const offsetY = sprite.userData.offsetY || 0;
-        const shift = sprite.userData.shift || { dx: 0, dy: 0 };
-        sprite.position.set(entity.x + shift.dx, anchor + shift.dy, entity.y);
+        const height = placement.height;
+        const offsetY = placement.offsetY;
+        sprite.scale.set(placement.drawWidth, placement.height, 1);
+        sprite.userData.shift = placement.shift;
+        sprite.userData.offsetY = placement.offsetY;
+        sprite.position.set(placement.centre.x, placement.centre.y, placement.centre.z);
         // Report the first enemy sprites so a log can answer "why is it drawn buried"
         // with the real numbers instead of a guess.
         if (sector && !editor && report.length < 4 && entity.type === 'enemy') report.push({

@@ -1,6 +1,8 @@
 // How an object is drawn in the preview, kept free of three.js so the editor and
 // renderer agree on the same rules and both stay testable without a GPU.
 
+import { spriteAnchor } from './sprite-anchor.js';
+
 export function entityRepresentation(entity) {
   // A panel is a translucent slab of its own; it has no artwork to load, so switching to
   // one from a sprite or a model is a swap like any other.
@@ -100,6 +102,43 @@ export function modelWorldBox(local, { scale = 32, position, angle = 0, quaterni
     }
   }
   return { min, max };
+}
+
+/**
+ * Where a sprite's card is drawn: its size, its vertical anchor and the centre it ends up at.
+ *
+ * One place for the maths, so the card on screen and the box the editor draws around it can never
+ * disagree — a box read from the sprite object itself is the unit box until the first frame has
+ * placed it.
+ */
+export function spritePlacement(entity, asset, floorHeight = 0, { flip = false } = {}) {
+  const scaleX = entity.spriteScaleX ?? entity.spriteScale ?? 1;
+  const scaleY = entity.spriteScaleY ?? entity.spriteScale ?? 1;
+  const width = (asset?.width || 24) * scaleX;
+  const height = (asset?.height || 40) * scaleY;
+  const artworkOffsetY = (asset ? asset.offsetY || asset.height || 40 : 40) * scaleY;
+  const shift = spriteAnchor({ width: Math.abs(width), height, offsetX: (asset?.offsetX || 0) * scaleX, offsetY: artworkOffsetY });
+  const anchor = entity.z ?? floorHeight + (entity.elevation || 0);
+  return {
+    drawWidth: width * (flip ? -1 : 1), height, offsetY: artworkOffsetY, shift,
+    centre: { x: entity.x + shift.dx, y: anchor + shift.dy, z: entity.y },
+  };
+}
+
+/**
+ * World-space box of a sprite, which is a card that always faces the camera.
+ *
+ * A billboard's own world box is therefore flat (no depth) and leans with the view, which is
+ * what a selected monster used to get: a slanted sheet instead of a box around the monster. What
+ * the object occupies is its footprint and its height, and the card's scale is exactly those
+ * numbers, so the box is built from them and stands still while the camera turns.
+ */
+export function spriteWorldBox(centre, width, height) {
+  const halfWidth = Math.abs(width) / 2, halfHeight = Math.abs(height) / 2;
+  return {
+    min: [centre.x - halfWidth, centre.y - halfHeight, centre.z - halfWidth],
+    max: [centre.x + halfWidth, centre.y + halfHeight, centre.z + halfWidth],
+  };
 }
 
 // Where an object stands: authored Z wins, otherwise the sector floor plus its

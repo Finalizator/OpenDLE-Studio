@@ -369,8 +369,11 @@ async function refreshScene() {
       grid: () => Number($('grid').value), tool: () => toolMode(),
       surface: () => $('sector-surface').value,
       script: openScript,
-      remove: id => {
-        try { edit(next => removeEntity(next, id), 'Object deleted'); } catch (error) { status(error.message, true); }
+      remove: value => {
+        // The 3D view may select a route or a waypoint as well as an object, so Delete means
+        // whatever is selected there rather than always an object.
+        const target = typeof value === 'string' ? { kind: 'entity', id: value } : value;
+        try { deleteSelectionObject(target); } catch (error) { status(error.message, true); }
       },
       pathPoint: point => addPathPoint(point),
       clearTool: () => finishPath(),
