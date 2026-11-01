@@ -827,6 +827,14 @@ replaces — writing the name through the shared table changed the undo snapshot
 the rename impossible to undo. The layout row keeps its id visible and renames only the name: the
 id is what the campaign, the saves and the rules refer to.
 
+**The asset table is shared, so an asset edit replaces its entry.** Copying the assets costs about
+15 ms per edit on the imported game (they are the megabytes), so `cloneProjectForEdit` hands the
+next project the same asset objects and only copies the array. The price is a rule: an edit that
+changes an asset has to *replace* that entry rather than write through it, or it changes the undo
+snapshot too and undo becomes a no-op — the same trap as `editGame` above, and the reason
+`updateAsset` in [`shared/project.js`](./shared/project.js) exists. Renaming an asset and
+re-importing a sound over an existing one both go through it.
+
 **Timesheet** is the editor's video-editor timeline. A timesheet is tracks over one clock, and a
 cue is a labelled moment on a track that carries a list of ordinary visual-script actions. Nothing
 in the timeline is a second scripting language: a cue holds actions from the same catalogue the
@@ -902,7 +910,10 @@ Two things make the number findable rather than guessed:
   the hand-set facing offset it would otherwise double up with.
 
 A faced model is trusted over the recipe's own arithmetic: if a facing is already declared, the
-recipe leaves it and the angle alone.
+recipe leaves it and the angle alone. The *collider* follows the same rule: `colliderRotation` in
+[`shared/physics.js`](./shared/physics.js) takes the facing off the angle too, because the collider
+is the artwork's own shape — left at `angle` it would sit off the drawn body by the facing, and a
+truck would scrape walls with the corner of a box nobody can see.
 
 **Moving along a route between two waypoints** is a cue action of its own (`Path: move object
 between waypoints over time`). It records the object's own starting position and offsets it by the

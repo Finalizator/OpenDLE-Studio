@@ -7,7 +7,7 @@ import { PNG } from 'pngjs';
 import { ShapeUtils, Vector2 } from 'three';
 import { decodePatch, decodeFlat, patchNames, textureDefinitions, composeTexture } from '../shared/doom-assets.js';
 import { sectorGeometry, sectorAt, sectorShapes, containsPoint } from '../shared/sectors.js';
-import { createProject, validateProject } from '../shared/project.js';
+import { cloneProjectForEdit, createProject, updateAsset, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { applyTool, jsonSchemaForTool, toolDefinitions } from '../server/tools.js';
 import { encodeImage, importWad } from '../server/import.js';
@@ -228,4 +228,29 @@ test('real Freedoom MAP01 imports bounded portable textures, sectors, skies, spr
     assert.equal(png.width, asset.width); assert.equal(png.height, asset.height);
   }
   assert.ok(!warnings.some(warning => /Missing (texture|flat|sprite)/.test(warning)));
+});
+
+// The editor shares the asset table between undo snapshots, because copying it costs as much as
+// copying the whole project. An edit that changes an asset therefore has to replace the entry:
+// writing through it also rewrites the snapshot undo would return to, and undo silently does
+// nothing (an asset rename that could not be undone was exactly this).
+test('changing an asset replaces it, so the previous snapshot still has the old value', () => {
+  const project = createProject();
+  project.assets = [{ id: 'sound_a', name: 'DSPISTOL', kind: 'sound', format: 'wav', src: 'data:audio/wav;base64,AA' }];
+  // A campaign: this is the case the sharing exists for, and the case the rename could not undo.
+  project.game = { active: 'MAP01', levels: [{ id: 'MAP01', name: 'MAP01', data: {} }] };
+  const snapshot = cloneProjectForEdit(project);
+  assert.equal(snapshot.assets[0], project.assets[0], 'the table is shared for speed, on purpose');
+  updateAsset(snapshot, 'sound_a', { name: 'PISTOL' });
+  assert.equal(snapshot.assets[0].name, 'PISTOL', 'the edit landed in the new project');
+  assert.equal(project.assets[0].name, 'DSPISTOL', 'and the previous snapshot is untouched, so undo works');
+  assert.notEqual(snapshot.assets[0], project.assets[0], 'a new object, not a write-through');
+  // A replacement can delete a field as well, which the sound re-import relies on.
+  updateAsset(snapshot, 'sound_a', copy => { copy.src = 'data:audio/wav;base64,BB'; delete copy.generated; });
+  assert.equal(snapshot.assets[0].src, 'data:audio/wav;base64,BB');
+  assert.ok(!('generated' in snapshot.assets[0]));
+  assert.equal(project.assets[0].src, 'data:audio/wav;base64,AA');
+  // A missing asset is an error rather than a silent new entry.
+  assert.throws(() => updateAsset(snapshot, 'nope', { name: 'x' }), /no longer exists/);
+  assert.equal(snapshot.assets.length, 1);
 });

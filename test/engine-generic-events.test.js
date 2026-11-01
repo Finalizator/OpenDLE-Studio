@@ -94,6 +94,36 @@ test('every new condition and action works on a bare project and survives a roun
   assert.doesNotThrow(() => createRuntime(copy));
 });
 
+// The count condition reads `condition.entityType || 'any'` so the runtime does not depend on the
+// editor having filled the field in. That fallback used to name a field no rule has, so a count with
+// no type came out as zero — a rule that silently never fires. A saved project cannot reach that
+// state (validation rejects a missing choice), so it is checked where it can happen: a project
+// built by hand, which is how tools and tests drive the runtime.
+test('a count with no entity type counts any object instead of nothing', t => {
+  const project = bareRoom();
+  project.variables.seen = 0;
+  project.events = [rule('any', { type: 'objectCount', operator: '>=', value: 1 },
+    [{ type: 'addVariable', variable: 'seen', value: 1 }])];
+  // No validateProject: the point is that the runtime does not rely on the editor's defaults.
+  const state = createRuntime(project);
+  state.physics = createPhysics(project, state, R, triangulate);
+  t.after(() => state.physics.dispose());
+  tick(project, state, 10);
+  assert.ok(state.variables.seen > 0, 'a count of any objects is satisfied by a level with objects');
+  // The explicit choices still count only what they name, and validation still requires one.
+  project.events[0].condition.entityType = 'enemy';
+  project.variables.seen = 0;
+  const enemies = createRuntime(project);
+  enemies.physics = createPhysics(project, enemies, R, triangulate);
+  t.after(() => enemies.physics.dispose());
+  tick(project, enemies, 10);
+  assert.equal(enemies.variables.seen, 0, 'this room has no enemies, so that rule never fires');
+  const strict = bareRoom();
+  strict.variables.seen = 0;
+  strict.events = [rule('any', { type: 'objectCount', operator: '>=', value: 1 }, [{ type: 'addVariable', variable: 'seen', value: 1 }])];
+  assert.throws(() => validateProject(strict), /Unsupported entityType/, 'the editor always writes the type');
+});
+
 test('every command is available to any project, not just imported ones', () => {
   for (const type of ['playerTouchingSurface', 'playerAirborne', 'playerInArea', 'playerEnteredArea',
     'everySeconds', 'randomChance', 'objectCount', 'entityAngle']) {

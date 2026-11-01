@@ -206,6 +206,25 @@ export function cloneProjectForEdit(project, { deepGame = false, shareActors = f
 }
 
 /**
+ * Changes one asset, leaving the previous undo snapshot alone.
+ *
+ * The editor shares the asset table between snapshots, because copying it costs about as much as
+ * copying the whole project (the images are hundreds of megabytes) and almost no edit touches it.
+ * The price of that is this rule: an edit that changes an asset has to *replace* the entry rather
+ * than write through it, or the change also rewrites the snapshot undo would go back to, and undo
+ * becomes a no-op. `change` may be an object to merge or a function given the copy to edit.
+ */
+export function updateAsset(project, id, change) {
+  const index = (project.assets || []).findIndex(asset => asset.id === id);
+  if (index < 0) throw new Error('That asset no longer exists');
+  const copy = { ...project.assets[index] };
+  if (typeof change === 'function') change(copy);
+  else Object.assign(copy, change);
+  project.assets[index] = copy;
+  return copy;
+}
+
+/**
  * `fast` skips re-validating dormant campaign levels and the multi-megabyte
  * game size check. Interactive edits only touch the active level, so a full
  * re-validation of 32 imported maps would add seconds to every drag; the full

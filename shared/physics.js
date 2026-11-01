@@ -145,6 +145,25 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
   return { positions: new Float32Array(positions), indices: new Uint32Array(indices), sectors };
 }
 
+/**
+ * The rotation a collider gets, as a quaternion.
+ *
+ * A collider stands for the artwork's own shape — a model's triangles, or a box sized from a sprite
+ * — so it has to turn exactly the way the drawn mesh turns. That is why a model's declared facing
+ * comes off the angle here too: the renderer draws a faced model at `angle - facing`, and a collider
+ * left at `angle` would sit off the body by that much, so a truck would scrape walls with the corner
+ * of an invisible box and pass through what its nose visibly overlapped.
+ *
+ * A tilted object's collider is tilted with it as well: an object rotated about a horizontal axis is
+ * a ramp, and `modelTilt` is already how the renderer tilts the thing that is drawn, so the collider
+ * and the artwork agree instead of being two guesses at the same shape.
+ */
+export function colliderRotation(entity) {
+  const angle = -((Number(entity?.angle) || 0) - (Number(entity?.modelFacing) || 0)) * Math.PI / 180;
+  if (entity?.modelTilt) return tiltQuaternion(entity.modelTilt, angle);
+  return { x: 0, y: Math.sin(angle / 2), z: 0, w: Math.cos(angle / 2) };
+}
+
 // Doom lets a thing into a gap that exactly matches its height (`P_CheckPosition` only
 // refuses a gap smaller than the height), so the capsule is a hair under the 56 unit
 // player height: the MAP01 exit sign sits in a 56 unit niche in front of the door, and a
@@ -299,14 +318,6 @@ export function createPhysics(project, state, R, triangulate) {
     return { normal, distance: hit.timeOfImpact * PHYSICS_SCALE - capsuleExtent(toRapier(upMap), rayDirection),
       kind: surfaceKind(normal) };
   }
-  function rotation(entity) {
-    const angle = -(entity.angle || 0) * Math.PI / 180;
-    // A tilted object's collider is tilted with it: an object rotated about a horizontal axis
-    // is a ramp, and `modelTilt` is already how the renderer tilts the thing that is drawn, so
-    // the collider and the artwork agree instead of being two guesses at the same shape.
-    if (entity.modelTilt) return tiltQuaternion(entity.modelTilt, angle);
-    return { x: 0, y: Math.sin(angle / 2), z: 0, w: Math.cos(angle / 2) };
-  }
   /**
    * The collider for a mesh, built from the mesh itself.
    *
@@ -348,7 +359,7 @@ export function createPhysics(project, state, R, triangulate) {
     // the renderer puts it too; every other shape's origin is its centre.
     const lift = config?.shape === 'wedge' || config?.shape === 'model' ? 0 : height / 2 + (player ? .4 : 0);
     descriptor.setTranslation(entity.x / PHYSICS_SCALE, (bottom + lift) / PHYSICS_SCALE, entity.y / PHYSICS_SCALE);
-    descriptor.setRotation(rotation(entity));
+    descriptor.setRotation(colliderRotation(entity));
     // The player capsule is re-oriented onto the surface it stands on, so its
     // rotation follows the up axis instead of being locked upright.
     if (!player && config?.lockRotation) descriptor.lockRotations();
@@ -779,8 +790,9 @@ export function createPhysics(project, state, R, triangulate) {
     rotate(id, angle) {
       const entity = state.entities.find(entity => entity.id === id), body = bodies.get(id);
       if (!entity || !body || id === playerId) return;
-      body.setRotation(rotation({ angle }), true); world.propagateModifiedBodyPositionsToColliders(); syncEntity(entity);
-      if (body.isKinematic()) body.setNextKinematicRotation(rotation({ angle }));
+      const turned = colliderRotation({ ...entity, angle });
+      body.setRotation(turned, true); world.propagateModifiedBodyPositionsToColliders(); syncEntity(entity);
+      if (body.isKinematic()) body.setNextKinematicRotation(turned);
     },
     impulse(id, vector) {
       const body = bodies.get(id);

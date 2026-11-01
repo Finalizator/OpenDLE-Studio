@@ -1,4 +1,4 @@
-import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, ENTITY_TYPES } from '/shared/project.js';
+import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, updateAsset, ENTITY_TYPES } from '/shared/project.js';
 import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
@@ -2325,8 +2325,13 @@ let assetSignatureCache = { assets: null, length: -1, signature: '' };
 function assetListSignature() {
   const assets = project.assets || [];
   if (assetSignatureCache.assets === assets && assetSignatureCache.length === assets.length) return assetSignatureCache.signature;
+  // The payload length belongs in here because a tile draws the payload: importing a sound over an
+  // existing name, and undoing that, keep the id, kind and name and change only the bytes, so a
+  // signature made of names left the panel showing the old audio after an undo. `.length` is free
+  // on a string, so this stays cheap enough for the signature's whole point — not rebuilding 2219
+  // tiles on every drag.
   const signature = assets.map(asset => `${asset.id}:${asset.kind}:${asset.name}:${asset.format || ''}` +
-    `:${asset.meshes || 0}:${asset.animations?.length || 0}:${asset.generated ? 1 : 0}`).join('|');
+    `:${asset.meshes || 0}:${asset.animations?.length || 0}:${asset.generated ? 1 : 0}:${(asset.src || '').length}`).join('|');
   assetSignatureCache = { assets, length: assets.length, signature };
   return signature;
 }
@@ -4276,7 +4281,9 @@ async function importSoundFiles(files) {
     next.assets ||= [];
     for (const asset of imported) {
       const existing = next.assets.find(item => item.kind === 'sound' && item.name === asset.name);
-      if (existing) { existing.src = asset.src; delete existing.generated; }
+      // Replacing the entry, not writing through it: the asset table is shared with the previous
+      // undo snapshot, so writing through it would change the snapshot too and undo would do nothing.
+      if (existing) updateAsset(next, existing.id, copy => { copy.src = asset.src; delete copy.generated; });
       else next.assets.push({ id: newId('sound'), ...asset });
     }
   });
@@ -4857,11 +4864,7 @@ function renameAsset(asset) {
   if (answer === null) return;
   const clean = answer.trim().slice(0, 100);
   if (!clean || clean === asset.name) return;
-  edit(next => {
-    const target = next.assets.find(item => item.id === asset.id);
-    if (!target) throw new Error('That asset no longer exists');
-    target.name = clean;
-  }, `Asset renamed to ${clean}`);
+  edit(next => updateAsset(next, asset.id, { name: clean }), `Asset renamed to ${clean}`);
 }
 
 function renameSceneObject(id) {

@@ -862,7 +862,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       if (condition.type === 'randomChance') return nextRandom(state) < condition.probability;
       if (condition.type === 'objectCount') {
-        const wanted = condition.entityType || condition.type_;
+        // A missing type means any object, which is what the `'any'` branch below counts: the
+        // runtime does not lean on the editor having filled the field in. (This read a field no
+        // command defines, so a count with no type came out as zero and never fired.)
+        const wanted = condition.entityType || 'any';
         const count = wanted === 'any' ? state.entities.length
           : state.entities.filter(entity => entity.type === wanted).length;
         return compareValues(count, condition.operator, condition.value);
