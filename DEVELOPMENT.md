@@ -706,11 +706,11 @@ runtime says which event is wrong rather than quietly never firing.
   the pointer, and an axis you are looking down simply becomes stiff to drag, which is what such an
   axis should be. A ring is followed rather than measured: the pointer's angle around the gizmo is
   the turn, signed by whether the ring's axis points towards or away from the camera.
-- **The selection outline is the volume**, not a box around it: same size, same centre, and it
-  turns with the zone, because an axis-aligned outline sticks out exactly where a turned zone does
-  not. The box, the outline and Form's face plates all take their turn from `areaYaw`, so they
-  cannot drift apart. Other selections keep a little air, because their box is sized from a sprite
-  or a model and is an approximation.
+- **The selection outline is the shape of what is selected**, drawn as segments in its own space:
+  an object's volume (turned by `areaYaw`, the same number the box, the outline and Form's arrows
+  use), a wall's own face, a room's own boundary. It used to be a unit box scaled over the
+  selection's bounds, which is the same shape only for an object — a diagonal wall got a box the
+  size of the room, and a room with a bay in it got a box that covered the bay.
 - **Rotation** turns the volume: containment rotates the player offset into the zone's own frame,
   and the box in the 3D view and the plate in the 2D view turn with it, so what you see is what
   fires. Round shapes on the ground are unaffected.

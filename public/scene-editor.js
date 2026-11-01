@@ -54,13 +54,18 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   const roomOutline = new THREE.Line(roomGeometry, roomMaterial);
   roomOutline.renderOrder = 200; roomOutline.visible = false; roomOutline.frustumCulled = false; scene.add(roomOutline);
 
-  const outlineGeometry = own(new THREE.EdgesGeometry(own(new THREE.BoxGeometry(1, 1, 1))));
+  // The selection outline is the shape of the thing selected, drawn as segments in its own space:
+  // the volume of an object, the face of a wall, the boundary of a room. It used to be a unit box
+  // scaled over the selection's bounds, which is the same shape only for objects — a diagonal wall
+  // got a box the size of the room, and a room with a bay in it got a box that covered the bay.
+  const outlineGeometry = own(new THREE.BufferGeometry());
   const selectionOutline = new THREE.LineSegments(outlineGeometry, own(new THREE.LineBasicMaterial({
     color: SELECT_COLOR, depthTest: false, transparent: true, opacity: .95,
   })));
   selectionOutline.renderOrder = 205; selectionOutline.visible = false; selectionOutline.frustumCulled = false;
   helperGroup.add(selectionOutline);
-  const dropOutline = new THREE.LineSegments(outlineGeometry, own(new THREE.LineBasicMaterial({ color: DROP_COLOR, depthTest: false })));
+  const dropBoxGeometry = own(new THREE.EdgesGeometry(own(new THREE.BoxGeometry(1, 1, 1))));
+  const dropOutline = new THREE.LineSegments(dropBoxGeometry, own(new THREE.LineBasicMaterial({ color: DROP_COLOR, depthTest: false })));
   dropOutline.renderOrder = 206; dropOutline.visible = false; dropOutline.frustumCulled = false;
   helperGroup.add(dropOutline);
   const dropMarker = new THREE.Mesh(own(new THREE.BoxGeometry(10, 10, 10)),
@@ -237,13 +242,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   rebuildPaths();
 
   const frustum = new THREE.Frustum(), projectionView = new THREE.Matrix4(), bounds = new THREE.Box3();
-  const boundsSphere = new THREE.Sphere(), boundsCenter = new THREE.Vector3(), boundsSize = new THREE.Vector3();
-  const outlineCenter = new THREE.Vector3(), outlineSize = new THREE.Vector3(), outlineShift = new THREE.Vector3();
+  const boundsCenter = new THREE.Vector3(), boundsSize = new THREE.Vector3();
   const forwardVector = new THREE.Vector3(), rightVector = new THREE.Vector3(), motionVector = new THREE.Vector3(), lookTarget = new THREE.Vector3();
-  let hasOutline = false;
-  // A volume turns with its object, so its outline has to turn too: an axis-aligned box around a
-  // turned zone sticks out exactly where the zone does not.
-  let outlineAngle = 0, outlinePadding = 4;
 
   function direction(target) {
     return target.set(Math.cos(pitch) * Math.cos(yaw), Math.sin(pitch), Math.cos(pitch) * Math.sin(yaw));
@@ -431,15 +431,73 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     }
     return box;
   }
-  function updateSelectionOutline() {
-    if (!hasOutline || !selected) { selectionOutline.visible = false; return; }
-    selectionOutline.position.copy(outlineCenter).add(outlineShift);
-    selectionOutline.rotation.set(0, areaYaw({ angle: outlineAngle }), 0);
-    selectionOutline.scale.set(Math.max(outlineSize.x, 8) + outlinePadding, Math.max(outlineSize.y, 8) + outlinePadding,
-      Math.max(outlineSize.z, 8) + outlinePadding);
-    boundsSphere.center.copy(selectionOutline.position);
-    boundsSphere.radius = Math.hypot(selectionOutline.scale.x, selectionOutline.scale.y, selectionOutline.scale.z) * .5;
-    selectionOutline.visible = frustum.intersectsSphere(boundsSphere);
+  const UP = new THREE.Vector3(0, 1, 0);
+  function pushSegment(points, a, b) { points.push(a.x, a.y, a.z, b.x, b.y, b.z); }
+  /** The twelve edges of a box, turned by `yaw` about its own middle. */
+  function outlineBox(points, box, yaw = 0) {
+    const centre = box.getCenter(new THREE.Vector3()), corners = [];
+    for (let index = 0; index < 8; index++) {
+      corners.push(new THREE.Vector3(
+        index & 1 ? box.max.x : box.min.x,
+        index & 2 ? box.max.y : box.min.y,
+        index & 4 ? box.max.z : box.min.z,
+      ).sub(centre).applyAxisAngle(UP, yaw).add(centre));
+    }
+    for (let index = 0; index < 8; index++) {
+      for (const bit of [1, 2, 4]) if (!(index & bit)) pushSegment(points, corners[index], corners[index | bit]);
+    }
+  }
+  /**
+   * The outline of the current selection, as world-space segments.
+   *
+   * A box is right for an object, because its own outline *is* its volume. A wall is drawn as its
+   * own face and a room as its own boundary, so the highlight lands on what was clicked rather
+   * than on a box that happens to contain it.
+   */
+  function outlineFor(selection) {
+    const points = [];
+    if (selection.kind === 'entity') {
+      const entity = entityById.get(selection.id);
+      const volume = entity?.area ? areaVolume(entity, sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0) : null;
+      if (volume) {
+        outlineBox(points, new THREE.Box3(
+          new THREE.Vector3(volume.center.x - volume.half.width, volume.center.z - volume.half.height, volume.center.y - volume.half.depth),
+          new THREE.Vector3(volume.center.x + volume.half.width, volume.center.z + volume.half.height, volume.center.y + volume.half.depth)),
+          areaYaw(entity));
+      } else {
+        boundsFor(selection, bounds);
+        if (!bounds.isEmpty()) outlineBox(points, bounds);
+      }
+    } else if (selection.kind === 'wall') {
+      const wall = wallById.get(selection.id), a = vertexById.get(wall?.a), b = vertexById.get(wall?.b);
+      if (a && b) {
+        const front = sectorById.get(wall.right?.sectorId || wall.left?.sectorId);
+        const floor = front?.floorHeight ?? 0, ceiling = front?.ceilingHeight ?? wall.height ?? 128;
+        const corners = [new THREE.Vector3(a.x, floor, a.y), new THREE.Vector3(b.x, floor, b.y),
+          new THREE.Vector3(b.x, ceiling, b.y), new THREE.Vector3(a.x, ceiling, a.y)];
+        for (let index = 0; index < 4; index++) pushSegment(points, corners[index], corners[(index + 1) % 4]);
+      }
+    } else if (selection.kind === 'sector') {
+      const sector = sectorById.get(selection.id);
+      const height = sector?.[selection.surface || 'floorHeight'];
+      if (sector && Number.isFinite(height)) {
+        for (const ring of sector.rings || []) {
+          for (let index = 0; index < ring.length; index++) {
+            const a = ring[index], b = ring[(index + 1) % ring.length];
+            pushSegment(points, new THREE.Vector3(a.x, height, a.y), new THREE.Vector3(b.x, height, b.y));
+          }
+        }
+      }
+    } else {
+      boundsFor(selection, bounds);
+      if (!bounds.isEmpty()) outlineBox(points, bounds);
+    }
+    return points;
+  }
+  function setOutline(points) {
+    outlineGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points), 3));
+    if (points.length) outlineGeometry.computeBoundingSphere();
+    selectionOutline.visible = points.length > 0;
   }
   function clearDropPreview() {
     dropOutline.visible = false; dropMarker.visible = false;
@@ -535,8 +593,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     // The highlighted volume follows the selection, including when nothing is selected.
     if (showAreas || showPhysics) rebuildOverlays();
     updateVertexMarkers();
-    selectionOutline.visible = false; outlineShift.set(0, 0, 0);
     canvas.dataset.sceneSelection = '';
+    // Nothing is highlighted until the selection below says what shape to draw.
+    setOutline([]);
     if (!selected) { clearHandles(); return; }
     const { kind, id } = selected;
     let position;
@@ -579,15 +638,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       position = new THREE.Vector3((sector.bounds.minX + sector.bounds.maxX) / 2,
         sector[selected.surface || 'floorHeight'], (sector.bounds.minY + sector.bounds.maxY) / 2);
     }
-    const outlined = selected.kind === 'entity' ? entityById.get(selected.id) : null;
-    const isVolume = Boolean(outlined?.area);
-    outlineAngle = isVolume ? Number(outlined.angle) || 0 : 0;
-    // The volume *is* the object, so its outline sits on the volume rather than around it; a box
-    // sized from a sprite, a model or a sector is an approximation and keeps a little air.
-    outlinePadding = isVolume ? 0 : 4;
-    boundsFor(selected, bounds);
-    hasOutline = !bounds.isEmpty();
-    if (hasOutline) { bounds.getCenter(outlineCenter); bounds.getSize(outlineSize); }
+    setOutline(outlineFor(selected));
     handles.position.copy(position);
     syncFormArrows();
     const axes = axesFor(kind);
@@ -1256,7 +1307,6 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         if (!marker.userData.pathPoint) continue;
         marker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(marker.position) / rect.height));
       }
-      updateSelectionOutline();
       updateCeilings(dt);
       view.render(state);
       canvas.dataset.camera = camera.position.toArray().map(value => value.toFixed(2)).join(',');
@@ -1264,8 +1314,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.outline = selectionOutline.visible ? 'visible' : 'hidden';
       canvas.dataset.handles = handles.visible ? 'visible' : 'hidden';
       canvas.dataset.vertexMarkers = String(markers);
-      // Screen positions of the gizmo and the selection box, so a drag can be
-      // followed (and regression-tested) from the outside.
+      // Where the gizmo is on screen, so a drag can be followed from the outside.
       canvas.dataset.handlesAt = handles.visible ? screenOf(handles.position) : '';
       // Which handles the gizmo is showing, and where their tips are: the mode changes what a
       // selection gets, and a handle can only be dragged where it is drawn.
@@ -1281,11 +1330,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // What the pointer is doing right now: a drag kind ('transform', 'pathPoint', 'room'…),
       // so an interaction can be followed from outside the canvas.
       canvas.dataset.action = action ? `${action.kind}${action.axis ? `:${action.axis}` : ''}` : '';
-      canvas.dataset.outlineAt = selectionOutline.visible ? screenOf(selectionOutline.position) : '';
-      // The selection box in world terms, so its match with a volume can be checked from outside.
-      canvas.dataset.outlineBox = selectionOutline.visible
-        ? `${selectionOutline.position.toArray().map(Math.round).join(',')}|${selectionOutline.scale.toArray().map(Math.round).join(',')}|${Math.round(-selectionOutline.rotation.y * 180 / Math.PI)}`
-        : '';
+      // How many segments the outline is made of: zero when nothing is highlighted.
+      canvas.dataset.outlineSegments = selectionOutline.visible ? String((outlineGeometry.getAttribute('position')?.count || 0) / 2) : '0';
     },
     ceilings(visible) { showCeilings = Boolean(visible); updateCeilings(0, true); },
     /** Where a scene placed from the asset browser should land: the view target. */
