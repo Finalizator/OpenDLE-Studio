@@ -10,7 +10,7 @@ import {
   moveEntityToFloor, requireImageAsset, requireModelAsset, resolveWallSide, sectorTarget, snapValue,
   wallPartAt, wallTarget,
 } from './editor-drop.js';
-import { areaVolume, overlayVolumes } from '/shared/areas.js';
+import { areaVolume, areaYaw, overlayVolumes } from '/shared/areas.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
 import { samplePath } from '/shared/paths.js';
 import {
@@ -241,6 +241,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   const outlineCenter = new THREE.Vector3(), outlineSize = new THREE.Vector3(), outlineShift = new THREE.Vector3();
   const forwardVector = new THREE.Vector3(), rightVector = new THREE.Vector3(), motionVector = new THREE.Vector3(), lookTarget = new THREE.Vector3();
   let hasOutline = false;
+  // A volume turns with its object, so its outline has to turn too: an axis-aligned box around a
+  // turned zone sticks out exactly where the zone does not.
+  let outlineAngle = 0, outlinePadding = 4;
 
   function direction(target) {
     return target.set(Math.cos(pitch) * Math.cos(yaw), Math.sin(pitch), Math.cos(pitch) * Math.sin(yaw));
@@ -431,7 +434,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   function updateSelectionOutline() {
     if (!hasOutline || !selected) { selectionOutline.visible = false; return; }
     selectionOutline.position.copy(outlineCenter).add(outlineShift);
-    selectionOutline.scale.set(Math.max(outlineSize.x, 8) + 4, Math.max(outlineSize.y, 8) + 4, Math.max(outlineSize.z, 8) + 4);
+    selectionOutline.rotation.set(0, areaYaw({ angle: outlineAngle }), 0);
+    selectionOutline.scale.set(Math.max(outlineSize.x, 8) + outlinePadding, Math.max(outlineSize.y, 8) + outlinePadding,
+      Math.max(outlineSize.z, 8) + outlinePadding);
     boundsSphere.center.copy(selectionOutline.position);
     boundsSphere.radius = Math.hypot(selectionOutline.scale.x, selectionOutline.scale.y, selectionOutline.scale.z) * .5;
     selectionOutline.visible = frustum.intersectsSphere(boundsSphere);
@@ -508,7 +513,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.formFaces = String(faceGroup.children.length);
     }
     faceGroup.position.set(volume.center.x, volume.center.z, volume.center.y);
-    faceGroup.rotation.set(0, -(Number(entity.angle) || 0) * Math.PI / 180, 0);
+    faceGroup.rotation.set(0, areaYaw(entity), 0);
     faceGroup.visible = true;
   }
   function updateVertexMarkers() {
@@ -571,6 +576,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       position = new THREE.Vector3((sector.bounds.minX + sector.bounds.maxX) / 2,
         sector[selected.surface || 'floorHeight'], (sector.bounds.minY + sector.bounds.maxY) / 2);
     }
+    const outlined = selected.kind === 'entity' ? entityById.get(selected.id) : null;
+    const isVolume = Boolean(outlined?.area);
+    outlineAngle = isVolume ? Number(outlined.angle) || 0 : 0;
+    // The volume *is* the object, so its outline sits on the volume rather than around it; a box
+    // sized from a sprite, a model or a sector is an approximation and keeps a little air.
+    outlinePadding = isVolume ? 0 : 4;
     boundsFor(selected, bounds);
     hasOutline = !bounds.isEmpty();
     if (hasOutline) { bounds.getCenter(outlineCenter); bounds.getSize(outlineSize); }
@@ -1247,6 +1258,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // so an interaction can be followed from outside the canvas.
       canvas.dataset.action = action ? `${action.kind}${action.axis ? `:${action.axis}` : ''}` : '';
       canvas.dataset.outlineAt = selectionOutline.visible ? screenOf(selectionOutline.position) : '';
+      // The selection box in world terms, so its match with a volume can be checked from outside.
+      canvas.dataset.outlineBox = selectionOutline.visible
+        ? `${selectionOutline.position.toArray().map(Math.round).join(',')}|${selectionOutline.scale.toArray().map(Math.round).join(',')}|${Math.round(-selectionOutline.rotation.y * 180 / Math.PI)}`
+        : '';
     },
     ceilings(visible) { showCeilings = Boolean(visible); updateCeilings(0, true); },
     /** Where a scene placed from the asset browser should land: the view target. */

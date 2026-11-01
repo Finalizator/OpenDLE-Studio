@@ -48,6 +48,19 @@ export function areaVolume(entity, floorHeight = 0) {
   };
 }
 
+/**
+ * The yaw a volume is drawn with, in radians.
+ *
+ * Map angles turn the other way from the scene's +Y, so everything that *draws* a volume — the
+ * box in the 3D view, its selection outline, the face plates Form picks — has to use this one
+ * number. Closing the gap between the box and its outline is what made a turned zone look
+ * selected by the wrong shape.
+ */
+export const areaYaw = entity => {
+  const turn = (Number(entity?.angle) || 0) * Math.PI / 180;
+  return turn ? -turn : 0;
+};
+
 /** Vertical span of the volume, used for the overlap test and the editor outline. */
 export function areaExtent(volume) {
   return { bottom: volume.center.z - volume.half.height, top: volume.center.z + volume.half.height };

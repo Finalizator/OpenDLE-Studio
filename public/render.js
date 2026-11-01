@@ -22,7 +22,7 @@ import { liveProjectPlan, modelOrientation, modelWorldBox, entityOrigin } from '
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
-import { areaVolume } from '/shared/areas.js';
+import { areaVolume, areaYaw } from '/shared/areas.js';
 import { gameView, viewNeedsScissor } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
 import { skyAssetFor, skyRequestName } from '/shared/sky.js';
@@ -1761,7 +1761,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
           volume.shape === 'box' ? volume.half.depth * 2 : volume.radius * 2);
         // The volume is tested in its own frame, so the box that stands for it turns with the
         // object; a round shape on the ground looks the same either way.
-        entry.mesh.rotation.set(0, -(Number(entity.angle) || 0) * Math.PI / 180, 0);
+        entry.mesh.rotation.set(0, areaYaw(entity), 0);
       }
       for (let index = 0; index < colliderBoxList.length; index++) {
         const entry = colliderBoxList[index], entity = entityIndex.get(entry.id);

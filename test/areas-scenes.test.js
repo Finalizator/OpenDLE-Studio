@@ -5,7 +5,7 @@ import { createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import {
   AREA_SHAPES, DEFAULT_AREA, PLAYER_CYLINDER, ZONE_AREA, areaBounds, areaContains, areaEntered, areaSpec, areaVolume,
-  overlayVolumes, physicsVolume, suggestedArea,
+  areaYaw, overlayVolumes, physicsVolume, suggestedArea,
 } from '../shared/areas.js';
 import { captureScene, instantiateScene, sceneOrigin, MAX_SCENE_ENTITIES } from '../shared/scenes.js';
 
@@ -32,6 +32,12 @@ test('area volumes sit on the sector floor like colliders do', () => {
   assert.deepEqual(volume.half, { width: 64, depth: 32, height: 48 });
   assert.deepEqual(areaBounds(volume), { min: { x: 36, y: -72, z: 88 }, max: { x: 164, y: -8, z: 184 } });
   assert.equal(areaVolume({ x: 0, y: 0 }, 0), null);
+  // A turned volume is drawn, outlined and tested in its own frame: one turn for all three, or a
+  // zone ends up selected by a box that is not the box the rule tests.
+  assert.equal(areaYaw({ angle: 90 }), -Math.PI / 2);
+  assert.equal(areaYaw({ angle: -45 }), Math.PI / 4);
+  assert.equal(areaYaw({}), 0);
+  assert.equal(areaYaw(undefined), 0);
   // A sphere is centred on its radius, a capsule on half its height.
   assert.deepEqual(areaVolume({ x: 0, y: 0, area: SPHERE }, 0).center.z, 96);
   assert.deepEqual(areaVolume({ x: 0, y: 0, area: CAPSULE }, 0).center.z, 80);
