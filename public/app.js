@@ -2768,10 +2768,20 @@ function drawMap() {
     ctx.lineWidth = 2 / camera.zoom;
     ctx.beginPath(); ctx.arc(entity.x, entity.y, 7 / camera.zoom, 0, Math.PI * 2); ctx.fill();
     if (isMarked) { ctx.beginPath(); ctx.arc(entity.x, entity.y, 12 / camera.zoom, 0, Math.PI * 2); ctx.stroke(); }
+    // Which way the player start looks is part of the map and nothing else says it: the marker is a
+    // heading arrow with a head, so a start facing north cannot be mistaken for one facing east.
     if (entity.type === 'player') {
       const angle = entity.angle * Math.PI / 180;
-      ctx.beginPath(); ctx.moveTo(entity.x, entity.y);
-      ctx.lineTo(entity.x + Math.cos(angle) * 24 / camera.zoom, entity.y + Math.sin(angle) * 24 / camera.zoom); ctx.stroke();
+      const reach = 26 / camera.zoom, head = 9 / camera.zoom, spread = Math.PI * .82;
+      const tipX = entity.x + Math.cos(angle) * reach, tipY = entity.y + Math.sin(angle) * reach;
+      ctx.strokeStyle = entityColors.player; ctx.fillStyle = entityColors.player;
+      ctx.lineWidth = 2 / camera.zoom;
+      ctx.beginPath(); ctx.moveTo(entity.x, entity.y); ctx.lineTo(tipX, tipY); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(tipX + Math.cos(angle + spread) * head, tipY + Math.sin(angle + spread) * head);
+      ctx.lineTo(tipX + Math.cos(angle - spread) * head, tipY + Math.sin(angle - spread) * head);
+      ctx.closePath(); ctx.fill();
     }
     if (camera.zoom > .25) {
       ctx.font = `${10 / camera.zoom}px system-ui`; ctx.fillText(entity.name, entity.x + 12 / camera.zoom, entity.y + 4 / camera.zoom);

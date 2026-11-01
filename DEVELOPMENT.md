@@ -674,6 +674,13 @@ project that predates them and keeps working; the key is optional in the validat
 shape once present (duplicate ids, out-of-range curvature and non-numeric coordinates are
 rejected).
 
+**The player start shows which way it faces**, because that is map data nothing else says: the
+start has no artwork to face the camera. In 2D it is a dot with a headed arrow, in 3D a flat arrow
+lying on the floor at the start's feet, kept a constant size on screen like a waypoint's cube and
+published as `playerAt` / `playerHeading` on the canvas. `playerStartPose` in
+[`shared/entity-visuals.js`](./shared/entity-visuals.js) decides where the arrow sits and turns it
+the way a model turns (`rotation.y = -angle`), so the editor and the game agree about east.
+
 ### Zones: a volume with no artwork
 
 A **zone** is an object type whose whole identity is a volume. It draws nothing in play and a

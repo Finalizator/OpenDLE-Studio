@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { addRoom, createProject, validateProject } from '../shared/project.js';
 import { addRamp } from '../shared/ramp.js';
 import { cloneEntitiesForPaste } from '../shared/entity-groups.js';
+import { playerStartPose } from '../shared/entity-visuals.js';
 import { sectorGeometry } from '../shared/sectors.js';
 import {
   addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, describeSurfaceTarget,
@@ -259,4 +260,20 @@ test('a pasted object is a copy of everything it was, at the point asked for', (
   // The player start is the one thing a level cannot have two of.
   const player = project.map.entities.find(entity => entity.type === 'player');
   assert.throws(() => cloneEntitiesForPaste(project, [player], null), /cannot be copied/);
+});
+
+// The player start has no artwork, so the editor draws its facing itself. The arrow sits at the
+// start's feet and turns the way a model does, which is what a mapper reads as "this way".
+test('the player start arrow sits at the start and points the way it faces', () => {
+  const at = (x, y, angle, elevation) => ({ id: 'player', type: 'player', x, y, angle, elevation });
+  const east = playerStartPose(at(0, 0, 0), 16);
+  assert.deepEqual([east.x, east.y, east.z], [0, 18, 0], 'on the floor it stands on, lifted clear of it');
+  assert.equal(east.yaw, 0, 'a map angle of 0 is east, and the scene turns anticlockwise from +x');
+  assert.ok(Math.abs(playerStartPose(at(0, 0, 90), 16).yaw + Math.PI / 2) < 1e-9, 'north is a quarter turn the other way');
+  const west = playerStartPose(at(80, 1088, -180), 0);
+  assert.deepEqual([west.x, west.z], [80, 1088], 'the map position, with y and z swapped for the scene');
+  assert.ok(Math.abs(Math.abs(west.yaw) - Math.PI) < 1e-9, 'a start facing -180 reads as west either way round');
+  assert.equal(playerStartPose(at(0, 0, 90, 40), 8).y, 50, 'elevation above the floor is included');
+  const broken = playerStartPose({ id: 'player', type: 'player' }, 0);
+  assert.deepEqual([broken.x, broken.y, broken.z, broken.angle], [0, 2, 0, 0], 'a start with no numbers still draws');
 });

@@ -146,3 +146,25 @@ export function spriteWorldBox(centre, width, height) {
 export function entityOrigin(entity, floorHeight = 0) {
   return [entity.x, entity.z ?? floorHeight + (entity.elevation || 0), entity.y];
 }
+
+/**
+ * Where the player start's facing arrow goes, and which way it points.
+ *
+ * The start is a point on the map with an angle and no artwork, so the editor draws that angle
+ * itself: a flat arrow at the player's feet (`y` is up in the scene, `z` is the map's `y`), turned
+ * the same way a model is (`rotation.y = -angle`, because a map angle turns anticlockwise seen from
+ * above while the scene's yaw turns clockwise). A level always has exactly one start, so this is
+ * the only place that decides it.
+ */
+export function playerStartPose(player, floorHeight = 0, { lift = 2 } = {}) {
+  const angle = Number(player?.angle) || 0;
+  return {
+    x: Number(player?.x) || 0,
+    y: (Number(floorHeight) || 0) + (Number(player?.elevation) || 0) + lift,
+    z: Number(player?.y) || 0,
+    // `-0` would print as a negative zero in a dataset and compare unequal to 0; a start facing
+    // east is exactly zero.
+    yaw: angle ? -angle * Math.PI / 180 : 0,
+    angle,
+  };
+}

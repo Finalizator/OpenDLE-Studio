@@ -11,6 +11,7 @@ import {
   wallPartAt, wallTarget,
 } from './editor-drop.js';
 import { areaVolume, areaYaw, overlayVolumes } from '/shared/areas.js';
+import { playerStartPose } from '/shared/entity-visuals.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
 import { samplePath, sampleLengths, pointAlong } from '/shared/paths.js';
 import {
@@ -94,6 +95,30 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     own(new THREE.MeshBasicMaterial({ color: DROP_COLOR, depthTest: false, transparent: true, opacity: .85 })));
   dropMarker.renderOrder = 206; dropMarker.visible = false; dropMarker.frustumCulled = false;
   helperGroup.add(dropMarker);
+
+  // The player start is where the level begins and which way the player looks is part of the map —
+  // but the start has no artwork to face, so nothing showed it. A flat arrow at its feet points the
+  // way it will face, at a constant size on screen so it reads at any zoom.
+  const playerMarker = new THREE.Group();
+  // An arrow lying flat on the floor, in the scene's own plane (x, z), so setting the heading is
+  // one turn of the group: `rotation.y = -angle` is the same convention the models use.
+  const playerArrowShape = own(new THREE.BufferGeometry());
+  playerArrowShape.setAttribute('position', new THREE.Float32BufferAttribute([
+    12, 0, 0, -6, 0, 6, -6, 0, -6,
+    12, 0, 0, -6, 0, -6, -6, 0, 6,
+  ], 3));
+  const playerArrow = new THREE.Mesh(playerArrowShape, own(new THREE.MeshBasicMaterial({
+    color: '#ffd34d', depthTest: false, transparent: true, opacity: .95, side: THREE.DoubleSide,
+  })));
+  playerArrow.renderOrder = 208;
+  const playerStemGeometry = own(new THREE.BufferGeometry());
+  playerStemGeometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 24, 0, 0], 3));
+  const playerStem = new THREE.Line(playerStemGeometry, own(new THREE.LineBasicMaterial({ color: '#ffd34d', depthTest: false })));
+  playerStem.renderOrder = 208;
+  playerMarker.add(playerStem, playerArrow);
+  playerMarker.renderOrder = 208;
+  playerMarker.visible = false;
+  helperGroup.add(playerMarker);
 
   // Interaction areas and colliders are wireframes over the world: they show what a
   // "player entered area" event and the physics body actually cover.
@@ -664,6 +689,26 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     faceGroup.rotation.set(0, areaYaw(entity), 0);
     faceGroup.visible = true;
   }
+  /**
+   * Where the player start stands and which way it looks.
+   *
+   * Read from the project every frame rather than cached: the start is one object, and a rotate
+   * drag, a typed angle or an undo all have to show up immediately. Hidden while the map has no
+   * player at all (a project in progress before its start is placed).
+   */
+  function updatePlayerMarker(rect, frustum) {
+    const player = entityById.size ? project.map.entities.find(entity => entity.type === 'player') : null;
+    if (!player) { playerMarker.visible = false; canvas.dataset.playerHeading = ''; return; }
+    const pose = playerStartPose(player, sectorAt(sectors, player.x, player.y)?.floorHeight ?? 0);
+    playerMarker.position.set(pose.x, pose.y, pose.z);
+    playerMarker.rotation.y = pose.yaw;
+    playerMarker.visible = frustum.containsPoint(playerMarker.position);
+    // Constant size on screen, the way a waypoint's cube is: a start across a big room still reads.
+    playerMarker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(playerMarker.position) / rect.height));
+    canvas.dataset.playerHeading = String(Math.round(Number(player.angle) || 0));
+    canvas.dataset.playerAt = `${player.x},${player.y}`;
+  }
+
   function updateVertexMarkers() {
     const shown = selected?.kind === 'vertex' ? [selected.id]
       : selected?.kind === 'wall' ? [wallById.get(selected.id)?.a, wallById.get(selected.id)?.b] : [];
@@ -1433,6 +1478,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       for (const marker of groupMarkers.children) {
         marker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(marker.position) / rect.height));
       }
+      updatePlayerMarker(rect, frustum);
       updateCeilings(dt);
       view.render(state);
       canvas.dataset.camera = camera.position.toArray().map(value => value.toFixed(2)).join(',');
