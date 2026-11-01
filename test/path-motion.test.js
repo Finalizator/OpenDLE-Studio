@@ -166,3 +166,29 @@ test('the runtime carries a model round its route, and the renderer reads it fro
   assert.ok(entity.y > 30 && entity.y < 70, `climbing it: ${entity.y}`);
   assert.ok(Math.abs(entity.angle - 90) < 8, `turning to face +y: ${entity.angle}`);
 });
+
+// The continuous follower uses the same facing rule as the timeline: a sprite is turned onto the
+// route, an imported model keeps the pose its author gave it and turns with the road.
+test('a follower turns a sprite onto the route and turns a model with it', () => {
+  const path = createPath({ id: 'lap', name: 'Lap', closed: false, points: [
+    createPathPoint({ id: 'a', x: 0, y: 0, curve: 0 }), createPathPoint({ id: 'b', x: 1000, y: 0, curve: 0 }),
+    createPathPoint({ id: 'c', x: 1000, y: 1000, curve: 0 })] });
+  const project = { paths: [path], map: { entities: [] } };
+  const sprite = { id: 'zombie', type: 'enemy', x: 0, y: 0, z: 0, angle: 300, path: { id: 'lap', speed: 500, mode: 'once' } };
+  const model = { id: 'truck', type: 'decoration', x: 0, y: 0, z: 0, angle: 300, modelAsset: 'asset_truck', path: { id: 'lap', speed: 500, mode: 'once' } };
+  const state = { entities: [sprite, model] };
+  advancePathMotion(project, state, 0);
+  assert.ok(Math.abs(sprite.angle) < 1, `a sprite faces its route heading (east), was ${sprite.angle}`);
+  assert.equal(model.angle, 300, 'a model keeps the pose it was given');
+  // Past the corner at 2000 units (1 s at 500 a second), the model has turned 90° with the route.
+  for (let i = 0; i < 60; i++) advancePathMotion(project, state, .05);   // 3 s at 500: past the corner
+  const turned = ((model.angle - 300) % 360 + 360) % 360;
+  assert.ok(Math.abs(turned - 90) < 6, `the model turned with the route, was ${model.angle}`);
+  assert.ok(Math.abs(((sprite.angle - 90) % 360 + 360) % 360) < 6, `the sprite faces north now, was ${sprite.angle}`);
+  // A facing offset corrects a model whose own forward axis is off.
+  model.angle = 0;
+  model.path = { id: 'lap', speed: 500, mode: 'once', yawOffset: -90 };
+  const fresh = { entities: [model] };
+  advancePathMotion(project, fresh, 0);
+  assert.ok(Math.abs(((model.angle % 360) + 360) % 360 - 270) < 6, `offset applied, was ${model.angle}`);
+});

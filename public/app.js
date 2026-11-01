@@ -1,5 +1,5 @@
 import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, ENTITY_TYPES } from '/shared/project.js';
-import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint } from '/shared/paths.js';
+import { createPath, createPathPoint, samplePath, pathLength, pointAlong, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
@@ -4760,9 +4760,18 @@ function driveRouteOnTimesheet(entity) {
   }, `Timeline "${sheet.name}" created: it drives ${entity.name} along ${path.name} in ${seconds}s`);
   showTab('timesheet');
   timesheetPanel.select(sheet.id);
+  const facing = yawOffset ? ` The model keeps the ${yawOffset}° facing offset it had on its route.` : '';
+  // A model keeps the pose it was given and turns with the road, so a model posed away from the
+  // first leg will drive at that angle — worth saying now rather than after pressing Play.
+  const startHeading = pointAlong(path, 0)?.angle ?? 0;
+  const posed = Math.round(((entity.angle - startHeading) % 360 + 360) % 360);
+  const drift = Math.min(posed, 360 - posed);
+  const warning = drift > 15 && !yawOffset
+    ? ` Its pose is ${drift}° away from the route's first leg; it keeps that pose and turns with the road, so set the cue's Facing offset if it should be squared up.`
+    : '';
   status(`Timeline "${sheet.name}": a cue at 0s drives ${entity.name} from the first waypoint to the last in ${seconds}s,`
     + ' and the "Start …" event starts it when the layout starts. The object no longer follows the route on its own — the'
-    + ' timeline does that now. Press Play level to watch it.');
+    + ` timeline does that now.${facing}${warning}`);
 }
 /** Deletes one waypoint, keeping the rest of the route. */
 function deletePathPoint(pathId, pointId) {

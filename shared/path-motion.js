@@ -16,6 +16,24 @@ import { samplePath, sampleLengths, pointAlong } from './paths.js';
 export const PATH_MODES = ['loop', 'pingpong', 'once'];
 export const DEFAULT_PATH_SPEED = 64;
 
+const wrap360 = value => ((value % 360) + 360) % 360;
+
+/**
+ * Which way a follower faces after a step.
+ *
+ * The same rule the timeline uses (`tweenAngle` in `shared/timesheet.js`): a sprite is turned onto
+ * the route, because Doom's 0° is east and its frames are drawn for that, while an imported model
+ * keeps the pose its author gave it and is turned by however much the route bends. A model whose
+ * own forward is off is corrected once with the facing offset instead of by re-posing it on every
+ * leg, which was why a truck that looked right in the editor drove sideways in play.
+ */
+function facingAngle(entity, motion, heading, yawOffset) {
+  const route = entity?.modelAsset
+    ? (Number(motion.authoredAngle) || 0) + (heading - (motion.startHeading ?? heading))
+    : heading;
+  return wrap360(route + (Number(yawOffset) || 0));
+}
+
 /** The settings an object needs to follow a route, with the defaults filled in. */
 export function pathFollowSettings(path = {}) {
   return {
@@ -112,7 +130,7 @@ export function advancePathMotion(project, state, dt) {
     // Where a follower starts is authored as a fraction of the route, so a second model can be
     // told to set off from the far side of a loop instead of on top of the first.
     if (!motion) {
-      motion = { distance: settings.startAt * length };
+      motion = { distance: settings.startAt * length, authoredAngle: Number(entity.angle) || 0, startHeading: null };
       motions.set(entity.id, motion);
     }
     motion.distance += Math.max(0, settings.speed) * dt;
@@ -123,7 +141,8 @@ export function advancePathMotion(project, state, dt) {
     // The curve's own height is the model's height: a route that climbs a staircase carries the
     // model up it, and keeping a separate elevation would let the two drift apart.
     entity.z = where.z || 0;
-    if (settings.faceDirection) entity.angle = where.angle + settings.yawOffset;
+    if (motion.startHeading === null || motion.startHeading === undefined) motion.startHeading = where.angle;
+    if (settings.faceDirection) entity.angle = facingAngle(entity, motion, where.angle, settings.yawOffset);
     moved++;
   }
   return moved;

@@ -138,7 +138,9 @@ export const ENGINE_ACTIONS = [
     // Waypoints are picked by name from the chosen route, never typed as an index: the first
     // waypoint is 0 in the data and "Waypoint 1" on screen, and nobody should have to know that.
     waypoint('fromPoint', 0), waypoint('toPoint', -1, { allowLast: true }), numeric('seconds', 3, .05, 3600),
-    choice('easing', 'linear', ['linear', 'easeIn', 'easeOut', 'easeInOut']), choice('faceDirection', 'yes', ['yes', 'no'])] },
+    choice('easing', 'linear', ['linear', 'easeIn', 'easeOut', 'easeInOut']), choice('faceDirection', 'yes', ['yes', 'no']),
+    // A model whose own forward axis is not the engine's: one number instead of re-posing it.
+    { ...numeric('yawOffset', 0, -360, 360), label: 'Facing offset (degrees)', optional: true }] },
   { type: 'spawnEntity', label: 'Object: spawn a new object from a template', fields: [
     { name: 'templateId', kind: 'text', value: '' }, numeric('x', 0, -65536, 65536), numeric('y', 0, -65536, 65536),
     { ...numeric('z', 0, -65536, 65536), optional: true }, { ...numeric('angle', 0, -3600, 3600), optional: true },

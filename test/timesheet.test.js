@@ -217,7 +217,7 @@ test('the drive-a-route recipe writes a timeline, a cue and the event that start
   assert.equal(cue.ownerId, entity.id, 'the cue names the object it drives');
   assert.deepEqual(cue.actions, [{
     type: 'followPath', entityId: entity.id, pathId: 'lap',
-    fromPoint: 0, toPoint: -1, seconds: 9, easing: 'linear', faceDirection: 'yes',
+    fromPoint: 0, toPoint: -1, seconds: 9, easing: 'linear', faceDirection: 'yes', yawOffset: 0,
   }]);
   assert.equal(event.condition.type, 'onStart');
   assert.deepEqual(event.actions, [{ type: 'startTimesheet', timesheetId: sheet.id, restart: 'yes', loop: 'same' }]);
@@ -288,5 +288,78 @@ test('deleting a timeline takes the rule that only started it', () => {
   assert.equal(result.rules, 1, 'the rule that owns a sub-event stays, emptied');
   assert.deepEqual(project.events.map(event => event.id), ['parent', 'child']);
   assert.deepEqual(project.events[0].actions, [], 'its start action is gone');
+  validateProject(project);
+});
+
+// A model's forward axis is whatever its file says, and the author poses it in the editor. Snapping
+// it to the route heading made a pre-rotated truck drive sideways, which is what this pins.
+test('a tweened model keeps the pose it was given and turns with the route', () => {
+  const project = createProject();
+  project.events = [];
+  // A straight route east, then a leg north: a right-angle bend the model should follow.
+  project.paths = [{ id: 'bend', name: 'Bend', closed: false, points: [
+    { id: 'p0', x: 0, y: 0, z: 0, curve: 0 }, { id: 'p1', x: 1000, y: 0, z: 0, curve: 0 },
+    { id: 'p2', x: 1000, y: 1000, z: 0, curve: 0 } ] }];
+  const project2 = structuredClone(project);
+  project2.timesheets = [{ id: 'drive', name: 'Drive', duration: 10, loop: false, tracks: [createTrack(0)], cues: [
+    { id: 'go', name: 'Go', trackId: 'track_1', time: 0, ownerId: 'pickup', actions: [
+      { type: 'followPath', entityId: '$self', pathId: 'bend', fromPoint: 0, toPoint: -1, seconds: 2, easing: 'linear', faceDirection: 'yes' },
+    ] },
+  ] }];
+  validateProject(project2);
+  const state = createRuntime(project2);
+  const model = state.entities.find(entity => entity.id === 'pickup');
+  model.modelAsset = 'asset_truck';
+  model.angle = 300;   // posed by the author, 60° away from the route's heading of 0
+  startTimesheetRun(project2, state, 'drive');
+  // The cue fires on the first step and the move advances on the next one.
+  tick(project2, state); tick(project2, state);
+  const first = state.entities.find(entity => entity.id === 'pickup').angle;
+  assert.ok(Math.abs(first - 300) < 1e-6, 'the pose is kept, not snapped to the route');
+  for (let i = 0; i < 8; i++) tick(project2, state);            // half a second: still on the east leg
+  assert.ok(Math.abs(state.entities.find(entity => entity.id === 'pickup').angle - 300) < 1e-6, 'still the authored pose');
+  for (let i = 0; i < 33; i++) tick(project2, state);           // the leg north: the model turned 90°
+  const turned = state.entities.find(entity => entity.id === 'pickup').angle;
+  assert.ok(Math.abs(((turned - 300) % 360 + 360) % 360 - 90) < 5, `turned with the route, was ${turned}`);
+});
+
+test('a tweened sprite is turned onto the route, because its forward is the engine\'s', () => {
+  const project = createProject();
+  project.events = [];
+  project.paths = [{ id: 'straight', name: 'Straight', closed: false, points: [
+    { id: 'p0', x: 0, y: 0, z: 0, curve: 0 }, { id: 'p1', x: 0, y: 1000, z: 0, curve: 0 } ] }];
+  project.timesheets = [{ id: 'walk', name: 'Walk', duration: 10, loop: false, tracks: [createTrack(0)], cues: [
+    { id: 'go', name: 'Go', trackId: 'track_1', time: 0, ownerId: 'pickup', actions: [
+      { type: 'followPath', entityId: '$self', pathId: 'straight', fromPoint: 0, toPoint: 1, seconds: 2, easing: 'linear', faceDirection: 'yes' },
+    ] },
+  ] }];
+  validateProject(project);
+  const state = createRuntime(project);
+  state.entities.find(entity => entity.id === 'pickup').angle = 300;   // a thing placed at any angle
+  startTimesheetRun(project, state, 'walk');
+  tick(project, state); tick(project, state);
+  assert.ok(Math.abs(state.entities.find(entity => entity.id === 'pickup').angle - 90) < 1, 'a sprite faces the way it walks');
+});
+
+test('the facing offset corrects a model whose own forward is off', () => {
+  const project = createProject();
+  project.events = [];
+  project.paths = [{ id: 'straight', name: 'Straight', closed: false, points: [
+    { id: 'p0', x: 0, y: 0, z: 0, curve: 0 }, { id: 'p1', x: 1000, y: 0, z: 0, curve: 0 } ] }];
+  project.timesheets = [{ id: 'drive', name: 'Drive', duration: 10, loop: false, tracks: [createTrack(0)], cues: [
+    { id: 'go', name: 'Go', trackId: 'track_1', time: 0, ownerId: 'pickup', actions: [
+      { type: 'followPath', entityId: '$self', pathId: 'straight', fromPoint: 0, toPoint: 1, seconds: 2,
+        easing: 'linear', faceDirection: 'yes', yawOffset: -90 },
+    ] },
+  ] }];
+  validateProject(project);
+  const state = createRuntime(project);
+  const entity = state.entities.find(item => item.id === 'pickup');
+  entity.modelAsset = 'asset_truck';
+  entity.angle = 0;
+  startTimesheetRun(project, state, 'drive');
+  tick(project, state); tick(project, state);
+  assert.ok(Math.abs(state.entities.find(item => item.id === 'pickup').angle - 270) < 1e-6, '0 - 90 is 270, wrapped');
+  // The field is part of the action, so a project carrying one validates and round-trips.
   validateProject(project);
 });

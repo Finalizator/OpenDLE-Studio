@@ -308,7 +308,7 @@ export function easingValue(name, t) {
  * any move already running for that object rather than stacking two on top of each other.
  */
 export function startPathTween(state, { entityId, pathId, fromPoint = 0, toPoint = -1, seconds = 2,
-  easing = 'linear', faceDirection = true } = {}) {
+  easing = 'linear', faceDirection = true, yawOffset = 0 } = {}) {
   const tweens = state.pathTweens || (state.pathTweens = []);
   const keep = tweens.filter(tween => tween.entityId !== entityId);
   // The route is a *shape*, and the object travels it from wherever it already stands: a cue that
@@ -317,9 +317,32 @@ export function startPathTween(state, { entityId, pathId, fromPoint = 0, toPoint
   const entity = (state.entities || []).find(item => item.id === entityId);
   keep.push({ entityId, pathId, fromPoint, toPoint, seconds: Math.max(.05, Number(seconds) || 2),
     easing: PATH_EASINGS.includes(easing) ? easing : 'linear', faceDirection: faceDirection !== false, elapsed: 0,
+    yawOffset: Number.isFinite(Number(yawOffset)) ? Number(yawOffset) : 0,
+    // How the object was posed before the trip: a model keeps that pose and is turned by how much
+    // the route bends, where a sprite (whose forward the engine defines) is turned onto the route.
+    authoredAngle: entity ? Number(entity.angle) || 0 : 0, startHeading: null,
     origin: entity ? { x: entity.x, y: entity.y, z: entity.z || 0 } : null, anchor: null });
   state.pathTweens = keep;
   return true;
+}
+
+const wrap360 = value => ((value % 360) + 360) % 360;
+
+/**
+ * Which way a tweened object faces at a given point of its route.
+ *
+ * A sprite's forward is the engine's — Doom's 0° is east, and the sprite frames are drawn for it —
+ * so a sprite is turned *onto* the route. An imported model's forward is whatever the file says,
+ * and the author poses it in the editor to make that readable; snapping such a model to the route
+ * heading made a pre-rotated truck drive sideways, so a model keeps the pose it was given and is
+ * turned by however much the route bends. `yawOffset` is added on top for a model whose own
+ * forward still needs a correction.
+ */
+export function tweenAngle(entity, tween, heading) {
+  const route = entity?.modelAsset
+    ? (Number(tween.authoredAngle) || 0) + (heading - (tween.startHeading ?? heading))
+    : heading;
+  return wrap360(route + (Number(tween.yawOffset) || 0));
 }
 
 /** Advances every tween and leaves `state.pathCompleted` naming the ones that just finished. */
@@ -353,7 +376,8 @@ export function advancePathTweens(project, state, dt) {
     entity.x = origin.x + (where.x - tween.anchor.x);
     entity.y = origin.y + (where.y - tween.anchor.y);
     entity.z = origin.z + ((where.z || 0) - tween.anchor.z);
-    if (tween.faceDirection) entity.angle = where.angle;
+    if (tween.startHeading === null || tween.startHeading === undefined) tween.startHeading = where.angle;
+    if (tween.faceDirection) entity.angle = tweenAngle(entity, tween, where.angle);
     moved++;
     if (tween.elapsed >= tween.seconds - 1e-9) finished.push(tween.entityId);
     else remaining.push(tween);

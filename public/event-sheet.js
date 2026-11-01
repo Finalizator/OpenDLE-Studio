@@ -20,10 +20,12 @@ export function describeCommand(command, labels, objectName, waypointName = null
   const parts = Object.entries(command).filter(([key]) => !['type', 'inverted', 'entityId', 'otherId'].includes(key))
     .map(([key, value]) => {
       // A route action reads as the waypoints it visits, not as the indices the data stores.
+      // A zero facing offset is the common case and says nothing worth reading.
+      if (key === 'yawOffset' && !value) return null;
       if (waypointName && (key === 'fromPoint' || key === 'toPoint') && !isExpression(value))
         return `${key === 'fromPoint' ? 'from' : 'to'} ${waypointName(command.pathId, value)}`;
       return `${key}: ${isExpression(value) ? '=' + value.expr : typeof value === 'number' ? Number(value.toFixed(4)) : value}`;
-    });
+    }).filter(Boolean);
   if (command.otherId) parts.push(`other: ${objectName(command.otherId)}`);
   return { object: command.entityId ? objectName(command.entityId) : categoryOf(command.type, label),
     text: `${command.inverted ? 'NOT ' : ''}${titles[command.type] || labelOf(label)}${parts.length ? '  ' + parts.join(' · ') : ''}` };

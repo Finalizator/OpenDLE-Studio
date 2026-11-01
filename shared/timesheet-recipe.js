@@ -26,13 +26,16 @@ export function driveRouteTimesheet({ entity, path, nextId }) {
   if ((path.points || []).length < 2) throw new Error('That route needs at least two waypoints');
   const speed = Math.max(1, Number(entity.path?.speed) || DEFAULT_PATH_SPEED);
   const seconds = Math.min(3600, Math.max(1, Math.round(pathLength(path) / speed * 10) / 10));
+  // A facing offset the author set on the object's own route following survives the hand-over: it
+  // is the correction that makes an imported model's forward axis line up with its route.
+  const yawOffset = Number(entity.path?.yawOffset) || 0;
   const sheet = createTimesheet({ id: nextId('timesheet'), name: `${entity.name} drives ${path.name}` });
   sheet.duration = Math.min(3600, Math.max(10, Math.ceil(seconds / 5) * 5));
   sheet.cues = [{
     ...createCue({ id: nextId('cue'), name: 'Drive', trackId: sheet.tracks[0].id, time: 0, ownerId: entity.id }),
     actions: [{
       type: 'followPath', entityId: entity.id, pathId: path.id,
-      fromPoint: 0, toPoint: -1, seconds, easing: 'linear', faceDirection: 'yes',
+      fromPoint: 0, toPoint: -1, seconds, easing: 'linear', faceDirection: 'yes', yawOffset,
     }],
   }];
   const event = {
@@ -40,5 +43,5 @@ export function driveRouteTimesheet({ entity, path, nextId }) {
     condition: { type: 'onStart' }, conditions: [],
     actions: [{ type: 'startTimesheet', timesheetId: sheet.id, restart: 'yes', loop: 'same' }],
   };
-  return { sheet, event, seconds };
+  return { sheet, event, seconds, yawOffset };
 }

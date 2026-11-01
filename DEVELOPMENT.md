@@ -840,6 +840,18 @@ things happen — including time.
 - **Timelines are saved.** The run clock is part of the game save: reloading a saved game resumes
   the timeline where it was, paused or playing.
 
+**Which way a moved object faces** depends on what it is, because the two kinds disagree about
+where "forward" is. A sprite's forward is the engine's — Doom's 0° is east and the frames are drawn
+for it — so a sprite is turned *onto* the route. An imported model's forward is whatever its file
+says, and the author poses it in the editor to make that readable; snapping such a model to the
+route heading is what made a pre-adjusted truck drive sideways, so a model **keeps the pose it was
+given and is turned by however much the route bends** (`tweenAngle` in `shared/timesheet.js`,
+`facingAngle` in `shared/path-motion.js`). A model whose own axis is still wrong takes one number —
+**Facing offset (degrees)** — on the object's route following and on the `followPath` action; the
+"drive this route on a timesheet" recipe carries that offset into the cue it writes. The recipe
+also says so when the model is posed more than 15° away from the route's first leg, because that
+pose is what will drive.
+
 **Moving along a route between two waypoints** is a cue action of its own (`Path: move object
 between waypoints over time`). It records the object's own starting position and offsets it by the
 route's arc length between the two waypoints, so a route is a shape that several objects can
