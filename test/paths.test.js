@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createPath, createPathPoint, segmentCount, samplePath, segmentPoint, pathLength, pointAlong,
-  sampleLengths, pathBounds, PATH_STEPS, MAX_PATHS, MAX_PATH_POINTS,
+  sampleLengths, pathBounds, pathPointLabel, pathPointName, pathPointOptions,
+  PATH_STEPS, MAX_PATHS, MAX_PATH_POINTS,
 } from '../shared/paths.js';
 import { createProject, validateProject } from '../shared/project.js';
 
@@ -184,4 +185,24 @@ test('the validator rejects paths that could not be drawn', () => {
   assert.throws(broken(paths => { paths[0].name = ''; }), /Path name/);
   assert.throws(broken(paths => { paths.push(...Array.from({ length: MAX_PATHS }, () => createPath({ id: 'x' }))); }), /Paths/);
   assert.throws(broken(paths => { paths[0].points = Array.from({ length: MAX_PATH_POINTS + 1 }, (_, index) => ({ id: `p${index}`, x: 0, y: 0 })); }), /Path points/);
+});
+
+// A waypoint is "Waypoint 1" on screen and 0 in the data, and a route other rules point at can
+// name its stops; both the editor's pickers and the action labels read from these helpers.
+test('waypoints are named, and unnamed ones are numbered', () => {
+  const named = createPathPoint({ id: 'a', name: '  Depot  ' });
+  assert.equal(named.name, 'Depot', 'a name is trimmed on the way in');
+  assert.equal(pathPointLabel(named, 4), 'Depot');
+  assert.equal(createPathPoint({ id: 'b', name: '   ' }).name, undefined, 'blank is not a name');
+  assert.equal(pathPointLabel(createPathPoint({ id: 'c' }), 0), 'Waypoint 1', 'the first waypoint is number one');
+  const path = createPath({ id: 'route', name: 'Route', points: [
+    { id: 'p0', x: 0, y: 0 }, { id: 'p1', x: 100, y: 0, name: 'Gate' }, { id: 'p2', x: 200, y: 0 } ] });
+  assert.deepEqual(pathPointOptions(path), [[0, 'Waypoint 1'], [1, 'Gate'], [2, 'Waypoint 3']]);
+  assert.deepEqual(pathPointOptions(path, { allowLast: true })[0], [-1, 'Last waypoint']);
+  assert.equal(pathPointOptions({ id: 'empty', points: [] }, { allowLast: true }).length, 1);
+  const project = { paths: [path] };
+  assert.equal(pathPointName(project, 'route', 1), 'Gate');
+  assert.equal(pathPointName(project, 'route', 2), 'Waypoint 3');
+  assert.equal(pathPointName(project, 'route', -1), 'Last waypoint');
+  assert.equal(pathPointName(project, 'gone', 0), 'Waypoint 1', 'a stale path still reads sensibly');
 });

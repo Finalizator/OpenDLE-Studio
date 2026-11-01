@@ -1,5 +1,5 @@
 import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, ENTITY_TYPES } from '/shared/project.js';
-import { createPath, createPathPoint, samplePath, pathLength, pathReferences, removePath, removePathPoint } from '/shared/paths.js';
+import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
@@ -1334,8 +1334,15 @@ function renderPathInspector() {
   }, message);
   const changePoint = (fn) => changePath(target => fn(target.points.find(item => item.id === point.id)), 'Waypoint changed');
   if (point) {
-    const index = path.points.indexOf(point) + 1;
-    parent.append(make('h2', `Waypoint ${index} of ${path.name}`), make('p', point.id, 'muted'));
+    const position = path.points.indexOf(point);
+    parent.append(make('h2', `${pathPointLabel(point, position)} of ${path.name}`), make('p', point.id, 'muted'));
+    // Naming a waypoint is what lets a route action say "to Depot" instead of "to waypoint 3",
+    // and what keeps the name attached when the route grows or loses points before it.
+    field(parent, 'Name', input(point.name || '', 'text', value => changePoint(target => {
+      const name = value.trim();
+      if (name) target.name = name; else delete target.name;
+    }), 'Waypoint name'));
+    parent.append(make('p', `Waypoint ${position + 1} of ${path.points.length} on this route.`, 'muted'));
     field(parent, 'X', input(Math.round(point.x), 'number', value => changePoint(target => { target.x = value; })));
     field(parent, 'Y', input(Math.round(point.y), 'number', value => changePoint(target => { target.y = value; })));
     field(parent, 'Height (Z)', input(Math.round(point.z || 0), 'number', value => changePoint(target => { target.z = value; })));
@@ -1353,7 +1360,7 @@ function renderPathInspector() {
     make('p', 'A closed path comes back to its first waypoint and keeps going, which is what a patrol route needs.', 'muted'));
   for (const [index, item] of path.points.entries()) {
     const row = make('div', undefined, 'property-section');
-    row.append(make('strong', `${index + 1}. ${Math.round(item.x)}, ${Math.round(item.y)} @ ${Math.round(item.z || 0)}`));
+    row.append(make('strong', `${pathPointLabel(item, index)} · ${Math.round(item.x)}, ${Math.round(item.y)} @ ${Math.round(item.z || 0)}`));
     field(row, 'Curve', curveSlider(item.curve ?? 1, value => changePath(target => { target.points[index].curve = value; }, 'Waypoint curvature changed')));
     row.append(button('Select waypoint', () => { selection = { kind: 'pathPoint', id: item.id, pathId: path.id }; render(); }));
     parent.append(row);
@@ -1863,6 +1870,12 @@ function commandLists(ownerId) {
     hudAnimations: (project.hud?.animations || []).map(clip => [clip.id, clip.name]),
     timesheets: (project.timesheets || []).map(sheet => [sheet.id, sheet.name]),
     paths: (project.paths || []).map(path => [path.id, path.name || path.id]),
+    // A route action's waypoints are picked by name, so the dialog needs the route itself.
+    pathPoints: id => (project.paths || []).find(path => path.id === id) || null,
+    waypointName: (pathId, index) => pathPointName(project, pathId, index),
+    // "Set / compare local variable" lists the variables of the object the rule acts on, and `$self`
+    // means the rule's own object, so the owner is what to look at there.
+    entityVariableNames: id => Object.keys((project.map.entities.find(entity => entity.id === (id === '$self' ? ownerId : id)) || {}).variables || {}),
     sounds: (project.assets || []).filter(asset => asset.kind === 'sound').map(asset => [asset.id, asset.name]),
     clips: id => {
       const entity = project.map.entities.find(entity => id === '$self'
@@ -2088,7 +2101,7 @@ function renderEvents() {
           const target = actionIndex + direction;
           if (target < 0 || target >= item.actions.length) throw new Error('No adjacent action');
           [item.actions[actionIndex], item.actions[target]] = [item.actions[target], item.actions[actionIndex]];
-        })));
+        })), { waypointName: (pathId, index) => pathPointName(project, pathId, index) });
       row.prepend(grip());
       row.dataset.dragRow = 'action'; row.dataset.dragId = event.id;
       row.dataset.dragKind = 'action'; row.dataset.dragIndex = String(actionIndex);
@@ -2588,7 +2601,9 @@ function addPathPoint(point) {
   activePathId = pathId;
   selection = { kind: 'pathPoint', id: pointId, pathId };
   render();
-  status(`Waypoint ${project.paths.find(path => path.id === pathId)?.points.length || 1} of ${project.paths.find(path => path.id === pathId)?.name || 'path'}. Keep clicking to shape the curve; Escape or a right click finishes.`);
+  const drawn = project.paths.find(path => path.id === pathId);
+  const added = drawn?.points.findIndex(point => point.id === pointId) ?? 0;
+  status(`${pathPointLabel(drawn?.points[added], Math.max(0, added))} of ${drawn?.name || 'path'} added. Keep clicking to shape the curve; Escape or a right click finishes.`);
 }
 /** Ends the route being drawn, so the next click starts a new one. */
 /**

@@ -20,6 +20,8 @@ export const INPUT_KEYS = ['Tab', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 
   ...Array.from({ length: 9 }, (_, index) => `Digit${index + 1}`)];
 const numeric = (name, value, min, max) => ({ name, value, kind: 'number', min, max });
 const choice = (name, value, options) => ({ name, value, kind: 'choice', options });
+/** A route waypoint: stored as an index, shown as the waypoint's name. */
+const waypoint = (name, value, extra = {}) => ({ name, value, kind: 'waypoint', ...extra });
 const stat = () => choice('stat', 'health', PLAYER_STATS);
 const comparison = () => choice('operator', '>', ['<', '<=', '=', '!=', '>=', '>']);
 const timer = () => ({ name: 'timer', value: 'weapon', kind: 'text' });
@@ -133,7 +135,9 @@ export const ENGINE_ACTIONS = [
   { type: 'setTimesheetPaused', label: 'Timesheet: pause / resume', timesheet: true, fields: [choice('paused', 'yes', ['yes', 'no'])] },
   // Motion along a route the map already has, between two of its waypoints.
   { type: 'followPath', label: 'Path: move object between waypoints over time', target: true, path: true, fields: [
-    numeric('fromPoint', 0, 0, 4096), numeric('toPoint', -1, -1, 4096), numeric('seconds', 3, .05, 3600),
+    // Waypoints are picked by name from the chosen route, never typed as an index: the first
+    // waypoint is 0 in the data and "Waypoint 1" on screen, and nobody should have to know that.
+    waypoint('fromPoint', 0), waypoint('toPoint', -1, { allowLast: true }), numeric('seconds', 3, .05, 3600),
     choice('easing', 'linear', ['linear', 'easeIn', 'easeOut', 'easeInOut']), choice('faceDirection', 'yes', ['yes', 'no'])] },
   { type: 'spawnEntity', label: 'Object: spawn a new object from a template', fields: [
     { name: 'templateId', kind: 'text', value: '' }, numeric('x', 0, -65536, 65536), numeric('y', 0, -65536, 65536),

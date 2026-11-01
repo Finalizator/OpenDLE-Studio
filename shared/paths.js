@@ -24,8 +24,39 @@ export function createPath({ id, name = 'Path', closed = false, points = [] } = 
   return { id, name, closed: Boolean(closed), points: points.map(point => createPathPoint(point)) };
 }
 
-export function createPathPoint({ id, x = 0, y = 0, z = 0, curve = 1 } = {}) {
-  return { id, x, y, z, curve };
+export function createPathPoint({ id, name, x = 0, y = 0, z = 0, curve = 1 } = {}) {
+  const point = { id, x, y, z, curve };
+  // A waypoint's name is optional: a route usually reads fine as "Waypoint 3", and only a route
+  // that other rules point at needs words ("Start", "Gate", "Depot").
+  const label = typeof name === 'string' ? name.trim() : '';
+  if (label) point.name = label;
+  return point;
+}
+
+/** What a waypoint is called: its own name, or where it sits on the route. */
+export function pathPointLabel(point, index) {
+  const name = typeof point?.name === 'string' ? point.name.trim() : '';
+  return name || `Waypoint ${index + 1}`;
+}
+
+/** The name of one waypoint of one route, for a label or a message: `-1` is the route's end. */
+export function pathPointName(project, pathId, index) {
+  if (index < 0) return 'Last waypoint';
+  const path = (project?.paths || []).find(item => item.id === pathId);
+  return pathPointLabel(path?.points?.[index], index);
+}
+
+/**
+ * Options for a waypoint picker, in the order a picker should show them.
+ *
+ * A rule names waypoints by index — 0 is the first — but a person reads "Waypoint 1", so the
+ * editor never asks anyone to type an index: `toPoint` also offers `-1`, "Last waypoint", which is
+ * what keeps a route action pointing at the end when the route grows.
+ */
+export function pathPointOptions(path, { allowLast = false } = {}) {
+  const options = (path?.points || []).map((point, index) => [index, pathPointLabel(point, index)]);
+  if (allowLast) options.unshift([-1, 'Last waypoint']);
+  return options;
 }
 
 const clamp01 = value => Math.min(1, Math.max(0, value));
@@ -218,14 +249,22 @@ export function removePathPoint(project, pathId, pointId) {
   if (!path.points.some(point => point.id === pointId)) throw new Error('That waypoint no longer exists');
   const remaining = path.points.length - 1;
   if (remaining < 2) throw new Error('A path needs at least two waypoints; delete the path instead');
+  const removedIndex = path.points.findIndex(point => point.id === pointId);
   path.points = path.points.filter(point => point.id !== pointId);
-  // Actions name waypoints by index, and an index past the end is invalid — so a shorter route
-  // has to bring them back inside it, or the project stops validating (`-1` means "the last one"
-  // and stays right by itself).
-  const last = remaining - 1, clamp = value => (typeof value === 'number' && value > last ? last : value);
+  // Actions name waypoints by index, and that index is a reference to *that* waypoint, so losing
+  // one has to move every later number down with it — an action pointing at the waypoint called
+  // "Depot" must still point at Depot, not at whatever slid into its place. `-1` means "the last
+  // one" and stays right by itself, and an index that is now past the end is clamped, or the
+  // project stops validating.
+  const last = remaining - 1;
+  const fix = value => {
+    if (typeof value !== 'number' || value < 0) return value;
+    const shifted = value > removedIndex ? value - 1 : value;
+    return shifted > last ? last : shifted;
+  };
   forEachPathAction(project, pathId, action => {
-    action.fromPoint = clamp(action.fromPoint);
-    action.toPoint = clamp(action.toPoint);
+    action.fromPoint = fix(action.fromPoint);
+    action.toPoint = fix(action.toPoint);
   });
   return { path, remaining };
 }

@@ -651,6 +651,9 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         // Curvature is how much the route sweeps through this point: 0 is a corner, 1 a
         // smooth pass. Anything outside that is clamped when sampling, so it is rejected here.
         if (point.curve !== undefined) number(point.curve, 'Path point curvature', 0, 1);
+        // A named waypoint is what a rule's waypoint picker reads, so the name is part of the data
+        // and validated like any other text rather than trusted blindly from a saved project.
+        if (point.name !== undefined) text(point.name, 'Path point name', 100);
       }
     }
   }
@@ -864,14 +867,17 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       if (!definition) return;
       for (const field of definition.fields) {
         if (field.optional && command[field.name] === undefined) continue;
-        if (isExpression(command[field.name]) && ['number', 'value', 'string'].includes(field.kind)) { expression(command[field.name]); continue; }
+        if (isExpression(command[field.name]) && ['number', 'value', 'string', 'waypoint'].includes(field.kind)) { expression(command[field.name]); continue; }
         if (field.kind === 'number') {
           number(command[field.name], field.name, field.min, field.max);
           if (['diceSides', 'pellets'].includes(field.name)) assert(Number.isInteger(command[field.name]), `${field.name} must be an integer`);
         } else if (field.kind === 'value') scalar(command[field.name]);
         else if (field.kind === 'choice') assert(field.options.includes(command[field.name]), `Unsupported ${field.name}`);
         else if (field.kind === 'string') assert(typeof command[field.name] === 'string' && command[field.name].length <= 2000, `${field.name} must be text up to 2000 characters`);
-        else if (field.kind === 'image') {
+        else if (field.kind === 'waypoint') {
+          // Which waypoints exist is the route's business; it is checked where `followPath` is.
+          assert(Number.isInteger(command[field.name]), `${field.name} must be a waypoint`);
+        } else if (field.kind === 'image') {
           // An empty image means "not chosen yet": the event is still valid, and the
           // runtime reports which spray needed artwork when it is triggered.
           if (command[field.name] === '') continue;

@@ -232,8 +232,9 @@ test('the zone conditions are offered as a zone picker, not a list of every obje
   const engine = readFileSync(new URL('../shared/engine-script.js', import.meta.url), 'utf8');
   assert.match(engine, /type: 'playerInZone', label: 'Player: inside a zone', zone: true/);
   assert.match(engine, /type: 'playerEnteredZone', label: 'Player: entered a zone', zone: true/);
-  const sheet = readFileSync(new URL('../public/event-sheet.js', import.meta.url), 'utf8');
-  assert.match(sheet, /definition\.zone \? \[\{ name: 'zoneId', label: 'Zone', options: zones \}\]/);
+  // The field builder lives in shared/ now, so the picker is asserted there.
+  const fields = readFileSync(new URL('../shared/command-fields.js', import.meta.url), 'utf8');
+  assert.match(fields, /definition\.zone \? \[\{ name: 'zoneId', label: 'Zone', options: zones \}\]/);
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(app, /zones: project\.map\.entities\.filter\(entity => entity\.type === 'zone'\)/);
   // The object type exists and is offered where objects are created.

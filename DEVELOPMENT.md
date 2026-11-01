@@ -593,6 +593,11 @@ committing malformed geometry.
 
 ### Paths: a curve through waypoints
 
+Rules name waypoints by index — 0 is the first — but nobody should have to know that: an action's
+from/to are pickers listing the chosen route's waypoints by name, plus "Last waypoint" for `-1`.
+Deleting a waypoint also moves every later index down with it, so an action that pointed at
+"Depot" still points at Depot rather than at whatever slid into its slot.
+
 A path is a list of waypoints and the curve fitted through them, and it lives in the layout
 rather than on any one object (`project.paths`). Nothing about it is specific to walking: the
 same curve is a patrol route, a camera track, a timeline's motion, or the spine a ramp or a
@@ -608,6 +613,11 @@ piece of procedural geometry is generated along, so it is authored once and refe
   plane and `z` up, exactly like the map data around them.
 - **Closed paths.** `closed` adds the segment from the last waypoint back to the first, which is
   what a patrol route or a looping orbit needs.
+- **Waypoints can be named.** A point's `name` is optional; without one it reads as
+  "Waypoint 4". The name is a label on the point itself, so it travels with it when the route
+  grows or loses points before it — which is what makes "drive to Depot" survive an edit.
+  `pathPointLabel` and `pathPointName` (in [`shared/paths.js`](./shared/paths.js)) are the only
+  places that decide how a waypoint is spelled.
 - **Travel is by distance, not by segment.** [`pointAlong`](./shared/paths.js) takes `t` from 0
   to 1 over the sampled arc length, so a walker keeps an even speed past waypoints that are spaced
   unevenly. It returns the position and the heading in degrees, ready to drive an object's angle.
@@ -1177,6 +1187,15 @@ the authored initial values. Names and types are stable during Play.
 an instance or `$self` in object-owned/for-each rules. Sub-events inherit that
 owner. Existing `setVariable`/`addVariable`/`variableCompare` operate on globals;
 addition requires numeric variables.
+
+Their **Local variable** field offers the variables of the object the rule acts
+on, and stays typable so a name can be written before it exists — the list used
+to be the project's globals, which produced rules that then failed validation.
+A global comparison keeps the global list. The parameter dialog is built by
+`commandFields` in [`shared/command-fields.js`](./shared/command-fields.js),
+which puts the object and the route first because everything below them is
+described in terms of them, and is covered by
+[`test/command-fields.test.js`](./test/command-fields.test.js).
 
 In numeric/free-text event parameters, prefix an expression with `=`:
 

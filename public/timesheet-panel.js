@@ -408,7 +408,8 @@ export function createTimesheetPanel(nodes, {
     if (!cue.actions.length) list.append(element('p', 'muted', 'No actions yet. Add one to say what happens at this moment.'));
     cue.actions.forEach((action, index) => {
       const row = commandRow(action, labels, id => (commandContext(cue.ownerId).entities || []).find(([value]) => value === id)?.[1] || id,
-        () => editAction(sheet, cue, action, index));
+        () => editAction(sheet, cue, action, index),
+        { waypointName: commandContext(cue.ownerId).waypointName });
       const removeButton = element('button', 'timesheet-action-remove', '\u00d7');
       removeButton.type = 'button'; removeButton.title = 'Remove this action';
       removeButton.addEventListener('click', () => change(next => {

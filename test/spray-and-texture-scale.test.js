@@ -146,6 +146,10 @@ test('the spray action offers every imported image by name', async () => {
   const source = readFileSync(new URL('../public/event-sheet.js', import.meta.url), 'utf8');
   assert.match(source, /openCommandDialog\(\{[^}]*images = \[\]/);
   assert.match(source, /commandFields\(draft, \{[^}]*images/);
+  // The field builder moved to shared/, so the library has to reach it from there.
+  const fields = readFileSync(new URL('../shared/command-fields.js', import.meta.url), 'utf8');
+  assert.match(fields, /commandFields\(command, \{[^}]*images/);
+  assert.match(fields, /imageFieldOptions\(images\)/);
 });
 
 test('a billboard sits with the artwork anchor on the entity, not centred on it', async () => {

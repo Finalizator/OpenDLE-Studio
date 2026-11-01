@@ -128,3 +128,42 @@ test('the editor deletes whatever is selected, and says how to leave Draw path',
   assert.match(app, /button\('Continue adding waypoints', \(\) => \{/);
   assert.match(app, /activePathId = path\.id;\s*\$\('tool'\)\.value = 'path';/);
 });
+
+// A route action picks waypoints by name in the editor, but stores the index — so a name has to
+// survive the route changing, and the stored value has to stay a number the validator accepts.
+test('a named waypoint keeps its name when the route loses a point before it', () => {
+  const project = createProject();
+  project.paths = [createPath({ id: 'route', name: 'Route', points: [
+    createPathPoint({ id: 'a', x: 0, y: 0 }), createPathPoint({ id: 'b', x: 64, y: 0 }),
+    createPathPoint({ id: 'c', x: 128, y: 0, name: 'Depot' }), createPathPoint({ id: 'd', x: 192, y: 0 }),
+  ] })];
+  project.events = [{ id: 'go', enabled: true, once: false, condition: { type: 'always' },
+    actions: [{ type: 'followPath', entityId: '$self', pathId: 'route', fromPoint: 0, toPoint: 2, seconds: 2, easing: 'linear', faceDirection: 'yes' }] }];
+  project.events[0].actions[0].entityId = 'pickup';
+  validateProject(project);
+  removePathPoint(project, 'route', 'b');
+  assert.equal(project.paths[0].points[1].name, 'Depot', 'the name travels with its waypoint');
+  assert.equal(project.events[0].actions[0].toPoint, 1, 'the action follows the shortened route');
+  validateProject(project);
+});
+
+test('a waypoint name is validated like any other text, and an index stays an index', () => {
+  const project = createProject();
+  project.paths = [createPath({ id: 'route', name: 'Route', points: [
+    createPathPoint({ id: 'a', x: 0, y: 0 }), createPathPoint({ id: 'b', x: 64, y: 0 }) ] })];
+  project.events = [{ id: 'go', enabled: true, once: false, condition: { type: 'always' },
+    actions: [{ type: 'followPath', entityId: 'pickup', pathId: 'route', fromPoint: 0, toPoint: -1, seconds: 2, easing: 'linear', faceDirection: 'yes' }] }];
+  validateProject(project);
+  project.paths[0].points[1].name = 'x'.repeat(101);
+  assert.throws(() => validateProject(project), /Path point name/);
+  project.paths[0].points[1].name = 'Gate';
+  validateProject(project);
+  // A waypoint field submitted as the text of a select instead of a number would point nowhere.
+  project.events[0].actions[0].fromPoint = '0';
+  assert.throws(() => validateProject(project), /fromPoint must be a waypoint/);
+  project.events[0].actions[0].fromPoint = 0;
+  project.events[0].actions[0].toPoint = 9;
+  assert.throws(() => validateProject(project), /outside the route/);
+  project.events[0].actions[0].toPoint = -1;
+  validateProject(project);
+});

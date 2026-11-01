@@ -1,4 +1,7 @@
-import { engineCommand, imageFieldOptions, INPUT_KEYS } from '/shared/engine-script.js';
+import { engineCommand } from '/shared/engine-script.js';
+import { commandFields } from '/shared/command-fields.js';
+
+export { commandFields };
 import { isExpression, EXPRESSION_HELP } from '/shared/expressions.js';
 
 const triggers = new Set(['onStart', 'keyPressed', 'mouseMoved', 'collisionStarted', 'collisionEnded', 'animationFinished', 'hudClicked', 'hudAnimationFinished', 'hudStatChanged', 'entityDamaged', 'wallActivated']);
@@ -12,17 +15,22 @@ const titles = {
   hitscan: 'Fire hitscan', timerReady: 'Timer is ready', startTimer: 'Start timer', showPlayerHUD: 'Show player HUD',
 };
 
-export function describeCommand(command, labels, objectName) {
+export function describeCommand(command, labels, objectName, waypointName = null) {
   const label = labels.find(([type]) => type === command.type)?.[1] || command.type;
   const parts = Object.entries(command).filter(([key]) => !['type', 'inverted', 'entityId', 'otherId'].includes(key))
-    .map(([key, value]) => `${key}: ${isExpression(value) ? '=' + value.expr : typeof value === 'number' ? Number(value.toFixed(4)) : value}`);
+    .map(([key, value]) => {
+      // A route action reads as the waypoints it visits, not as the indices the data stores.
+      if (waypointName && (key === 'fromPoint' || key === 'toPoint') && !isExpression(value))
+        return `${key === 'fromPoint' ? 'from' : 'to'} ${waypointName(command.pathId, value)}`;
+      return `${key}: ${isExpression(value) ? '=' + value.expr : typeof value === 'number' ? Number(value.toFixed(4)) : value}`;
+    });
   if (command.otherId) parts.push(`other: ${objectName(command.otherId)}`);
   return { object: command.entityId ? objectName(command.entityId) : categoryOf(command.type, label),
     text: `${command.inverted ? 'NOT ' : ''}${titles[command.type] || labelOf(label)}${parts.length ? '  ' + parts.join(' · ') : ''}` };
 }
 
-export function commandRow(command, labels, objectName, open, { inverted = false, or = false } = {}) {
-  const description = describeCommand(command, labels, objectName);
+export function commandRow(command, labels, objectName, open, { inverted = false, or = false, waypointName = null } = {}) {
+  const description = describeCommand(command, labels, objectName, waypointName);
   const row = document.createElement('button');
   row.type = 'button'; row.className = 'script-command';
   if (inverted) row.classList.add('inverted');
@@ -42,7 +50,7 @@ export function commandRow(command, labels, objectName, open, { inverted = false
 
 export function openCommandDialog({ kind, labels, command, defaults, entities, zones = [], playerId, variables, groups, clips, walls = [], sectors = [], spriteClips = [], images = [], hudElements = [], hudAnimations = [],
   // Project data the newer commands point at: timelines, routes and imported sounds.
-  timesheets = [], paths = [], sounds = [], submit, remove, move }) {
+  timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], submit, remove, move }) {
   const dialog = document.createElement('dialog'); dialog.className = 'command-dialog';
   dialog.setAttribute('aria-label', `${command ? 'Edit' : 'Add'} ${kind}`);
   const heading = document.createElement('h2'), search = document.createElement('input'), content = document.createElement('div');
@@ -81,7 +89,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
     } else {
       const label = document.createElement('h3'); label.textContent = labels.find(([type]) => type === draft.type)?.[1] || draft.type;
       content.append(label);
-      for (const field of commandFields(draft, { entities, zones, playerId, variables, groups, clips, walls, sectors, spriteClips, images, hudElements, hudAnimations, timesheets, paths, sounds })) {
+      for (const field of commandFields(draft, { entities, zones, playerId, variables, groups, clips, walls, sectors, spriteClips, images, hudElements, hudAnimations, timesheets, paths, sounds, pathPoints, entityVariableNames })) {
         const label = document.createElement('label'); label.textContent = field.label || field.name;
         const valueType = field.value ? isExpression(draft[field.name]) ? 'expression' : typeof draft[field.name] : null;
         if (field.value) {
@@ -94,13 +102,33 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
             : type.value === 'string' ? '' : type.value === 'boolean' ? false : 0; render(); });
           label.append(type);
         }
+        // A suggestion list is for names the author may have to type before they exist (an object
+        // variable on a fresh object), so it stays a text box with the known names on offer.
+        let list = null;
+        if (field.suggestions) {
+          list = document.createElement('datalist');
+          list.id = `command-suggestions-${draft.type}-${field.name}`;
+          for (const value of field.suggestions) {
+            const option = document.createElement('option'); option.value = value; list.append(option);
+          }
+        }
         const input = document.createElement(field.options ? 'select' : 'input');
         input.setAttribute('aria-label', field.label || field.name);
+        if (list) { input.setAttribute('list', list.id); input.autocomplete = 'off'; }
         if (field.options) for (const value of field.options) {
           const [id, name] = Array.isArray(value) ? value : [value, value];
           const option = document.createElement('option'); option.value = id; option.textContent = name; input.append(option);
         }
         else input.type = 'text';
+        // A picker whose stored value is not on offer — an expression, or a waypoint of a route
+        // that no longer exists — has to say so instead of painting the first option as if chosen.
+        if (field.options && draft[field.name] !== undefined && draft[field.name] !== ''
+          && ![...input.options].some(option => option.value === String(draft[field.name]))) {
+          const option = document.createElement('option');
+          option.value = String(draft[field.name]);
+          option.textContent = isExpression(draft[field.name]) ? `= ${draft[field.name].expr}` : `${draft[field.name]} (not on this route)`;
+          input.append(option);
+        }
         input.value = isExpression(draft[field.name]) ? '=' + draft[field.name].expr : draft[field.name] ?? '';
         const update = () => {
           if (input.value === '' && field.optional) delete draft[field.name];
@@ -113,18 +141,28 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
         };
         // A picker that shows a choice has to submit it: an untouched select would otherwise
         // leave the field unset, and the rule would run against nothing.
-        if (field.options && !draft[field.name]) {
+        if (field.options && (draft[field.name] === undefined || draft[field.name] === '')) {
           // A select paints its first option even when the draft has no value that matches one,
           // so a fresh "Route" or "Sound" field looked filled in while holding nothing — Done then
-          // built an action that pointed at no path at all. Choose the option that is on screen.
+          // built an action that pointed at no path at all. Choose the option that is on screen,
+          // as the kind of value the field stores: a waypoint stays a number, not the text of it.
           if (input.selectedIndex < 0 && input.options[0]?.value) input.value = input.options[0].value;
-          if (input.value !== '') draft[field.name] = input.value;
+          if (input.value !== '') draft[field.name] = field.numeric ? Number(input.value) : input.value;
         }
         input.addEventListener('input', update);
-        input.addEventListener('change', () => { update(); if (field.name === 'entityId' && draft.type === 'playAnimation') {
-          draft.clip = clips(draft.entityId)[0]; render();
-        } });
-        label.append(input); content.append(label);
+        input.addEventListener('change', () => {
+          update();
+          if (field.name === 'entityId' && draft.type === 'playAnimation') { draft.clip = clips(draft.entityId)[0]; render(); }
+          // The waypoint pickers below the route are built from that route, so choosing another
+          // route has to rebuild them — and the old waypoint numbers mean nothing on the new one.
+          if (field.name === 'pathId') { draft.fromPoint = 0; draft.toPoint = -1; render(); }
+          // Which local variables exist depends on the object, so the list below follows it.
+          if (field.name === 'entityId' && field.suggestions) render();
+        });
+        label.append(input);
+        if (list) label.append(list);
+        if (field.hint) label.append(Object.assign(document.createElement('span'), { className: 'muted', textContent: field.hint }));
+        content.append(label);
       }
       if (kind === 'condition' && !triggers.has(draft.type)) {
         const label = document.createElement('label'), input = document.createElement('input');
@@ -145,45 +183,3 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
   render(); dialog.showModal(); (stage === 'parameters' ? content.querySelector('input,select') : search)?.focus();
 }
 
-export function commandFields(command, { entities, zones = [], playerId, variables, groups, clips, walls, sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [] }) {
-  const definition = engineCommand(command.type);
-  if (definition) {
-    return [
-      ...definition.fields.map(field => ({ ...field, value: field.kind === 'value', numeric: field.kind === 'number',
-        ...(['clipId', 'impactClipId'].includes(field.name) ? { options: [['', 'None / primitive visual'], ...spriteClips] } : {}),
-        // Image fields list the asset library, so a spray's artwork is chosen by name.
-        ...(field.kind === 'image' ? { options: imageFieldOptions(images) } : {}) })),
-      ...(definition.spriteClip ? [{ name: 'clipId', label: 'Sprite clip', options: spriteClips }] : []),
-      ...(definition.wall ? [{ name: 'wallId', label: 'Linedef', options: walls }] : []),
-      ...(definition.sector ? [{ name: 'sectorId', label: 'Sector', options: sectors }] : []),
-      // A zone condition picks from the zones, so a rule cannot be pointed at a wall by mistake.
-      ...(definition.zone ? [{ name: 'zoneId', label: 'Zone', options: zones }] : []),
-      ...(definition.target ? [{ name: 'entityId', label: 'Object', options: ['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(command.type) ? entities : entities.filter(([id]) => id !== playerId) }] : []),
-      ...(definition.variable ? [{ name: 'variable', options: variables }] : []),
-      ...(definition.group ? [{ name: 'groupId', label: 'Group', options: groups }] : []),
-      ...(definition.hudElement ? [{ name: 'elementId', label: 'HUD element', options: hudElements }] : []),
-      ...(definition.hudAnimation ? [{ name: 'animationId', label: 'HUD animation', options: hudAnimations }] : []),
-      // Timelines, routes and imported sounds are project data, so each field offers the list.
-      ...(definition.timesheet ? [{ name: 'timesheetId', label: 'Timesheet', options: timesheets }] : []),
-      ...(definition.path ? [{ name: 'pathId', label: 'Route', options: paths }] : []),
-      ...(definition.sound ? [{ name: 'assetId', label: 'Sound', options: sounds }] : []),
-    ];
-  }
-  const fields = [];
-  const field = (name, numeric = false, options, optional = false) => fields.push({ name, numeric, options, optional });
-  if (command.type === 'keyPressed') field('key', false, INPUT_KEYS);
-  if (['nearEntity', 'collisionStarted', 'collisionEnded', 'isTouching', 'animationFinished', 'removeEntity', 'setEntityPosition', 'rotateEntity', 'applyImpulse', 'applyForce', 'setVelocity', 'playAnimation', 'stopAnimation'].includes(command.type)) field('entityId', false,
-    command.type === 'removeEntity' ? entities.filter(([id]) => id !== playerId) : entities);
-  if (['collisionStarted', 'collisionEnded', 'isTouching'].includes(command.type)) field('otherId', false, [['$world', 'Sector geometry'], ...entities]);
-  if (command.type === 'nearEntity') field('distance', true);
-  if (command.type === 'showMessage') field('message');
-  if (['setVariable', 'addVariable'].includes(command.type)) { field('variable', false, variables); fields.push({ name: 'value', value: true }); }
-  if (['teleport', 'setEntityPosition', 'applyImpulse', 'applyForce', 'setVelocity'].includes(command.type)) {
-    field('x', true); field('y', true); field('z', true, undefined, ['teleport', 'setEntityPosition'].includes(command.type));
-  }
-  if (command.type === 'rotateEntity') field('angle', true);
-  if (command.type === 'playAnimation') {
-    field('clip', false, clips(command.entityId)); field('speed', true); field('loop', false, [['true', 'Yes'], ['false', 'No']]);
-  }
-  return fields;
-}
