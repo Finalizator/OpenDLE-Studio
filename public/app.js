@@ -80,6 +80,22 @@ let previewRenderer = null, previewLoading = false, mapSectors = [];
 // The path the Draw path tool is extending: the next click adds to it rather than starting a
 // second route on top of the first. Cleared when the tool changes or the path is finished.
 let activePathId = null;
+/**
+ * What the Tool box means for a pointer gesture.
+ *
+ * The box lists the object tools as well ("Form", "Scale object"…), because that is where a
+ * mapper looks for a tool. Choosing one only picks which transform a drag *is* — the gizmo or a
+ * grip does the work — so for placing and selecting they all behave as Select.
+ */
+function toolMode() {
+  const value = $('tool').value;
+  return value.startsWith('transform:') ? 'select' : value;
+}
+/** The transform mode the Tool box is currently asking for, or null when it is not one. */
+function toolTransform() {
+  const value = $('tool').value;
+  return value.startsWith('transform:') ? value.slice('transform:'.length) : null;
+}
 let previewGeneration = 0;
 let audioPlayer = null, audioContext = null, hudWarningShown = false, musicReported = false;
 let settingsRevision = -1, settingsStorageKey = '';
@@ -346,7 +362,7 @@ async function refreshScene() {
       edit, error: message => status(message, true),
       live: (fn, message) => liveApply(fn, message),
       liveFinish: (message, options) => liveFinish(message, options),
-      grid: () => Number($('grid').value), tool: () => $('tool').value,
+      grid: () => Number($('grid').value), tool: () => toolMode(),
       surface: () => $('sector-surface').value,
       script: openScript,
       remove: id => {
@@ -403,8 +419,12 @@ function setSceneMode(mode) {
 $('view-2d').addEventListener('click', () => setSceneMode('2d'));
 $('view-3d').addEventListener('click', () => setSceneMode('3d'));
 $('tool').addEventListener('change', () => {
-  if ($('tool').value !== 'path') finishPath({ select: false });
-  else status('Draw path: click to place waypoints. Each one bends as the segment at its end allows; curve 0 is a corner.');
+  if (toolMode() !== 'path') finishPath({ select: false });
+  if (toolMode() === 'path') status('Draw path: click to place waypoints. Each one bends as the segment at its end allows; curve 0 is a corner.');
+  // Choosing an object tool sets the transform the gizmo and the grips perform, so the two
+  // controls can never disagree about what a drag will do.
+  const wanted = toolTransform();
+  if (wanted) { $('transform-mode').value = wanted; sceneEditor?.mode(wanted); }
 });
 /**
  * Which transforms make sense for what is selected.
@@ -414,6 +434,9 @@ $('tool').addEventListener('change', () => {
  * checks. A model or sprite keeps the visual scale and the tilt. Offering every mode to every
  * object is how a tool ends up silently doing nothing.
  */
+/** The tools that are always there, in the order a mapper reaches for them. */
+const BASE_TOOLS = [['select', 'Select / move'], ['room', 'Draw room'], ['entity', 'Place entity'], ['path', 'Draw path']];
+let toolListSignature = '';
 function syncTransformModes() {
   const mode = $('transform-mode');
   const item = selection?.kind === 'entity' ? project.map.entities.find(entity => entity.id === selection.id) : null;
@@ -428,6 +451,31 @@ function syncTransformModes() {
   if (mode.value === 'form' && !volume) mode.value = 'move';
   sceneEditor?.mode(mode.value);
   sceneEditor?.hasVolume(Boolean(volume));
+
+  // The Tool box is where a mapper looks for a tool, so the selected object's own transforms are
+  // listed there too. They are not placement tools: choosing one says what a drag on the gizmo or
+  // a grip *is*, and for selecting they behave as Select (see `toolMode`).
+  const objectTools = item ? [
+    ['transform:move', 'Move object'],
+    ['transform:rotate', tilts ? 'Rotate / tilt object' : 'Rotate object'],
+    ...(volume ? [['transform:form', 'Form (resize sides)']] : []),
+    ['transform:scale', volume ? 'Scale volume' : 'Scale object'],
+  ] : [];
+  const signature = `${BASE_TOOLS.length}/${objectTools.map(([value, label]) => `${value}=${label}`).join('|')}`;
+  if (signature !== toolListSignature) {
+    const previous = $('tool').value;
+    toolListSignature = signature;
+    $('tool').replaceChildren(
+      ...BASE_TOOLS.map(([value, label]) => new Option(label, value, false, value === previous)),
+      ...objectTools.map(([value, label]) => new Option(label, value, false, value === previous)),
+    );
+    // A tool that no longer applies (Form on an object that is not a volume) falls back to Select.
+    if (!$('tool').value) $('tool').value = 'select';
+  }
+  // Picking a tool and picking a transform mode are the same choice.
+  const wanted = toolTransform();
+  if (wanted && mode.value !== wanted) mode.value = wanted;
+  if (wanted) { sceneEditor?.mode(wanted); }
 }
 $('transform-mode').addEventListener('change', () => sceneEditor?.mode($('transform-mode').value));
 $('show-ceilings').addEventListener('change', () => sceneEditor?.ceilings($('show-ceilings').checked));
@@ -1371,7 +1419,7 @@ document.addEventListener('keydown', event => { if (event.code === 'Escape' && !
 // toolbar. It works even before the first waypoint: the mode itself is what has to end.
 document.addEventListener('keydown', event => {
   if (event.code !== 'Escape') return;
-  if (activePathId || $('tool').value === 'path') finishPath();
+  if (activePathId || toolMode() === 'path') finishPath();
 });
 
 // Rebuilt once per project, not once per rule: the event sheet asks for the object list
@@ -2327,9 +2375,9 @@ function addPathPoint(point) {
  * toolbar, where the tool has already changed to whatever the mapper picked.
  */
 function finishPath({ select = true } = {}) {
-  const drawing = activePathId || $('tool').value === 'path';
+  const drawing = activePathId || toolMode() === 'path';
   activePathId = null;
-  if (select && $('tool').value === 'path') $('tool').value = 'select';
+  if (select && toolMode() === 'path') $('tool').value = 'select';
   if (!drawing) return;
   status(select
     ? 'Path finished, back to Select. Right-click or pick Draw path to start another route.'
@@ -2561,9 +2609,9 @@ canvas.addEventListener('pointerdown', guard(event => {
     drag = { kind: 'pan', button: event.button, clientX: event.clientX, clientY: event.clientY, x: camera.x, y: camera.y,
       startX: event.clientX, startY: event.clientY, moved: false }; return;
   }
-  if ($('tool').value === 'path') { addPathPoint(point); return; }
-  if ($('tool').value === 'room') { drag = { kind: 'room', start: snap(point), end: snap(point) }; return; }
-  if ($('tool').value === 'entity') {
+  if (toolMode() === 'path') { addPathPoint(point); return; }
+  if (toolMode() === 'room') { drag = { kind: 'room', start: snap(point), end: snap(point) }; return; }
+  if (toolMode() === 'entity') {
     const position = snap(point), type = $('entity-type').value;
     edit(next => {
       if (type === 'player') Object.assign(next.map.entities.find(entity => entity.type === 'player'), position);
@@ -2648,7 +2696,7 @@ canvas.addEventListener('pointerup', guard(event => {
 }));
 canvas.addEventListener('pointercancel', () => { drag = null; mapNeedsDraw = true; });
 canvas.addEventListener('dblclick', event => {
-  if ($('tool').value !== 'select') return;
+  if (toolMode() !== 'select') return;
   const hit = hitTest(worldPoint(event));
   if (hit?.kind === 'entity') openScript(hit.id);
 });

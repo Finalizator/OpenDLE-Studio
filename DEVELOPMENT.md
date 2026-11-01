@@ -651,11 +651,16 @@ runtime says which event is wrong rather than quietly never firing.
 - A zone is **born with a room-sized volume** (`ZONE_AREA`, 128³), because an object that can be
   entered with no volume would be a rule that can never fire. The shape picker has no "None" for a
   zone for the same reason.
-- **The tools follow the object.** A zone is a volume, so the Transform list offers *Form* (resize
-  one side), *Scale volume* and *Rotate* — and no *tilt*, because a tilted trigger volume would
-  change nothing a rule tests, so its Rotate gizmo shows only the two ground bars. A model or
-  sprite keeps *Scale visual* and *Rotate / tilt*, and never shows Form. Offering every mode to
-  every object is how a tool ends up silently doing nothing.
+- **The tools follow the object**, in the **Tool** box where a mapper looks for them: select a
+  zone and the list grows *Move object*, *Rotate object*, *Form (resize sides)* and *Scale volume*;
+  select a model or sprite and it grows *Move object*, *Rotate / tilt object* and *Scale object*
+  instead, with no Form. Choosing one says what a drag on the gizmo or a grip *is*, and for
+  selecting it behaves as Select — so `toolMode()` is what every placement branch reads, while the
+  box keeps showing the tool you picked. The 3D toolbar's Transform list is the same choice by
+  another name and stays in step with it.
+- A zone gets **no tilt**: a tilted trigger volume would change nothing a rule tests, so its
+  Rotate gizmo shows only the two ground bars. Offering every mode to every object is how a tool
+  ends up silently doing nothing.
 - **Forming** resizes one side and nothing else. A size is all that changes, so the volume grows
   symmetrically about the object: in 3D the bar drags that axis and the side grows by twice the
   drag, and in 2D the selected footprint grows eight grips — a corner taking two sides, an edge one

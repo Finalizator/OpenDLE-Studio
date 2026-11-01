@@ -54,12 +54,17 @@ test('Draw path is a mode that Escape and a right click can leave', () => {
   // Leaving the tool returns to Select, so a later left click selects instead of adding a
   // waypoint — the trap the tool had: click anywhere and the route grew.
   assert.match(app, /function finishPath\(\{ select = true \} = \{\}\)/);
-  assert.match(app, /if \(select && \$\('tool'\)\.value === 'path'\) \$\('tool'\)\.value = 'select';/);
+  assert.match(app, /if \(select && toolMode\(\) === 'path'\) \$\('tool'\)\.value = 'select';/);
+  // The Tool box carries the selected object's own transforms, and choosing one is the same
+  // choice as the Transform list, so a drag and a gizmo can never disagree.
+  assert.match(app, /function toolMode\(\)/);
+  assert.match(app, /\['transform:form', 'Form \(resize sides\)'\]/);
+  assert.match(app, /\['transform:scale', volume \? 'Scale volume' : 'Scale object'\]/);
   // The toolbar's own change handler must not drag the tool back to Select after the mapper
   // picked something else.
-  assert.match(app, /finishPath\(\{ select: false \}\)/);
+  assert.match(app, /if \(toolMode\(\) !== 'path'\) finishPath\(\{ select: false \}\)/);
   // Escape works even before the first waypoint: the mode itself has to end.
-  assert.match(app, /if \(activePathId \|\| \$\('tool'\)\.value === 'path'\) finishPath\(\);/);
+  assert.match(app, /if \(activePathId \|\| toolMode\(\) === 'path'\) finishPath\(\);/);
   // A right press leaves the mode in both views: the map's own pointerdown, and the 3D view
   // through its callback.
   assert.match(app, /if \(event\.button === 2\) finishPath\(\);/);
