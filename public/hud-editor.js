@@ -1,4 +1,4 @@
-import { hudElement, hudViewport, createHUDState, advanceHUD, playHUDAnimation, HUD_PROPERTIES, installDefaultHUD } from '/shared/hud.js';
+import { hudElement, hudViewport, createHUDState, advanceHUD, playHUDAnimation, HUD_PROPERTIES, installDefaultHUD, removeHUDElements, removeHUDAnimations } from '/shared/hud.js';
 import { parseHUDCSS } from '/shared/hud-style.js';
 import { newId } from '/shared/project.js';
 import { HUD_PLAYER_BINDINGS } from '/shared/player-state.js';
@@ -226,13 +226,11 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
       hud.elements.push(copy); selectedId = copy.id;
       if (previewScreen !== 'playing') attachMenuElement(next, copy, previewScreen);
     })), button('Delete element and children', () => update((hud, next) => {
-      const ids = new Set([element.id]);
-      for (const item of hud.elements) if (ids.has(item.parentId)) ids.add(item.id);
-      hud.elements = hud.elements.filter(item => !ids.has(item.id));
-      if (next.gameMenus?.elementIds.some(id => ids.has(id))) {
-        next.gameMenus.elementIds = next.gameMenus.elementIds.filter(id => !ids.has(id));
-        next.events = next.events.filter(event => !ids.has(event.condition.elementId) && !event.actions.some(action => ids.has(action.elementId)));
-      }
+      // Everything that named the element is released with it — its children, the animation tracks
+      // that drove it, a menu that listed it and the rules that clicked or showed it — because a
+      // leftover name is a project that no longer validates, in an editor that then cannot delete
+      // the element at all.
+      removeHUDElements(next, [element.id]);
     })));
     properties.append(node('p', 'Text supports {health}, {armor}, {bullets}, {message}, {var:score}. Delete referenced animation tracks/events before deleting their target.', 'muted'));
   }
@@ -279,7 +277,10 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
           keys: [{ time: 0, value: property === 'opacity' ? 0 : element[property] },
             { time: clip.duration, value: property === 'opacity' ? 1 : element[property] }] });
       });
-    }), button('Delete animation', () => update(hud => { hud.animations = hud.animations.filter(item => item.id !== clip.id); })));
+    }), button('Delete animation', () => update((hud, next) => {
+      // The rules that start or stop it name it too, so they are released with it.
+      removeHUDAnimations(next, [clip.id]);
+    })));
     clip.tracks.forEach((track, index) => {
       const row = node('div', null, 'hud-track'); animationPanel.append(row);
       const changeTrack = fn => change(clip => fn(clip.tracks[index]));

@@ -248,6 +248,23 @@ test('an exported folder zips and unpacks back to the same project', async () =>
   assert.equal(unpacked.project.assets[0].src, dataUrl('audio/wav', 'RIFFaaaaWAVE'));
 });
 
+test('a folder zipped from a desktop reads back from inside its own directory', async () => {
+  const project = projectWithAssets();
+  const entries = projectZipEntries(project, { revision: 2 });
+  // The way an OS "compress folder" writes it: everything under the folder's own name.
+  const wrapped = entries.map(entry => ({ ...entry, path: `MyGame/${entry.path}` }));
+  const unpacked = await readProjectArchive(createZipArchive(wrapped, new Date()));
+  assert.equal(unpacked.project.title, 'Folder project');
+  assert.equal(unpacked.project.assets[0].src, dataUrl('audio/wav', 'RIFFaaaaWAVE'), 'its payloads resolve inside the directory');
+  // A document that names its files with a leading `./` is the same document.
+  const document = JSON.parse(entries[0].data.toString('utf8'));
+  for (const asset of document.project.assets || []) if (asset.file) asset.file = `./${asset.file}`;
+  const saved = createZipArchive([{ ...entries[0], data: Buffer.from(JSON.stringify(document)) },
+    ...entries.slice(1)], new Date());
+  const dotted = await readProjectArchive(saved);
+  assert.equal(dotted.project.assets[0].src, dataUrl('audio/wav', 'RIFFaaaaWAVE'));
+});
+
 test('an archive without a project document, or with a hostile path, is refused', async () => {
   const bytes = createZipArchive([{ path: 'assets/x.png', data: Buffer.from('x'), mode: 0o644 }], new Date());
   await assert.rejects(() => readProjectArchive(bytes), /no project\.json/);

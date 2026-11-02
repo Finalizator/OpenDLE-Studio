@@ -1867,6 +1867,8 @@ export function createSceneObjectEditor({ callbacks }) {
     try {
       const document = exportNodeFile(current, nodeId, {
         assets: callbacks.assets() || [], shaders: callbacks.shaders?.() || [],
+        clips: callbacks.spriteClips?.() || [], eventSheets: callbacks.eventSheets?.() || [],
+        eventGroups: callbacks.eventGroups?.() || [],
         includeEvents: answer.includeEvents,
       });
       const fileName = nodeFileName(document.name);

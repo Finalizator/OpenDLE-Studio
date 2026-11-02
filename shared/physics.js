@@ -54,6 +54,9 @@ export function validatePhysicsState(snapshot, expectedIds) {
       !vector(body.translation, ['x', 'y', 'z']) || !vector(body.rotation, ['x', 'y', 'z', 'w']) ||
       !vector(body.linvel, ['x', 'y', 'z']) || !vector(body.angvel, ['x', 'y', 'z']) ||
       typeof body.sleeping !== 'boolean') fail('invalid body');
+    // Saves written before the motion parameters travelled simply have no parameters to restore.
+    for (const key of ['gravityScale', 'damping'])
+      if (body[key] !== undefined && !Number.isFinite(body[key])) fail('invalid body');
     const length = Math.hypot(...Object.values(body.rotation));
     if (Math.abs(length - 1) > .001) fail('invalid body quaternion');
     ids.add(body.id);
@@ -414,13 +417,19 @@ export function createPhysics(project, state, R, triangulate) {
     return R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, Math.max(height, 1) / 2 / PHYSICS_SCALE,
       config.depth / 2 / PHYSICS_SCALE);
   }
-  for (const entity of state.entities) {
+  /**
+   * Builds the body and collider one object needs, if it needs any.
+   *
+   * It is a function rather than a loop body because objects appear during play too: a
+   * `spawnEntity` cue put a crate in the level with no body, and the player walked through it.
+   */
+  function addBody(entity) {
     const player = entity.type === 'player', config = entity.physics;
     // An imported actor is solid in Doom: a monster stops the player rather than being walked
     // through. Its size is the actor's own radius and height, and the body is kinematic
     // because the actor runtime moves the monster itself.
     const actor = player || config ? null : solidActor(project, entity);
-    if (!player && !config && !actor) continue;
+    if (!player && !config && !actor) return;
     const height = player ? 56 : config ? config.height : actor.height;
     const radius = player ? 12 : config ? config.radius : actor.radius;
     const bodyType = player || actor ? 'kinematic' : config.body;
@@ -459,6 +468,7 @@ export function createPhysics(project, state, R, triangulate) {
     if (actor) actorHeights.set(entity.id, height);
     entity.z = bottom;
   }
+  for (const entity of state.entities) addBody(entity);
   createJoints();
   const spawn = state.entities.find(entity => entity.type === 'player'), playerId = spawn.id;
   /** How far below the capsule a surface still counts as ground, in map units. */
@@ -676,6 +686,9 @@ export function createPhysics(project, state, R, triangulate) {
         bodies: [...bodies].map(([id, body]) => ({
           id, translation: vector(body.translation()), rotation: { ...vector(body.rotation()), w: body.rotation().w },
           linvel: vector(body.linvel()), angvel: vector(body.angvel()), sleeping: body.isSleeping(),
+          // A cue can change how a body falls, so the number it set is part of the motion being
+          // saved: without it a body caught in mid-air fell on at the wrong rate after a load.
+          gravityScale: body.gravityScale(), damping: body.linearDamping(),
         })),
         active: [...active], contacts: [...contacts], started: [...started], ended: [...ended],
         forces: [...forces].map(([id, force]) => [id, { ...force }]), accumulator, verticalSpeed, grounded,
@@ -698,6 +711,8 @@ export function createPhysics(project, state, R, triangulate) {
           body.setLinvel(saved.linvel, false); body.setAngvel(saved.angvel, false);
         }
         if (saved.sleeping) body.sleep(); else body.wakeUp();
+        if (Number.isFinite(saved.gravityScale)) body.setGravityScale(saved.gravityScale, false);
+        if (Number.isFinite(saved.damping)) { body.setLinearDamping(saved.damping); body.setAngularDamping(saved.damping); }
       }
       active.clear(); for (const key of snapshot.active) active.add(key);
       contacts = new Set(snapshot.contacts); started = new Set(snapshot.started); ended = new Set(snapshot.ended);
@@ -892,6 +907,13 @@ export function createPhysics(project, state, R, triangulate) {
       if (!bodies.get(id)?.isDynamic()) return;
       const previous = forces.get(id) || { x: 0, y: 0, z: 0 };
       forces.set(id, { x: previous.x + vector.x, y: previous.y + vector.y, z: previous.z + vector.z });
+    },
+    /** Gives an object that appeared during play the body its authored copy would have had. */
+    add(id) {
+      const entity = state.entities.find(entity => entity.id === id);
+      if (!entity || bodies.has(id)) return;
+      addBody(entity);
+      if (bodies.has(id)) { world.propagateModifiedBodyPositionsToColliders(); syncEntity(entity); }
     },
     remove(id) {
       const body = bodies.get(id), collider = colliders.get(id);

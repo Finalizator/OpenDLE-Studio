@@ -325,6 +325,58 @@ test('a tweened model keeps the pose it was given and turns with the route', () 
   assert.ok(Math.abs(((turned - 300) % 360 + 360) % 360 - 90) < 5, `turned with the route, was ${turned}`);
 });
 
+// A trip is the route's shape plus the object's own displacement from it, and that displacement is
+// taken from where the object was authored. Reading the live position instead made a looping
+// timeline carry the object past its route's end for ever (100, 200, 300 …) and doubled the
+// distance of a trip restarted halfway.
+test('a repeated trip ends on the route, and objects keep their own displacement', () => {
+  const project = createProject();
+  project.events = [];
+  project.paths = [{ id: 'road', name: 'Road', closed: false, points: [
+    { id: 'p0', x: 0, y: 0, z: 0, curve: 0 }, { id: 'p1', x: 1000, y: 0, z: 0, curve: 0 } ] }];
+  const actor = project.map.entities.find(entity => entity.id === 'pickup');
+  // Two objects on one road, one of them 200 units off the route: both travel the same shape.
+  const driver = { ...structuredClone(actor), id: 'driver', name: 'Driver', x: 0, y: 0 };
+  const passenger = { ...structuredClone(actor), id: 'passenger', name: 'Passenger', x: 0, y: 200 };
+  project.map.entities = [...project.map.entities.filter(entity => entity.id !== 'pickup'), driver, passenger];
+  project.timesheets = [{ id: 'lap', name: 'Lap', duration: 2, loop: true, tracks: [createTrack(0)], cues: [
+    { id: 'go', name: 'Go', trackId: 'track_1', time: 0, ownerId: null, actions: [
+      { type: 'followPath', entityId: 'driver', pathId: 'road', fromPoint: 0, toPoint: -1, seconds: 2, easing: 'linear', faceDirection: 'no' },
+      { type: 'followPath', entityId: 'passenger', pathId: 'road', fromPoint: 0, toPoint: -1, seconds: 2, easing: 'linear', faceDirection: 'no' },
+    ] },
+  ] }];
+  validateProject(project);
+
+  // The move itself, run twice by hand: the second trip must land where the first did.
+  const once = createRuntime(project);
+  startPathTween(once, { entityId: 'driver', pathId: 'road', seconds: 2 });
+  for (let i = 0; i < 45; i++) advancePathTweens(project, once, .05);
+  const firstEnd = once.entities.find(entity => entity.id === 'driver').x;
+  assert.ok(Math.abs(firstEnd - 1000) < 1, `the first trip ends on the route, was ${firstEnd}`);
+  startPathTween(once, { entityId: 'driver', pathId: 'road', seconds: 2 });
+  for (let i = 0; i < 45; i++) advancePathTweens(project, once, .05);
+  assert.ok(Math.abs(once.entities.find(entity => entity.id === 'driver').x - 1000) < 1, 'the second trip ends on the route too');
+
+  // A restarted trip does not double its distance either.
+  const halfway = createRuntime(project);
+  startPathTween(halfway, { entityId: 'driver', pathId: 'road', seconds: 2 });
+  for (let i = 0; i < 14; i++) advancePathTweens(project, halfway, .05);
+  assert.ok(Math.abs(halfway.entities.find(entity => entity.id === 'driver').x - 350) < 5, 'part of the way along');
+  startPathTween(halfway, { entityId: 'driver', pathId: 'road', seconds: 2 });
+  for (let i = 0; i < 45; i++) advancePathTweens(project, halfway, .05);
+  assert.ok(Math.abs(halfway.entities.find(entity => entity.id === 'driver').x - 1000) < 1, 'the restart still ends on the route');
+
+  // The looping timeline never carries either object off the road, and the displaced one stays
+  // displaced by exactly its own 200 units.
+  const state = createRuntime(project);
+  startTimesheetRun(project, state, 'lap');
+  for (let i = 0; i < 200; i++) tick(project, state);
+  const ended = state.entities.filter(entity => ['driver', 'passenger'].includes(entity.id));
+  assert.ok(Math.abs(ended.find(entity => entity.id === 'driver').x - 1000) < 2, `driver at ${ended.find(entity => entity.id === 'driver').x}`);
+  assert.ok(Math.abs(ended.find(entity => entity.id === 'passenger').y - 200) < 2, 'the passenger keeps its own line');
+  assert.ok(Math.abs(ended.find(entity => entity.id === 'passenger').x - 1000) < 2, 'and travels the same length of road');
+});
+
 test('a tweened sprite is turned onto the route, because its forward is the engine\'s', () => {
   const project = createProject();
   project.events = [];

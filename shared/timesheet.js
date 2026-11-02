@@ -384,7 +384,19 @@ export function advancePathTweens(project, state, dt) {
       const start = pointAlong(path, startDistance / total);
       tween.anchor = start ? { x: start.x, y: start.y, z: start.z || 0 } : { x: 0, y: 0, z: 0 };
     }
-    const origin = tween.origin || tween.anchor;
+    // The object's own displacement from the route is taken from where it was *authored*, once,
+    // not from wherever the previous trip left it: reading the live position made a looping
+    // timeline carry an object off the end of its road (100, 200, 300 for a route ending at 100)
+    // and doubled the distance of a trip restarted halfway.
+    if (!tween.originFrom) {
+      const authored = (project.map.entities || []).find(item => item.id === tween.entityId);
+      tween.originFrom = authored
+        ? { x: authored.x, y: authored.y, z: authored.z || 0 }
+        // An object the level made during play has no authored position, so it keeps the one it
+        // had when the trip started.
+        : { ...(tween.origin || { x: 0, y: 0, z: 0 }) };
+    }
+    const origin = tween.originFrom;
     entity.x = origin.x + (where.x - tween.anchor.x);
     entity.y = origin.y + (where.y - tween.anchor.y);
     entity.z = origin.z + ((where.z || 0) - tween.anchor.z);

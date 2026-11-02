@@ -196,3 +196,34 @@ test('a sub-event of an object rule resolves this object', async () => {
   const crate = state.entities.find(entity => entity.id === 'crate');
   assert.deepEqual([crate.x, crate.y], [99, 77], 'the child rule moved the owning object');
 });
+
+// A cue that puts an object in the level during play has to give it the body its authored copy
+// would have had: a spawned crate was walked through, and a spawned monster could not block.
+test('an object spawned during play gets a body, a per-object rule, and is forgotten when removed', t => {
+  const project = bareRoom();
+  project.map.entities = project.map.entities.map(entity => entity.type === 'player' ? entity
+    : { ...entity, variables: { seen: 0 } });
+  project.map.entities.push({ id: 'block', type: 'decoration', name: 'Block', x: 64, y: 64, angle: 0, elevation: 0,
+    variables: { seen: 0 },
+    physics: { body: 'fixed', shape: 'box', width: 64, height: 64, depth: 64, radius: 32, mass: 1,
+      friction: .7, restitution: 0, sensor: false, lockRotation: false } });
+  project.events = [
+    rule('spawn', { type: 'onStart' }, [{ type: 'spawnEntity', templateId: 'block', x: -64, y: 64 }], { once: true }),
+    { id: 'mark', enabled: true, once: true, forEachType: 'decoration',
+      condition: { type: 'always' }, conditions: [], actions: [{ type: 'addObjectVariable', entityId: '$self', variable: 'seen', value: 1 }] },
+  ];
+  const state = withPhysics(project, t);
+  tick(project, state, 3);
+  const spawned = state.entities.find(entity => entity.spawnedFrom);
+  assert.ok(spawned, 'the cue made an object');
+  assert.equal(state.physics.bodies.has(spawned.id), true, 'and it is solid');
+  assert.equal(spawned.variables?.seen, 1, 'a per-object rule ran for it');
+  assert.ok([...state.fired].some(key => key.endsWith(`:${spawned.id}`)), 'and left a per-object mark');
+
+  // Removing it releases what the runtime remembered, so a spawner does not grow for ever. The
+  // rule is added after validation because it names an object that only exists during play.
+  project.events.push(rule('cleanup', { type: 'always' }, [{ type: 'removeEntity', entityId: spawned.id }], { once: true }));
+  tick(project, state, 1);
+  assert.equal(state.entities.some(entity => entity.id === spawned.id), false, 'the rule removed it');
+  assert.equal([...state.fired].some(key => key.endsWith(`:${spawned.id}`)), false, 'its per-object marks went with it');
+});

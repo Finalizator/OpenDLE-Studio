@@ -221,6 +221,37 @@ test('a save round trips when imported actors are solid without a physics config
   assert.deepEqual(runtime.physics.saveState().bodies.map(body => body.id).sort(), saved.bodies.map(body => body.id).sort());
 });
 
+// A cue can change how a body falls, and that is part of the motion being saved: without the two
+// numbers a body caught in mid-air fell on at the wrong rate after a load.
+test('a save keeps the motion parameters a cue set on a body', t => {
+  const { project, state } = fixture();
+  Object.assign(project.map.entities[1], { physics: config, elevation: 60 });
+  state.entities = createRuntime(project).entities;
+  state.physics = createPhysics(project, state, R, triangulate);
+  t.after(() => state.physics.dispose());
+  state.physics.gravityScale('pickup', .2);
+  state.physics.damping('pickup', 4);
+  const record = json(captureGameSave(project, state, 'id'));
+  const { runtime, physicsData } = restoreGameSave(project, record, 'id');
+  runtime.physics = createPhysics(project, runtime, R, triangulate);
+  t.after(() => runtime.physics.dispose());
+  runtime.physics.restoreState(physicsData);
+  const saved = physicsData.bodies.find(body => body.id === 'pickup');
+  assert.equal(Math.round(saved.gravityScale * 10) / 10, .2);
+  assert.equal(saved.damping, 4);
+  const body = runtime.physics.bodies.get('pickup');
+  assert.equal(Math.round(body.gravityScale() * 10) / 10, .2);
+  assert.equal(body.linearDamping(), 4);
+  // Saves written before the parameters travelled simply have no parameters to restore.
+  const old = json(record);
+  for (const entry of old.physicsData.bodies) { delete entry.gravityScale; delete entry.damping; }
+  resign(old);
+  const plainRuntime = restoreGameSave(project, old, 'id');
+  plainRuntime.runtime.physics = createPhysics(project, plainRuntime.runtime, R, triangulate);
+  t.after(() => plainRuntime.runtime.physics.dispose());
+  assert.doesNotThrow(() => plainRuntime.runtime.physics.restoreState(plainRuntime.physicsData));
+});
+
 test('physics snapshot restores midair player, dynamic rigid bodies, velocities, forces and substeps after initialization', t => {
   const { project, state } = fixture();
   Object.assign(project.map.entities[1], { physics: config, elevation: 60 });
@@ -394,4 +425,58 @@ test('a save written after a spray or a grounded actor still restores', () => {
   assert.equal(restored.decalCounter, 4);
   assert.equal(restored.impacts.filter(effect => effect.decal).length, 1);
   assert.equal(restored.groundCorrections, undefined, 'diagnostics are not part of a save');
+});
+
+// A save written while an object the level made is alive has to load: the host writes the file, so
+// an unloadable save costs the player their only one. A spawned enemy used to fail the shape check
+// (it lacked the actor fields its template gained), then the id checks (its animation and its
+// per-object rule were not "known objects").
+test('a save written while a spawned object is alive restores it', async () => {
+  const { project, state } = fixture();
+  project.actors = [{ id: 'actor_soldier', name: 'Soldier', health: 20, radius: 16, height: 56,
+    flags: {}, sounds: {}, states: { frames: [], labels: {} } }];
+  const template = project.map.entities.find(entity => entity.type !== 'player');
+  Object.assign(template, { type: 'enemy', name: 'Soldier', health: 20, actorId: 'actor_soldier', actorName: 'Soldier' });
+  project.events = [
+    { id: 'spawn', enabled: true, once: true, condition: { type: 'onStart' },
+      actions: [{ type: 'spawnEntity', templateId: template.id, x: template.x + 32, y: template.y }] },
+    { id: 'each', enabled: true, once: true, forEachType: 'enemy',
+      condition: { type: 'always' }, conditions: [], actions: [{ type: 'setObjectVariable', entityId: '$self', variable: 'seen', value: 1 }] },
+  ];
+  template.variables = { seen: 0 };
+  const identity = await gameSaveIdentity(project);
+  const runtime = createRuntime(project);
+  runtime.physics = createPhysics(project, runtime, R, triangulate);
+  runtime.hasGame = true;
+  for (let frame = 0; frame < 5; frame++) stepRuntime(project, runtime, 1 / 35, new Set());
+  const spawned = runtime.entities.find(entity => entity.spawnedFrom);
+  assert.ok(spawned, 'the cue made an object');
+  assert.equal(spawned.actorResolved, true, 'it has the actor fields its template has');
+  const record = captureGameSave(project, runtime, identity);
+  const { runtime: restored } = restoreGameSave(project, json(record), identity);
+  const copy = restored.entities.find(entity => entity.id === spawned.id);
+  assert.ok(copy, 'the restored game still has it');
+  assert.equal(copy.spawnedFrom, template.id);
+  runtime.physics?.dispose?.();
+  restored.physics?.dispose?.();
+});
+
+test('an object the level made from a template it did not place is a known object', async () => {
+  // A cue may spawn a thing the current difficulty filtered out, so the template is in the project
+  // but not in the runtime's own baseline. The save names the template, and the project knows it.
+  const project = createProject();
+  project.events = [];
+  const template = project.map.entities.find(entity => entity.type !== 'player');
+  Object.assign(template, { type: 'decoration', name: 'Late', x: 900, y: 900, skillMask: 64 });
+  const identity = await gameSaveIdentity(project);
+  project.events = [{ id: 'spawn', enabled: true, once: true, condition: { type: 'onStart' },
+    actions: [{ type: 'spawnEntity', templateId: template.id, x: 32, y: 32 }] }];
+  const runtime = createRuntime(project);
+  runtime.hasGame = true;
+  stepRuntime(project, runtime, 1 / 35, new Set());
+  const spawned = runtime.entities.find(entity => entity.spawnedFrom);
+  assert.ok(spawned, 'the cue made an object from a template the difficulty did not place');
+  const record = captureGameSave(project, runtime, identity);
+  const { runtime: restored } = restoreGameSave(project, json(record), identity);
+  assert.ok(restored.entities.some(entity => entity.id === spawned.id));
 });

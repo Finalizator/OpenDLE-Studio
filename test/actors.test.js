@@ -246,6 +246,21 @@ test('a project with an actor table validates and round-trips', () => {
   assert.ok(imp.states.labels.See !== undefined);
 });
 
+test('an object that names an actor the table does not have is refused', () => {
+  const project = createProject();
+  project.actors = buildVanillaActors();
+  const entity = project.map.entities.find(item => item.type !== 'player');
+  entity.actorId = 'actor_doomimp';
+  entity.actorName = 'DoomImp';
+  assert.doesNotThrow(() => validateProject(project));
+  entity.actorId = 'actor_missing';
+  assert.throws(() => validateProject(project), /references an unknown actor actor_missing/);
+  assert.throws(() => validateProject(project, { fast: true }), /references an unknown actor/, 'fast mode checks it too');
+  entity.actorId = 'actor_doomimp';
+  entity.actorName = 'NotAnActor';
+  assert.throws(() => validateProject(project), /references an unknown actor NotAnActor/);
+});
+
 test('imported actors drive enemy behaviour: see, chase and fire', () => {
   const project = createProject();
   project.actors = buildVanillaActors();

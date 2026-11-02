@@ -12,6 +12,100 @@ const limits = {
   frame: [0, 4095], fontSize: [1, 512],
 };
 
+/**
+ * Drops every event command that matches, and any rule the drop left with nothing to do.
+ *
+ * The same shape the route and timeline deletes follow: a rule this delete gutted goes with it,
+ * a rule that was already idle is none of its business.
+ */
+function releaseCommands(project, matches, removed) {
+  const keepEvent = event => {
+    const conditionsBefore = [event.condition, ...(event.conditions || [])].filter(Boolean);
+    const before = (event.actions || []).length + conditionsBefore.length;
+    const drop = list => list.filter(command => {
+      if (!matches(command)) return true;
+      removed.commands += 1;
+      return false;
+    });
+    event.actions = drop(event.actions || []);
+    const keptConditions = drop(conditionsBefore);
+    event.condition = keptConditions[0] || null;
+    event.conditions = keptConditions.slice(1);
+    const after = event.actions.length + keptConditions.length;
+    if (after < before && (!event.actions.length || !keptConditions.length)) { removed.rules += 1; return false; }
+    return true;
+  };
+  project.events = (project.events || []).filter(keepEvent);
+}
+
+/**
+ * Deletes HUD animations, releasing the rules that start or stop them.
+ *
+ * A timeline of HUD property keys is named by `playHUDAnimation`/`stopHUDAnimation` commands, and
+ * deleting the clip used to leave them naming nothing — which the editor then reported as an
+ * invalid project, after the delete.
+ */
+export function removeHUDAnimations(project, ids) {
+  const wanted = new Set([].concat(ids));
+  const removed = { clips: 0, commands: 0, rules: 0 };
+  project.hud.animations = (project.hud.animations || []).filter(clip => {
+    if (!wanted.has(clip.id)) return true;
+    removed.clips += 1;
+    return false;
+  });
+  releaseCommands(project, command => wanted.has(command?.animationId), removed);
+  return removed;
+}
+
+/**
+ * Deletes HUD elements, releasing everything that named them.
+ *
+ * A HUD element is named by more than its own row: a child element sits under it, an animation
+ * drives it, a game menu lists it, and a rule can click it, show it or set its text. Deleting one
+ * used to leave those names behind, which the editor then reported as "Command references an
+ * unknown HUD element" *after* the delete — the element stayed, the error stayed, and there was no
+ * way to find the rule that blocked it. Everything is released here, and the counts say what went
+ * so the editor can report it.
+ */
+export function removeHUDElements(project, ids) {
+  const wanted = new Set([].concat(ids));
+  const elements = project?.hud?.elements || [];
+  // A child of a deleted element goes with it, however deep the nesting runs.
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const element of elements) {
+      if (element.parentId && wanted.has(element.parentId) && !wanted.has(element.id)) { wanted.add(element.id); changed = true; }
+    }
+  }
+  const removed = { elements: 0, tracks: 0, clips: 0, commands: 0, rules: 0 };
+  project.hud.elements = elements.filter(element => {
+    if (!wanted.has(element.id)) return true;
+    removed.elements += 1;
+    return false;
+  });
+
+  const emptied = [];
+  project.hud.animations = (project.hud.animations || []).filter(clip => {
+    const before = (clip.tracks || []).length;
+    clip.tracks = (clip.tracks || []).filter(track => !wanted.has(track.elementId));
+    removed.tracks += before - clip.tracks.length;
+    // An animation whose every track drove deleted elements has nothing left to do.
+    if (before && !clip.tracks.length) { emptied.push(clip.id); return false; }
+    return true;
+  });
+  if (emptied.length) {
+    // The clips are already out of the list; this releases the rules that started them.
+    const dropped = removeHUDAnimations(project, emptied);
+    removed.commands += dropped.commands;
+    removed.rules += dropped.rules;
+    removed.clips += emptied.length;
+  }
+  if (project.gameMenus?.elementIds) project.gameMenus.elementIds = project.gameMenus.elementIds.filter(id => !wanted.has(id));
+
+  releaseCommands(project, command => wanted.has(command?.elementId), removed);
+  return removed;
+}
+
 export function validateHUDProperty(property, value, element, assert) {
   assert(HUD_PROPERTIES.includes(property), 'Unknown HUD property');
   const [min, max] = limits[property];

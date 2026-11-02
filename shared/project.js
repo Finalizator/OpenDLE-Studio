@@ -776,6 +776,12 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   for (const key of ['sky', 'floor']) assert(colorPattern.test(project.environment[key]), `${key} must be #rrggbb`);
   assetRef(project.environment.skyAsset, 'Sky panorama');
   assetRef(project.environment.weaponAsset, 'Weapon overlay');
+  // A dangling track is accepted by nothing downstream — the level simply plays no music — so the
+  // reference is checked here, against the kind the music player can actually decode.
+  if (project.environment.musicAsset !== undefined && project.environment.musicAsset !== null) {
+    assert(assetIds.has(project.environment.musicAsset), 'Music references an unknown asset');
+    assert(['music', 'sound'].includes(assetById.get(project.environment.musicAsset)?.kind), 'Music requires an imported track');
+  }
   if (project.environment.weaponAssets !== undefined) {
     object(project.environment.weaponAssets, 'Weapon overlay mappings');
     for (const [weapon, id] of Object.entries(project.environment.weaponAssets)) {
@@ -1124,6 +1130,16 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       }
     }
     }
+    // An object that names an actor the table does not have runs without its state machine, its
+    // sounds and its AI, and says nothing about it, so the reference is checked where both tables
+    // are known. Only the lookups are built here, so the check still runs in fast mode.
+    const knownActorIds = new Set(project.actors.map(actor => actor?.id));
+    const knownActorNames = new Set(project.actors.map(actor => String(actor?.name ?? '').toLowerCase()));
+    for (const entity of [...entities, ...(project.scenes || []).flatMap(scene => scene.entities || [])]) {
+      if (entity.actorId !== undefined) assert(knownActorIds.has(entity.actorId), `Object ${entity.id} references an unknown actor ${entity.actorId}`);
+      if (entity.actorName !== undefined)
+        assert(knownActorNames.has(String(entity.actorName).toLowerCase()), `Object ${entity.id} references an unknown actor ${entity.actorName}`);
+    }
   }
   if (project.cameraTextures !== undefined) {
     array(project.cameraTextures, 'Camera textures', 32);
@@ -1147,8 +1163,9 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       assert(!['game', 'version', 'title', 'assets'].some(key => Object.hasOwn(level.data, key)), 'Level data must not nest shared game fields');
       array(level.assetIds, 'Level assets', LIMITS.assets);
       assert(new Set(level.assetIds).size === level.assetIds.length, 'Duplicate level asset references');
-      if (level.id !== game.active)
-        for (const id of level.assetIds) assert(assetIds.has(id), `Level ${level.id} references unknown asset ${id}`);
+      // The open level is checked too: a dangling reference there is the same corruption as on a
+      // dormant one, and the studio validates this project on every save.
+      for (const id of level.assetIds) assert(assetIds.has(id), `Level ${level.id} references unknown asset ${id}`);
     }
     assert(levelIds.has(game.entry) && levelIds.has(game.active), 'Game entry/active level is missing');
     for (const level of game.levels) {

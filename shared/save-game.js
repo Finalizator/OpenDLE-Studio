@@ -1,4 +1,5 @@
 import { createRuntime } from './runtime.js';
+import { initialiseActorEntities } from './actor-runtime.js';
 import { HL2_MOVEMENT } from './source-motion.js';
 import { selectGameLevel } from './game-levels.js';
 import { validatePhysicsState, physicsEntityIds } from './physics.js';
@@ -174,10 +175,19 @@ function validateRuntime(project, state, baseline) {
   for (const key of ['x', 'y', 'angle', 'pitch']) if (!Number.isFinite(state.player[key])) fail(`invalid player ${key}`);
   if (state.player.z !== undefined && !Number.isFinite(state.player.z)) fail('invalid player z');
   const entities = new Map(baseline.entities.map(entity => [entity.id, entity])), seen = new Set();
+  // A template is what the object was made from: the runtime's own copy when the level placed it,
+  // and otherwise the project's — a cue may spawn a thing this skill did not place, and the save
+  // still has to load. The project copy is initialised the way the runtime would, because that is
+  // the shape the saved entity has.
+  const templateFor = id => {
+    const raw = (project.map.entities || []).find(item => item.id === id);
+    return raw ? initialiseActorEntities(project, [structuredClone(raw)])[0] : null;
+  };
   for (const entity of state.entities) {
     if (!plain(entity) || seen.has(entity.id)) fail('unknown or duplicate entity');
-    const template = entities.get(entity.id) || (typeof entity.spawnedFrom === 'string' && entities.get(entity.spawnedFrom));
-    if (!template) fail('unknown entity');
+    const template = entities.get(entity.id) ||
+      (typeof entity.spawnedFrom === 'string' && (entities.get(entity.spawnedFrom) || templateFor(entity.spawnedFrom)));
+    if (!template) fail(`unknown entity ${entity.id}`);
     seen.add(entity.id); matchShape(entity, template, `entity ${entity.id}`);
     for (const key of ['x', 'y']) if (!Number.isFinite(entity[key])) fail('invalid entity position');
     if (entity.z !== undefined && !Number.isFinite(entity.z)) fail('invalid entity height');
@@ -193,10 +203,23 @@ function validateRuntime(project, state, baseline) {
   }
   for (const [id, value] of state.timers) if (typeof id !== 'string' || typeof value !== 'number' || Number.isNaN(value)) fail('invalid script timer');
   for (const [id, enabled] of state.groups) if (!baseline.groups.has(id) || typeof enabled !== 'boolean') fail('invalid event group');
+  // The objects this level has, plus the ones it made while playing: a spawned enemy is a real
+  // object with its own animation, its own per-object rules and its own fired marks, and a save
+  // written while it is alive has to load.
+  const entityIds = new Set([...project.map.entities.map(entity => entity.id),
+    ...(Array.isArray(state.entities) ? state.entities.map(entity => entity?.id).filter(id => typeof id === 'string') : [])]);
   const events = new Set((project.events || []).flatMap(event => event.forEachType
     ? project.map.entities.filter(entity => entity.type === event.forEachType).map(entity => `${event.id}:${entity.id}`)
     : [event.id]));
-  for (const id of state.fired) if (typeof id !== 'string' || !events.has(id)) fail('invalid fired event');
+  for (const id of state.fired) {
+    if (typeof id !== 'string') fail('invalid fired event');
+    if (events.has(id)) continue;
+    // A per-object rule that fired for an object the level made: the same rule, another owner.
+    const cut = id.lastIndexOf(':');
+    if (cut > 0 && entityIds.has(id.slice(cut + 1)) &&
+      (project.events || []).some(event => event.id === id.slice(0, cut) && event.forEachType)) continue;
+    fail('invalid fired event');
+  }
   for (const [key, allowed] of [['keys', KEYS], ['weapons', WEAPONS]])
     for (const id of state.inventory[key]) if (!allowed.includes(id)) fail('invalid inventory');
   if (!WEAPONS.includes(state.inventory.selectedWeapon) || !state.inventory.weapons.has(state.inventory.selectedWeapon))
@@ -205,7 +228,6 @@ function validateRuntime(project, state, baseline) {
   const stringSet = (set, allowed, label) => {
     for (const id of set) if (typeof id !== 'string' || allowed && !allowed.has(id)) fail(`invalid ${label}`);
   };
-  const entityIds = new Set(project.map.entities.map(entity => entity.id));
   const wallIds = new Set(project.map.walls.map(wall => wall.id));
   stringSet(state.animationFinished, entityIds, 'finished animations');
   stringSet(state.worldTriggers.cross, wallIds, 'crossed walls');

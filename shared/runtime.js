@@ -171,6 +171,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     onRemove: entity => {
       recordRemovedEntity(state, entity);
       state.physics?.remove(entity.id);
+      forgetEntity(state, entity.id);
       state.entities = state.entities.filter(item => item.id !== entity.id);
     },
     initialiseEntities: entities => initialiseActorEntities(project, entities),
@@ -229,6 +230,19 @@ function cacheFor(state) {
   let cache = stateCaches.get(state);
   if (!cache) stateCaches.set(state, cache = {});
   return cache;
+}
+
+/**
+ * Drops everything the runtime remembered about an object that no longer exists.
+ *
+ * A rule's per-object instance and the health it last saw are keyed by the object's id, so a
+ * spawner that made and removed objects left one entry per object for the life of the game.
+ */
+function forgetEntity(state, id) {
+  const instances = cacheFor(state).instances;
+  if (instances) for (const byOwner of instances.values()) byOwner.delete(id);
+  for (const key of [...state.entitySamples.keys()]) if (key.endsWith(`:${id}`)) state.entitySamples.delete(key);
+  for (const key of [...state.fired]) if (key.endsWith(`:${id}`)) state.fired.delete(key);
 }
 
 /**
@@ -1089,7 +1103,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (action.z !== undefined) spawned.z = action.z;
           if (action.angle !== undefined) spawned.angle = action.angle;
           if (action.name) spawned.name = action.name.slice(0, 100);
+          // A spawned enemy gets the same actor fields its authored copy has, or the save written
+          // while it is alive would not load: the runtime shape is checked against the template.
+          initialiseActorEntities(project, [spawned]);
           state.entities.push(spawned);
+          // The body the authored copy would have had: a spawned crate is solid, a spawned monster
+          // blocks the player. Without this one the player walks through everything it makes.
+          state.physics?.add?.(spawned.id);
           state.worldRevision++;
           break;
         }
@@ -1297,6 +1317,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           recordRemovedEntity(state, state.entities.find(item => item.id === id));
           state.physics?.remove(id); state.animations.delete(id);
           state.spriteAnimations.delete(id);
+          forgetEntity(state, id);
           state.entities = state.entities.filter(item => item.id !== id);
           break;
         }

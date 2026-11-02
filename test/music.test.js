@@ -5,6 +5,7 @@ import { parseMusic, parseMidi, parseMus, defaultLevelMusic, resolveLevelMusic, 
 import { encodeMusic } from '../shared/sound.js';
 import { readWad } from '../shared/wad.js';
 import { applyLevelMusic } from '../shared/game-levels.js';
+import { createProject, validateProject } from '../shared/project.js';
 import { instrumentPatch, noteFrequency } from '../public/music-player.js';
 
 const bytes = (...values) => new Uint8Array(values.flat());
@@ -335,4 +336,19 @@ test('every Doom MUS track in the local Doom II IWAD parses with a real length',
     assert.ok(track.notes.length > 100, `${lump.name} has ${track.notes.length} notes`);
     assert.ok(track.seconds > 10 && track.seconds < 900, `${lump.name} lasts ${track.seconds}s`);
   }
+});
+
+test('a level track that is not an imported track is refused rather than silently silent', () => {
+  const project = createProject();
+  project.assets = [
+    { id: 'music_a', name: 'D_A', kind: 'music', format: 'midi', src: encodeMusic(buildMidi(), 'midi') },
+    { id: 'sprite_a', name: 'A', kind: 'sprite', width: 32, height: 32,
+      src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==' },
+  ];
+  project.environment.musicAsset = 'music_a';
+  assert.doesNotThrow(() => validateProject(project));
+  project.environment.musicAsset = 'music_missing';
+  assert.throws(() => validateProject(project), /Music references an unknown asset/);
+  project.environment.musicAsset = 'sprite_a';
+  assert.throws(() => validateProject(project), /Music requires an imported track/);
 });

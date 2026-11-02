@@ -4594,6 +4594,9 @@ function ensureSceneObjectEditor() {
       openScenes: () => openSceneIds,
       assets: () => project?.assets || [],
       shaders: () => project?.shaders || [],
+      spriteClips: () => project?.spriteClips || [],
+      eventSheets: () => project?.eventSheets || [],
+      eventGroups: () => project?.eventGroups || [],
       entities: () => project?.map?.entities || [],
       editScene(id, fn, message) {
         editGame(next => {
@@ -5263,20 +5266,26 @@ function eventCardMenu(id, event) {
 function importNodeDocument(document, options = {}) {
   const sceneId = activeSceneId || project.scenes?.[0]?.id;
   if (!sceneId) throw new Error('Create a scene object before importing a .node file');
-  const plan = planNodeFileInstall(document, { assets: project.assets || [], shaders: project.shaders || [] });
+  const plan = planNodeFileInstall(document, { assets: project.assets || [], shaders: project.shaders || [],
+    spriteClips: project.spriteClips || [], eventSheets: project.eventSheets || [], eventGroups: project.eventGroups || [] });
   let imported = null;
   editGame(next => {
     next.assets ||= [];
     next.shaders ||= [];
     next.assets.push(...plan.addAssets);
     next.shaders.push(...plan.addShaders);
+    next.spriteClips = [...(next.spriteClips || []), ...plan.addClips];
+    next.eventSheets = [...(next.eventSheets || []), ...plan.addSheets];
+    next.eventGroups = [...(next.eventGroups || []), ...plan.addGroups];
     const scene = (next.scenes || []).find(item => item.id === sceneId);
     if (!scene) throw new Error('That scene object no longer exists');
-    imported = applyNodeFile(scene, document, { ...options, assetRemap: plan.assetRemap, shaderRemap: plan.shaderRemap });
+    imported = applyNodeFile(scene, document, { ...options, assetRemap: plan.assetRemap, shaderRemap: plan.shaderRemap,
+      clipRemap: plan.clipRemap, sheetRemap: plan.sheetRemap, groupRemap: plan.groupRemap });
   }, `Imported ${document.nodes.length} node(s) from ${document.name}`);
   renderSceneObjects();
   const notes = [...(document.warnings || [])];
   if (plan.addAssets.length) notes.push(`${plan.addAssets.length} asset(s) added`);
+  if (plan.addClips.length) notes.push(`${plan.addClips.length} sprite clip(s) added`);
   status(`Imported "${document.name}" (${document.nodes.length} node(s)${notes.length ? `; ${notes.join('; ')}` : ''})`);
   return imported;
 }
@@ -5403,6 +5412,7 @@ async function exportLayoutObject(entity) {
   try {
     const document = exportNodeFile(layoutContainer(project), entity.id, {
       assets: project.assets || [], shaders: project.shaders || [], includeEvents: answer.includeEvents,
+      clips: project.spriteClips || [], eventSheets: project.eventSheets || [], eventGroups: project.eventGroups || [],
     });
     const name = nodeFileName(document.name);
     downloadNodeFile(document, name);
@@ -5426,21 +5436,23 @@ async function importLayoutObjectFile() {
     if (!file) return;
     void file.text().then(text => {
       const document_ = parseNodeFile(text);
-      const install = planNodeFileInstall(document_, { assets: project.assets || [], shaders: project.shaders || [] });
+      const install = planNodeFileInstall(document_, { assets: project.assets || [], shaders: project.shaders || [],
+        spriteClips: project.spriteClips || [], eventSheets: project.eventSheets || [], eventGroups: project.eventGroups || [] });
       let added = null;
       edit(next => {
         if (install.addAssets.length) next.assets = [...(next.assets || []), ...install.addAssets];
         if (install.addShaders.length) next.shaders = [...(next.shaders || []), ...install.addShaders];
+        if (install.addClips.length) next.spriteClips = [...(next.spriteClips || []), ...install.addClips];
+        if (install.addSheets.length) next.eventSheets = [...(next.eventSheets || []), ...install.addSheets];
+        if (install.addGroups.length) next.eventGroups = [...(next.eventGroups || []), ...install.addGroups];
         const container = layoutContainer(next);
         const at = { x: camera.x, y: camera.y };
         added = applyNodeFile(container, document_, {
           x: Math.round(at.x), y: Math.round(at.y),
           assetRemap: install.assetRemap, shaderRemap: install.shaderRemap,
+          clipRemap: install.clipRemap, sheetRemap: install.sheetRemap, groupRemap: install.groupRemap,
           maxEntities: LIMITS.entities, maxEvents: 100000,
         });
-        // The container's own arrays are the draft's, except the two the importer replaces.
-        next.map.joints = container.joints;
-        next.events = container.events;
       }, `Imported ${document_.name}`);
       if (added?.root) {
         selection = { kind: 'entity', id: added.root };
@@ -5493,6 +5505,7 @@ async function exportSceneObject(scene) {
   try {
     const document = exportNodeFile(scene, scene.id, {
       assets: project.assets || [], shaders: project.shaders || [], includeEvents: answer.includeEvents,
+      clips: project.spriteClips || [], eventSheets: project.eventSheets || [], eventGroups: project.eventGroups || [],
     });
     const name = nodeFileName(document.name);
     downloadNodeFile(document, name);

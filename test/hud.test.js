@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
-import { hudElement, hudViewport, hudRect, createHUDState, advanceHUD, hudText, installDefaultHUD } from '../shared/hud.js';
+import { hudElement, hudViewport, hudRect, createHUDState, advanceHUD, hudText, installDefaultHUD, removeHUDElements, removeHUDAnimations } from '../shared/hud.js';
 import { parseHUDCSS } from '../shared/hud-style.js';
 import { createRuntime, stepRuntime, lookPlayer } from '../shared/runtime.js';
 import { applyTool } from '../server/tools.js';
@@ -124,6 +124,43 @@ test('HUD play restarts immediately and stop holds the last sampled pose without
   stepRuntime(project, state, .01, new Set(), new Set(['KeyF']));
   assert.equal(state.hudState.elements.get(target).opacity, .45);
 });
+// Deleting a HUD element used to leave every name of it behind — the animation track that drove
+// it, the rule that set its text — and the project then failed validation, so the delete could not
+// be completed at all and nothing said which rule was in the way.
+test('deleting a HUD element releases its children, tracks and rules', () => {
+  const project = createProject();
+  if (!project.hud) installDefaultHUD(project);
+  const parent = project.hud.elements[1];
+  const child = project.hud.elements[2];
+  child.parentId = parent.id;
+  project.hud.animations = [...(project.hud.animations || []), { id: 'clip', name: 'Clip', duration: 1, loop: false, autoPlay: false,
+    tracks: [{ elementId: child.id, property: 'opacity', easing: 'linear', keys: [{ time: 0, value: 1 }, { time: 1, value: 0 }] }] }];
+  project.events = [...project.events, { id: 'rule', name: 'rule', enabled: true, once: false, condition: { type: 'always' },
+    actions: [{ type: 'setHUDText', elementId: parent.id, text: 'hi' }, { type: 'playHUDAnimation', animationId: 'clip' },
+      { type: 'showMessage', message: 'still here' }] }];
+  assert.doesNotThrow(() => validateProject(project), 'the fixture is a valid project');
+
+  const removed = removeHUDElements(project, [parent.id]);
+  assert.equal(removed.elements, 2, 'the child goes with its parent');
+  assert.equal(removed.tracks, 1, 'the animation track goes');
+  assert.equal(removed.clips, 1, 'and an animation with nothing left to drive goes with it');
+  assert.equal(removed.commands, 2, 'both commands that named them are released');
+  assert.doesNotThrow(() => validateProject(project), 'the project is valid again');
+  // The rule survives with the action that had nothing to do with either of them.
+  assert.deepEqual(project.events.find(event => event.id === 'rule').actions.map(action => action.type), ['showMessage']);
+});
+
+test('deleting a HUD animation releases the rules that started it', () => {
+  const project = createProject();
+  if (!project.hud) installDefaultHUD(project);
+  project.hud.animations = [...(project.hud.animations || []), { id: 'clip', name: 'Clip', duration: 1, loop: false, autoPlay: false, tracks: [] }];
+  project.events = [...project.events, { id: 'start', name: 'start', enabled: true, once: false, condition: { type: 'onStart' },
+    actions: [{ type: 'playHUDAnimation', animationId: 'clip' }] }];
+  const removed = removeHUDAnimations(project, ['clip']);
+  assert.deepEqual([removed.clips, removed.commands, removed.rules], [1, 1, 1], 'the rule existed only to start it');
+  assert.doesNotThrow(() => validateProject(project));
+});
+
 test('font assets stay portable and cannot be assigned as world or HUD images', () => {
   const project = fixture();
   project.assets.unshift({ id: 'font_file', name: 'Web font', kind: 'font', src: 'data:font/woff2;base64,d09GMg==' });

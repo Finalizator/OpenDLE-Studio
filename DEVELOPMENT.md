@@ -795,6 +795,13 @@ drives as many models as you like, and editing the path re-shapes all of them.
 Travel is measured in *three* dimensions, so climbing costs distance: a route up a staircase is
 longer than its footprint, and a follower therefore walks it at its stated ground speed.
 
+A route is a **shape**, not a position: an object travels it from where it was *authored*, so three
+decorations set along the same curve all move along it and each keeps its own displacement. That
+displacement is read once, from the authored position — reading the live one made a looping timeline
+carry a truck past the end of its road for ever (100, 200, 300 … for a route ending at 100) and
+doubled the distance of a trip restarted halfway. It also means a `followPath` cue always ends on the
+waypoint it names, however many times it has run.
+
 A rigid body outranks the route: Rapier writes the object's position back from its collider every
 frame, so an object with one is pinned where the physics says, and Properties says so when both are
 set.
@@ -1579,6 +1586,35 @@ the preview or reloading Studio on the same browser origin. They are not
 GZDoom `.zds` files or project saves. Slots are isolated by a content identity of
 the editable game, so changed/imported content cannot accidentally load an
 incompatible runtime. Clearing site data removes browser-local saves.
+
+### What a save carries when the level made things during play
+
+A `spawnEntity` cue makes a real object: it gets the actor fields its template has (`actorResolved`,
+`maxHealth`, `radius`, `height`), a rigid body when its template has one, and its own entry in every
+per-object rule. It used to get none of those — the player walked through a crate a cue spawned, and
+a save written while a spawned enemy was alive could never be loaded again, because the runtime's
+shape check compares a saved object against its template.
+
+The three rules that keep a written save loadable:
+
+- **a spawned object is shaped like its template.** The shape check compares it against the
+  runtime's own copy when the level placed the template, and against the project's copy (initialised
+  the same way) when the cue spawned something this difficulty filtered out;
+- **the save's id checks know about objects the level made.** A spawned object's sprite animation, its
+  per-object rule marks and its body are legitimate, so they are matched against the saved entity
+  list as well as the authored one;
+- **a body's motion parameters travel with it.** `gravityScale` and `damping` are set by cues, so they
+  are part of the physics snapshot; a save written before they travelled still restores, at the
+  defaults it never had.
+
+Removing an object releases what the runtime remembered about it — its per-object rule instance, the
+health it last sampled and the marks of the rules that already fired for it — so a spawner that makes
+and removes thousands of objects does not grow the heap for the life of the game.
+
+The physics snapshot carries Rapier's body state, not Rapier's solver cache, so a restored game
+continues a hair away from where the uninterrupted one would have been (≈0.1–0.2 map units after two
+seconds of walking) and its RNG stream then desyncs. Two restores of the same save are identical, and
+a jump saved mid-air resumes exactly.
 
 Imported menu elements now sit inside a centered, fixed virtual canvas rather
 than spreading across a widescreen HUD. A separate black letterbox hides the
@@ -2484,24 +2520,39 @@ file…*). One format covers all of them because they are the same thing from th
 entity with artwork, a body, an area, variables and possibly a script — and only the table it lives
 in differs, which is what `layoutContainer` in [`shared/node-file.js`](./shared/node-file.js) bridges.
 
-**The file stands on its own.** The artwork, the model and the shader it uses are embedded, so it
-opens on another machine with no project behind it. Two references cannot travel and are dropped with
-a warning rather than written into a file that would dangle: a **route** (`entity.path`) and a
-**layout group** (`entity.groupId`) both belong to the layout, not to the object.
+**The file stands on its own.** The artwork, the model, the shader and the sprite clips it paints
+with are embedded — a clip brings its frames, and a file only carries a clip when every frame's
+picture travels with it — so it opens on another machine with no project behind it. Three references
+cannot travel and are dropped with a warning rather than written into a file that would dangle: a
+**route** (`entity.path`) and a **layout group** (`entity.groupId`) both belong to the layout, not to
+the object, and a **parent node** outside the subtree (saving a child saves that child, not its
+group).
 
 **The visual script is the author's choice.** Every export asks — "Include its visual script (N
 events)" — with the count in front of them, and the answer is recorded in the file as
 `script: { available, included }` so a reader can tell a script that was left out from one that was
-lost. An event that names an object outside the exported one is left out anyway and reported: half a
-rule set that arrives without its partners is worse than none. The same dialog is `askObjectExport`
-in [`public/export-object.js`](./public/export-object.js), and it is the only path to
-`downloadNodeFile` — one place that revokes the blob **after** the click, because revoking it in the
-same task cancels the download while the editor still reports success.
+lost. The script travels with the **sheet and the group** it was written in, so it reads the same way
+where it lands; on import a sheet or group of the same name is rejoined rather than duplicated. A
+rule that cannot travel is left out and reported, because half a rule set that arrives without its
+partners is worse than none:
+
+| a rule is left out when it names | why |
+| --- | --- |
+| an object outside the exported one | the object is not in the file |
+| a route, timesheet, linedef, sector, zone, HUD element or animation | those belong to the project, not the object |
+| a sprite clip or picture the file cannot carry | its frames or bytes are missing from the project |
+| a parent rule that was itself left out | a sub-event without its parent is not a rule |
+
+The same dialog is `askObjectExport` in [`public/export-object.js`](./public/export-object.js), and it
+is the only path to `downloadNodeFile` — one place that revokes the blob **after** the click, because
+revoking it in the same task cancels the download while the editor still reports success.
 
 Importing works both ways: a scene takes a `.node` file with *Import .node*, and the layout takes one
 with right-click → *Import an object file…*, which places it at the view centre. Artwork the project
-already has identically is reused, a clashing id gets a fresh one, and the layout's own limits
-(`LIMITS.entities`) are what the import is checked against rather than a scene's 128.
+already has identically is reused, a clashing id gets a fresh one, sprite clips and event sheets come
+along when they are not already there, and the layout's own limits (`LIMITS.entities`) are what the
+import is checked against rather than a scene's 128. The importer pushes into the project's own
+arrays, so a layout import needs no copying back afterwards.
 
 ### The Scene Object editor
 

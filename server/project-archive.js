@@ -17,7 +17,14 @@ import { PROJECT_FILE, isFolderDocument, unpackProject } from './project-folder.
 const MiB = 1024 * 1024;
 const MAX_ARCHIVE = 1024 * MiB;
 const MAX_UNPACKED = 2048 * MiB;
-const MAX_ENTRIES = 20000;
+// The same ceiling the packer writes to: a zip this studio cannot export is the only one it may
+// refuse for its size, so an archive it just wrote always reads back.
+const MAX_ENTRIES = 0xffff;
+
+/** An archive path as the document names it: forward slashes, no leading `./`, no traversal. */
+function archivePath(name) {
+  return posix.normalize(String(name).replace(/\\/g, '/')).replace(/^\.\//, '');
+}
 
 /**
  * Reads an exported project folder back from its zip.
@@ -39,7 +46,7 @@ export async function readProjectArchive(buffer) {
     zip.on('entry', entry => {
       try {
         if (++entries > MAX_ENTRIES) throw new Error(`The project archive has more than ${MAX_ENTRIES} entries`);
-        const name = posix.normalize(entry.fileName.replace(/\\/g, '/')).replace(/^\.\//, '');
+        const name = archivePath(entry.fileName);
         if (name.endsWith('/')) { zip.readEntry(); return; }
         if (name.includes('..') || name.startsWith('/')) throw new Error(`Project archive path is not safe: ${entry.fileName}`);
         total += entry.uncompressedSize;
@@ -59,12 +66,22 @@ export async function readProjectArchive(buffer) {
     // place, and each entry asks for the next as it finishes.
     zip.readEntry();
   });
-  const document = files.get(PROJECT_FILE);
+  // A folder zipped from a desktop keeps its own name as the top directory (`MyGame/project.json`),
+  // so an archive that has no document at its root is read one level down rather than refused.
+  let prefix = '';
+  let document = files.get(PROJECT_FILE);
+  if (!document) {
+    const candidates = [...files.keys()].filter(name => posix.basename(name) === PROJECT_FILE && name.split('/').length === 2);
+    if (candidates.length > 1) throw new Error(`The archive holds more than one ${PROJECT_FILE}; zip a single project folder`);
+    if (candidates.length === 1) { prefix = `${posix.dirname(candidates[0])}/`; document = files.get(candidates[0]); }
+  }
   if (!document) throw new Error(`The archive has no ${PROJECT_FILE}`);
   let saved;
   try { saved = JSON.parse(document.toString('utf8')); }
   catch (error) { throw new Error(`The project document is not valid JSON (${error.message})`); }
   // The document alone is the format; a bare project in a zip is still a project.
   const folder = isFolderDocument(saved) ? saved : { project: saved, revision: 0 };
-  return unpackProject(folder, path => files.get(path) || null);
+  // A document names its files relative to itself, and the reader normalises the same way, so
+  // `./assets/x.png` and `assets/x.png` both resolve, inside or outside a wrapping directory.
+  return unpackProject(folder, path => files.get(archivePath(`${prefix}${path}`)) || null);
 }

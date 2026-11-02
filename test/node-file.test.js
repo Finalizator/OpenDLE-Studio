@@ -237,6 +237,112 @@ test('an object file imports into a layout without disturbing the layout it join
   assert.doesNotThrow(() => validateProject(destination), 'the result is a valid project');
 });
 
+/** The clip a node paints with, so a file can be asked to carry it. */
+const torchClip = (id = 'clip_torch') => ({ id, name: 'Torch', frames: ['sprite_a', 'sprite_b'], seconds: .1, loop: true });
+
+test('a grouped node saves on its own when its group stays behind', () => {
+  // Saving a child offers the child only: its parent is not carried, so the file must not name it.
+  const { scene, lid } = nodeScene();
+  const document = exportNodeFile(scene, lid.id, { assets: [sprite()] });
+  assert.equal(document.nodes.length, 1);
+  assert.equal(document.nodes[0].parentId, undefined, 'a parent the file does not hold is dropped');
+  assert.match(document.warnings.join(' '), /parent group was not included/);
+  assert.doesNotThrow(() => parseNodeFile(nodeFileText(document)), 'the file it writes is one it can read');
+  const target = newScene('Target');
+  const added = applyNodeFile(target, parseNodeFile(nodeFileText(document)), {});
+  assert.equal(target.entities.find(item => item.id === added.root)?.parentId, undefined);
+});
+
+test('a sprite clip travels with the node that paints with it', () => {
+  const project = createProject();
+  project.assets = [sprite('sprite_a'), sprite('sprite_b', 'B')];
+  const clips = [torchClip()];
+  const torch = project.map.entities.find(item => item.type !== 'player');
+  torch.name = 'Torch';
+  torch.spriteAsset = 'sprite_a';
+  torch.spriteStates = { stand: 'clip_torch' };
+
+  const document = exportNodeFile(layoutContainer(project), torch.id, { assets: project.assets, clips });
+  assert.deepEqual(document.clips.map(clip => clip.id), ['clip_torch'], 'the clip is in the file');
+  assert.deepEqual(document.assets.map(asset => asset.id).sort(), ['sprite_a', 'sprite_b'], 'and so are its frames');
+  assert.deepEqual(document.warnings, [], 'nothing is reported missing');
+
+  // A destination with no clips at all still ends up valid, because the clip came along.
+  const destination = createProject();
+  const install = planNodeFileInstall(parseNodeFile(nodeFileText(document)), { assets: destination.assets || [] });
+  assert.equal(install.addClips.length, 1);
+  assert.equal(install.addAssets.length, 2);
+  destination.assets = [...(destination.assets || []), ...install.addAssets];
+  destination.spriteClips = [...(destination.spriteClips || []), ...install.addClips];
+  applyNodeFile(layoutContainer(destination), parseNodeFile(nodeFileText(document)), {
+    assetRemap: install.assetRemap, clipRemap: install.clipRemap, maxEntities: 100000,
+  });
+  assert.doesNotThrow(() => validateProject(destination));
+  assert.equal(destination.map.entities.find(item => item.name === 'Torch').spriteStates.stand, 'clip_torch');
+
+  // A clip the project does not have cannot be carried, and the file says so rather than
+  // writing a state the destination would reject.
+  const orphan = exportNodeFile(layoutContainer(project), torch.id, { assets: project.assets, clips: [] });
+  assert.deepEqual(orphan.clips, []);
+  assert.match(orphan.warnings.join(' '), /Missing sprite clips: clip_torch/);
+});
+
+test('an object\'s script keeps the sheet and group it was written in', () => {
+  const source = createProject();
+  source.assets = [sprite()];
+  const pickup = source.map.entities.find(item => item.type !== 'player');
+  pickup.name = 'Pickup';
+  pickup.spriteAsset = 'sprite_a';
+  pickup.variables = { taken: 0 };
+  const sheet = { id: `object_${pickup.id}_0`, name: 'Pickup script', section: 'object', enabled: true, phase: 'afterPhysics' };
+  const group = { id: `${sheet.id}_group`, name: 'Pickup logic', sheetId: sheet.id, enabled: true };
+  source.eventSheets = [sheet];
+  source.eventGroups = [group];
+  // A second object the file does not carry: a rule naming it cannot travel.
+  const rival = { ...structuredClone(pickup), id: 'entity_rival', name: 'Rival' };
+  source.map.entities.push(rival);
+  source.events = [
+    { id: 'take', name: 'Take it', enabled: true, once: true, sheetId: sheet.id, groupId: group.id, ownerId: pickup.id,
+      condition: { type: 'onStart' }, conditions: [], actions: [{ type: 'addObjectVariable', entityId: pickup.id, variable: 'taken', value: 1 }] },
+    // A parent that names the player cannot travel; its child has to go with it, or the file
+    // would describe a sub-event whose parent does not exist.
+    { id: 'loud', enabled: true, once: false, sheetId: sheet.id, groupId: group.id, ownerId: pickup.id,
+      condition: { type: 'always' }, conditions: [], actions: [{ type: 'setEntityPosition', entityId: rival.id, x: 0, y: 0 }] },
+    { id: 'child', enabled: true, once: false, sheetId: sheet.id, groupId: group.id, ownerId: pickup.id, parentId: 'loud',
+      condition: { type: 'always' }, conditions: [], actions: [] },
+  ];
+  validateProject(source);
+  const document = exportNodeFile(layoutContainer(source), pickup.id, {
+    assets: source.assets, eventSheets: source.eventSheets, eventGroups: source.eventGroups,
+  });
+  assert.deepEqual(document.events.map(event => event.id), ['take'], 'only the script that stays inside the object travels');
+  assert.match(document.warnings.join(' '), /parent rule was left out/);
+  assert.deepEqual(document.sheets.map(item => item.name), ['Pickup script']);
+  assert.deepEqual(document.groups.map(item => item.name), ['Pickup logic']);
+  const parsed = parseNodeFile(nodeFileText(document));
+  assert.doesNotThrow(() => validateNodeFile(parsed));
+
+  // It lands in a project that has never heard of that sheet, and the project stays valid.
+  const destination = createProject();
+  const plan = planNodeFileInstall(parsed, { assets: destination.assets || [] });
+  destination.assets = [...(destination.assets || []), ...plan.addAssets];
+  destination.eventSheets = [...(destination.eventSheets || []), ...plan.addSheets];
+  destination.eventGroups = [...(destination.eventGroups || []), ...plan.addGroups];
+  applyNodeFile(layoutContainer(destination), parsed, { assetRemap: plan.assetRemap,
+    sheetRemap: plan.sheetRemap, groupRemap: plan.groupRemap, maxEntities: 100000, maxEvents: 100000 });
+  assert.doesNotThrow(() => validateProject(destination), 'the import is valid where it lands');
+  const landed = destination.events.find(event => event.actions.some(action => action.type === 'addObjectVariable'));
+  const landedSheet = destination.eventSheets.find(item => item.id === landed.sheetId);
+  assert.equal(landedSheet?.name, 'Pickup script', 'the rule rejoined a sheet of that name');
+  assert.equal(destination.eventGroups.find(item => item.id === landed.groupId)?.sheetId, landedSheet.id, 'and its group follows the sheet');
+  assert.notEqual(landed.actions[0].entityId, pickup.id, 'the action points at the copy');
+
+  // Importing the same file twice rejoins the sheet rather than duplicating it.
+  const again = planNodeFileInstall(parsed, { assets: destination.assets || [], spriteClips: destination.spriteClips || [],
+    eventSheets: destination.eventSheets || [], eventGroups: destination.eventGroups || [] });
+  assert.deepEqual([again.addSheets.length, again.addGroups.length, again.addAssets.length], [0, 0, 0]);
+});
+
 test('an invalid .node file is refused with a readable reason', () => {
   const { scene, frame } = nodeScene();
   const good = exportNodeFile(scene, frame.id, { assets: [sprite()] });

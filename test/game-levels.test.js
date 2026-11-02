@@ -141,6 +141,8 @@ test('malformed inactive maps, missing routes/assets, duplicate IDs and recursiv
     p => { p.game.levels[1].next = 'unknown'; },
     p => { p.game.entry = 'unknown'; },
     p => { p.game.levels[1].assetIds.push('unknown'); },
+    // The open level is held to the same rule: a dangling reference there is the same corruption.
+    p => { p.game.levels.find(level => level.id === p.game.active).assetIds.push('unknown'); },
     p => { p.game.levels[1].id = 'MAP01'; },
     p => { p.game.levels[1].data.game = p.game; },
   ]) { const p = game(); mutate(p); assert.throws(() => validateProject(p)); }
