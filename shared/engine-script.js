@@ -11,6 +11,7 @@ import { installEngineSounds } from './sound.js';
 import { doomWalk } from './sprite-animation.js';
 import { doomThings } from './doom-assets.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
+import { addonCommands, addonCommand } from './addons.js';
 
 // Every key a creator can bind to an event, including the letters Doom leaves free, so
 // scriptlets such as the spray can be rebound from the event sheet.
@@ -213,12 +214,29 @@ export const ENGINE_ACTIONS = [
   { type: 'clearTimer', label: 'System: clear timer', fields: [timer()] },
   { type: 'showPlayerHUD', label: 'HUD: show / hide overlay (legacy stats)', fields: [choice('visible', 'yes', ['yes', 'no'])] },
 ];
-export function engineCommand(type) {
-  return [...ENGINE_CONDITIONS, ...ENGINE_ACTIONS].find(command => command.type === type);
+/**
+ * The catalogue a project runs with: the engine's own commands, then the ones addons add.
+ *
+ * Adding a command is the one part of an addon that the *engine* has to know about, because an event
+ * names it, the sheet draws its fields and `validateProject` checks them. Everything else an addon
+ * brings is content.
+ */
+export function engineCommands(project) {
+  return {
+    conditions: [...ENGINE_CONDITIONS, ...addonCommands(project, 'conditions')],
+    actions: [...ENGINE_ACTIONS, ...addonCommands(project, 'actions')],
+  };
 }
-export function defaultEngineCommand(type) {
-  const command = engineCommand(type);
-  return { type, ...Object.fromEntries(command.fields.map(field => [field.name, field.value])) };
+
+export function engineCommand(type, project) {
+  const builtIn = [...ENGINE_CONDITIONS, ...ENGINE_ACTIONS].find(command => command.type === type);
+  return builtIn || (project ? addonCommand(project, type) : null) || null;
+}
+
+export function defaultEngineCommand(type, project) {
+  const command = engineCommand(type, project);
+  if (!command) throw new Error(`Unknown command ${type}`);
+  return { type, ...Object.fromEntries((command.fields || []).map(field => [field.name, field.value])) };
 }
 export const WALL_WALK_SHEET = 'Wall walking (experiment)';
 export const SPRAY_SHEET = 'Spray (CS-style)';

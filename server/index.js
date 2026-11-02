@@ -22,6 +22,8 @@ import { loadGzdoomActors } from './actor-sources.js';
 import { createPlaytestLogStore, DEFAULT_LOG_DIRECTORY, DEFAULT_PLACEHOLDER_DIRECTORY } from './playtest-logs.js';
 import { isLogId, normalizeLogEntry, LOG_LIMITS } from '../shared/playtest-log.js';
 import { fetchShadertoy } from './shadertoy.js';
+import { fetchAddon } from './addons.js';
+import { addonFile, projectAddons } from '../shared/addons.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function equal(a, b) {
@@ -84,6 +86,11 @@ export function createApp({
   });
   app.use(['/api', '/mcp'], (req, res, next) => {
     res.set('Cache-Control', 'no-store');
+    // An addon's own script is loaded with `import()`, which cannot carry a header — so its files
+    // are as public as the editor's own: served by this origin, from this project, and read over
+    // 127.0.0.1 only, exactly like `/public`. Everything else needs the token. `req.path` is
+    // relative to the mount, so it starts at `/addons/`.
+    if (req.method === 'GET' && /^\/addons\/[^/]+\/.+/.test(req.path)) return next();
     if (!equal(req.headers.authorization || '', `Bearer ${token}`)) return res.status(401).json({ error: 'A valid local bearer token is required' });
     next();
   });
@@ -255,6 +262,49 @@ export function createApp({
     res.json(placeholderLogs.read(req.params.session));
   });
   app.delete('/api/placeholder/logs', (req, res) => res.json(placeholderLogs.clear()));
+  // Addons. The project is the store, so nothing is written beside it: a URL is read into a manifest
+  // and its files, and the editor installs them with the normal validated edit.
+  app.post('/api/addons/fetch', async (req, res, next) => {
+    try { res.json(await fetchAddon(String(req.body?.url ?? ''), { fetchImpl })); }
+    catch (error) { next(error); }
+  });
+  app.get('/api/addons', (req, res) => res.json({ addons: projectAddons(store.snapshot().project)
+    .map(addon => ({ id: addon.id, name: addon.name, version: addon.version, enabled: addon.enabled !== false })) }));
+  // An addon's own files, served from the project: a script has to come from this origin to run under
+  // the studio's CSP, and it has to come from the project so the project stays self-contained.
+  // The project is the store, and the editor holds the project — a freshly installed addon is in the
+  // page before it is in the saved file. Its scripts have to load *now*, so the page stages the files
+  // it is about to import here first; the route prefers the project, so a saved addon needs no stage.
+  const stagedAddons = new Map();
+  app.post('/api/addons/stage', (req, res) => {
+    const id = String(req.body?.id ?? '');
+    const files = req.body?.files;
+    if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(id)) return res.status(400).json({ error: 'Invalid addon id' });
+    if (!files || typeof files !== 'object' || Array.isArray(files)) return res.status(400).json({ error: 'An addon stage needs files' });
+    const names = Object.keys(files);
+    if (names.length > 64) return res.status(400).json({ error: 'An addon may stage at most 64 files' });
+    let total = 0;
+    for (const name of names) {
+      const body = files[name];
+      if (typeof body !== 'string' || name.includes('..') || name.startsWith('/')) return res.status(400).json({ error: `Addon file ${name} is not usable` });
+      total += body.length;
+    }
+    if (total > 4 * 1024 * 1024) return res.status(413).json({ error: 'An addon may stage at most 4 MiB of files' });
+    if (stagedAddons.size >= 32 && !stagedAddons.has(id)) return res.status(400).json({ error: 'Too many staged addons' });
+    stagedAddons.set(id, { files: { ...files }, at: Date.now() });
+    res.json({ staged: id, files: names.length });
+  });
+  app.get('/api/addons/:id/*name', (req, res) => {
+    const name = String(req.params.name || '');
+    const body = addonFile(store.snapshot().project, req.params.id, name) ?? stagedAddons.get(String(req.params.id))?.files?.[name] ?? null;
+    if (body === null) return res.status(404).json({ error: 'That addon file is not in this project' });
+    const extension = name.toLowerCase().split('.').pop();
+    const type = { js: 'text/javascript', mjs: 'text/javascript', cjs: 'text/javascript', json: 'application/json',
+      css: 'text/css', md: 'text/plain', txt: 'text/plain', glsl: 'text/plain', wgsl: 'text/plain',
+      frag: 'text/plain', vert: 'text/plain', tsl: 'text/plain', html: 'text/plain', svg: 'image/svg+xml' }[extension];
+    if (!type) return res.status(415).json({ error: 'That addon file is not a kind the studio serves' });
+    res.type(type).send(body);
+  });
   app.get('/api/project', (req, res) => res.json(store.snapshot()));
   app.put('/api/project', (req, res) => res.json(store.update(req.body.project, req.body.revision)));
   // Stored projects: the studio reopens the active one on the next start, so switching

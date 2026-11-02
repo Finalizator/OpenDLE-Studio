@@ -5,6 +5,7 @@ import { decodeDataURI, readModel, validateModelDocument } from './gltf.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand } from './engine-script.js';
 import { validateEventStructure } from './events.js';
 import { MODEL_FACING_SEMANTICS } from './entity-visuals.js';
+import { ADDON_LIMITS, ADDON_VERSION, declaredAddonTypes, validateAddonManifest } from './addons.js';
 import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
 import { WEAPONS } from './player-state.js';
 import { isExpression, validateExpression, validateVariables, scalar, expressionContext } from './expressions.js';
@@ -27,6 +28,8 @@ export const CONDITIONS = ['onStart', 'always', 'keyPressed', 'nearEntity', 'col
   // actions are validated by the same loop as a hand-written rule's.
   TIMESHEET_CUE_CONDITION, ...ENGINE_CONDITIONS.map(command => command.type)];
 export const ACTIONS = ['showMessage', 'setVariable', 'addVariable', 'teleport', 'removeEntity', 'setEntityPosition', 'rotateEntity', 'applyImpulse', 'applyForce', 'setVelocity', 'playAnimation', 'stopAnimation', ...ENGINE_ACTIONS.map(command => command.type)];
+/** Every type the engine itself understands, so an addon cannot shadow one. */
+const BUILT_IN_TYPES = new Set([...CONDITIONS, ...ACTIONS]);
 // `zone` is a volume with no artwork: it exists to be entered, so an event can ask "is the
 // player in the guard room" without standing a visible object in the doorway.
 export const ENTITY_TYPES = ['player', 'enemy', 'pickup', 'light', 'decoration', 'ramp', 'zone'];
@@ -805,6 +808,55 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   if (sectors.length) sectorGeometry(project);
   validateVariables(project.variables);
   if (project.playerControl !== undefined) assert(['legacy', 'events'].includes(project.playerControl), 'Unknown player control mode');
+  // Addons before the rules: an event may name a command an addon adds, and a manifest this build
+  // cannot read has to be reported before anything tries to resolve one.
+  if (project.addons !== undefined) {
+    array(project.addons, 'Addons', ADDON_LIMITS.addons);
+    const addonIds = new Set(), commandTypes = new Set();
+    for (const addon of project.addons) {
+      object(addon, 'Addon');
+      assert(typeof addon.id === 'string' && /^[a-z0-9][a-z0-9-]{1,63}$/.test(addon.id), 'Invalid addon id');
+      assert(!addonIds.has(addon.id), `Duplicate addon ${addon.id}`);
+      addonIds.add(addon.id);
+      text(addon.name, 'Addon name', 100);
+      assert(addon.version === ADDON_VERSION, 'Unknown addon version');
+      assert(typeof addon.enabled === 'boolean', 'Addon enabled must be boolean');
+      assert(addon.manifest && typeof addon.manifest === 'object', `Addon ${addon.id} has no manifest`);
+      try { validateAddonManifest(addon.manifest); }
+      catch (error) { assert(false, `Addon ${addon.id}: ${error.message}`); }
+      assert(addon.manifest.id === addon.id, `Addon ${addon.id} does not match its manifest id`);
+      object(addon.files, 'Addon files');
+      const names = Object.keys(addon.files);
+      assert(names.length <= ADDON_LIMITS.files, `Addon ${addon.id} has too many files`);
+      let total = 0;
+      for (const name of names) {
+        assert(!name.includes('..') && !name.startsWith('/'), `Addon ${addon.id} has an unsafe file name`);
+        assert(typeof addon.files[name] === 'string' && addon.files[name].length <= ADDON_LIMITS.fileChars,
+          `Addon ${addon.id} file ${name} is too large`);
+        total += addon.files[name].length;
+      }
+      assert(total <= ADDON_LIMITS.totalChars, `Addon ${addon.id} carries too much data`);
+      if (addon.description !== undefined) text(addon.description, 'Addon description', 2000);
+      if (addon.author !== undefined) text(addon.author, 'Addon author', 200);
+      if (addon.homepage !== undefined) text(addon.homepage, 'Addon homepage', 2000);
+      for (const kind of ['actions', 'conditions']) {
+        for (const definition of addon.manifest.provides?.[kind] || []) {
+          assert(!BUILT_IN_TYPES.has(definition.type), `Addon ${addon.id} redeclares the engine command ${definition.type}`);
+          assert(!commandTypes.has(definition.type), `Two addons declare the command ${definition.type}`);
+          commandTypes.add(definition.type);
+        }
+      }
+    }
+    // A switched-on addon has to have what it needs; a switched-off one may be waiting for it. That
+    // is the state removal leaves behind — the dependent is off and says so, rather than the project
+    // becoming unsavable because a requirement went away.
+    for (const addon of project.addons) {
+      if (addon.enabled === false) continue;
+      for (const required of addon.manifest.requires || []) {
+        assert(addonIds.has(required), `Addon ${addon.id} requires ${required}, which is not installed`);
+      }
+    }
+  }
   const sheets = project.eventSheets || [];
   array(sheets, 'Event sheets', 100);
   for (const sheet of sheets) {
@@ -900,7 +952,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     const expression = value => validateExpression(value, expressionContext(project, event));
     const numberOrExpression = (value, label, min, max) => isExpression(value) ? expression(value) : number(value, label, min, max);
     const validateCommand = command => {
-      const definition = engineCommand(command.type);
+      const definition = engineCommand(command.type, project);
       if (!definition) return;
       for (const field of definition.fields) {
         if (field.optional && command[field.name] === undefined) continue;
@@ -1007,7 +1059,9 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     };
     for (const condition of eventConditions(event)) {
       object(condition, 'Condition');
-      assert(CONDITIONS.includes(condition.type), 'Unknown condition');
+      // An addon's conditions are as real as the engine's; the type is checked against the
+      // project's own catalogue so a project opened without its addon still reports the rule.
+      assert(CONDITIONS.includes(condition.type) || declaredAddonTypes(project).has(condition.type), 'Unknown condition');
       if (condition.inverted !== undefined) {
         assert(typeof condition.inverted === 'boolean', 'Condition inversion must be boolean');
         assert(!condition.inverted || !['onStart', 'keyPressed', 'mouseMoved', 'collisionStarted', 'collisionEnded', 'animationFinished', 'hudClicked', 'hudAnimationFinished', 'hudStatChanged', 'entityDamaged', 'wallActivated'].includes(condition.type), 'Trigger conditions cannot be inverted');
@@ -1036,7 +1090,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     array(event.actions, 'Actions', 32);
     for (const action of event.actions) {
       object(action, 'Action');
-      assert(ACTIONS.includes(action.type), 'Unknown action');
+      assert(ACTIONS.includes(action.type) || declaredAddonTypes(project).has(action.type), 'Unknown action');
       validateCommand(action);
       if (action.type === 'showMessage') isExpression(action.message) ? expression(action.message) : text(action.message, 'Message', 500);
       if (['setVariable', 'addVariable'].includes(action.type)) {

@@ -702,3 +702,26 @@ body.scene-dragging { cursor: grabbing; }
 .tab-scroll { flex: 0 0 auto; padding: 2px 4px; background: transparent; color: var(--muted); border: none; font-size: 13px; line-height: 1; }
 .tab-scroll:hover { background: #696969; color: var(--text); }
 .tab-scroll:disabled { opacity: .3; }
+
+/* Addons: a list of cards, each one thing the author installed. The URL field is wide because the
+   thing being pasted is always longer than the box, and the manifest example is monospaced because
+   an author will copy it. */
+.addons-toolbar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin: 10px 0; }
+.addon-url { flex: 1 1 380px; min-width: 220px; }
+.addons-intro { max-width: 900px; }
+.addons-intro p { margin: 0 0 4px; line-height: 1.5; }
+.addons-list { display: grid; gap: 8px; margin-top: 10px; max-width: 900px; }
+.addon-card { padding: 8px 10px; background: #414141; border: 1px solid var(--border); border-radius: 3px; }
+.addon-card p { margin: 3px 0; font-size: 10px; line-height: 1.5; }
+.addon-card .error { color: #ffb5ab; }
+.addon-card-head { display: flex; align-items: center; gap: 8px; }
+.addon-card-head strong { font-size: 12px; font-weight: 600; }
+.addon-card .button-row { margin-top: 6px; }
+.addons-preview-slot { max-width: 900px; }
+.addon-preview { padding: 8px 10px; background: #4a4636; border: 1px solid #8a8160; border-radius: 3px; }
+.addon-preview h3 { margin: 0 0 4px; font-size: 12px; }
+.addon-preview p { margin: 3px 0; font-size: 10px; }
+.addon-docs { flex: 1 1 100%; }
+.addon-docs summary { cursor: pointer; font-size: 10px; color: var(--muted); }
+.addon-code { margin: 6px 0; padding: 8px; background: #303030; border: 1px solid var(--border); border-radius: 2px;
+  font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.5; white-space: pre; overflow-x: auto; }

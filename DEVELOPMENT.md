@@ -2839,6 +2839,62 @@ artwork alone when the project already has the same asset. An asset id that exis
 whole import — artwork, shaders and nodes — is one undoable edit, and a damaged file is
 refused with a reason before anything reaches the project (`validateNodeFile`).
 
+### Addons: extensions for a project
+
+**Menu → Addons** (top left, beside About) is where extensions are installed. An addon is a folder
+with an `opendle-addon.json` in it, and it may add:
+
+| what | how it arrives |
+| --- | --- |
+| event **actions and conditions** | declared in the manifest, drawn and validated by the same code as the engine's, offered in the event sheet's **Addon** category |
+| **artwork, shaders, HUD elements and animations** | copied into the project when the addon is installed, tagged with its id |
+| a **script** — a panel, a menu button, a frame hook, anything the page can do | `entry` in the manifest, loaded from `/api/addons/<id>/<file>` |
+
+Install from a URL: a **GitHub repository** (`https://github.com/owner/repo`, optionally `#ref` or
+`/tree/ref`), an **https zip or tar.gz**, or an **FTP (or explicit-TLS FTPS) archive**. The URL is
+read by the server (`server/addons.js`), which downloads it bounded at 32 MiB, unpacks it with the
+zip reader the project importer already uses or a small tar reader, refuses paths that leave the
+archive, keeps **text files only**, and finds the shallowest manifest so a repository that collects
+addons in `addons/<name>/` still works. The panel shows what arrived — name, author, what it brings,
+which files were left out — before anything is installed, because **installing is trusting**: the
+script runs in this page with the editor's own access.
+
+**The project is the store.** `installAddon` (`shared/addons.js`) puts the record — manifest,
+files, source URL, digest — into `project.addons` and copies the declarative content in, so an
+exported project carries its addons and needs no separate install. Removing an addon takes back
+exactly what it added and **strips its commands out of the rules that used them** (a rule left with
+nothing is dropped, the same rule deletion follows elsewhere); switching one off is softer — its
+commands stay valid in the project, they simply do nothing, and the panel says how many rules that
+affects. A requirement (`requires`) is switched on with its dependent and refuses to be switched off
+under it.
+
+**Where the "no limits" lives** is `public/addons-host.js`. Each enabled addon's entry is imported
+and called with an `api`:
+
+```js
+export function activate(api) {
+  api.actions.implement('my:sparkle', (context, action) => context.say('sparkle'));   // context: project, state, event, command, entity, find, player, say, sound
+  api.conditions.implement('my:armed', (context, condition) => true);
+  api.ui.tab({ id, label, render(container) });          // a tab beside the editor's own
+  api.ui.menuButton({ label, run });                     // a button in the top-left menu
+  api.ui.style('panel.css');                             // a stylesheet of the addon's own
+  api.hooks.on('frame' | 'beforeStep' | 'afterStep' | 'levelStart', fn);
+  api.edit(fn, label); api.status(text); api.dom;        // one validated edit, and the page itself
+}
+```
+
+Implementations are kept **beside** the runtime, not in it (`setAddonHooks` in
+`shared/runtime.js`): a save is data and a function cannot be one, so a game restored from a save
+gets them re-attached when it is created. Unknown command types stay the no-ops they always were,
+which is what lets a project open and play without the addon that wrote it.
+
+Two constraints come from the studio's own content policy, and they are worth knowing before
+writing an addon: a script has to be served from this origin (so it is served from the project, never
+a `blob:`), and styles have to come from a stylesheet file rather than inline CSS.
+
+`addons_list` over MCP answers with every installed addon and the commands it adds, so the assistant
+can write rules against them with the same tool it writes engine rules with.
+
 ### Context menus everywhere
 
 Every list, tile and view answers a right click through one shared menu

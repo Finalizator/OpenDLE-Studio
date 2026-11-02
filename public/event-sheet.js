@@ -52,7 +52,9 @@ export function commandRow(command, labels, objectName, open, { inverted = false
 
 export function openCommandDialog({ kind, labels, command, defaults, entities, zones = [], playerId, variables, groups, clips, walls = [], sectors = [], spriteClips = [], images = [], hudElements = [], hudAnimations = [],
   // Project data the newer commands point at: timelines, routes and imported sounds.
-  timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], submit, remove, move }) {
+  timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [],
+  // Engine commands plus the ones addons add; the parameter stage is built from this list.
+  commands = null, submit, remove, move }) {
   const dialog = document.createElement('dialog'); dialog.className = 'command-dialog';
   dialog.setAttribute('aria-label', `${command ? 'Edit' : 'Add'} ${kind}`);
   const heading = document.createElement('h2'), search = document.createElement('input'), content = document.createElement('div');
@@ -91,7 +93,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
     } else {
       const label = document.createElement('h3'); label.textContent = labels.find(([type]) => type === draft.type)?.[1] || draft.type;
       content.append(label);
-      for (const field of commandFields(draft, { entities, zones, playerId, variables, groups, clips, walls, sectors, spriteClips, images, hudElements, hudAnimations, timesheets, paths, sounds, pathPoints, entityVariableNames })) {
+      for (const field of commandFields(draft, { entities, zones, playerId, variables, groups, clips, walls, sectors, spriteClips, images, hudElements, hudAnimations, timesheets, paths, sounds, pathPoints, entityVariableNames, commands })) {
         const label = document.createElement('label'); label.textContent = field.label || field.name;
         const valueType = field.value ? isExpression(draft[field.name]) ? 'expression' : typeof draft[field.name] : null;
         if (field.value) {

@@ -61,6 +61,7 @@
     <button id="new">New project</button><button id="open">Open project</button><button id="export">Export project</button>
     <button id="quick-import" class="primary">Quick import game</button><button id="export-build">Export playable app</button><button id="wad">Import WAD + assets</button><button id="local-wad">Local WAD library</button><button id="package-upload">Import PK3 / IPK3</button><button id="package-library">Local package library</button><button id="reload">Reload server</button><button id="restore">Restore local draft</button>
     <label class="project-picker">Stored project<select id="projects" aria-label="Stored projects"></select></label>
+    <button data-tab="addons">Addons</button>
     <button data-tab="about">About</button>
     <input id="project-file" type="file" accept=".zip,.json,.opendle" hidden>
     <input id="wad-file" type="file" accept=".wad" hidden>
@@ -320,6 +321,13 @@
       </div>
       <div id="splitter-assets" class="splitter splitter-horizontal" role="separator" aria-orientation="horizontal"
         aria-label="Resize asset browser" aria-valuemin="110" tabindex="0" title="Drag to resize · double-click to reset"></div>
+      <section id="addons-panel" class="panel" hidden>
+        <div class="panel-heading"><div><h1>Addons</h1><p>Extensions for this project: new event commands, artwork, shaders, HUD and menus — and scripts that can change how the editor itself works.</p></div></div>
+        <div id="addons-intro" class="addons-intro"></div>
+        <div id="addons-toolbar" class="addons-toolbar"></div>
+        <div id="addons-preview" class="addons-preview-slot" hidden></div>
+        <div id="addons-list" class="addons-list" role="list"></div>
+      </section>
       <section id="asset-dock" aria-label="Asset browser"></section>
     </section>
     <div id="splitter-right" class="splitter splitter-vertical" role="separator" aria-orientation="vertical"

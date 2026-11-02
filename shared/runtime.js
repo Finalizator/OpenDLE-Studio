@@ -88,7 +88,7 @@ export function runtimeEntities(project, settings = {}) {
     .map(entity => ({ ...entity, variables: { ...(entity.variables || {}) } }));
 }
 
-export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false, progress } = {}) {
+export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false, progress, addons = null } = {}) {
   // Missile artwork has to exist before the renderer builds its sprite index.
   installActorProjectileSprites(project);
   const spawn = project.map.entities.find(entity => entity.type === 'player');
@@ -165,6 +165,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     physics: null,
     scripts: null,
   };
+  if (addons) setAddonHooks(state, addons);
   state.scripts = createMapScripts(project, state, {
     finishLevel: exit => beginIntermission(project, state, exit === 'secret'),
     changeLevel: () => {},
@@ -230,6 +231,43 @@ function cacheFor(state) {
   let cache = stateCaches.get(state);
   if (!cache) stateCaches.set(state, cache = {});
   return cache;
+}
+
+/**
+ * The implementations an addon registers for the commands it declares.
+ *
+ * They are kept beside the runtime rather than in it: a save is data, and a function cannot be one.
+ * The editor's addon host attaches them when it creates or restores a game, which is also why a
+ * project played without its addons simply runs without them.
+ */
+const addonHooksByState = new WeakMap();
+
+export function setAddonHooks(state, hooks) {
+  addonHooksByState.set(state, hooks || null);
+  return state;
+}
+
+export function addonHooks(state) {
+  return addonHooksByState.get(state) || null;
+}
+
+/** What an addon's implementation is handed: the game, the rule and the object it named. */
+function addonContext({ project, state, event, command, findTarget, player }) {
+  const id = command.entityId === '$self' ? event.ownerId : command.entityId;
+  const entity = id && !String(id).startsWith('$') ? findTarget(id) : null;
+  return {
+    project, state, event, command, entity,
+    find: findTarget,
+    player,
+    /** A message over the game view, the same one a rule writes with `showMessage`. */
+    say(text, seconds = 4) { state.message = String(text); state.messageTime = Number(seconds) || 4; },
+    /** A Doom sound by name, through the same list every other sound uses. */
+    sound(name, volume = .6) {
+      if (!name) return;
+      state.sounds.push({ name: String(name), volume: Math.min(1, Math.max(0, Number(volume) || 0)),
+        position: entity ? { x: entity.x, y: entity.y } : undefined });
+    },
+  };
 }
 
 /**
@@ -1025,6 +1063,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const set = condition.type === 'collisionStarted' ? state.physics.started : condition.type === 'collisionEnded' ? state.physics.ended : state.physics.contacts;
         return set.has(pairKey(resolveEntityId(event, condition.entityId), resolveEntityId(event, condition.otherId)));
       }
+      // A condition an addon declared: its implementation decides. An addon that is installed but
+      // not running leaves the rule false rather than throwing, so a project still plays without it.
+      const custom = addonHooks(state)?.conditions?.get(condition.type);
+      if (custom) return Boolean(custom(addonContext({ project, state, event, command: condition, findTarget, player }), condition));
       const entity = findTarget(condition.entityId);
       const position = entity?.type === 'player' ? player : entity;
       return position && Math.hypot(position.x - player.x, position.y - player.y) <= condition.distance;
@@ -1357,6 +1399,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'stopAnimation': {
           const animation = state.animations.get(resolveEntityId(event, action.entityId));
           if (animation) { animation.playing = false; animation.revision++; }
+          break;
+        }
+        default: {
+          // An action an addon declared: its implementation does whatever it does, with the game
+          // state in hand. Anything else unknown stays the no-op it always was.
+          const custom = addonHooks(state)?.actions?.get(action.type);
+          if (custom) custom(addonContext({ project, state, event, command: action, findTarget, player }), action);
           break;
         }
       }

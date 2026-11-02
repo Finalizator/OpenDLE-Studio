@@ -122,6 +122,9 @@ export const toolDefinitions = [
       actions: z.array(z.record(z.unknown())).max(32).optional() } },
   { name: 'project_replace', description: 'Replace the full project after validation. First read project_get to preserve existing content.',
     shape: { project: z.record(z.unknown()) } },
+  { name: 'addons_list', description: 'List the addons installed in this project and the event actions and conditions each one adds. '
+    + 'An addon command is used in events_add_rule exactly like an engine command, with its declared fields. '
+    + 'A switched-off addon keeps its commands in the catalogue of the project but its actions do nothing at runtime.', shape: {} },
 ];
 toolDefinitions.find(tool => tool.name === 'events_add_rule').description +=
   ' Values in numeric/free-text event fields can be expressions: {expr:"clamp(local(\\"speed\\") * dt, 0, 20)"}. No JavaScript. Functions global("name"), local("name") (owner/$self), object("id","name"), property("id","x|y|z|angle|health|name|type|elevation|doomType"), player("health"), time,dt,pi; math abs/min/max/clamp/lerp/floor/ceil/round/sqrt/pow/sin/cos/tan/atan2/random; text str/number/concat/upper/lower/trim/len/left/right/mid/replace/contains/find. Operators +,-,*,/,%,^,& (text concatenate),==,!=,<,<=,>,>=,&&,||,!,?:. Radians, zero-based text indexes. Resource IDs, variable names and enum choices remain literal. setObjectVariable/addObjectVariable/objectVariableCompare target entity.variables. expressionCompare compares scalar left/right. ' +
@@ -162,6 +165,15 @@ export function applyTool(project, name, args, context = {}) {
   let next = structuredClone(project);
   switch (name) {
     case 'project_get': return { project: next, changed: false };
+    case 'addons_list': return { changed: false, addons: (next.addons || []).map(addon => ({
+      id: addon.id, name: addon.name, version: addon.version, enabled: addon.enabled !== false,
+      description: addon.description ?? null,
+      actions: (addon.manifest?.provides?.actions || []).map(command => ({ type: command.type, label: command.label,
+        fields: command.fields || [], target: Boolean(command.target) })),
+      conditions: (addon.manifest?.provides?.conditions || []).map(command => ({ type: command.type, label: command.label,
+        fields: command.fields || [], target: Boolean(command.target) })),
+      requires: addon.manifest?.requires || [], source: addon.source?.url ?? null,
+    })) }
     case 'game_level_select': selectGameLevel(next, input.levelId); break;
     case 'game_level_set_routes': {
       const level = next.game?.levels.find(level => level.id === input.levelId);

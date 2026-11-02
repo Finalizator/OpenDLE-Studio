@@ -1,6 +1,6 @@
 import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, updateAsset, standInFor, ENTITY_TYPES } from '/shared/project.js';
 import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity } from '/shared/paths.js';
-import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
+import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment, setAddonHooks } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
@@ -24,7 +24,8 @@ import { recoverProject } from './project-recovery.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
   removeEventBranch, setEventParent, eventScope } from '/shared/events.js';
 import { editInline, installRowDrag } from './row-drag.js';
-import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, defaultEngineCommand, installEngineScripts } from '/shared/engine-script.js';
+import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, engineCommands, defaultEngineCommand, installEngineScripts } from '/shared/engine-script.js';
+import { addonCommands } from '/shared/addons.js';
 import { ENGINE_SCRIPTLETS, installScriptlet, removeScriptlet } from '/shared/scriptlets.js';
 import { createHUDEditor } from './hud-editor.js';
 import { createHUDView } from './hud-view.js';
@@ -45,6 +46,8 @@ import { createPlaceholderLog } from './placeholder-log.js';
 import { createAcsHud } from './acs-hud.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { createTimesheetPanel } from './timesheet-panel.js';
+import { createAddonsPanel } from './addons-panel.js';
+import { createAddonHost } from './addons-host.js';
 import { alignModelToRoute, driveRouteTimesheet } from '/shared/timesheet-recipe.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
@@ -81,6 +84,52 @@ let projectId = null;
 // The Project tree lists timelines, but the tree can be drawn before the timeline panel exists;
 // this flag is what stops the first render from reading a binding that has not been set yet.
 let timesheetPanelBuilt = false;
+// Addons: the host that runs their scripts, the panel that manages them, and the tabs and menu
+// buttons they asked for. The host owns the scripts; the maps here own their DOM, so switching an
+// addon off can take its tab away again.
+let addonHost = null, addonsPanel = null;
+const addonTabs = new Map(), addonMenuButtons = new Map();
+
+/** A tab an addon added: its button in the strip and its panel beside the editor's own. */
+function registerAddonTab(entry) {
+  const existing = addonTabs.get(entry.id);
+  if (existing) { existing.render = entry.render; return; }
+  const button = document.createElement('button');
+  button.dataset.tab = entry.id;
+  button.textContent = entry.label;
+  button.title = `Added by the addon ${entry.addonId || 'unknown'}`;
+  document.querySelector('.document-tabs')?.append(button);
+  const panel = document.createElement('section');
+  panel.id = entry.panelId;
+  panel.className = 'panel';
+  panel.hidden = true;
+  $('addons-panel')?.parentElement?.append(panel);
+  button.addEventListener('click', () => showTab(entry.id));
+  addonTabs.set(entry.id, { ...entry, button, panel });
+}
+
+/** A button an addon asked for in the top-left menu, where everything that is not a document lives. */
+function registerAddonMenuButton(entry) {
+  const existing = addonMenuButtons.get(entry.addonId + ':' + entry.label);
+  if (existing) existing.run = entry.run;
+  const button = document.createElement('button');
+  button.textContent = entry.label;
+  button.title = `Added by the addon ${entry.addonId || 'unknown'}`;
+  button.addEventListener('click', () => {
+    try { entry.run(); } catch (error) { status(`Addon "${entry.label}" failed: ${error.message}`, true); }
+  });
+  const menu = $('file-menu');
+  menu?.insertBefore(button, menu.querySelector('.project-picker') || null);
+  addonMenuButtons.set(entry.addonId + ':' + entry.label, { button, run: entry.run });
+}
+
+/** Takes every piece of UI an addon put on the page away again. */
+function clearAddonUi() {
+  for (const entry of addonTabs.values()) { entry.button.remove(); entry.panel.remove(); }
+  addonTabs.clear();
+  for (const entry of addonMenuButtons.values()) entry.button.remove();
+  addonMenuButtons.clear();
+}
 // A temporary project is the stored copy of an import: it reopens next time but the next
 // import replaces it, so the badge says so instead of "Saved".
 let projectTemporary = false;
@@ -188,6 +237,33 @@ const scriptsPanel = createScriptsPanel({
   list: $('script-list'), detail: $('script-detail'), summary: $('scripts-summary'),
   specials: $('script-specials'), search: $('script-search'),
 }, { project: () => project });
+// Addons: the host runs their scripts, the panel manages them. Both read the live project and edit
+// through the same validated path a click in the editor takes.
+addonHost = createAddonHost({
+  project: () => project,
+  edit: (fn, label) => edit(fn, label),
+  status: (text, isError) => status(text, isError),
+  refresh: () => render(),
+  registerTab: registerAddonTab,
+  registerMenuButton: registerAddonMenuButton,
+  resetUi: clearAddonUi,
+  showTab: tab => showTab(tab),
+  // The page has the project, the service serves the script: staging hands the files over so an
+  // addon works the moment it is installed, before anything is saved.
+  stage: addon => api('/api/addons/stage', { method: 'POST', body: JSON.stringify({ id: addon.id, files: addon.files }) }),
+});
+addonsPanel = createAddonsPanel({
+  intro: $('addons-intro'), toolbar: $('addons-toolbar'), preview: $('addons-preview'), list: $('addons-list'),
+}, {
+  project: () => project,
+  edit: (fn, label) => edit(fn, label),
+  status: (text, isError) => status(text, isError),
+  // No content-type here: the session helper sets it, and two spellings of the same header make
+  // Node drop the body into an unparsed request.
+  fetchAddon: url => api('/api/addons/fetch', { method: 'POST', body: JSON.stringify({ url }) }),
+  host: addonHost,
+});
+
 const hudEditor = createHUDEditor($('hud-editor'), {
   project: () => project, edit, script: openHUDScript, error: message => status(message, true),
 });
@@ -1635,8 +1711,12 @@ function showTab(tab) {
   if (tab === 'assets') {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
-  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'about', 'scene'])
+  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'addons', 'about', 'scene'])
     $(name + '-panel').hidden = tab !== name;
+  // Tabs an addon added belong to the same strip and must close with it.
+  for (const entry of addonTabs.values()) entry.panel.hidden = tab !== entry.id;
+  if (addonTabs.has(tab)) addonTabs.get(tab).render?.($(addonTabs.get(tab).panelId));
+  if (tab === 'addons') addonsPanel.render();
   // The designer is only refreshed while its tab is visible, so opening the tab
   // has to build it once.
   if (tab === 'hud') hudEditor.render();
@@ -1792,7 +1872,7 @@ function healthTarget(context) {
   return entity.id === context ? '$self' : entity.id;
 }
 function defaultHUDTarget(command) {
-  const definition = engineCommand(command.type);
+  const definition = engineCommand(command.type, project);
   if (definition.hudElement) {
     command.elementId = project.hud?.elements.find(element => command.type !== 'hudClicked' || element.interactive)?.id;
     if (!command.elementId) throw new Error('Create a suitable HUD element in the HUD designer first');
@@ -1819,24 +1899,24 @@ function openHUDScript(elementId) {
   openScript(`$sheet:${sheet.id}`);
 }
 function defaultCondition(type, ownerId) {
-  if (engineCommand(type)) {
-    const command = defaultEngineCommand(type);
+  if (engineCommand(type, project)) {
+    const command = defaultEngineCommand(type, project);
     defaultHUDTarget(command);
     defaultWorldTarget(command);
-    if (engineCommand(type).group) {
+    if (engineCommand(type, project).group) {
       command.groupId = project.eventGroups?.[0]?.id;
       if (!command.groupId) throw new Error('Add an event group first');
     }
-    if (engineCommand(type).target && !['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(type)) command.entityId = healthTarget(ownerId);
+    if (engineCommand(type, project).target && !['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(type)) command.entityId = healthTarget(ownerId);
     // A zone rule starts pointed at a zone, or the picker would open showing one and submit none.
-    if (engineCommand(type).zone) {
+    if (engineCommand(type, project).zone) {
       const zone = project.map.entities.find(entity => entity.type === 'zone');
       if (!zone) throw new Error('Create a zone first: right-click the view and choose Create object — Zone');
       command.zoneId = zone.id;
     }
     defaultObjectVariable(command, ownerId);
     defaultShaderTarget(command);
-    if (engineCommand(type).variable) {
+    if (engineCommand(type, project).variable) {
       command.variable = Object.keys(project.variables)[0];
       if (!command.variable) throw new Error('Create a numeric variable first');
     }
@@ -1861,15 +1941,15 @@ function scriptObject(ownerId, predicate, message) {
   return entity;
 }
 function defaultAction(type, ownerId) {
-  if (engineCommand(type)) {
-    const command = defaultEngineCommand(type);
+  if (engineCommand(type, project)) {
+    const command = defaultEngineCommand(type, project);
     defaultHUDTarget(command);
     defaultWorldTarget(command);
-    if (engineCommand(type).group) {
+    if (engineCommand(type, project).group) {
       command.groupId = project.eventGroups?.[0]?.id;
       if (!command.groupId) throw new Error('Add an event group first');
     }
-    if (engineCommand(type).target && !['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(type)) command.entityId = healthTarget(ownerId);
+    if (engineCommand(type, project).target && !['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(type)) command.entityId = healthTarget(ownerId);
     defaultObjectVariable(command, ownerId);
     defaultShaderTarget(command);
     return command;
@@ -1901,7 +1981,7 @@ function defaultAction(type, ownerId) {
   return { type, variable, value: type === 'addVariable' ? 1 : project.variables[variable] };
 }
 function defaultWorldTarget(command) {
-  const definition = engineCommand(command.type);
+  const definition = engineCommand(command.type, project);
   if (definition.wall) {
     command.wallId = project.map.walls[0]?.id;
     if (!command.wallId) throw new Error('Add a wall first');
@@ -1935,15 +2015,22 @@ function defaultShaderTarget(command) {
   if (!command.uniform) throw new Error('Select a shader with a numeric uniform in Environment first');
   command.value = shader.uniforms[command.uniform];
 }
-const conditionLabels = [['onStart', 'On start of layout'], ['always', 'Every tick'], ['keyPressed', 'On key pressed'], ['nearEntity', 'Player is near object'],
+const builtInConditionLabels = [['onStart', 'On start of layout'], ['always', 'Every tick'], ['keyPressed', 'On key pressed'], ['nearEntity', 'Player is near object'],
   ['collisionStarted', 'Physics: contact / trigger entered'], ['collisionEnded', 'Physics: contact / trigger exited'],
   ['isTouching', 'Physics: touching / overlapping'], ['playerGrounded', 'Player is grounded'], ['animationFinished', 'Model: animation finished'],
   ...ENGINE_CONDITIONS.map(command => [command.type, command.label])];
-const actionLabels = [['showMessage', 'System: show message'], ['setVariable', 'System: set variable'], ['addVariable', 'System: add to variable'],
+const builtInActionLabels = [['showMessage', 'System: show message'], ['setVariable', 'System: set variable'], ['addVariable', 'System: add to variable'],
   ['teleport', 'Player: teleport'], ['removeEntity', 'Object: destroy'], ['setEntityPosition', 'Object: set position'], ['rotateEntity', 'Object: set angle'],
   ['applyImpulse', 'Physics: apply impulse'], ['applyForce', 'Physics: apply force'], ['setVelocity', 'Physics: set velocity'],
   ['playAnimation', 'Model: play animation'], ['stopAnimation', 'Model: stop animation'],
   ...ENGINE_ACTIONS.map(command => [command.type, command.label])];
+// What addons add is offered beside the engine's own commands, in the order they were installed.
+// Read through the project, like every other catalogue in the editor, so switching one off takes its
+// commands out of the pickers at the same moment it takes them out of the game.
+const addonLabels = (kind, builtIn) => [...builtIn, ...addonCommands(project, kind).map(command => [command.type, command.label])];
+const conditionLabelsFor = () => addonLabels('conditions', builtInConditionLabels);
+const actionLabelsFor = () => addonLabels('actions', builtInActionLabels);
+const conditionLabels = builtInConditionLabels, actionLabels = builtInActionLabels;
 
 /**
  * The lists the command dialog needs, in one place: the event sheet and the timesheet panel both
@@ -1957,6 +2044,11 @@ function commandLists(ownerId) {
     playerId: project.map.entities.find(entity => entity.type === 'player').id,
     groups: (project.eventGroups || []).map(group => [group.id, group.name]),
     walls: project.map.walls.map(wall => [wall.id, `${wall.id} / special ${wall.special || 0}`]),
+    // The whole catalogue the project runs with, so a dialog can describe an addon's fields.
+    get commands() {
+      const catalogue = engineCommands(project);
+      return [...catalogue.conditions, ...catalogue.actions];
+    },
     sectors: (project.map.sectors || []).map(sector => [sector.id, sector.id]),
     spriteClips: (project.spriteClips || []).map(clip => [clip.id, clip.name]),
     images: imageAssetOptions(),
@@ -1982,7 +2074,7 @@ const timesheetPanel = createTimesheetPanel({ root: $('timesheet-root') }, {
   project: () => project,
   edit,
   status: message => status(message, true),
-  labels: actionLabels,
+  get labels() { return actionLabelsFor(); },
   // A cue's own target object is the context its actions are built in, so `$self` and the
   // object lists mean the same thing they mean inside that object's events.
   defaults: (type, ownerId) => {
@@ -2175,7 +2267,7 @@ function renderEvents() {
     const conditions = make('div', undefined, 'event-conditions');
     conditions.dataset.dragList = `${event.id}:condition`;
     eventConditions(event).forEach((condition, conditionIndex) => {
-      const row = commandRow(condition, conditionLabels, objectName, () => editCommand('condition', condition, value => modify(item => {
+      const row = commandRow(condition, conditionLabelsFor(), objectName, () => editCommand('condition', condition, value => modify(item => {
         if (conditionIndex === 0) item.condition = value; else item.conditions[conditionIndex - 1] = value;
       }), eventConditions(event).length > 1 ? () => modify(item => {
         if (conditionIndex === 0) item.condition = item.conditions.shift(); else item.conditions.splice(conditionIndex - 1, 1);
@@ -2191,7 +2283,7 @@ function renderEvents() {
     const actions = make('div', undefined, 'event-actions');
     actions.dataset.dragList = `${event.id}:action`;
     event.actions.forEach((action, actionIndex) => {
-      const row = commandRow(action, actionLabels, objectName, () => editCommand('action', action,
+      const row = commandRow(action, actionLabelsFor(), objectName, () => editCommand('action', action,
         value => modify(item => { item.actions[actionIndex] = value; }),
         () => modify(item => { item.actions.splice(actionIndex, 1); }), direction => modify(item => {
           const target = actionIndex + direction;
@@ -2213,7 +2305,7 @@ function renderEvents() {
       openCommandDialog({ kind, command, submit: value => {
         if (version !== editVersion) throw new Error('Project changed while this dialog was open. Cancel and reopen it.');
         submit(value);
-      }, remove, move, labels: kind === 'condition' ? conditionLabels : actionLabels,
+      }, remove, move, labels: kind === 'condition' ? conditionLabelsFor() : actionLabelsFor(),
         defaults: type => (kind === 'condition' ? defaultCondition : defaultAction)(type, context),
         ...commandLists(context),
         clips: id => {
@@ -2263,7 +2355,7 @@ function addScriptEvent(parentEvent) {
   else if (!['$all', '$scene'].includes(scriptScope)) template.ownerId = scriptScope;
   const context = scriptContext(template), version = editVersion;
   openCommandDialog({
-    kind: 'condition', labels: conditionLabels, defaults: type => defaultCondition(type, context),
+    kind: 'condition', labels: conditionLabelsFor(), defaults: type => defaultCondition(type, context),
     ...commandLists(context), clips: () => [],
     submit: condition => {
       if (version !== editVersion) throw new Error('Project changed. Cancel and reopen the dialog.');
@@ -3227,6 +3319,14 @@ async function reloadProject(initial = false) {
   // The 3D view of a different map starts framed on that map, not on the last one's camera.
   scenePose = null;
   render(); fitMap();
+  // Addon scripts are loaded from this project, so this is the first moment they can run.
+  void addonHost.sync().then(result => {
+    if (!result?.errors?.size) return;
+    for (const [id, list] of result.errors) {
+      const failure = list.find(entry => entry.level === 'error');
+      if (failure) status(`Addon "${id}" failed: ${failure.message}`, true);
+    }
+  });
   status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'
     : recovery?.warning || 'Server project loaded', Boolean(recovery?.warning));
 }
@@ -3579,7 +3679,10 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     audioPlayer = createAudioPlayer(snapshot, message => mouseStatus(message, true), undefined, primeAudio() || undefined);
     status('Loading renderer and embedded images (WebGPU preferred, WebGL fallback)...');
     const nextRuntime = restored?.runtime || createRuntime(snapshot, { settings, gameMode, progress,
-      screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing' });
+      screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing', addons: addonHost.runtime() });
+    // A restored game is a fresh runtime built inside `restoreGameSave`; the implementations are not
+    // part of a save, so they are attached to it the same way they were attached to a new one.
+    if (restored?.runtime) setAddonHooks(restored.runtime, addonHost.runtime());
     nextRuntime.gameMode = gameMode;
     nextRuntime.hudState.cursor = nextRuntime.gameScreen !== 'playing';
     if (statusBarHidden(snapshot.hud, nextRuntime.settings)) {
@@ -3601,6 +3704,8 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     runtime = nextRuntime;
     settingsRevision = -1;
     previewProject = snapshot;
+    // Addons that care about a level starting get it with the game already in hand.
+    addonHost.emit('levelStart', nextRuntime, snapshot);
     previewSaveIdentity = identity;
     hudView = createHUDView($('hud-overlay'), snapshot, {
       click: id => { if (runtime?.hudState.cursor && !runtime.bindingKey) runtime.hudState.clicked.add(id); },
@@ -3843,8 +3948,11 @@ function frame(now) {
   if (runtime) {
     try {
       const onMenu = runtime.gameScreen !== 'playing';
+      addonHost.emit('beforeStep', runtime, dt);
       stepRuntime(previewProject, runtime, dt, onMenu ? keys : mappedKeys(keys, runtime.settings),
         onMenu ? pressed : mappedKeys(pressed, runtime.settings)); pressed.clear();
+      addonHost.emit('afterStep', runtime, dt);
+      addonHost.emit('frame', dt, runtime);
       if (settingsRevision !== runtime.settingsRevision) {
         settingsRevision = runtime.settingsRevision;
         try { localStorage.setItem(settingsStorageKey, JSON.stringify(runtime.settings)); }

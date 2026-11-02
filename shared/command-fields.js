@@ -17,8 +17,10 @@ import { pathPointOptions } from './paths.js';
 /** The commands whose `variable` field names an object's own variable rather than a global. */
 export const OBJECT_VARIABLE_COMMANDS = ['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'];
 
-export function commandFields(command, { entities, zones = [], playerId, variables, groups, clips, walls, sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [] }) {
-  const definition = engineCommand(command.type);
+export function commandFields(command, { entities, zones = [], playerId, variables, groups, clips, walls, sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], commands = null }) {
+  // `commands` is the project's whole catalogue, engine commands first and addon commands after it,
+  // so an addon's fields are drawn by the same code as the engine's.
+  const definition = (commands ? commands.find(entry => entry.type === command.type) : null) || engineCommand(command.type);
   if (definition) {
     return [
       // The object and the route come first: everything below them is described in terms of them —
