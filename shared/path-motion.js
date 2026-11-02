@@ -27,8 +27,9 @@ const wrap360 = value => ((value % 360) + 360) % 360;
  * own forward is off is corrected once with the facing offset instead of by re-posing it on every
  * leg, which was why a truck that looked right in the editor drove sideways in play.
  */
-export function facingAngle(entity, motion, heading, yawOffset) {
-  const declared = entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
+export function facingAngle(entity, motion, heading, yawOffset, useModelFacing = true) {
+  const declared = useModelFacing !== false
+    && entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
   const route = entity?.modelAsset && !declared
     ? (Number(motion.authoredAngle) || 0) + (heading - (motion.startHeading ?? heading))
     : heading;
@@ -47,6 +48,9 @@ export function pathFollowSettings(path = {}) {
     // sideways next to one authored facing +x. The offset turns the model on top of the route's
     // direction so either can be used without re-exporting it.
     yawOffset: Number.isFinite(Number(path.yawOffset)) ? Number(path.yawOffset) : 0,
+    // A declared facing can be honoured (the nose is the object's angle, exact) or ignored so the
+    // model keeps the pose it was given and only turns by how much the route bends.
+    useModelFacing: path.useModelFacing !== false,
     startAt: Math.min(1, Math.max(0, Number(path.startAt) || 0)),
   };
 }
@@ -143,7 +147,7 @@ export function advancePathMotion(project, state, dt) {
     // model up it, and keeping a separate elevation would let the two drift apart.
     entity.z = where.z || 0;
     if (motion.startHeading === null || motion.startHeading === undefined) motion.startHeading = where.angle;
-    if (settings.faceDirection) entity.angle = facingAngle(entity, motion, where.angle, settings.yawOffset);
+    if (settings.faceDirection) entity.angle = facingAngle(entity, motion, where.angle, settings.yawOffset, settings.useModelFacing);
     moved++;
   }
   return moved;

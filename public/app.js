@@ -1,5 +1,5 @@
 import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, updateAsset, ENTITY_TYPES } from '/shared/project.js';
-import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint } from '/shared/paths.js';
+import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
@@ -9,6 +9,7 @@ import { undoDepthFor, UNDO_DEEP_GAME_STEPS } from '/shared/undo-depth.js';
 import { hasModelFacing } from '/shared/entity-visuals.js';
 import { addRamp, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { bundleModel } from '/shared/gltf.js';
+import { measureAssetForward } from '/shared/model-forward.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
 import { createSceneEditor } from './scene-editor.js';
 import {
@@ -747,6 +748,16 @@ function button(text, fn, className) {
   element.addEventListener('click', guard(fn));
   return element;
 }
+/**
+ * A facing as the degrees the inspector shows: wrapped into -180…180 and rounded to a tenth.
+ *
+ * Rounding after the wrap keeps -66.9 from coming back as -66.89999999999998, because the
+ * remainder of a negative number is where the floating-point tail creeps in.
+ */
+function normalizeFacing(value) {
+  const wrapped = ((Number(value) % 360) + 360) % 360;
+  return Math.round((wrapped > 180 ? wrapped - 360 : wrapped) * 10) / 10;
+}
 function input(value, type, fn, label, { raw = false } = {}) {
   const element = make('input');
   element.type = type;
@@ -1150,20 +1161,40 @@ function renderInspector() {
             if (String(value).trim() === '') { delete entity.modelFacing; return; }
             const clean = Number(value);
             if (!Number.isFinite(clean)) { delete entity.modelFacing; return; }
-            const wrapped = ((clean % 360) + 360) % 360;
-            // Rounding after the wrap keeps -66.9 from coming back as -66.89999999999998: the
-            // remainder of a negative number is where the floating-point tail creeps in.
-            entity.modelFacing = Math.round((wrapped > 180 ? wrapped - 360 : wrapped) * 10) / 10;
+            entity.modelFacing = normalizeFacing(clean);
           }, 'Model facing changed');
           field(parent, 'Model facing (degrees)', input(facing ?? '', 'number', value => setFacing(value), null, { raw: true }));
+          // The number above is the one place a model disagrees with the engine, and reading it off
+          // the screen always leaves a few degrees behind — a truck whose body runs along Z is 90°,
+          // and 10° of guess is exactly what showed up in play. The model's own bounding box knows
+          // the axis, so it is offered instead of guessed.
+          const modelAsset = (project.assets || []).find(asset => asset.id === item.modelAsset);
+          const measured = measureAssetForward(modelAsset);
+          // The route is whatever drives the object — its own path setting, an event action or a
+          // timesheet cue — because a truck driven by a timeline used to be offered nothing at all.
+          const route = routesForEntity(project, item.id)[0]?.path ?? null;
+          const alignment = route ? alignModelToRoute(item, route, { forward: measured }) : null;
+          if (measured !== null) {
+            parent.append(button(`Measure from the model (${measured}°)`, () => {
+              edit(next => {
+                const entity = next.map.entities.find(entity => entity.id === item.id);
+                // Which end is the nose is not in a bounding box. A declared facing, or the pose
+                // the author lined up next to the route, says which end leads; with neither there
+                // is nothing to go on and the near end of the axis is as good as any.
+                const reference = alignment ? alignment.facing
+                  : normalizeFacing(((Number(entity.modelFacing) || 0) % 360 + 360) % 360);
+                const gap = value => Math.abs(((value - reference + 540) % 360) - 180);
+                entity.modelFacing = normalizeFacing(gap(measured) <= gap(measured + 180) ? measured : measured + 180);
+              }, `${item.name} now faces its model's own axis (${measured}° or ${measured + 180}°)`);
+            }));
+            parent.append(make('p', `This model is longer along ${measured === 0 ? 'X' : 'Z'} than across it, so its body runs at ${measured}° (or ${measured + 180}° the other way): that is the facing a route needs to turn its nose onto the path. Add 180 to it if the model drives backwards.`, 'info'));
+          }
           parent.append(make('p', facing === undefined
             ? 'Set this when the model file\'s own forward is not east: the orange arrow shows the direction the nose follows, so turn the model with Rotate until the body lines up, then read the angle here. Until it is set, the model keeps the pose you gave it and turns with the route.'
             : `The model\'s nose follows the object\'s angle; a route turns it exactly. Measured from east, so a file drawn facing north is 90. The orange arrow is drawn while this object is selected.`, 'info'));
           // The shortcut that turns a posed model into a faced one: the route's own heading is the
           // reference, and the difference to the current angle is the file's forward.
-          const route = (project.paths || []).find(candidate => candidate.id === item.path?.id);
           if (route) {
-            const alignment = alignModelToRoute(item, route);
             if (alignment) {
               parent.append(button('Line this model up with its route', () => {
                 edit(next => {
@@ -1173,7 +1204,9 @@ function renderInspector() {
                   if (entity.path) delete entity.path.yawOffset;
                 }, `${item.name} now faces its route (facing ${alignment.facing}°, angle ${alignment.angle}°)`);
               }));
-              parent.append(make('p', `This turns ${item.name} onto the route without moving it: the route heads ${alignment.heading}° and the model was drawn at ${alignment.was}°, so a facing of ${alignment.facing}° is what makes the two agree.`, 'info'));
+              parent.append(make('p', alignment.measured
+                ? `The route "${route.name}" heads ${alignment.heading}°, and the model's own body runs at ${measured}° (or ${measured + 180}°), so a facing of ${alignment.facing}° turns its nose onto the path exactly. This also sets the angle to ${alignment.angle}°, so the model is turned, not moved.`
+                : `This turns ${item.name} onto the route without moving it: the route heads ${alignment.heading}° and the model was drawn at ${alignment.was}°, so a facing of ${alignment.facing}° is what makes the two agree.`, 'info'));
             }
           }
           // Yaw is the object's own facing; pitch and roll stand the model up, on its
@@ -1236,7 +1269,10 @@ function renderInspector() {
               follow.mode || 'loop', value => changeFollow('mode', value)));
             field(parent, 'Start at (0-1 of the route)', input(follow.startAt ?? 0, 'number', value => changeFollow('startAt', value)));
             field(parent, 'Facing offset (degrees)', input(follow.yawOffset ?? 0, 'number', value => changeFollow('yawOffset', value)));
-            parent.append(checkbox('Face the way it is going', follow.faceDirection !== false, value => changeFollow('faceDirection', value)),
+            parent.append(checkbox('Face the way it is going', follow.faceDirection !== false, value => changeFollow('faceDirection', value)));
+            if (item.modelFacing !== undefined) parent.append(checkbox('Use the model facing', follow.useModelFacing !== false,
+              value => changeFollow('useModelFacing', value)));
+            parent.append(
               make('p', 'The model is placed by the route, height included, and turns to follow it. Two objects on one route with different start points will not overlap. The route is edited with Draw path; this object only stores which one it walks.', 'muted'));
             if (item.physics?.body && item.physics.body !== 'none') {
               parent.append(make('p', 'This object also has a Rapier rigid body, and the body decides where it is — the route will not move it. Set the rigid body to none to see the walk.', 'info'));
@@ -2842,10 +2878,12 @@ function drawMap() {
     if (isMarked) { ctx.beginPath(); ctx.arc(entity.x, entity.y, 12 / camera.zoom, 0, Math.PI * 2); ctx.stroke(); }
     // Which way the player start looks is part of the map and nothing else says it: the marker is a
     // heading arrow with a head, so a start facing north cannot be mistaken for one facing east.
-    // A model that declared its facing gets the same arrow, because the angle is then the direction
-    // its nose points, and that is the line the author is checking against a route.
+    // A faced model gets the same arrow *while it is selected*, because the angle is then the
+    // direction its nose points and that is the line the author checks the body against — drawing
+    // one on every faced object buried the map in arrows nobody asked to see.
     if (entity.type === 'player') drawFacingArrow(ctx, entity, entityColors.player, camera.zoom);
-    else if (hasModelFacing(entity)) drawFacingArrow(ctx, entity, '#ff9d5c', camera.zoom);
+    else if (hasModelFacing(entity) && selection?.kind === 'entity' && selection.id === entity.id)
+      drawFacingArrow(ctx, entity, '#ff9d5c', camera.zoom);
     if (camera.zoom > .25) {
       ctx.font = `${10 / camera.zoom}px system-ui`; ctx.fillText(entity.name, entity.x + 12 / camera.zoom, entity.y + 4 / camera.zoom);
     }

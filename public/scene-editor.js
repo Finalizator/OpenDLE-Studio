@@ -708,36 +708,33 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     faceGroup.visible = true;
   }
   /**
-   * The facing arrows of the models that declared one.
+   * The facing arrow of the selected model, when it declared one.
    *
    * Only a model with `modelFacing` has an arrow — for every other object the gizmo's axes already
-   * say what its angle means, and an arrow on everything would be noise. The arrow points along the
-   * object's angle, which is the direction the nose follows once a facing is declared, so the check
-   * the author makes is "does the body sit along this line?".
+   * say what its angle means — and only while it is selected, because the arrow is the line the
+   * author checks the body against and one on every faced object buries the scene in arrows. The
+   * arrow points along the object's angle, which is the direction the nose follows once a facing is
+   * declared, so the check is "does the body sit along this line?".
    */
   function updateFacingMarkers(rect, frustum) {
-    let shown = 0;
     const posed = selected?.kind === 'entity' ? entityById.get(selected.id) : null;
-    for (const entity of entityById.values()) {
-      if (!entity?.modelAsset || !hasModelFacing(entity)) continue;
-      const pose = facingArrowPose(entity, sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0);
-      const marker = facingMarkerAt(shown++);
-      marker.position.set(pose.x, pose.y, pose.z);
-      marker.rotation.y = pose.yaw;
-      marker.visible = frustum.containsPoint(marker.position);
-      // Constant size on screen, the way the player start's arrow is: a model across a big room
-      // still reads, and a row of trucks does not bury the map in arrows.
-      marker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(marker.position) / rect.height));
-      if (entity === posed) {
-        canvas.dataset.modelFacing = String(Math.round(Number(entity.modelFacing) || 0));
-        canvas.dataset.facingAt = `${Math.round(pose.x)},${Math.round(pose.z)}`;
-        canvas.dataset.facingDrawn = String(marker.visible);
-      }
-    }
-    for (let index = shown; index < facingMarkers.length; index++) facingMarkers[index].visible = false;
-    if (!posed || !posed.modelAsset || !hasModelFacing(posed)) {
+    if (!posed?.modelAsset || !hasModelFacing(posed)) {
+      for (const hidden of facingMarkers) hidden.visible = false;
       canvas.dataset.modelFacing = ''; canvas.dataset.facingAt = ''; canvas.dataset.facingDrawn = '';
+      return;
     }
+    const marker = facingMarkerAt(0);
+    const pose = facingArrowPose(posed, sectorAt(sectors, posed.x, posed.y)?.floorHeight ?? 0);
+    marker.position.set(pose.x, pose.y, pose.z);
+    marker.rotation.y = pose.yaw;
+    marker.visible = frustum.containsPoint(marker.position);
+    // Constant size on screen, the way the player start's arrow is: a model across a big room
+    // still reads without the arrow becoming a wall of its own.
+    marker.scale.setScalar(Math.max(.8, 1.9 * camera.position.distanceTo(marker.position) / rect.height));
+    for (let index = 1; index < facingMarkers.length; index++) facingMarkers[index].visible = false;
+    canvas.dataset.modelFacing = String(Math.round(Number(posed.modelFacing) || 0));
+    canvas.dataset.facingAt = `${Math.round(pose.x)},${Math.round(pose.z)}`;
+    canvas.dataset.facingDrawn = String(marker.visible);
   }
 
   /**

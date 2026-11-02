@@ -219,6 +219,7 @@ test('the drive-a-route recipe writes a timeline, a cue and the event that start
   assert.deepEqual(cue.actions, [{
     type: 'followPath', entityId: entity.id, pathId: 'lap',
     fromPoint: 0, toPoint: -1, seconds: 9, easing: 'linear', faceDirection: 'yes', yawOffset: 0,
+    useModelFacing: 'yes',
   }]);
   assert.equal(event.condition.type, 'onStart');
   assert.deepEqual(event.actions, [{ type: 'startTimesheet', timesheetId: sheet.id, restart: 'yes', loop: 'same' }]);
@@ -421,6 +422,38 @@ test('a posed model is lined up with its route without moving it', async () => {
   for (let i = 0; i < 4; i++) assert.ok(Math.abs(looked[i] - now[i]) < 1e-9, 'the model did not jump');
   // A route with nowhere to go has no direction to face.
   assert.equal(alignModelToRoute(entity, { id: 'dot', points: [{ id: 'a', x: 0, y: 0, z: 0 }] }), null);
+
+  // A model whose body can be measured is set to that measurement, not to the gap between the
+  // route and a pose that was only roughly right: a truck 10° off the path is what the eye reads as
+  // "not aligned", and the bounding box knows the 10° the author could not see.
+  const skewed = { ...entity, angle: 70, modelFacing: 80 };
+  const measured = alignModelToRoute(skewed, path, { forward: 90 });
+  assert.equal(measured.facing, 90, 'the body runs along Z, so its facing is 90 and not the 80 it had');
+  assert.equal(measured.angle, 90, 'and the angle goes onto the route');
+  assert.equal(measured.measured, true);
+  // The hemisphere is the one the author already chose: 80 was nearer 90 than 270, and 20 nearer
+  // -90 than 90, so aligning again never flips a truck around behind their back.
+  assert.equal(alignModelToRoute({ ...entity, modelFacing: 200 }, path, { forward: 90 }).facing, -90);
+  assert.equal(alignModelToRoute({ ...entity, modelFacing: 20 }, path, { forward: 0 }).facing, 0);
+  assert.equal(alignModelToRoute({ ...entity, modelFacing: 200 }, path, { forward: 0 }).facing, 180);
+  // With no facing declared yet — the case this button exists for — the *pose* is the author's
+  // answer about which end leads, not a made-up 0. A model whose body runs along ±X (so 0 or 180)
+  // was posed with its tail toward the route: facing 180 keeps it looking exactly as it did, where
+  // taking 0 as the reference turned it a half turn and drove it backwards.
+  const tailFirst = { ...entity, angle: 270 };
+  const kept = alignModelToRoute(tailFirst, path, { forward: 0 });
+  assert.equal(kept.facing, 180, 'the pose implies the other end is the nose');
+  // Quaternions q and -q are the same rotation, so the check is the direction the body is drawn in
+  // rather than the four numbers: rotating the model's own +Z by each must land in the same place.
+  const facingDirection = quaternion => {
+    const [x, y, z, w] = quaternion;
+    // `+ 0` turns -0 into 0: they are the same number but not the same in a deep compare.
+    return [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)].map(value => Math.round(value * 1e9) / 1e9 + 0);
+  };
+  assert.deepEqual(facingDirection(modelOrientation({ angle: kept.angle, modelFacing: kept.facing })),
+    facingDirection(modelOrientation({ angle: 270 })), 'so the model is drawn where the author put it');
+  // The same model declared facing 0 already, and then the declaration wins over the pose.
+  assert.equal(alignModelToRoute({ ...tailFirst, modelFacing: 0 }, path, { forward: 0 }).facing, 0);
 
   // The recipe applies it, and the cue carries no yaw offset: the facing is already exact.
   let sequence = 0;

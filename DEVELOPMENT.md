@@ -911,21 +911,46 @@ paths in `public/render.js`). A route then turns a faced model exactly, the same
 follows, because there is no unknown left to bend around. Until a facing is declared, a model keeps
 the pose the author gave it, so every project that never sets one behaves as it always did.
 
-Two things make the number findable rather than guessed:
+Three things make the number findable rather than guessed:
 
 - **An arrow** at the model's feet, in the 2D map and in the 3D view, pointing along the object's
   angle — the direction the nose follows once a facing is declared, so "does the body sit along
-  this line?" is the check. It is drawn for every model that declares a facing (`#ff9d5c`, the
-  player start's arrow is `#70ddba`) at a constant size on screen, and the 3D view publishes it on
-  the canvas dataset (`modelFacing`, `facingAt`, `facingDrawn`) so a build can be checked without
-  eyeballing it.
-- **"Line this model up with its route"**, in Properties, which needs the object to have a route.
-  The model was turned until it looked right, so the gap between the route's heading and its angle
-  *is* the file's forward: `alignModelToRoute` in `shared/timesheet-recipe.js` writes that gap as
-  the facing and puts the angle on the route, which leaves the model drawn exactly where it was
-  (measured: zero pixels change) and makes the drive match what the author saw. The "drive this
-  route on a timesheet" recipe does the same thing for a model that has no facing yet, and drops
-  the hand-set facing offset it would otherwise double up with.
+  this line?" is the check. It is drawn **only while the object is selected** (`#ff9d5c`; the
+  player start's arrow is `#70ddba` and is always on, because a level has exactly one start), at a
+  constant size on screen, and the 3D view publishes it on the canvas dataset (`modelFacing`,
+  `facingAt`, `facingDrawn`) so a build can be checked without eyeballing it. An arrow on every
+  faced object buried the map in arrows nobody had asked to see.
+- **"Measure from the model (90°)"**, in Properties, which reads the axis out of the model's own
+  geometry. Almost everything with a front is longer along it than across it, so
+  `modelForwardAngle` in [`shared/model-forward.js`](./shared/model-forward.js) measures the
+  accessor bounds through the node hierarchy and reports 0 (long on X), 90 (long on Z) or nothing
+  when the footprint is too square to say. A truck whose body runs along Z is 90°, and a number
+  read off the screen — the truck was set to 80° — leaves exactly the 10° that read as "still not
+  aligned" in play. Each node is composed the way glTF means it, **M = T·R·S**: rotating the
+  translation by the node's own rotation (R·[S|t]) puts a placed, turned part in the wrong place,
+  and a model made of several such parts measures its longest side on the wrong axis.
+  A bounding box cannot tell the nose end from the tail end, so the ending is taken from the
+  author's own answer — the **declared facing** if there is one, and otherwise the forward their
+  **pose implies** (`heading − angle`: a model posed so it looks right next to its route has said
+  which end leads). Only when neither exists does the near end of the axis win; a model that then
+  drives backwards needs 180 added.
+- **"Line this model up with its route"**, in Properties, which needs the object to have a route —
+  its own `path` setting, an event action, or a **timesheet cue**. `routesForEntity` in
+  [`shared/paths.js`](./shared/paths.js) finds all three, because a truck driven by a timeline used
+  to be offered nothing at all and looked as if it followed no route. With a measurement the
+  button writes that measurement as the facing and turns the body onto the route; without one it
+  falls back to the older rule — the model was turned until it looked right, so the gap between the
+  route's heading and its angle *is* the file's forward — which leaves the model drawn exactly where
+  it was (measured: zero pixels change). Either way the angle goes onto the route, so the model is
+  turned, not moved. The "drive this route on a timesheet" recipe does the same for a model with no
+  facing yet, and drops the hand-set facing offset it would otherwise double up with.
+
+**A cue can ignore the facing.** The `followPath` action and the object's own route following both
+carry **Use the model facing** (`useModelFacing`, default yes). With it on, a faced model is turned
+onto the route exactly; with it off, the model keeps the pose it was given for this trip and is only
+turned by however much the route bends — the rule everything followed before a facing existed,
+which is what an author wants when one model is posed per route. The field is optional in the
+schema so every cue written before it existed still validates and keeps behaving as it did.
 
 A faced model is trusted over the recipe's own arithmetic: if a facing is already declared, the
 recipe leaves it and the angle alone. The *collider* follows the same rule: `colliderRotation` in

@@ -1241,7 +1241,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (path && target && target.type !== 'player')
             startPathTween(state, { entityId: target.id, pathId: path.id, fromPoint: action.fromPoint,
               toPoint: action.toPoint, seconds: action.seconds, easing: action.easing,
-              faceDirection: action.faceDirection !== 'no', yawOffset: action.yawOffset });
+              faceDirection: action.faceDirection !== 'no', yawOffset: action.yawOffset,
+              useModelFacing: action.useModelFacing !== 'no' });
           break;
         }
         case 'facePlayer': {

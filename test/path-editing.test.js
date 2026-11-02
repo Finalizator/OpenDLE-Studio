@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createProject, validateProject } from '../shared/project.js';
-import { createPath, createPathPoint, pathReferences, removePath, removePathPoint } from '../shared/paths.js';
+import { createPath, createPathPoint, pathReferences, removePath, removePathPoint, routesForEntity } from '../shared/paths.js';
 import { createTrack, createTimesheet, createCue } from '../shared/timesheet.js';
 
 // A route is layout data, so deleting one cannot simply splice it out: whatever walked it and any
@@ -41,6 +41,24 @@ test('a route reports every object and action that names it', () => {
   assert.deepEqual(pathReferences(project, 'other'), { followers: [], actions: [] });
 });
 
+// A truck driven by a timeline used to look as if it followed nothing: the inspector only ever
+// looked at the object's own `path` setting, so the "line this model up with its route" button was
+// offered for objects the route had never been pointed at, and missing for the ones it had.
+test('every way an object is driven along a route is reported, with where it was decided', () => {
+  const { project, walker } = projectWithRoute();
+  // The object's own setting is gone, so the timeline is the only thing that drives it.
+  delete walker.path;
+  assert.deepEqual(routesForEntity(project, walker.id).map(entry => [entry.path.id, entry.source]),
+    [['route', 'event']], 'the event action that moves the object still counts once its own path is gone');
+  // With the event gone the timeline is the only thing left that drives it, and the entry says so.
+  project.events = [];
+  assert.deepEqual(routesForEntity(project, walker.id).map(entry => [entry.path.id, entry.source]),
+    [['route', 'timesheet:timeline']], 'a cue names the route it drives the object along, and which timeline it is in');
+  // With its own setting back the object answers first, and the route is reported once either way.
+  walker.path = { id: 'route', speed: 64 };
+  assert.deepEqual(routesForEntity(project, walker.id).map(entry => [entry.path.id, entry.source]), [['route', 'object']]);
+  assert.deepEqual(routesForEntity(project, 'nobody'), [], 'an object nothing drives has no route');
+});
 test('deleting a route releases its followers and drops the actions that used it', () => {
   const { project, walker } = projectWithRoute();
   const result = removePath(project, 'route');

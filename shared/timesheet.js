@@ -308,7 +308,7 @@ export function easingValue(name, t) {
  * any move already running for that object rather than stacking two on top of each other.
  */
 export function startPathTween(state, { entityId, pathId, fromPoint = 0, toPoint = -1, seconds = 2,
-  easing = 'linear', faceDirection = true, yawOffset = 0 } = {}) {
+  easing = 'linear', faceDirection = true, yawOffset = 0, useModelFacing = true } = {}) {
   const tweens = state.pathTweens || (state.pathTweens = []);
   const keep = tweens.filter(tween => tween.entityId !== entityId);
   // The route is a *shape*, and the object travels it from wherever it already stands: a cue that
@@ -317,6 +317,9 @@ export function startPathTween(state, { entityId, pathId, fromPoint = 0, toPoint
   const entity = (state.entities || []).find(item => item.id === entityId);
   keep.push({ entityId, pathId, fromPoint, toPoint, seconds: Math.max(.05, Number(seconds) || 2),
     easing: PATH_EASINGS.includes(easing) ? easing : 'linear', faceDirection: faceDirection !== false, elapsed: 0,
+    // Whether the object's declared model facing turns the body onto the route (exact) or the
+    // model keeps the pose it was given and is turned by however much the route bends.
+    useModelFacing: useModelFacing !== false,
     yawOffset: Number.isFinite(Number(yawOffset)) ? Number(yawOffset) : 0,
     // How the object was posed before the trip: a model keeps that pose and is turned by how much
     // the route bends, where a sprite (whose forward the engine defines) is turned onto the route.
@@ -337,12 +340,17 @@ const wrap360 = value => ((value % 360) + 360) % 360;
  * heading made a pre-rotated truck drive sideways, so a model keeps the pose it was given and is
  * turned by however much the route bends. `yawOffset` is added on top for a model whose own
  * forward still needs a correction.
+ *
+ * `useModelFacing: false` on the tween asks for the pose rule even when a facing is declared, which
+ * is what an author wants when the model was posed for this route by hand and the facing belongs to
+ * some other trip.
  */
 export function tweenAngle(entity, tween, heading) {
   // A declared facing makes the model's nose the object's angle, so the angle is simply the route's
   // — exact, and the same rule a sprite follows. Without one, an imported model keeps the pose the
   // author gave it and is turned by how much the road bends.
-  const declared = entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
+  const declared = tween?.useModelFacing !== false
+    && entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
   const route = entity?.modelAsset && !declared
     ? (Number(tween.authoredAngle) || 0) + (heading - (tween.startHeading ?? heading))
     : heading;

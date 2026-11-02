@@ -312,7 +312,11 @@ test('a declared model facing turns the body so its nose follows the object angl
   const editor = readFileSync(new URL('../public/scene-editor.js', import.meta.url), 'utf8');
   assert.ok(/updateFacingMarkers/.test(editor) && /hasModelFacing/.test(editor), 'the 3D view draws the arrows');
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  assert.ok(/hasModelFacing\(entity\)\) drawFacingArrow/.test(app), 'the 2D map draws them too');
+  // Only the selected object: the arrow is the line the author checks the body against, and one on
+  // every faced object buried the map in arrows nobody asked to see.
+  assert.match(app, /hasModelFacing\(entity\) && selection\?\.kind === 'entity' && selection\.id === entity\.id\)\s*\n\s*drawFacingArrow/,
+    'the 2D map draws the arrow for the selected model only');
+  assert.match(editor, /const posed = selected\?\.kind === 'entity'/, 'so does the 3D view');
 });
 
 // The declared facing must reach the simulation, not just the editor.
@@ -333,4 +337,32 @@ test('a route drives a face-declaring model to the exact heading, and holds back
   assert.ok(near(facingAngle({ modelAsset: 'truck' }, { authoredAngle: -93.9, startHeading: 20 }, 65, 0), 311.1));
   // An offset still applies on top, for a model that is only roughly aligned.
   assert.equal(tweenAngle({ modelAsset: 'truck', modelFacing: 90 }, { ...tween, yawOffset: 10 }, 65), 75);
+  // A cue can say not to use the facing at all, which is what an author wants when a model was
+  // posed for this one route by hand and the facing belongs to some other trip.
+  assert.ok(near(tweenAngle({ modelAsset: 'truck', modelFacing: 90 }, { ...tween, useModelFacing: false }, 65), 311.1));
+  assert.ok(near(facingAngle({ modelAsset: 'truck', modelFacing: 90 },
+    { authoredAngle: -93.9, startHeading: 20 }, 65, 0, false), 311.1), 'the live follower agrees');
+});
+
+// The tween the runtime builds is where the option has to arrive from a cue.
+test('a cue that turns the model facing off keeps the authored pose while it drives', async () => {
+  const { createProject } = await import('../shared/project.js');
+  const { createPath, createPathPoint } = await import('../shared/paths.js');
+  const { createRuntime } = await import('../shared/runtime.js');
+  const { startPathTween, advancePathTweens } = await import('../shared/timesheet.js');
+  const project = createProject();
+  project.paths = [createPath({ id: 'up', name: 'Up', points: [
+    createPathPoint({ id: 'a', x: 0, y: 0 }), createPathPoint({ id: 'b', x: 0, y: 800 }),
+  ] })];
+  const make = useModelFacing => {
+    const state = createRuntime(project);
+    const truck = state.entities.find(entity => entity.type !== 'player');
+    Object.assign(truck, { type: 'decoration', angle: 0, modelAsset: 'truck', modelFacing: 90, x: 0, y: 0 });
+    startPathTween(state, { entityId: truck.id, pathId: 'up', seconds: 2, useModelFacing });
+    for (let frame = 0; frame < 70; frame++) advancePathTweens(project, state, 1 / 35);
+    return state.entities.find(entity => entity.id === truck.id);
+  };
+  // The route heads north (90°) out of its first waypoint.
+  assert.equal(make(true).angle, 90, 'with the facing on, the nose is the road');
+  assert.ok(Math.abs(make(false).angle) < 1e-9, 'with it off, the pose is kept and only bent by the turn');
 });

@@ -30,10 +30,13 @@ test('a loop wraps, a ping-pong reflects and a one-way trip stops', () => {
 
 test('settings fill in the defaults and reject nonsense', () => {
   assert.deepEqual(pathFollowSettings({ id: 'route' }),
-    { id: 'route', speed: 64, mode: 'loop', faceDirection: true, startAt: 0, yawOffset: 0 });
+    { id: 'route', speed: 64, mode: 'loop', faceDirection: true, yawOffset: 0, useModelFacing: true, startAt: 0 });
   assert.equal(pathFollowSettings({ id: 'route', speed: 'fast' }).speed, 64, 'a broken speed falls back');
   assert.equal(pathFollowSettings({ id: 'route', mode: 'spiral' }).mode, 'loop');
   assert.equal(pathFollowSettings({ id: 'route', faceDirection: false }).faceDirection, false);
+  // A route honours a declared model facing unless it is told not to, which is the option the
+  // object's own "Follows a path" section offers.
+  assert.equal(pathFollowSettings({ id: 'route', useModelFacing: false }).useModelFacing, false);
   assert.equal(pathFollowSettings({ id: 'route', startAt: 2 }).startAt, 1, 'a start offset is clamped');
   assert.equal(pathFollowSettings({ id: 'route', startAt: -1 }).startAt, 0);
   assert.deepEqual(PATH_MODES, ['loop', 'pingpong', 'once']);

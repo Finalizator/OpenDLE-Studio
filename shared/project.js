@@ -270,6 +270,8 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
     if (follow.faceDirection !== undefined) assert(typeof follow.faceDirection === 'boolean', 'Object path facing must be boolean');
     if (follow.startAt !== undefined) number(follow.startAt, 'Object path start', 0, 1);
     if (follow.yawOffset !== undefined) number(follow.yawOffset, 'Object path facing offset', -360, 360);
+    if (follow.useModelFacing !== undefined)
+      assert(typeof follow.useModelFacing === 'boolean', 'Object path model facing must be boolean');
     assert(entity.type !== 'player', 'The player is driven by the controls, not by a path');
   }
   if (entity.health !== undefined) number(entity.health, 'Object health', 0, 1000000);

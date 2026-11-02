@@ -221,6 +221,40 @@ export function pathReferences(project, pathId) {
 }
 
 /**
+ * The routes one object is driven along, and where that was decided.
+ *
+ * An object follows a route in three different ways — its own `path` setting, an event action,
+ * or a timeline cue — and only the first was ever visible in the inspector. A truck driven by a
+ * timesheet therefore looked as if it followed nothing at all, which is why aligning a model to
+ * "its route" was offered for objects the route had never been pointed at. Each entry says where
+ * it came from so the editor can name it rather than just offering a path id.
+ */
+export function routesForEntity(project, entityId) {
+  if (!entityId) return [];
+  const routes = [];
+  const add = (pathId, source) => {
+    const path = (project.paths || []).find(item => item.id === pathId);
+    if (!path || routes.some(entry => entry.path.id === path.id)) return;
+    routes.push({ path, source });
+  };
+  // `$self` is the action's own object — the cue's owner, or the event's — and it is how a usual
+  // timeline driving its own object is written, so matching the id literally would miss it.
+  const targets = (action, ownerId) => action?.type === 'followPath'
+    && (action.entityId === entityId || (action.entityId === '$self' && ownerId === entityId));
+  const entity = (project.map?.entities || []).find(item => item.id === entityId);
+  if (entity?.path?.id) add(entity.path.id, 'object');
+  for (const event of project.events || []) {
+    for (const action of event.actions || []) if (targets(action, event.ownerId)) add(action.pathId, 'event');
+  }
+  for (const sheet of project.timesheets || []) {
+    for (const cue of sheet.cues || []) {
+      for (const action of cue.actions || []) if (targets(action, cue.ownerId)) add(action.pathId, `timesheet:${sheet.id}`);
+    }
+  }
+  return routes;
+}
+
+/**
  * Deletes a route from a draft project, releasing what referenced it.
  *
  * Followers simply stop following; an action that moved something along the route is dropped,
