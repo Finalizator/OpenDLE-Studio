@@ -36,7 +36,7 @@ function createAddonApi({ addon, host }) {
       implement(type, fn) {
         if (!declares(addon, 'actions', type)) throw new Error(`${addon.id} does not declare the action ${type} in its manifest`);
         if (typeof fn !== 'function') throw new Error(`${type} needs a function`);
-        host.hooks.actions.set(type, fn);
+        host.registerAction(addon, type, fn);
       },
     },
     conditions: {
@@ -44,7 +44,7 @@ function createAddonApi({ addon, host }) {
       implement(type, fn) {
         if (!declares(addon, 'conditions', type)) throw new Error(`${addon.id} does not declare the condition ${type} in its manifest`);
         if (typeof fn !== 'function') throw new Error(`${type} needs a function`);
-        host.hooks.conditions.set(type, fn);
+        host.registerCondition(addon, type, fn);
       },
     },
     hooks: {
@@ -74,7 +74,7 @@ function createAddonApi({ addon, host }) {
     /** The page itself. An addon is code the author chose to install, so this is not a sandbox. */
     dom: document,
     /** Called with nothing after the addon has been switched off. */
-    onDeactivate(fn) { if (typeof fn === 'function') host.deactivators.push(fn); },
+    onDeactivate(fn) { if (typeof fn === 'function') host.registerDeactivate(addon, fn); },
   };
   return api;
 }
@@ -92,19 +92,49 @@ export function createAddonHost({ project, edit, status = () => {}, refresh = ()
     loaded: new Map(),
     hooks: { actions: new Map(), conditions: new Map() },
     hookHandlers: Object.fromEntries(hookNames.map(name => [name, []])),
-    deactivators: [],
+    // Everything an addon registered, kept per addon so switching one off takes exactly its
+    // registrations away and leaves the others running.
+    owned: new Map(),
     styles: new Map(),
     errors: new Map(),
-    signature: '',
+    loads: 0,
   };
+  /** The per-addon record of what it registered; created on first use. */
+  function ownership(id) {
+    let record = state.owned.get(id);
+    if (!record) {
+      record = { actions: new Set(), conditions: new Set(), deactivators: [] };
+      state.owned.set(id, record);
+    }
+    return record;
+  }
+  /**
+   * What identifies this addon's *content*, for the URL its script and styles load from.
+   *
+   * The digest of the fetched archive is used when there is one; a hand-installed or hand-edited addon
+   * has none, and falling back to `version` (the manifest *format* version, always 1) meant editing its
+   * script changed nothing until the page was reloaded.
+   */
+  function stamp(addon) {
+    if (addon.source?.digest) return addon.source.digest;
+    const files = addon.files || {};
+    let hash = 5381;
+    const feed = text => { for (let index = 0; index < text.length; index++) hash = ((hash * 33) ^ text.charCodeAt(index)) >>> 0; };
+    feed(addon.manifest?.entry || '');
+    for (const name of Object.keys(files).sort()) { feed(name); feed(String(files[name])); }
+    return `h${hash.toString(16)}`;
+  }
   const host = {
     project,
     edit,
     status,
     refresh,
+    stamp,
     hooks: state.hooks,
     hookHandlers: state.hookHandlers,
-    deactivators: state.deactivators,
+    registerAction(addon, type, fn) { ownership(addon.id).actions.add(type); state.hooks.actions.set(type, fn); },
+    registerCondition(addon, type, fn) { ownership(addon.id).conditions.add(type); state.hooks.conditions.set(type, fn); },
+    registerDeactivate(addon, fn) { ownership(addon.id).deactivators.push(fn); },
     registerStyle(addon, file) {
       const name = String(file ?? '');
       if (!name.toLowerCase().endsWith('.css')) throw new Error('ui.style takes the file name of a .css file in the addon');
@@ -113,7 +143,7 @@ export function createAddonHost({ project, edit, status = () => {}, refresh = ()
       const link = document.createElement('link');
       link.rel = 'stylesheet';
       link.dataset.addonStyle = addon.id;
-      link.href = `/api/addons/${encodeURIComponent(addon.id)}/${name.split('/').map(encodeURIComponent).join('/')}?v=${encodeURIComponent(addon.source?.digest || addon.version)}`;
+      link.href = `/api/addons/${encodeURIComponent(addon.id)}/${name.split('/').map(encodeURIComponent).join('/')}?v=${encodeURIComponent(host.stamp(addon))}`;
       document.head.append(link);
       state.styles.set(addon.id, link);
     },
@@ -144,50 +174,95 @@ export function createAddonHost({ project, edit, status = () => {}, refresh = ()
     }
   }
 
-  async function unload() {
-    for (const deactivate of state.deactivators.splice(0)) {
-      try { deactivate(); } catch { /* an addon that fails to tidy up is still being switched off */ }
+  /**
+   * Takes one addon out: everything it registered goes first, then its own teardown runs.
+   *
+   * That order matters — a frame hook that fires while the addon is being switched off is a call into
+   * code that is no longer loaded.
+   */
+  async function unloadOne(id) {
+    const loaded = state.loaded.get(id);
+    const record = state.owned.get(id);
+    if (record) {
+      for (const type of record.actions) state.hooks.actions.delete(type);
+      for (const type of record.conditions) state.hooks.conditions.delete(type);
     }
-    // The tabs, buttons and styles these addons put on the page go with them.
+    for (const name of hookNames) state.hookHandlers[name] = state.hookHandlers[name].filter(entry => entry.addon !== id);
+    state.styles.get(id)?.remove();
+    state.styles.delete(id);
+    state.errors.delete(id);
+    resetUi?.(id);
+    state.owned.delete(id);
+    if (loaded) {
+      for (const deactivate of record?.deactivators || []) {
+        try { deactivate(); } catch { /* an addon that fails to tidy up is still being switched off */ }
+      }
+      try { await loaded.module?.deactivate?.(); } catch (error) { host.log(id, 'error', [error.message]); }
+      try { loaded.dispose?.(); } catch { /* the module is going either way */ }
+    }
+    state.loaded.delete(id);
+  }
+
+  /** Brings one addon in, after the project has already been edited to hold it. */
+  async function loadOne(addon) {
+    try {
+      await stage?.(addon);
+      // Each activation gets its own module instance: an addon that keeps module-scope state must not
+      // inherit what the previous activation left there.
+      state.loads += 1;
+      const url = `/api/addons/${encodeURIComponent(addon.id)}/${addon.manifest.entry.split('/').map(encodeURIComponent).join('/')}`
+        + `?v=${encodeURIComponent(stamp(addon))}.${state.loads}`;
+      const module = await import(url);
+      const api = createAddonApi({ addon, host });
+      if (typeof module.activate === 'function') await module.activate(api);
+      else if (typeof module.default === 'function') await module.default(api);
+      else throw new Error('The entry module has no activate(api) export');
+      state.loaded.set(addon.id, { id: addon.id, module, api, stamp: stamp(addon) });
+    } catch (error) {
+      host.log(addon.id, 'error', [error.message]);
+    }
+  }
+
+  /** Switches every addon off and takes its UI away. */
+  async function unload() {
+    for (const id of [...state.loaded.keys()]) await unloadOne(id);
+    // Anything an addon put on the page without going through a loaded module goes too.
     resetUi?.();
     for (const style of state.styles.values()) style.remove();
     state.styles.clear();
-    for (const addon of state.loaded.values()) {
-      try { await addon.module?.deactivate?.(); } catch (error) { host.log(addon.id, 'error', [error.message]); }
-      addon.dispose?.();
-    }
-    state.loaded.clear();
+    state.owned.clear();
     state.hooks.actions.clear();
     state.hooks.conditions.clear();
     for (const name of hookNames) state.hookHandlers[name] = [];
   }
 
   /**
-   * Brings the loaded addons in line with the project: nothing to do when nothing changed, a full
-   * reload when the set of enabled addons (or their content) changed.
+   * Brings the loaded addons in line with the project.
+   *
+   * Only the addons that entered, left or changed are touched: switching one off used to unload and
+   * restart every addon, throwing away the other tab panels and re-running their `activate`. The whole
+   * thing is serialised, because the panel fires a sync per click and two overlapping runs left addons
+   * loaded that the project no longer had.
    */
-  async function sync() {
+  let queue = Promise.resolve();
+  function sync() {
+    const run = queue.then(syncNow, syncNow);
+    queue = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async function syncNow() {
     const current = project();
     const enabled = (current?.addons || []).filter(addon => addon.enabled !== false && addon.manifest?.entry);
-    const signature = JSON.stringify(enabled.map(addon => [addon.id, addon.manifest.entry, addon.source?.digest || '']));
-    if (signature === state.signature) return { loaded: state.loaded.size, errors: state.errors };
-    state.signature = signature;
-    await unload();
-    state.errors.clear();
-    for (const addon of enabled) {
-      try {
-        await stage?.(addon);
-        const url = `/api/addons/${encodeURIComponent(addon.id)}/${addon.manifest.entry.split('/').map(encodeURIComponent).join('/')}?v=${encodeURIComponent(addon.source?.digest || addon.version)}`;
-        const module = await import(url);
-        const api = createAddonApi({ addon, host });
-        if (typeof module.activate === 'function') await module.activate(api);
-        else if (typeof module.default === 'function') await module.default(api);
-        else throw new Error('The entry module has no activate(api) export');
-        state.loaded.set(addon.id, { id: addon.id, module, api });
-      } catch (error) {
-        host.log(addon.id, 'error', [error.message]);
-      }
+    for (const id of [...state.loaded.keys()]) {
+      const wanted = enabled.find(addon => addon.id === id);
+      if (!wanted || stamp(wanted) !== state.loaded.get(id).stamp) await unloadOne(id);
     }
+    for (const addon of enabled) {
+      if (!state.loaded.has(addon.id)) await loadOne(addon);
+    }
+    // Errors belong to the attempt that produced them.
+    for (const id of [...state.errors.keys()]) if (!enabled.some(addon => addon.id === id)) state.errors.delete(id);
     return { loaded: state.loaded.size, errors: state.errors };
   }
 
@@ -196,10 +271,22 @@ export function createAddonHost({ project, edit, status = () => {}, refresh = ()
     emit,
     errors: () => state.errors,
     loaded: () => [...state.loaded.keys()],
-    /** What `createRuntime` takes: the implementations for the commands addons declared. */
-    runtime: () => ({ actions: state.hooks.actions, conditions: state.hooks.conditions }),
+    /**
+     * What `createRuntime` takes: the implementations for the commands addons declared, and where a
+     * failure goes. A throwing implementation is contained by the runtime, but the author has to be
+     * able to see it — the addon's own card in the panel is where its log already appears.
+     */
+    runtime: () => ({
+      actions: state.hooks.actions,
+      conditions: state.hooks.conditions,
+      onError({ type, message }) {
+        let owner = null;
+        for (const [id, record] of state.owned) if (record.actions.has(type) || record.conditions.has(type)) owner = id;
+        host.log(owner || 'addon', 'error', [`${type} failed: ${message}`]);
+      },
+    }),
     /** Forgets everything, for a project switch. */
-    reset() { state.signature = ''; return unload(); },
+    reset() { return unload(); },
     showTab,
   };
 }

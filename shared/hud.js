@@ -264,6 +264,11 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
   }
 }
 
+/** The canvas a HUD starts with when a project had none: 16:9, fitted, no pixel grid. */
+export function emptyHUD() {
+  return { width: 800, height: 450, scaleMode: 'fit', fonts: [], elements: [], animations: [] };
+}
+
 export function hudElement(id, type = 'text', name = type) {
   return { id, name, type, anchors: { left: 0, top: 0, right: 0, bottom: 0 }, pivotX: 0, pivotY: 0,
     x: 20, y: 20, width: 180, height: 40, opacity: 1, scale: 1, rotation: 0, z: 0,

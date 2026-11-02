@@ -379,6 +379,10 @@ export function applyNodeFile(scene, document, {
   // A layout holds a whole map's worth of objects where a scene stops at 128, so the ceiling is
   // the destination's, not the file's.
   maxEntities = MAX_SCENE_ENTITIES, maxEvents = MAX_SCENE_EVENTS,
+  // Every command type the destination understands (the engine's, plus the ones its addons
+  // declare). A rule naming anything else is stripped instead of arriving as an invalid project —
+  // the file cannot know whether the addon that wrote it will be there.
+  knownTypes = null,
 } = {}) {
   validateNodeFile(document);
   if (!scene) throw new Error('There is no scene to import into');
@@ -435,9 +439,18 @@ export function applyNodeFile(scene, document, {
     for (const joint of joints) scene.joints.push(joint);
   }
 
-  const events = (document.events || []).map(event => {
+  const stamp = () => globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6);
+  const events = [];
+  const stripped = { commands: 0, rules: 0, types: new Set() };
+  const known = knownTypes ? (knownTypes instanceof Set ? knownTypes : new Set(knownTypes)) : null;
+  const keptIds = new Set();
+  // Sub-events travel with their parent or not at all: a child alone would arrive with a parent the
+  // destination does not have.
+  for (const event of document.events || []) {
+    const parentKept = event.parentId === undefined || keptIds.has(event.parentId);
+    if (!parentKept) { stripped.rules += 1; continue; }
     const copy = remapReferences(cloneProjectData(event), mapping);
-    copy.id = `${event.id}_import_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`.slice(0, 120);
+    copy.id = `${event.id}_import_${stamp()}`.slice(0, 120);
     if (event.ownerId) copy.ownerId = mapping.get(event.ownerId);
     // The script keeps its sheet and its group; an id the destination could not offer is dropped
     // rather than left dangling.
@@ -448,8 +461,26 @@ export function applyNodeFile(scene, document, {
       for (const key of CLIP_FIELDS) if (command[key] && clipRemap.has(command[key])) command[key] = clipRemap.get(command[key]);
       for (const key of ASSET_FIELDS) if (command[key] && assetRemap.has(command[key])) command[key] = assetRemap.get(command[key]);
     }
-    return copy;
-  });
+    if (known) {
+      const keep = command => {
+        if (!command || known.has(command.type)) return true;
+        stripped.commands += 1;
+        stripped.types.add(command.type);
+        return false;
+      };
+      const conditions = [copy.condition, ...(copy.conditions || [])].filter(Boolean);
+      const hadActions = (copy.actions || []).length;
+      copy.actions = (copy.actions || []).filter(keep);
+      const keptConditions = conditions.filter(keep);
+      copy.condition = keptConditions[0] || null;
+      copy.conditions = keptConditions.slice(1);
+      // A rule that lost everything it said is not a rule; one that still says something keeps what
+      // is left, the same way deleting an addon leaves the rules that still mean something.
+      if ((hadActions && !copy.actions.length) || !keptConditions.length) { stripped.rules += 1; continue; }
+    }
+    keptIds.add(event.id);
+    events.push(copy);
+  }
   if (events.length) {
     if ((scene.events || []).length + events.length > maxEvents) throw new Error(`The destination holds at most ${maxEvents} events`);
     for (const event of events) scene.events.push(event);
@@ -457,7 +488,8 @@ export function applyNodeFile(scene, document, {
 
   return { ids: copies.map(copy => copy.id), root: roots.length ? mapping.get(roots[0].id) : null,
     assets: document.assets || [], shaders: document.shaders || [], clips: document.clips || [],
-    sheets: document.sheets || [], groups: document.groups || [] };
+    sheets: document.sheets || [], groups: document.groups || [],
+    stripped: { ...stripped, types: [...stripped.types] } };
 }
 
 const freshId = base => `${String(base).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}_r${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;

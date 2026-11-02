@@ -12,6 +12,7 @@ import { ProjectStore } from '../server/store.js';
 import { readEngineVersion } from '../server/version.js';
 import { proposeChanges } from '../server/deepseek.js';
 import { createProject } from '../shared/project.js';
+import { normalizeAddon } from '../shared/addons.js';
 import { toolDefinitions } from '../server/tools.js';
 import { openLocalBrowser } from '../server/browser.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -323,6 +324,34 @@ test('DeepSeek request errors, malformed responses, missing config and tool budg
   } }), /eight-round/);
   assert.equal(calls, 8);
 });
+test('addon files are served from the project, and a staged copy bridges the moment before a save', async t => {
+  const { url } = await fixture(t);
+  const manifest = { format: 'opendle-addon', version: 1, id: 'sparkle', name: 'Sparkle', entry: 'addon.js',
+    provides: { actions: [{ type: 'sparkle:burst', label: 'Burst', fields: [] }] } };
+  const files = { 'addon.js': 'export default () => {};', 'style.css': 'body{}' };
+  // A script has to be same-origin to run under the studio's CSP and `import()` cannot send the bearer
+  // token, so this one GET is open.
+  assert.equal((await fetch(`${url}/api/addons/sparkle/addon.js`)).status, 404, 'nothing is served before it exists');
+  const staged = await fetch(`${url}/api/addons/stage`, { method: 'POST', headers, body: JSON.stringify({ id: 'sparkle', files }) });
+  assert.equal(staged.status, 200);
+  const pending = await fetch(`${url}/api/addons/sparkle/addon.js`);
+  assert.equal(pending.status, 200);
+  assert.match(pending.headers.get('content-type'), /text\/javascript/);
+  assert.match(await pending.text(), /export default/);
+  assert.match((await fetch(`${url}/api/addons/sparkle/style.css`)).headers.get('content-type'), /text\/css/);
+  assert.equal((await fetch(`${url}/api/addons/sparkle/notes.bin`)).status, 404);
+  assert.equal((await fetch(`${url}/api/addons/stage`, { method: 'POST', headers,
+    body: JSON.stringify({ id: 'no', files: { '../escape.js': 'x' } }) })).status, 400, 'a path out of the addon is refused');
+
+  // Once the project holds it, the route reads the project instead of the staged copy.
+  const snapshot = await (await fetch(`${url}/api/project`, { headers })).json();
+  const project = { ...snapshot.project, addons: [normalizeAddon({ manifest,
+    files: { 'addon.js': 'export const saved = true;', 'style.css': 'body{}' } })] };
+  const saved = await fetch(`${url}/api/project`, { method: 'PUT', headers, body: JSON.stringify({ project, revision: snapshot.revision }) });
+  assert.equal(saved.status, 200);
+  assert.match(await (await fetch(`${url}/api/addons/sparkle/addon.js`)).text(), /saved = true/);
+});
+
 test('AI HTTP returns approval-only changes and leaves server project untouched', async t => {
   let calls = 0;
   const { url, store } = await fixture(t, { apiKey: 'test', fetchImpl: async () => {

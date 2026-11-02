@@ -5,7 +5,10 @@ import { resolveString } from './language.js';
 
 // `actors` describes the game as a whole (monster and weapon state machines),
 // so it is stored once instead of being duplicated into every level.
-const sharedKeys = new Set(['version', 'title', 'assets', 'game', 'actors', 'strings', 'soundAliases']);
+// What belongs to the game rather than to one map. Addons are here because an addon adds *commands*:
+// one level cannot have a vocabulary the next one lacks, or a rule would stop resolving the moment
+// the author looked at another map. Its artwork already went into the shared asset list.
+const sharedKeys = new Set(['version', 'title', 'assets', 'game', 'actors', 'strings', 'soundAliases', 'addons']);
 
 /**
  * Point a level's environment at its music asset. MAPINFO `music` wins, then the
@@ -78,7 +81,11 @@ export function selectGameLevel(project, id) {
   current.assetIds = gameLevelAssetIds(project);
   if (id === game.active) return project;
   for (const key of Object.keys(project)) if (!sharedKeys.has(key)) delete project[key];
-  Object.assign(project, structuredClone(target.data));
+  const data = structuredClone(target.data);
+  // A level saved before addons were shared may still carry its own list; the project's is the one
+  // that counts, so a stale copy cannot switch the catalogue out from under the rules.
+  delete data.addons;
+  Object.assign(project, data);
   game.active = id;
   return project;
 }
@@ -108,7 +115,7 @@ function classicNext(id, secret) {
 
 export function assembleGameLevels(entries, entryId, title, routes = new Map()) {
   const assets = [], byId = new Map(), byContent = new Map(), levels = [], warnings = new Set(), ids = new Set();
-  let version, sharedActors = null, sharedStrings = null;
+  let version, sharedActors = null, sharedStrings = null, sharedAddons = null;
   const repeatedWarnings = new Set();
   for (const entry of entries) {
     if (levels.length >= 128) throw new Error('A game must contain 1–128 levels');
@@ -120,6 +127,7 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
     // machines), so it is taken from the first level that has one.
     if (!sharedActors && project.actors?.length) sharedActors = structuredClone(project.actors);
     if (!sharedStrings && project.strings) sharedStrings = { ...project.strings };
+    if (!sharedAddons && project.addons?.length) sharedAddons = structuredClone(project.addons);
     for (const asset of project.assets) {
       const { id: originalId, ...content } = asset;
       const signature = JSON.stringify(content), existing = byContent.get(signature);
@@ -176,6 +184,7 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
   if (!active) throw new Error(`Missing game entry level ${entryId}`);
   const project = { version, title: title.slice(0, 100), assets,
     ...(sharedStrings ? { strings: sharedStrings } : {}), ...(sharedActors ? { actors: sharedActors } : {}),
+    ...(sharedAddons ? { addons: sharedAddons } : {}),
     ...structuredClone(active.data), game: { version: 1, entry: entryId, active: entryId, levels } };
   if (JSON.stringify(project).length > LIMITS.gameBytes) {
     throw new Error(`Imported game exceeds the ${LIMITS.gameBytes / 1024 / 1024} MiB portable project limit`);

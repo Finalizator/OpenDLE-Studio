@@ -11,7 +11,7 @@ import { installEngineSounds } from './sound.js';
 import { doomWalk } from './sprite-animation.js';
 import { doomThings } from './doom-assets.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
-import { addonCommands, addonCommand } from './addons.js';
+import { addonCommands, addonCommand, declaredAddonTypes } from './addons.js';
 
 // Every key a creator can bind to an event, including the letters Doom leaves free, so
 // scriptlets such as the spray can be rebound from the event sheet.
@@ -27,6 +27,18 @@ const stat = () => choice('stat', 'health', PLAYER_STATS);
 const comparison = () => choice('operator', '>', ['<', '<=', '=', '!=', '>=', '>']);
 const timer = () => ({ name: 'timer', value: 'weapon', kind: 'text' });
 const projectileClips = () => ['clipId', 'impactClipId'].map(name => ({ name, kind: 'text', optional: true }));
+
+/**
+ * Conditions and actions the runtime answers by itself, before the catalogue is consulted.
+ *
+ * They predate the catalogue entries and the event sheet offers them first, so they are listed
+ * here as types rather than as definitions: what matters to an importer is only that a project
+ * understands them.
+ */
+export const CORE_CONDITIONS = ['onStart', 'always', 'keyPressed', 'nearEntity', 'collisionStarted', 'collisionEnded',
+  'isTouching', 'playerGrounded', 'animationFinished'];
+export const CORE_ACTIONS = ['showMessage', 'setVariable', 'addVariable', 'teleport', 'removeEntity', 'setEntityPosition',
+  'rotateEntity', 'applyImpulse', 'applyForce', 'setVelocity', 'playAnimation', 'stopAnimation'];
 
 export const ENGINE_CONDITIONS = [
   { type: 'levelTransition', label: 'Game: level entered with campaign inventory', fields: [] },
@@ -226,6 +238,20 @@ export function engineCommands(project) {
     conditions: [...ENGINE_CONDITIONS, ...addonCommands(project, 'conditions')],
     actions: [...ENGINE_ACTIONS, ...addonCommands(project, 'actions')],
   };
+}
+
+/**
+ * Every command type a project understands: the engine's own, plus the ones its addons declare.
+ *
+ * A file arriving from another project can name a command this one has never heard of — an addon's,
+ * usually. Importing it regardless would leave a project `validateProject` rejects, so an importer
+ * asks this first and says what it had to drop.
+ */
+export function knownCommandTypes(project) {
+  const types = new Set([...CORE_CONDITIONS, ...CORE_ACTIONS,
+    ...ENGINE_CONDITIONS.map(command => command.type), ...ENGINE_ACTIONS.map(command => command.type)]);
+  for (const type of declaredAddonTypes(project)) types.add(type);
+  return types;
 }
 
 export function engineCommand(type, project) {

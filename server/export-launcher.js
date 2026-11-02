@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ProjectStore } from './store.js';
+import { addonFile } from '../shared/addons.js';
 import { readEngineVersion } from './version.js';
 import { openLocalBrowser } from './browser.js';
 
@@ -29,6 +30,19 @@ const MIME_TYPES = new Map([
 const REWRITTEN_ADDONS = new Set([
   'environments/RoomEnvironment.js', 'loaders/GLTFLoader.js', 'utils/BufferGeometryUtils.js', 'utils/SkeletonUtils.js',
 ]);
+
+/** The kinds of file an addon may ship, matching what the studio serves. */
+const ADDON_MIME_TYPES = new Map([
+  ['js', 'text/javascript; charset=utf-8'], ['mjs', 'text/javascript; charset=utf-8'], ['cjs', 'text/javascript; charset=utf-8'],
+  ['json', 'application/json; charset=utf-8'], ['css', 'text/css; charset=utf-8'], ['md', 'text/plain; charset=utf-8'],
+  ['txt', 'text/plain; charset=utf-8'], ['glsl', 'text/plain; charset=utf-8'], ['wgsl', 'text/plain; charset=utf-8'],
+  ['frag', 'text/plain; charset=utf-8'], ['vert', 'text/plain; charset=utf-8'], ['tsl', 'text/plain; charset=utf-8'],
+  ['html', 'text/plain; charset=utf-8'], ['svg', 'image/svg+xml'],
+]);
+
+export function addonMimeType(name) {
+  return ADDON_MIME_TYPES.get(String(name).toLowerCase().split('.').pop()) || null;
+}
 
 export function contentSecurityPolicy(html) {
   const hashes = [];
@@ -105,6 +119,12 @@ export function createGameHandler({ root = bundleRoot, store, token, version, li
     response.end(request.method === 'HEAD' ? undefined : data);
   }
 
+  function sendText(response, status, body, type) {
+    const payload = Buffer.from(body, 'utf8');
+    response.writeHead(status, { ...security, 'Content-Type': type, 'Content-Length': payload.length, 'Cache-Control': 'no-cache' });
+    response.end(payload);
+  }
+
   function authorized(request) {
     return sameSecret(request.headers.authorization || '', `Bearer ${token}`);
   }
@@ -124,6 +144,17 @@ export function createGameHandler({ root = bundleRoot, store, token, version, li
     try { pathname = decodeURIComponent(url.pathname); }
     catch { return sendJson(response, 400, { error: 'Malformed request URL' }); }
     try {
+      // An addon's own files come from the project, exactly as the studio serves them: its script has
+      // to be same-origin to run under the CSP, and `import()` cannot send a bearer token, so this one
+      // GET is open in a portable build too.
+      const addonMatch = /^\/api\/addons\/([^/]+)\/(.+)$/.exec(pathname);
+      if (addonMatch && request.method === 'GET') {
+        const body = addonFile(store.snapshot().project, decodeURIComponent(addonMatch[1]), decodeURIComponent(addonMatch[2]));
+        if (body === null) return sendJson(response, 404, { error: 'That addon file is not in this project' });
+        const type = addonMimeType(addonMatch[2]);
+        if (!type) return sendJson(response, 415, { error: 'That addon file is not a kind the studio serves' });
+        return sendText(response, 200, body, type);
+      }
       if (pathname.startsWith('/api/')) {
         if (pathname === '/api/session' && request.method === 'GET') {
           return sendJson(response, 200, { token, deepseekConfigured: false, model: '' });

@@ -101,6 +101,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
   const state = {
     settings: userSettings, settingsRevision: 0, gameScreen: screen, gameMode,
     hasGame: screen === 'playing', bindingKey: null,
+    // The one field an addon owns. Everything else on the state belongs to the engine, and a save whose
+    // state holds a field the loader does not know is a save that cannot be read back.
+    addonState: {},
     menuRequests: [], interfaceStarted: false,
     saveSlots: Array(6).fill(''), saveStatus: '', pendingSaveSlot: null,
     newGameLevel: project.game && project.gameMenus?.episodes?.length === 1 ? project.gameMenus.episodes[0].levelId : null,
@@ -254,21 +257,63 @@ export function addonHooks(state) {
 /** What an addon's implementation is handed: the game, the rule and the object it named. */
 function addonContext({ project, state, event, command, findTarget, player }) {
   const id = command.entityId === '$self' ? event.ownerId : command.entityId;
-  const entity = id && !String(id).startsWith('$') ? findTarget(id) : null;
+  // `$player` is a real object; every other token (`$world`, `$all`) is a keyword, not something an
+  // implementation can be handed.
+  const entity = !id ? null : id === '$player' ? (player ? { ...player, type: 'player' } : null)
+    : !String(id).startsWith('$') ? findTarget(id) : null;
   return {
     project, state, event, command, entity,
     find: findTarget,
     player,
     /** A message over the game view, the same one a rule writes with `showMessage`. */
     say(text, seconds = 4) { state.message = String(text); state.messageTime = Number(seconds) || 4; },
-    /** A Doom sound by name, through the same list every other sound uses. */
+    /**
+     * A Doom sound by name.
+     *
+     * It goes through the same queue every other sound uses, so it is capped, positioned with the
+     * `x`/`y` the audio player reads, and reaches the same overflow counter.
+     */
     sound(name, volume = .6) {
       if (!name) return;
-      state.sounds.push({ name: String(name), volume: Math.min(1, Math.max(0, Number(volume) || 0)),
-        position: entity ? { x: entity.x, y: entity.y } : undefined });
+      soundEvent(state, String(name), Math.min(1, Math.max(0, Number(volume) || 0)), entity || undefined);
     },
   };
 }
+
+/**
+ * Runs one addon implementation, containing whatever it does.
+ *
+ * An addon is third-party code in the game loop: a throw, or a rejected promise nobody awaits, must
+ * not end the frame, skip the rest of the rule, or take the preview down with it. It is reported the
+ * way every other addon failure is — to the host's error log — and the step carries on.
+ */
+function runAddon(handler, context, command) {
+  let result;
+  try { result = handler(context, command); }
+  catch (error) {
+    reportAddonFailure(context?.state, command?.type, error);
+    return null;
+  }
+  if (result && typeof result.then === 'function') {
+    try {
+      result.then(null, error => reportAddonFailure(context?.state, command?.type, error));
+    } catch { /* a thenable that throws when awaited is still the addon's problem, not the frame's */ }
+  }
+  return result;
+}
+
+function reportAddonFailure(state, type, error) {
+  const report = addonHooks(state)?.onError;
+  const message = error instanceof Error ? error.message : String(error);
+  if (typeof report === 'function') { try { report({ type, message }); return; } catch { /* the log itself failed */ } }
+  // Nothing is listening (a headless run, a test): recorded instead of thrown, and bounded, because a
+  // rule that throws every frame must not become a leak.
+  addonFailures.push({ type, message });
+  if (addonFailures.length > 50) addonFailures.splice(0, addonFailures.length - 50);
+}
+
+/** Failures nothing listened for, so a test or a headless run can still see them. */
+export const addonFailures = [];
 
 /**
  * Drops everything the runtime remembered about an object that no longer exists.
@@ -481,7 +526,10 @@ const expressionFree = new WeakSet();
 function resolveExpression(command, key, value, context, project, event) {
   try {
     const result = evaluateExpression(value, context);
-    const field = engineCommand(command.type)?.fields.find(entry => entry.name === key);
+    // The project is passed so an addon's command is described too: without it every addon field falls
+    // through to the generic numeric rule, which rejects a text expression and lets a number through
+    // that the field's own bounds forbid.
+    const field = engineCommand(command.type, project)?.fields.find(entry => entry.name === key);
     if (field?.kind === 'number') {
       if (typeof result !== 'number' || result < field.min || result > field.max ||
         ['pellets', 'diceSides', 'doomType'].includes(key) && !Number.isInteger(result)) throw new Error(`Invalid numeric result for ${key}`);
@@ -1066,7 +1114,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       // A condition an addon declared: its implementation decides. An addon that is installed but
       // not running leaves the rule false rather than throwing, so a project still plays without it.
       const custom = addonHooks(state)?.conditions?.get(condition.type);
-      if (custom) return Boolean(custom(addonContext({ project, state, event, command: condition, findTarget, player }), condition));
+      if (custom) return Boolean(runAddon(custom, addonContext({ project, state, event, command: condition, findTarget, player }), condition));
       const entity = findTarget(condition.entityId);
       const position = entity?.type === 'player' ? player : entity;
       return position && Math.hypot(position.x - player.x, position.y - player.y) <= condition.distance;
@@ -1405,7 +1453,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           // An action an addon declared: its implementation does whatever it does, with the game
           // state in hand. Anything else unknown stays the no-op it always was.
           const custom = addonHooks(state)?.actions?.get(action.type);
-          if (custom) custom(addonContext({ project, state, event, command: action, findTarget, player }), action);
+          if (custom) runAddon(custom, addonContext({ project, state, event, command: action, findTarget, player }), action);
           break;
         }
       }

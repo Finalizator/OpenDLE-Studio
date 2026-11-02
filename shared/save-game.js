@@ -42,7 +42,10 @@ const optional = new Set(['decalCounter', 'lastShot', 'playerNoise', 'soundFlood
   // Teleport lines are derived from the map, but they are cached on the state on first use.
   'teleportLines',
   // Falling things keep their own tic clock, like the actor and projectile machines.
-  'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock', 'gravityClock']);
+  'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock', 'gravityClock',
+  // Where an addon keeps state of its own. Rules and scripts write the engine's fields through the API;
+  // this one bag is theirs, so their data travels with a save without a field per addon.
+  'addonState']);
 const fail = message => { throw new Error(`Invalid game save: ${message}`); };
 const plain = value => value !== null && typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -293,6 +296,15 @@ function validateRuntime(project, state, baseline) {
   if (state.playerNoise !== undefined &&
     (!plain(state.playerNoise) || !['x', 'y', 'time'].every(key => Number.isFinite(state.playerNoise[key])))) fail('invalid player noise');
   if (state.soundFlood !== undefined && (!plain(state.soundFlood) || !(state.soundFlood.reached instanceof Map))) fail('invalid sound propagation');
+  if (state.addonState !== undefined) {
+    const bag = state.addonState;
+    if (!plain(bag) || Object.keys(bag).length > 256) fail('invalid addon state');
+    // It ends up in a save file, so it is plain JSON and nothing else.
+    for (const value of Object.values(bag)) {
+      if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') fail('invalid addon state');
+      try { JSON.stringify(value); } catch { fail('invalid addon state'); }
+    }
+  }
 }
 
 /** Capture only portable runtime data; assets, project documents and GPU/physics handles are excluded. */
@@ -306,6 +318,12 @@ export function captureGameSave(project, state, identity) {
   portable.bindingKey = null;
   if (Object.hasOwn(portable, 'menuHistory')) portable.menuHistory = [];
   const snapshot = encode(portable);
+  // Whatever is written has to be readable: a save whose own loader refuses it is worse than no save at
+  // all, because the player is told it worked. An addon that adds a field of its own to the state would
+  // otherwise produce exactly that, so the same check the loader runs is run before the file is kept.
+  const readable = decode(snapshot);
+  try { validateRuntime(project, readable, createRuntime(project, { settings: gameSettings(readable.settings) })); }
+  catch (error) { fail(`${error.message.replace(/^Invalid game save: /, '')} (an addon changed the runtime state)`); }
   const physicsData = state.physics ? state.physics.saveState() : null;
   if (physicsData) validatePhysicsState(physicsData);
   const record = { version: GAME_SAVE_VERSION, identity, levelId: project.game?.active ?? null,

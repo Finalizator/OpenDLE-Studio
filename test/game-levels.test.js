@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
+import { installAddon, removeAddon } from '../shared/addons.js';
 import { installGameMenu } from '../shared/game-menu.js';
 import { assembleGameLevels, selectGameLevel, nextGameLevel, parseLevelRoutes, gameLevelAssetIds, cloneForLevelSwitch } from '../shared/game-levels.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
@@ -219,4 +220,38 @@ test('switching on a level-switch copy leaves the undo snapshot untouched', () =
   assert.doesNotThrow(() => validateProject(next));
   // The two projects do not share the level objects they changed.
   assert.notEqual(next.game.levels[0], project.game.levels[0]);
+});
+
+test('an installed addon belongs to the game, so switching levels keeps it and its commands valid', () => {
+  // The addon lives on the game rather than in one map's data: a rule that names its action has to
+  // keep validating no matter which level is open, and the dormant levels have to see it too.
+  const manifest = { format: 'opendle-addon', version: 1, id: 'sparkle', name: 'Sparkle',
+    provides: { actions: [{ type: 'sparkle:burst', label: 'Addon: burst', fields: [] }] } };
+  const a = level(10), b = level(20);
+  a.events.push({ id: 'sparkle_rule', name: 'Sparkle', enabled: true, once: false,
+    condition: { type: 'onStart' }, actions: [{ type: 'sparkle:burst' }] });
+  b.events.push({ id: 'sparkle_rule_b', name: 'Sparkle B', enabled: true, once: false,
+    condition: { type: 'onStart' }, actions: [{ type: 'sparkle:burst' }] });
+  const installed = installAddon(a, { manifest, files: {} });
+  b.addons = structuredClone(installed.addons);
+
+  const p = assembleGameLevels([{ id: 'MAP01', project: a }, { id: 'MAP02', project: b }], 'MAP01', 'Sparkles').project;
+  assert.equal(p.addons.length, 1, 'the addon survives the assembly');
+  validateProject(p);
+
+  selectGameLevel(p, 'MAP02');
+  assert.equal(p.addons.length, 1, 'and survives a level switch');
+  assert.doesNotThrow(() => validateProject(p), 'the rule on the newly opened level still resolves');
+  const dormant = p.game.levels.find(level => level.id === 'MAP01');
+  assert.ok(dormant, 'the level left behind is kept');
+  selectGameLevel(p, 'MAP01');
+  assert.equal(p.addons.length, 1);
+  assert.doesNotThrow(() => validateProject(p), 'and the level left behind validates with it too');
+
+  // Removing it from the open level is game-wide: the rule goes, so no level is left naming a
+  // command the project cannot resolve.
+  removeAddon(p, 'sparkle');
+  assert.deepEqual(p.addons, [], 'the list is empty, so no addon is installed on any level');
+  assert.equal(p.events.some(event => event.actions.some(action => action.type === 'sparkle:burst')), false);
+  validateProject(p);
 });

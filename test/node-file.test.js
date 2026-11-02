@@ -11,6 +11,7 @@ import {
   applyNodeFile, planNodeFileInstall, nodeFileName, layoutContainer,
 } from '../shared/node-file.js';
 import { entityRepresentation, liveProjectPlan } from '../shared/entity-visuals.js';
+import { knownCommandTypes } from '../shared/engine-script.js';
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 const sprite = (id = 'sprite_a', name = 'A') => ({ id, kind: 'sprite', name, width: 32, height: 32, src: PNG });
@@ -507,4 +508,79 @@ test('a node file written under the old facing meaning lands looking the same', 
   const current = newScene('Target');
   const same = applyNodeFile(current, parseNodeFile(nodeFileText(document)), {});
   assert.equal(current.entities.find(item => item.id === same.root).angle, 0);
+});
+
+test('an object file naming a command the destination lacks is stripped, not imported broken', () => {
+  // A `.node` file can carry a rule written with an addon's action. Arriving in a project that does
+  // not have that addon, the rule would make the project invalid, so the import drops the command,
+  // says which, and drops the rule it emptied.
+  const source = createProject();
+  const crate = source.map.entities.find(item => item.type !== 'player');
+  crate.name = 'Crate';
+  source.events = [{ id: 'own', name: 'Sparkle on start', enabled: true, once: true, ownerId: crate.id,
+    condition: { type: 'onStart' }, actions: [{ type: 'sparkle:burst', entityId: crate.id }] }];
+  const document = exportNodeFile(layoutContainer(source), crate.id, { assets: source.assets });
+
+  const destination = createProject();
+  const container = layoutContainer(destination);
+  const before = container.events.length;
+  const added = applyNodeFile(container, document, { knownTypes: knownCommandTypes(destination), maxEntities: 100000, maxEvents: 100000 });
+  destination.map.joints = container.joints;
+  destination.events = container.events;
+  assert.deepEqual(added.stripped.types, ['sparkle:burst'], 'the missing type is named');
+  assert.equal(added.stripped.commands, 1);
+  assert.equal(added.stripped.rules, 1, 'the rule it emptied is dropped rather than left without an action');
+  assert.equal(container.events.filter(event => event.actions?.some(action => action.type === 'sparkle:burst')).length, 0);
+  assert.equal(container.events.length, before, 'the layout keeps the rules it already had');
+  assert.doesNotThrow(() => validateProject(destination), 'the result is valid, so the import is not wasted');
+
+  // With the addon declaring the type, nothing is stripped and the rule arrives intact.
+  const known = new Set([...knownCommandTypes(destination), 'sparkle:burst']);
+  const second = createProject();
+  const other = layoutContainer(second);
+  const kept = applyNodeFile(other, document, { knownTypes: known, maxEntities: 100000, maxEvents: 100000 });
+  second.events = other.events;
+  assert.deepEqual(kept.stripped, { commands: 0, rules: 0, types: [] });
+  assert.deepEqual(second.events.filter(event => event.name === 'Sparkle on start').map(event => event.actions.map(action => action.type)),
+    [['sparkle:burst']]);
+});
+
+test('a rule that still says something keeps what is left when one command is unknown', () => {
+  const source = createProject();
+  const crate = source.map.entities.find(item => item.type !== 'player');
+  source.events = [{ id: 'own', name: 'Mixed', enabled: true, once: false, ownerId: crate.id,
+    condition: { type: 'onStart' }, conditions: [{ type: 'sparkle:check' }],
+    actions: [{ type: 'addVariable', variable: 'score', value: 1 }, { type: 'sparkle:burst' }] }];
+  const document = exportNodeFile(layoutContainer(source), crate.id, { assets: source.assets });
+
+  const destination = createProject();
+  const container = layoutContainer(destination);
+  const added = applyNodeFile(container, document, { knownTypes: knownCommandTypes(destination), maxEntities: 100000, maxEvents: 100000 });
+  destination.events = container.events;
+  assert.deepEqual([...added.stripped.types].sort(), ['sparkle:burst', 'sparkle:check']);
+  assert.equal(added.stripped.rules, 0, 'the surviving condition and action are still a rule');
+  const landed = destination.events.find(event => event.name === 'Mixed');
+  assert.deepEqual(landed.actions.map(action => action.type), ['addVariable']);
+  assert.deepEqual(landed.conditions, [], 'the unknown condition is gone');
+  assert.doesNotThrow(() => validateProject(destination));
+});
+
+test('a sub-event does not arrive without the rule that held it', () => {
+  const source = createProject();
+  const crate = source.map.entities.find(item => item.type !== 'player');
+  source.events = [
+    { id: 'parent', name: 'Parent', enabled: true, once: false, ownerId: crate.id,
+      condition: { type: 'onStart' }, actions: [{ type: 'sparkle:burst' }] },
+    { id: 'child', name: 'Child', enabled: true, once: false, ownerId: crate.id, parentId: 'parent',
+      condition: { type: 'onStart' }, actions: [{ type: 'addVariable', variable: 'score', value: 1 }] },
+  ];
+  const document = exportNodeFile(layoutContainer(source), crate.id, { assets: source.assets });
+  const destination = createProject();
+  const container = layoutContainer(destination);
+  const before = container.events.length;
+  const added = applyNodeFile(container, document, { knownTypes: knownCommandTypes(destination), maxEntities: 100000, maxEvents: 100000 });
+  destination.events = container.events;
+  assert.equal(container.events.length, before, 'neither the emptied parent nor its orphaned child came');
+  assert.equal(container.events.filter(event => ['Parent', 'Child'].includes(event.name)).length, 0);
+  assert.equal(added.stripped.rules, 2);
 });

@@ -275,8 +275,17 @@ export function createApp({
   // The project is the store, and the editor holds the project — a freshly installed addon is in the
   // page before it is in the saved file. Its scripts have to load *now*, so the page stages the files
   // it is about to import here first; the route prefers the project, so a saved addon needs no stage.
+  // A staged copy exists only to bridge the moment between "installed in this page" and "saved into the
+  // project". Nothing deletes it, so it expires: a studio left open overnight must not hold every addon
+  // anyone ever installed.
+  const STAGED_ADDON_MS = 10 * 60 * 1000;
   const stagedAddons = new Map();
+  const pruneStagedAddons = () => {
+    const cutoff = Date.now() - STAGED_ADDON_MS;
+    for (const [id, entry] of stagedAddons) if (entry.at < cutoff) stagedAddons.delete(id);
+  };
   app.post('/api/addons/stage', (req, res) => {
+    pruneStagedAddons();
     const id = String(req.body?.id ?? '');
     const files = req.body?.files;
     if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(id)) return res.status(400).json({ error: 'Invalid addon id' });
@@ -295,6 +304,7 @@ export function createApp({
     res.json({ staged: id, files: names.length });
   });
   app.get('/api/addons/:id/*name', (req, res) => {
+    pruneStagedAddons();
     const name = String(req.params.name || '');
     const body = addonFile(store.snapshot().project, req.params.id, name) ?? stagedAddons.get(String(req.params.id))?.files?.[name] ?? null;
     if (body === null) return res.status(404).json({ error: 'That addon file is not in this project' });

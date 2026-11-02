@@ -127,16 +127,69 @@ async function withTimeout(promise, timeoutMs) {
   finally { clearTimeout(timer); }
 }
 
+const MAX_REDIRECTS = 5;
+
+/**
+ * Downloads one document, with the size and time bounds applied to the *body*.
+ *
+ * `withTimeout` around `fetch` only covers the headers: a server that answers and then drips bytes
+ * would otherwise hold the request open and grow the heap until the process died. A redirect is
+ * followed by hand so the URL policy is re-applied at every hop — `redirect: 'follow'` let an https
+ * URL bounce to `http://` an endpoint `addonUrlKind` exists to refuse.
+ */
 async function download(url, { fetchImpl, timeoutMs, what }) {
-  let response;
-  try { response = await withTimeout(fetchImpl(url, { redirect: 'follow', headers: { 'user-agent': 'OpenDLE-Studio' } }), timeoutMs); }
-  catch (error) { fail(`${what} could not be reached: ${error.message}`); }
-  if (!response.ok) fail(`${what} answered ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
-  const declared = Number(response.headers?.get?.('content-length'));
-  if (Number.isFinite(declared) && declared > MAX_DOWNLOAD) fail(`${what} is larger than ${MAX_DOWNLOAD / MiB} MiB`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length > MAX_DOWNLOAD) fail(`${what} is larger than ${MAX_DOWNLOAD / MiB} MiB`);
-  return buffer;
+  const started = Date.now();
+  let current = new URL(String(url));
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    addonUrlKind(current.href);
+    const remaining = timeoutMs - (Date.now() - started);
+    if (remaining <= 0) fail(`${what} took longer than ${Math.round(timeoutMs / 1000)} s`);
+    let response;
+    try {
+      response = await withTimeout(fetchImpl(current.href, { redirect: 'manual', headers: { 'user-agent': 'OpenDLE-Studio' } }), remaining);
+    } catch (error) { fail(`${what} could not be reached: ${error.message}`); }
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers?.get?.('location');
+      if (!location) fail(`${what} answered ${response.status} without a destination`);
+      current = new URL(location, current);
+      continue;
+    }
+    if (!response.ok) fail(`${what} answered ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
+    const declared = Number(response.headers?.get?.('content-length'));
+    if (Number.isFinite(declared) && declared > MAX_DOWNLOAD) fail(`${what} is larger than ${MAX_DOWNLOAD / MiB} MiB`);
+    return await readBounded(response, { what, timeoutMs: timeoutMs - (Date.now() - started) });
+  }
+  fail(`${what} redirected more than ${MAX_REDIRECTS} times`);
+}
+
+/** Reads a response body, refusing it as soon as it passes the cap or the clock runs out. */
+async function readBounded(response, { what, timeoutMs }) {
+  const body = response.body;
+  if (!body || typeof body.getReader !== 'function') {
+    // No stream to count (an injected `fetchImpl` in a test, usually): the buffer still has to be checked.
+    const buffer = Buffer.from(await withTimeout(response.arrayBuffer(), Math.max(1, timeoutMs)));
+    if (buffer.length > MAX_DOWNLOAD) fail(`${what} is larger than ${MAX_DOWNLOAD / MiB} MiB`);
+    return buffer;
+  }
+  const reader = body.getReader();
+  const chunks = [];
+  let total = 0;
+  const deadline = Date.now() + Math.max(1, timeoutMs);
+  try {
+    for (;;) {
+      const left = deadline - Date.now();
+      if (left <= 0) fail(`${what} took too long to download`);
+      const step = await withTimeout(reader.read(), left);
+      if (step.done) break;
+      total += step.value?.length || 0;
+      if (total > MAX_DOWNLOAD) fail(`${what} is larger than ${MAX_DOWNLOAD / MiB} MiB`);
+      chunks.push(Buffer.from(step.value));
+    }
+  } catch (error) {
+    try { await reader.cancel(); } catch { /* the connection is going anyway */ }
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+  return Buffer.concat(chunks);
 }
 
 /* --------------------------------------------------------------- archives */
@@ -162,20 +215,51 @@ export function readTarGz(buffer) {
   catch (error) { fail(`The tar.gz could not be unpacked: ${error.message}`); }
   const files = new Map();
   let offset = 0, entries = 0;
+  // A PAX header carries the values ustar cannot hold — a path longer than 100 bytes, a large size — in
+  // its own entry, for the entry that follows. GitHub tarballs use them, so ignoring the records
+  // silently truncated (or dropped) any addon path longer than 100 bytes.
+  let extended = null;
+  const paxRecords = body => {
+    const records = {};
+    let index = 0;
+    while (index < body.length) {
+      const space = body.indexOf(0x20, index);
+      if (space < 0) break;
+      const length = Number(body.subarray(index, space).toString('utf8'));
+      if (!Number.isFinite(length) || length <= 0) break;
+      const record = body.subarray(space + 1, index + length - 1).toString('utf8');
+      const equals = record.indexOf('=');
+      if (equals > 0) records[record.slice(0, equals)] = record.slice(equals + 1);
+      index += length;
+    }
+    return records;
+  };
   while (offset + 512 <= tar.length) {
     const header = tar.subarray(offset, offset + 512);
     // Two zero blocks end the archive; a name of all zeroes is the same end.
     if (header.every(byte => byte === 0)) break;
     const read = (start, length) => header.subarray(start, start + length).toString('utf8').replace(/\0.*$/s, '').trim();
-    const name = read(0, 100);
+    let name = read(0, 100);
     const prefix = read(345, 155);
-    const sizeField = read(124, 12).trim() || '0';
-    const size = parseInt(sizeField, 8);
+    let sizeField = read(124, 12).trim() || '0';
     const type = String.fromCharCode(header[156] || 48);
-    if (!Number.isFinite(size) || size < 0) fail('A tar entry has an unreadable size');
     const bodyStart = offset + 512;
     if (++entries > MAX_ENTRIES) fail(`The archive has more than ${MAX_ENTRIES} entries`);
-    // '0' and '\0' are ordinary files; everything else (directories, PAX headers, links) is skipped.
+    if (type === 'x' || type === 'g') {
+      const declared = parseInt(sizeField, 8);
+      if (!Number.isFinite(declared) || declared < 0) fail('A tar entry has an unreadable size');
+      if (type === 'x') extended = paxRecords(tar.subarray(bodyStart, bodyStart + declared));
+      offset = bodyStart + Math.ceil(declared / 512) * 512;
+      continue;
+    }
+    if (extended) {
+      if (typeof extended.path === 'string' && extended.path) name = extended.path;
+      if (typeof extended.size === 'string' && /^\d+$/.test(extended.size)) sizeField = extended.size;
+      extended = null;
+    }
+    const size = parseInt(sizeField, 8);
+    if (!Number.isFinite(size) || size < 0) fail('A tar entry has an unreadable size');
+    // '0' and '\0' are ordinary files; everything else (directories, links, other headers) is skipped.
     if ((type === '0' || type === '\0') && name && !name.endsWith('/')) {
       files.set(safeName(prefix ? `${prefix}/${name}` : name), tar.subarray(bodyStart, bodyStart + size));
     }
@@ -240,6 +324,9 @@ export function unpackAddon(files, { url = null, github = null } = {}) {
   const manifests = [...files.keys()].filter(name => posix.basename(name) === ADDON_MANIFEST)
     .sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b));
   if (!manifests.length) fail(`The addon has no ${ADDON_MANIFEST}`);
+  const shallowest = manifests[0].split('/').length;
+  const contenders = manifests.filter(name => name.split('/').length === shallowest);
+  if (contenders.length > 1) fail(`The archive holds ${contenders.length} addons (${contenders.slice(0, 3).join(', ')}); install them one at a time`);
   const manifestPath = manifests[0];
   const root = posix.dirname(manifestPath) === '.' ? '' : `${posix.dirname(manifestPath)}/`;
   let manifest;
@@ -249,7 +336,8 @@ export function unpackAddon(files, { url = null, github = null } = {}) {
   catch (error) { fail(`${ADDON_MANIFEST}: ${error.message}`); }
   const carried = {}, ignored = [];
   for (const [name, bytes] of files) {
-    if (!name.startsWith(root) || name === manifestPath) continue;
+    if (name === manifestPath) continue;
+    if (!name.startsWith(root)) { ignored.push(name); continue; }
     const relative = name.slice(root.length);
     if (!relative) continue;
     const extension = posix.extname(relative).toLowerCase();
@@ -356,19 +444,25 @@ export function ftpDownload(url, { timeoutMs = 30_000, secure = false } = {}) {
         const passive = await command('PASV');
         const match = /(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)/.exec(passive.lines);
         if (!match) throw new Error('The FTP server did not offer a passive data connection');
-        const host = `${match[1]}.${match[2]}.${match[3]}.${match[4]}`;
+        // RFC 959 lets the client ignore the address in the PASV reply, and it must: a server (or anyone
+        // who can interfere with `ftp://`, which has no TLS) could otherwise make the studio open a
+        // connection to any host and port it names. The port is the server's to choose; the host is not.
         const dataPort = Number(match[5]) * 256 + Number(match[6]);
+        let receivedBytes = 0;
         const chunks = [];
-        const data = netConnect({ host, port: dataPort });
+        const data = netConnect({ host: url.hostname, port: dataPort });
         data.on('error', error => finish(new Error(`The FTP data connection failed: ${error.message}`)));
         data.on('data', chunk => {
           chunks.push(chunk);
-          if (chunks.reduce((total, part) => total + part.length, 0) > MAX_DOWNLOAD) finish(new Error('The addon is larger than 32 MiB'));
+          receivedBytes += chunk.length;
+          if (receivedBytes > MAX_DOWNLOAD) finish(new Error('The addon is larger than 32 MiB'));
         });
-        const received = new Promise((done, boom) => {
+        // Resolves on failure too: the error is reported once through `finish`, and a second rejection
+        // nobody awaits would take the whole service down.
+        const received = new Promise(done => {
           data.on('end', done);
           data.on('close', done);
-          data.on('error', boom);
+          data.on('error', done);
         });
         await command(`RETR ${path}`);
         await received;

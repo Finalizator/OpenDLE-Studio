@@ -24,7 +24,7 @@ import { recoverProject } from './project-recovery.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
   removeEventBranch, setEventParent, eventScope } from '/shared/events.js';
 import { editInline, installRowDrag } from './row-drag.js';
-import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, engineCommands, defaultEngineCommand, installEngineScripts } from '/shared/engine-script.js';
+import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, engineCommands, defaultEngineCommand, installEngineScripts, knownCommandTypes } from '/shared/engine-script.js';
 import { addonCommands } from '/shared/addons.js';
 import { ENGINE_SCRIPTLETS, installScriptlet, removeScriptlet } from '/shared/scriptlets.js';
 import { createHUDEditor } from './hud-editor.js';
@@ -120,15 +120,32 @@ function registerAddonMenuButton(entry) {
   });
   const menu = $('file-menu');
   menu?.insertBefore(button, menu.querySelector('.project-picker') || null);
-  addonMenuButtons.set(entry.addonId + ':' + entry.label, { button, run: entry.run });
+  // The addon id travels with the entry: switching one addon off removes its button and nobody else's.
+  addonMenuButtons.set(entry.addonId + ':' + entry.label, { button, run: entry.run, addonId: entry.addonId });
 }
 
-/** Takes every piece of UI an addon put on the page away again. */
-function clearAddonUi() {
-  for (const entry of addonTabs.values()) { entry.button.remove(); entry.panel.remove(); }
-  addonTabs.clear();
-  for (const entry of addonMenuButtons.values()) entry.button.remove();
-  addonMenuButtons.clear();
+/**
+ * Takes the UI an addon put on the page away again.
+ *
+ * With no id every addon's pieces go, which is what a project switch needs. With an id only that
+ * addon's do: switching one addon off must not empty the tabs and menu buttons of the others.
+ */
+function clearAddonUi(addonId = null) {
+  const mine = entry => addonId === null || entry.addonId === addonId;
+  for (const [key, entry] of addonTabs) {
+    if (!mine(entry)) continue;
+    // A tab that is open when its addon goes would leave an empty panel behind.
+    const wasOpen = entry.button.classList.contains('active');
+    entry.button.remove();
+    entry.panel.remove();
+    addonTabs.delete(key);
+    if (wasOpen) showTab('addons');
+  }
+  for (const [key, entry] of addonMenuButtons) {
+    if (!mine(entry)) continue;
+    entry.button.remove();
+    addonMenuButtons.delete(key);
+  }
 }
 // A temporary project is the stored copy of an import: it reopens next time but the next
 // import replaces it, so the badge says so instead of "Saved".
@@ -397,6 +414,10 @@ function render() {
   // only re-drawn while it is the visible panel.
   if (!$('scene-panel').hidden) sceneObjectEditor?.render();
   $('dirty').textContent = badgeText();
+  // Every way the project can change — an edit, undo, redo, a live drag, a reload, a level switch —
+  // ends here, so this is the one place that keeps the running addon scripts in step with the
+  // project's list. It is a signature comparison unless the set of enabled addons actually moved.
+  void addonHost.sync().catch(error => status(`Addon scripts could not be updated: ${error.message}`, true));
   $('undo').disabled = history.length === 0;
   $('redo').disabled = future.length === 0;
   renderEntities();
@@ -3319,14 +3340,6 @@ async function reloadProject(initial = false) {
   // The 3D view of a different map starts framed on that map, not on the last one's camera.
   scenePose = null;
   render(); fitMap();
-  // Addon scripts are loaded from this project, so this is the first moment they can run.
-  void addonHost.sync().then(result => {
-    if (!result?.errors?.size) return;
-    for (const [id, list] of result.errors) {
-      const failure = list.find(entry => entry.level === 'error');
-      if (failure) status(`Addon "${id}" failed: ${failure.message}`, true);
-    }
-  });
   status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'
     : recovery?.warning || 'Server project loaded', Boolean(recovery?.warning));
 }
@@ -5369,6 +5382,13 @@ function eventCardMenu(id, event) {
   ], { label: 'Rule actions' });
 }
 
+/** What an import had to drop, in one clause for the status line. */
+function importStripped(added) {
+  const stripped = added?.stripped;
+  if (!stripped?.commands) return '';
+  return `; ${stripped.commands} command(s) dropped (this project has no ${stripped.types.join(', ')} — install the addon that provides them)`;
+}
+
 /**
  * Installs a `.node` file's artwork and shaders, then places its nodes in the open scene.
  * It is one edit, so the whole import is a single undo step.
@@ -5390,12 +5410,14 @@ function importNodeDocument(document, options = {}) {
     const scene = (next.scenes || []).find(item => item.id === sceneId);
     if (!scene) throw new Error('That scene object no longer exists');
     imported = applyNodeFile(scene, document, { ...options, assetRemap: plan.assetRemap, shaderRemap: plan.shaderRemap,
-      clipRemap: plan.clipRemap, sheetRemap: plan.sheetRemap, groupRemap: plan.groupRemap });
+      clipRemap: plan.clipRemap, sheetRemap: plan.sheetRemap, groupRemap: plan.groupRemap,
+      knownTypes: knownCommandTypes(project) });
   }, `Imported ${document.nodes.length} node(s) from ${document.name}`);
   renderSceneObjects();
   const notes = [...(document.warnings || [])];
   if (plan.addAssets.length) notes.push(`${plan.addAssets.length} asset(s) added`);
   if (plan.addClips.length) notes.push(`${plan.addClips.length} sprite clip(s) added`);
+  if (imported?.stripped?.commands) notes.push(`${imported.stripped.commands} command(s) dropped: this project has no ${[...new Set(imported.stripped.types)].join(', ')}`);
   status(`Imported "${document.name}" (${document.nodes.length} node(s)${notes.length ? `; ${notes.join('; ')}` : ''})`);
   return imported;
 }
@@ -5561,6 +5583,7 @@ async function importLayoutObjectFile() {
           x: Math.round(at.x), y: Math.round(at.y),
           assetRemap: install.assetRemap, shaderRemap: install.shaderRemap,
           clipRemap: install.clipRemap, sheetRemap: install.sheetRemap, groupRemap: install.groupRemap,
+          knownTypes: knownCommandTypes(project),
           maxEntities: LIMITS.entities, maxEvents: 100000,
         });
       }, `Imported ${document_.name}`);
@@ -5568,7 +5591,7 @@ async function importLayoutObjectFile() {
         selection = { kind: 'entity', id: added.root };
         render();
       }
-      status(`Imported ${file.name} (${added?.ids.length || 0} object${added?.ids.length === 1 ? '' : 's'})`);
+      status(`Imported ${file.name} (${added?.ids.length || 0} object${added?.ids.length === 1 ? '' : 's'}${importStripped(added)})`);
     }).catch(error => status(error.message, true));
   });
   picker.click();

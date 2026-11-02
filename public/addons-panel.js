@@ -11,7 +11,7 @@
  * Install is pressed here, and installation is an ordinary validated edit.
  */
 
-import { ADDON_MANIFEST, addonUsage, installAddon, removeAddon, setAddonEnabled } from '/shared/addons.js';
+import { ADDON_MANIFEST, addonUsage, installAddon, removeAddon, replaceAddon, setAddonEnabled } from '/shared/addons.js';
 import { ACTIONS, CONDITIONS } from '/shared/project.js';
 
 /** Every command type the engine itself has, so an addon cannot redeclare one. */
@@ -126,8 +126,15 @@ export function createAddonsPanel(nodes, { project, edit, status = () => {}, fet
   function installPreview() {
     if (!preview) return;
     const { manifest, files, source } = preview;
-    edit(next => { installAddon(next, { manifest, files, source }, { engineTypes: ENGINE_TYPES }); },
-      `Installed the addon ${manifest.name}`);
+    // Installing is refused for a reason a person can act on — a duplicate id, a missing requirement,
+    // a command the engine already has, content the project cannot hold. The status line says which.
+    try {
+      edit(next => { installAddon(next, { manifest, files, source }, { engineTypes: ENGINE_TYPES }); },
+        `Installed the addon ${manifest.name}`);
+    } catch (error) {
+      status(error.message, true);
+      return;
+    }
     preview = null;
     status(`Installed "${manifest.name}"`);
     void host?.sync().then(() => render());
@@ -142,7 +149,13 @@ export function createAddonsPanel(nodes, { project, edit, status = () => {}, fet
     enabled.title = 'Switch this addon on or off';
     enabled.setAttribute('aria-label', `Enable ${addon.name}`);
     enabled.addEventListener('change', () => {
-      edit(next => { setAddonEnabled(next, addon.id, enabled.checked); }, `${enabled.checked ? 'Enabled' : 'Disabled'} ${addon.name}`);
+      // A dependent cannot be switched on without what it needs, and saying so in the status line is
+      // better than a console stack and a checkbox that lies about the project.
+      try {
+        edit(next => { setAddonEnabled(next, addon.id, enabled.checked); }, `${enabled.checked ? 'Enabled' : 'Disabled'} ${addon.name}`);
+      } catch (error) {
+        status(error.message, true);
+      }
       void host?.sync().then(() => render());
     });
     head.append(enabled, el('strong', undefined, `${addon.name}${addon.version ? ` v${addon.version}` : ''}`));
@@ -168,12 +181,15 @@ export function createAddonsPanel(nodes, { project, edit, status = () => {}, fet
     const actions = el('div', 'button-row');
     if (addon.source?.url && addon.source.type !== 'ftp') {
       actions.append(button('Update from source', async () => {
-        const fetched = await fetchAddon(addon.source.url);
-        if (fetched.manifest.id !== addon.id) throw new Error(`That URL now holds "${fetched.manifest.id}", not "${addon.id}"`);
-        edit(next => {
-          removeAddon(next, addon.id, { strip: false });
-          installAddon(next, fetched, { engineTypes: ENGINE_TYPES });
-        }, `Updated ${addon.name}`);
+        try {
+          const fetched = await fetchAddon(addon.source.url);
+          // One edit, not a removal and an install: the rules that call the addon stay valid, and a copy
+          // that cannot be installed leaves the one that works exactly as it was.
+          edit(next => { replaceAddon(next, addon.id, fetched, { engineTypes: ENGINE_TYPES }); }, `Updated ${addon.name}`);
+        } catch (error) {
+          status(error.message, true);
+          return;
+        }
         status(`Updated "${addon.name}"`);
         await host?.sync();
       }));
@@ -185,7 +201,14 @@ export function createAddonsPanel(nodes, { project, edit, status = () => {}, fet
         : `Remove "${addon.name}" and everything it added?`;
       if (!confirm(message)) return;
       let result = null;
-      edit(next => { result = removeAddon(next, addon.id); }, `Removed ${addon.name}`);
+      // The removal is refused while something still draws with what the addon brought; saying so beats
+      // a console stack and a project that no longer saves.
+      try {
+        edit(next => { result = removeAddon(next, addon.id); }, `Removed ${addon.name}`);
+      } catch (error) {
+        status(error.message, true);
+        return;
+      }
       status(`Removed "${addon.name}"${result?.rules ? ` and ${result.rules} rule(s)` : ''}`);
       return host?.sync().then(() => render());
     }, 'danger'));

@@ -12,7 +12,8 @@ import {
 } from '../server/export-build.js';
 import { chromiumCandidates, contentSecurityPolicy, openInAppWindow, resolveDataFile } from '../server/export-launcher.js';
 import { readPackageArchive } from '../server/packages.js';
-import { createProject, validateProject } from '../shared/project.js';
+import { ACTIONS, CONDITIONS, createProject, validateProject } from '../shared/project.js';
+import { installAddon } from '../shared/addons.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const exportedAt = new Date('2026-10-25T12:00:00.000Z');
@@ -350,4 +351,21 @@ test('an extracted build serves the game with Node.js only', async t => {
 
   assert.equal((await fetch(`${url}%2e%2e/README.md`)).status, 404, 'encoded traversal outside public is not served');
   assert.equal((await fetch(`${url}api/unknown`, authorized)).status, 404);
+  // An addon's script has to load without a token (`import()` cannot send one), and it comes from the
+  // project, so a game exported with an addon still runs it.
+  const withAddon = structuredClone(saved.project);
+  installAddon(withAddon, { manifest: { format: 'opendle-addon', version: 1, id: 'sparkle', name: 'Sparkle', entry: 'addon.js',
+    provides: { actions: [{ type: 'sparkle:burst', label: 'Burst', fields: [] }] } },
+  files: { 'addon.js': 'export default () => {};', 'style.css': 'body{}', 'notes.bin': 'x' } }, { engineTypes: new Set([...CONDITIONS, ...ACTIONS]) });
+  const put = await fetch(`${url}api/project`, { method: 'PUT', headers: { ...authorized.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project: withAddon, revision: saved.revision }) });
+  assert.equal(put.status, 200, `saving a project with an addon succeeds: ${await put.clone?.().text?.() ?? ''}`);
+  const script = await fetch(`${url}api/addons/sparkle/addon.js`);
+  assert.equal(script.status, 200, 'the addon script is served in the portable build');
+  assert.match(script.headers.get('content-type'), /text\/javascript/);
+  assert.equal(await script.text(), 'export default () => {};');
+  const style = await fetch(`${url}api/addons/sparkle/style.css`);
+  assert.match(style.headers.get('content-type'), /text\/css/);
+  assert.equal((await fetch(`${url}api/addons/sparkle/missing.js`)).status, 404);
+  assert.equal((await fetch(`${url}api/addons/sparkle/notes.bin`)).status, 415, 'only the kinds the studio serves');
 });

@@ -89,6 +89,48 @@ test('a tar.gz is read into its files, refusing anything that leaves the archive
   await assert.rejects(async () => readArchive(Buffer.alloc(0)), /empty/);
 });
 
+/** A tar.gz whose entries can carry a PAX header, the way a repository tarball does. */
+function paxTarGz(entries) {
+  const blocks = [];
+  const header = (name, size, type) => {
+    const block = Buffer.alloc(512);
+    block.write(name, 0);
+    block.write('0000644\0', 100);
+    block.write('0000000\0', 108);
+    block.write('0000000\0', 116);
+    block.write(`${size.toString(8).padStart(11, '0')}\0`, 124);
+    block.write('00000000000\0', 136);
+    block.write(type, 156);
+    block.write('ustar\0', 257);
+    let sum = 0;
+    for (const byte of block) sum += byte;
+    block.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148);
+    return block;
+  };
+  for (const [name, body] of Object.entries(entries)) {
+    const data = Buffer.from(body, 'utf8');
+    const record = `path=${name}`;
+    const length = Buffer.byteLength(record) + 3 + String(Buffer.byteLength(record) + 3).length;
+    // The length prefix counts its own digits, so widen it until it settles.
+    let prefix = String(Buffer.byteLength(record) + 2);
+    while (Buffer.byteLength(`${prefix} ${record}\n`) !== Number(prefix)) prefix = String(Buffer.byteLength(`${prefix} ${record}\n`));
+    const pax = Buffer.from(`${prefix} ${record}\n`, 'utf8');
+    blocks.push(header('PaxHeader', pax.length, 'x'), pax, Buffer.alloc((512 - (pax.length % 512)) % 512));
+    blocks.push(header(name.slice(0, 99), data.length, '0'), data, Buffer.alloc((512 - (data.length % 512)) % 512));
+    void length;
+  }
+  blocks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(blocks));
+}
+
+test('a PAX header keeps a path longer than a tar name', async () => {
+  const long = `sparkle-1.0/${'d'.repeat(120)}.js`;
+  const files = await readArchive(paxTarGz({ 'sparkle-1.0/opendle-addon.json': JSON.stringify(manifest), [long]: 'export const x = 1;' }));
+  assert.ok(files.has(long), 'the long path survived instead of being truncated or dropped');
+  const addon = unpackAddon(files, { url: 'https://example.test/sparkle.tar.gz' });
+  assert.equal(addon.files[`${'d'.repeat(120)}.js`], 'export const x = 1;');
+});
+
 test('a zip is read the same way', async () => {
   const zip = createZipArchive(Object.entries(addonFiles).map(([path, body]) => ({ path, data: Buffer.from(body), mode: 0o644 })), new Date());
   const files = await readArchive(zip);
@@ -102,7 +144,7 @@ test('the shallowest manifest decides the addon folder, and only text travels', 
   const addon = unpackAddon(files, { url: 'https://example.test/sparkle.tar.gz' });
   assert.equal(addon.manifest.id, 'sparkle');
   assert.deepEqual(Object.keys(addon.files), ['README.md', 'main.js', 'ui/panel.js'], 'the repository wrapper is stripped');
-  assert.deepEqual(addon.ignored, ['icon.png'], 'a binary file is reported, not carried');
+  assert.deepEqual(addon.ignored, ['icon.png', 'LICENCE'], 'a binary file, and a file above the addon folder, are reported rather than silently dropped');
   assert.equal(addon.source.type, 'url');
   assert.match(addon.source.digest, /^[0-9a-f]{32}$/);
   // A folder of several addons installs the shallowest one, and a missing manifest says so.
@@ -117,6 +159,11 @@ test('the shallowest manifest decides the addon folder, and only text travels', 
   assert.equal(unpackAddon(nested).manifest.id, 'sparkle');
   await assert.rejects(async () => unpackAddon(await readArchive(tarGz({ 'repo/README.md': 'x' }))), /no opendle-addon\.json/);
   await assert.rejects(async () => unpackAddon(await readArchive(tarGz({ 'opendle-addon.json': '{ not json' }))), /not valid JSON/);
+  // Two addons side by side at the same depth: installing the alphabetically first would be a guess.
+  await assert.rejects(async () => unpackAddon(await readArchive(tarGz({
+    'a/opendle-addon.json': JSON.stringify(manifest), 'a/main.js': 'x',
+    'b/opendle-addon.json': JSON.stringify({ ...manifest, id: 'second' }), 'b/main.js': 'x',
+  }))), /holds 2 addons/);
   await assert.rejects(async () => unpackAddon(await readArchive(tarGz({ 'opendle-addon.json': JSON.stringify({ ...manifest, format: 'x' }) }))), /format/);
 });
 

@@ -2859,14 +2859,49 @@ addons in `addons/<name>/` still works. The panel shows what arrived — name, a
 which files were left out — before anything is installed, because **installing is trusting**: the
 script runs in this page with the editor's own access.
 
+The download is a hostile input, so it is bounded at every step rather than at the end of one:
+
+- the **body** is read in a stream and refused the moment it passes the cap, and the clock covers the
+  whole read, not only the headers (a server that answers and then drips bytes used to pin the request
+  and grow the heap);
+- **redirects are followed by hand** and the URL policy is re-applied at every hop, so an https URL
+  cannot bounce to a plain-`http` address the policy exists to refuse;
+- the **FTP data connection goes to the host that was typed**, not to the address a `PASV` reply names
+  — RFC 959 lets the client ignore it, and trusting it let a server point the studio at any host and
+  port;
+- a **PAX header** carries the paths a plain tar name cannot (GitHub tarballs use them), so an addon
+  file deeper than 100 bytes is no longer truncated or dropped;
+- an archive holding **two addons side by side** is refused rather than silently installing the
+  alphabetically first, and files outside the addon's folder are reported as left behind.
+
 **The project is the store.** `installAddon` (`shared/addons.js`) puts the record — manifest,
 files, source URL, digest — into `project.addons` and copies the declarative content in, so an
-exported project carries its addons and needs no separate install. Removing an addon takes back
-exactly what it added and **strips its commands out of the rules that used them** (a rule left with
-nothing is dropped, the same rule deletion follows elsewhere); switching one off is softer — its
-commands stay valid in the project, they simply do nothing, and the panel says how many rules that
-affects. A requirement (`requires`) is switched on with its dependent and refuses to be switched off
-under it.
+exported project carries its addons and needs no separate install.
+
+`addons` is a **game-level key** (`shared/game-levels.js`), like `assets` and `actors`: an addon adds
+a *vocabulary*, and one level cannot have a command the next one lacks. Switching levels therefore
+keeps it, and a dormant level is validated with it — otherwise a rule written on the map that is
+closed would read as "Unknown action" the moment it were reopened.
+
+Removing an addon takes back exactly what it added and **strips its commands out of the rules that
+used them** — in the open level, in every closed level's stored snapshot, in scenes and in timesheet
+cues. A rule left with nothing is dropped **with its sub-events** (an orphaned child is a project
+that fails "Sub-event parent must precede it"). Content is harder to take back than a command, because
+an object can be drawing with the addon's artwork or a rule clicking its HUD element, so the removal is
+applied and the project validated: one that this broke is **put back and the removal refused** with the
+reason, and the level asset caches are pruned either way. A caller that catches that error must read the
+project again rather than hold a reference into the contents that were restored.
+
+Switching an addon off is softer — its commands stay valid in the project (and stay *checked*: a
+switched-off addon still describes its fields, so re-enabling cannot reject a value that was written
+while it was off), they simply do nothing, and the panel says how many rules that affects. A
+requirement (`requires`) is switched on with its dependent; two addons may not both declare one
+command, so the second install is refused, and switching one on under another that holds the type is
+refused too.
+
+Updating an addon is **one edit** (`replaceAddon`), not a removal followed by an install: the rules
+that call it stay valid throughout, and a copy that cannot be installed leaves the previous one exactly
+as it was.
 
 **Where the "no limits" lives** is `public/addons-host.js`. Each enabled addon's entry is imported
 and called with an `api`:
@@ -2888,9 +2923,41 @@ Implementations are kept **beside** the runtime, not in it (`setAddonHooks` in
 gets them re-attached when it is created. Unknown command types stay the no-ops they always were,
 which is what lets a project open and play without the addon that wrote it.
 
+An implementation is third-party code in the game loop, so it is **contained**: a throw or a rejected
+promise is caught, reported to the addon's own log (the panel's card), and the action counts as done —
+the rest of the rule, the rest of the frame and the preview all carry on. The context hands an addon:
+
+- `state` — the live game state. Everything on it belongs to the engine except `state.addonState`, which
+  is the addon's own bag and the one place its data should go. A save validates the state it is about to
+  write, so a field an addon invents is refused at save time rather than producing a file the loader
+  later rejects;
+- `sound(name, volume)` — through the same capped, positional queue every other sound uses (an addon
+  that pushed into `state.sounds` itself bypassed the cap and wrote a shape the audio player cannot
+  place);
+- `entity` — the object the command names (`$self` resolves to the rule's owner, `$player` to the
+  player); `say()`, `find()`, `player`, `project`, `event`, `command`.
+
+Field expressions are resolved against the addon's own field definitions, so a text expression in a
+text field is legal and a number outside a field's declared bounds is rejected — the addon never
+receives a value outside the contract its manifest published.
+
+The host loads addons **per addon**: switching one off unloads that one and leaves the others' tabs,
+hooks and module state alone, and `sync()` is serialised, because the panel fires it per click and two
+overlapping runs used to leave addons loaded that the project no longer had. Each activation imports a
+fresh module instance, and the URL carries a stamp of the addon's *content* (the fetched digest, or a
+hash of its files for a hand-made addon) so editing a script reloads it.
+
 Two constraints come from the studio's own content policy, and they are worth knowing before
 writing an addon: a script has to be served from this origin (so it is served from the project, never
 a `blob:`), and styles have to come from a stylesheet file rather than inline CSS.
+
+**Two things an addon's commands touch besides the panel.** An object file (`.node`) exported from a
+project whose script uses an addon arrives in a project that may not have it: the import strips the
+command types the destination does not know (the engine's plus the ones its own addons declare — see
+`knownCommandTypes` in `shared/engine-script.js`) and says which, instead of writing a project that
+`validateProject` would refuse. And a **portable build serves its addons' files** from the project, the
+same open GET the studio uses (a script has to be same-origin to run under the CSP, and `import()`
+cannot send a bearer token), so an exported game runs the addons it was exported with.
 
 `addons_list` over MCP answers with every installed addon and the commands it adds, so the assistant
 can write rules against them with the same tool it writes engine rules with.
