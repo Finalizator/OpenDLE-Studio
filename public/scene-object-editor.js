@@ -11,9 +11,10 @@ import { contextMenu } from './context-menu.js';
 import { JOINT_TYPES, JOINT_LABELS, AXIS_JOINTS, newJoint, jointAnchorBetween, jointsOf } from '/shared/joints.js';
 import { PANEL_LIMITS, curtainStrips, newPanel, panelPhysics } from '/shared/panel.js';
 import { curtainShaderId } from '/shared/shaders.js';
-import { NODE_FILE_EXTENSION, exportNodeFile, nodeFileName, nodeFileText, parseNodeFile } from '/shared/node-file.js';
+import { NODE_FILE_EXTENSION, exportNodeFile, nodeFileName, parseNodeFile } from '/shared/node-file.js';
 import { createScene3dView } from './scene-3d-view.js';
 import { nodeIcon } from './node-icons.js';
+import { askObjectExport, downloadNodeFile } from './export-object.js';
 
 // A scene object editor laid out like Godot's scene dock and inspector: the node tree
 // on the left with the node toolbar above it, the view in the middle, and the inspector
@@ -1799,19 +1800,29 @@ export function createSceneObjectEditor({ callbacks }) {
   }
 
   /** Downloads one node (with its group) as a `.node` file. */
-  function saveNodeFile(nodeId) {
+  /**
+   * Saves a node, or the whole scene when the root is selected, as a file that stands alone.
+   *
+   * The author is asked whether the visual script travels with it, the same question a layout
+   * object's export asks, so both kinds of object leave the project the same way.
+   */
+  async function saveNodeFile(nodeId) {
     const current = scene();
     if (!current) return;
+    const wholeScene = nodeId === current.id;
+    const ids = new Set(wholeScene ? (current.entities || []).map(node => node.id) : sceneSubtree(current, nodeId).map(node => node.id));
+    const events = (current.events || []).filter(event => event.ownerId && ids.has(event.ownerId)).length;
+    const name = wholeScene ? current.name : current.entities.find(node => node.id === nodeId)?.name;
+    const answer = await askObjectExport({ name: name || 'Node', kind: wholeScene ? 'Scene' : 'Node', events });
+    if (!answer) return;
     try {
       const document = exportNodeFile(current, nodeId, {
         assets: callbacks.assets() || [], shaders: callbacks.shaders?.() || [],
+        includeEvents: answer.includeEvents,
       });
-      const name = nodeFileName(document.name);
-      const url = URL.createObjectURL(new Blob([nodeFileText(document)], { type: 'application/json' }));
-      const link = el('a');
-      link.href = url; link.download = name; link.click();
-      URL.revokeObjectURL(url);
-      callbacks.status(`Saved ${name}${document.warnings.length ? ` (${document.warnings.join('; ')})` : ''}`);
+      const fileName = nodeFileName(document.name);
+      downloadNodeFile(document, fileName);
+      callbacks.status(`Saved ${fileName}${document.warnings.length ? ` (${document.warnings.join('; ')})` : ''}`);
     } catch (error) { callbacks.status(error.message, true); }
   }
 

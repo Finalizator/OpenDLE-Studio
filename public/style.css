@@ -307,6 +307,13 @@ footer { grid-column: 1 / -1; grid-row: 3; display: flex; justify-content: space
 #status.error, #import-status.error { color: #ffb5ab; }
 dialog { color: var(--text); background: var(--panel); border: 1px solid #888; border-radius: 3px; padding: 16px; max-width: 95vw; max-height: 95dvh; overflow: auto; }
 dialog::backdrop { background: #111c; }
+/* The export question: one checkbox, the count of events, and two buttons. */
+.export-dialog { width: min(520px, 94vw); }
+.export-dialog h2 { margin: 0 0 10px; font-size: 15px; }
+.export-dialog .info { max-width: none; }
+.export-script-option { display: flex; align-items: center; gap: 7px; margin: 12px 0 4px; }
+.export-script-option input { margin: 0; }
+.export-dialog .button-row { justify-content: flex-end; }
 #play-dialog { width: 900px; }
 .preview-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 #preview { width: 100%; display: block; background: #333; aspect-ratio: 16/9; touch-action: none; }

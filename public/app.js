@@ -53,7 +53,8 @@ import { suggestedArea, ZONE_AREA } from '/shared/areas.js';
 import { captureScene, instantiateScene, sceneIsEmpty, newScene } from '/shared/scenes.js';
 import { createSceneObjectEditor } from './scene-object-editor.js';
 import { contextMenu } from './context-menu.js';
-import { applyNodeFile, parseNodeFile, planNodeFileInstall } from '/shared/node-file.js';
+import { applyNodeFile, parseNodeFile, planNodeFileInstall, exportNodeFile, layoutContainer, nodeFileName } from '/shared/node-file.js';
+import { askObjectExport, downloadNodeFile } from './export-object.js';
 import { openAssetPicker, PICTURE_KINDS, MODEL_KINDS } from './asset-picker.js';
 import { captureModelPreview } from './model-thumbnail.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
@@ -5306,6 +5307,69 @@ function groupMenuItems(entity) {
   return items.length ? [...items, { separator: true }] : [];
 }
 
+/**
+ * Saves one layout object as a file that stands on its own.
+ *
+ * The author is asked whether the object's visual script travels with it, because a script is only
+ * worth carrying when the events make sense where they land — the file reports what it left out.
+ */
+async function exportLayoutObject(entity) {
+  if (!entity) return;
+  const events = (project.events || []).filter(event => event.ownerId === entity.id).length;
+  const answer = await askObjectExport({ name: entity.name, kind: 'Object', events });
+  if (!answer) return;
+  try {
+    const document = exportNodeFile(layoutContainer(project), entity.id, {
+      assets: project.assets || [], shaders: project.shaders || [], includeEvents: answer.includeEvents,
+    });
+    const name = nodeFileName(document.name);
+    downloadNodeFile(document, name);
+    status(`Exported ${name}${document.warnings.length ? ` (${document.warnings.join('; ')})` : ''}`);
+  } catch (error) { status(error.message, true); }
+}
+
+/**
+ * Reads a `.node` file into the current layout.
+ *
+ * Assets and shaders arrive inside the file; anything the project already has identically is
+ * reused, and a clashing id gets a fresh one, so importing the same file twice does not duplicate
+ * artwork or silently repoint a texture at someone else's.
+ */
+async function importLayoutObjectFile() {
+  const picker = document.createElement('input');
+  picker.type = 'file';
+  picker.accept = '.node,application/json';
+  picker.addEventListener('change', () => {
+    const file = picker.files?.[0];
+    if (!file) return;
+    void file.text().then(text => {
+      const document_ = parseNodeFile(text);
+      const install = planNodeFileInstall(document_, { assets: project.assets || [], shaders: project.shaders || [] });
+      let added = null;
+      edit(next => {
+        if (install.addAssets.length) next.assets = [...(next.assets || []), ...install.addAssets];
+        if (install.addShaders.length) next.shaders = [...(next.shaders || []), ...install.addShaders];
+        const container = layoutContainer(next);
+        const at = { x: camera.x, y: camera.y };
+        added = applyNodeFile(container, document_, {
+          x: Math.round(at.x), y: Math.round(at.y),
+          assetRemap: install.assetRemap, shaderRemap: install.shaderRemap,
+          maxEntities: LIMITS.entities, maxEvents: 100000,
+        });
+        // The container's own arrays are the draft's, except the two the importer replaces.
+        next.map.joints = container.joints;
+        next.events = container.events;
+      }, `Imported ${document_.name}`);
+      if (added?.root) {
+        selection = { kind: 'entity', id: added.root };
+        render();
+      }
+      status(`Imported ${file.name} (${added?.ids.length || 0} object${added?.ids.length === 1 ? '' : 's'})`);
+    }).catch(error => status(error.message, true));
+  });
+  picker.click();
+}
+
 function objectMenuItems(entity) {
   const isPlayer = entity.type === 'player';
   return [
@@ -5320,6 +5384,7 @@ function objectMenuItems(entity) {
       render();
       captureSceneFromSelection('object');
     }) },
+    { label: 'Export as a file\u2026', disabled: isPlayer, run: guard(() => exportLayoutObject(entity)) },
     { separator: true },
     { label: 'Delete object', danger: !isPlayer, disabled: isPlayer, run: guard(() => deleteLayoutObject(entity.id)) },
   ];
@@ -5335,6 +5400,22 @@ function sectorMenuItems(sector) {
     }) },
     { label: 'Copy sector id', run: () => copyText(sector.id, sector.id) },
   ];
+}
+
+/** Saves a whole scene object as one file, script included or not, at the author's choice. */
+async function exportSceneObject(scene) {
+  if (!scene?.id) return;
+  const events = (scene.events || []).filter(event => event.ownerId).length;
+  const answer = await askObjectExport({ name: scene.name, kind: 'Scene', events });
+  if (!answer) return;
+  try {
+    const document = exportNodeFile(scene, scene.id, {
+      assets: project.assets || [], shaders: project.shaders || [], includeEvents: answer.includeEvents,
+    });
+    const name = nodeFileName(document.name);
+    downloadNodeFile(document, name);
+    status(`Exported ${name}${document.warnings.length ? ` (${document.warnings.join('; ')})` : ''}`);
+  } catch (error) { status(error.message, true); }
 }
 
 /** Right click in the 2D layout: act on whatever is under the pointer. */
@@ -5356,6 +5437,7 @@ function mapCanvasMenu(event) {
   items.push(
     { label: 'Create object', submenu: createObjectMenuItems(position) },
     { label: `Place ${$('entity-type').value} here`, run: guard(() => placeLayoutObject(position)) },
+    { label: 'Import an object file\u2026', run: guard(() => importLayoutObjectFile()) },
     { label: 'Fit the map in the view', run: () => { fitMap(); mapNeedsDraw = true; } },
     { separator: true },
     { label: 'Copy coordinates', run: () => copyText(`${position.x}, ${position.y}`, `${position.x}, ${position.y}`) });
@@ -5577,6 +5659,7 @@ function installContextMenus() {
       { label: 'Place at the view', run: guard(() => placeScene(scene.id)) },
       { label: 'Rename\u2026', run: guard(() => renameSceneObject(scene.id)) },
       { label: 'Capture the selected layout objects', run: guard(() => captureIntoSceneObject(scene.id)) },
+      { label: 'Export as a file\u2026', run: guard(() => exportSceneObject(scene)) },
       { separator: true },
       { label: 'Delete scene object', danger: true, run: guard(() => {
         if (!confirm(`Delete the scene object "${scene.name}"? Objects already placed from it are kept.`)) return;

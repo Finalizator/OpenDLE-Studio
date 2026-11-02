@@ -39,7 +39,37 @@ function commandReferences(command) {
  * because an imported event that points at an object the destination does not have would
  * make the project invalid.
  */
-export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [] } = {}) {
+/**
+ * The layout read as a container of the same shape a scene has, so one exporter serves both.
+ *
+ * A layout object is a node in every way that matters — it has artwork, a body, an interaction
+ * area, variables and possibly a visual script — and it was the one thing that could not be
+ * saved on its own. What differs is only where its table lives: `map.entities` and `events`
+ * instead of a scene's own.
+ */
+export function layoutContainer(project) {
+  return {
+    id: 'layout',
+    name: project?.title || 'Layout',
+    entities: project?.map?.entities || [],
+    events: project?.events || [],
+    joints: project?.map?.joints || [],
+  };
+}
+
+/**
+ * Builds the document for one node and its group.
+ *
+ * `name` defaults to the node's name. Assets and shaders that the subtree references are
+ * embedded; `includeEvents` says whether the object's visual script travels with it, and events
+ * are kept only when every object they name is inside the subtree, because an imported event
+ * that points at an object the destination does not have would make the project invalid.
+ *
+ * Two references cannot travel at all: a route (`entity.path`) and a layout object group
+ * (`entity.groupId`) both name things the project owns rather than the object. They are dropped
+ * and reported instead of being written into a file that would dangle on import.
+ */
+export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [], includeEvents = true } = {}) {
   // Selecting the scene root means "save the whole scene", so the top-level nodes are
   // wrapped in a group named after the scene and travel as one object.
   const wholeScene = nodeId === scene?.id;
@@ -52,11 +82,16 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [] 
   const ids = new Set(subtree.map(node => node.id));
   const minX = Math.min(...carried.map(node => node.x));
   const minY = Math.min(...carried.map(node => node.y));
+  let droppedRoutes = 0, droppedGroups = 0;
   const nodes = carried.map(node => {
     const copy = cloneProjectData(node);
     copy.x = round(node.x - minX);
     copy.y = round(node.y - minY);
     if (root && node.id !== root.id && !copy.parentId) copy.parentId = root.id;
+    // A route lives in the project's own path list and a group in its own group list, so neither
+    // can be carried by a file that has to stand on its own.
+    if (copy.path) { delete copy.path; droppedRoutes += 1; }
+    if (copy.groupId) { delete copy.groupId; droppedGroups += 1; }
     return copy;
   });
 
@@ -84,7 +119,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [] 
 
   const owners = (scene.events || []).filter(event => event.ownerId && ids.has(event.ownerId));
   const keptEvents = [], droppedEvents = [];
-  for (const event of owners) {
+  for (const event of includeEvents ? owners : []) {
     const commands = [...(event.conditions || []), event.condition, ...(event.actions || [])].filter(Boolean);
     const outside = commands.flatMap(commandReferences).filter(id => !ids.has(id));
     if (outside.length) droppedEvents.push(event.name || event.id);
@@ -95,6 +130,9 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [] 
   if (missingAssets.length) warnings.push(`Missing artwork: ${missingAssets.join(', ')}`);
   if (missingShaders.length) warnings.push(`Missing shaders: ${missingShaders.join(', ')}`);
   if (droppedEvents.length) warnings.push(`${droppedEvents.length} event(s) left out because they use objects outside this node`);
+  if (!includeEvents && owners.length) warnings.push(`Its visual script was not included (${owners.length} event(s))`);
+  if (droppedRoutes) warnings.push(`Its route was not included — a route belongs to the layout, not to the object`);
+  if (droppedGroups) warnings.push(`Its layout group was not included`);
 
   return {
     format: NODE_FILE_FORMAT,
@@ -106,6 +144,9 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [] 
     nodes,
     joints,
     events: keptEvents,
+    // What the file carries of the object's script, so a reader can see the choice was made
+    // rather than the script having been lost.
+    script: { available: owners.length, included: keptEvents.length },
     assets: embeddedAssets,
     shaders: embeddedShaders,
     warnings,
@@ -208,11 +249,14 @@ export function validateNodeFile(document) {
  */
 export function applyNodeFile(scene, document, {
   x = 0, y = 0, parentId = null, degrees = 0, assetRemap = new Map(), shaderRemap = new Map(),
+  // A layout holds a whole map's worth of objects where a scene stops at 128, so the ceiling is
+  // the destination's, not the file's.
+  maxEntities = MAX_SCENE_ENTITIES, maxEvents = MAX_SCENE_EVENTS,
 } = {}) {
   validateNodeFile(document);
   if (!scene) throw new Error('There is no scene to import into');
-  if ((scene.entities || []).length + document.nodes.length > MAX_SCENE_ENTITIES) {
-    throw new Error(`A scene holds at most ${MAX_SCENE_ENTITIES} objects`);
+  if ((scene.entities || []).length + document.nodes.length > maxEntities) {
+    throw new Error(`The destination holds at most ${maxEntities} objects`);
   }
   const radians = (Number(degrees) || 0) * Math.PI / 180;
   const cos = Math.cos(radians), sin = Math.sin(radians);
@@ -264,7 +308,7 @@ export function applyNodeFile(scene, document, {
     return copy;
   });
   if (events.length) {
-    if ((scene.events || []).length + events.length > MAX_SCENE_EVENTS) throw new Error(`A scene holds at most ${MAX_SCENE_EVENTS} events`);
+    if ((scene.events || []).length + events.length > maxEvents) throw new Error(`The destination holds at most ${maxEvents} events`);
     scene.events = [...(scene.events || []), ...events];
   }
 

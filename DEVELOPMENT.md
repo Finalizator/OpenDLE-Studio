@@ -2451,6 +2451,34 @@ Objects and events inside a scene cannot include the player. Captured events
 keep their actions but drop their HUD `sheetId`, because a scene can be placed
 in any level. Limits are 64 scenes, 128 objects and 256 events per scene.
 
+### Exporting one object
+
+Any object can leave the project on its own as a **`.node` file**: a layout object (right-click it in
+the 2D map, the project tree or the object list → *Export as a file…*), a node or a group in a scene
+(*Save .node*, or its context menu), or a whole scene object (the Scene objects list → *Export as a
+file…*). One format covers all of them because they are the same thing from the data's side — an
+entity with artwork, a body, an area, variables and possibly a script — and only the table it lives
+in differs, which is what `layoutContainer` in [`shared/node-file.js`](./shared/node-file.js) bridges.
+
+**The file stands on its own.** The artwork, the model and the shader it uses are embedded, so it
+opens on another machine with no project behind it. Two references cannot travel and are dropped with
+a warning rather than written into a file that would dangle: a **route** (`entity.path`) and a
+**layout group** (`entity.groupId`) both belong to the layout, not to the object.
+
+**The visual script is the author's choice.** Every export asks — "Include its visual script (N
+events)" — with the count in front of them, and the answer is recorded in the file as
+`script: { available, included }` so a reader can tell a script that was left out from one that was
+lost. An event that names an object outside the exported one is left out anyway and reported: half a
+rule set that arrives without its partners is worse than none. The same dialog is `askObjectExport`
+in [`public/export-object.js`](./public/export-object.js), and it is the only path to
+`downloadNodeFile` — one place that revokes the blob **after** the click, because revoking it in the
+same task cancels the download while the editor still reports success.
+
+Importing works both ways: a scene takes a `.node` file with *Import .node*, and the layout takes one
+with right-click → *Import an object file…*, which places it at the view centre. Artwork the project
+already has identically is reused, a clashing id gets a fresh one, and the layout's own limits
+(`LIMITS.entities`) are what the import is checked against rather than a scene's 128.
+
 ### The Scene Object editor
 
 A scene is not only a bag of objects to place: **Menu → Layouts → Scene Object**

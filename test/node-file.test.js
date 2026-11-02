@@ -4,10 +4,11 @@ import { readFileSync } from 'node:fs';
 import { newScene, addSceneObject, reparentSceneObject } from '../shared/scenes.js';
 import { newJoint, newJointId } from '../shared/joints.js';
 import { newPanel, validatePanel, panelPhysics, curtainStrips, PANEL_DEFAULTS } from '../shared/panel.js';
+import { createPath } from '../shared/paths.js';
 import { createProject, validateProject, validateEntity } from '../shared/project.js';
 import {
   NODE_FILE_FORMAT, NODE_FILE_VERSION, exportNodeFile, nodeFileText, parseNodeFile, validateNodeFile,
-  applyNodeFile, planNodeFileInstall, nodeFileName,
+  applyNodeFile, planNodeFileInstall, nodeFileName, layoutContainer,
 } from '../shared/node-file.js';
 import { entityRepresentation, liveProjectPlan } from '../shared/entity-visuals.js';
 
@@ -158,6 +159,84 @@ test('events travel with a node only when they stay inside it', () => {
   assert.match(document.warnings.join(' '), /1 event\(s\) left out/);
 });
 
+// A layout object is a node in everything but where its table lives, so the same file can be a
+// library of ready-made things — an enemy with its health, a truck with its model — and not only a
+// part of a scene.
+test('a layout object exports as a file, and the script travels only when asked for', () => {
+  const project = createProject();
+  project.assets = [sprite()];
+  const entity = project.map.entities.find(item => item.type !== 'player');
+  entity.spriteAsset = 'sprite_a';
+  entity.variables = { health: 5 };
+  project.events = [
+    { id: 'own', name: 'Own rule', enabled: true, once: false, ownerId: entity.id,
+      condition: { type: 'onStart' }, conditions: [], actions: [{ type: 'addVariable', variable: 'score', value: 1 }] },
+    { id: 'other', name: 'Someone else', enabled: true, once: false, ownerId: project.map.entities.find(item => item.type === 'player').id,
+      condition: { type: 'onStart' }, conditions: [], actions: [{ type: 'addVariable', variable: 'score', value: 1 }] },
+  ];
+  const layout = layoutContainer(project);
+  assert.equal(layout.id, 'layout');
+
+  const withScript = exportNodeFile(layout, entity.id, { assets: project.assets, includeEvents: true });
+  assert.deepEqual(withScript.events.map(event => event.id), ['own'], 'only the object\'s own rule');
+  assert.deepEqual(withScript.script, { available: 1, included: 1 });
+  assert.deepEqual(withScript.assets.map(asset => asset.id), ['sprite_a'], 'the artwork comes along');
+  assert.equal(withScript.nodes[0].variables.health, 5);
+  assert.doesNotThrow(() => parseNodeFile(nodeFileText(withScript)), 'the file is a valid .node document');
+
+  const withoutScript = exportNodeFile(layout, entity.id, { assets: project.assets, includeEvents: false });
+  assert.deepEqual(withoutScript.events, []);
+  assert.deepEqual(withoutScript.script, { available: 1, included: 0 });
+  assert.match(withoutScript.warnings.join(' '), /visual script was not included/);
+
+  // A route and a layout group belong to the layout, not to the object: the file cannot carry
+  // them without dangling, so they are dropped and reported instead.
+  entity.path = { id: 'route', speed: 64 };
+  entity.groupId = 'group_a';
+  project.paths = [createPath({ id: 'route', name: 'Route', points: [
+    { id: 'a', x: 0, y: 0 }, { id: 'b', x: 64, y: 0 },
+  ] })];
+  project.map.entityGroups = [{ id: 'group_a', name: 'Group' }];
+  validateProject(project);
+  const stripped = exportNodeFile(layoutContainer(project), entity.id, { assets: project.assets });
+  assert.equal(stripped.nodes[0].path, undefined);
+  assert.equal(stripped.nodes[0].groupId, undefined);
+  assert.match(stripped.warnings.join(' '), /route was not included/);
+  assert.match(stripped.warnings.join(' '), /group was not included/);
+});
+
+test('an object file imports into a layout without disturbing the layout it joins', () => {
+  const source = createProject();
+  source.assets = [sprite()];
+  const original = source.map.entities.find(item => item.type !== 'player');
+  original.name = 'Crate';
+  original.spriteAsset = 'sprite_a';
+  source.events = [{ id: 'own', name: 'Own rule', enabled: true, once: false, ownerId: original.id,
+    condition: { type: 'onStart' }, conditions: [], actions: [{ type: 'addVariable', variable: 'score', value: 1 }] }];
+  const document = exportNodeFile(layoutContainer(source), original.id, { assets: source.assets });
+
+  // The destination project has its own objects, its own events and no such artwork.
+  const destination = createProject();
+  const before = destination.map.entities.length;
+  const install = planNodeFileInstall(document, { assets: destination.assets || [] });
+  const container = layoutContainer(destination);
+  const added = applyNodeFile(container, document, {
+    x: 256, y: -128, assetRemap: install.assetRemap, shaderRemap: install.shaderRemap,
+    maxEntities: 100000, maxEvents: 100000,
+  });
+  destination.assets = [...(destination.assets || []), ...install.addAssets];
+  destination.map.joints = container.joints;
+  destination.events = container.events;
+
+  assert.equal(destination.map.entities.length, before + 1, 'the copy joins the layout');
+  const copy = destination.map.entities.find(item => item.id === added.root);
+  assert.equal(copy.name, 'Crate');
+  assert.deepEqual([copy.x, copy.y], [256, -128], 'it lands where the importer put it');
+  assert.equal(copy.spriteAsset, 'sprite_a', 'its artwork came with it');
+  assert.equal(destination.events.filter(event => event.ownerId === copy.id).length, 1, 'and so did its rule');
+  assert.doesNotThrow(() => validateProject(destination), 'the result is a valid project');
+});
+
 test('an invalid .node file is refused with a readable reason', () => {
   const { scene, frame } = nodeScene();
   const good = exportNodeFile(scene, frame.id, { assets: [sprite()] });
@@ -286,7 +365,14 @@ test('the studio offers saving and importing node files', () => {
   // Saving needs a node, so the button is disabled on the scene root rather than failing.
   assert.match(editor, /dom\.saveNode\.disabled = !hasNode/);
   assert.match(editor, /function saveNodeFile\(nodeId\)/);
-  assert.match(editor, /link\.download = name;/);
+  // The download is one shared helper now, so a layout object and a scene node are saved the
+  // same way — and the blob is revoked after the click rather than during it.
+  assert.match(editor, /downloadNodeFile\(document, fileName\)/);
+  assert.match(readFileSync(new URL('../public/export-object.js', import.meta.url), 'utf8'),
+    /setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\)/);
+  // Saving asks whether the visual script travels, the same question a layout object's export asks.
+  assert.match(editor, /askObjectExport\(\{ name: name \|\| 'Node'/);
+  assert.match(editor, /includeEvents: answer\.includeEvents/);
   assert.match(editor, /function importNodeFile\(point = null\)/);
   assert.match(editor, /picker\.accept = NODE_FILE_EXTENSION;/);
   assert.match(editor, /label: 'Save as a \.node file'/);
