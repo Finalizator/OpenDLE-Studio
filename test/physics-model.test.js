@@ -312,21 +312,17 @@ test('the player cannot walk through a monster, and a corpse stops blocking', { 
   assert.ok(walk() < reach, 'the corpse still blocked the player');
 });
 
-// A collider stands for what is drawn, so a declared facing comes off the angle here too. Left
-// out, the artwork turned on the route and the invisible box did not, and a truck scraped walls
-// with the corner of a box nobody could see.
-test('a collider turns with the model facing, exactly like the drawn body', t => {
+// A collider stands for what is drawn. A declared facing is a note about the artwork's own forward,
+// not a pose, so it turns neither the mesh nor the box: the two agree at the object's angle alone.
+test('a collider turns with the object angle, and a declared facing moves neither mesh nor box', t => {
   // Rapier keeps a rotation as float32, so a body's own numbers carry a little less precision
   // than the arithmetic that made them.
   const near = (a, b, what) => assert.ok(Math.abs(a - b) < 1e-6, `${what}: ${a} vs ${b}`);
   const same = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.w === b.w;
-  // Declaring a facing is the same as having that much less angle — the renderer's own rule.
-  assert.ok(same(colliderRotation({ angle: 0, modelFacing: 90 }), colliderRotation({ angle: -90 })),
-    'a facing turns the collider by the same amount the mesh is turned');
-  assert.ok(same(colliderRotation({ angle: 30, modelFacing: 0 }), colliderRotation({ angle: 30 })),
-    'no facing leaves the collider where it always was');
+  assert.ok(same(colliderRotation({ angle: 0, modelFacing: 90 }), colliderRotation({ angle: 0 })),
+    'declaring a facing does not turn the collider');
   assert.ok(same(colliderRotation({ angle: 30, modelFacing: 20, modelTilt: { pitch: 45, roll: 0 } }),
-    colliderRotation({ angle: 10, modelTilt: { pitch: 45, roll: 0 } })), 'facing and tilt compose');
+    colliderRotation({ angle: 30, modelTilt: { pitch: 45, roll: 0 } })), 'and composes with a tilt');
 
   // A body's rotation is copied back onto the entity, and the renderer draws from there: the two
   // must be the same quaternion or the body would be drawn somewhere its collider is not.
@@ -336,14 +332,14 @@ test('a collider turns with the model facing, exactly like the drawn body', t =>
   tick(2);
   const entity = state.entities.find(item => item.id === 'pickup');
   assert.ok(entity.rotation, 'the body reports its rotation');
-  const collider = colliderRotation({ angle: 0, modelFacing: 90 });
+  const collider = colliderRotation({ angle: 0 });
   for (const key of ['x', 'y', 'z', 'w']) near(entity.rotation[key], collider[key], `body ${key}`);
   const drawn = modelOrientation(entity);
   for (const [index, key] of ['x', 'y', 'z', 'w'].entries()) near(drawn[index], collider[key], `drawn ${key}`);
   // Turning a body keeps its facing: a script that turns a faced model must not undo the offset.
   state.physics.rotate('pickup', 45);
   const turned = state.entities.find(item => item.id === 'pickup').rotation;
-  const expected = colliderRotation({ angle: 45, modelFacing: 90 });
+  const expected = colliderRotation({ angle: 45 });
   for (const key of ['x', 'y', 'z', 'w']) near(turned[key], expected[key], `turned ${key}`);
 });
 

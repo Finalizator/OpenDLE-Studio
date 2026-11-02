@@ -467,7 +467,10 @@ test('a posed model is lined up with its route without moving it', async () => {
   const alignment = alignModelToRoute(entity, path);
   assert.equal(alignment.heading, 90, 'the route heads north out of its first waypoint');
   assert.equal(alignment.facing, 90 - 70, 'the gap between the route and the pose is the file\'s forward');
-  assert.equal(alignment.angle, 90, 'the angle moves onto the route');
+  // Declaring the facing never poses the model, so the angle stays where the author put it and the
+  // nose (angle + facing) is what lands on the route.
+  assert.equal(alignment.angle, 70, 'the pose is not moved by declaring a facing');
+  assert.equal((alignment.angle + alignment.facing) % 360, 90, 'the nose is on the route');
   // What the author saw is what they now get: the model is drawn in exactly the same place.
   const looked = modelOrientation({ angle: 70 });
   const now = modelOrientation({ angle: alignment.angle, modelFacing: alignment.facing });
@@ -481,7 +484,9 @@ test('a posed model is lined up with its route without moving it', async () => {
   const skewed = { ...entity, angle: 70, modelFacing: 80 };
   const measured = alignModelToRoute(skewed, path, { forward: 90 });
   assert.equal(measured.facing, 90, 'the body runs along Z, so its facing is 90 and not the 80 it had');
-  assert.equal(measured.angle, 90, 'and the angle goes onto the route');
+  // The 80 was wrong, so the body really is 10° off the road: the angle that fixes it is the heading
+  // less the *measured* 90, and the model turns by the correction it needed.
+  assert.equal(measured.angle, 0, 'the angle becomes the heading less the real forward');
   assert.equal(measured.measured, true);
   // The hemisphere is the one the author already chose: 80 was nearer 90 than 270, and 20 nearer
   // -90 than 90, so aligning again never flips a truck around behind their back.

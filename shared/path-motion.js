@@ -21,18 +21,21 @@ const wrap360 = value => ((value % 360) + 360) % 360;
 /**
  * Which way a follower faces after a step.
  *
- * The same rule the timeline uses (`tweenAngle` in `shared/timesheet.js`): a sprite is turned onto
- * the route, because Doom's 0° is east and its frames are drawn for that, while an imported model
- * keeps the pose its author gave it and is turned by however much the route bends. A model whose
- * own forward is off is corrected once with the facing offset instead of by re-posing it on every
- * leg, which was why a truck that looked right in the editor drove sideways in play.
+ * The same rule the timeline uses (`tweenAngle` in `shared/timesheet.js`). A sprite is turned onto
+ * the route, because Doom's 0° is east and its frames are drawn for that. A model with a declared
+ * facing is turned onto the route too, but by the angle that puts its **nose** there: the mesh is
+ * drawn at `angle`, the file's own forward is `facing` degrees from east, so `heading - facing` is
+ * the angle whose nose lands on the path. Without a facing an imported model keeps the pose its
+ * author gave it and is only turned by however much the route bends, and `yawOffset` is added on top
+ * of either.
  */
 export function facingAngle(entity, motion, heading, yawOffset, useModelFacing = true) {
   const declared = useModelFacing !== false
     && entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
-  const route = entity?.modelAsset && !declared
-    ? (Number(motion.authoredAngle) || 0) + (heading - (motion.startHeading ?? heading))
-    : heading;
+  const route = declared ? heading - Number(entity.modelFacing)
+    : entity?.modelAsset
+      ? (Number(motion.authoredAngle) || 0) + (heading - (motion.startHeading ?? heading))
+      : heading;
   return wrap360(route + (Number(yawOffset) || 0));
 }
 

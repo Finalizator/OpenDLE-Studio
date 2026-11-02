@@ -9,6 +9,7 @@
 import { validateEntity, cloneProjectData } from './project.js';
 import { sceneEntityId, sceneSubtree, remapReferences, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
 import { MAX_JOINTS, validateJoint, newJointId } from './joints.js';
+import { MODEL_FACING_SEMANTICS, hasModelFacing } from './entity-visuals.js';
 
 export const NODE_FILE_FORMAT = 'opendle-node';
 export const NODE_FILE_VERSION = 1;
@@ -232,6 +233,8 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   return {
     format: NODE_FILE_FORMAT,
     version: NODE_FILE_VERSION,
+    // Which meaning of a declared facing the nodes' angles are written in (`migrateModelFacing`).
+    modelFacingSemantics: MODEL_FACING_SEMANTICS,
     name: String(name || root?.name || subtree[0].name || 'Node').slice(0, 100),
     createdAt: new Date().toISOString(),
     // The group's floor corner, so an importer can place it without guesswork.
@@ -387,6 +390,9 @@ export function applyNodeFile(scene, document, {
   const mapping = new Map();
   for (const node of document.nodes) mapping.set(node.id, sceneEntityId(scene, node.id));
   const roots = document.nodes.filter(node => !node.parentId);
+  // A file written before a facing stopped turning the mesh stored the pose the old renderer drew,
+  // so its angle has to move over — otherwise the object lands visibly turned by its own facing.
+  const staleFacing = document.modelFacingSemantics !== MODEL_FACING_SEMANTICS;
   const copies = document.nodes.map(node => {
     const copy = cloneProjectData(node);
     copy.id = mapping.get(node.id);
@@ -395,6 +401,7 @@ export function applyNodeFile(scene, document, {
     copy.x = round(x + local.x * cos - local.y * sin);
     copy.y = round(y + local.x * sin + local.y * cos);
     copy.angle = (Number(node.angle) || 0) + (Number(degrees) || 0);
+    if (staleFacing && hasModelFacing(copy)) copy.angle = (((copy.angle - Number(copy.modelFacing)) % 360) + 360) % 360;
     if (node.parentId) copy.parentId = mapping.get(node.parentId);
     else if (parentId) copy.parentId = parentId;
     // An asset that clashed with different artwork in the destination got a new id.

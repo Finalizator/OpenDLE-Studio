@@ -321,8 +321,9 @@ export function startPathTween(state, { entityId, pathId, fromPoint = 0, toPoint
     // model keeps the pose it was given and is turned by however much the route bends.
     useModelFacing: useModelFacing !== false,
     yawOffset: Number.isFinite(Number(yawOffset)) ? Number(yawOffset) : 0,
-    // How the object was posed before the trip: a model keeps that pose and is turned by how much
-    // the route bends, where a sprite (whose forward the engine defines) is turned onto the route.
+    // How the object was posed before the trip: a model with no declared facing keeps that pose and
+    // is turned by how much the route bends, where a sprite (whose forward the engine defines) and a
+    // faced model are turned onto the route.
     authoredAngle: entity ? Number(entity.angle) || 0 : 0, startHeading: null,
     origin: entity ? { x: entity.x, y: entity.y, z: entity.z || 0 } : null, anchor: null });
   state.pathTweens = keep;
@@ -335,25 +336,28 @@ const wrap360 = value => ((value % 360) + 360) % 360;
  * Which way a tweened object faces at a given point of its route.
  *
  * A sprite's forward is the engine's — Doom's 0° is east, and the sprite frames are drawn for it —
- * so a sprite is turned *onto* the route. An imported model's forward is whatever the file says,
- * and the author poses it in the editor to make that readable; snapping such a model to the route
- * heading made a pre-rotated truck drive sideways, so a model keeps the pose it was given and is
- * turned by however much the route bends. `yawOffset` is added on top for a model whose own
- * forward still needs a correction.
+ * so a sprite is turned *onto* the route. An imported model's forward is whatever the file says, so
+ * once that is declared the trip sets the angle that puts the model's **nose** on the path
+ * (`heading - facing`) and the truck drives along its road instead of sideways. Without a
+ * declaration the model keeps the pose the author gave it and is only turned by however much the
+ * route bends, which is what a hand-posed model needs. `yawOffset` is added on top of either, for a
+ * body whose forward still needs a correction.
  *
  * `useModelFacing: false` on the tween asks for the pose rule even when a facing is declared, which
  * is what an author wants when the model was posed for this route by hand and the facing belongs to
  * some other trip.
  */
 export function tweenAngle(entity, tween, heading) {
-  // A declared facing makes the model's nose the object's angle, so the angle is simply the route's
-  // — exact, and the same rule a sprite follows. Without one, an imported model keeps the pose the
-  // author gave it and is turned by how much the road bends.
+  // A declared facing is turned onto the route by the angle that puts the model's nose there: the
+  // mesh is drawn at `angle`, the file's forward is `facing` degrees from east, so the nose lands on
+  // the trip's heading at `heading - facing`. A sprite has no file of its own (its forward is the
+  // engine's) and a model without a facing keeps the pose the author gave it, turned by the bend.
   const declared = tween?.useModelFacing !== false
     && entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
-  const route = entity?.modelAsset && !declared
-    ? (Number(tween.authoredAngle) || 0) + (heading - (tween.startHeading ?? heading))
-    : heading;
+  const route = declared ? heading - Number(entity.modelFacing)
+    : entity?.modelAsset
+      ? (Number(tween.authoredAngle) || 0) + (heading - (tween.startHeading ?? heading))
+      : heading;
   return wrap360(route + (Number(tween.yawOffset) || 0));
 }
 

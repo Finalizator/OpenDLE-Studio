@@ -712,9 +712,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    *
    * Only a model with `modelFacing` has an arrow — for every other object the gizmo's axes already
    * say what its angle means — and only while it is selected, because the arrow is the line the
-   * author checks the body against and one on every faced object buries the scene in arrows. The
-   * arrow points along the object's angle, which is the direction the nose follows once a facing is
-   * declared, so the check is "does the body sit along this line?".
+   * author checks the body against and one on every faced object buries the scene in arrows. It
+   * points along the **nose** (the angle plus what the file is turned by), which is the direction a
+   * route aims at the path, so the check is "does the body sit along this line?".
    */
   function updateFacingMarkers(rect, frustum) {
     const posed = selected?.kind === 'entity' ? entityById.get(selected.id) : null;

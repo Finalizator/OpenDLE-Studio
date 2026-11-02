@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { addRoom, createProject, validateProject } from '../shared/project.js';
 import { addRamp } from '../shared/ramp.js';
 import { cloneEntitiesForPaste } from '../shared/entity-groups.js';
-import { facingArrowPose, hasModelFacing, modelOrientation, playerStartPose } from '../shared/entity-visuals.js';
+import { facingArrowPose, hasModelFacing, modelOrientation, noseAngle, playerStartPose } from '../shared/entity-visuals.js';
 import { sectorGeometry } from '../shared/sectors.js';
 import {
   addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, describeSurfaceTarget,
@@ -279,36 +279,41 @@ test('the player start arrow sits at the start and points the way it faces', () 
   assert.deepEqual([broken.x, broken.y, broken.z, broken.angle], [0, 2, 0, 0], 'a start with no numbers still draws');
 });
 
-// A model's own forward is not always east; a file drawn facing +Z (north) needs 90 declared before
-// the object's angle means "where the nose points", which is what makes a route drive it straight.
-test('a declared model facing turns the body so its nose follows the object angle', () => {
+// A model's own forward is not always east, and declaring it is a statement about the artwork — it
+// must not turn the mesh, because the object's angle is the pose and the author sets that by hand.
+test('a declared model facing never turns the body, and the arrow follows the nose', () => {
   const near = (a, b) => Math.abs(a - b) < 1e-9;
   assert.deepEqual(modelOrientation({ angle: 0 }).map(v => Math.round(v) + 0), [0, 0, 0, 1]);
-  // Declaring the facing is exactly the same as having set that much less angle, so a model drawn
-  // facing north (90) is turned a quarter turn back until its nose is east.
-  const cases = [[0, 90], [90, 90], [-93.9, 270], [37, -12], [180, 0]];
-  for (const [angle, modelFacing] of cases) {
-    assert.deepEqual(modelOrientation({ angle, modelFacing }), modelOrientation({ angle: angle - modelFacing }),
-      `facing ${modelFacing} at angle ${angle} turns the model by the difference`);
+  // Declaring a facing leaves the drawn quaternion exactly where it was, whatever the angle.
+  for (const [angle, modelFacing] of [[0, 90], [90, 90], [-93.9, 270], [37, -12], [180, 0]]) {
+    assert.deepEqual(modelOrientation({ angle, modelFacing }), modelOrientation({ angle }),
+      `facing ${modelFacing} at angle ${angle} does not turn the model`);
   }
-  const north = modelOrientation({ angle: 0, modelFacing: 90 });
-  assert.ok(near(north[1], Math.SQRT1_2), 'a model facing north is turned a quarter turn back to east');
-  assert.deepEqual(modelOrientation({ angle: 90, modelFacing: 90 }).map(v => Math.round(v) + 0), [0, 0, 0, 1],
-    'a model that already faces the object angle is left alone');
-  // The declared facing composes with tilt, which is applied in the model's own frame.
+  // Tilt still composes, in the model's own frame, and the facing does not join in.
   assert.deepEqual(modelOrientation({ angle: 0, modelFacing: 90, modelTilt: { pitch: 180 } }),
-    modelOrientation({ angle: -90, modelTilt: { pitch: 180 } }));
+    modelOrientation({ angle: 0, modelTilt: { pitch: 180 } }));
   assert.ok(hasModelFacing({ modelFacing: 0 }), '0 is a real declaration — the file already faces east');
-  assert.ok(!hasModelFacing({}), 'no facing means the author keeps the pose they gave');
+  assert.ok(!hasModelFacing({}), 'no facing means nothing is declared');
   assert.ok(!hasModelFacing({ modelFacing: 'x' }), 'a non-number is not a declaration');
-  // The arrow the author compares against: the player start's pose, in a colour of its own.
+  // Which way the artwork points: the angle plus what the file is turned by.
+  assert.equal(noseAngle({ angle: 0, modelFacing: 90 }), 90);
+  assert.equal(noseAngle({ angle: 300, modelFacing: 90 }), 30);
+  assert.equal(noseAngle({ angle: -30 }), 330, 'wrapped, and a facing-less object points at its angle');
+
+  // The arrow the author compares against: the player start's pose, and a model's nose.
   const arrow = facingArrowPose({ x: 3, y: 5, angle: 90 }, 8, { lift: 2 });
   assert.deepEqual([arrow.x, arrow.y, arrow.z], [3, 10, 5]);
-  assert.ok(near(arrow.yaw, -Math.PI / 2), 'the arrow points along the object angle, not the facing');
+  assert.ok(near(arrow.yaw, -Math.PI / 2), 'the arrow points along the object angle');
+  const facedArrow = facingArrowPose({ x: 0, y: 0, angle: 0, modelFacing: 90 }, 0);
+  assert.ok(near(facedArrow.yaw, -Math.PI / 2), 'and along the nose when a facing is declared');
+
   // The drawing has to use the same rule as the maths, in all three places that turn a body.
   const render = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
-  assert.equal((render.match(/\(entity\.angle \|\| 0\) - \(entity\.modelFacing \|\| 0\)/g) || []).length, 2,
-    'models and panels are both drawn at angle minus facing');
+  assert.equal((render.match(/\(entity\.angle \|\| 0\) - \(entity\.modelFacing \|\| 0\)/g) || []).length, 0,
+    'nothing is drawn at angle minus facing any more');
+  assert.equal((render.match(/rotation\.set\{0, -\(entity\.angle \|\| 0\)/g) || []).length, 0);
+  assert.equal((render.match(/rotation\.set\(0, -\(entity\.angle \|\| 0\) \* Math\.PI \/ 180, 0\)/g) || []).length, 2,
+    'models and panels are both drawn at the object angle');
   const editor = readFileSync(new URL('../public/scene-editor.js', import.meta.url), 'utf8');
   assert.ok(/updateFacingMarkers/.test(editor) && /hasModelFacing/.test(editor), 'the 3D view draws the arrows');
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -319,8 +324,9 @@ test('a declared model facing turns the body so its nose follows the object angl
   assert.match(editor, /const posed = selected\?\.kind === 'entity'/, 'so does the 3D view');
 });
 
-// The declared facing must reach the simulation, not just the editor.
-test('a route drives a face-declaring model to the exact heading, and holds back for one without', async () => {
+// The declared facing must reach the simulation: a route aims the nose along the path by setting the
+// angle to the heading less the facing, because the mesh is drawn at the angle it is given.
+test('a route aims a face-declaring model\'s nose at the heading, and holds back for one without', async () => {
   const { tweenAngle } = await import('../shared/timesheet.js');
   const { facingAngle } = await import('../shared/path-motion.js');
   const near = (a, b) => Math.abs(a - b) < 1e-9;
@@ -328,15 +334,15 @@ test('a route drives a face-declaring model to the exact heading, and holds back
   // Without a facing the authored pose is kept and bent by the turn, as before.
   const legacy = tweenAngle({ modelAsset: 'truck' }, tween, 65);
   assert.ok(near(legacy, 311.1), `kept the pose and bent by 45°, got ${legacy}`);
-  // With one, the nose follows the road exactly — a sprite does the same.
-  assert.equal(tweenAngle({ modelAsset: 'truck', modelFacing: 90 }, tween, 65), 65);
+  // With one, the nose lands on the road: drawn at the angle returned, turned by its own facing.
+  assert.equal(tweenAngle({ modelAsset: 'truck', modelFacing: 90 }, tween, 65), 335);
   assert.equal(tweenAngle({ modelAsset: 'truck', modelFacing: 0 }, tween, 65), 65);
   assert.equal(tweenAngle({ type: 'sprite' }, tween, 65), 65, 'a sprite always follows the road');
   // The live path follower agrees with the timesheet, or a truck would snap on hand-off.
-  assert.equal(facingAngle({ modelAsset: 'truck', modelFacing: 90 }, { authoredAngle: -93.9, startHeading: 20 }, 65, 0), 65);
+  assert.equal(facingAngle({ modelAsset: 'truck', modelFacing: 90 }, { authoredAngle: -93.9, startHeading: 20 }, 65, 0), 335);
   assert.ok(near(facingAngle({ modelAsset: 'truck' }, { authoredAngle: -93.9, startHeading: 20 }, 65, 0), 311.1));
   // An offset still applies on top, for a model that is only roughly aligned.
-  assert.equal(tweenAngle({ modelAsset: 'truck', modelFacing: 90 }, { ...tween, yawOffset: 10 }, 65), 75);
+  assert.equal(tweenAngle({ modelAsset: 'truck', modelFacing: 90 }, { ...tween, yawOffset: 10 }, 65), 345);
   // A cue can say not to use the facing at all, which is what an author wants when a model was
   // posed for this one route by hand and the facing belongs to some other trip.
   assert.ok(near(tweenAngle({ modelAsset: 'truck', modelFacing: 90 }, { ...tween, useModelFacing: false }, 65), 311.1));
@@ -362,7 +368,9 @@ test('a cue that turns the model facing off keeps the authored pose while it dri
     for (let frame = 0; frame < 70; frame++) advancePathTweens(project, state, 1 / 35);
     return state.entities.find(entity => entity.id === truck.id);
   };
-  // The route heads north (90°) out of its first waypoint.
-  assert.equal(make(true).angle, 90, 'with the facing on, the nose is the road');
+  // The route heads north (90°) out of its first waypoint, and the mesh is drawn at this angle, so
+  // the angle that puts the nose (90° from east in the file) on the road is 90 - 90 = 0. It is the
+  // pose a hand-aligned truck would have had anyway; the difference is that it is now derived.
+  assert.equal(make(true).angle, 0, 'with the facing on, the nose is the road');
   assert.ok(Math.abs(make(false).angle) < 1e-9, 'with it off, the pose is kept and only bent by the turn');
 });

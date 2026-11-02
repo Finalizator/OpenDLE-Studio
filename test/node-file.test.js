@@ -487,3 +487,24 @@ test('the studio offers saving and importing node files', () => {
   assert.match(app, /planNodeFileInstall\(document/);
   assert.match(app, /applyNodeFile\(scene, document, \{ \.\.\.options/);
 });
+
+// A file written before the facing stopped turning the mesh stores the pose the old renderer drew,
+// so its angle has to be moved over on the way in — otherwise the node lands visibly turned.
+test('a node file written under the old facing meaning lands looking the same', () => {
+  const scene = newScene('Source');
+  const truck = addSceneObject(scene, { name: 'Truck', x: 0, y: 0, angle: 0, spriteAsset: 'sprite_a' });
+  const document = exportNodeFile(scene, truck.id, { assets: [sprite()] });
+  assert.equal(document.modelFacingSemantics, 2, 'what this build writes says which meaning it uses');
+  // The old meaning: drawn at `angle - facing`, so this node looked as if it were at -90.
+  const stale = structuredClone(document);
+  delete stale.modelFacingSemantics;
+  stale.nodes[0].modelFacing = 90;
+  const target = newScene('Target');
+  const added = applyNodeFile(target, parseNodeFile(nodeFileText(stale)), {});
+  assert.equal(target.entities.find(item => item.id === added.root).angle, 270, 'angle - facing is what it used to look like');
+  assert.equal(target.entities.find(item => item.id === added.root).modelFacing, 90, 'the declaration itself is kept');
+  // A file from this build is taken as written.
+  const current = newScene('Target');
+  const same = applyNodeFile(current, parseNodeFile(nodeFileText(document)), {});
+  assert.equal(current.entities.find(item => item.id === same.root).angle, 0);
+});

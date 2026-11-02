@@ -788,7 +788,9 @@ drives as many models as you like, and editing the path re-shapes all of them.
   up a staircase; gravity is switched off for a follower, because falling would fight the path.
 - **The model turns with it**, facing the curve's tangent, and **Facing offset** turns it on top
   of that — imported models disagree about which way is forward, and a 90° offset is usually what
-  a GLB authored facing +z needs.
+  a GLB authored facing +z needs. Declaring **Model facing** is the exact version of that guess: the
+  route then sets the angle to the tangent less the facing, so the nose — not the file's idea of
+  zero — runs along the road.
 - **Start at** (0–1 of the route) lets a second model set off from the far side of a loop instead
   of on top of the first.
 
@@ -935,22 +937,30 @@ given and is turned by however much the route bends** (`tweenAngle` in `shared/t
 
 **Model facing** is the better answer to the same problem, and the one to reach for first. The
 model's Properties carry **Model facing (degrees)**: how far the file's own forward is turned from
-the engine's +X, so a glTF exported facing +Z reads 90. Declaring it changes what the object's
-angle *means* — from then on the angle is the direction the nose points, and the renderer draws the
-body at `angle − facing` (`modelOrientation` in `shared/entity-visuals.js`, and the two per-frame
-paths in `public/render.js`). A route then turns a faced model exactly, the same rule a sprite
-follows, because there is no unknown left to bend around. Until a facing is declared, a model keeps
-the pose the author gave it, so every project that never sets one behaves as it always did.
+the engine's +X, so a glTF exported facing +Z reads 90. **It never turns the model.** The object's
+Angle is the mesh's rotation and nothing else touches it, so typing a facing moves nothing on screen
+— the number is a statement about the artwork, and only a route reads it. A route aims the nose at
+the path by setting `angle = heading − facing` (the mesh is drawn at `angle`, so its nose lands on
+`heading`), which is `tweenAngle` in [`shared/timesheet.js`](./shared/timesheet.js) and `facingAngle`
+in [`shared/path-motion.js`](./shared/path-motion.js). Until a facing is declared, a model keeps the
+pose the author gave it and only turns by how much the route bends, so every project that never sets
+one behaves as it always did.
+
+> This is the second meaning of the number. It used to be subtracted from the drawn yaw
+> (`angle − facing`), so a project that declared one stored `angle` as "where the nose follows".
+> Anything written under that meaning is moved over once, when it is opened —
+> `migrateModelFacing` in [`shared/entity-visuals.js`](./shared/entity-visuals.js), recorded by the
+> project's `modelFacingSemantics` (and by a `.node` file's), so the picture an author approved is
+> exactly what comes back and the shift never happens twice.
 
 Three things make the number findable rather than guessed:
 
-- **An arrow** at the model's feet, in the 2D map and in the 3D view, pointing along the object's
-  angle — the direction the nose follows once a facing is declared, so "does the body sit along
-  this line?" is the check. It is drawn **only while the object is selected** (`#ff9d5c`; the
-  player start's arrow is `#70ddba` and is always on, because a level has exactly one start), at a
-  constant size on screen, and the 3D view publishes it on the canvas dataset (`modelFacing`,
-  `facingAt`, `facingDrawn`) so a build can be checked without eyeballing it. An arrow on every
-  faced object buried the map in arrows nobody had asked to see.
+- **An arrow** at the model's feet, in the 2D map and in the 3D view, pointing along the **nose**
+  (`noseAngle`: the angle plus the facing, which is where the artwork points). It is drawn **only
+  while the object is selected** (`#ff9d5c`; the player start's arrow is `#70ddba` and is always on,
+  because a level has exactly one start), at a constant size on screen, and the 3D view publishes it
+  on the canvas dataset (`modelFacing`, `facingAt`, `facingDrawn`) so a build can be checked without
+  eyeballing it. An arrow on every faced object buried the map in arrows nobody had asked to see.
 - **"Measure from the model (90°)"**, in Properties, which reads the axis out of the model's own
   geometry. Almost everything with a front is longer along it than across it, so
   `modelForwardAngle` in [`shared/model-forward.js`](./shared/model-forward.js) measures the
@@ -968,26 +978,27 @@ Three things make the number findable rather than guessed:
 - **"Line this model up with its route"**, in Properties, which needs the object to have a route —
   its own `path` setting, an event action, or a **timesheet cue**. `routesForEntity` in
   [`shared/paths.js`](./shared/paths.js) finds all three, because a truck driven by a timeline used
-  to be offered nothing at all and looked as if it followed no route. With a measurement the
-  button writes that measurement as the facing and turns the body onto the route; without one it
-  falls back to the older rule — the model was turned until it looked right, so the gap between the
-  route's heading and its angle *is* the file's forward — which leaves the model drawn exactly where
-  it was (measured: zero pixels change). Either way the angle goes onto the route, so the model is
-  turned, not moved. The "drive this route on a timesheet" recipe does the same for a model with no
-  facing yet, and drops the hand-set facing offset it would otherwise double up with.
+  to be offered nothing at all and looked as if it followed no route. It writes the facing *and* the
+  pose that goes with it: `angle = heading − facing`, so the body is drawn along the road. With a
+  measurement the facing is that measurement (the body really does turn by the 10° the eye could not
+  see); without one it falls back to the older rule — the model was turned until it looked right, so
+  the gap between the route's heading and its angle *is* the file's forward — which leaves the model
+  drawn exactly where it was (measured: zero pixels change). The "drive this route on a timesheet"
+  recipe does the same for a model with no facing yet, and drops the hand-set facing offset it would
+  otherwise double up with.
 
 **A cue can ignore the facing.** The `followPath` action and the object's own route following both
-carry **Use the model facing** (`useModelFacing`, default yes). With it on, a faced model is turned
-onto the route exactly; with it off, the model keeps the pose it was given for this trip and is only
-turned by however much the route bends — the rule everything followed before a facing existed,
-which is what an author wants when one model is posed per route. The field is optional in the
-schema so every cue written before it existed still validates and keeps behaving as it did.
+carry **Use the model facing** (`useModelFacing`, default yes). With it on, a faced model's nose is
+aimed along the route exactly; with it off, the model keeps the pose it was given for this trip and
+is only turned by however much the route bends — the rule everything followed before a facing
+existed, which is what an author wants when one model is posed per route. The field is optional in
+the schema so every cue written before it existed still validates and keeps behaving as it did.
 
 A faced model is trusted over the recipe's own arithmetic: if a facing is already declared, the
-recipe leaves it and the angle alone. The *collider* follows the same rule: `colliderRotation` in
-[`shared/physics.js`](./shared/physics.js) takes the facing off the angle too, because the collider
-is the artwork's own shape — left at `angle` it would sit off the drawn body by the facing, and a
-truck would scrape walls with the corner of a box nobody can see.
+recipe leaves it and the angle alone. The *collider* follows the mesh and nothing else:
+`colliderRotation` in [`shared/physics.js`](./shared/physics.js) turns by the object's angle alone,
+because the drawn body does the same — subtracting the facing on one side of the pair without the
+other is exactly how a truck ends up scraping walls with a box nobody can see.
 
 **Moving along a route between two waypoints** is a cue action of its own (`Path: move object
 between waypoints over time`). It records the object's own starting position and offsets it by the

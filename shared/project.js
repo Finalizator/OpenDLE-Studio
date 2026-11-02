@@ -4,6 +4,7 @@ import { entityReferences } from './references.js';
 import { decodeDataURI, readModel, validateModelDocument } from './gltf.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand } from './engine-script.js';
 import { validateEventStructure } from './events.js';
+import { MODEL_FACING_SEMANTICS } from './entity-visuals.js';
 import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
 import { WEAPONS } from './player-state.js';
 import { isExpression, validateExpression, validateVariables, scalar, expressionContext } from './expressions.js';
@@ -399,6 +400,10 @@ function validateLevelJoints(map, entityIds) {
 export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   object(project, 'Project');
   assert(project.version === VERSION, `Unsupported project version; expected ${VERSION}`);
+  // An older project has no marker and is migrated when it is opened; a marker this build does not
+  // know would mean an angle means something else again.
+  if (project.modelFacingSemantics !== undefined)
+    assert(project.modelFacingSemantics === MODEL_FACING_SEMANTICS, 'Unknown model facing semantics');
   text(project.title, 'Title', 100);
   object(project.map, 'Map');
   if (project.importSource !== undefined) {
@@ -1188,6 +1193,8 @@ export function newId(prefix) {
 export function createProject() {
   return {
     version: VERSION,
+    // Which meaning of a declared model facing this project is written in; see `migrateModelFacing`.
+    modelFacingSemantics: MODEL_FACING_SEMANTICS,
     title: 'My first OpenDLE world',
     map: {
       vertices: [

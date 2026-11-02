@@ -152,17 +152,17 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
  * The rotation a collider gets, as a quaternion.
  *
  * A collider stands for the artwork's own shape — a model's triangles, or a box sized from a sprite
- * — so it has to turn exactly the way the drawn mesh turns. That is why a model's declared facing
- * comes off the angle here too: the renderer draws a faced model at `angle - facing`, and a collider
- * left at `angle` would sit off the body by that much, so a truck would scrape walls with the corner
- * of an invisible box and pass through what its nose visibly overlapped.
+ * — so it has to turn exactly the way the drawn mesh turns, and the mesh turns by the object's
+ * `angle` alone: a declared model facing is a note about the artwork's own forward, not a pose, so
+ * it is not subtracted here. (It used to be, back when the renderer subtracted it too; moving one
+ * without the other put the collider off the body, which is what this comment is here to prevent.)
  *
  * A tilted object's collider is tilted with it as well: an object rotated about a horizontal axis is
  * a ramp, and `modelTilt` is already how the renderer tilts the thing that is drawn, so the collider
  * and the artwork agree instead of being two guesses at the same shape.
  */
 export function colliderRotation(entity) {
-  const angle = -((Number(entity?.angle) || 0) - (Number(entity?.modelFacing) || 0)) * Math.PI / 180;
+  const angle = -(Number(entity?.angle) || 0) * Math.PI / 180;
   if (entity?.modelTilt) return tiltQuaternion(entity.modelTilt, angle);
   return { x: 0, y: Math.sin(angle / 2), z: 0, w: Math.cos(angle / 2) };
 }

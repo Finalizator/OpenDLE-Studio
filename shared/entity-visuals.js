@@ -67,10 +67,11 @@ function multiplyQuaternion(a, b) {
  * project without tilt, facing or physics produces the same quaternion as before.
  */
 export function modelOrientation(entity) {
-  // `modelFacing` is how far the file's own forward is turned from the engine's +X, in degrees:
-  // a glTF exported facing +Z reports 90 here. Subtracting it puts the model's nose on the
-  // object's angle, which is what makes a path turn the truck instead of dragging it sideways.
-  const yaw = -((Number(entity?.angle) || 0) - (Number(entity?.modelFacing) || 0)) * Math.PI / 360;
+  // The object's angle is the model's rotation, and nothing else turns it: declaring which way a
+  // file's own forward points is a statement about the artwork, not a pose, so it must not move the
+  // mesh on screen. A route is the one thing that reads it (see `facingAngle`/`tweenAngle`), where
+  // it decides the angle that puts the nose along the path.
+  const yaw = -(Number(entity?.angle) || 0) * Math.PI / 360;
   let quaternion = entity?.rotation
     ? [entity.rotation.x, entity.rotation.y, entity.rotation.z, entity.rotation.w]
     : [0, Math.sin(yaw), 0, Math.cos(yaw)];
@@ -158,7 +159,7 @@ export function entityOrigin(entity, floorHeight = 0) {
  * above while the scene's yaw turns clockwise), lifted clear of the floor so it is not buried in it.
  */
 export function facingArrowPose(entity, floorHeight = 0, { lift = 2 } = {}) {
-  const angle = Number(entity?.angle) || 0;
+  const angle = noseAngle(entity);
   return {
     x: Number(entity?.x) || 0,
     y: (Number(floorHeight) || 0) + (Number(entity?.elevation) || 0) + lift,
@@ -171,6 +172,19 @@ export function facingArrowPose(entity, floorHeight = 0, { lift = 2 } = {}) {
 }
 
 /**
+ * Which way an object's artwork points, in map degrees.
+ *
+ * The mesh is drawn turned by the object's `angle`, and `modelFacing` says how far the file's own
+ * forward is turned from the engine's +X (a glTF exported facing +Z reads 90), so the nose points at
+ * their sum. A route uses the same arithmetic backwards: it sets `angle = heading - facing` so the
+ * nose ends up along the path.
+ */
+export function noseAngle(entity) {
+  const angle = (Number(entity?.angle) || 0) + (hasModelFacing(entity) ? Number(entity.modelFacing) : 0);
+  return ((angle % 360) + 360) % 360;
+}
+
+/**
  * The player start's arrow: the same one, because a start is a point with an angle and no artwork,
  * and a level always has exactly one start, so this is the only place that decides it.
  */
@@ -179,4 +193,42 @@ export const playerStartPose = facingArrowPose;
 /** True when an object has told the engine which way its model's forward points. */
 export function hasModelFacing(entity) {
   return entity?.modelFacing !== undefined && Number.isFinite(Number(entity.modelFacing));
+}
+
+/**
+ * The version of what a declared model facing *means*.
+ *
+ * Facing used to be subtracted from the drawn yaw, so a project that declared one stored `angle` as
+ * the direction the nose followed. It is now a path-only correction and the mesh is drawn at `angle`
+ * alone, so the same picture means `angle - facing`. `migrateModelFacing` moves stored data over
+ * once, which is why a project says which version it is written in.
+ */
+export const MODEL_FACING_SEMANTICS = 2;
+
+/** Every object list a project has: the open layout's, each scene's, and each stored level's. */
+function portableObjects(project) {
+  const lists = [project?.map?.entities, ...(project?.scenes || []).map(scene => scene.entities)];
+  for (const level of project?.game?.levels || []) {
+    lists.push(level?.data?.map?.entities);
+    for (const scene of level?.data?.scenes || []) lists.push(scene?.entities);
+  }
+  return lists.filter(list => Array.isArray(list)).flat();
+}
+
+/**
+ * Moves a project written before `MODEL_FACING_SEMANTICS` 2 onto the current meaning of a facing.
+ *
+ * The picture an author already approved has to survive: `angle - facing` was what used to be drawn,
+ * so that is what the angle becomes. A project written by this build is left alone, and a project
+ * without any declared facing is only marked.
+ */
+export function migrateModelFacing(project) {
+  if (!project || typeof project !== 'object' || project.modelFacingSemantics === MODEL_FACING_SEMANTICS) return project;
+  for (const entity of portableObjects(project)) {
+    if (!hasModelFacing(entity)) continue;
+    const turned = (Number(entity.angle) || 0) - Number(entity.modelFacing);
+    entity.angle = ((turned % 360) + 360) % 360;
+  }
+  project.modelFacingSemantics = MODEL_FACING_SEMANTICS;
+  return project;
 }

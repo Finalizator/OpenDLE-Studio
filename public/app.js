@@ -6,7 +6,7 @@ import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
 import { undoDepthFor, UNDO_DEEP_GAME_STEPS } from '/shared/undo-depth.js';
-import { hasModelFacing } from '/shared/entity-visuals.js';
+import { hasModelFacing, noseAngle } from '/shared/entity-visuals.js';
 import { addRamp, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { bundleModel } from '/shared/gltf.js';
 import { measureAssetForward } from '/shared/model-forward.js';
@@ -1154,12 +1154,12 @@ function renderInspector() {
         }), ['model']));
         if (item.modelAsset) {
           field(parent, 'Model scale (map units / glTF unit)', input(item.modelScale ?? 32, 'number', value => update('modelScale', value)));
-          // Which way the file's own forward points. With a facing declared, the object's angle is
-          // the direction the nose follows — so a route drives the truck straight instead of
-          // dragging it sideways, which is what a model drawn facing +Z does by default.
+          // Which way the file's own forward points. It does not turn the model — the angle does
+          // that — it only tells a route what to subtract so the nose follows the path, which is
+          // what stops a model drawn facing +Z from driving sideways.
           const facing = item.modelFacing;
           // Blank means "not declared" and zero means "the file already faces east" — the two are
-          // different, because a declared facing (even 0) is what makes a route turn the nose.
+          // different, because a declared facing (even 0) is what makes a route aim the nose.
           const setFacing = value => edit(next => {
             const entity = next.map.entities.find(entity => entity.id === item.id);
             if (String(value).trim() === '') { delete entity.modelFacing; return; }
@@ -1194,8 +1194,8 @@ function renderInspector() {
             parent.append(make('p', `This model is longer along ${measured === 0 ? 'X' : 'Z'} than across it, so its body runs at ${measured}° (or ${measured + 180}° the other way): that is the facing a route needs to turn its nose onto the path. Add 180 to it if the model drives backwards.`, 'info'));
           }
           parent.append(make('p', facing === undefined
-            ? 'Set this when the model file\'s own forward is not east: the orange arrow shows the direction the nose follows, so turn the model with Rotate until the body lines up, then read the angle here. Until it is set, the model keeps the pose you gave it and turns with the route.'
-            : `The model\'s nose follows the object\'s angle; a route turns it exactly. Measured from east, so a file drawn facing north is 90. The orange arrow is drawn while this object is selected.`, 'info'));
+            ? 'Set this when the model file\'s own forward is not east. It never turns the model — Angle does that — it tells a route what to subtract so the nose follows the path. Until it is set, the model keeps the pose you gave it and only turns with the route. The orange arrow (drawn while selected) shows where the artwork points.'
+            : `Measured from east, so a file drawn facing north is 90. A route sets Angle to the path\'s heading minus this, which puts the nose on the road; on its own it leaves the model exactly where you posed it. The orange arrow is drawn while this object is selected.`, 'info'));
           // The shortcut that turns a posed model into a faced one: the route's own heading is the
           // reference, and the difference to the current angle is the file's forward.
           if (route) {
@@ -2897,10 +2897,12 @@ function drawMap() {
  * A heading arrow with a head, in map space.
  *
  * The 2D view draws objects as dots, so which way one faces would otherwise only be visible in 3D —
- * and a heading is exactly what a route depends on.
+ * and a heading is exactly what a route depends on. It follows the artwork (`noseAngle`), so a model
+ * that declares how far its own forward is turned from east is drawn along its nose rather than
+ * along the number in its Angle field.
  */
 function drawFacingArrow(ctx, entity, colour, zoom) {
-  const angle = (Number(entity.angle) || 0) * Math.PI / 180;
+  const angle = noseAngle(entity) * Math.PI / 180;
   const reach = 26 / zoom, head = 9 / zoom, spread = Math.PI * .82;
   const tipX = entity.x + Math.cos(angle) * reach, tipY = entity.y + Math.sin(angle) * reach;
   ctx.strokeStyle = colour; ctx.fillStyle = colour;

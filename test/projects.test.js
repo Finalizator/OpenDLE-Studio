@@ -145,3 +145,35 @@ test('project ids are file safe slugs of the title', () => {
   assert.equal(projectSlug('   '), 'project');
   assert.ok(projectSlug('x'.repeat(200)).length <= 60);
 });
+
+// A declared model facing used to be subtracted from the drawn yaw, so a project that declared one
+// stored `angle` as the direction the nose followed. It is now a path-only correction and the mesh
+// is drawn at the angle alone, so opening an older project has to move its data over — once, and
+// without changing the picture the author approved.
+test('a project written before the facing changed meaning is opened with the same picture', t => {
+  const directory = withDirectory(t);
+  const file = join(directory, 'project.json');
+  const project = titled('Faced truck');
+  const truck = project.map.entities.find(entity => entity.id === 'pickup');
+  Object.assign(truck, { type: 'decoration', name: 'Truck', angle: 90, modelFacing: 90 });
+  delete project.modelFacingSemantics;
+  // The layout and a stored level both carry objects, and both have to be moved.
+  const levelData = structuredClone(project);
+  for (const key of ['game', 'version', 'title', 'assets']) delete levelData[key];
+  project.game = { version: 1, entry: 'MAP01', active: 'MAP01',
+    levels: [{ id: 'MAP01', name: 'MAP01', assetIds: [], next: null, secretNext: null, data: levelData }] };
+  project.game.levels[0].data.map.entities.find(entity => entity.id === 'pickup').modelFacing = 45;
+  writeFileSync(file, JSON.stringify({ project, revision: 3 }));
+  const store = new ProjectStore(file);
+  const opened = store.snapshot().project;
+  const saved = opened.map.entities.find(entity => entity.id === 'pickup');
+  assert.equal(opened.modelFacingSemantics, 2, 'the project is marked as written in the new meaning');
+  assert.equal(saved.angle, 0, 'angle - facing is the pose that was drawn before');
+  assert.equal(saved.modelFacing, 90, 'and the facing itself is untouched');
+  const dormant = opened.game.levels[0].data.map.entities.find(entity => entity.id === 'pickup');
+  assert.equal(dormant.angle, 45, 'a stored level is moved over too');
+  // Saving and opening again must not shift it a second time.
+  store.update(opened, store.snapshot().revision);
+  const reopened = new ProjectStore(file).snapshot().project.map.entities.find(entity => entity.id === 'pickup');
+  assert.equal(reopened.angle, 0);
+});

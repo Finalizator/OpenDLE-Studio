@@ -21,22 +21,23 @@ export const DEFAULT_PATH_SPEED = 96;
 const wrap360 = value => ((value % 360) + 360) % 360;
 
 /**
- * Points a model's declared facing at its route.
+ * Declares which way a model's artwork points, and poses it so its nose runs along its route.
  *
- * The engine draws a model at `angle - modelFacing`, so which way the artwork's own nose points is
- * a number only the file knows — and a guessed one leaves the body skewed by the guess. When the
- * model can be measured (`forward`, from `modelForwardAngle`) that measurement is used, so the body
- * ends up exactly along the route. A truck whose body runs along Z is 90°, not the 80° someone
- * reading it off the screen typed, and the 10° that were left over were what showed in play.
+ * Which way the artwork's own forward points is a number only the file knows — and a guessed one
+ * leaves the body skewed by the guess. When the model can be measured (`forward`, from
+ * `modelForwardAngle`) that measurement is used, so the body ends up exactly along the route; a
+ * truck whose body runs along Z is 90°, not the 80° someone reading it off the screen typed.
  *
- * The two hemispheres cannot be told apart from a bounding box, so the one nearest the facing the
- * object already has wins: an author who lined the nose up by eye keeps the end they chose, and
- * only the residual skew is taken out.
+ * Two numbers come out of it, and they mean different things. `facing` is a property of the file and
+ * is what a route reads to turn the nose onto the path. `angle` is where the object is: the mesh is
+ * drawn at `angle`, so the pose that shows the body along the route is `heading - facing`. Declaring
+ * a facing on its own never moves the model; posing it is this function's second half, and the button
+ * calls it so the two agree.
  *
- * Without a measurement the older rule answers instead, and it is the honest one: the difference
- * between the route's heading and the model's angle *is* the file's forward if the author posed the
- * model by eye next to its route, so declaring it keeps the look and makes the angle mean "where
- * the nose points".
+ * The two hemispheres cannot be told apart from a bounding box, so the one nearest what the object
+ * already says wins: a declared facing, or else the nose the author's pose implies (the model was
+ * lined up next to its route by eye, so the route's heading minus its angle *is* the file's
+ * forward). Only the residual skew is taken out, and an end chosen by eye is kept.
  *
  * Returns null when the route has no direction to face (fewer than two waypoints).
  */
@@ -65,7 +66,9 @@ export function alignModelToRoute(entity, path, { forward = null } = {}) {
     const offset = wrap360(heading - angle);
     facing = tenth(offset > 180 ? offset - 360 : offset);
   }
-  return { facing, angle: tenth(heading), heading: tenth(heading), was: tenth(Number(entity.angle) || 0),
+  // The mesh is drawn at the angle it is stored with, so the pose that puts the nose on the route is
+  // the heading less what the file is turned by; the facing alone never moves it.
+  return { facing, angle: tenth(wrap360(heading - facing)), heading: tenth(heading), was: tenth(Number(entity.angle) || 0),
     measured: measured !== null };
 }
 

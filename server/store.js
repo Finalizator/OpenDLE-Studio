@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { ASSET_DIRECTORY, PROJECT_FILE, documentBytes, isFolderDocument, packProject, readFolderFile, unpackProject } from './project-folder.js';
+import { migrateModelFacing } from '../shared/entity-visuals.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { upgradePickupReach } from '../shared/doom-hud.js';
@@ -28,13 +29,14 @@ export function projectSlug(title) {
 function readSaved(file) {
   const saved = JSON.parse(readFileSync(file, 'utf8'));
   // Version 1 files are a bare project from the first saved format.
-  if (saved.version === 1) return { project: saved, revision: 0 };
+  if (saved.version === 1) return { project: migrateModelFacing(saved), revision: 0 };
   if (isFolderDocument(saved)) {
     const directory = dirname(file);
-    return unpackProject(saved, path => readFolderFile(directory, path));
+    const unpacked = unpackProject(saved, path => readFolderFile(directory, path));
+    return { ...unpacked, project: migrateModelFacing(unpacked.project) };
   }
   if (!Number.isSafeInteger(saved.revision) || saved.revision < 0) throw new Error('Saved project revision is invalid');
-  return { project: saved.project, revision: saved.revision };
+  return { project: migrateModelFacing(saved.project), revision: saved.revision };
 }
 
 /**
