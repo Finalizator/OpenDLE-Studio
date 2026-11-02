@@ -293,6 +293,8 @@ export function createTimesheetPanel(nodes, {
   function cueBlock(sheet, cue, lane) {
     const block = element('button', 'timesheet-cue');
     block.type = 'button';
+    // Cue identity for anything that has to point at one cue — the delete confirmation links here.
+    block.dataset.cueId = cue.id;
     block.style.left = `${cue.time * pixelsPerSecond}px`;
     block.style.borderColor = TIMESHEET_TRACK_COLORS[Math.max(0, sheet.tracks.findIndex(track => track.id === cue.trackId)) % TIMESHEET_TRACK_COLORS.length];
     block.classList.toggle('selected', cue.id === selectedCue);

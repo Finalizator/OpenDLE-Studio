@@ -1,4 +1,4 @@
-import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, updateAsset, ENTITY_TYPES } from '/shared/project.js';
+import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, updateAsset, standInFor, ENTITY_TYPES } from '/shared/project.js';
 import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
@@ -55,6 +55,8 @@ import { createSceneObjectEditor } from './scene-object-editor.js';
 import { contextMenu } from './context-menu.js';
 import { applyNodeFile, parseNodeFile, planNodeFileInstall, exportNodeFile, layoutContainer, nodeFileName } from '/shared/node-file.js';
 import { askObjectExport, downloadNodeFile } from './export-object.js';
+import { askDeleteObject } from './delete-object.js';
+import { entityReferences, stripEntityReferences, rewriteEntityReferences, referenceLabel } from '/shared/references.js';
 import { openAssetPicker, PICTURE_KINDS, MODEL_KINDS } from './asset-picker.js';
 import { captureModelPreview } from './model-thumbnail.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
@@ -1358,12 +1360,7 @@ function renderInspector() {
           // than a solid block that happens to be called a ramp.
           if (value === 'ramp' && !entity.ramp) normalizeRamp(entity, RAMP_DEFAULTS);
         }, `Type changed to ${value}`)));
-        parent.append(button('Delete object', () => {
-          if (count && !confirm(`Delete ${item.name} and its ${count} attached events? You can undo this change.`)) return;
-          edit(next => removeEntity(next, item.id), 'Object deleted');
-          selection = null;
-          render();
-        }, 'danger'));
+        parent.append(button('Delete object', () => deleteObjects([item.id]), 'danger'));
       }
     }
   }
@@ -4952,15 +4949,107 @@ function duplicateLayoutObject(id) {
   render();
 }
 
+/**
+ * Jumps to the rule a delete dialog pointed at, and marks it so it can be found on screen.
+ *
+ * A link is only useful if it lands somewhere: an event's sheet is opened by scope, and the card is
+ * scrolled to and flashed; a cue is opened on its timeline and selected, because the cue carries
+ * the time as well as the name.
+ */
+function revealReference(reference) {
+  if (reference.source === 'cue') {
+    showTab('timesheet');
+    const choose = document.querySelector('#timesheet-panel select[aria-label="Timesheet"]');
+    if (choose && reference.timesheetId && choose.value !== reference.timesheetId) {
+      choose.value = reference.timesheetId;
+      choose.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    requestAnimationFrame(() => {
+      const cue = document.querySelector(`[data-cue-id="${reference.id}"]`);
+      if (!cue) return;
+      cue.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      cue.click();
+      flashElement(cue);
+    });
+    return;
+  }
+  openScript(reference.sheetId ? `$sheet:${reference.sheetId}` : '$all');
+  requestAnimationFrame(() => {
+    const card = document.querySelector(`[data-event-id="${reference.id}"]`);
+    if (!card) return;
+    card.scrollIntoView({ block: 'center' });
+    flashElement(card);
+  });
+}
+
+/** A short highlight, so a link that lands on one card among hundreds is visible. */
+function flashElement(element) {
+  element.classList.remove('flash-located');
+  // Re-adding in a frame restarts the animation when the same rule is opened twice.
+  requestAnimationFrame(() => {
+    element.classList.add('flash-located');
+    setTimeout(() => element.classList.remove('flash-located'), 1400);
+  });
+}
+
+/**
+ * Deletes layout objects, asking first when a script would be left pointing at nothing.
+ *
+ * Everything the project says about the object is found before anything happens: rules that name
+ * it, cues that name it, and the object's own script. The author then either takes those with the
+ * object or keeps them and gets an empty stand-in in its place, which is the difference between
+ * "I am done with this" and "I am swapping this out".
+ */
+async function deleteObjects(ids) {
+  const targets = [].concat(ids).filter(id => project.map.entities.some(entity => entity.id === id));
+  if (!targets.length) return;
+  const player = targets.find(id => project.map.entities.find(entity => entity.id === id).type === 'player');
+  if (player) throw new Error('The layout must keep the player object');
+  const names = targets.map(id => project.map.entities.find(entity => entity.id === id).name);
+  const references = entityReferences(project, targets);
+  const ownedEvents = project.events.filter(event => targets.includes(event.ownerId)).length
+    + (project.timesheets || []).reduce((total, sheet) => total + (sheet.cues || []).filter(cue => targets.includes(cue.ownerId)).length, 0);
+  const sheetNames = new Map((project.eventSheets || []).map(sheet => [sheet.id, `${sheet.section} / ${sheet.name}`]));
+  const outside = references.filter(reference => !reference.owned);
+
+  if (!outside.length) {
+    const detail = [targets.length > 1 ? `${targets.length} objects` : names[0],
+      ownedEvents ? `${ownedEvents} attached event${ownedEvents === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ');
+    if (ownedEvents && !confirm(`Delete ${detail}? You can undo this change.`)) return;
+  } else {
+    const answer = await askDeleteObject({
+      names, references, ownedEvents,
+      labelFor: reference => referenceLabel(reference, { sheetName: sheetNames.get(reference.sheetId) || null }),
+    });
+    if (!answer) return;
+    if (answer.open) { revealReference(answer.open); return; }
+    if (answer.mode === 'replace') {
+      edit(next => {
+        const placeholders = new Map();
+        for (const id of targets) {
+          const original = next.map.entities.find(entity => entity.id === id);
+          if (!original) continue;
+          const stand = standInFor(original, newId('entity'));
+          next.map.entities.push(stand);
+          placeholders.set(id, stand.id);
+        }
+        rewriteEntityReferences(next, placeholders);
+      }, `Replaced ${targets.length > 1 ? `${targets.length} objects` : names[0]} with an empty object`);
+    } else {
+      edit(next => { stripEntityReferences(next, targets); }, 'Rules that named the object removed');
+    }
+  }
+  edit(next => { for (const id of targets) removeEntity(next, id); }, targets.length > 1 ? `${targets.length} objects deleted` : 'Object deleted');
+  if (selection?.kind === 'entity' && targets.includes(selection.id)) selection = null;
+  multiSelection = multiSelection.filter(id => !targets.includes(id));
+  render();
+}
+
 function deleteLayoutObject(id) {
   const entity = project.map.entities.find(item => item.id === id);
   if (!entity) throw new Error('That object no longer exists');
   if (entity.type === 'player') throw new Error('The layout must keep the player object');
-  const count = project.events.filter(event => event.ownerId === id).length;
-  if (count && !confirm(`Delete ${entity.name} and its ${count} attached events? You can undo this change.`)) return;
-  edit(next => removeEntity(next, id), 'Object deleted');
-  if (selection?.id === id) selection = null;
-  render();
+  void deleteObjects([id]);
 }
 
 /**
@@ -5065,15 +5154,8 @@ function deleteSelectedEntities(primaryId) {
   const targets = ids.includes(primaryId) && ids.length > 1 ? ids : [primaryId];
   const player = targets.find(id => project.map.entities.find(entity => entity.id === id)?.type === 'player');
   if (player) throw new Error('The layout must keep the player object');
-  const names = targets.map(id => project.map.entities.find(entity => entity.id === id)?.name || id);
-  const events = project.events.filter(event => targets.includes(event.ownerId)).length;
-  if (targets.length > 1 || events) {
-    const detail = [targets.length > 1 ? `${targets.length} objects` : names[0], events ? `${events} attached events` : ''].filter(Boolean).join(' and ');
-    if (!confirm(`Delete ${detail}? You can undo this change.`)) return;
-  }
-  edit(next => { for (const id of targets) removeEntity(next, id); }, targets.length > 1 ? `${targets.length} objects deleted` : 'Object deleted');
-  selection = null; multiSelection = []; lastPrimarySelection = null;
-  render();
+  lastPrimarySelection = null;
+  void deleteObjects(targets);
 }
 
 function setSectorLight(sector) {

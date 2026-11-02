@@ -240,7 +240,7 @@ test('physics/model tools and event validation retain owner semantics and reject
   assert.throws(() => validateProject(invalid), /requires an image/);
   assert.throws(() => applyTool(project, 'entity_set_physics', { id: 'player', body: 'dynamic' }), /built-in/);
   project.events = [{ id: 'reference', enabled: true, once: false, condition: { type: 'isTouching', entityId: 'player', otherId: 'pickup' }, actions: [{ type: 'showMessage', message: 'contact' }] }];
-  assert.throws(() => removeEntity(project, 'pickup'), /used by an event/);
+  assert.throws(() => removeEntity(project, 'pickup'), /used by reference/);
 });
 
 test('DeepSeek model drafts exclude base64 and restore exported source on replacement', async () => {

@@ -307,6 +307,28 @@ footer { grid-column: 1 / -1; grid-row: 3; display: flex; justify-content: space
 #status.error, #import-status.error { color: #ffb5ab; }
 dialog { color: var(--text); background: var(--panel); border: 1px solid #888; border-radius: 3px; padding: 16px; max-width: 95vw; max-height: 95dvh; overflow: auto; }
 dialog::backdrop { background: #111c; }
+/* A rule a delete link jumped to: one short highlight so it can be found on a busy sheet. */
+.flash-located { animation: flash-located 1.4s ease-out; }
+@keyframes flash-located {
+  0% { outline: 2px solid var(--accent); outline-offset: 2px; background: #5c5945; }
+  100% { outline: 2px solid transparent; outline-offset: 2px; background: transparent; }
+}
+
+/* The delete question: what names the object, links to it, and the two ways out. */
+.delete-dialog { width: min(560px, 94vw); }
+.delete-dialog h2 { margin: 0 0 8px; font-size: 15px; }
+.delete-dialog p { max-width: none; }
+.delete-references { margin: 8px 0 12px; padding-left: 18px; max-height: 34vh; overflow: auto; }
+.delete-references li { margin: 2px 0; }
+.delete-reference-link { background: transparent; border: none; padding: 1px 0; color: #cfd7ff; text-align: left; text-decoration: underline; }
+.delete-reference-link:hover { color: #ffffff; }
+.delete-choice { border: 1px solid var(--border); padding: 8px 10px; margin: 0 0 10px; display: grid; gap: 6px; }
+.delete-choice legend { padding: 0 4px; color: var(--muted); }
+.delete-choice label { display: grid; grid-template-columns: 16px 1fr; align-items: start; gap: 6px; }
+.delete-choice input { margin: 2px 0 0; }
+.delete-choice-note { grid-column: 2; color: var(--muted); font-size: 10px; }
+.delete-dialog .button-row { justify-content: flex-end; }
+
 /* The export question: one checkbox, the count of events, and two buttons. */
 .export-dialog { width: min(520px, 94vw); }
 .export-dialog h2 { margin: 0 0 10px; font-size: 15px; }

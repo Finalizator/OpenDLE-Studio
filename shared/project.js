@@ -1,5 +1,6 @@
 import { sectorGeometry } from './sectors.js';
 import { LIMITS } from './limits.js';
+import { entityReferences } from './references.js';
 import { decodeDataURI, readModel, validateModelDocument } from './gltf.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand } from './engine-script.js';
 import { validateEventStructure } from './events.js';
@@ -1222,13 +1223,47 @@ export function addRoom(project, { x, y, width, depth, color = '#597b9a' }) {
   })));
 }
 
+/**
+ * A blank object to take a deleted object's place, when its rules are being kept.
+ *
+ * Everything that made the object itself — artwork, model, script, variables, interaction area —
+ * is gone; what stays is what its rules need in order to still be true. Position and angle keep it
+ * where the author was working, and a **rigid body comes along** when the object had one, because a
+ * collision rule that named it needs a target that is still solid: without the body the rule would
+ * not even validate, and "keep the rules" would quietly mean "break them".
+ */
+export function standInFor(original, id) {
+  const stand = {
+    id, name: `${original?.name || 'Object'} (empty)`.slice(0, 100), type: 'decoration',
+    x: Number(original?.x) || 0, y: Number(original?.y) || 0, angle: Number(original?.angle) || 0,
+  };
+  if (original?.elevation) stand.elevation = original.elevation;
+  if (original?.physics) stand.physics = cloneProjectData(original.physics);
+  return stand;
+}
+
+/**
+ * Deletes one object.
+ *
+ * It refuses while anything still names it — an event, a timeline cue, a spawn template — because
+ * a project that names an object it does not have is invalid, and half the references (a cue, a
+ * spawn template, an `otherId`) used to slip past this check and leave exactly that behind. The
+ * editor asks first and clears the names itself (`stripEntityReferences` or
+ * `rewriteEntityReferences`), so reaching here with a reference is a bug rather than a user error.
+ */
 export function removeEntity(project, id) {
   const entity = project.map.entities.find(item => item.id === id);
   assert(entity && entity.type !== 'player', 'Select a non-player entity to delete');
-  const referenced = project.events.some(event => event.ownerId !== id &&
-    (eventConditions(event).some(condition => condition.entityId === id || condition.otherId === id) || event.actions.some(action => action.entityId === id)));
-  assert(!referenced, 'This entity is used by an event. Remove those references first.');
+  const references = entityReferences(project, id).filter(reference => reference.ownerId !== id || !reference.owned);
+  assert(!references.length,
+    `This entity is used by ${references.map(reference => reference.name).slice(0, 3).join(', ')}`
+    + `${references.length > 3 ? ` and ${references.length - 3} more` : ''}. Remove those references first.`);
   project.events = project.events.filter(event => event.ownerId !== id);
+  // A cue owned by the object is its script too, and a cue that outlived its object targets
+  // nothing — the same rule the events above follow.
+  for (const sheet of project.timesheets || []) {
+    sheet.cues = (sheet.cues || []).filter(cue => cue.ownerId !== id);
+  }
   project.map.entities = project.map.entities.filter(item => item.id !== id);
   // A group holds objects; when its last member is gone it is not a group any more.
   if (project.map.entityGroups) {

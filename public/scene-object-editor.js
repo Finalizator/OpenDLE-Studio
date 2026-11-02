@@ -3,9 +3,9 @@ import {
   sceneChildren, sceneDepths, sceneSubtree, sceneDescendants, sceneBounds, sceneOrigin,
   addSceneObject, removeSceneObjects, duplicateSceneObject, reparentSceneObject, placeSceneObject, moveSceneObject,
   renameSceneObject, MAX_SCENE_ENTITIES,
-  sceneArtwork, sceneAssetUse, setSceneObjectAsset, addSceneObjectFromAsset, addSceneObjectFromEntity, nestScene,
+  sceneArtwork, sceneAssetUse, setSceneObjectAsset, addSceneObjectFromAsset, addSceneObjectFromEntity, nestScene, sceneEntityId,
 } from '/shared/scenes.js';
-import { ENTITY_TYPES } from '/shared/project.js';
+import { ENTITY_TYPES, standInFor } from '/shared/project.js';
 import { assetField, openAssetPicker, MODEL_KINDS, PICTURE_KINDS } from './asset-picker.js';
 import { contextMenu } from './context-menu.js';
 import { JOINT_TYPES, JOINT_LABELS, AXIS_JOINTS, newJoint, jointAnchorBetween, jointsOf } from '/shared/joints.js';
@@ -15,6 +15,8 @@ import { NODE_FILE_EXTENSION, exportNodeFile, nodeFileName, parseNodeFile } from
 import { createScene3dView } from './scene-3d-view.js';
 import { nodeIcon } from './node-icons.js';
 import { askObjectExport, downloadNodeFile } from './export-object.js';
+import { askDeleteObject } from './delete-object.js';
+import { entityReferences, stripEntityReferences, rewriteEntityReferences, referenceLabel } from '/shared/references.js';
 
 // A scene object editor laid out like Godot's scene dock and inspector: the node tree
 // on the left with the node toolbar above it, the view in the middle, and the inspector
@@ -430,6 +432,59 @@ export function createSceneObjectEditor({ callbacks }) {
     if (created) select(created.id);
   }
 
+  /**
+   * Deletes a node, asking first when another node's rule still names it.
+   *
+   * A scene keeps its own rule list, so the same question the layout asks applies here: the rule
+   * that names this node either goes with it or keeps a blank stand-in to point at. Deleting the
+   * node alone used to leave the rule pointing at nothing, and a scene's rules are not checked
+   * against their own targets, so nothing complained until play time.
+   */
+  async function deleteNodeWithScript(current, id) {
+    const entity = selectedObject();
+    if (!entity) return;
+    const subtree = sceneSubtree(current, id);
+    const ids = new Set(subtree.map(node => node.id));
+    const references = entityReferences({ events: [] }, ids, { scene: current });
+    const outside = references.filter(reference => !reference.owned);
+    const owned = (current.events || []).filter(event => event.ownerId && ids.has(event.ownerId)).length;
+    const label = subtree.length > 1 ? `${entity.name} and ${subtree.length - 1} grouped node(s)` : entity.name;
+    if (!outside.length) {
+      if (owned && !confirm(`Delete ${label}? Its ${owned} event(s) go with it. You can undo this change.`)) return;
+      editScene(next => removeSceneObjects(next, id), 'Node deleted');
+      select(current.id);
+      return;
+    }
+    const answer = await askDeleteObject({
+      names: subtree.map(node => node.name), references, ownedEvents: owned,
+      labelFor: reference => referenceLabel(reference, { sheetName: 'Scene events' }),
+    });
+    if (!answer) return;
+    if (answer.open) {
+      // A scene's rules live in the scene editor itself, so the "link" is a selection: opening the
+      // event sheet would show the layout's rules, not these.
+      const owner = (current.events || []).find(event => event.id === answer.open.id)?.ownerId;
+      if (owner) select(owner);
+      callbacks.status(`"${answer.open.name}" is one of this scene's rules`);
+      return;
+    }
+    if (answer.mode === 'replace') {
+      editScene(next => {
+        const mapping = new Map();
+        for (const node of sceneSubtree(next, id)) {
+          const stand = { ...standInFor(node, sceneEntityId(next, `${node.id}_empty`)), parentId: node.parentId || null };
+          next.entities.push(stand);
+          mapping.set(node.id, stand.id);
+        }
+        rewriteEntityReferences({ events: [] }, mapping, { scene: next });
+      }, `Replaced ${entity.name} with an empty node`);
+    } else {
+      editScene(next => stripEntityReferences({ events: [] }, ids, { scene: next }), 'Rules that named the node removed');
+    }
+    editScene(next => removeSceneObjects(next, id), 'Node deleted');
+    select(current.id);
+  }
+
   function runTool(tool) {
     const current = scene();
     if (!current) return;
@@ -470,13 +525,7 @@ export function createSceneObjectEditor({ callbacks }) {
           if (isRoot) { callbacks.status('The scene root cannot be deleted; remove the scene instead', true); return; }
           const entity = selectedObject();
           if (!entity) return;
-          const subtree = sceneSubtree(current, id).length;
-          const message = subtree > 1
-            ? `Delete ${title(entity.name)} and ${subtree - 1} grouped node(s)?`
-            : `Delete ${title(entity.name)}?`;
-          if (!confirm(message)) return;
-          editScene(next => removeSceneObjects(next, id), 'Node deleted');
-          select(current.id);
+          void deleteNodeWithScript(current, id);
           return;
         }
         default: return;

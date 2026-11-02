@@ -819,6 +819,30 @@ been wired up, so a layout or a timeline answered with nothing and the tree look
 was merely unhandled: a layout row now offers *Edit*, *Rename…* and *Copy layout id*, a timeline
 row *Open*, *Rename…* and *Delete timeline*, and the object and scene rows keep the menus they had.
 
+**Deleting an object takes its names with it, or asks first.** An object is named by more than the
+action target the old guard knew about: a condition's `entityId`, a condition's `otherId`, a
+`spawnEntity` `templateId`, an event's `ownerId`, and a timeline cue's `ownerId` or cue action all
+count, in the layout *and* in a scene object's own rule list. Three of those used to slip past
+`removeEntity` and leave a project that no longer validated — or, for a scene, one that validated
+and quietly stopped working, because a scene's rules are not checked against their own targets.
+[`shared/references.js`](./shared/references.js) answers both questions in one place
+(`entityReferences`, `stripEntityReferences`, `rewriteEntityReferences`) so the guard, the dialog
+and the cleanup cannot drift apart.
+
+Deleting something that is still named opens a dialog that lists every rule and cue by name, each
+one a link that opens it — the event on its sheet with its card flashed, the cue selected on its
+timeline. The author then picks one of two answers:
+
+- **Delete them too** — the rules that named it go with it: an event or cue owned by the object is
+  its script and is removed whole, while one owned by something else loses only the conditions and
+  actions that named the object. A rule or cue this leaves with nothing to do is dropped; one that
+  was already idle is left alone.
+- **Keep them and put an empty object in its place** — a blank decoration takes over the name and
+  every reference is re-pointed at it (`standInFor` in [`shared/project.js`](./shared/project.js)),
+  so the script survives and can be re-pointed later. The stand-in keeps the position, the angle
+  and **the rigid body**, because a collision rule that named the object needs a target that is
+  still solid — without it "keep the rules" would quietly mean "break them".
+
 **A name in the tree renames where it is read**: `beginInlineRename` in
 [`public/app.js`](./public/app.js) swaps the row's text for an input (Enter accepts, Escape
 cancels, clicking away accepts), and layouts, scene objects and timelines all use it. A layout's

@@ -61,7 +61,7 @@ test('room generation and entity reference integrity', () => {
   delete project.events[1].ownerId;
   project.events[1].condition.entityId = 'pickup';
   project.events[1].actions[1].entityId = 'pickup';
-  assert.throws(() => removeEntity(project, 'pickup'), /used by an event/);
+  assert.throws(() => removeEntity(project, 'pickup'), /used by collect/, 'the message names the rule that uses it');
   assert.throws(() => removeEntity(project, 'player'), /non-player/);
   project.events = [];
   removeEntity(project, 'pickup');
@@ -143,12 +143,12 @@ test('deleting an authored object removes its scripts, but external conditions/a
   assert.equal(project.events.length, 1);
   const withReference = createProject();
   withReference.events[0].conditions = [{ type: 'nearEntity', entityId: 'pickup', distance: 30 }];
-  assert.throws(() => removeEntity(withReference, 'pickup'), /used by an event/);
+  assert.throws(() => removeEntity(withReference, 'pickup'), /used by/);
   assert.equal(withReference.events.length, 2);
   assert.equal(withReference.map.entities.length, 2);
   delete withReference.events[0].conditions;
   withReference.events[0].actions.push({ type: 'rotateEntity', entityId: 'pickup', angle: 30 });
-  assert.throws(() => removeEntity(withReference, 'pickup'), /used by an event/);
+  assert.throws(() => removeEntity(withReference, 'pickup'), /used by/);
 });
 test('player-owned position and angle actions synchronize camera and object state', () => {
   const project = createProject();

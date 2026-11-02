@@ -3,6 +3,7 @@
 // into a map as one thing. Instances are copies, exactly like the rest of the editor
 // data, so every placed object stays individually editable.
 import { MAX_JOINTS, pruneJoints, remapJoint } from './joints.js';
+import { stripEntityReferences } from './references.js';
 
 export const MAX_SCENES = 64;
 export const MAX_SCENE_ENTITIES = 128;
@@ -208,6 +209,10 @@ export function removeSceneObjects(scene, ids) {
   for (const id of [].concat(ids)) for (const entity of sceneSubtree(scene, id)) removing.add(entity.id);
   if (!removing.size) return { removed: 0, events: 0 };
   const events = (scene.events || []).filter(event => event.ownerId && removing.has(event.ownerId));
+  // A node another node's rule still names has to lose those names in the same pass: a scene is
+  // not validated against its own event targets, so a leftover reference would sit there silently
+  // and the rule would do nothing at play time.
+  stripEntityReferences({ events: [] }, removing, { scene });
   scene.events = (scene.events || []).filter(event => !event.ownerId || !removing.has(event.ownerId));
   scene.entities = scene.entities.filter(entity => !removing.has(entity.id));
   const joints = (scene.joints || []).length;
