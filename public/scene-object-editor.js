@@ -1,7 +1,7 @@
 import { entityColors } from './render.js';
 import {
   sceneChildren, sceneDepths, sceneSubtree, sceneDescendants, sceneBounds, sceneOrigin,
-  addSceneObject, removeSceneObjects, duplicateSceneObject, reparentSceneObject, moveSceneObject,
+  addSceneObject, removeSceneObjects, duplicateSceneObject, reparentSceneObject, placeSceneObject, moveSceneObject,
   renameSceneObject, MAX_SCENE_ENTITIES,
   sceneArtwork, sceneAssetUse, setSceneObjectAsset, addSceneObjectFromAsset, addSceneObjectFromEntity, nestScene,
 } from '/shared/scenes.js';
@@ -13,14 +13,14 @@ import { PANEL_LIMITS, curtainStrips, newPanel, panelPhysics } from '/shared/pan
 import { curtainShaderId } from '/shared/shaders.js';
 import { NODE_FILE_EXTENSION, exportNodeFile, nodeFileName, nodeFileText, parseNodeFile } from '/shared/node-file.js';
 import { createScene3dView } from './scene-3d-view.js';
+import { nodeIcon } from './node-icons.js';
 
 // A scene object editor laid out like Godot's scene dock and inspector: the node tree
-// on the left with the node toolbar under it, the view in the middle, and the
-// inspector on the right with folded property categories. The scene is the node tree
-// root, so the tree always starts on the scene itself, exactly as a Godot scene does.
+// on the left with the node toolbar above it, the view in the middle, and the inspector
+// on the right with folded property categories. The scene is the node tree root, so the
+// tree always starts on the scene itself, exactly as a Godot scene does.
 
 /** Icons are text glyphs, one per object type, so the tree needs no image assets. */
-const TYPE_GLYPHS = { scene: 'S', enemy: 'E', pickup: 'P', light: 'L', decoration: 'D', player: 'O' };
 const TYPE_LABELS = { scene: 'Scene', enemy: 'Enemy', pickup: 'Pickup', light: 'Light', decoration: 'Decoration', ramp: 'Ramp', zone: 'Zone' };
 const GRID = 32;
 /** Godot's inspector groups; a row is only shown when the object has that data. */
@@ -68,13 +68,8 @@ export function createSceneObjectEditor({ callbacks }) {
 
   /* ---------------------------------------------------------------- helpers */
 
-  function glyph(type) {
-    const span = document.createElement('span');
-    // Colour comes from the stylesheet per type: inline styles are refused by the CSP.
-    span.className = `node-glyph node-glyph-${type}`;
-    span.textContent = TYPE_GLYPHS[type] || 'N';
-    return span;
-  }
+  // Godot draws a pictogram per node type and leaves the type name to the tooltip.
+  const glyph = nodeIcon;
 
   function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -98,14 +93,33 @@ export function createSceneObjectEditor({ callbacks }) {
     callbacks.editScene(id, fn, message);
   }
 
-  function select(id) {
+  /**
+   * Selects a node.
+   *
+   * `rebuildTree: false` is what a pointer-down in the tree asks for: the rows are rebuilt from
+   * scratch on every render, so replacing them under a pressed button cancels the drag the press
+   * was starting — a node could only be dragged if it had already been selected first. Selecting
+   * in place keeps the highlight instant and the drag alive, and the rest of the editor (inspector,
+   * 3D view, canvas) still follows.
+   */
+  function select(id, { rebuildTree = true } = {}) {
     state.selection = id;
     if (id && id !== state.sceneId) revealInTree(id);
-    renderTree();
+    if (rebuildTree) renderTree();
+    else markSelectedRows();
     renderInspector();
     syncNodeFileButtons();
     view3d?.select(id);
     draw();
+  }
+
+  /** The selection classes of the rows already on screen, without replacing them. */
+  function markSelectedRows() {
+    for (const row of dom.tree?.querySelectorAll('.node-row') || []) {
+      const on = row.dataset.nodeId === state.selection;
+      row.classList.toggle('selected', on);
+      row.setAttribute('aria-selected', String(on));
+    }
   }
 
   /** Saving a `.node` file needs a node; importing only needs an open scene. */
@@ -202,10 +216,14 @@ export function createSceneObjectEditor({ callbacks }) {
     root.tabIndex = 0;
     root.append(el('span', null, 'node-twisty node-twisty-empty'), glyph('scene'));
     root.append(el('span', current.name, 'node-name'));
-    root.append(el('span', 'Scene', 'node-type'));
+    root.title = `${current.name} — Scene`;
     const count = current.entities.length;
     root.append(el('span', `${count} node${count === 1 ? '' : 's'}`, 'node-badge'));
-    root.addEventListener('mousedown', event => { event.stopPropagation(); select(current.id); });
+    root.addEventListener('mousedown', event => {
+      if (event.button !== 0) return;
+      event.stopPropagation();
+      select(current.id, { rebuildTree: false });
+    });
     root.addEventListener('dblclick', () => beginRename(current.id, root));
     root.addEventListener('contextmenu', menuEvent => {
       menuEvent.preventDefault();
@@ -255,14 +273,20 @@ export function createSceneObjectEditor({ callbacks }) {
           });
         }
         row.append(twisty, glyph(entity.type), el('span', entity.name, 'node-name'));
-        row.append(el('span', TYPE_LABELS[entity.type] || entity.type, 'node-type'));
+        const label = TYPE_LABELS[entity.type] || entity.type;
+        row.title = `${entity.name} — ${label}`;
+        // A node with a visual script wears the same mark Godot puts on nodes with a script.
         const events = (current.events || []).filter(event => event.ownerId === entity.id).length;
-        if (events) row.append(el('span', String(events), 'node-badge'), el('span', null, 'node-badge-score'));
+        if (events) {
+          const script = el('span', 'script', 'node-script');
+          script.title = `${events} attached event${events === 1 ? '' : 's'}`;
+          row.append(script);
+        }
         row.draggable = true;
         row.addEventListener('mousedown', event => {
           if (event.button !== 0) return;
           event.stopPropagation();
-          select(entity.id);
+          select(entity.id, { rebuildTree: false });
         });
         row.addEventListener('dragstart', dragEvent => {
           state.treeDrag = entity.id;
@@ -287,7 +311,7 @@ export function createSceneObjectEditor({ callbacks }) {
             { label: 'Move down', run: () => { select(entity.id); runTool('down'); } },
           ], { label: `${entity.name} actions` });
         });
-        makeTreeDropTarget(row, entity.id);
+        makeTreeDropTarget(row, entity);
         dom.tree.append(row);
         rows.push(row);
         if (!collapsed) walk(entity.id, depth + 1);
@@ -301,24 +325,55 @@ export function createSceneObjectEditor({ callbacks }) {
     }
   }
 
-  function makeTreeDropTarget(row, parentId) {
+  /**
+   * Where a dragged node lands, decided the way Godot's scene tree decides it.
+   *
+   * The middle of a row takes the node *into* that node (reparenting), the top and bottom edges put
+   * it *beside* that node among its siblings (reordering), and the edge shows as a line across the
+   * row so the two are never confused. The old drop target only ever reparented, so a tree could
+   * not be reordered by dragging at all — the arrows were the only way.
+   */
+  const DROP_EDGE = .3;
+  function makeTreeDropTarget(row, entity) {
+    const clear = () => {
+      row.classList.remove('drop-into', 'drop-before', 'drop-after');
+    };
     row.addEventListener('dragover', event => {
-      if (!state.treeDrag) return;
+      const moving = state.treeDrag;
+      if (!moving) return;
+      if (moving === entity?.id) { clear(); return; }
       event.preventDefault();
-      if (state.treeDrag === parentId) return;
-      row.classList.add('drop-into');
+      // The root has no siblings to sit between, so the whole row takes the node.
+      const rect = row.getBoundingClientRect();
+      const ratio = rect.height ? (event.clientY - rect.top) / rect.height : .5;
+      // The root has no siblings, so it only ever takes the node; every other row splits into a
+      // thin edge (beside it) and a wide middle (into it).
+      const zone = !entity ? 'into' : ratio < DROP_EDGE ? 'before' : ratio > 1 - DROP_EDGE ? 'after' : 'into';
+      row.classList.toggle('drop-into', zone === 'into');
+      row.classList.toggle('drop-before', zone === 'before');
+      row.classList.toggle('drop-after', zone === 'after');
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
     });
-    row.addEventListener('dragleave', () => row.classList.remove('drop-into'));
+    row.addEventListener('dragleave', clear);
     row.addEventListener('drop', event => {
       if (!state.treeDrag) return;
       event.preventDefault(); event.stopPropagation();
-      row.classList.remove('drop-into');
+      const before = row.classList.contains('drop-before'), after = row.classList.contains('drop-after');
+      clear();
       const moving = state.treeDrag;
       state.treeDrag = null;
-      if (!moving || moving === parentId) return;
+      if (!moving || moving === entity?.id) return;
       try {
-        editScene(next => reparentSceneObject(next, moving, parentId),
-          parentId ? 'Node grouped under its new parent' : 'Node moved to the scene root');
+        if (!entity) {
+          editScene(next => placeSceneObject(next, moving, null), 'Node moved to the scene root');
+          return;
+        }
+        if (!before && !after) {
+          editScene(next => placeSceneObject(next, moving, entity.id), 'Node grouped under its new parent');
+          return;
+        }
+        editScene(next => placeSceneObject(next, moving, entity.parentId || null,
+          before ? { before: entity.id } : { after: entity.id }), 'Node reordered');
       } catch (error) { callbacks.status(error.message, true); }
     });
   }
@@ -2138,8 +2193,26 @@ export function createSceneObjectEditor({ callbacks }) {
     dom.tree?.addEventListener('keydown', keyEvent => {
       const current = scene();
       if (!current) return;
+      // Godot's tree keys: F2 renames, Delete removes, Ctrl+D duplicates, Ctrl+Up/Down reorders
+      // and the arrows walk or fold the tree.
+      const modifier = keyEvent.ctrlKey || keyEvent.metaKey;
+      if (modifier && keyEvent.key.toLowerCase() === 'd' && state.selection) {
+        keyEvent.preventDefault(); runTool('duplicate'); return;
+      }
+      if (modifier && (keyEvent.key === 'ArrowUp' || keyEvent.key === 'ArrowDown') && state.selection) {
+        keyEvent.preventDefault(); runTool(keyEvent.key === 'ArrowUp' ? 'up' : 'down'); return;
+      }
       if (keyEvent.key === 'Delete' && state.selection) { keyEvent.preventDefault(); runTool('delete'); }
       else if (keyEvent.key === 'F2' && state.selection) { keyEvent.preventDefault(); runTool('rename'); }
+      else if (keyEvent.key === 'Home' || keyEvent.key === 'End') {
+        const ids = [...dom.tree.querySelectorAll('.node-row[data-node-id]')].map(row => row.dataset.nodeId);
+        const next = ids[keyEvent.key === 'Home' ? 0 : ids.length - 1];
+        if (next) {
+          keyEvent.preventDefault();
+          select(next);
+          dom.tree.querySelector(`.node-row[data-node-id="${next}"]`)?.scrollIntoView({ block: 'nearest' });
+        }
+      }
       else if (keyEvent.key === 'ArrowDown' || keyEvent.key === 'ArrowUp') {
         // Godot walks the visible tree with the arrow keys, so this does too.
         const ids = [current.id, ...[...dom.tree.querySelectorAll('.node-row[data-node-id]')]

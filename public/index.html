@@ -121,11 +121,6 @@
             <div class="dock-heading scene-dock-heading">Scene
               <button id="scene-dock-menu" class="dock-menu" aria-haspopup="menu" title="Node actions">Edit</button>
             </div>
-            <div class="scene-filter">
-              <input id="scene-filter" type="search" placeholder="Filter nodes" aria-label="Filter scene nodes">
-              <button id="scene-filter-clear" title="Clear the node filter" aria-label="Clear the node filter">x</button>
-            </div>
-            <div id="scene-tree" class="node-tree" role="tree" tabindex="0" aria-label="Scene node tree"></div>
             <div class="scene-toolbar" role="toolbar" aria-label="Scene node actions">
               <button data-scene-tool="add" title="Add child node">+</button>
               <button data-scene-tool="duplicate" title="Duplicate (Ctrl+D)">&#10697;</button>
@@ -136,6 +131,11 @@
               <button data-scene-tool="rename" title="Rename (F2)">abc</button>
               <button data-scene-tool="delete" class="danger" title="Delete (Del)">&#10005;</button>
             </div>
+            <div class="scene-filter">
+              <input id="scene-filter" type="search" placeholder="Filter nodes" aria-label="Filter scene nodes">
+              <button id="scene-filter-clear" title="Clear the node filter" aria-label="Clear the node filter">x</button>
+            </div>
+            <div id="scene-tree" class="node-tree" role="tree" tabindex="0" aria-label="Scene node tree"></div>
             <div id="scene-menu" class="dock-popup" role="menu" hidden></div>
           </aside>
           <div id="scene-splitter-dock" class="splitter splitter-vertical scene-splitter" role="separator"

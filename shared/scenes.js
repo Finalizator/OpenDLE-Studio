@@ -262,6 +262,29 @@ export function reparentSceneObject(scene, id, parentId) {
   return entity;
 }
 
+/**
+ * Drops an object where the pointer let go: under a parent, and among that parent's children
+ * immediately before or after one of its siblings.
+ *
+ * Godot's scene tree drops into the middle of a row to reparent and onto the top or bottom edge to
+ * reorder, and both are the same operation from the data's side — a parent plus a place in the
+ * order. Stored order *is* display order (`sceneChildren` keeps it), so giving the node a new place
+ * means moving its record to sit beside the reference's.
+ */
+export function placeSceneObject(scene, id, parentId, { before = null, after = null } = {}) {
+  const entity = reparentSceneObject(scene, id, parentId);
+  const reference = before || after;
+  if (!reference) return entity;
+  if (reference === id) return entity;
+  const at = scene.entities.findIndex(item => item.id === reference);
+  if (at < 0) throw new Error('That reference node no longer exists');
+  scene.entities = scene.entities.filter(item => item.id !== id);
+  const index = scene.entities.findIndex(item => item.id === reference);
+  if (index < 0) { scene.entities.push(entity); return entity; }
+  scene.entities.splice(after ? index + 1 : index, 0, entity);
+  return entity;
+}
+
 /** Reorders an object among its siblings; `direction` is -1 (up) or 1 (down). */
 export function moveSceneObject(scene, id, direction) {
   const entity = (scene?.entities || []).find(item => item.id === id);

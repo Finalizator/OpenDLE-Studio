@@ -2461,9 +2461,29 @@ the top keep several open, exactly like Godot's scene tabs.
 
 | dock | what it does |
 | --- | --- |
-| Scene (left) | filter box, the node tree, and the node toolbar: add child node, duplicate, move up/down, expand/collapse, rename, delete. Right-clicking a node opens the same actions, and dragging a node onto another one groups it (drag onto the scene root to ungroup). |
+| Scene (left) | the node toolbar (add child node, duplicate, move up/down, expand/collapse, rename, delete), the node filter, then the node tree — Godot's top-to-bottom order, not the toolbar under the list. Right-clicking a node opens the same actions. |
 | View (middle) | **2D** is a top-down blueprint: dot grid, scene bounds, parent links, facing ticks, interaction-area rings, drag to move (snapped), wheel to zoom, middle-drag or alt-drag to pan. **3D** draws the same nodes as boxes whose height is the node's collider or type height, so elevation, collider size and grouping are readable; dragging a node moves it along the ground plane and a right click that stays put opens the node menu. Both views draw the node's artwork — the sprite image at its real world size, or the model's preview picture — so assigning an asset visibly changes the view. |
 | Inspector (right) | the selected node's properties in folded categories — Transform, Node, Visual, Model, Physics, Light, Interaction area, Script — with Godot's right-aligned labels and per-row revert arrow, plus a property filter and an expand/collapse menu. Empty categories are not drawn. |
+
+**The tree is read the way Godot's is read.** Each row is a twisty, a pictogram for the node's
+type, and the name: [public/node-icons.js](./public/node-icons.js) draws them as line art in the
+type's colour (a picture for a sprite, a sun for a light, a skull for an enemy, a gem for a
+pickup, a wedge for a ramp, a dashed box for an interaction area), so the type is in the icon and
+the row's tooltip rather than spelled out beside every row. A node carrying visual-script events
+wears the small script mark the same way. The letters-in-a-box that used to stand there said
+nothing about the node.
+
+**Dropping a node lands where the line shows.** The middle of a row takes the node *into* that
+node, and the top and bottom edges put it *beside* that node among its siblings with a line drawn
+across the edge — Godot's split between reparenting and reordering. Both are one operation on the
+data (`placeSceneObject` in [`shared/scenes.js`](./shared/scenes.js): a parent plus a place in the
+order), so stored order and drawn order stay the same thing. Dragging onto the scene root still
+ungroups.
+
+A pointer-down in the tree selects **without rebuilding the rows**. They are re-rendered on every
+edit, and replacing the row under a pressed button cancels the drag that press was starting, which
+is why a node could only be dragged after it had been selected first. `select(id, { rebuildTree:
+false })` moves the highlight in place and lets the rest of the editor follow.
 
 **Every edge of the editor is draggable.** The tree and the inspector are columns with
 their own separators (`#scene-splitter-dock`, `#scene-splitter-inspector`), the same

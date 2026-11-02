@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   newScene, addSceneObject, removeSceneObjects, duplicateSceneObject, reparentSceneObject,
-  moveSceneObject, renameSceneObject, sceneChildren, sceneDepths, sceneSubtree, sceneDescendants,
+  moveSceneObject, placeSceneObject, renameSceneObject, sceneChildren, sceneDepths, sceneSubtree, sceneDescendants,
   instantiateScene, captureScene, MAX_SCENE_ENTITIES,
   sceneAssetUse, setSceneObjectAsset, addSceneObjectFromAsset, addSceneObjectFromEntity, nestScene, sceneArtwork,
 } from '../shared/scenes.js';
@@ -114,6 +114,37 @@ test('reordering moves a node only among its own siblings', () => {
   assert.equal(nested.entities.find(entity => entity.id === spark.id).parentId, imp.id);
 });
 
+// Godot's tree drops a node into the middle of a row to reparent it and onto a row's edge to put it
+// beside that node; both are "under this parent, at this place in the order" and both have to keep
+// the stored order, because that order is what the tree draws.
+test('a dragged node lands where the drop line showed', () => {
+  const scene = newScene('Drop');
+  const first = addSceneObject(scene, { name: 'First', x: 0, y: 0 });
+  const second = addSceneObject(scene, { name: 'Second', x: 0, y: 0 });
+  const third = addSceneObject(scene, { name: 'Third', x: 0, y: 0 });
+  const order = () => (sceneChildren(scene).get('') || []).map(entity => entity.name);
+  assert.deepEqual(order(), ['First', 'Second', 'Third']);
+  // The top edge of a row: the node goes just before it.
+  placeSceneObject(scene, third.id, null, { before: first.id });
+  assert.deepEqual(order(), ['Third', 'First', 'Second']);
+  // The bottom edge: just after it.
+  placeSceneObject(scene, third.id, null, { after: second.id });
+  assert.deepEqual(order(), ['First', 'Second', 'Third']);
+  // The middle of a row: into that node, and the scene root keeps its own order.
+  placeSceneObject(scene, first.id, second.id);
+  assert.deepEqual(order(), ['Second', 'Third']);
+  assert.deepEqual((sceneChildren(scene).get(second.id) || []).map(entity => entity.name), ['First']);
+  // Dropping back onto the root puts it at the top level again, without losing its place among
+  // the siblings it joins.
+  placeSceneObject(scene, first.id, null, { before: third.id });
+  assert.deepEqual(order(), ['Second', 'First', 'Third']);
+  // The rules that already guarded reparenting still apply to a placed node: no node goes under
+  // its own child, and a reference that is gone is refused rather than silently ignored.
+  placeSceneObject(scene, second.id, first.id);
+  assert.throws(() => placeSceneObject(scene, first.id, second.id), /under its own child/);
+  assert.throws(() => placeSceneObject(scene, third.id, null, { after: 'node_missing' }), /no longer exists/);
+});
+
 test('renaming rejects an empty name and trims the rest', () => {
   const { scene, crate } = groupedScene();
   assert.throws(() => renameSceneObject(scene, crate.id, '   '), /cannot be empty/);
@@ -210,15 +241,24 @@ test('the scene editor copies the Godot docking, not a plain form', () => {
   assert.match(editor, /property-category-name/);
   assert.match(editor, /property-revert/);
   assert.match(editor, /Reset \$\{label\}/);
-  // The tree shows the node type in parentheses, and the root is the scene itself.
-  assert.match(editor, /node-type/);
+  // Godot shows a pictogram per node type and leaves the name to the tooltip, rather than
+  // spelling the type out beside every row.
+  assert.match(editor, /nodeIcon/);
+  assert.doesNotMatch(editor, /node-type/);
+  assert.match(editor, /row\.title = `\$\{entity\.name\} — \$\{label\}`/);
   assert.match(editor, /const root = el\('div', null, 'node-row node-row-root'\)/);
-  // Dragging a node in the tree reparents it, dragging in the view moves its group.
+  // Dragging a node in the tree reparents it into a row's middle or reorders it at that row's
+  // edge, exactly as Godot's scene tree does; dragging in the view moves its whole group.
   assert.match(editor, /drop-into/);
-  assert.match(editor, /reparentSceneObject/);
+  assert.match(editor, /drop-before/);
+  assert.match(editor, /drop-after/);
+  assert.match(editor, /placeSceneObject/);
   assert.match(editor, /sceneSubtree\(next, drag\.id\)\.slice\(1\)/);
   // Arrow keys walk the tree, F2 renames, Delete removes.
-  for (const key of ['ArrowDown', 'ArrowRight', 'F2', 'Delete']) assert.match(editor, new RegExp(`'${key}'`), `${key} is handled`);
+  for (const key of ['ArrowDown', 'ArrowRight', 'F2', 'Delete', 'Home', 'End']) assert.match(editor, new RegExp(`'${key}'`), `${key} is handled`);
+  // Ctrl+D duplicates and Ctrl+Up/Down reorders, which is what the toolbar tooltips promise.
+  assert.match(editor, /keyEvent\.ctrlKey \|\| keyEvent\.metaKey/);
+  assert.match(editor, /keyEvent\.key\.toLowerCase\(\) === 'd'/);
   // Empty categories are not drawn, exactly like Godot's folded groups.
   assert.match(editor, /if \(!body\.childElementCount\) return;/);
 });

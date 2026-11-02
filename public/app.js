@@ -10,6 +10,7 @@ import { hasModelFacing } from '/shared/entity-visuals.js';
 import { addRamp, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { bundleModel } from '/shared/gltf.js';
 import { measureAssetForward } from '/shared/model-forward.js';
+import { nodeIcon } from './node-icons.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
 import { createSceneEditor } from './scene-editor.js';
 import {
@@ -4427,7 +4428,7 @@ function sceneObjectRow(scene) {
   const row = button('', () => openSceneObject(scene.id), 'scene-object-row');
   row.dataset.sceneId = scene.id;
   const parentCount = scene.entities.filter(entity => entity.parentId).length;
-  row.append(make('span', '◆', 'node-glyph node-glyph-scene'), make('span', scene.name, 'node-name tree-rename-target'),
+  row.append(nodeIcon('scene'), make('span', scene.name, 'node-name tree-rename-target'),
     make('span', `${scene.entities.length}`, 'scene-object-count'));
   row.addEventListener('dblclick', event => { event.preventDefault(); renameSceneInline(row, scene); });
   row.title = `${scene.name}: ${scene.entities.length} object${scene.entities.length === 1 ? '' : 's'}`

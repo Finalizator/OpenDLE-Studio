@@ -450,14 +450,18 @@ dialog::backdrop { background: #111c; }
 .scene-editor-body > .scene-splitter { grid-row: auto; }
 /* A dragged column may be narrower than the toolbar's text, so nothing inside it
    gets to hold the column open: every row shrinks and its inputs shrink with it. */
-.scene-dock, .scene-inspector { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 0; min-width: 0; background: var(--panel); }
+/* The scene dock reads top to bottom the way Godot's does: title, node toolbar, node filter, tree.
+   The tree is the row that takes the leftover height; the inspector keeps its own arrangement. */
+.scene-dock { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); }
+.scene-inspector { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.scene-dock, .scene-inspector { min-height: 0; min-width: 0; background: var(--panel); }
 .scene-editor-body > .scene-dock > *, .scene-editor-body > .scene-inspector > * { min-width: 0; }
 .scene-dock input, .scene-dock select, .scene-inspector input, .scene-inspector select { min-width: 0; }
 .scene-inspector { grid-template-rows: auto auto auto minmax(0, 1fr); }
 .scene-dock-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .dock-menu { background: transparent; border: 1px solid transparent; color: var(--muted); padding: 1px 6px; font-size: 10px; }
 .dock-menu:hover { background: #606060; color: var(--text); }
-.scene-filter { display: flex; gap: 3px; padding: 3px; border-bottom: 1px solid var(--border); }
+.scene-filter { display: flex; gap: 3px; padding: 3px; border-bottom: 1px solid var(--border); min-height: 0; }
 .scene-filter input { flex: 1; padding: 2px 4px; }
 .scene-filter button { padding: 0 5px; background: #3d3d3d; color: var(--muted); }
 .scene-filter button:hover { color: var(--text); }
@@ -478,27 +482,35 @@ dialog::backdrop { background: #111c; }
 .node-depth-8 { padding-left: 134px; }
 .node-row.selected { background: #6a6758; border-color: #8a8160; }
 .node-row.drop-into { border-color: var(--accent); background: #5c5945; }
+/* Dropping beside a row reorders; the line across the edge says so without moving anything. */
+.node-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.node-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .node-row.dragging { opacity: .55; }
 .node-row.dimmed { opacity: .45; }
 .node-row-root { font-weight: 600; }
 .node-twisty { width: 10px; text-align: center; color: var(--muted); font-size: 9px; flex: 0 0 auto; }
 .node-twisty-empty { visibility: hidden; }
-.node-glyph { width: 13px; height: 13px; border-radius: 3px; display: grid; place-items: center; font-size: 9px; font-weight: 700; color: #1b1c20; background: #6d6d6d; flex: 0 0 auto; }
-.node-glyph-scene { background: #d4c28e; }
-.node-glyph-enemy { background: #ed8b83; }
-.node-glyph-pickup { background: #efd17a; }
-.node-glyph-light { background: #a9beff; }
-.node-glyph-decoration { background: #a6a4bc; }
-.node-glyph-player { background: #70ddba; }
+/* Godot's pictogram per node type: line art in the type's colour, not a letter in a box. */
+.node-icon { width: 14px; height: 14px; display: grid; place-items: center; flex: 0 0 auto; color: #a6a4bc; }
+.node-icon svg { display: block; }
+.node-icon-scene { color: #d4c28e; }
+.node-icon-enemy { color: #ed8b83; }
+.node-icon-pickup { color: #efd17a; }
+.node-icon-light { color: #a9beff; }
+.node-icon-decoration { color: #a6a4bc; }
+.node-icon-player { color: #70ddba; }
+.node-icon-ramp { color: #e0a269; }
+.node-icon-zone { color: #8fc7e8; }
 .node-name { overflow: hidden; text-overflow: ellipsis; }
-.node-type { color: #9b9b9b; font-size: 10px; }
-.node-type::before { content: "("; }
-.node-type::after { content: ")"; }
+/* The script mark Godot puts on a node with a script attached; the count is its tooltip. */
+.node-script { width: 11px; height: 11px; border-radius: 2px; background: #b9b48f; color: #2a2a2a;
+  font: 700 7px/11px system-ui; text-align: center; margin-left: auto; }
 .node-badge { margin-left: auto; font-size: 9px; color: #1b1c20; background: #a9a9a9; border-radius: 7px; padding: 0 5px; }
+.node-row .node-script + .node-badge { margin-left: 0; }
 .node-badge-score { display: none; }
 .node-rename { width: 100%; padding: 0 3px; }
 .scene-empty { padding: 8px; font-size: 10px; }
-.scene-toolbar { display: flex; justify-content: space-between; gap: 1px; padding: 3px; border-top: 1px solid var(--border); background: #3d3d3d; }
+.scene-toolbar { display: flex; justify-content: space-between; gap: 1px; padding: 3px; border-bottom: 1px solid var(--border); background: #3d3d3d; }
 .scene-toolbar button { background: transparent; padding: 2px 6px; color: var(--muted); min-width: 22px; }
 .scene-toolbar button:hover { background: #5c5c5c; color: var(--text); }
 .scene-dock, .scene-inspector { position: relative; }
