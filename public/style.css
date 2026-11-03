@@ -41,6 +41,10 @@ label { display: block; color: var(--muted); }
 .profile-vertex { fill: #333; stroke: #d4c28e; stroke-width: 2; cursor: move; }
 .profile-vertex.selected { fill: #78c9e8; stroke: #fff; }
 .profile-number { fill: #eee; font-size: 10px; pointer-events: none; }
+.cut-tools { display: flex; flex-wrap: wrap; align-items: end; gap: 6px; padding: 6px; background: #3b3b3b; border-bottom: 1px solid var(--border); }
+.cut-tools label { max-width: 160px; }
+.cut-tools input { width: 100%; }
+.cut-help { flex-basis: 100%; color: var(--muted); }
 label input:not([type=checkbox]), label select { display: block; width: 100%; margin-top: 3px; }
 h1 { font-size: 15px; font-weight: 500; margin: 0; }
 h2 { font-size: 12px; font-weight: 500; }

@@ -20,6 +20,7 @@ function fixture(api = async () => {}) {
     project, projectId: 'first', revision: 1, projectTemporary: false, dirty: true, editVersion: 1,
     documentGeneration: 1, documentSession: { projectId: 'first', revision: 1, temporary: false },
     projectOperationBusy: false, draftSkipNoted: false, history: [], future: [], scenePose: null,
+    cutResets: 0, cutTool: { cancel() { context.cutResets++; } },
     selection: null, scriptScope: '$all', sceneObjectEditor: null, openSceneIds: [], activeSceneId: null,
     $: id => {
       if (!elements.has(id)) elements.set(id, { disabled: false, hidden: true, textContent: '' });
@@ -157,6 +158,7 @@ test('undo across a document replacement restores its original binding, not the 
   context.restoreHistory(imported);
   assert.equal(context.projectId, 'temporary');
   assert.equal(context.revision, 4);
+  assert.equal(context.cutResets, 3, 'replacement and each history restore clear pending geometry cuts');
 });
 
 test('editing a large project does not delete a recoverable draft from another document', () => {

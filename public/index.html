@@ -89,7 +89,7 @@
       <section id="map-panel" class="panel">
         <div class="layout-toolbar"><strong>Layout 1 / editor only — use Play world for gameplay</strong><button id="view-2d" aria-pressed="true">2D</button><button id="view-3d" aria-pressed="false">3D</button><button id="layout-events">Event sheet</button></div>
         <div class="map-tools">
-          <label>Tool <select id="tool"><option value="select">Select / move</option><option value="room">Draw room</option><option value="entity">Place entity</option><option value="path">Draw path</option></select></label>
+          <label>Tool <select id="tool"><option value="select">Select / move</option><option value="room">Draw room</option><option value="cut">Cut / stairs / tunnel</option><option value="entity">Place entity</option><option value="path">Draw path</option></select></label>
           <label>Entity <select id="entity-type"><option>enemy</option><option>pickup</option><option>light</option><option>decoration</option><option>ramp</option><option>zone</option><option>player</option></select></label>
           <label>Grid <select id="grid"><option>16</option><option>8</option><option>32</option><option>64</option></select></label>
           <button id="fit">Fit world</button>
@@ -99,6 +99,7 @@
           <label id="physics-field" hidden><input id="show-physics" type="checkbox">Show physics</label>
           <label id="surface-field" hidden>Sector handle<select id="sector-surface"><option value="floorHeight">Floor</option><option value="ceilingHeight">Ceiling</option></select></label>
         </div>
+        <div id="cut-tools" class="cut-tools" role="toolbar" aria-label="Geometry cutting" hidden></div>
         <div class="canvas-wrap" id="map-wrap"><canvas id="map" aria-label="Visual map editor" tabindex="0"></canvas><canvas id="scene-3d" aria-label="3D scene editor" tabindex="0" hidden></canvas><div id="scene-loading" role="status" hidden></div><div id="scene-hint" class="canvas-hint">Wheel: zoom · Right-drag: pan · Select wall, vertex or object to edit</div></div>
         <div class="map-footer"><span id="map-stats"></span><span id="coordinates">X 0 / Y 0</span></div>
         <details id="import-report" class="info" hidden><summary id="import-summary"></summary><pre id="import-warnings"></pre></details>

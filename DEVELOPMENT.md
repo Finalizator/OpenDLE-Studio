@@ -4070,6 +4070,52 @@ staying at 150.0 and z following the surface from 11.6 to 151.6. A note that thi
 sideways instead of climbing" was my own measurement rig passing degrees where the runtime works
 in radians, and is withdrawn.
 
+### Edge-snapping geometry cuts, stairs and tunnels
+
+Choose **Cut / stairs / tunnel** in the map tool selector. The same operation and preview
+work in both 2D and 3D:
+
+- **Cut sector:** click two boundary points to divide one sector along a straight line.
+  Cyan marks a snapped vertex; yellow marks an exact point on an edge. Endpoints must snap.
+  The chord must cross only that sector, without following a boundary or crossing a hole.
+- **Create stairs:** click the two ends of the stair width, then its destination. The depth
+  runs perpendicular to the width edge, including diagonal edges. **Stair steps** accepts
+  1–64 treads. The first snapped height and destination height supply the default start/end
+  floors; numerical overrides are available. Tread `i` has floor
+  `start + (end - start) * (i + 1) / steps`, so the last tread reaches the destination.
+- **Carve tunnel:** click the width endpoints, then the opposite end of the passage. Set
+  **Tunnel height** and optionally **End / tunnel floor**. Where a raised floor provides
+  enough headroom, the passage lowers its floor and retains the platform above as a solid
+  3D-floor slab. Open approaches retain their existing high ceilings rather than acquiring
+  artificial roofs; ceilings below the requested headroom are raised to fit.
+  Insufficient headroom or an intersecting existing solid slab fails without changing the map.
+
+The rectangular stair/tunnel footprint is clipped to existing mapped sectors; it does not
+create a new room outside them. In 2D, a shared floor edge prefers its higher ledge. In 3D,
+visible floor, ceiling and solid-platform edges snap within 12 screen pixels; hidden ceilings
+and geometry behind the visible surface are excluded. White marks ordinary grid snapping.
+The red wire preview shows tread heights or the tunnel volume before committing.
+**Backspace/Delete** removes a pending point; **Escape**, a right-click, or **Cancel cut**
+cancels. Right-drag navigation and toolbar adjustments preserve pending points. A completed
+operation is one undo entry. Document/level replacement, history restoration and other project
+edits clear stale points.
+
+These are real sector edits, not overlapping entity boxes. Shared linedefs are split and welded,
+including partial ledge attachments, holes and intersections with neighbouring sectors. Source
+materials, light, tags and linedef metadata are retained; sidedef texture offsets follow split
+wall lengths. Edited stair/tunnel portals are opened while unrelated blocking walls remain.
+Tunnel carving also preserves the world heights of objects on the retained platform.
+The outside retains its source sector ID; when a source is completely replaced, its first child
+retains that ID. Sector tags are copied, but explicit sector-ID visual actions are **not**
+automatically expanded to every child: select the intended new sectors when authoring those actions.
+This tool edits sector geometry, not model meshes or arbitrary free-form solids.
+
+MCP/DeepSeek uses `geometry_cut` with `mode: 'cut'|'stairs'|'tunnel'`,
+`a`/`b: {x,y,z?}`, and `end: {x,y,z?}` for stairs/tunnels. Optional fields are
+`steps` (1–64), `startHeight`, `endHeight`, and `clearance` (8–4096). MCP coordinates
+are exact authored coordinates; clients may use the shared snapping helpers to select edges.
+The operation validates its closed topology and project budgets before replacing the map.
+
 ### The 3D view: what is clickable, and where the camera starts
 
 Two things made the 3D view feel broken on a large map.

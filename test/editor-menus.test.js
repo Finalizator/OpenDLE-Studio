@@ -103,7 +103,7 @@ test('Draw path is a mode that Escape and a right click can leave', () => {
   // A right *click* leaves the mode in both views — the map when the pan turns out to be a click,
   // the 3D view through its callback — and looking around with the right button does not, because
   // a mapper places a waypoint, turns the view and expects to keep drawing.
-  assert.match(app, /if \(finished\.kind === 'pan' && finished\.button === 2 && !finished\.moved\) \{ finishPath\(\); mapCanvasMenu\(event\); return; \}/);
+  assert.match(app, /if \(finished\.kind === 'pan' && finished\.button === 2 && !finished\.moved\) \{\s*if \(geometryCutActive\(\)\) \{ cutTool\.cancel\(\); return; \}\s*finishPath\(\); mapCanvasMenu\(event\); return;\s*\}/);
   assert.doesNotMatch(app, /if \(event\.button === 2\) finishPath\(\);/);
   assert.match(memo('scene-editor.js'), /callbacks\.clearTool\?\.\(\)/);
   assert.match(memo('scene-editor.js'), /if \(!completed\.moved\) \{\s*callbacks\.clearTool\?\.\(\);/);

@@ -12,8 +12,10 @@ import { unsupportedSpecials, specialName } from '../shared/line-specials.js';
 import { unsupportedActorActions, usedActors } from '../shared/actor-runtime.js';
 import { addRamp, bindRampPath, normalizeRamp, syncRampModels } from '../shared/ramp.js';
 import { PROFILE_FIELDS, CORNER_STYLES, MAX_PROFILE_VERTICES } from '../shared/ramp-profile.js';
+import { cutLevelGeometry } from '../shared/geometry-cut.js';
 
 const coordinate = z.number().min(-65536).max(65536);
+const cutPointShape = z.object({ x: coordinate, y: coordinate, z: z.number().min(-32768).max(32767).optional() });
 const rampProfileShape = {
   profile: z.enum(['single', 'ridge', 'custom']).optional(),
   topWidth: z.number().min(0).max(4096).optional(), footWidth: z.number().min(0).max(4096).optional(),
@@ -41,6 +43,12 @@ function scriptSpecials(project) {
 }
 
 export const toolDefinitions = [
+  { name: 'geometry_cut', description: 'Modify actual sector geometry, transactionally. mode cut: a,b must lie exactly on opposite edges/vertices of one sector (no hole crossing). mode stairs/tunnel: a,b define the starting width edge and end defines perpendicular depth, clipped to mapped sectors. Stairs use steps 1..64, startHeight (default a.z) and endHeight (default end.z); each tread advances toward the end height. Tunnel uses endHeight/end.z as floor and clearance as headroom, preserving an overhead slab where the original raised floor is high enough. No overlapping boxes; linedefs are split/welded, textures and tags retained, edited brush portals opened. Existing solid 3D-floor intersections fail explicitly. All points use map coordinates.', shape: {
+    mode: z.enum(['cut', 'stairs', 'tunnel']), a: cutPointShape, b: cutPointShape, end: cutPointShape.optional(),
+    steps: z.number().int().min(1).max(64).optional(),
+    startHeight: z.number().min(-32768).max(32767).optional(), endHeight: z.number().min(-32768).max(32767).optional(),
+    clearance: z.number().min(8).max(4096).optional(),
+  } },
   { name: 'paths_set', description: 'Replace layout paths. Each path: id,name,closed,points[{id,x,y,z,curve,handleIn?,handleOut?,steps?}], optional mode (straight/smooth/bezier/sine), softness 0..1, steps 1..256 default face density, sine{amplitude,height,cycles,phase}. Point steps overrides density of its outgoing span. Handles are x/y/z offsets. Linked ramps rebuild automatically; references must remain valid.', shape: {
     paths: z.array(z.record(z.unknown())).max(128),
   } },
@@ -414,6 +422,7 @@ export function applyTool(project, name, args, context = {}) {
       } else next.events.push(event);
       break;
     }
+    case 'geometry_cut': cutLevelGeometry(next, input); break;
     case 'paths_set': next.paths = input.paths; break;
     case 'ramp_generate': {
       if (input.id) {

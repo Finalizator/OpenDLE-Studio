@@ -19,6 +19,7 @@ import {
   rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
 } from '/shared/gizmo-math.js';
 import { buildFaceArrows, buildGizmo, disposeHandles, handleKey, paintHandles } from './gizmo.js';
+import { geometryEdges } from '/shared/geometry-cut.js';
 
 const SELECT_COLOR = '#ffd34d', DROP_COLOR = '#7fe6ff';
 /** How long a gizmo arm should be on screen, as a share of the viewport's shorter side. */
@@ -52,6 +53,75 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   scene.add(handles, helperGroup, vertexGroup, pathGroup, faceGroup);
   const resources = [], keys = new Set(), listeners = [];
   const own = resource => { resources.push(resource); return resource; };
+  let cutEdges = null, cutSignature = '';
+  // At most 64 treads, with four horizontal edges and two risers each.
+  const cutPositions = new Float32Array(64 * 6 * 2 * 3);
+  const cutGeometry = own(new THREE.BufferGeometry());
+  cutGeometry.setAttribute('position', new THREE.BufferAttribute(cutPositions, 3).setUsage(THREE.DynamicDrawUsage));
+  cutGeometry.setDrawRange(0, 0);
+  const cutLines = new THREE.LineSegments(cutGeometry, own(new THREE.LineBasicMaterial({ color: '#ff655b', depthTest: false })));
+  cutLines.renderOrder = 215; cutLines.frustumCulled = false; cutLines.visible = false; scene.add(cutLines);
+  const cutMarker = new THREE.Mesh(own(new THREE.SphereGeometry(3, 10, 6)),
+    own(new THREE.MeshBasicMaterial({ color: '#78e8f4', depthTest: false })));
+  cutMarker.renderOrder = 216; cutMarker.visible = false; scene.add(cutMarker);
+
+  function cutPoint(event) {
+    const hit = worldHit(), rect = canvas.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left, pointerY = event.clientY - rect.top;
+    let vertex = null, edge = null;
+    const closestRay = new THREE.Vector3(), closestSegment = new THREE.Vector3();
+    const screenDistance = position => {
+      const screen = position.clone().project(camera);
+      if (screen.z < -1 || screen.z > 1) return Infinity;
+      return Math.hypot((screen.x + 1) * rect.width / 2 - pointerX, (1 - screen.y) * rect.height / 2 - pointerY);
+    };
+    const candidate = (point, boundary, kind, vertexId) => {
+      const position = new THREE.Vector3(point.x, point.z, point.y), distance = screenDistance(position);
+      if (distance > 12) return;
+      const depth = position.clone().sub(camera.position).dot(ray.ray.direction);
+      if (depth < 0 || hit && depth > hit.distance + Math.max(4, hit.distance * .015)) return;
+      const value = { x: point.x, y: point.y, z: point.z, wallId: boundary.wallId, sectorId: boundary.sectorId,
+        kind, ...(vertexId ? { vertexId } : {}), distance, depth };
+      if (kind === 'vertex') {
+        if (!vertex || distance < vertex.distance - .5 || Math.abs(distance - vertex.distance) <= .5 && depth < vertex.depth) vertex = value;
+      } else if (!edge || distance < edge.distance - .5 || Math.abs(distance - edge.distance) <= .5 && depth < edge.depth) edge = value;
+    };
+    cutEdges ||= geometryEdges(project, { ceilings: true });
+    for (const boundary of cutEdges) {
+      if (boundary.surface === 'ceiling' && !ceilingDrawn(boundary.sectorId)) continue;
+      candidate(boundary.a, boundary, 'vertex', boundary.a.id); candidate(boundary.b, boundary, 'vertex', boundary.b.id);
+      const a = new THREE.Vector3(boundary.a.x, boundary.a.z, boundary.a.y), b = new THREE.Vector3(boundary.b.x, boundary.b.z, boundary.b.y);
+      ray.ray.distanceSqToSegment(a, b, closestRay, closestSegment);
+      candidate({ x: closestSegment.x, y: closestSegment.z, z: closestSegment.y }, boundary, 'edge');
+    }
+    if (vertex || edge) return vertex || edge;
+    const point = hit?.point || planePoint(0);
+    if (!point) return null;
+    const x = snapValue(point.x, callbacks.grid()), y = snapValue(point.z, callbacks.grid());
+    return { x, y, z: point.y, kind: 'grid' };
+  }
+  function updateCutPreview() {
+    const preview = callbacks.tool() === 'cut' ? callbacks.cut?.preview() : null;
+    cutLines.visible = Boolean(preview?.segments.length); cutMarker.visible = Boolean(preview?.point);
+    const signature = JSON.stringify(preview);
+    if (signature !== cutSignature) {
+      cutSignature = signature;
+      let offset = 0;
+      for (const segment of preview?.segments || []) for (const point of segment) {
+        cutPositions[offset++] = point.x; cutPositions[offset++] = (point.z || 0) + .5; cutPositions[offset++] = point.y;
+      }
+      cutGeometry.attributes.position.needsUpdate = true;
+      cutGeometry.setDrawRange(0, offset / 3);
+    }
+    if (preview?.point) {
+      cutMarker.position.set(preview.point.x, preview.point.z || 0, preview.point.y);
+      cutMarker.scale.setScalar(Math.max(.5, camera.position.distanceTo(cutMarker.position) / Math.max(1, canvas.clientHeight)));
+      cutMarker.material.color.set(preview.point.kind === 'vertex' ? '#78e8f4' : preview.point.kind === 'edge' ? '#ffd34d' : '#ffffff');
+    }
+    canvas.dataset.cutSnap = preview?.point?.kind || '';
+    canvas.dataset.cutSnapAt = preview?.point ? `${preview.point.x},${preview.point.y},${preview.point.z}` : '';
+    canvas.dataset.cutSegments = String(preview?.segments.length || 0);
+  }
 
   const roomPositions = new Float32Array(15);
   const roomGeometry = own(new THREE.BufferGeometry());
@@ -300,6 +370,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    */
   function refreshProjectData() {
     sectors = sectorGeometry(project);
+    cutEdges = null;
     sectorById = new Map(sectors.map(sector => [sector.id, sector]));
     wallById = new Map(project.map.walls.map(wall => [wall.id, wall]));
     vertexById = new Map(project.map.vertices.map(vertex => [vertex.id, vertex]));
@@ -1235,6 +1306,11 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       return;
     }
     const tool = callbacks.tool();
+    if (tool === 'cut') {
+      const point = cutPoint(event);
+      if (!point) { callbacks.error('Aim at level geometry or the ground plane'); return; }
+      callbacks.cut?.click(point); return;
+    }
     if (tool !== 'select') {
       const hit = worldHit(), point = hit?.point || planePoint(0);
       if (!point) { callbacks.error('Aim at a floor or the ground plane to place geometry'); return; }
@@ -1301,6 +1377,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   });
   listen(canvas, 'pointermove', event => {
     lastPointer = { clientX: event.clientX, clientY: event.clientY };
+    if (!action && callbacks.tool() === 'cut') {
+      collectSceneHandles(); cast(event);
+      callbacks.cut?.hover(cutPoint(event)); return;
+    }
     if (!action) { if (selected) updateHover(event); return; }
     if (action.kind === 'fly') {
       if (!action.moved && Math.hypot(event.clientX - action.startX, event.clientY - action.startY) >= 3) action.moved = true;
@@ -1428,17 +1508,23 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     callbacks.liveFinish(completed.selection?.kind === 'pathPoint' ? '3D waypoint moved'
       : completed.formKey ? `3D ${completed.formKey} ${completed.formSize}` : `3D ${completed.mode || mode}`);
   });
-  function cancel() {
+  function cancel({ keepCut = false } = {}) {
     action = null; keys.clear(); roomOutline.visible = false;
     hideReadout(); canvas.dataset.surfaceHeight = '';
     callbacks.liveFinish(null, { revert: true });
+    if (!keepCut) callbacks.cut?.cancel();
     select(callbacks.selection());
   }
   listen(canvas, 'pointercancel', cancel);
   listen(canvas, 'lostpointercapture', () => { if (action) cancel(); });
-  listen(canvas, 'blur', cancel);
+  listen(canvas, 'blur', () => cancel({ keepCut: true }));
   listen(window, 'blur', cancel);
   listen(canvas, 'keydown', event => {
+    if (callbacks.tool() === 'cut' && ['Escape', 'Backspace', 'Delete'].includes(event.code)) {
+      event.preventDefault(); event.stopPropagation();
+      if (event.code === 'Escape') cancel(); else callbacks.cut?.back();
+      return;
+    }
     if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'].includes(event.code)) { event.preventDefault(); keys.add(event.code); }
     if (event.code === 'Escape') cancel();
     if (event.code === 'Delete' && selected) callbacks.remove({ ...selected });
@@ -1497,7 +1583,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         motionVector.copy(direction(forwardVector)).multiplyScalar(Number(keys.has('KeyW')) - Number(keys.has('KeyS')))
           .addScaledVector(rightVector, Number(keys.has('KeyD')) - Number(keys.has('KeyA')));
         motionVector.y += Number(keys.has('KeyE')) - Number(keys.has('KeyQ'));
-        if (motionVector.lengthSq()) camera.position.addScaledVector(motionVector.normalize(), speed * Math.min(dt, .05) * (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 4 : 1));
+        if (motionVector.lengthSq()) {
+          action.moved = true;
+          camera.position.addScaledVector(motionVector.normalize(), speed * Math.min(dt, .05) * (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 4 : 1));
+        }
       }
       camera.lookAt(lookTarget.copy(camera.position).add(direction(forwardVector)));
       // A gizmo arm is about an eighth of the viewport, whatever the distance: the world size that
@@ -1510,7 +1599,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       camera.updateMatrixWorld();
       projectionView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       frustum.setFromProjectionMatrix(projectionView);
-      handles.visible = Boolean(selected) && handles.children.length > 0 && frustum.containsPoint(handles.position);
+      handles.visible = callbacks.tool() !== 'cut' && Boolean(selected) && handles.children.length > 0 && frustum.containsPoint(handles.position);
       let markers = 0;
       for (const marker of vertexMarkers) {
         if (marker.userData.active) marker.visible = frustum.containsPoint(marker.position);
@@ -1528,6 +1617,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       }
       updatePlayerMarker(rect, frustum);
       updateFacingMarkers(rect, frustum);
+      updateCutPreview();
       updateCeilings(dt);
       view.render(state);
       canvas.dataset.camera = camera.position.toArray().map(value => value.toFixed(2)).join(',');

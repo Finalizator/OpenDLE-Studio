@@ -9,6 +9,8 @@ import { undoDepthFor, UNDO_DEEP_GAME_STEPS } from '/shared/undo-depth.js';
 import { hasModelFacing, noseAngle } from '/shared/entity-visuals.js';
 import { addRamp, bindRampPath, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { createRampProfileEditor } from './ramp-profile-editor.js';
+import { geometryEdges, snapGeometryPoint, cutLevelGeometry } from '/shared/geometry-cut.js';
+import { createGeometryCutTool } from './geometry-cut-tool.js';
 import { bundleModel } from '/shared/gltf.js';
 import { measureAssetForward } from '/shared/model-forward.js';
 import { nodeIcon } from './node-icons.js';
@@ -86,6 +88,15 @@ let documentGeneration = 0, documentSession = {}, projectOperationBusy = false;
 // The Project tree lists timelines, but the tree can be drawn before the timeline panel exists;
 // this flag is what stops the first render from reading a binding that has not been set yet.
 let timesheetPanelBuilt = false;
+let cutTool = null, cutEdges = [], cutEdgesProject = null;
+function geometryCutActive() { return toolMode() === 'cut'; }
+function cuttingEdges() {
+  if (cutEdgesProject !== project) { cutEdgesProject = project; cutEdges = geometryEdges(project); }
+  return cutEdges;
+}
+function mapCutPoint(point) {
+  return snapGeometryPoint(project, point, { tolerance: 12 / camera.zoom, grid: Number($('grid').value), edges: cuttingEdges(), sectors: mapSectors });
+}
 // Addons: the host that runs their scripts, the panel that manages them, and the tabs and menu
 // buttons they asked for. The host owns the scripts; the maps here own their DOM, so switching an
 // addon off can take its tab away again.
@@ -497,6 +508,8 @@ async function refreshScene() {
       live: (fn, message) => liveApply(fn, message),
       liveFinish: (message, options) => liveFinish(message, options),
       grid: () => Number($('grid').value), tool: () => toolMode(),
+      cut: { click: point => cutTool.click(point), hover: point => cutTool.hover(point),
+        preview: () => cutTool.preview(), cancel: () => cutTool.cancel(), back: () => cutTool.back() },
       surface: () => $('sector-surface').value,
       script: openScript,
       remove: value => {
@@ -506,7 +519,7 @@ async function refreshScene() {
         try { deleteSelectionObject(target); } catch (error) { status(error.message, true); }
       },
       pathPoint: point => addPathPoint(point),
-      clearTool: () => finishPath(),
+      clearTool: () => { cutTool?.cancel(); finishPath(); },
       place: point => {
         try {
           const position = snap(point), type = $('entity-type').value;
@@ -556,6 +569,7 @@ function setSceneMode(mode) {
 $('view-2d').addEventListener('click', () => setSceneMode('2d'));
 $('view-3d').addEventListener('click', () => setSceneMode('3d'));
 $('tool').addEventListener('change', () => {
+  cutTool?.cancel();
   if (toolMode() !== 'path') finishPath({ select: false });
   if (toolMode() === 'path') status('Draw path: click to place waypoints. Each one bends as the segment at its end allows; curve 0 is a corner.');
   // Choosing an object tool sets the transform the gizmo and the grips perform, so the two
@@ -575,7 +589,7 @@ $('tool').addEventListener('change', () => {
  * object is how a tool ends up silently doing nothing.
  */
 /** The tools that are always there, in the order a mapper reaches for them. */
-const BASE_TOOLS = [['select', 'Select / move'], ['room', 'Draw room'], ['entity', 'Place entity'], ['path', 'Draw path']];
+const BASE_TOOLS = [['select', 'Select / move'], ['room', 'Draw room'], ['cut', 'Cut / stairs / tunnel'], ['entity', 'Place entity'], ['path', 'Draw path']];
 let toolListSignature = '';
 function syncTransformModes() {
   const mode = $('transform-mode');
@@ -638,6 +652,7 @@ function historySnapshot() {
   return { project, session: documentSession };
 }
 function restoreHistory(snapshot) {
+  cutTool?.cancel();
   if (documentSession !== snapshot.session) {
     documentGeneration++;
     documentSession = snapshot.session;
@@ -727,6 +742,7 @@ function commit(next, message = 'Project updated', limit = historyLimit(next), n
     documentSession = {};
     bindProject({ projectId: null, revision: 0 });
   }
+  cutTool?.cancel();
   project = next;
   dirty = true;
   editVersion++;
@@ -1917,6 +1933,7 @@ document.addEventListener('keydown', event => {
 // have no safe removal yet, so they are left alone rather than half-deleted.
 document.addEventListener('keydown', event => {
   if (event.code !== 'Delete' && event.code !== 'Backspace') return;
+  if (geometryCutActive()) return;
   // The 3D view listens on its own canvas for this key, so it must not delete twice.
   if (sceneMode === '3d' || (runtime && $('play-dialog').open)) return;
   if (!['entity', 'path', 'pathPoint'].includes(selection?.kind)) return;
@@ -2900,6 +2917,26 @@ function snap(point) {
   const grid = Number($('grid').value);
   return { x: Math.round(point.x / grid) * grid, y: Math.round(point.y / grid) * grid };
 }
+cutTool = createGeometryCutTool($('cut-tools'), {
+  active: geometryCutActive,
+  status,
+  changed: () => { mapNeedsDraw = true; },
+  apply: options => {
+    let result;
+    edit(next => { result = cutLevelGeometry(next, options); },
+      options.mode === 'cut' ? 'Sector cut' : options.mode === 'stairs' ? 'Stair sectors created' : 'Tunnel carved');
+    selection = { kind: 'sector', id: result.sectorIds[0], surface: 'floorHeight' };
+    render();
+  },
+});
+document.addEventListener('keydown', event => {
+  if (!geometryCutActive() || $('map-panel').hidden || (runtime && $('play-dialog').open) ||
+    event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  if (event.code === 'Escape' || event.code === 'Backspace' || event.code === 'Delete') {
+    event.preventDefault();
+    if (event.code === 'Escape') cutTool.cancel(); else cutTool.back();
+  }
+});
 /**
  * Adds a waypoint to the path being drawn, starting one if none is open.
  *
@@ -3022,6 +3059,17 @@ function drawMap() {
     ctx.beginPath(); ctx.moveTo(wall.start.x, wall.start.y); ctx.lineTo(wall.end.x, wall.end.y); ctx.stroke();
   }
   ctx.setLineDash([]);
+  if (geometryCutActive()) {
+    const preview = cutTool.preview();
+    ctx.strokeStyle = '#ff655b'; ctx.lineWidth = 2 / camera.zoom; ctx.beginPath();
+    for (const [a, b] of preview.segments) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+    ctx.stroke();
+    if (preview.point) {
+      const point = preview.point;
+      ctx.strokeStyle = point.kind === 'vertex' ? '#78e8f4' : point.kind === 'edge' ? '#ffd34d' : '#ffffff';
+      ctx.beginPath(); ctx.arc(point.x, point.y, 6 / camera.zoom, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
   // Paths are drawn as the curve that will be walked, sampled by the same function the engine
   // uses, so a waypoint's curvature reads the same here as it will in play.
   for (const path of display.paths || []) {
@@ -3219,6 +3267,7 @@ canvas.addEventListener('pointerdown', guard(event => {
   if (!project) return;
   capturePointer(canvas, event.pointerId);
   const point = worldPoint(event);
+  if (geometryCutActive() && event.button === 0) { cutTool.click(mapCutPoint(point)); return; }
   // Ctrl+click builds a set: the objects can then be grouped, copied or moved together.
   if ((event.ctrlKey || event.metaKey) && event.button === 0) {
     const hit = hitTest(point);
@@ -3298,6 +3347,11 @@ canvas.addEventListener('pointermove', event => {
   const point = worldPoint(event);
   pointerMapPoint = point;
   $('coordinates').textContent = `X ${Math.round(point.x)} / Y ${Math.round(point.y)}`;
+  if (geometryCutActive() && drag?.kind !== 'pan') {
+    const snapped = mapCutPoint(point);
+    cutTool.hover(snapped);
+    $('coordinates').textContent = `${snapped.kind} snap / X ${snapped.x.toFixed(2)} / Y ${snapped.y.toFixed(2)} / Z ${snapped.z.toFixed(2)}`;
+  }
   if (!drag) return;
   if (drag.kind === 'pan') {
     if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 3) drag.moved = true;
@@ -3340,7 +3394,10 @@ canvas.addEventListener('pointerup', guard(event => {
   drag = null;
   mapNeedsDraw = true;
   if (!finished) return;
-  if (finished.kind === 'pan' && finished.button === 2 && !finished.moved) { finishPath(); mapCanvasMenu(event); return; }
+  if (finished.kind === 'pan' && finished.button === 2 && !finished.moved) {
+    if (geometryCutActive()) { cutTool.cancel(); return; }
+    finishPath(); mapCanvasMenu(event); return;
+  }
   if (finished.kind === 'room') {
     const { start, end } = finished;
     edit(next => addRoom(next, { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: Math.abs(start.x - end.x), depth: Math.abs(start.y - end.y) }), 'Room added. Select shared walls and disable collision to make openings.');
@@ -3394,7 +3451,7 @@ canvas.addEventListener('pointerup', guard(event => {
       : group.length > 1 ? `${group.length} objects moved` : 'Object moved');
   }
 }));
-canvas.addEventListener('pointercancel', () => { drag = null; mapNeedsDraw = true; });
+canvas.addEventListener('pointercancel', () => { drag = null; cutTool?.cancel(); mapNeedsDraw = true; });
 canvas.addEventListener('dblclick', event => {
   if (toolMode() !== 'select') return;
   const hit = hitTest(worldPoint(event));
@@ -3435,6 +3492,7 @@ async function reloadProject(initial = false) {
     const version = editVersion;
     const result = await api('/api/project');
     if (version !== editVersion) throw new Error('Project changed while loading. Your current edits were kept; retry loading when ready.');
+    cutTool?.cancel();
     project = validateProject(result.project);
     documentGeneration++; documentSession = {}; bindProject(result); dirty = false;
     let recovery;
@@ -4186,6 +4244,7 @@ $('projects').addEventListener('change', guard(() => withProjectOperation(async 
   const version = editVersion;
   const result = await api('/api/projects/open', { method: 'POST', body: JSON.stringify({ id }) });
   if (version !== editVersion) throw new Error('Project changed while opening another project. Your current edits were kept; retry opening when ready.');
+  cutTool?.cancel();
   project = validateProject(result.project);
   documentGeneration++; documentSession = {}; bindProject(result);
   dirty = false;
