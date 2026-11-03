@@ -10,6 +10,7 @@ import { readProjectArchive } from '../server/project-archive.js';
 import { createZipArchive } from '../server/export-build.js';
 import { ProjectStore } from '../server/store.js';
 import { createProject, validateProject } from '../shared/project.js';
+import { assembleGameLevels, selectGameLevel } from '../shared/game-levels.js';
 import { PNG } from 'pngjs';
 
 const dataUrl = (mime, bytes) => `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
@@ -180,6 +181,53 @@ test('a save keeps the payload files it already wrote and drops the ones nothing
   assert.equal(readdirSync(assets).some(name => name.endsWith('.png')), false);
 });
 
+test('repeated folder saves persist campaign and actor edits across reopen and restart', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json');
+  const store = new ProjectStore(file);
+  const project = assembleGameLevels([
+    { id: 'MAP01', project: { ...createProject(), assets: [] } }, { id: 'MAP02', project: { ...createProject(), assets: [] } },
+  ], 'MAP01', 'Saved campaign').project;
+  project.actors = [{ id: 'actor_probe', name: 'Probe', health: 60,
+    states: { labels: { Spawn: 0 }, frames: [{ kind: 'stop', label: 'Spawn' }] } }];
+  const first = store.adopt(project);
+  project.map.entities.find(entity => entity.id === 'pickup').x = 123;
+  project.variables.score = 17;
+  selectGameLevel(project, 'MAP02');
+  project.map.entities.find(entity => entity.id === 'pickup').x = 456;
+  project.actors[0].health = 99;
+  project.game.levels[0].name = 'Renamed level';
+  project.game.entry = 'MAP02';
+  validateProject(project);
+  const saved = store.update(project, first.revision);
+  const expected = structuredClone(saved.project);
+  for (const result of [store.open(saved.projectId), new ProjectStore(file).snapshot()]) {
+    assert.deepEqual(result.project, expected, 'all saved sections, not just the top-level map, come back');
+    assert.equal(result.project.game.active, 'MAP02');
+    selectGameLevel(result.project, 'MAP01');
+    assert.equal(result.project.variables.score, 17);
+    assert.equal(result.project.map.entities.find(entity => entity.id === 'pickup').x, 123);
+    selectGameLevel(result.project, 'MAP02');
+    assert.equal(result.project.map.entities.find(entity => entity.id === 'pickup').x, 456);
+  }
+});
+
+test('reimporting and promoting a temporary project replaces old campaign sections', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json'), store = new ProjectStore(file);
+  const campaign = () => assembleGameLevels([
+    { id: 'MAP01', project: { ...createProject(), assets: [] } }, { id: 'MAP02', project: { ...createProject(), assets: [] } },
+  ], 'MAP01', 'Same title').project;
+  store.adopt(campaign());
+  store.adopt(campaign(), undefined, { temporary: true });
+  const updated = campaign();
+  updated.game.levels[1].name = 'Latest import';
+  selectGameLevel(updated, 'MAP02');
+  updated.variables.score = 42;
+  const temporary = store.adopt(updated, undefined, { temporary: true });
+  assert.deepEqual(store.open('temporary').project, temporary.project, 'reimport refreshes the temporary section files');
+  const promoted = store.update(temporary.project, temporary.revision);
+  assert.deepEqual(new ProjectStore(file).snapshot().project, promoted.project, 'promotion refreshes an existing saved folder');
+});
+
 test('a studio project that was one JSON file moves into a folder and leaves no copy', t => {
   const directory = withDirectory(t);
   const path = join(directory, 'project.json');
@@ -310,4 +358,43 @@ test('export posts a project folder zip that opens again through the unpack rout
   // Without the session token neither route answers.
   assert.equal((await fetch(`${url}/api/export/project`)).status, 401);
   assert.equal((await fetch(`${url}/api/project/unpack`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes })).status, 401);
+});
+
+test('exporting current editor edits round-trips them without saving over the stored project', async t => {
+  const { createApp } = await import('../server/index.js');
+  const directory = withDirectory(t), store = new ProjectStore(join(directory, 'project.json'));
+  store.adopt(projectWithAssets());
+  const saved = store.snapshot(), edited = structuredClone(saved.project);
+  edited.map.entities.find(entity => entity.id === 'pickup').x = 321;
+  edited.variables.score = 57;
+  edited.assets[0].src = dataUrl('audio/wav', 'RIFFeditWAVE');
+  const { app } = createApp({ store, token: 'folder-test', projectsDir: directory });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const headers = { Authorization: 'Bearer folder-test', 'Content-Type': 'application/json' };
+  const exported = await fetch(`${url}/api/export/project`, { method: 'POST', headers,
+    body: JSON.stringify({ project: edited }) });
+  assert.equal(exported.status, 200, await exported.clone().text());
+  const bytes = Buffer.from(await exported.arrayBuffer());
+  const unpacked = await fetch(`${url}/api/project/unpack`, { method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/octet-stream' }, body: bytes });
+  assert.equal(unpacked.status, 200);
+  assert.deepEqual((await unpacked.json()).project, edited, 'Open project restores the exported edits and asset changes');
+  assert.deepEqual(store.snapshot(), saved, 'export does not change the stored project or its revision');
+  assert.deepEqual(new ProjectStore(join(directory, 'project.json')).snapshot(), saved);
+  assert.equal((await fetch(`${url}/api/export/project`, { method: 'POST', headers, body: '{}' })).status, 400,
+    'a missing editor snapshot must not silently export the older saved project');
+  assert.equal((await fetch(`${url}/api/export/project`, { method: 'POST', headers,
+    body: JSON.stringify({ project: { ...edited, map: null } }) })).status, 400);
+  assert.equal((await fetch(`${url}/api/export/project`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: edited }) })).status, 401);
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  for (const id of ['export', 'export-build']) {
+    const handler = source.slice(source.indexOf(`$('${id}').addEventListener`));
+    const request = handler.slice(0, handler.indexOf('if (!response.ok)'));
+    assert.match(request, /method: 'POST'/, `${id} sends a snapshot`);
+    assert.match(request, /JSON\.stringify\(\{ project \}\)/, `${id} sends the current editor project`);
+  }
 });

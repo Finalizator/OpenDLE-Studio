@@ -4108,8 +4108,10 @@ $('export').addEventListener('click', guard(async () => {
   $('export').disabled = true;
   status('Packing the project folder (document plus its asset files)...');
   try {
-    const { response } = await requestWithSession('/api/export/project', {}, token);
-    if (!response.ok) throw new Error(`Export failed (HTTP ${response.status})`);
+    const { response } = await requestWithSession('/api/export/project', {
+      method: 'POST', body: JSON.stringify({ project }),
+    }, token);
+    if (!response.ok) await readServiceResponse(response, '/api/export/project');
     const blob = await response.blob();
     const name = /filename="([^"]+)"/.exec(response.headers.get('content-disposition') || '')?.[1]
       || `${project.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.opendle.zip`;
@@ -4124,8 +4126,10 @@ $('export-build').addEventListener('click', guard(async () => {
   $('export-build').disabled = true;
   status('Packaging a standalone desktop build (engine files, project data and launch scripts)...');
   try {
-    const { response } = await requestWithSession(`/api/export/build?platform=${encodeURIComponent(navigator.platform.toLowerCase().includes('win') ? 'windows' : navigator.platform.toLowerCase().includes('mac') ? 'macos' : 'linux')}`, {}, token);
-    if (!response.ok) throw new Error(`Export failed (HTTP ${response.status})`);
+    const { response } = await requestWithSession(`/api/export/build?platform=${encodeURIComponent(navigator.platform.toLowerCase().includes('win') ? 'windows' : navigator.platform.toLowerCase().includes('mac') ? 'macos' : 'linux')}`, {
+      method: 'POST', body: JSON.stringify({ project }),
+    }, token);
+    if (!response.ok) await readServiceResponse(response, '/api/export/build');
     const blob = await response.blob();
     const name = /filename="([^"]+)"/.exec(response.headers.get('content-disposition') || '')?.[1] || 'opendle-game.zip';
     const url = URL.createObjectURL(blob);

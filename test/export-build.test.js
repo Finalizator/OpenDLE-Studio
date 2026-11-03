@@ -96,6 +96,35 @@ test('manifest records engine version, project title, export date and every bund
   assert.deepEqual(result.files, [...entries].map(([path, entry]) => ({ path, size: entry.data.length })));
 });
 
+test('HTTP build export packages current editor edits without changing the saved project', async t => {
+  const { createApp } = await import('../server/index.js');
+  const { ProjectStore } = await import('../server/store.js');
+  const store = new ProjectStore(), saved = store.snapshot(), edited = structuredClone(saved.project);
+  edited.title = 'Current editor build';
+  edited.variables.score = 81;
+  edited.map.entities.find(entity => entity.id === 'pickup').x = 321;
+  const { app } = createApp({ store, token: 'build-test' });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/export/build?platform=linux`;
+  const headers = { Authorization: 'Bearer build-test', 'Content-Type': 'application/json' };
+  const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ project: edited }) });
+  assert.equal(response.status, 200, await response.clone().text());
+  const files = await readZip(Buffer.from(await response.arrayBuffer()));
+  const bundled = JSON.parse(files.get('current-editor-build/data/project.json').data.toString('utf8'));
+  assert.deepEqual(bundled.project, edited);
+  assert.deepEqual(store.snapshot(), saved, 'export does not save or switch the project');
+  assert.equal((await fetch(url, { method: 'POST', headers, body: '{}' })).status, 400);
+  assert.equal((await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project: edited }) })).status, 401);
+  const legacy = await fetch(url, { headers });
+  assert.equal(legacy.status, 200);
+  const oldFiles = await readZip(Buffer.from(await legacy.arrayBuffer()));
+  assert.deepEqual(JSON.parse(oldFiles.get('my-first-opendle-world/data/project.json').data.toString('utf8')).project, saved.project,
+    'GET remains an export of the saved server snapshot');
+});
+
 test('build ships launch scripts, license, runtime modules and the exported project', async () => {
   const result = await build();
   const entries = await readZip(result.bytes);

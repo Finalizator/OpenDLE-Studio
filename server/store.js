@@ -144,13 +144,16 @@ export class ProjectStore {
     for (const payload of files) {
       written.add(payload.path);
       const target = join(directory, payload.path);
-      if (!existsSync(target)) writeFileSync(target, payload.bytes, { mode: 0o600 });
-    }
-    for (const name of readdirSync(assets)) {
-      if (!written.has(`${ASSET_DIRECTORY}/${name}`)) rmSync(join(assets, name), { force: true });
+      // Only hashed asset payloads are immutable; campaign and actor sections change on save.
+      if (payload.path.startsWith(`${ASSET_DIRECTORY}/`) && existsSync(target)) continue;
+      writeFileSync(`${target}.tmp`, payload.bytes, { mode: 0o600 });
+      renameSync(`${target}.tmp`, target);
     }
     writeFileSync(`${file}.tmp`, documentBytes(document), { mode: 0o600 });
     renameSync(`${file}.tmp`, file);
+    for (const name of readdirSync(assets)) {
+      if (!written.has(`${ASSET_DIRECTORY}/${name}`)) rmSync(join(assets, name), { force: true });
+    }
     // A studio project that used to be one JSON file (`projects/<id>.json`) leaves no copy of the
     // old 137 MiB format behind. A game's own seed file (`data/project.json` in a portable build)
     // is not ours to delete: it is the file the package shipped.

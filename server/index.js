@@ -6,6 +6,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ProjectStore, projectSlug } from './store.js';
+import { validateProject } from '../shared/project.js';
 import { LIMITS } from '../shared/limits.js';
 import { applyTool, toolDefinitions } from './tools.js';
 import { proposeChanges } from './deepseek.js';
@@ -205,14 +206,15 @@ export function createApp({
     cache?.clear();
     res.json({ cleared: Boolean(cache) });
   });
-  app.get('/api/export/build', async (req, res) => {
-    const project = store.snapshot().project;
+  const exportBuild = async (req, res) => {
+    const project = req.method === 'POST' ? validateProject(req.body?.project) : store.snapshot().project;
     const built = await createPortableBuild({ project, projectJson: JSON.stringify(project),
       version: readEngineVersion(versionFile), platform: req.query.platform || process.platform });
     res.set({ 'Content-Type': 'application/zip',
       'Content-Disposition': `attachment; filename="${built.filename}"`,
       'Content-Length': String(built.bytes.length) }).send(built.bytes);
-  });
+  };
+  app.route('/api/export/build').get(exportBuild).post(exportBuild);
   // Playtest logs: the browser posts batches of failures during play and the
   // service appends them to a file, so nothing is lost when the tab closes.
   let logBudget = { minute: Math.floor(Date.now() / 60000), used: 0 };
@@ -325,8 +327,9 @@ export function createApp({
     { temporary: req.body?.temporary === true })));
   // Export is the same folder the studio saves: the document plus the asset files it names, so a
   // model, a texture and a sound leave as themselves rather than as base64 in one JSON blob.
-  app.get('/api/export/project', (req, res) => {
-    const snapshot = store.snapshot();
+  const exportProject = (req, res) => {
+    const snapshot = req.method === 'POST'
+      ? { project: validateProject(req.body?.project), revision: 0 } : store.snapshot();
     const entries = projectZipEntries(snapshot.project, { revision: snapshot.revision });
     const bytes = createZipArchive(entries, new Date());
     const slug = projectSlug(snapshot.project.title || 'project');
@@ -334,7 +337,8 @@ export function createApp({
       'Content-Disposition': `attachment; filename="${slug}.opendle.zip"`,
       'Content-Length': String(bytes.length),
       'X-Opendle-Assets': String(entries.length - 1) }).send(bytes);
-  });
+  };
+  app.route('/api/export/project').get(exportProject).post(exportProject);
   // Opening an exported folder: the client posts the zip's bytes and gets the project back with
   // its assets inlined, which is the document the editor works with.
   app.post('/api/project/unpack', express.raw({ type: 'application/octet-stream', limit: archiveLimit }), async (req, res, next) => {

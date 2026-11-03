@@ -96,6 +96,9 @@ renderer, the audio player and a portable build all expect on the way in. A save
 payloads it has not written before (the hash is in the name) and removes the files nothing names,
 so replacing one texture does not double the folder. Identical bytes are one file, which is what a
 route's repeated sound or a texture used twice should be.
+Only hashed asset payloads are immutable: `actors.json` and `game.json` are refreshed on every
+save, using a temporary file and rename, just like the main document. Skipping those existing
+files would restore old campaign levels, active-map selection and actor definitions on reopen.
 
 The old one-file format is still read, so an installation that predates this is not stranded; the
 next save moves it into a folder and retires `projects/<id>.json`.
@@ -1377,9 +1380,13 @@ which is a document nothing can open, diff or repair; a zip of real files unzips
 person can look at, and `Open project` takes that zip back (`POST /api/project/unpack` unpacks it
 on the server, so there is one implementation of the format, not two).
 
-The routes are `GET /api/export/project` (zip, `X-Opendle-Assets` carries the file count) and
-`POST /api/project/unpack` (raw zip bytes → the project with its assets inlined). Both need the
-session token. `server/project-archive.js` reads the archive: bounded by entry count and expanded
+The editor uses `POST /api/export/project` and `POST /api/export/build` with `{ project }`,
+capturing the current editor state, including unsaved edits. Export does not change the stored
+project, its revision, or the editor's unsaved flag; use **Save** to make reload reopen those edits.
+The corresponding `GET` routes still export the last server-saved snapshot for API clients.
+`X-Opendle-Assets` carries the project zip's file count, and `POST /api/project/unpack` takes raw
+zip bytes and returns the project with its assets inlined. All routes need the session token.
+`server/project-archive.js` reads the archive: bounded by entry count and expanded
 size, normalised paths, and only `project.json` and the files it names are read. The packing side
 lives in `server/project-folder.js` and ships inside a portable build; the reading side needs
 `yauzl` and stays in the studio.
