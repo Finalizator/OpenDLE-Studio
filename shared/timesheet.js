@@ -311,9 +311,8 @@ export function startPathTween(state, { entityId, pathId, fromPoint = 0, toPoint
   easing = 'linear', faceDirection = true, yawOffset = 0, useModelFacing = true } = {}) {
   const tweens = state.pathTweens || (state.pathTweens = []);
   const keep = tweens.filter(tween => tween.entityId !== entityId);
-  // The route is a *shape*, and the object travels it from wherever it already stands: a cue that
-  // sends three decorations along the same curve moves all three, instead of stacking them on the
-  // route's first waypoint. The offset is taken now, before the first sample moves anything.
+  // Authored objects keep their displacement from the route's first waypoint across all legs.
+  // Spawned objects have no authored origin, so capture their position before the move.
   const entity = (state.entities || []).find(item => item.id === entityId);
   keep.push({ entityId, pathId, fromPoint, toPoint, seconds: Math.max(.05, Number(seconds) || 2),
     easing: PATH_EASINGS.includes(easing) ? easing : 'linear', faceDirection: faceDirection !== false, elapsed: 0,
@@ -382,28 +381,29 @@ export function advancePathTweens(project, state, dt) {
     const distance = startDistance + (endDistance - startDistance) * progress;
     const where = pointAlong(path, distance / total);
     if (!where) { finished.push(tween.entityId); continue; }
-    // Where the route's `from` waypoint is, so the object keeps its own starting position and
-    // only the route's shape moves it.
-    if (!tween.anchor) {
-      const start = pointAlong(path, startDistance / total);
-      tween.anchor = start ? { x: start.x, y: start.y, z: start.z || 0 } : { x: 0, y: 0, z: 0 };
-    }
     // The object's own displacement from the route is taken from where it was *authored*, once,
     // not from wherever the previous trip left it: reading the live position made a looping
     // timeline carry an object off the end of its road (100, 200, 300 for a route ending at 100)
     // and doubled the distance of a trip restarted halfway.
+    const authored = (project.map.entities || []).find(item => item.id === tween.entityId);
     if (!tween.originFrom) {
-      const authored = (project.map.entities || []).find(item => item.id === tween.entityId);
       tween.originFrom = authored
         ? { x: authored.x, y: authored.y, z: authored.z || 0 }
         // An object the level made during play has no authored position, so it keeps the one it
         // had when the trip started.
         : { ...(tween.origin || { x: 0, y: 0, z: 0 }) };
     }
+    // Every authored leg uses the same route origin, not its `from` waypoint. Per-leg anchors
+    // sent a second cue back to spawn; ignore those anchors in older saved tweens too.
+    let anchor = authored ? path.points[0] : tween.anchor;
+    if (!anchor) {
+      const start = pointAlong(path, startDistance / total);
+      tween.anchor = anchor = { x: start.x, y: start.y, z: start.z || 0 };
+    }
     const origin = tween.originFrom;
-    entity.x = origin.x + (where.x - tween.anchor.x);
-    entity.y = origin.y + (where.y - tween.anchor.y);
-    entity.z = origin.z + ((where.z || 0) - tween.anchor.z);
+    entity.x = origin.x + (where.x - anchor.x);
+    entity.y = origin.y + (where.y - anchor.y);
+    entity.z = origin.z + ((where.z || 0) - (anchor.z || 0));
     if (tween.startHeading === null || tween.startHeading === undefined) tween.startHeading = where.angle;
     if (tween.faceDirection) entity.angle = tweenAngle(entity, tween, where.angle);
     moved++;

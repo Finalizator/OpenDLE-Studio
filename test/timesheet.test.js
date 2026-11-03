@@ -377,6 +377,103 @@ test('a repeated trip ends on the route, and objects keep their own displacement
   assert.ok(Math.abs(ended.find(entity => entity.id === 'passenger').x - 1000) < 2, 'and travels the same length of road');
 });
 
+test('successive waypoint moves share one route origin, including reverse legs and saved tweens', async () => {
+  const { captureGameSave, restoreGameSave, gameSaveIdentity } = await import('../shared/save-game.js');
+  const project = createProject();
+  project.events = [];
+  project.paths = [{ id: 'road', name: 'Road', closed: false, points: [
+    { id: 'p0', x: 100, y: 200, z: 40, curve: 0 },
+    { id: 'p1', x: 1100, y: 200, z: 140, curve: 0 },
+    { id: 'p2', x: 1100, y: 1200, z: 240, curve: 0 },
+  ] }];
+  Object.assign(project.map.entities.find(entity => entity.id === 'pickup'), { x: 110, y: 220, z: 70 });
+  validateProject(project);
+  const identity = await gameSaveIdentity(project);
+  let state = createRuntime(project);
+  const position = () => {
+    const { x, y, z } = state.entities.find(entity => entity.id === 'pickup');
+    return [x, y, z];
+  };
+  const near = (expected, label) => position().forEach((value, axis) =>
+    assert.ok(Math.abs(value - expected[axis]) < 1e-8, `${label}, axis ${axis}: ${value} != ${expected[axis]}`));
+  const points = [[110, 220, 70], [1110, 220, 170], [1110, 1220, 270]];
+  for (const [fromPoint, toPoint] of [[0, 1], [1, 2], [2, 1], [1, 0], [0, 2]]) {
+    startPathTween(state, { entityId: 'pickup', pathId: 'road', fromPoint, toPoint, seconds: 1 });
+    advancePathTweens(project, state, 0);
+    near(points[fromPoint], `starts at waypoint ${fromPoint + 1} without rebasing to spawn`);
+    advancePathTweens(project, state, .5);
+    const beforeSave = position();
+    // Older saves cached a per-leg anchor. Authored objects must no longer use it as the route origin.
+    state.pathTweens[0].anchor = { ...project.paths[0].points[fromPoint] };
+    const save = JSON.parse(JSON.stringify(captureGameSave(project, state, identity)));
+    state = restoreGameSave(project, save, identity).runtime;
+    advancePathTweens(project, state, 0);
+    near(beforeSave, 'a saved move resumes at the same route position');
+    advancePathTweens(project, state, .5);
+    near(points[toPoint], `ends at waypoint ${toPoint + 1}, preserving the authored offset`);
+  }
+});
+
+test('timesheet cue handoffs keep an object on its curved route across repeated passes', () => {
+  const project = createProject();
+  project.events = [];
+  project.paths = [{ id: 'road', name: 'Road', closed: false, points: [
+    { id: 'p0', x: -1264, y: 1104, z: 16, curve: 1 },
+    { id: 'p1', x: -1600, y: 912, z: 16, curve: 1 },
+    { id: 'p2', x: -1600, y: -304, z: 16, curve: .55 },
+  ] }];
+  Object.assign(project.map.entities.find(entity => entity.id === 'pickup'), { x: -1264, y: 1088, z: 0 });
+  project.timesheets = [{ id: 'drive', name: 'Drive', duration: 3, loop: true, tracks: [createTrack(0)], cues: [
+    { id: 'second', name: 'Second leg', trackId: 'track_1', time: 1.25, actions: [
+      { type: 'followPath', entityId: 'pickup', pathId: 'road', fromPoint: 1, toPoint: 2, seconds: 1, easing: 'linear', faceDirection: 'yes' },
+    ] },
+    { id: 'first', name: 'First leg', trackId: 'track_1', time: 0, actions: [
+      { type: 'followPath', entityId: 'pickup', pathId: 'road', fromPoint: 0, toPoint: 1, seconds: 1, easing: 'linear', faceDirection: 'yes' },
+    ] },
+  ] }];
+  validateProject(project);
+  const state = createRuntime(project);
+  startTimesheetRun(project, state, 'drive');
+  let previous, handoffs = 0, ends = 0;
+  for (let frame = 0; frame < 360; frame++) {
+    tick(project, state, .025);
+    const entity = state.entities.find(item => item.id === 'pickup'), time = state.timesheets.get('drive').time;
+    if (time > 1.1 && time < 1.25) {
+      assert.ok(Math.abs(entity.x + 1600) < 1e-8 && Math.abs(entity.y - 896) < 1e-8, 'holds at waypoint 2 before the next cue');
+    }
+    if (time >= 1.25 && time < 1.35 && previous) {
+      assert.ok(Math.hypot(entity.x - previous.x, entity.y - previous.y) < 50, 'no teleport at the next cue');
+      handoffs++;
+    }
+    if (time > 2.4 && time < 2.5) {
+      assert.ok(Math.abs(entity.x + 1600) < 1e-8 && Math.abs(entity.y + 320) < 1e-8, 'second leg ends at waypoint 3 with the original offset');
+      ends++;
+    }
+    previous = { x: entity.x, y: entity.y };
+  }
+  assert.ok(handoffs >= 9 && ends >= 9, 'checked the handoff and endpoint across three timeline passes');
+});
+
+test('a spawned object still follows successive route legs from its live starting position', () => {
+  const project = createProject();
+  project.events = [];
+  project.paths = [{ id: 'road', name: 'Road', closed: false, points: [
+    { id: 'p0', x: 100, y: 200, z: 40, curve: 0 },
+    { id: 'p1', x: 1100, y: 200, z: 140, curve: 0 },
+    { id: 'p2', x: 1100, y: 1200, z: 240, curve: 0 },
+  ] }];
+  const state = createRuntime(project), spawned = { id: 'spawned', type: 'decoration', x: 0, y: 10, z: 20 };
+  state.entities.push(spawned);
+  for (const [fromPoint, toPoint, expected] of [[0, 1, [1000, 10, 120]], [1, 2, [1000, 1010, 220]]]) {
+    const before = [spawned.x, spawned.y, spawned.z];
+    startPathTween(state, { entityId: spawned.id, pathId: 'road', fromPoint, toPoint, seconds: 1 });
+    advancePathTweens(project, state, 0);
+    assert.deepEqual([spawned.x, spawned.y, spawned.z], before, 'a new leg does not teleport a spawned object');
+    advancePathTweens(project, state, 1);
+    assert.deepEqual([spawned.x, spawned.y, spawned.z], expected);
+  }
+});
+
 test('a tweened sprite is turned onto the route, because its forward is the engine\'s', () => {
   const project = createProject();
   project.events = [];

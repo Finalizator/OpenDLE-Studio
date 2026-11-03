@@ -803,6 +803,10 @@ displacement is read once, from the authored position — reading the live one m
 carry a truck past the end of its road for ever (100, 200, 300 … for a route ending at 100) and
 doubled the distance of a trip restarted halfway. It also means a `followPath` cue always ends on the
 waypoint it names, however many times it has run.
+All waypoint legs use the **first waypoint** as that reference, preserving the object's authored
+offset from the route. A cue from Waypoint 2 to 3 therefore continues where 1 to 2 ended, rather than
+rebasing the second leg onto the object's spawn position. Reverse legs and saved mid-leg moves use
+the same reference.
 
 A rigid body outranks the route: Rapier writes the object's position back from its collider every
 frame, so an object with one is pinned where the physics says, and Properties says so when both are
