@@ -2122,7 +2122,7 @@ function commandLists(ownerId) {
 const timesheetPanel = createTimesheetPanel({ root: $('timesheet-root') }, {
   project: () => project,
   edit,
-  status: message => status(message, true),
+  status: (message, error = false) => status(message, error),
   get labels() { return actionLabelsFor(); },
   // A cue's own target object is the context its actions are built in, so `$self` and the
   // object lists mean the same thing they mean inside that object's events.
@@ -3094,6 +3094,7 @@ function pasteEntities() {
   return true;
 }
 document.addEventListener('keydown', event => {
+  if (event.defaultPrevented) return;
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
   const target = event.target;
   // Typing in a field is the browser's clipboard and undo, not the editor's.
@@ -3109,6 +3110,10 @@ document.addEventListener('keydown', event => {
     return;
   }
   if (event.shiftKey || event.code !== 'KeyC' && event.code !== 'KeyV') return;
+  if (!$('timesheet-panel').hidden) {
+    timesheetPanel.handleClipboardKey(event);
+    return;
+  }
   if (event.code === 'KeyC') { if (copySelectedEntities()) event.preventDefault(); return; }
   if (pasteEntities()) event.preventDefault();
 });

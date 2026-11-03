@@ -31,6 +31,9 @@ export function createTimesheetPanel(nodes, {
 } = {}) {
   if (!nodes?.root) throw new Error('The timesheet panel needs a root node');
   let selectedId = null, selectedCue = null, pixelsPerSecond = 60, playhead = 0;
+  let cueClipboard = null;
+  nodes.root.tabIndex = 0;
+  nodes.root.addEventListener('keydown', handleClipboardKey);
 
   const timesheets = () => project()?.timesheets || [];
   const current = () => timesheets().find(sheet => sheet.id === selectedId) || timesheets()[0] || null;
@@ -87,13 +90,66 @@ export function createTimesheetPanel(nodes, {
     }, 'Cue deleted');
   }
 
-  function duplicateCue(sheet, cue) {
-    const copy = { ...structuredClone(cue), id: newId('cue'), name: `${cue.name} copy` };
-    selectedCue = copy.id;
-    change(next => {
-      const target = next.timesheets.find(item => item.id === sheet.id);
-      target.cues = [...target.cues, copy];
-    }, 'Cue duplicated');
+  function copyCue(sheet, cue) {
+    cueClipboard = { sheetId: sheet.id, cue: structuredClone(cue), afterIds: [cue.id] };
+    status(`Copied cue "${cue.name}"`);
+    render();
+    nodes.root.focus({ preventScroll: true });
+  }
+
+  function insertCue(sheet, cue, afterId, message) {
+    let copy;
+    try {
+      if (sheet.cues.length >= TIMESHEET_LIMITS.cues) throw new Error(`A timesheet can have at most ${TIMESHEET_LIMITS.cues} cues`);
+      const after = sheet.cues.find(item => item.id === afterId);
+      // Cues are instants, not clips: the next tenth-second tick is immediately after one.
+      const time = Math.round(((after || cue).time + .1) * 1e9) / 1e9;
+      if (time > TIMESHEET_LIMITS.duration[1]) throw new Error('No time remains after this cue. Move it earlier before pasting.');
+      copy = { ...structuredClone(cue), id: newId('cue'),
+        name: `${cue.name.slice(0, TIMESHEET_LIMITS.name - 5)} copy`, time,
+        trackId: sheet.tracks.some(track => track.id === (after || cue).trackId) ? (after || cue).trackId : sheet.tracks[0].id };
+      edit(next => {
+        const target = next.timesheets.find(item => item.id === sheet.id);
+        const index = target.cues.findIndex(item => item.id === afterId);
+        target.cues.splice(index < 0 ? target.cues.length : index + 1, 0, copy);
+        target.duration = Math.max(target.duration, time);
+      }, message);
+    } catch (error) {
+      status(`Cue could not be pasted: ${error.message}`, true);
+      return null;
+    }
+    selectedCue = copy.id; playhead = copy.time;
+    render();
+    nodes.root.focus({ preventScroll: true });
+    nodes.root.querySelector('.timesheet-cue.selected')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return copy.id;
+  }
+
+  function pasteCue(sheet) {
+    if (!cueClipboard) return;
+    const sameSheet = sheet.id === cueClipboard.sheetId;
+    const afterId = sameSheet ? cueClipboard.afterIds.findLast(id => sheet.cues.some(cue => cue.id === id)) : null;
+    const id = insertCue(sheet, cueClipboard.cue, afterId, 'Cue pasted after source');
+    if (id) {
+      cueClipboard.afterIds = [...(sameSheet ? cueClipboard.afterIds : []), id];
+      cueClipboard.sheetId = sheet.id;
+    }
+  }
+
+  function handleClipboardKey(event) {
+    if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey ||
+      event.target?.closest?.('input, textarea, select, [contenteditable]')) return;
+    const key = event.code || (event.key?.toLowerCase() === 'c' ? 'KeyC' : event.key?.toLowerCase() === 'v' ? 'KeyV' : '');
+    if (key !== 'KeyC' && key !== 'KeyV') return;
+    event.preventDefault(); event.stopPropagation();
+    const sheet = current();
+    if (!sheet) return;
+    const cue = sheet.cues.find(item => item.id === selectedCue);
+    if (key === 'KeyC') {
+      if (cue) copyCue(sheet, cue);
+      else status('Select a cue to copy', true);
+    } else if (cueClipboard) pasteCue(sheet);
+    else status('Copy a timesheet cue first', true);
   }
 
   function patchCue(sheet, cueId, patch, message) {
@@ -164,6 +220,21 @@ export function createTimesheetPanel(nodes, {
       return;
     }
     root.append(toolbar(sheet), timeline(sheet), inspector(sheet));
+    // Keep nearby instant cues readable without changing their authored track or time.
+    for (const lane of root.querySelectorAll('.timesheet-lane')) {
+      const ends = [];
+      const blocks = [...lane.children].map(block => ({ block, left: parseFloat(block.style.left), width: block.offsetWidth }))
+        .sort((a, b) => a.left - b.left);
+      for (const { block, left, width } of blocks) {
+        let row = ends.findIndex(end => end + 4 <= left);
+        if (row < 0) row = ends.length;
+        ends[row] = left + width;
+        block.style.top = `${2 + row * 44}px`;
+        block.style.bottom = 'auto';
+        block.style.height = '40px';
+      }
+      lane.style.height = `${Math.max(1, ends.length) * 44}px`;
+    }
   }
 
   function toolbar(sheet) {
@@ -197,6 +268,14 @@ export function createTimesheetPanel(nodes, {
     loopLabel.append(loop, document.createTextNode(' Loop'));
     const cue = element('button', 'primary', 'Cue at playhead');
     cue.type = 'button'; cue.addEventListener('click', () => addCue(sheet, playhead));
+    const copy = element('button', '', 'Copy cue');
+    copy.type = 'button'; copy.title = 'Copy selected cue (Ctrl/Cmd+C)';
+    copy.disabled = !sheet.cues.some(item => item.id === selectedCue);
+    copy.addEventListener('click', () => copyCue(sheet, sheet.cues.find(item => item.id === selectedCue)));
+    const paste = element('button', '', 'Paste cue');
+    paste.type = 'button'; paste.title = 'Paste 0.1s after the source; repeated pastes follow the previous copy (Ctrl/Cmd+V)';
+    paste.disabled = !cueClipboard || sheet.cues.length >= TIMESHEET_LIMITS.cues;
+    paste.addEventListener('click', () => pasteCue(sheet));
     const zoomOut = element('button', '', '\u2212');
     zoomOut.type = 'button'; zoomOut.title = 'Zoom out';
     zoomOut.addEventListener('click', () => { pixelsPerSecond = Math.max(12, Math.round(pixelsPerSecond * .75)); render(); });
@@ -206,7 +285,7 @@ export function createTimesheetPanel(nodes, {
     bar.append(element('label', 'timesheet-field', 'Timesheet'), picker, add, remove,
       (() => { const label = element('label', 'timesheet-field', 'Name'); label.append(name); return label; })(),
       (() => { const label = element('label', 'timesheet-field', 'Duration (s)'); label.append(duration); return label; })(),
-      loopLabel, cue,
+      loopLabel, cue, copy, paste,
       (() => { const group = element('span', 'timesheet-zoom'); group.append(element('span', 'muted', 'Zoom'), zoomOut, zoomIn); return group; })());
     return bar;
   }
@@ -305,6 +384,7 @@ export function createTimesheetPanel(nodes, {
     block.addEventListener('click', event => {
       event.stopPropagation();
       selectedCue = cue.id; playhead = cue.time; render();
+      nodes.root.focus({ preventScroll: true });
     });
     block.addEventListener('dblclick', event => { event.stopPropagation(); editAction(sheet, cue, null, null); });
     block.addEventListener('contextmenu', event => {
@@ -313,7 +393,9 @@ export function createTimesheetPanel(nodes, {
       const items = [
         { label: 'Edit actions', run: () => editAction(sheet, cue, null, null) },
         { label: 'Move to playhead', run: () => patchCue(sheet, cue.id, { time: Math.round(playhead * 10) / 10 }, 'Cue moved') },
-        { label: 'Duplicate', run: () => duplicateCue(sheet, cue) },
+        { label: 'Copy cue', hint: 'Ctrl/Cmd+C', run: () => copyCue(sheet, cue) },
+        { label: 'Paste cue', hint: 'Ctrl/Cmd+V', disabled: !cueClipboard, run: () => pasteCue(sheet) },
+        { label: 'Duplicate', run: () => insertCue(sheet, cue, cue.id, 'Cue duplicated after source') },
         { separator: true },
         { label: 'Delete cue', danger: true, run: () => removeCue(sheet, cue) },
       ];
@@ -435,6 +517,7 @@ export function createTimesheetPanel(nodes, {
 
   return {
     render,
+    handleClipboardKey,
     /** The panel is rebuilt from the project, so `refresh` is the same thing said plainly. */
     refresh: render,
     select(id) { selectedId = id; selectedCue = null; render(); },

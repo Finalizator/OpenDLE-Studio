@@ -918,6 +918,19 @@ event sheet uses, so a cue can set a global or an object's local variable, move 
 route, play an imported sound, or start another timeline — and every action keeps its tooltip,
 its validation and its editor.
 
+Select a cue and use **Copy cue / Paste cue**, **Ctrl+C / Ctrl+V** (Cmd on macOS), or the
+cue's right-click menu. The clipboard keeps a deep copy of its actions and target. Pasting
+creates a fresh cue id on the source track, 0.1 seconds after the source; repeated pastes
+follow the previous copy. **Duplicate** uses the same placement. The timeline grows if
+needed (up to its one-hour limit), existing cues are not shifted, and each paste is one
+undo step. The new cue is selected and can be dragged or retimed in its inspector.
+Nearby cue cards stack vertically within their track so each remains readable and clickable;
+this is display-only and does not change their times or track assignments.
+Clipboard shortcuts in text/number fields retain their normal browser behavior. The cue
+clipboard is editor-local; it is not the system text clipboard. Pasting into another
+timesheet uses the copied time plus 0.1 seconds and the matching track, or its first track;
+invalid object/action references are reported rather than silently removed.
+
 **Nothing plays by itself.** The runtime only advances a timesheet that a rule started
 (`On start of layout` → `Timesheet: start`, written in the Events tab or by the object's
 "drive this route on a timesheet" recipe). The panel does not write that rule: a button that
