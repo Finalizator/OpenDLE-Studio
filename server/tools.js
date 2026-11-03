@@ -11,8 +11,19 @@ import { scriptListing, scriptSummary, collectSpecials, programFor } from '../sh
 import { unsupportedSpecials, specialName } from '../shared/line-specials.js';
 import { unsupportedActorActions, usedActors } from '../shared/actor-runtime.js';
 import { addRamp, bindRampPath, normalizeRamp, syncRampModels } from '../shared/ramp.js';
+import { PROFILE_FIELDS, CORNER_STYLES, MAX_PROFILE_VERTICES } from '../shared/ramp-profile.js';
 
 const coordinate = z.number().min(-65536).max(65536);
+const rampProfileShape = {
+  profile: z.enum(['single', 'ridge', 'custom']).optional(),
+  topWidth: z.number().min(0).max(4096).optional(), footWidth: z.number().min(0).max(4096).optional(),
+  baseThickness: z.number().min(0).max(4096).optional(),
+  edgeStyle: z.enum(CORNER_STYLES).optional(), edgeSize: z.number().min(0).max(4096).optional(),
+  toeStyle: z.enum(CORNER_STYLES).optional(), toeSize: z.number().min(0).max(4096).optional(),
+  roundSegments: z.number().int().min(1).max(16).optional(),
+  vertices: z.array(z.object({ x: z.number().min(-4096).max(4096), z: z.number().min(-4096).max(4096),
+    style: z.enum(CORNER_STYLES).optional(), size: z.number().min(0).max(4096).optional() })).min(3).max(MAX_PROFILE_VERTICES).optional(),
+};
 /** Linedef specials with their Hexen names and whether the runtime performs them. */
 function wallSpecials(project) {
   return (project.map.walls || []).filter(wall => wall.special).map(wall => {
@@ -33,11 +44,14 @@ export const toolDefinitions = [
   { name: 'paths_set', description: 'Replace layout paths. Each path: id,name,closed,points[{id,x,y,z,curve,handleIn?,handleOut?,steps?}], optional mode (straight/smooth/bezier/sine), softness 0..1, steps 1..256 default face density, sine{amplitude,height,cycles,phase}. Point steps overrides density of its outgoing span. Handles are x/y/z offsets. Linked ramps rebuild automatically; references must remain valid.', shape: {
     paths: z.array(z.record(z.unknown())).max(128),
   } },
-  { name: 'ramp_generate', description: 'Create a live surf ramp along a layout path, or rebind/update an existing ramp by id. length is horizontal cross-slope run per face, NOT path distance. profile ridge has two surf faces; single has one. Uses exact static mesh collision. Edit paths_set to reshape.', shape: {
+  { name: 'ramp_generate', description: 'Create a live surf ramp along a layout path, or rebind/update an existing ramp by id. length is cross-slope run per face, NOT path distance. Profiles: single, ridge, custom. Supports flat tops/feet, beveled/rounded top edges and soft toes. Corner size trims that many map units along each adjacent edge; trims must not overlap. Custom vertices: closed simple polygon [{x,z,style?,size?}], implicitly closed. Exact static mesh collision. Edit paths_set to reshape the spine.', shape: {
     pathId: z.string().min(1).max(80), id: z.string().min(1).max(80).optional(),
-    name: z.string().min(1).max(80).optional(), profile: z.enum(['single', 'ridge']).optional(),
+    name: z.string().min(1).max(80).optional(), ...rampProfileShape,
     slope: z.number().min(1).max(89).optional(), length: z.number().min(1).max(4096).optional(),
     facing: z.enum(['left', 'right']).optional(),
+  } },
+  { name: 'ramp_set_profile', description: 'Edit an existing standalone or path ramp cross-section without moving/rebinding it. single/ridge presets support topWidth, footWidth, baseThickness (below spine; defaults to 8 with a foot), edgeStyle/edgeSize for the top, toeStyle/toeSize for slope-to-flat transitions and roundSegments 1..16. profile custom uses 3..32 vertices [{x,z,style?,size?}] in map units, either winding, implicit closure. Vertex styles sharp/bevel/round; size is distance trimmed along adjacent edges. Concave outlines allowed, crossings/collapsed edges/overlapping corner trims rejected transactionally. This changes real mesh faces and collision.', shape: {
+    id: z.string().min(1).max(80), ...rampProfileShape,
   } },
   { name: 'project_get', description: 'Read the complete active OpenDLE project.', shape: {} },
   { name: 'game_level_select', description: 'Select an imported game level for editing by its ID. Preserves the current level edits, shared assets and every other level. Read project_get.game.levels first. Does not run or reset gameplay.', shape: { levelId: z.string().min(1).max(80) } },
@@ -405,11 +419,18 @@ export function applyTool(project, name, args, context = {}) {
       if (input.id) {
         const entity = next.map.entities.find(item => item.id === input.id);
         if (!entity || entity.type !== 'ramp') throw new Error('Ramp not found');
-        const changes = Object.fromEntries(['slope', 'length', 'facing'].filter(key => input[key] !== undefined).map(key => [key, input[key]]));
+        const changes = Object.fromEntries(['slope', 'length', 'facing', ...PROFILE_FIELDS]
+          .filter(key => input[key] !== undefined).map(key => [key, input[key]]));
         normalizeRamp(entity, changes);
         bindRampPath(next, entity, input.pathId, { profile: input.profile || entity.ramp.profile || 'ridge' });
         if (input.name) entity.name = input.name;
       } else addRamp(next, { ...input, length: input.length ?? 64 });
+      break;
+    }
+    case 'ramp_set_profile': {
+      const entity = next.map.entities.find(item => item.id === input.id);
+      if (!entity || entity.type !== 'ramp') throw new Error('Ramp not found');
+      normalizeRamp(entity, Object.fromEntries(PROFILE_FIELDS.filter(key => input[key] !== undefined).map(key => [key, input[key]])));
       break;
     }
     case 'project_replace': next = input.project; break;

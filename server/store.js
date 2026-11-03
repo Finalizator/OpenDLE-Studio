@@ -9,7 +9,7 @@ import { syncRampModels } from '../shared/ramp-model.js';
 
 function prepareProceduralRamps(project) {
   validateProject(project);
-  if (!(project.map?.entities || []).some(entity => entity.ramp?.pathId)) return project;
+  if (!(project.map?.entities || []).some(entity => entity.type === 'ramp' && entity.ramp)) return project;
   const copy = structuredClone(project);
   syncRampModels(copy);
   validateProject(copy);

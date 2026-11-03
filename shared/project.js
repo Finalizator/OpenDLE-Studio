@@ -16,6 +16,7 @@ import { MAX_JOINTS, validateJoint } from './joints.js';
 import { validatePanel } from './panel.js';
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
 import { MAX_PATHS, MAX_PATH_POINTS, PATH_MODES as PATH_CURVE_MODES } from './paths.js';
+import { validateRampProfile, rampProfile, hasEditableProfile } from './ramp-profile.js';
 import { validateTimesheet, timesheetCueEvents, TIMESHEET_CUE_CONDITION } from './timesheet.js';
 
 /** How many timelines one project may carry. */
@@ -253,9 +254,11 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
       assert(ramp.slope > 0 && ramp.slope < 90, 'Ramp slope must be between 0 and 90 degrees');
       assert(ramp.length > 0 && ramp.width > 0, 'Ramp length and width must be positive');
       assert(ramp.facing === 'left' || ramp.facing === 'right', 'Ramp facing must be left or right');
+      validateRampProfile(ramp);
+      if (hasEditableProfile(ramp)) rampProfile(ramp);
       if (ramp.pathId !== undefined) {
         assert(typeof ramp.pathId === 'string' && pathRef?.(ramp.pathId), 'Ramp references an unknown path');
-        assert(['single', 'ridge'].includes(ramp.profile), 'Path ramp profile must be single or ridge');
+        assert(['single', 'ridge', 'custom'].includes(ramp.profile), 'Path ramp profile must be single, ridge or custom');
         object(ramp.pathOrigin, 'Ramp path origin');
         for (const axis of ['x', 'y', 'z']) number(ramp.pathOrigin[axis], `Ramp path origin ${axis}`);
       }

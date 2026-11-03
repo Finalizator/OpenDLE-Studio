@@ -7,6 +7,7 @@
 // second geometry to keep in step.
 import { dataURI, decodeDataURI, encodeGLB } from './gltf.js';
 import { pathRampFaces, pathRampModelId } from './path-ramp.js';
+import { hasEditableProfile, rampProfile } from './ramp-profile.js';
 
 /**
  * A wedge ramp's six corners, named, in map units, y up, base centred on the origin.
@@ -156,18 +157,26 @@ export function rampModelAsset(shape, { id } = {}) {
  */
 export function ensureRampModel(project, entity) {
   if (!entity || entity.type !== 'ramp' || !entity.physics) return null;
-  if (entity.ramp?.pathId) {
-    const path = (project.paths || []).find(item => item.id === entity.ramp.pathId);
+  if (hasEditableProfile(entity.ramp)) {
+    const linked = Boolean(entity.ramp.pathId);
+    const path = linked ? (project.paths || []).find(item => item.id === entity.ramp.pathId) : {
+      name: entity.name || 'Ramp', mode: 'straight', points: [{ x: 0, y: -entity.ramp.width / 2, z: 0 },
+        { x: 0, y: entity.ramp.width / 2, z: 0 }], steps: 1,
+    };
     if (!path) throw new Error(`Ramp "${entity.name}" references a missing path`);
-    const faces = pathRampFaces(path, entity.ramp), id = pathRampModelId(faces);
+    const shape = linked ? entity.ramp : { ...entity.ramp, pathOrigin: { x: 0, y: 0, z: 0 } };
+    const faces = pathRampFaces(path, shape), id = pathRampModelId(faces);
     project.assets ||= [];
     if (!project.assets.some(asset => asset.id === id)) {
       const { json, binary } = facesModelDocument(faces);
-      project.assets.push({ id, name: `${path.name} ramp`.slice(0, 100), kind: 'model', format: 'glb',
+      project.assets.push({ id, name: (linked ? `${path.name} ramp` : path.name).slice(0, 100), kind: 'model', format: 'glb',
         src: dataURI(encodeGLB(json, binary), 'model/gltf-binary'), meshes: 1, skins: 0, animations: [] });
     }
     entity.modelAsset = id; entity.modelScale = 1;
     entity.physics.shape = 'model'; entity.physics.body = 'fixed'; entity.physics.modelCollision = 'trimesh';
+    const profile = rampProfile(entity.ramp).vertices;
+    entity.physics.width = Math.max(...profile.map(point => point.x)) - Math.min(...profile.map(point => point.x));
+    entity.physics.height = Math.max(...profile.map(point => point.z)) - Math.min(...profile.map(point => point.z));
     return id;
   }
   const shape = { width: entity.physics.width, height: entity.physics.height,

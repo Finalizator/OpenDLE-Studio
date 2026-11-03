@@ -30,6 +30,17 @@ input[type=color] { width: 100%; height: 24px; padding: 1px; }
 input[type=checkbox] { accent-color: var(--accent); }
 textarea { width: 100%; resize: vertical; }
 label { display: block; color: var(--muted); }
+.ramp-profile-editor svg { display: block; width: 100%; background: #303030; border: 1px solid var(--border); touch-action: none; }
+.ramp-profile-editor label { margin-bottom: 6px; }
+.profile-baseline { stroke: #777; stroke-dasharray: 4 4; }
+.profile-solid { fill: #887b534d; stroke: var(--accent); stroke-width: 1.5; pointer-events: none; }
+.profile-invalid { fill: #af444433; stroke: #ffb5ab; pointer-events: none; }
+.profile-controls { fill: none; stroke: #aaa; stroke-dasharray: 3 3; pointer-events: none; }
+.profile-edge { stroke: transparent; stroke-width: 10; cursor: move; }
+.profile-edge.selected { stroke: #78c9e8; stroke-width: 3; }
+.profile-vertex { fill: #333; stroke: #d4c28e; stroke-width: 2; cursor: move; }
+.profile-vertex.selected { fill: #78c9e8; stroke: #fff; }
+.profile-number { fill: #eee; font-size: 10px; pointer-events: none; }
 label input:not([type=checkbox]), label select { display: block; width: 100%; margin-top: 3px; }
 h1 { font-size: 15px; font-weight: 500; margin: 0; }
 h2 { font-size: 12px; font-weight: 500; }

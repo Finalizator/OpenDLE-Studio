@@ -20,6 +20,7 @@ import { captureScene } from '../shared/scenes.js';
 import { exportNodeFile, validateNodeFile } from '../shared/node-file.js';
 import { applyTool } from '../server/tools.js';
 import { ProjectStore } from '../server/store.js';
+import { rampProfile, rampProfileVertices, splitProfileEdge, editProfileVertex } from '../shared/ramp-profile.js';
 
 const route = (options = {}) => createPath({ id: 'spine', name: 'Surf path', mode: 'smooth',
   points: [[-240, -180, 96], [240, -180, 128], [240, 180, 80], [-240, 180, 96]].map(([x, y, z], index) =>
@@ -329,4 +330,124 @@ test('MCP edits rebuild ramps transactionally; disk save and reopen keep curves 
   assert.notEqual(saved.project.map.entities.find(item => item.id === ramp.id).modelAsset, stale, 'HTTP/store saves rebuild stale procedural assets too');
   const reopened = new ProjectStore(file).snapshot();
   assert.deepEqual(reopened.project, saved.project);
+});
+
+test('advanced standalone and path profiles are watertight solids, including concave toes and caps', () => {
+  const custom = [{ x: -32, z: -4 }, { x: -32, z: 32 }, { x: -16, z: 32 }, { x: -16, z: 8 },
+    { x: 16, z: 8 }, { x: 16, z: 32 }, { x: 32, z: 32 }, { x: 32, z: -4 }];
+  for (const profile of ['single', 'ridge', 'custom']) for (const facing of ['left', 'right'])
+    for (const closed of [false, true]) {
+      const changes = { profile, facing, length: 24, topWidth: 12, footWidth: 16, baseThickness: 4,
+        edgeStyle: 'round', edgeSize: 4, toeStyle: 'round', toeSize: 6, roundSegments: 6,
+        ...(profile === 'custom' ? { vertices: splitProfileEdge(custom, 0) } : {}) };
+      const { project, ramp, path } = setup({ closed }, changes);
+      assertClosedMesh(mesh(project, ramp));
+      const geometry = rampProfile(ramp.ramp);
+      const segments = samplePath(path).length - 1;
+      assert.equal(mesh(project, ramp).indices.length / 3,
+        segments * geometry.vertices.length * 2 + (closed ? 0 : 2 * geometry.triangles.length));
+      const standalone = addRamp(project, { ...changes, width: 128 });
+      assertClosedMesh(mesh(project, standalone));
+      validateProject(project);
+      assert.equal(standalone.physics.modelCollision, 'trimesh');
+    }
+});
+
+test('rounded profile normals join across fillets; bevel and cap boundaries keep hard normals', () => {
+  for (const style of ['round', 'bevel']) {
+    const { ramp, path } = setup({}, { edgeStyle: style, edgeSize: 6, roundSegments: 6 });
+    const { vertices } = rampProfile(ramp.ramp), faces = pathRampFaces(path, ramp.ramp);
+    for (let vertex = 0; vertex < vertices.length; vertex++) {
+      const before = faces[(vertex - 1 + vertices.length) % vertices.length].normals[3], after = faces[vertex].normals[0];
+      if (vertices[vertex].smooth) assert.deepEqual(before, after);
+      else assert.notDeepEqual(before, after, 'hard corners are not smoothed into their neighbouring planes');
+    }
+  }
+});
+
+test('profile detail multiplies path detail but cannot exceed the mesh triangle budget', () => {
+  const path = route({ steps: 256 });
+  const options = { pathId: path.id, profile: 'ridge', length: 24, slope: 50, topWidth: 16, footWidth: 16,
+    edgeStyle: 'round', edgeSize: 4, toeStyle: 'round', toeSize: 4, roundSegments: 16 };
+  const project = createProject(); project.paths = [path];
+  assert.throws(() => addRamp(project, options), /at most 65536 triangles/);
+});
+
+test('large valid rounded sweeps use 32-bit indices within the combined triangle budget', () => {
+  const { project, ramp, path } = setup({ steps: 256, mode: 'straight' }, { topWidth: 12, footWidth: 16,
+    baseThickness: 4, edgeStyle: 'round', edgeSize: 4, toeStyle: 'round', toeSize: 6, roundSegments: 8 });
+  const asset = project.assets.find(asset => asset.id === ramp.modelAsset);
+  const { json } = readModel(decodeDataURI(asset.src), asset.format);
+  const primitive = json.meshes[0].primitives[0], indices = json.accessors[primitive.indices];
+  assert.equal(indices.componentType, 5125);
+  assert.equal(indices.count / 3, (samplePath(path).length - 1) * 80 + 76);
+  assert.ok(json.accessors[primitive.attributes.POSITION].count > 65535);
+});
+
+test('Rapier matches flat tops, soft toes, rounded surfaces and custom concave face edits exactly', async () => {
+  await R.init();
+  const custom = [{ x: -64, z: -8 }, { x: -64, z: 64 }, { x: -24, z: 64 }, { x: -24, z: 16 },
+    { x: 24, z: 16 }, { x: 24, z: 64 }, { x: 64, z: 64 }, { x: 64, z: -8 }];
+  for (const options of [{ profile: 'ridge', topWidth: 32, footWidth: 48, baseThickness: 8,
+    edgeStyle: 'round', edgeSize: 8, toeStyle: 'round', toeSize: 16 }, { profile: 'custom', vertices: custom }]) {
+    const project = createProject(), ramp = addRamp(project, { ...options, length: 64, width: 128, slope: 45 });
+    ramp.elevation = 32;
+    const state = createRuntime(project, { screen: 'playing', gameMode: true });
+    state.physics = createPhysics(project, state, R, triangulate);
+    try {
+      const collider = state.physics.bodies.get(ramp.id).collider(0);
+      assert.equal(collider.shapeType(), R.ShapeType.TriMesh);
+      const geometry = rampProfile(ramp.ramp), vertices = geometry.vertices;
+      for (let index = 0; index < vertices.length; index++) {
+        const a = vertices[index], b = vertices[(index + 1) % vertices.length];
+        if (b.x <= a.x + 1e-6) continue;
+        const x = (a.x + b.x) / 2, z = (a.z + b.z) / 2 + 32;
+        const ray = new R.Ray({ x: x / 64, y: (z + 200) / 64, z: 0 }, { x: 0, y: -1, z: 0 });
+        const hit = collider.castRayAndGetNormal(ray, 400 / 64, true);
+        assert.ok(hit); near(z + 200 - hit.timeOfImpact * 64, z, 'ray hits the actual profile, not a convex hull');
+      }
+      if (options.profile === 'custom') {
+        const ray = new R.Ray({ x: 0, y: 200 / 64, z: 0 }, { x: 0, y: -1, z: 0 });
+        near(200 - collider.castRay(ray, 400 / 64, true) * 64, 48, 'concave notch remains empty down to its authored plane');
+      }
+    } finally { state.physics.dispose(); }
+  }
+});
+
+test('custom profile edits regenerate, persist, export and reject invalid MCP edits transactionally', t => {
+  const project = createProject(), ramp = addRamp(project, { length: 64, width: 128 });
+  const original = structuredClone(project);
+  const vertices = editProfileVertex(splitProfileEdge(rampProfileVertices(ramp.ramp), 0), 1, { x: -12, z: 50 });
+  const result = applyTool(project, 'ramp_set_profile', { id: ramp.id, profile: 'custom', vertices, roundSegments: 8 });
+  assert.deepEqual(project, original);
+  const edited = result.project.map.entities.find(item => item.id === ramp.id);
+  assert.notEqual(edited.modelAsset, ramp.modelAsset); assertClosedMesh(mesh(result.project, edited));
+  assert.deepEqual(edited.ramp.vertices, vertices);
+  const snapshot = structuredClone(result.project);
+  assert.throws(() => applyTool(result.project, 'ramp_set_profile',
+    { id: ramp.id, profile: 'custom', vertices: [vertices[0], vertices[0], vertices[2]] }), /must not coincide/);
+  assert.deepEqual(result.project, snapshot);
+  assert.throws(() => applyTool(project, 'ramp_set_profile', { id: ramp.id, roundSegments: 1.5 }));
+  const linkedProject = structuredClone(result.project);
+  linkedProject.paths = [route()];
+  const linked = applyTool(linkedProject, 'ramp_generate', { id: ramp.id, pathId: linkedProject.paths[0].id,
+    profile: 'custom', vertices, roundSegments: 8 });
+  const linkedRamp = linked.project.map.entities.find(item => item.id === ramp.id);
+  assert.deepEqual(linkedRamp.ramp.vertices, vertices);
+  const linkedScene = captureScene(linked.project, [ramp.id]);
+  assert.equal(linkedScene.entities[0].ramp, undefined);
+  assert.equal(linkedScene.entities[0].modelAsset, linkedRamp.modelAsset);
+  const scene = captureScene(result.project, [edited.id], { id: 'profile_scene', name: 'Profile' });
+  assert.deepEqual(scene.entities[0].ramp.vertices, vertices, 'standalone profiles stay editable inside reusable scenes');
+  const portable = exportNodeFile(scene, edited.id, { assets: result.project.assets });
+  validateNodeFile(portable);
+  const directory = mkdtempSync(join(tmpdir(), 'opendle-profile-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'project.json'), store = new ProjectStore(file), saved = store.adopt(result.project);
+  const stale = structuredClone(saved.project), changed = stale.map.entities.find(item => item.id === ramp.id);
+  changed.ramp.vertices[1].z -= 8;
+  const updated = store.update(stale, saved.revision, saved.projectId);
+  assert.notEqual(updated.project.map.entities.find(item => item.id === ramp.id).modelAsset, changed.modelAsset);
+  assert.deepEqual(new ProjectStore(file).snapshot().project, updated.project);
+  assert.deepEqual(stale.map.entities.find(item => item.id === ramp.id).modelAsset, changed.modelAsset, 'store regeneration never mutates its input');
 });

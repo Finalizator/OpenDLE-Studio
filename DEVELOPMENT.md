@@ -3969,7 +3969,7 @@ built by the tool the same kind of object.
 Select a whole path and press **Generate surf ramp along path**, or choose **Generate along
 path** in an existing ramp's inspector. The path becomes a live shape source, not a movement
 route for the ramp. The generator in [`shared/path-ramp.js`](./shared/path-ramp.js) sweeps a
-triangular profile along the shared sampled curve, including its world-space Z changes.
+solid cross-section along the shared sampled curve, including its world-space Z changes.
 
 - **Single slope** is a wedge; **Double-sided ridge** has a surf face on each side, like a
   traditional surf ramp. `length` is the horizontal cross-slope run **per surf face**. A ridge's
@@ -3982,8 +3982,8 @@ triangular profile along the shared sampled curve, including its world-space Z c
   the generated shape. Rebinding resets the anchor and rotation. Curve/shape edits retain the
   object's placement offsets; ramp-shape edits reset model pitch and roll, as for wedges.
 - Shared mitered cross-sections eliminate cracks and internal end faces. Open paths have two
-  triangular caps; closed paths weld their seam and have no caps. Normals are smoothed along
-  each profile face but stay sharp across the ridge/base. UV distance follows the spine and
+  triangulated caps; closed paths weld their seam and have no caps. Normals are smoothed along
+  each profile face but stay sharp across unrounded corners. UV distance follows the spine and
   tiles every 64 map units.
 - Curved ramps use `physics: {body:'fixed',shape:'model',modelCollision:'trimesh',...}`.
   Rapier receives the actual indexed triangles, merges duplicate vertices and fixes internal
@@ -3996,7 +3996,8 @@ triangular profile along the shared sampled curve, including its world-space Z c
 - **Bake generated mesh** removes the live dependency and changes the ramp to a static decoration
   with the same model and exact collision. Deleting its source path also bakes it. Scene capture
   and portable node export bake linked ramps so a project-local path ID cannot escape into a
-  reusable object. Choosing **Standalone wedge** instead returns to the ordinary wedge generator.
+  reusable object. Choosing **Standalone ramp** instead keeps the cross-section, extruded along
+  the standalone width rather than the path.
 - A ramp supports at most 4096 sampled segments. Duplicate positions are merged. Vertical-only
   segments, near-reversals and bends that fold the profile are rejected with an actionable error;
   reduce cross-slope run, soften the curve, simplify the path or reduce resolution. The editor
@@ -4007,6 +4008,51 @@ triangular profile along the shared sampled curve, including its world-space Z c
   [`test/path-ramps.test.js`](./test/path-ramps.test.js) covers curve/cache consistency, watertight
   winding, profiles/closed loops, real Rapier surface rays and empty concavities, baking/export,
   MCP regeneration and folder-save/reopen.
+
+### Editable ramp cross-sections
+
+The same profile controls work on standalone and path-generated ramps. Legacy standalone ramps
+with no profile settings retain their original mesh IDs and collision behavior. Edited profiles
+use exact fixed triangle-mesh collision, including concave outlines; smoothing is not a collider
+substitute.
+
+- **Flat top width** adds a real horizontal plateau between the surf slopes (or behind the top
+  of a single slope). It does not change the slope's run or rise.
+- **Flat foot width** adds a horizontal landing at the base of each surf face. **Base thickness**
+  extends the solid below the spine, so the landing has volume rather than a zero-thickness face.
+  With a foot, the default thickness is 8 map units; an explicitly zero thickness is rejected.
+- **Top edges** and **Slope to flat foot** independently choose sharp, beveled or rounded corners.
+  Trim size is the distance cut back along **each adjacent edge**, not a circle radius. Rounded
+  corners use quadratic fillets tangent to their neighbouring planes; toes are concave fillets
+  joining the slope to the flat landing. **Rounding subdivisions** (1–16, default 6) changes real
+  faces and collision density. Rounded joins share normals; bevel creases stay hard. The
+  slope/run/height parameters describe the untrimmed control cage; trimming a peak can lower
+  its final mesh height.
+- **Vertex / face editing** shows the solid cross-section and its control cage in X/Z map units.
+  Drag a control vertex or enter its precise coordinates. Select or drag an edge to offset its
+  entire longitudinal face strip in its outward-normal direction. **Split face / insert vertex**
+  adds a midpoint control vertex; **Remove vertex** joins the adjacent edges. Each vertex can be
+  sharp, beveled or rounded independently. Shift snaps drag deltas to 8 units; Escape or pointer
+  cancellation restores the pre-drag shape. A drag previews locally and commits once on release,
+  producing one undo entry. Numeric edits also commit atomically.
+- Direct editing converts the preset to **Custom cross-section**; the scalar slope/run/top/foot
+  controls are hidden because the vertices now define those dimensions. The profile dropdown
+  returns to single/ridge presets; the custom vertices remain available for switching back.
+  This is cross-section vertex and swept-face-strip editing, not arbitrary 3D mesh sculpting.
+- The persisted `ramp` fields are `profile: 'single'|'ridge'|'custom'`, `topWidth`, `footWidth`,
+  `baseThickness`, `edgeStyle`/`edgeSize`, `toeStyle`/`toeSize`, `roundSegments`, and custom
+  `vertices: [{x,z,style?,size?}]`. Polygons close implicitly and accept either winding. Profiles
+  support 3–32 control vertices and at most 256 generated vertices after rounding, with width and
+  height at most 4096 map units. Self-intersections, touching non-adjacent edges, collapsed edges,
+  overlapping trims and zero-area solids fail explicitly without replacing the previous mesh.
+- Ear-clipped caps retain concavities and split boundary vertices. The complete sweep is limited
+  to 65,536 triangles in addition to the 4096 path-segment budget; reduce either path density or
+  cross-section rounding detail if their product exceeds the budget.
+- MCP/DeepSeek: `ramp_generate` accepts all profile settings when creating/rebinding a path ramp.
+  `ramp_set_profile` edits these settings on any existing ramp by `id` without changing placement
+  or binding. All edits regenerate transactionally. Server saves also rebuild stale standalone
+  profile meshes; standalone reusable scenes/nodes preserve editable vertices, while linked
+  ramps bake on export as before.
 
 The test does not compare formulas — it casts rays at the live physics world: at 10, 30, 50, 70
 and 90 % of the run the collider answers within half a map unit of `surfRampSurface().heightAt(x)`

@@ -8,6 +8,7 @@ import { createPreview, entityColors } from './render.js';
 import { undoDepthFor, UNDO_DEEP_GAME_STEPS } from '/shared/undo-depth.js';
 import { hasModelFacing, noseAngle } from '/shared/entity-visuals.js';
 import { addRamp, bindRampPath, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
+import { createRampProfileEditor } from './ramp-profile-editor.js';
 import { bundleModel } from '/shared/gltf.js';
 import { measureAssetForward } from '/shared/model-forward.js';
 import { nodeIcon } from './node-icons.js';
@@ -943,6 +944,7 @@ function checkbox(text, value, fn) {
 // inspector and the 3D gizmo follow; `multiSelection` is the whole set, and any change of primary
 // by other code drops the extras on the next render so the two can never disagree.
 let multiSelection = [];
+let rampProfileSelection = { id: null, kind: 'vertex', index: 0 };
 // What the ids in `multiSelection` are: objects or routes. A set is one kind, because the arrows,
 // the outline and the delete all mean different things for each.
 let multiSelectionKind = null;
@@ -1367,26 +1369,44 @@ function renderInspector() {
           const changeRamp = change => edit(next => {
             normalizeRamp(next.map.entities.find(entity => entity.id === item.id), change);
           }, 'Ramp geometry changed');
-          field(parent, 'Generate along path', select([['', 'Standalone wedge'], ...(project.paths || []).map(path => [path.id, path.name])],
+          field(parent, 'Generate along path', select([['', 'Standalone ramp'], ...(project.paths || []).map(path => [path.id, path.name])],
             ramp.pathId || '', value => edit(next => {
               const entity = next.map.entities.find(entity => entity.id === item.id);
-              if (value) bindRampPath(next, entity, value);
+              if (value) bindRampPath(next, entity, value, { profile: entity.ramp.profile || 'ridge' });
               else normalizeRamp(entity, { pathId: null });
             }, 'Ramp path updated')));
+          field(parent, 'Surf profile', select([['single', 'Single slope'], ['ridge', 'Double-sided ridge'],
+            ...(ramp.vertices ? [['custom', 'Custom cross-section']] : [])],
+          ramp.profile || 'single', value => changeRamp({ profile: value })));
           if (ramp.pathId) {
-            field(parent, 'Surf profile', select([['single', 'Single slope'], ['ridge', 'Double-sided ridge']],
-              ramp.profile, value => changeRamp({ profile: value })));
             parent.append(make('p', 'The path is the base spine. Cross-slope run is each surf face\'s horizontal run. Edit the path to reshape the ramp; object position, height and angle offset the whole mesh.', 'muted'),
               button('Edit path / face density', () => selectWholePath(ramp.pathId)),
               button('Bake generated mesh', () => edit(next => bakePathRamp(next.map.entities.find(entity => entity.id === item.id)), 'Ramp baked; path link removed')));
           }
-          field(parent, 'Angle (degrees)', input(ramp.slope, 'number', value => changeRamp({ slope: value })));
-          field(parent, ramp.pathId ? 'Cross-slope run' : 'Length (ground it covers)', input(ramp.length, 'number', value => changeRamp({ length: value })));
           if (!ramp.pathId) field(parent, 'Width (across)', input(ramp.width, 'number', value => changeRamp({ width: value })));
-          field(parent, 'Height (how far it rises)', input(height, 'number', value => changeRamp({ height: value })));
-          field(parent, 'Falls towards', select([['right', '+X (right)'], ['left', '-X (left)']], ramp.facing,
-            value => changeRamp({ facing: value })));
-          parent.append(make('p', 'The collider, the tilt it is drawn with and the height it sits at all follow these numbers, so the ramp you see is the ramp you slide on. Above 45.6 degrees the engine stops calling the surface ground, which is what makes it surfable. Angle and length, or angle and height: whichever you change last decides the other.', 'muted'));
+          if (ramp.profile !== 'custom') {
+            field(parent, 'Angle (degrees)', input(ramp.slope, 'number', value => changeRamp({ slope: value })));
+            field(parent, ramp.pathId ? 'Cross-slope run' : 'Length (ground it covers)', input(ramp.length, 'number', value => changeRamp({ length: value })));
+            field(parent, 'Height (before edge trimming)', input(height, 'number', value => changeRamp({ height: value })));
+            if (ramp.profile !== 'ridge') field(parent, 'Falls towards', select([['right', '+X (right)'], ['left', '-X (left)']], ramp.facing,
+              value => changeRamp({ facing: value })));
+            field(parent, 'Flat top width', input(ramp.topWidth || 0, 'number', value => changeRamp({ topWidth: value })));
+            field(parent, 'Flat foot width', input(ramp.footWidth || 0, 'number', value => changeRamp({ footWidth: value })));
+            field(parent, 'Base thickness (below spine)', input(ramp.baseThickness ?? (ramp.footWidth ? 8 : 0), 'number', value => changeRamp({ baseThickness: value })));
+            const corners = [['sharp', 'Sharp'], ['bevel', 'Beveled'], ['round', 'Rounded / soft']];
+            field(parent, 'Top edges', select(corners, ramp.edgeStyle || 'sharp', value => changeRamp({ edgeStyle: value })));
+            if (ramp.edgeStyle && ramp.edgeStyle !== 'sharp')
+              field(parent, 'Top edge trim size', input(ramp.edgeSize ?? 8, 'number', value => changeRamp({ edgeSize: value })));
+            field(parent, 'Slope to flat foot', select(corners, ramp.toeStyle || 'sharp', value => changeRamp({ toeStyle: value })));
+            if (ramp.toeStyle && ramp.toeStyle !== 'sharp')
+              field(parent, 'Foot transition trim size', input(ramp.toeSize ?? 8, 'number', value => changeRamp({ toeSize: value })));
+          }
+          field(parent, 'Rounding subdivisions', input(ramp.roundSegments ?? 6, 'number', value => changeRamp({ roundSegments: value })));
+          parent.append(make('h3', 'Vertex / face editing'));
+          if (rampProfileSelection.id !== item.id) rampProfileSelection = { id: item.id, kind: 'vertex', index: 0 };
+          parent.append(createRampProfileEditor(ramp, { change: changeRamp, selection: rampProfileSelection,
+            error: failure => status(failure.message, true) }));
+          parent.append(make('p', 'The mesh and collider use the same cross-section. Angle, run and height describe the sharp control cage; trimming its top corners can lower the final peak. Above 45.6 degrees a slope becomes surfable. Angle and length, or angle and height: whichever you change last decides the other.', 'muted'));
         }
         // A model can be told to walk a route: the path is a layout object, so an object only
         // stores which one and how it travels along it.

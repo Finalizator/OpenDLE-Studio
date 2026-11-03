@@ -16,6 +16,7 @@
 export { ensureRampModel, syncRampModels, WEDGE_INDICES, wedgeCorners } from './ramp-model.js';
 import { ensureRampModel } from './ramp-model.js';
 import { sectorAt, sectorGeometry } from './sectors.js';
+import { PROFILE_FIELDS, hasEditableProfile } from './ramp-profile.js';
 
 export function surfRampGeometry({ width = 256, depth = 256, thickness, slope = 50, facing = 'right' } = {}) {
   const radians = Math.abs(slope) * Math.PI / 180;
@@ -104,6 +105,7 @@ export function normalizeRamp(entity, change = {}) {
   const round = value => Math.round(value * 100) / 100;
   entity.ramp = { slope: shape.slope, length: round(shape.length), width: round(width), facing,
     height: round(shape.rise) };
+  for (const key of PROFILE_FIELDS) if (next[key] !== undefined) entity.ramp[key] = structuredClone(next[key]);
   if (next.pathId) {
     entity.ramp.pathId = next.pathId;
     entity.ramp.profile = next.profile || 'single';
@@ -116,14 +118,14 @@ export function normalizeRamp(entity, change = {}) {
   // A zero tilt, not a deleted one: the shape carries the slope, but every reader of `modelTilt`
   // in the editor and the renderer expects the field to exist.
   entity.modelTilt = { pitch: 0, roll: 0 };
-  if (!entity.ramp.pathId) entity.elevation = 0;
+  if (!entity.ramp.pathId && !hasEditableProfile(entity.ramp)) entity.elevation = 0;
   // A ramp that already has its generated mesh is collided as that mesh; a fresh one is a wedge
   // until `ensureRampModel` gives it a model to be collided as.
   entity.physics = { body: 'fixed', shape: entity.modelAsset ? 'model' : 'wedge',
     width: shape.run, height: shape.rise,
     depth: width, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true,
     wedge: { slope: shape.slope, facing } };
-  if (entity.ramp.pathId) entity.physics.modelCollision = 'trimesh';
+  if (hasEditableProfile(entity.ramp)) entity.physics.modelCollision = 'trimesh';
   return entity;
 }
 
