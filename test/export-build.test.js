@@ -353,7 +353,7 @@ test('an extracted build serves the game with Node.js only', async t => {
   assert.equal(snapshot.revision, 0);
   const saved = await (await fetch(`${url}api/project`, {
     method: 'PUT', headers: { ...authorized.headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project: { ...snapshot.project, title: 'Saved in the build' }, revision: 0 }),
+    body: JSON.stringify({ project: { ...snapshot.project, title: 'Saved in the build' }, revision: 0, projectId: snapshot.projectId }),
   })).json();
   assert.equal(saved.revision, 1);
   // A save in the build writes a project folder (document plus asset files), the same format the
@@ -387,7 +387,7 @@ test('an extracted build serves the game with Node.js only', async t => {
     provides: { actions: [{ type: 'sparkle:burst', label: 'Burst', fields: [] }] } },
   files: { 'addon.js': 'export default () => {};', 'style.css': 'body{}', 'notes.bin': 'x' } }, { engineTypes: new Set([...CONDITIONS, ...ACTIONS]) });
   const put = await fetch(`${url}api/project`, { method: 'PUT', headers: { ...authorized.headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project: withAddon, revision: saved.revision }) });
+    body: JSON.stringify({ project: withAddon, revision: saved.revision, projectId: saved.projectId }) });
   assert.equal(put.status, 200, `saving a project with an addon succeeds: ${await put.clone?.().text?.() ?? ''}`);
   const script = await fetch(`${url}api/addons/sparkle/addon.js`);
   assert.equal(script.status, 200, 'the addon script is served in the portable build');

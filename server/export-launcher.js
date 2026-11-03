@@ -170,7 +170,8 @@ export function createGameHandler({ root = bundleRoot, store, token, version, li
           let parsed;
           try { parsed = JSON.parse(body.toString('utf8')); }
           catch { return sendJson(response, 400, { error: 'Request body must be valid JSON' }); }
-          const snapshot = store.update(parsed.project, parsed.revision);
+          if (!parsed || !Object.hasOwn(parsed, 'projectId')) return sendJson(response, 400, { error: 'Save request is missing project identity. Refresh the editor before saving.' });
+          const snapshot = store.update(parsed.project, parsed.revision, parsed.projectId);
           return sendJson(response, 200, snapshot);
         }
         if (pathname === '/api/open-browser' && request.method === 'POST') {

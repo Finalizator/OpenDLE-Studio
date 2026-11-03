@@ -55,7 +55,7 @@ test('stored projects can be adopted, listed and opened over HTTP', async t => {
   assert.deepEqual(listed.projects.map(entry => entry.id), ['imported-wad-game']);
   // Saving the open project keeps it as the active one.
   const saved = await (await fetch(`${url}/api/project`, { method: 'PUT', headers,
-    body: JSON.stringify({ project: imported, revision: adopted.revision }) })).json();
+    body: JSON.stringify({ project: imported, revision: adopted.revision, projectId: adopted.projectId }) })).json();
   assert.equal(saved.projectId, 'imported-wad-game');
   assert.equal(saved.revision, 2);
   assert.equal((await fetch(`${url}/api/projects/open`, { method: 'POST', headers,
@@ -70,11 +70,26 @@ test('stored projects can be adopted, listed and opened over HTTP', async t => {
   assert.equal(temporary.projectId, 'temporary');
   assert.equal(temporary.temporary, true);
   const promoted = await (await fetch(`${url}/api/project`, { method: 'PUT', headers,
-    body: JSON.stringify({ project: imported, revision: temporary.revision }) })).json();
-  assert.equal(promoted.projectId, 'imported-wad-game');
+    body: JSON.stringify({ project: imported, revision: temporary.revision, projectId: temporary.projectId }) })).json();
+  assert.equal(promoted.projectId, 'imported-wad-game-2');
   assert.equal(promoted.temporary, false);
   const afterSave = await (await fetch(`${url}/api/projects`, { headers })).json();
   assert.equal(afterSave.projects.some(entry => entry.id === 'temporary'), false);
+});
+
+test('HTTP saves require identity and refuse stale tabs even at matching revisions', async t => {
+  const { url, store } = await fixture(t);
+  const first = createProject(); first.title = 'First';
+  const second = createProject(); second.title = 'Second';
+  const tab = store.adopt(first);
+  const active = store.adopt(second);
+  assert.equal(tab.revision, active.revision);
+  const write = body => fetch(`${url}/api/project`, { method: 'PUT', headers, body: JSON.stringify(body) });
+  const missing = await write({ project: tab.project, revision: tab.revision });
+  assert.equal(missing.status, 400);
+  assert.match((await missing.json()).error, /missing project identity/);
+  assert.equal((await write({ project: tab.project, revision: tab.revision, projectId: tab.projectId })).status, 409);
+  assert.deepEqual(store.snapshot().project, active.project);
 });
 
 test('HTTP editor, auth, host/origin checks, invalid input and revision conflict', async t => {
@@ -234,7 +249,7 @@ test('WAD library/import APIs are authenticated, bounded to WAD files and return
   assert.equal(draft.project.hud.reserveBottom, 32);
   assert.equal(store.snapshot().revision, 0);
   assert.notEqual(store.snapshot().project.title, draft.project.title);
-  const saved = await fetch(`${url}/api/project`, { method: 'PUT', headers, body: JSON.stringify({ project: draft.project, revision: 0 }) });
+  const saved = await fetch(`${url}/api/project`, { method: 'PUT', headers, body: JSON.stringify({ project: draft.project, revision: 0, projectId: null }) });
   assert.equal(saved.status, 200);
   assert.equal(store.snapshot().project.assets.length, draft.project.assets.length);
   const uploaded = await fetch(`${url}/api/import/wad?map=MAP01&scope=level`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/octet-stream' },
@@ -347,7 +362,7 @@ test('addon files are served from the project, and a staged copy bridges the mom
   const snapshot = await (await fetch(`${url}/api/project`, { headers })).json();
   const project = { ...snapshot.project, addons: [normalizeAddon({ manifest,
     files: { 'addon.js': 'export const saved = true;', 'style.css': 'body{}' } })] };
-  const saved = await fetch(`${url}/api/project`, { method: 'PUT', headers, body: JSON.stringify({ project, revision: snapshot.revision }) });
+  const saved = await fetch(`${url}/api/project`, { method: 'PUT', headers, body: JSON.stringify({ project, revision: snapshot.revision, projectId: snapshot.projectId }) });
   assert.equal(saved.status, 200);
   assert.match(await (await fetch(`${url}/api/addons/sparkle/addon.js`)).text(), /saved = true/);
 });

@@ -119,6 +119,13 @@ test('a missing asset file is reported instead of loading a project with holes',
     /asset files are missing/);
 });
 
+test('folder revisions are validated instead of silently turning corrupted values into revision zero', () => {
+  for (const revision of [-1, undefined, '5', 1.5]) {
+    const document = { ...packProject(createProject()).document, revision };
+    assert.throws(() => unpackProject(document), /revision is invalid/);
+  }
+});
+
 test('a document cannot read outside its own folder', t => {
   const directory = withDirectory(t);
   writeFileSync(join(directory, 'outside.txt'), 'secret');
@@ -226,6 +233,82 @@ test('reimporting and promoting a temporary project replaces old campaign sectio
   assert.deepEqual(store.open('temporary').project, temporary.project, 'reimport refreshes the temporary section files');
   const promoted = store.update(temporary.project, temporary.revision);
   assert.deepEqual(new ProjectStore(file).snapshot().project, promoted.project, 'promotion refreshes an existing saved folder');
+});
+
+test('a failed document write cannot mix new campaign sections into the old saved document', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json'), store = new ProjectStore(file);
+  const project = assembleGameLevels(['MAP01', 'MAP02'].map(id => ({
+    id, project: { ...createProject(), assets: [] },
+  })), 'MAP01', 'Atomic campaign').project;
+  store.adopt(project);
+  const before = store.snapshot(), listed = store.list();
+  const entry = JSON.parse(readFileSync(join(directory, 'projects.json'), 'utf8')).projects[0];
+  const edited = structuredClone(before.project);
+  edited.game.entry = 'MAP02';
+  edited.game.levels[1].name = 'New campaign section';
+  edited.variables.score = 23;
+  const obstacle = `${join(directory, entry.file)}.tmp`;
+  mkdirSync(obstacle);
+  assert.throws(() => store.update(edited, before.revision), /EISDIR/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.deepEqual(store.list(), listed);
+  assert.deepEqual(new ProjectStore(file).snapshot(), before, 'failed save leaves an exact old snapshot, not mixed revisions');
+  rmSync(obstacle, { recursive: true });
+  const saved = store.update(edited, before.revision);
+  assert.deepEqual(new ProjectStore(file).snapshot().project, saved.project, 'retry works at the same revision');
+});
+
+test('saving an older folder migrates mutable sections without rewriting them before commit', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json'), store = new ProjectStore(file);
+  const project = assembleGameLevels(['MAP01', 'MAP02'].map(id => ({
+    id, project: { ...createProject(), assets: [] },
+  })), 'MAP01', 'Legacy sections').project;
+  const first = store.adopt(project);
+  const entry = JSON.parse(readFileSync(join(directory, 'projects.json'), 'utf8')).projects[0];
+  const folder = dirname(join(directory, entry.file)), legacy = packProject(project, { revision: first.revision });
+  writePacked(folder, legacy);
+  writeFileSync(join(directory, entry.file), JSON.stringify(legacy.document));
+  const legacyGame = readFileSync(join(folder, 'game.json'));
+  const edited = structuredClone(project); edited.game.entry = 'MAP02';
+  const originalIndexWriter = store.saveIndex;
+  store.saveIndex = () => {
+    assert.deepEqual(readFileSync(join(folder, 'game.json')), legacyGame, 'old sections survive until the index commits');
+    throw new Error('Legacy migration interrupted');
+  };
+  assert.throws(() => store.update(edited, first.revision), /migration interrupted/);
+  assert.deepEqual(new ProjectStore(file).snapshot().project, project);
+  store.saveIndex = originalIndexWriter;
+  store.update(edited, first.revision);
+  assert.equal(existsSync(join(folder, 'game.json')), false, 'the obsolete mutable section is retired after success');
+  assert.equal(new ProjectStore(file).snapshot().project.game.entry, 'MAP02');
+});
+
+test('an index failure rolls a published project document back without deleting its assets', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json'), store = new ProjectStore(file);
+  store.adopt(projectWithAssets());
+  const before = store.snapshot();
+  const edited = structuredClone(before.project);
+  edited.assets[0].src = dataUrl('audio/wav', 'RIFFeditWAVE');
+  edited.assets = edited.assets.filter(asset => asset.id !== 'sprite_a');
+  edited.variables.score = 99;
+  store.saveIndex = () => { throw new Error('Simulated index failure'); };
+  assert.throws(() => store.update(edited, before.revision), /Simulated index failure/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.deepEqual(new ProjectStore(file).snapshot(), before);
+});
+
+test('a cleanup error reports a warning but does not misreport a committed save as failed', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json'), store = new ProjectStore(file);
+  store.adopt(projectWithAssets());
+  const entry = JSON.parse(readFileSync(join(directory, 'projects.json'), 'utf8')).projects[0];
+  mkdirSync(join(directory, dirname(entry.file), 'assets', 'cleanup-obstruction'));
+  const errors = [];
+  t.mock.method(console, 'error', message => errors.push(message));
+  const project = store.snapshot().project; project.variables.score = 45;
+  const saved = store.update(project, store.snapshot().revision);
+  assert.match(saved.warning, /Project saved, but old files could not be cleaned up/);
+  assert.deepEqual(errors, [saved.warning]);
+  assert.deepEqual(new ProjectStore(file).snapshot().project, saved.project);
 });
 
 test('a studio project that was one JSON file moves into a folder and leaves no copy', t => {

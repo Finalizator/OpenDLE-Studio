@@ -73,7 +73,7 @@ npm package release version in `package.json`.
 ### Stored projects and reopening the last one
 
 The studio reopens the project that was open when it last ran. Projects are stored
-under `data/`, one file each, with a small list beside them:
+under `data/`, one folder each, with a small list beside them:
 
 | path | contents |
 | --- | --- |
@@ -96,9 +96,19 @@ renderer, the audio player and a portable build all expect on the way in. A save
 payloads it has not written before (the hash is in the name) and removes the files nothing names,
 so replacing one texture does not double the folder. Identical bytes are one file, which is what a
 route's repeated sound or a texture used twice should be.
-Only hashed asset payloads are immutable: `actors.json` and `game.json` are refreshed on every
-save, using a temporary file and rename, just like the main document. Skipping those existing
-files would restore old campaign levels, active-map selection and actor definitions on reopen.
+Actor and campaign sections change on save. On disk these are content-addressed too
+(`actors-<hash>.json`, `game-<hash>.json`); the main document names the exact versions it uses.
+New sections are written before replacing `project.json`, so a failed document write cannot
+mix new campaign data into the previous saved map. Older `actors.json`/`game.json` sections
+remain readable; exported zips retain those simple names.
+
+The store stages a new index without mutating its live state. If writing the index fails, it
+restores the previous project document; obsolete assets, legacy files and the temporary source
+are removed only after both writes succeed. Cleanup failures report a **saved, cleanup failed**
+warning, not a misleading save failure. Invalid indexes, missing active files and invalid
+revisions are explicit errors, never a silent fallback to a blank or old seed project.
+These guarantees cover ordinary write failures on a single running service; they are not a
+power-loss-durable database or coordination between two server processes sharing one data folder.
 
 The old one-file format is still read, so an installation that predates this is not stranded; the
 next save moves it into a folder and retires `projects/<id>.json`.
@@ -127,10 +137,26 @@ open project lives there.
 (`imported-wad-game`), removes the temporary file and reports the new id, after
 which a later import cannot overwrite it. A document that never had a file of its
 own (**New project**, **Restore local draft**) is stored by the first **Save** the
-same way. **Menu → Stored project** lists everything and switches between them;
+same way. A new document or promoted import never overwrites a same-title saved project:
+collisions receive a numbered id (`imported-wad-game-2`) and the menu disambiguates matching
+titles with their ids. Saving an already-bound project still updates that project.
+**Menu → Stored project** lists everything and switches between them;
 switching asks before discarding unsaved edits, and the browser draft is kept
 under the project id it came from, so a draft is never restored into a different
-project.
+project. Save requests carry both `projectId` and `revision`; the HTTP API rejects missing
+identity or a stale project/revision pair. The temporary slot keeps a revision watermark
+through promotion, so a stale tab cannot overwrite a later import at a reused revision.
+
+The editor permits only one save/open request at a time. Responses for a document since
+replaced are not rebound to the new document, and edits made while a save is in flight remain
+unsaved with a draft based on the returned revision. Undo/redo across imports restores the
+document's own binding. A recovery draft for another project is detached rather than bound
+to the currently saved project.
+
+Small browser drafts store data and identity together in one localStorage write; older
+two-key drafts remain readable. Large campaigns still skip browser draft backup, but no
+longer erase a previous draft when doing so. This is **not autosave**: large-project edits
+require Save or Export before closing/reloading, and localStorage has only one draft slot.
 
 Requires Node.js 22 or newer and npm.
 

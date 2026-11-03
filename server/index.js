@@ -318,7 +318,10 @@ export function createApp({
     res.type(type).send(body);
   });
   app.get('/api/project', (req, res) => res.json(store.snapshot()));
-  app.put('/api/project', (req, res) => res.json(store.update(req.body.project, req.body.revision)));
+  app.put('/api/project', (req, res) => {
+    if (!req.body || !Object.hasOwn(req.body, 'projectId')) return res.status(400).json({ error: 'Save request is missing project identity. Refresh the editor before saving.' });
+    res.json(store.update(req.body.project, req.body.revision, req.body.projectId));
+  });
   // Stored projects: the studio reopens the active one on the next start, so switching
   // and adopting both have to be reachable from the client.
   app.get('/api/projects', (req, res) => res.json(store.list()));

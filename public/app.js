@@ -20,7 +20,7 @@ import { requestMouseLock } from './pointer-lock.js';
 import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
 import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
-import { recoverProject } from './project-recovery.js';
+import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
   removeEventBranch, setEventParent, eventScope } from '/shared/events.js';
 import { editInline, installRowDrag } from './row-drag.js';
@@ -81,6 +81,7 @@ let project, token, revision = 0, dirty = false, selection = null, editVersion =
 // its own yet (a new project, an import that was never stored, a restored draft), which
 // is what decides whether Save updates the open project or stores a new one.
 let projectId = null;
+let documentGeneration = 0, documentSession = {}, projectOperationBusy = false;
 // The Project tree lists timelines, but the tree can be drawn before the timeline panel exists;
 // this flag is what stops the first render from reading a binding that has not been set yet.
 let timesheetPanelBuilt = false;
@@ -356,14 +357,12 @@ function persistDraft() {
   if (draftTooLarge()) {
     if (!draftSkipNoted) {
       draftSkipNoted = true;
-      try { localStorage.removeItem('opendle-draft'); localStorage.removeItem('opendle-draft-metadata'); } catch { /* ignore */ }
       status('Browser draft backup is off for large projects (it cannot fit in browser storage). Use Save or Export project to keep your edits.');
     }
     return;
   }
   try {
-    localStorage.setItem('opendle-draft', JSON.stringify(project));
-    localStorage.setItem('opendle-draft-metadata', JSON.stringify({ baseRevision: revision, projectId }));
+    writeProjectDraft(localStorage, project, { baseRevision: revision, projectId });
   }
   catch (error) { status(`Edit kept in memory, but browser backup failed: ${error.message}. Save or export now.`, true); }
 }
@@ -627,6 +626,31 @@ $('sector-surface').addEventListener('change', () => {
 function historyLimit(candidate) {
   return undoDepthFor(candidate);
 }
+function bindProject(result, session = documentSession) {
+  Object.assign(session, { projectId: result.projectId ?? null, revision: result.revision, temporary: Boolean(result.temporary) });
+  if (session !== documentSession) return;
+  projectId = session.projectId;
+  revision = session.revision;
+  projectTemporary = session.temporary;
+}
+function historySnapshot() {
+  return { project, session: documentSession };
+}
+function restoreHistory(snapshot) {
+  if (documentSession !== snapshot.session) {
+    documentGeneration++;
+    documentSession = snapshot.session;
+    bindProject(documentSession);
+  }
+  project = snapshot.project;
+}
+async function withProjectOperation(operation) {
+  if (projectOperationBusy) throw new Error('A project save or open is already in progress. Wait for it to finish and retry.');
+  projectOperationBusy = true;
+  $('save').disabled = true;
+  try { return await operation(); }
+  finally { projectOperationBusy = false; $('save').disabled = false; }
+}
 /** How many steps an edit may keep: a campaign edit deep-copies the game, so it keeps few. */
 function editHistoryLimit(candidate, deepGame) {
   return deepGame ? Math.min(UNDO_DEEP_GAME_STEPS, undoDepthFor(candidate)) : undoDepthFor(candidate);
@@ -641,7 +665,7 @@ let liveEditState = null;
 function liveBegin() {
   if (liveEditState) return;
   liveEditState = { baseline: project, changed: false, wasDirty: dirty };
-  history.push(project);
+  history.push(historySnapshot());
   future = [];
   const limit = historyLimit(project);
   while (history.length > limit) history.shift();
@@ -686,16 +710,21 @@ function renderLive(message) {
   }
   render();
 }
-function commit(next, message = 'Project updated', limit = historyLimit(next)) {
+function commit(next, message = 'Project updated', limit = historyLimit(next), newDocument = false) {
   // A ramp's mesh is generated from its numbers, so any edit may have changed what it should be.
   syncRampModels(next);
   validateProject(next, { fast: true });
   // The previous project is never mutated in place (see cloneProjectForEdit), so the
   // old reference is already a valid snapshot; cloning it again cost a second
   // full copy of large campaigns on every edit.
-  history.push(project);
+  history.push(historySnapshot());
   while (history.length > Math.max(1, limit)) history.shift();
   future = [];
+  if (newDocument) {
+    documentGeneration++;
+    documentSession = {};
+    bindProject({ projectId: null, revision: 0 });
+  }
   project = next;
   dirty = true;
   editVersion++;
@@ -729,11 +758,9 @@ function replace(next, message) {
   $('import-report').hidden = true;
   selection = null;
   scriptScope = '$all';
-  commit(next, message);
+  commit(next, message, historyLimit(next), true);
   // The new document has no stored project until it is adopted (imports, opened files)
   // or saved, which is what keeps Save from overwriting whatever was open before.
-  projectId = null;
-  projectTemporary = false;
   // A replaced document has its own scenes: close the scene editor instead of showing
   // the previous project's nodes.
   openSceneIds = [];
@@ -748,26 +775,26 @@ function replace(next, message) {
  * reopens it instead of whatever was saved before.
  */
 async function adoptDocument() {
-  const version = editVersion, submitted = project.title;
-  let result;
   try {
-    // Imports and opened files are stored in the temporary slot, which every later
-    // import replaces and which the next start reopens; Save promotes it to a project.
-    result = await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: submitted, temporary: true }) });
+    await withProjectOperation(async () => {
+      const version = editVersion, generation = documentGeneration, session = documentSession, submitted = project.title;
+      // Imports and opened files are stored in the temporary slot, which every later
+      // import replaces and which the next start reopens; Save promotes it to a project.
+      const result = await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: submitted, temporary: true }) });
+      bindProject(result, session);
+      if (generation !== documentGeneration) throw new Error('The earlier document was stored, but a different document is now open. Save the current document separately.');
+      dirty = version !== editVersion;
+      persistDraft();
+      $('dirty').textContent = badgeText();
+      await refreshProjects();
+      if (result.warning) status(result.warning, true);
+    });
   } catch (error) {
     // Opening the project worked; only storing it for the next start failed (an older
     // server, or a read-only data folder). Saving later retries it.
     status(`Project opened, but it could not be stored for reopening: ${error.message}`, true);
     return;
   }
-  // An edit while the document was being stored stays unsaved and unbound.
-  if (version !== editVersion) return;
-  projectId = result.projectId ?? null;
-  projectTemporary = Boolean(result.temporary);
-  revision = result.revision;
-  dirty = false;
-  $('dirty').textContent = badgeText();
-  await refreshProjects();
 }
 /** Stored projects, newest first, with the open one selected in the file menu. */
 async function refreshProjects() {
@@ -782,7 +809,8 @@ async function refreshProjects() {
   }
   select.disabled = false;
   for (const entry of library.projects) {
-      const label = `${entry.title || entry.id}${entry.temporary ? ' (temporary)' : ''}`;
+    const duplicateTitle = library.projects.some(other => other.id !== entry.id && other.title === entry.title);
+    const label = `${entry.title || entry.id}${entry.temporary ? ' (temporary)' : duplicateTitle ? ` [${entry.id}]` : ''}`;
     select.append(new Option(label, entry.id, false, entry.id === (projectId ?? library.active)));
   }
 }
@@ -3297,51 +3325,56 @@ canvas.addEventListener('wheel', event => {
 }, { passive: false });
 
 async function saveProject() {
-  const submittedVersion = editVersion;
-  // A document without a stored project gets its own file, so saving a fresh import no
-  // longer overwrites whichever project happened to be open.
-  const result = projectId
-    ? await api('/api/project', { method: 'PUT', body: JSON.stringify({ project, revision }) })
-    : await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: project.title }) });
-  revision = result.revision;
-  projectId = result.projectId ?? projectId;
-  // Saving promotes a temporary import into a real project.
-  projectTemporary = Boolean(result.temporary);
-  dirty = editVersion !== submittedVersion;
-  if (!dirty) persistDraft();
-  render();
-  await refreshProjects();
-  const folder = result.saved?.file;
-  status(dirty ? 'Earlier snapshot saved; newer edits are still unsaved'
-    : folder ? `Project saved as a folder (${folder} plus ${result.saved.assets} asset file(s)); it reopens next time as "${project.title}"`
-    : `Project saved to the local server; it reopens next time as "${project.title}"`);
+  return withProjectOperation(async () => {
+    const submittedVersion = editVersion, generation = documentGeneration, session = documentSession;
+    // A document without a stored project gets its own file, so saving a fresh import no
+    // longer overwrites whichever project happened to be open.
+    const result = projectId
+      ? await api('/api/project', { method: 'PUT', body: JSON.stringify({ project, revision, projectId }) })
+      : await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: project.title }) });
+    bindProject(result, session);
+    if (generation !== documentGeneration) throw new Error('The earlier document was saved, but a different document is now open. The current document is not saved.');
+    dirty = editVersion !== submittedVersion;
+    persistDraft();
+    render();
+    await refreshProjects();
+    const folder = result.saved?.file;
+    status(result.warning || (dirty ? 'Earlier snapshot saved; newer edits are still unsaved'
+      : folder ? `Project saved as a folder (${folder} plus ${result.saved.assets} asset file(s)); it reopens next time as "${project.title}"`
+      : `Project saved to the local server; it reopens next time as "${project.title}"`), Boolean(result.warning));
+  });
 }
 async function reloadProject(initial = false) {
-  if (!initial && dirty && !confirm('Discard unsaved edits and load the server project? Your last draft stays in browser storage.')) return;
-  const result = await api('/api/project');
-  project = validateProject(result.project); revision = result.revision; projectId = result.projectId ?? null;
-  projectTemporary = Boolean(result.temporary); dirty = false;
-  let recovery;
-  if (initial) {
-    recovery = recoverProject(result, localStorage.getItem('opendle-draft'), localStorage.getItem('opendle-draft-metadata'));
-    if (recovery.recovery === 'conflict' && confirm('A different unsaved browser draft exists. Restore it instead of the server project? Choose Cancel to load the server project; the draft remains available in Restore draft.')) {
-      project = recovery.draft; dirty = true;
-    } else { project = recovery.project; dirty = recovery.dirty; }
-  }
-  // Drafts and older imports can still carry the narrow pickup reach that made an
-  // item on a ledge impossible to take.
-  if (upgradePickupReach(project)) { dirty = true; status('Pickup reach widened so items on ledges can be collected; save to keep it.'); }
-  // Ramps saved before they were meshes get the model their numbers describe, so an old map
-  // opens with the ramps drawn and collided the way the tool now builds them.
-  const before = project.assets?.length || 0;
-  syncRampModels(project);
-  if ((project.assets?.length || 0) !== before) { dirty = true; status('Ramp meshes generated for this map; save to keep them.'); }
-  history = []; future = []; selection = null; scriptScope = '$all'; editVersion++; clearDraft();
-  // The 3D view of a different map starts framed on that map, not on the last one's camera.
-  scenePose = null;
-  render(); fitMap();
-  status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'
-    : recovery?.warning || 'Server project loaded', Boolean(recovery?.warning));
+  return withProjectOperation(async () => {
+    if (!initial && dirty && !confirm('Discard unsaved edits and load the server project? Your last draft stays in browser storage.')) return;
+    const version = editVersion;
+    const result = await api('/api/project');
+    if (version !== editVersion) throw new Error('Project changed while loading. Your current edits were kept; retry loading when ready.');
+    project = validateProject(result.project);
+    documentGeneration++; documentSession = {}; bindProject(result); dirty = false;
+    let recovery;
+    if (initial) {
+      recovery = recoverProject(result, localStorage.getItem('opendle-draft'), localStorage.getItem('opendle-draft-metadata'));
+      if (recovery.recovery === 'conflict' && confirm('A different unsaved browser draft exists. Restore it instead of the server project? Choose Cancel to load the server project; the draft remains available in Restore draft.')) {
+        project = recovery.draft; dirty = true;
+        bindProject({ projectId: null, revision: 0 });
+      } else { project = recovery.project; dirty = recovery.dirty; }
+    }
+    // Drafts and older imports can still carry the narrow pickup reach that made an
+    // item on a ledge impossible to take.
+    if (upgradePickupReach(project)) { dirty = true; status('Pickup reach widened so items on ledges can be collected; save to keep it.'); }
+    // Ramps saved before they were meshes get the model their numbers describe, so an old map
+    // opens with the ramps drawn and collided the way the tool now builds them.
+    const before = project.assets?.length || 0;
+    syncRampModels(project);
+    if ((project.assets?.length || 0) !== before) { dirty = true; status('Ramp meshes generated for this map; save to keep them.'); }
+    history = []; future = []; selection = null; scriptScope = '$all'; editVersion++; clearDraft();
+    // The 3D view of a different map starts framed on that map, not on the last one's camera.
+    scenePose = null;
+    render(); fitMap();
+    status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'
+      : recovery?.warning || 'Server project loaded', Boolean(recovery?.warning));
+  });
 }
 /**
  * Drains what the runtime collected while playing: stopped ACS scripts, action
@@ -4058,35 +4091,35 @@ $('fit').addEventListener('click', fitMap);
 $('grid').addEventListener('change', () => { mapNeedsDraw = true; });
 $('save').addEventListener('click', guard(saveProject));
 $('reload').addEventListener('click', guard(() => reloadProject()));
-$('projects').addEventListener('change', guard(async () => {
+$('projects').addEventListener('change', guard(() => withProjectOperation(async () => {
   const id = $('projects').value;
   if (!id || id === projectId) return;
   if (dirty && !confirm('Discard unsaved edits and open this stored project? Your draft stays in browser storage.')) {
     await refreshProjects();
     return;
   }
+  const version = editVersion;
   const result = await api('/api/projects/open', { method: 'POST', body: JSON.stringify({ id }) });
+  if (version !== editVersion) throw new Error('Project changed while opening another project. Your current edits were kept; retry opening when ready.');
   project = validateProject(result.project);
-  revision = result.revision;
-  projectId = result.projectId ?? id;
-  projectTemporary = Boolean(result.temporary);
+  documentGeneration++; documentSession = {}; bindProject(result);
   dirty = false;
   editVersion++;
   history = []; future = []; selection = null; scriptScope = '$all';
   $('dirty').textContent = badgeText();
   render(); fitMap();
   status(`Opened stored project "${project.title}"; it reopens next time`);
-}));
+})));
 $('undo').addEventListener('click', () => {
   if (!history.length) return;
   // Projects are never mutated in place (see cloneProjectForEdit), so the current
   // value is already a safe snapshot and needs no copy.
-  future.push(project); project = history.pop(); dirty = true; editVersion++; clearDraft();
+  future.push(historySnapshot()); restoreHistory(history.pop()); dirty = true; editVersion++; clearDraft();
   persistDraft(); render(); status('Undone');
 });
 $('redo').addEventListener('click', () => {
   if (!future.length) return;
-  history.push(project); project = future.pop(); dirty = true; editVersion++; clearDraft();
+  history.push(historySnapshot()); restoreHistory(future.pop()); dirty = true; editVersion++; clearDraft();
   persistDraft(); render(); status('Redone');
 });
 $('new').addEventListener('click', guard(() => {
@@ -4097,7 +4130,7 @@ $('restore').addEventListener('click', guard(() => {
   if (!draft) throw new Error('There is no local draft in this browser');
   if (!confirm('Restore your last browser draft? You can undo this change.')) return;
   let parsed;
-  try { parsed = JSON.parse(draft); }
+  try { parsed = draftProject(draft); }
   catch (error) { throw new Error(`The browser draft is not valid JSON (${error.message}). Export or clear it before restoring.`); }
   replace(parsed, 'Browser draft restored; save to keep it on the server');
 }));

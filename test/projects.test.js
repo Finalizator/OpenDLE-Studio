@@ -69,15 +69,15 @@ test('saving updates the open project instead of replacing another one', t => {
   assert.deepEqual(store.list().projects.map(entry => entry.id).sort(), ['hexabun', 'imported-wad-game']);
 });
 
-test('adopting the same title twice replaces that project rather than adding another', t => {
+test('adopting the same title creates a separate project instead of overwriting saved work', t => {
   const directory = withDirectory(t);
   const store = new ProjectStore(join(directory, 'project.json'));
   assert.equal(store.list().projects.length, 0);
   store.adopt(titled('Imported WAD game'), 'Imported WAD game');
   const second = store.adopt(titled('Imported WAD game'), 'Imported WAD game');
-  assert.equal(second.revision, 2);
-  assert.equal(store.list().projects.length, 1);
-  assert.equal(store.snapshot().projectId, 'imported-wad-game');
+  assert.equal(second.projectId, 'imported-wad-game-2');
+  assert.equal(store.list().projects.length, 2);
+  assert.equal(store.open('imported-wad-game').project.title, 'Imported WAD game');
 });
 
 test('an unknown or escaping project id is refused', t => {
@@ -144,6 +144,92 @@ test('project ids are file safe slugs of the title', () => {
   assert.equal(projectSlug('../etc/passwd'), 'etc-passwd');
   assert.equal(projectSlug('   '), 'project');
   assert.ok(projectSlug('x'.repeat(200)).length <= 60);
+});
+
+test('a save from another project is refused even when both revisions match', t => {
+  const store = new ProjectStore(join(withDirectory(t), 'project.json'));
+  const first = store.adopt(titled('First'));
+  const second = store.adopt(titled('Second'));
+  assert.equal(first.revision, second.revision);
+  assert.throws(() => store.update(first.project, first.revision, first.projectId), error => error.status === 409);
+  assert.deepEqual(store.snapshot().project, second.project);
+});
+
+test('replacing an inactive temporary slot never reuses a previous revision', t => {
+  const store = new ProjectStore(join(withDirectory(t), 'project.json'));
+  const first = store.adopt(titled('First'), undefined, { temporary: true });
+  store.adopt(titled('Second'));
+  const replacement = store.adopt(titled('First'), undefined, { temporary: true });
+  assert.ok(replacement.revision > first.revision);
+  assert.throws(() => store.update(first.project, first.revision, first.projectId), error => error.status === 409);
+});
+
+test('temporary promotion keeps same-title work and cannot reset stale temporary revisions', t => {
+  const file = join(withDirectory(t), 'project.json'), store = new ProjectStore(file);
+  const original = store.adopt(titled('Same name'));
+  const imported = store.adopt(titled('Same name'), undefined, { temporary: true });
+  const edited = structuredClone(imported.project); edited.variables.score = 123;
+  const promoted = store.update(edited, imported.revision);
+  assert.notEqual(promoted.projectId, original.projectId, 'promotion does not clobber same-title projects');
+  assert.equal(store.open(original.projectId).project.variables.score, 0);
+  assert.equal(store.open(promoted.projectId).project.variables.score, 123);
+  const restarted = new ProjectStore(file);
+  const next = restarted.adopt(titled('Next import'), undefined, { temporary: true });
+  assert.ok(next.revision > imported.revision, 'the temporary revision watermark survives promotion and restart');
+  assert.throws(() => restarted.update(imported.project, imported.revision, imported.projectId), error => error.status === 409);
+});
+test('failed index writes leave adopt, open, and promotion unchanged in memory and on restart', t => {
+  for (const operation of ['adopt', 'open', 'promote']) {
+    const file = join(withDirectory(t), 'project.json'), store = new ProjectStore(file);
+    store.adopt(titled('Saved'));
+    store.adopt(titled('Other'));
+    if (operation === 'promote') store.adopt(titled('Saved'), undefined, { temporary: true });
+    const before = store.snapshot(), index = store.list();
+    store.saveIndex = () => { throw new Error('Simulated full disk writing project index'); };
+    const edited = structuredClone(before.project);
+    edited.variables.score = 123;
+    assert.throws(() => {
+      if (operation === 'adopt') store.adopt(titled('Imported'), undefined, { temporary: true });
+      if (operation === 'open') store.open('saved');
+      if (operation === 'promote') store.update(edited, before.revision, before.projectId);
+    }, /Simulated full disk/);
+    assert.deepEqual(store.snapshot(), before, `${operation} did not publish failed work in memory`);
+    assert.deepEqual(store.list(), index);
+    const restarted = new ProjectStore(file);
+    assert.deepEqual(restarted.snapshot(), before, `${operation} left the last saved copy reopenable`);
+    if (operation === 'promote') {
+      assert.equal(restarted.open('saved').project.variables.score, 0, 'previous destination is intact');
+      assert.equal(restarted.open('temporary').project.variables.score, 0, 'temporary source is intact');
+    }
+  }
+});
+
+test('a missing active project is an explicit load error, not a new blank project', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json'), store = new ProjectStore(file);
+  const saved = store.adopt(titled('Missing'));
+  const index = JSON.parse(readFileSync(join(directory, 'projects.json'), 'utf8'));
+  rmSync(join(directory, index.projects.find(entry => entry.id === saved.projectId).file));
+  assert.throws(() => new ProjectStore(file), /missing/i);
+});
+
+test('promotion cannot delete its temporary source when writing the destination fails', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json'), store = new ProjectStore(file);
+  const imported = store.adopt(titled('Imported'), undefined, { temporary: true });
+  const before = store.snapshot();
+  mkdirSync(join(directory, 'projects', 'imported', 'project.json.tmp'), { recursive: true });
+  assert.throws(() => store.update(imported.project, imported.revision), /EISDIR/);
+  assert.deepEqual(store.snapshot(), before);
+  assert.deepEqual(new ProjectStore(file).snapshot(), before);
+});
+
+test('an invalid project index cannot silently fall back to the old single-file project', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json');
+  writeFileSync(file, JSON.stringify({ project: titled('Old seed project'), revision: 1 }));
+  writeFileSync(join(directory, 'projects.json'), JSON.stringify({ version: 1, active: 'latest',
+    projects: [{ id: 'latest' }] }));
+  assert.throws(() => new ProjectStore(file), /project list is invalid/);
+  writeFileSync(join(directory, 'projects.json'), JSON.stringify({ version: 1, active: 'latest', projects: [] }));
+  assert.throws(() => new ProjectStore(file), /active project is missing/);
 });
 
 // A declared model facing used to be subtracted from the drawn yaw, so a project that declared one

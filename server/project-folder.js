@@ -79,7 +79,7 @@ export function assetFileName(asset, mime, digest) {
  * Returns `{ document, files }` where `files` is `[{ path, bytes }]` with paths relative to the
  * project folder and `/` separators. The caller writes them; nothing here touches the disk.
  */
-export function packProject(project, { revision = 0 } = {}) {
+export function packProject(project, { revision = 0, immutableSections = false } = {}) {
   const document = structuredClone(project);
   const files = new Map(), shared = new Map();
   let inline = 0, split = 0;
@@ -111,8 +111,10 @@ export function packProject(project, { revision = 0 } = {}) {
   const sections = {};
   for (const [key, name] of Object.entries(SECTION_FILES)) {
     if (document[key] === undefined) continue;
-    sections[key] = name;
-    files.set(name, documentBytes(document[key]));
+    const bytes = documentBytes(document[key]);
+    const path = immutableSections ? `${key}-${createHash('sha256').update(bytes).digest('hex')}.json` : name;
+    sections[key] = path;
+    files.set(path, bytes);
     delete document[key];
   }
   return {
@@ -144,6 +146,7 @@ export function readFolderFile(directory, path) {
  * never split — an old single-file project — comes back unchanged.
  */
 export function unpackProject(document, read = null) {
+  if (!Number.isSafeInteger(document.revision) || document.revision < 0) throw new Error('Saved project revision is invalid');
   const project = structuredClone(document.project);
   const missing = [];
   // A section lives in its own file; the document names it so the project comes back whole.
@@ -163,7 +166,7 @@ export function unpackProject(document, read = null) {
     delete asset.srcMime;
   }
   if (missing.length) throw new Error(`Project asset files are missing: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ` and ${missing.length - 5} more` : ''}`);
-  return { project, revision: Number.isSafeInteger(document.revision) ? document.revision : 0 };
+  return { project, revision: document.revision };
 }
 
 /** True when a parsed `project.json` names files beside it rather than holding the bytes. */
@@ -179,4 +182,3 @@ export function projectZipEntries(project, { revision = 0 } = {}) {
     ...files.map(file => ({ path: file.path, data: file.bytes, mode: 0o644 })),
   ];
 }
-

@@ -143,7 +143,7 @@ test('authenticated standalone WAD upload imports UDMF source and saves/reloads 
   const { project } = await response.json();
   validateProject(project); assert.equal(project.importSource.format, 'udmf');
   const save = await fetch(`${url}/api/project`, { method: 'PUT',
-    headers: { Authorization: 'Bearer udmf-test', 'Content-Type': 'application/json' }, body: JSON.stringify({ project, revision: 0 }) });
+    headers: { Authorization: 'Bearer udmf-test', 'Content-Type': 'application/json' }, body: JSON.stringify({ project, revision: 0, projectId: null }) });
   assert.equal(save.status, 200);
   assert.deepEqual(store.snapshot().project.importSource, project.importSource);
 });
