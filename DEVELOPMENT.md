@@ -963,6 +963,8 @@ Three things make the number findable rather than guessed:
   eyeballing it. An arrow on every faced object buried the map in arrows nobody had asked to see.
   The 3D arrowhead meets the shaft at its forward tip; the node editor's 2D heading tick uses the
   same nose angle and map-Y direction, so switching views does not reverse the indicated heading.
+  Model markers reset all three rotation axes after cloning the player marker: a west-facing
+  player's quaternion otherwise becomes X/Z half-turns that reverse a subsequently assigned yaw.
 - **"Measure from the model (90°)"**, in Properties, which reads the axis out of the model's own
   geometry. Almost everything with a front is longer along it than across it, so
   `modelForwardAngle` in [`shared/model-forward.js`](./shared/model-forward.js) measures the

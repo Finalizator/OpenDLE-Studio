@@ -725,7 +725,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     const marker = facingMarkerAt(0);
     const pose = facingArrowPose(posed, sectorAt(sectors, posed.x, posed.y)?.floorHeight ?? 0);
     marker.position.set(pose.x, pose.y, pose.z);
-    marker.rotation.y = pose.yaw;
+    // Cloning the player's quaternion can represent a westward yaw as X/Z half-turns.
+    marker.rotation.set(0, pose.yaw, 0);
     marker.visible = frustum.containsPoint(marker.position);
     // Constant size on screen, the way the player start's arrow is: a model across a big room
     // still reads without the arrow becoming a wall of its own.

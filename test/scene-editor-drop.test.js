@@ -7,7 +7,7 @@ import { addRoom, createProject, validateProject } from '../shared/project.js';
 import { addRamp } from '../shared/ramp.js';
 import { cloneEntitiesForPaste } from '../shared/entity-groups.js';
 import { facingArrowPose, hasModelFacing, modelOrientation, noseAngle, playerStartPose } from '../shared/entity-visuals.js';
-import { sectorGeometry } from '../shared/sectors.js';
+import { sectorAt, sectorGeometry } from '../shared/sectors.js';
 import {
   addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, describeSurfaceTarget,
   moveEntityToFloor, requireImageAsset, resolveWallSide, sectorTarget, snapValue, wallPartAt, wallTarget,
@@ -358,6 +358,54 @@ test('the drawn 3D arrowhead meets the shaft tip and agrees with the 2D arrow', 
     }
   } finally {
     for (const child of marker.children) { child.geometry.dispose(); child.material.dispose(); }
+  }
+});
+
+test('a model arrow cloned from a west-facing player still matches the 2D heading', () => {
+  const editor = readFileSync(new URL('../public/scene-editor.js', import.meta.url), 'utf8');
+  const markerSource = editor.slice(editor.indexOf('const playerMarker ='), editor.indexOf('// Interaction areas and colliders'));
+  const updateSource = editor.slice(editor.indexOf('function updateFacingMarkers('), editor.indexOf('function updateVertexMarkers('));
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const drawSource = app.slice(app.indexOf('function drawFacingArrow('), app.indexOf('// Ctrl+C / Ctrl+V'));
+  const draw = runInNewContext(`${drawSource}\ndrawFacingArrow;`, { noseAngle });
+  for (const playerAngle of [-180, 135, 225, 0, 90, 270]) {
+    const project = createProject(), resources = new Set(), helperGroup = new THREE.Group();
+    const player = project.map.entities.find(entity => entity.type === 'player');
+    player.angle = playerAngle;
+    const model = { id: 'truck', type: 'decoration', x: 7, y: 5, angle: 0, modelFacing: 0, modelAsset: 'truck-model' };
+    project.map.entities.push(model);
+    const context = {
+      THREE, helperGroup, project, sectors: sectorGeometry(project), sectorAt,
+      entityById: new Map(project.map.entities.map(entity => [entity.id, entity])),
+      selected: { kind: 'entity', id: model.id }, canvas: { dataset: {} },
+      camera: new THREE.PerspectiveCamera(), facingArrowPose, hasModelFacing, playerStartPose,
+      own: resource => { resources.add(resource); return resource; },
+    };
+    const markers = runInNewContext(`${markerSource}\n${updateSource}
+      ({ facingMarkers, updatePlayerMarker, updateFacingMarkers });`, context);
+    context.camera.position.set(7, 400, 5);
+    const rect = { height: 600 }, frustum = new THREE.Frustum();
+    try {
+      for (const [angle, modelFacing] of [[0, 0], [90, 0], [180, 0], [270, 0], [-93.93476166504624, -90], [-93.93476166504624, 90], [37, -12]]) {
+        Object.assign(model, { angle, modelFacing });
+        markers.updatePlayerMarker(rect, frustum);
+        markers.updateFacingMarkers(rect, frustum);
+        helperGroup.updateMatrixWorld(true);
+        const marker = markers.facingMarkers[0], stem = marker.children[0];
+        const origin = marker.getWorldPosition(new THREE.Vector3());
+        const direction = new THREE.Vector3().fromBufferAttribute(stem.geometry.attributes.position, 1)
+          .applyMatrix4(stem.matrixWorld).sub(origin).normalize();
+        const lines = [];
+        draw({ beginPath() {}, moveTo() {}, lineTo(x, y) { lines.push([x, y]); }, stroke() {}, closePath() {}, fill() {} }, model, '#ff9d5c', 1);
+        const label = `player ${playerAngle}, model ${angle} + facing ${modelFacing}`;
+        assert.ok(Math.abs(direction.x - (lines[0][0] - model.x) / 26) < 1e-9, `${label}: same X direction`);
+        assert.ok(Math.abs(direction.z - (lines[0][1] - model.y) / 26) < 1e-9, `${label}: same map-Y direction`);
+        assert.ok(Math.abs(direction.y) < 1e-9, `${label}: arrow stays on the floor plane`);
+      }
+    } finally {
+      helperGroup.traverse(node => { if (node.material) resources.add(node.material); });
+      for (const resource of resources) resource.dispose();
+    }
   }
 });
 
