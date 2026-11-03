@@ -104,8 +104,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   // one turn of the group: `rotation.y = -angle` is the same convention the models use.
   const playerArrowShape = own(new THREE.BufferGeometry());
   playerArrowShape.setAttribute('position', new THREE.Float32BufferAttribute([
-    12, 0, 0, -6, 0, 6, -6, 0, -6,
-    12, 0, 0, -6, 0, -6, -6, 0, 6,
+    24, 0, 0, 15, 0, 6, 15, 0, -6,
   ], 3));
   const playerArrow = new THREE.Mesh(playerArrowShape, own(new THREE.MeshBasicMaterial({
     color: '#ffd34d', depthTest: false, transparent: true, opacity: .95, side: THREE.DoubleSide,

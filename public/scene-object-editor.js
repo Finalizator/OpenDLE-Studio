@@ -1,4 +1,5 @@
 import { entityColors } from './render.js';
+import { noseAngle } from '/shared/entity-visuals.js';
 import {
   sceneChildren, sceneDepths, sceneSubtree, sceneDescendants, sceneBounds, sceneOrigin,
   addSceneObject, removeSceneObjects, duplicateSceneObject, reparentSceneObject, placeSceneObject, moveSceneObject,
@@ -1470,11 +1471,11 @@ export function createSceneObjectEditor({ callbacks }) {
         ctx.fill(); ctx.stroke();
       }
       // Facing tick, so rotation is visible without opening the inspector.
-      const angle = (Number(entity.angle) || 0) * Math.PI / 180;
+      const angle = noseAngle(entity) * Math.PI / 180;
       ctx.strokeStyle = 'rgba(20,20,20,.9)';
       ctx.beginPath();
       ctx.moveTo(point.x, point.y);
-      ctx.lineTo(point.x + Math.cos(angle) * size, point.y - Math.sin(angle) * size);
+      ctx.lineTo(point.x + Math.cos(angle) * size, point.y + Math.sin(angle) * size);
       ctx.stroke();
       if (zoom > .55 || selected?.id === entity.id) {
         ctx.fillStyle = selected?.id === entity.id ? '#ffffff' : '#c9ccd4';

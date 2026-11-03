@@ -1,6 +1,8 @@
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import assert from 'node:assert/strict';
+import * as THREE from 'three';
 import { addRoom, createProject, validateProject } from '../shared/project.js';
 import { addRamp } from '../shared/ramp.js';
 import { cloneEntitiesForPaste } from '../shared/entity-groups.js';
@@ -322,6 +324,56 @@ test('a declared model facing never turns the body, and the arrow follows the no
   assert.match(app, /hasModelFacing\(entity\) && selection\?\.kind === 'entity' && selection\.id === entity\.id\)\s*\n\s*drawFacingArrow/,
     'the 2D map draws the arrow for the selected model only');
   assert.match(editor, /const posed = selected\?\.kind === 'entity'/, 'so does the 3D view');
+});
+
+test('the drawn 3D arrowhead meets the shaft tip and agrees with the 2D arrow', () => {
+  const editor = readFileSync(new URL('../public/scene-editor.js', import.meta.url), 'utf8');
+  const markerSource = editor.slice(editor.indexOf('const playerMarker ='), editor.indexOf('helperGroup.add(playerMarker);'));
+  const marker = runInNewContext(`${markerSource}\nplayerMarker;`, { THREE, own: value => value });
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const drawSource = app.slice(app.indexOf('function drawFacingArrow('), app.indexOf('// Ctrl+C / Ctrl+V'));
+  const draw = runInNewContext(`${drawSource}\ndrawFacingArrow;`, { noseAngle });
+  const [stem, head] = marker.children;
+  try {
+    for (const [angle, modelFacing] of [[0, 0], [90, 0], [180, 0], [270, 0], [0, 90], [37, -12], [-93.93476166504624, 90], [300, 90]]) {
+      const entity = { x: 7, y: -11, angle, modelFacing };
+      const pose = facingArrowPose(entity, 8);
+      marker.position.set(pose.x, pose.y, pose.z);
+      marker.rotation.y = pose.yaw;
+      marker.updateMatrixWorld(true);
+      const tip = new THREE.Vector3().fromBufferAttribute(stem.geometry.attributes.position, 1).applyMatrix4(stem.matrixWorld);
+      const headTip = new THREE.Vector3().fromBufferAttribute(head.geometry.attributes.position, 0).applyMatrix4(head.matrixWorld);
+      assert.ok(tip.distanceTo(headTip) < 1e-9, 'the arrowhead is at the forward end, not behind the shaft');
+      for (let index = 1; index < 3; index++) {
+        const base = new THREE.Vector3().fromBufferAttribute(head.geometry.attributes.position, index).applyMatrix4(head.matrixWorld);
+        assert.ok(base.sub(marker.position).dot(tip.clone().sub(marker.position)) < tip.distanceToSquared(marker.position),
+          'both base corners are behind the tip');
+      }
+      const lines = [];
+      const ctx = { beginPath() {}, moveTo() {}, lineTo(x, y) { lines.push([x, y]); }, stroke() {}, closePath() {}, fill() {} };
+      draw(ctx, entity, '#ff9d5c', 1);
+      const dx = (lines[0][0] - entity.x) / 26, dy = (lines[0][1] - entity.y) / 26;
+      assert.ok(Math.abs((tip.x - pose.x) / 24 - dx) < 1e-9, `same X direction at ${angle} + ${modelFacing}`);
+      assert.ok(Math.abs((tip.z - pose.z) / 24 - dy) < 1e-9, `same map-Y direction at ${angle} + ${modelFacing}`);
+    }
+  } finally {
+    for (const child of marker.children) { child.geometry.dispose(); child.material.dispose(); }
+  }
+});
+
+test('the node editor 2D heading tick uses the nose and the same map-Y direction as 3D', () => {
+  const editor = readFileSync(new URL('../public/scene-object-editor.js', import.meta.url), 'utf8');
+  const tickSource = editor.slice(editor.indexOf('// Facing tick,'), editor.indexOf('if (zoom > .55'));
+  for (const entity of [{ angle: 90 }, { angle: 0, modelFacing: 90 }, { angle: -93.93476166504624, modelFacing: 90 }, { angle: 37, modelFacing: -12 }]) {
+    const point = { x: 30, y: 50 }, size = 20;
+    let tip;
+    const ctx = { beginPath() {}, moveTo() {}, lineTo(x, y) { tip = { x, y }; }, stroke() {} };
+    runInNewContext(tickSource, { entity, point, size, ctx, noseAngle });
+    const pose = facingArrowPose(entity);
+    const direction = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), pose.yaw);
+    assert.ok(Math.abs((tip.x - point.x) / size - direction.x) < 1e-9);
+    assert.ok(Math.abs((tip.y - point.y) / size - direction.z) < 1e-9);
+  }
 });
 
 // The declared facing must reach the simulation: a route aims the nose along the path by setting the

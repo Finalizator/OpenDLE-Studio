@@ -961,6 +961,8 @@ Three things make the number findable rather than guessed:
   because a level has exactly one start), at a constant size on screen, and the 3D view publishes it
   on the canvas dataset (`modelFacing`, `facingAt`, `facingDrawn`) so a build can be checked without
   eyeballing it. An arrow on every faced object buried the map in arrows nobody had asked to see.
+  The 3D arrowhead meets the shaft at its forward tip; the node editor's 2D heading tick uses the
+  same nose angle and map-Y direction, so switching views does not reverse the indicated heading.
 - **"Measure from the model (90°)"**, in Properties, which reads the axis out of the model's own
   geometry. Almost everything with a front is longer along it than across it, so
   `modelForwardAngle` in [`shared/model-forward.js`](./shared/model-forward.js) measures the
