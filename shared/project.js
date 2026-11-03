@@ -15,7 +15,7 @@ import { MAX_SCENES, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
 import { MAX_JOINTS, validateJoint } from './joints.js';
 import { validatePanel } from './panel.js';
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
-import { MAX_PATHS, MAX_PATH_POINTS } from './paths.js';
+import { MAX_PATHS, MAX_PATH_POINTS, PATH_MODES as PATH_CURVE_MODES } from './paths.js';
 import { validateTimesheet, timesheetCueEvents, TIMESHEET_CUE_CONDITION } from './timesheet.js';
 
 /** How many timelines one project may carry. */
@@ -253,6 +253,12 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
       assert(ramp.slope > 0 && ramp.slope < 90, 'Ramp slope must be between 0 and 90 degrees');
       assert(ramp.length > 0 && ramp.width > 0, 'Ramp length and width must be positive');
       assert(ramp.facing === 'left' || ramp.facing === 'right', 'Ramp facing must be left or right');
+      if (ramp.pathId !== undefined) {
+        assert(typeof ramp.pathId === 'string' && pathRef?.(ramp.pathId), 'Ramp references an unknown path');
+        assert(['single', 'ridge'].includes(ramp.profile), 'Path ramp profile must be single or ridge');
+        object(ramp.pathOrigin, 'Ramp path origin');
+        for (const axis of ['x', 'y', 'z']) number(ramp.pathOrigin[axis], `Ramp path origin ${axis}`);
+      }
     }
   }
   number(entity.x, 'Entity X');
@@ -336,6 +342,11 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
       if (config.shape === 'model') {
         assert(entity.modelAsset, 'A model collider needs the object to have a model');
         assert(assets.find(asset => asset.id === entity.modelAsset)?.kind === 'model', 'A model collider needs a model asset');
+      }
+      if (config.modelCollision !== undefined) {
+        assert(['convex', 'trimesh'].includes(config.modelCollision), 'Invalid model collision mode');
+        assert(config.modelCollision !== 'trimesh' || config.body === 'fixed' && config.shape === 'model',
+          'Triangle mesh collision requires a fixed model body');
       }
       // A wedge's own numbers: how steep its face is and which edge is the ridge.
       if (config.shape === 'wedge') {
@@ -679,6 +690,18 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       pathIds.add(path.id);
       text(path.name, 'Path name', 100);
       assert(typeof path.closed === 'boolean', 'A path must say whether it is closed');
+      if (path.mode !== undefined) assert(PATH_CURVE_MODES.includes(path.mode), 'Invalid path curve mode');
+      if (path.softness !== undefined) number(path.softness, 'Path softness', 0, 1);
+      if (path.steps !== undefined) {
+        number(path.steps, 'Path resolution', 1, 256);
+        assert(Number.isInteger(path.steps), 'Path resolution must be an integer');
+      }
+      if (path.sine !== undefined) {
+        object(path.sine, 'Path sine settings');
+        for (const key of ['amplitude', 'height']) if (path.sine[key] !== undefined) number(path.sine[key], `Path sine ${key}`, -8192, 8192);
+        if (path.sine.cycles !== undefined) number(path.sine.cycles, 'Path sine cycles', .25, 16);
+        if (path.sine.phase !== undefined) number(path.sine.phase, 'Path sine phase', -360, 360);
+      }
       array(path.points, 'Path points', MAX_PATH_POINTS);
       const pointIds = new Set();
       for (const point of path.points) {
@@ -692,6 +715,14 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         // Curvature is how much the route sweeps through this point: 0 is a corner, 1 a
         // smooth pass. Anything outside that is clamped when sampling, so it is rejected here.
         if (point.curve !== undefined) number(point.curve, 'Path point curvature', 0, 1);
+        if (point.steps !== undefined) {
+          number(point.steps, 'Waypoint outgoing face density', 1, 256);
+          assert(Number.isInteger(point.steps), 'Waypoint outgoing face density must be an integer');
+        }
+        for (const key of ['handleIn', 'handleOut']) if (point[key] !== undefined) {
+          object(point[key], `Path ${key}`);
+          for (const axis of ['x', 'y', 'z']) number(point[key][axis], `Path ${key} ${axis}`, -65536, 65536);
+        }
         // A named waypoint is what a rule's waypoint picker reads, so the name is part of the data
         // and validated like any other text rather than trusted blindly from a saved project.
         if (point.name !== undefined) text(point.name, 'Path point name', 100);

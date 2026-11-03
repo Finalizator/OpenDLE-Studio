@@ -6,6 +6,7 @@
 // way a ramp cut in Blockbench and a ramp built by the tool travel the same path, and there is no
 // second geometry to keep in step.
 import { dataURI, decodeDataURI, encodeGLB } from './gltf.js';
+import { pathRampFaces, pathRampModelId } from './path-ramp.js';
 
 /**
  * A wedge ramp's six corners, named, in map units, y up, base centred on the origin.
@@ -79,19 +80,24 @@ function faceUv(name, [x, y, z]) {
  * from needs no conversion between what is drawn and what is collided.
  */
 export function rampModelDocument(shape) {
+  return facesModelDocument(rampFaces(shape));
+}
+
+export function facesModelDocument(faces) {
   const positions = [], normals = [], uvs = [], indices = [];
-  for (const face of rampFaces(shape)) {
+  for (const face of faces) {
     const normal = faceNormal(face.corners), first = positions.length / 3;
-    for (const corner of face.corners) {
+    for (const [index, corner] of face.corners.entries()) {
       positions.push(corner[0], corner[1], corner[2]);
-      normals.push(normal[0], normal[1], normal[2]);
-      uvs.push(...faceUv(face.name, corner));
+      normals.push(...(face.normals?.[index] || normal));
+      uvs.push(...(face.uvs?.[index] || faceUv(face.name, corner)));
     }
     // A quad is two triangles, wound the same way as the face; an end is already one.
     if (face.corners.length === 4) indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
     else indices.push(first, first + 1, first + 2);
   }
-  const arrays = [new Float32Array(positions), new Float32Array(normals), new Float32Array(uvs), new Uint16Array(indices)];
+  const IndexArray = positions.length / 3 > 65535 ? Uint32Array : Uint16Array;
+  const arrays = [new Float32Array(positions), new Float32Array(normals), new Float32Array(uvs), new IndexArray(indices)];
   const buffer = new Uint8Array(arrays.reduce((size, array) => size + array.byteLength, 0));
   let offset = 0;
   const bufferViews = arrays.map(array => {
@@ -100,7 +106,11 @@ export function rampModelDocument(shape) {
     offset += array.byteLength;
     return view;
   });
-  const axis = index => positions.filter((_, position) => position % 3 === index);
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  positions.forEach((value, index) => {
+    const axis = index % 3;
+    min[axis] = Math.min(min[axis], value); max[axis] = Math.max(max[axis], value);
+  });
   const json = {
     asset: { version: '2.0', generator: 'OpenDLE ramp tool' },
     scene: 0, scenes: [{ nodes: [0] }], nodes: [{ name: 'Ramp', mesh: 0 }],
@@ -110,10 +120,10 @@ export function rampModelDocument(shape) {
     buffers: [{ byteLength: buffer.length }], bufferViews,
     accessors: [
       { bufferView: 0, componentType: 5126, count: positions.length / 3, type: 'VEC3',
-        min: [0, 1, 2].map(index => Math.min(...axis(index))), max: [0, 1, 2].map(index => Math.max(...axis(index))) },
+        min, max },
       { bufferView: 1, componentType: 5126, count: normals.length / 3, type: 'VEC3' },
       { bufferView: 2, componentType: 5126, count: uvs.length / 2, type: 'VEC2' },
-      { bufferView: 3, componentType: 5123, count: indices.length, type: 'SCALAR' },
+      { bufferView: 3, componentType: IndexArray === Uint32Array ? 5125 : 5123, count: indices.length, type: 'SCALAR' },
     ],
   };
   return { json, binary: buffer };
@@ -135,7 +145,7 @@ export function rampModelAsset(shape, { id } = {}) {
   const { json, binary } = rampModelDocument(shape);
   const glb = encodeGLB(json, binary);
   return { id: id || rampModelId(shape), name: 'Ramp', kind: 'model', format: 'glb',
-    src: dataURI(glb, 'model/gltf-binary'), animations: [] };
+    src: dataURI(glb, 'model/gltf-binary'), meshes: 1, skins: 0, animations: [] };
 }
 
 /**
@@ -146,6 +156,20 @@ export function rampModelAsset(shape, { id } = {}) {
  */
 export function ensureRampModel(project, entity) {
   if (!entity || entity.type !== 'ramp' || !entity.physics) return null;
+  if (entity.ramp?.pathId) {
+    const path = (project.paths || []).find(item => item.id === entity.ramp.pathId);
+    if (!path) throw new Error(`Ramp "${entity.name}" references a missing path`);
+    const faces = pathRampFaces(path, entity.ramp), id = pathRampModelId(faces);
+    project.assets ||= [];
+    if (!project.assets.some(asset => asset.id === id)) {
+      const { json, binary } = facesModelDocument(faces);
+      project.assets.push({ id, name: `${path.name} ramp`.slice(0, 100), kind: 'model', format: 'glb',
+        src: dataURI(encodeGLB(json, binary), 'model/gltf-binary'), meshes: 1, skins: 0, animations: [] });
+    }
+    entity.modelAsset = id; entity.modelScale = 1;
+    entity.physics.shape = 'model'; entity.physics.body = 'fixed'; entity.physics.modelCollision = 'trimesh';
+    return id;
+  }
   const shape = { width: entity.physics.width, height: entity.physics.height,
     depth: entity.physics.depth, facing: entity.physics.wedge?.facing };
   const id = rampModelId(shape);
@@ -171,6 +195,11 @@ export function pruneRampModels(project) {
   const collect = entities => { for (const entity of entities || []) if (entity.modelAsset) used.add(entity.modelAsset); };
   collect(project.map?.entities);
   for (const scene of project.scenes || []) collect(scene.entities);
+  for (const level of project.game?.levels || []) {
+    collect(level.data?.map?.entities);
+    for (const scene of level.data?.scenes || []) collect(scene.entities);
+    for (const id of level.assetIds || []) used.add(id);
+  }
   project.assets = project.assets.filter(asset => !asset.id.startsWith('ramp_mesh_') || used.has(asset.id));
 }
 

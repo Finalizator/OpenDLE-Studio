@@ -19,17 +19,24 @@ export const MAX_PATHS = 128;
 export const MAX_PATH_POINTS = 512;
 /** Samples per segment when nothing more specific is asked for. */
 export const PATH_STEPS = 12;
+export const PATH_MODES = ['smooth', 'straight', 'bezier', 'sine'];
+export const PATH_SINE_DEFAULTS = { amplitude: 64, height: 0, cycles: 1, phase: 0 };
 
-export function createPath({ id, name = 'Path', closed = false, points = [] } = {}) {
-  return { id, name, closed: Boolean(closed), points: points.map(point => createPathPoint(point)) };
+export function createPath({ id, name = 'Path', closed = false, points = [], mode, softness, steps, sine } = {}) {
+  const path = { id, name, closed: Boolean(closed), points: points.map(point => createPathPoint(point)) };
+  for (const [key, value] of Object.entries({ mode, softness, steps, sine })) if (value !== undefined) path[key] = structuredClone(value);
+  return path;
 }
 
-export function createPathPoint({ id, name, x = 0, y = 0, z = 0, curve = 1 } = {}) {
+export function createPathPoint({ id, name, x = 0, y = 0, z = 0, curve = 1, handleIn, handleOut, steps } = {}) {
   const point = { id, x, y, z, curve };
   // A waypoint's name is optional: a route usually reads fine as "Waypoint 3", and only a route
   // that other rules point at needs words ("Start", "Gate", "Depot").
   const label = typeof name === 'string' ? name.trim() : '';
   if (label) point.name = label;
+  if (handleIn) point.handleIn = { ...handleIn };
+  if (handleOut) point.handleOut = { ...handleOut };
+  if (steps !== undefined) point.steps = steps;
   return point;
 }
 
@@ -75,7 +82,14 @@ function tangentsAt(points, index, closed) {
   const current = points[index], before = closed || index > 0 ? at(index - 1) : current;
   const after = closed || index < count - 1 ? at(index + 1) : current;
   const scale = 0.5 * clamp01(current.curve ?? 1);
-  return { x: (after.x - before.x) * scale, y: (after.y - before.y) * scale, z: (after.z - before.z) * scale };
+  return { x: (after.x - before.x) * scale, y: (after.y - before.y) * scale, z: ((after.z || 0) - (before.z || 0)) * scale };
+}
+
+export function pathHandle(path, index, key) {
+  const explicit = path.points[index][key];
+  if (explicit) return explicit;
+  const tangent = tangentsAt(path.points, index, path.closed), sign = key === 'handleIn' ? -1 : 1;
+  return { x: tangent.x * sign / 3, y: tangent.y * sign / 3, z: tangent.z * sign / 3 };
 }
 
 /** How many segments a path has: one per gap, plus the closing one when it loops. */
@@ -92,19 +106,75 @@ export function segmentCount(path) {
  * number with no special cases. At `curve = 0` on both ends the tangents vanish and this is
  * exactly the straight line between the two points.
  */
-export function segmentPoint(points, index, t, closed = false) {
+export function segmentPoint(points, index, t, closed = false, options = {}) {
   const count = points.length;
   const from = points[index], to = points[(index + 1) % count];
+  if (t <= 0) return { x: from.x, y: from.y, z: from.z || 0 };
+  if (t >= 1) return { x: to.x, y: to.y, z: to.z || 0 };
+  const mode = options.mode || 'smooth', softness = options.softness ?? 1;
+  const lerp = {
+    x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t,
+    z: (from.z || 0) + ((to.z || 0) - (from.z || 0)) * t,
+  };
+  if (mode === 'straight') return lerp;
+  if (mode === 'bezier') {
+    const u = 1 - t, result = {};
+    const shape = { points, closed };
+    const handleOut = pathHandle(shape, index, 'handleOut');
+    const handleIn = pathHandle(shape, (index + 1) % count, 'handleIn');
+    for (const axis of ['x', 'y', 'z']) {
+      const a = from[axis] || 0, b = to[axis] || 0;
+      const out = handleOut[axis], incoming = handleIn[axis];
+      result[axis] = u * u * u * a + 3 * u * u * t * (a + out) +
+        3 * u * t * t * (b + incoming) + t * t * t * b;
+      result[axis] = lerp[axis] + (result[axis] - lerp[axis]) * softness;
+    }
+    return result;
+  }
+  if (mode === 'sine') {
+    const wave = { ...PATH_SINE_DEFAULTS, ...options.sine };
+    const length = Math.hypot(to.x - from.x, to.y - from.y);
+    // The squared envelope keeps waypoint positions and endpoint tangents continuous.
+    const envelope = (1 - softness) + softness * Math.sin(Math.PI * t) ** 2;
+    const phase = wave.phase * Math.PI / 180;
+    const oscillation = Math.sin(2 * Math.PI * wave.cycles * t + phase) -
+      ((1 - t) * Math.sin(phase) + t * Math.sin(2 * Math.PI * wave.cycles + phase));
+    const amount = envelope * oscillation;
+    return {
+      x: lerp.x - (length ? (to.y - from.y) / length : 0) * wave.amplitude * amount,
+      y: lerp.y + (length ? (to.x - from.x) / length : 0) * wave.amplitude * amount,
+      z: lerp.z + wave.height * amount,
+    };
+  }
   const m1 = tangentsAt(points, index, closed);
   const m2 = tangentsAt(points, (index + 1) % count, closed);
   const t2 = t * t, t3 = t2 * t;
   const h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t;
   const h01 = -2 * t3 + 3 * t2, h11 = t3 - t2;
-  return {
+  const smooth = {
     x: h00 * from.x + h10 * m1.x + h01 * to.x + h11 * m2.x,
     y: h00 * from.y + h10 * m1.y + h01 * to.y + h11 * m2.y,
     z: h00 * (from.z || 0) + h10 * m1.z + h01 * (to.z || 0) + h11 * m2.z,
   };
+  if (softness === 1) return smooth;
+  return {
+    x: lerp.x + (smooth.x - lerp.x) * softness,
+    y: lerp.y + (smooth.y - lerp.y) * softness,
+    z: lerp.z + (smooth.z - lerp.z) * softness,
+  };
+}
+
+/** A waypoint override controls the span leaving it; explicit caller density wins over both. */
+export function pathSteps(path, requested, segment) {
+  const override = segment === undefined ? undefined : path?.points?.[segment]?.steps;
+  const base = Math.max(1, Math.min(256, Math.round(requested ?? override ?? path?.steps ?? PATH_STEPS)));
+  return path?.mode === 'sine' ? Math.max(base, Math.ceil((path.sine?.cycles ?? 1) * 16)) : base;
+}
+
+/** Everything that can change the sampled curve, including handles and wave settings. */
+export function pathSignature(path) {
+  return JSON.stringify([path.closed, path.mode, path.softness, path.steps, path.sine,
+    path.points.map(point => [point.x, point.y, point.z || 0, point.curve ?? 1, point.handleIn, point.handleOut, point.steps])]);
 }
 
 /**
@@ -114,17 +184,32 @@ export function segmentPoint(points, index, t, closed = false) {
  * one point samples to that point, and an empty path to nothing — both are legal while the
  * user is still clicking.
  */
-export function samplePath(path, { steps = PATH_STEPS } = {}) {
+export function samplePath(path, { steps, withTangents = false } = {}) {
   const points = path?.points || [];
   if (points.length === 0) return [];
   if (points.length === 1) return [{ x: points[0].x, y: points[0].y, z: points[0].z || 0 }];
-  const segments = segmentCount(path), per = Math.max(1, Math.round(steps)), out = [];
+  const segments = segmentCount(path), out = [];
+  const derivative = (segment, t) => {
+    const before = segmentPoint(points, segment, Math.max(0, t - .0001), path.closed, path);
+    const after = segmentPoint(points, segment, Math.min(1, t + .0001), path.closed, path);
+    return { x: after.x - before.x, y: after.y - before.y, z: after.z - before.z };
+  };
+  const sample = (segment, t) => {
+    const point = segmentPoint(points, segment, t, path.closed, path);
+    if (withTangents) {
+      const outgoing = derivative(segment, t);
+      const incoming = t === 0 && (segment > 0 || path.closed)
+        ? derivative((segment - 1 + segments) % segments, 1) : outgoing;
+      point.tangents = { incoming, outgoing };
+    }
+    return point;
+  };
   for (let segment = 0; segment < segments; segment++) {
-    for (let step = 0; step < per; step++) out.push(segmentPoint(points, segment, step / per, path.closed));
+    const per = pathSteps(path, steps, segment);
+    for (let step = 0; step < per; step++) out.push(sample(segment, step / per));
   }
   // The last waypoint (or the first again, for a loop) closes the sampled chain.
-  const last = path.closed ? points[0] : points[points.length - 1];
-  out.push({ x: last.x, y: last.y, z: last.z || 0 });
+  out.push(path.closed ? { ...out[0] } : sample(segments - 1, 1));
   return out;
 }
 
@@ -148,19 +233,20 @@ export function pathLength(path, options) {
  * The distance along the route at each **waypoint**.
  *
  * A tween between two waypoints needs the arc length where those waypoints sit, and
- * `samplePath` lays exactly `steps` samples on every segment, so waypoint `k` is sample
- * `k * steps`. The last entry is the end of the route (the first point again for a closed path).
+ * Each span can have its own density, so waypoint indexes accumulate the actual span counts.
+ * On a closed path the last waypoint precedes the closing segment; total includes it.
  */
-export function waypointDistances(path, { steps = PATH_STEPS } = {}) {
+export function waypointDistances(path, { steps } = {}) {
   const points = path?.points || [];
   const lengths = sampleLengths(samplePath(path, { steps }));
   const total = lengths[lengths.length - 1] || 0;
-  const per = Math.max(1, Math.round(steps));
   const distances = [];
+  let sampleIndex = 0;
   for (let index = 0; index < Math.max(1, points.length); index++) {
-    distances.push(lengths[Math.min(lengths.length - 1, index * per)] || 0);
+    distances.push(lengths[Math.min(lengths.length - 1, sampleIndex)] || 0);
+    sampleIndex += pathSteps(path, steps, index);
   }
-  if (distances.length) distances[distances.length - 1] = total;
+  if (distances.length && !path.closed) distances[distances.length - 1] = total;
   return { distances, total };
 }
 
@@ -170,7 +256,7 @@ export function waypointDistances(path, { steps = PATH_STEPS } = {}) {
  * By *distance*, not by segment: a model walking a route must not sprint along a short
  * segment and crawl along a long one, which is what a per-segment parameter would do.
  */
-export function pointAlong(path, t, { steps = PATH_STEPS, samples = null, lengths = null } = {}) {
+export function pointAlong(path, t, { steps, samples = null, lengths = null } = {}) {
   const chain = samples || samplePath(path, { steps });
   if (!chain.length) return null;
   const distances = lengths || sampleLengths(chain);
@@ -214,10 +300,19 @@ export function pathBounds(path) {
  */
 export function pathReferences(project, pathId) {
   const followers = (project.map?.entities || []).filter(entity => entity.path?.id === pathId);
+  const ramps = (project.map?.entities || []).filter(entity => entity.ramp?.pathId === pathId);
   const actions = [];
   for (const event of project.events || []) for (const action of event.actions || []) actions.push(action);
   for (const sheet of project.timesheets || []) for (const cue of sheet.cues || []) for (const action of cue.actions || []) actions.push(action);
-  return { followers, actions: actions.filter(action => action?.type === 'followPath' && action.pathId === pathId) };
+  return { followers, ramps, actions: actions.filter(action => action?.type === 'followPath' && action.pathId === pathId) };
+}
+
+/** Keep the generated mesh and collision while dropping its layout-only shape dependency. */
+export function bakePathRamp(entity) {
+  if (!entity.ramp?.pathId) return false;
+  entity.type = 'decoration';
+  delete entity.ramp;
+  return true;
 }
 
 /**
@@ -264,13 +359,15 @@ export function routesForEntity(project, entityId) {
 export function removePath(project, pathId) {
   const path = (project.paths || []).find(item => item.id === pathId);
   if (!path) return null;
-  const { followers, actions } = pathReferences(project, pathId);
+  const { followers, actions, ramps } = pathReferences(project, pathId);
+  // The mesh is already an ordinary model: deleting its source bakes it rather than losing it.
+  for (const entity of ramps) bakePathRamp(entity);
   for (const entity of project.map?.entities || []) if (entity.path?.id === pathId) delete entity.path;
   const drop = list => (list || []).filter(action => !(action?.type === 'followPath' && action.pathId === pathId));
   for (const event of project.events || []) event.actions = drop(event.actions);
   for (const sheet of project.timesheets || []) for (const cue of sheet.cues || []) cue.actions = drop(cue.actions);
   project.paths = (project.paths || []).filter(item => item.id !== pathId);
-  return { path, followers: followers.length, actions: actions.length };
+  return { path, followers: followers.length, actions: actions.length, ramps: ramps.length };
 }
 
 /**

@@ -677,6 +677,31 @@ piece of procedural geometry is generated along, so it is authored once and refe
 - **One sampler, one density.** The editor, the game and any generated geometry all call
   `samplePath`, twelve samples per segment by default. A route that looks curved in the editor is
   the same curve in play, because it is the same function and the same number.
+- **Curve modes.** Select the whole path to choose `mode`: `smooth` (the legacy Hermite/
+  Catmull-Rom curve), `straight`, `bezier`, or `sine`. Omitted settings preserve old paths.
+  `softness` (0..1, default 1) blends smooth and Bezier shapes toward the straight chord.
+  In sine mode it controls the endpoint envelope: 1 eases the wave into and out of each segment.
+- **Bezier handles.** Select a waypoint in Bezier mode to edit `handleIn` and `handleOut`,
+  each an `{x,y,z}` offset from that waypoint. Missing handles use the automatic smooth tangent;
+  "Reset to automatic handles" removes overrides. Waypoint `curve` also scales those automatic
+  tangents, but does not scale explicit handles.
+- **Sine waves.** `sine: {amplitude,height,cycles,phase}` controls lateral amplitude (map units,
+  default 64), vertical amplitude (default 0), waves per segment (.25..16, default 1), and phase
+  (degrees, default 0). Endpoint correction keeps every waypoint exact even for fractional cycles
+  and nonzero phase. Softness 1 gives zero wave displacement and wave derivative at endpoints;
+  corners in the authored spine can still change travel direction.
+- **Face density between waypoints.** Path `steps` is 1..256 slices per segment, default 12.
+  The whole-path inspector sets the default; selecting a waypoint exposes **Face density to
+  next waypoint** (`point.steps`), with **Use path default density** to remove that override.
+  The last point in a closed path controls the closing span; the last point in an open path has
+  no outgoing span. Each generated ramp slice is three profile quads (six triangles), with
+  two extra end triangles on an open path. The path inspector reports the actual total slices.
+  Sine mode automatically uses
+  at least 16 samples per wave (up to 256 per segment) to prevent high-frequency aliasing.
+  Preview, followers, timesheet motion and generated ramps all share this effective resolution;
+  the runtime sampler cache includes every shape setting, handle and per-span density. Waypoint
+  distances accumulate the effective span counts, so timesheet endpoints remain exact at mixed
+  densities.
 
 The maths lives in [`shared/paths.js`](./shared/paths.js) with
 [`test/paths.test.js`](./test/paths.test.js) covering the parts that are easy to get subtly
@@ -3938,6 +3963,50 @@ built by the tool the same kind of object.
 - Textures: the generated material is plain white on purpose, and the image assigned to a ramp is
   applied to it as the base map, with UVs already in map units over 64 so a bigger ramp simply
   repeats more.
+
+### Procedural surf ramps along paths
+
+Select a whole path and press **Generate surf ramp along path**, or choose **Generate along
+path** in an existing ramp's inspector. The path becomes a live shape source, not a movement
+route for the ramp. The generator in [`shared/path-ramp.js`](./shared/path-ramp.js) sweeps a
+triangular profile along the shared sampled curve, including its world-space Z changes.
+
+- **Single slope** is a wedge; **Double-sided ridge** has a surf face on each side, like a
+  traditional surf ramp. `length` is the horizontal cross-slope run **per surf face**. A ridge's
+  full base width is twice that run; `height = length * tan(slope)`. Path distance controls the
+  longitudinal length; standalone `width` is not used while linked. `facing` flips a single slope.
+- Binding stores `ramp: {pathId,profile,pathOrigin,...}`. The origin is the first waypoint when
+  bound. Placement compensates for the sector floor so the base spine initially matches the
+  path's absolute world Z, even above a raised floor. Later path edits stay in that original
+  coordinate frame; moving, elevating or rotating the ramp applies a normal object transform to
+  the generated shape. Rebinding resets the anchor and rotation. Curve/shape edits retain the
+  object's placement offsets; ramp-shape edits reset model pitch and roll, as for wedges.
+- Shared mitered cross-sections eliminate cracks and internal end faces. Open paths have two
+  triangular caps; closed paths weld their seam and have no caps. Normals are smoothed along
+  each profile face but stay sharp across the ridge/base. UV distance follows the spine and
+  tiles every 64 map units.
+- Curved ramps use `physics: {body:'fixed',shape:'model',modelCollision:'trimesh',...}`.
+  Rapier receives the actual indexed triangles, merges duplicate vertices and fixes internal
+  contact edges. It does **not** fill bends or valleys with a convex hull. This mode is restricted
+  to fixed model bodies; unreadable triangle geometry is an explicit error. Ordinary model
+  collision retains its existing convex-hull behavior.
+- Editing paths or ramp numbers regenerates content-addressed GLBs on normal commits, live
+  drags, load, MCP edits and server saves. Unused generated models are pruned, but models referenced
+  by other ramps, captured scenes or dormant campaign levels remain.
+- **Bake generated mesh** removes the live dependency and changes the ramp to a static decoration
+  with the same model and exact collision. Deleting its source path also bakes it. Scene capture
+  and portable node export bake linked ramps so a project-local path ID cannot escape into a
+  reusable object. Choosing **Standalone wedge** instead returns to the ordinary wedge generator.
+- A ramp supports at most 4096 sampled segments. Duplicate positions are merged. Vertical-only
+  segments, near-reversals and bends that fold the profile are rejected with an actionable error;
+  reduce cross-slope run, soften the curve, simplify the path or reduce resolution. The editor
+  rolls back invalid edits rather than keeping stale geometry.
+- MCP/DeepSeek: `paths_set` accepts complete path definitions with the same settings;
+  `ramp_generate` creates or rebinds a ramp (`pathId`, optional existing `id`, `profile`, `slope`,
+  cross-slope `length`, `facing`, `name`). Both validate transactionally and regenerate assets.
+  [`test/path-ramps.test.js`](./test/path-ramps.test.js) covers curve/cache consistency, watertight
+  winding, profiles/closed loops, real Rapier surface rays and empty concavities, baking/export,
+  MCP regeneration and folder-save/reopen.
 
 The test does not compare formulas — it casts rays at the live physics world: at 10, 30, 50, 70
 and 90 % of the run the collider answers within half a map unit of `surfRampSurface().heightAt(x)`

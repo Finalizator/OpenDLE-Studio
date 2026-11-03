@@ -5,6 +5,16 @@ import { migrateModelFacing } from '../shared/entity-visuals.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { upgradePickupReach } from '../shared/doom-hud.js';
+import { syncRampModels } from '../shared/ramp-model.js';
+
+function prepareProceduralRamps(project) {
+  validateProject(project);
+  if (!(project.map?.entities || []).some(entity => entity.ramp?.pathId)) return project;
+  const copy = structuredClone(project);
+  syncRampModels(copy);
+  validateProject(copy);
+  return copy;
+}
 
 /** The list of stored projects and which one the studio reopens on the next start. */
 const INDEX_NAME = 'projects.json';
@@ -296,7 +306,7 @@ export class ProjectStore {
    * project under its title, after which a new import cannot overwrite it.
    */
   adopt(project, title = project?.title, { temporary = false } = {}) {
-    validateProject(project);
+    project = prepareProceduralRamps(project);
     const index = structuredClone(this.index);
     const id = temporary ? TEMPORARY_ID : unusedProjectId(title, index);
     let entry = index.projects.find(candidate => candidate.id === id);
@@ -320,7 +330,7 @@ export class ProjectStore {
       error.status = 409;
       throw error;
     }
-    validateProject(project);
+    project = prepareProceduralRamps(project);
     // A studio that has never saved anything stores the first save as a project.
     if (!this.activeEntry()) return this.adopt(project);
     const index = structuredClone(this.index);

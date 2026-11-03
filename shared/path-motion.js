@@ -10,7 +10,7 @@
  * per-segment parameter gets wrong in a way you can see.
  */
 
-import { samplePath, sampleLengths, pointAlong } from './paths.js';
+import { samplePath, sampleLengths, pointAlong, pathSignature } from './paths.js';
 
 /** What happens when a follower reaches the end of its path. */
 export const PATH_MODES = ['loop', 'pingpong', 'once'];
@@ -85,8 +85,7 @@ export function pathDistance(distance, length, mode = 'loop') {
 export function pathSampler() {
   const cache = new Map();
   return function forPath(path) {
-    const key = `${path.id}:` + path.points.map(point => `${point.x},${point.y},${point.z || 0},${point.curve ?? 1}`).join(';') +
-      (path.closed ? ':closed' : '');
+    const key = `${path.id}:${pathSignature(path)}`;
     let entry = cache.get(key);
     if (!entry) {
       const samples = samplePath(path);

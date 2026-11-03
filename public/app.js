@@ -1,5 +1,5 @@
 import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, updateAsset, standInFor, ENTITY_TYPES } from '/shared/project.js';
-import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity } from '/shared/paths.js';
+import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity, pathHandle, pathSteps, bakePathRamp, PATH_SINE_DEFAULTS } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment, setAddonHooks } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
@@ -7,7 +7,7 @@ import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
 import { undoDepthFor, UNDO_DEEP_GAME_STEPS } from '/shared/undo-depth.js';
 import { hasModelFacing, noseAngle } from '/shared/entity-visuals.js';
-import { addRamp, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
+import { addRamp, bindRampPath, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { bundleModel } from '/shared/gltf.js';
 import { measureAssetForward } from '/shared/model-forward.js';
 import { nodeIcon } from './node-icons.js';
@@ -675,6 +675,7 @@ function liveApply(fn, message) {
   const next = cloneProjectForEdit(project);
   try {
     fn(next);
+    syncRampModels(next);
     validateProject(next, { fast: true });
   } catch (error) { status(error.message, true); return; }
   project = next; dirty = true; editVersion++; liveEditState.changed = true;
@@ -1366,9 +1367,22 @@ function renderInspector() {
           const changeRamp = change => edit(next => {
             normalizeRamp(next.map.entities.find(entity => entity.id === item.id), change);
           }, 'Ramp geometry changed');
+          field(parent, 'Generate along path', select([['', 'Standalone wedge'], ...(project.paths || []).map(path => [path.id, path.name])],
+            ramp.pathId || '', value => edit(next => {
+              const entity = next.map.entities.find(entity => entity.id === item.id);
+              if (value) bindRampPath(next, entity, value);
+              else normalizeRamp(entity, { pathId: null });
+            }, 'Ramp path updated')));
+          if (ramp.pathId) {
+            field(parent, 'Surf profile', select([['single', 'Single slope'], ['ridge', 'Double-sided ridge']],
+              ramp.profile, value => changeRamp({ profile: value })));
+            parent.append(make('p', 'The path is the base spine. Cross-slope run is each surf face\'s horizontal run. Edit the path to reshape the ramp; object position, height and angle offset the whole mesh.', 'muted'),
+              button('Edit path / face density', () => selectWholePath(ramp.pathId)),
+              button('Bake generated mesh', () => edit(next => bakePathRamp(next.map.entities.find(entity => entity.id === item.id)), 'Ramp baked; path link removed')));
+          }
           field(parent, 'Angle (degrees)', input(ramp.slope, 'number', value => changeRamp({ slope: value })));
-          field(parent, 'Length (ground it covers)', input(ramp.length, 'number', value => changeRamp({ length: value })));
-          field(parent, 'Width (across)', input(ramp.width, 'number', value => changeRamp({ width: value })));
+          field(parent, ramp.pathId ? 'Cross-slope run' : 'Length (ground it covers)', input(ramp.length, 'number', value => changeRamp({ length: value })));
+          if (!ramp.pathId) field(parent, 'Width (across)', input(ramp.width, 'number', value => changeRamp({ width: value })));
           field(parent, 'Height (how far it rises)', input(height, 'number', value => changeRamp({ height: value })));
           field(parent, 'Falls towards', select([['right', '+X (right)'], ['left', '-X (left)']], ramp.facing,
             value => changeRamp({ facing: value })));
@@ -1415,12 +1429,12 @@ function renderInspector() {
           update('physics', config);
         };
         parent.append(make('h2', 'Rapier physics'));
-        field(parent, 'Rigid body', select(['none', 'fixed', 'dynamic', 'kinematic'], physics.body, value => changePhysics('body', value)));
+        field(parent, 'Rigid body', select(physics.modelCollision === 'trimesh' ? ['fixed'] : ['none', 'fixed', 'dynamic', 'kinematic'], physics.body, value => changePhysics('body', value)));
         if (physics.body !== 'none') {
           // A model collider is the object's own mesh, which is how a ramp is solid.
           const colliderShapes = item.modelAsset ? ['box', 'ball', 'capsule', 'model'] : ['box', 'ball', 'capsule'];
-          field(parent, 'Collider', select(colliderShapes, physics.shape, value => changePhysics('shape', value)));
-          for (const key of physics.shape === 'box' ? ['width', 'height', 'depth'] : physics.shape === 'ball' ? ['radius'] : ['radius', 'height']) {
+          field(parent, 'Collider', select(physics.modelCollision === 'trimesh' ? ['model'] : colliderShapes, physics.shape, value => changePhysics('shape', value)));
+          for (const key of physics.modelCollision === 'trimesh' ? [] : physics.shape === 'box' ? ['width', 'height', 'depth'] : physics.shape === 'ball' ? ['radius'] : ['radius', 'height']) {
             field(parent, physics.shape === 'model' ? `Fallback ${key} (if the mesh cannot be read)` : `Collider ${key}`,
               input(physics[key], 'number', value => changePhysics(key, value)));
           }
@@ -1428,7 +1442,9 @@ function renderInspector() {
           parent.append(checkbox('Sensor / trigger (no blocking)', physics.sensor, value => changePhysics('sensor', value)),
             checkbox('Lock body rotation', physics.lockRotation, value => changePhysics('lockRotation', value)),
             make('p', physics.shape === 'model'
-              ? 'This collider is the object\'s model mesh, face by face, so the solid is the shape that is drawn. A non-convex model is approximated by the hull around it. Positions are map units; 64 units = 1 metre.'
+              ? physics.modelCollision === 'trimesh'
+                ? 'Exact static triangle mesh collision follows the curved surf surface, including bends and valleys. Shared internal edges are smoothed for contact.'
+                : 'Model collision uses a convex hull. Positions are map units; 64 units = 1 metre.'
               : 'Boxes, balls and capsules are primitives; choose "model" to collide the object\'s own mesh instead. Positions are map units; 64 units = 1 metre.', 'muted'));
         }
         const area = item.area;
@@ -1503,6 +1519,11 @@ function curveSlider(value, onChange) {
   slider.min = '0'; slider.max = '1'; slider.step = '0.05';
   return slider;
 }
+function pathDensityInput(value, onChange) {
+  const control = input(value, 'number', onChange);
+  control.min = '1'; control.max = '256'; control.step = '1';
+  return control;
+}
 /**
  * Selects a whole route, remembering where along it the editor's move arrows should stand: the
  * waypoint the mapper came from, or the middle of the route when there is no such waypoint.
@@ -1566,6 +1587,24 @@ function renderPathInspector() {
     field(parent, 'Y', input(Math.round(point.y), 'number', value => changePoint(target => { target.y = value; })));
     field(parent, 'Height (Z)', input(Math.round(point.z || 0), 'number', value => changePoint(target => { target.z = value; })));
     field(parent, 'Curve through this point', curveSlider(point.curve ?? 1, value => changePoint(target => { target.curve = value; })));
+    if (path.closed || position < path.points.length - 1) {
+      const next = path.points[(position + 1) % path.points.length];
+      field(parent, 'Face density to next waypoint', pathDensityInput(point.steps ?? path.steps ?? 12,
+        value => changePoint(target => { target.steps = value; })));
+      parent.append(make('p', `Span to ${pathPointLabel(next, (position + 1) % path.points.length)}: ${pathSteps(path, undefined, position)} slices, 6 side triangles per slice. ${point.steps === undefined ? 'Using the path default.' : 'This span overrides the path default.'}`, 'muted'),
+        button('Use path default density', () => changePoint(target => { delete target.steps; })));
+    }
+    if (path.mode === 'bezier') {
+      parent.append(make('p', 'Bezier handles are offsets from this waypoint, in map units. Missing handles use automatic smooth tangents.', 'muted'));
+      for (const [key, label] of [['handleIn', 'Incoming handle'], ['handleOut', 'Outgoing handle']]) {
+        const fallback = pathHandle(path, position, key);
+        for (const axis of ['x', 'y', 'z']) field(parent, `${label} ${axis.toUpperCase()}`,
+          input((point[key] || fallback)[axis], 'number', value => changePoint(target => {
+            target[key] = { ...(target[key] || fallback), [axis]: value };
+          })));
+      }
+      parent.append(button('Reset to automatic handles', () => changePoint(target => { delete target.handleIn; delete target.handleOut; })));
+    }
     parent.append(make('p', 'Curve 0 makes a corner: the route goes straight in and straight out. Curve 1 sweeps through the waypoint. The segment at each end bends as much as *that* end allows, so a corner never kinks.', 'muted'),
       pathDraftControls(path),
       button('Select the whole path', () => selectWholePath(path.id, point.id)),
@@ -1577,6 +1616,27 @@ function renderPathInspector() {
   field(parent, 'Name', input(path.name, 'text', value => changePath(target => { target.name = value || 'Path'; })));
   parent.append(checkbox('Closed loop', path.closed, value => changePath(target => { target.closed = value; }, value ? 'Path closed' : 'Path opened')),
     make('p', 'A closed path comes back to its first waypoint and keeps going, which is what a patrol route needs.', 'muted'));
+  field(parent, 'Curve mode', select([['smooth', 'Smooth / Catmull-Rom'], ['straight', 'Straight segments'],
+    ['bezier', 'Bezier handles'], ['sine', 'Sine wave']], path.mode || 'smooth', value => changePath(target => { target.mode = value; })));
+  field(parent, 'Softness', curveSlider(path.softness ?? 1, value => changePath(target => { target.softness = value; })));
+  field(parent, 'Default face density between waypoints', pathDensityInput(path.steps ?? 12,
+    value => changePath(target => { target.steps = value; })));
+  parent.append(make('p', `${samplePath(path).length - 1} longitudinal slices total. Each ramp slice creates 3 profile quads (6 triangles), plus 2 end triangles on an open path. Select a waypoint to override its next span (1–256 slices). Sine curves enforce at least 16 slices per wave.`, 'muted'));
+  if (path.mode === 'sine') {
+    const sine = { ...PATH_SINE_DEFAULTS, ...path.sine };
+    for (const [key, label] of [['amplitude', 'Lateral amplitude'], ['height', 'Vertical amplitude'],
+      ['cycles', 'Waves per segment'], ['phase', 'Wave phase (degrees)']]) {
+      field(parent, label, input(sine[key], 'number', value => changePath(target => { target.sine = { ...sine, [key]: value }; })));
+    }
+  }
+  parent.append(make('p', 'Softness blends smooth/Bezier curves toward a straight chord; on sine curves it softens wave entry and exit. Waypoint curve strength controls Smooth and automatic Bezier tangents. All views, movement and generated ramps use the same samples.', 'muted'),
+    button('Generate surf ramp along path', () => {
+      let id;
+      edit(next => {
+        id = addRamp(next, { pathId: path.id, profile: 'ridge', length: 64, slope: 50, name: `${path.name} ramp`.slice(0, 100) }).id;
+      }, 'Path ramp generated');
+      selection = { kind: 'entity', id }; render();
+    }));
   for (const [index, item] of path.points.entries()) {
     const row = make('div', undefined, 'property-section');
     row.append(make('strong', `${pathPointLabel(item, index)} · ${Math.round(item.x)}, ${Math.round(item.y)} @ ${Math.round(item.z || 0)}`));
@@ -5230,8 +5290,9 @@ function deleteLayoutObject(id) {
 function deletePath(id) {
   const path = (project.paths || []).find(item => item.id === id);
   if (!path) throw new Error('That path no longer exists');
-  const { followers, actions } = pathReferences(project, id);
-  const detail = [followers.length ? `${followers.length} object${followers.length === 1 ? '' : 's'} stopped following it` : '',
+  const { followers, actions, ramps } = pathReferences(project, id);
+  const detail = [ramps.length ? `${ramps.length} ramp${ramps.length === 1 ? '' : 's'} baked into static meshes` : '',
+    followers.length ? `${followers.length} object${followers.length === 1 ? '' : 's'} stopped following it` : '',
     actions.length ? `${actions.length} action${actions.length === 1 ? '' : 's'} removed` : ''].filter(Boolean).join(', ');
   if (detail && !confirm(`Delete "${path.name}"? ${detail}. You can undo this change.`)) return;
   edit(next => removePath(next, id), `Path "${path.name}" deleted${detail ? ` (${detail})` : ''}`);
@@ -5249,7 +5310,8 @@ function deleteSelectedPaths(primaryId) {
   const ids = selectedPathIds();
   const targets = ids.includes(primaryId) && ids.length > 1 ? ids : [primaryId];
   const names = targets.map(id => (project.paths || []).find(path => path.id === id)?.name || id);
-  if (targets.length > 1 && !confirm(`Delete ${targets.length} routes (${names.join(', ')})? You can undo this change.`)) return;
+  const rampCount = targets.reduce((count, id) => count + pathReferences(project, id).ramps.length, 0);
+  if ((targets.length > 1 || rampCount) && !confirm(`Delete ${targets.length} routes (${names.join(', ')})?${rampCount ? ` ${rampCount} linked ramps will be baked into static meshes.` : ''} You can undo this change.`)) return;
   let released = 0, dropped = 0;
   edit(next => {
     for (const id of targets) {

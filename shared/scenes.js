@@ -4,6 +4,7 @@
 // data, so every placed object stays individually editable.
 import { MAX_JOINTS, pruneJoints, remapJoint } from './joints.js';
 import { stripEntityReferences } from './references.js';
+import { bakePathRamp } from './paths.js';
 
 export const MAX_SCENES = 64;
 export const MAX_SCENE_ENTITIES = 128;
@@ -74,7 +75,11 @@ export function captureScene(project, entityIds, { id = newSceneId(), name } = {
     id,
     name: (name || `Scene ${project.scenes ? project.scenes.length + 1 : 1}`).slice(0, 100),
     origin,
-    entities: entities.map(entity => structuredClone({ ...entity, x: entity.x - origin.x, y: entity.y - origin.y })),
+    entities: entities.map(entity => {
+      const copy = structuredClone({ ...entity, x: entity.x - origin.x, y: entity.y - origin.y });
+      bakePathRamp(copy);
+      return copy;
+    }),
     events: structuredClone(events),
     joints: structuredClone(joints),
   };

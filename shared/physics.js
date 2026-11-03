@@ -409,9 +409,14 @@ export function createPhysics(project, state, R, triangulate) {
     if (triangles?.positions.length) {
       const points = new Float32Array(triangles.positions.length);
       for (let index = 0; index < points.length; index++) points[index] = triangles.positions[index] * scale;
+      if (config.modelCollision === 'trimesh') {
+        return R.ColliderDesc.trimesh(points, triangles.indices,
+          R.TriMeshFlags.MERGE_DUPLICATE_VERTICES | R.TriMeshFlags.FIX_INTERNAL_EDGES);
+      }
       const hull = R.ColliderDesc.convexHull(points);
       if (hull) return hull;
     }
+    if (config.modelCollision === 'trimesh') throw new Error(`Cannot build triangle mesh collision for "${entity.name || entity.id}": model has no readable triangles`);
     // No readable triangles: fall back to the box the numbers describe rather than to a shape
     // nothing can collide with.
     return R.ColliderDesc.cuboid(config.width / 2 / PHYSICS_SCALE, Math.max(height, 1) / 2 / PHYSICS_SCALE,

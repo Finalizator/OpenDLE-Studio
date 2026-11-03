@@ -15,6 +15,7 @@
  */
 export { ensureRampModel, syncRampModels, WEDGE_INDICES, wedgeCorners } from './ramp-model.js';
 import { ensureRampModel } from './ramp-model.js';
+import { sectorAt, sectorGeometry } from './sectors.js';
 
 export function surfRampGeometry({ width = 256, depth = 256, thickness, slope = 50, facing = 'right' } = {}) {
   const radians = Math.abs(slope) * Math.PI / 180;
@@ -103,6 +104,11 @@ export function normalizeRamp(entity, change = {}) {
   const round = value => Math.round(value * 100) / 100;
   entity.ramp = { slope: shape.slope, length: round(shape.length), width: round(width), facing,
     height: round(shape.rise) };
+  if (next.pathId) {
+    entity.ramp.pathId = next.pathId;
+    entity.ramp.profile = next.profile || 'single';
+    entity.ramp.pathOrigin = next.pathOrigin && { ...next.pathOrigin };
+  }
   // A wedge, not a rotated box. A box is a *slab*: its lower edge reaches
   // `thickness · sin(slope)` past the bottom of the surf face, buried under the floor where it
   // still answers the character controller — which lifted the player into the air tens of units
@@ -110,13 +116,28 @@ export function normalizeRamp(entity, change = {}) {
   // A zero tilt, not a deleted one: the shape carries the slope, but every reader of `modelTilt`
   // in the editor and the renderer expects the field to exist.
   entity.modelTilt = { pitch: 0, roll: 0 };
-  entity.elevation = 0;
+  if (!entity.ramp.pathId) entity.elevation = 0;
   // A ramp that already has its generated mesh is collided as that mesh; a fresh one is a wedge
   // until `ensureRampModel` gives it a model to be collided as.
   entity.physics = { body: 'fixed', shape: entity.modelAsset ? 'model' : 'wedge',
     width: shape.run, height: shape.rise,
     depth: width, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true,
     wedge: { slope: shape.slope, facing } };
+  if (entity.ramp.pathId) entity.physics.modelCollision = 'trimesh';
+  return entity;
+}
+
+/** Bind at the first waypoint; later object transforms are offsets on the procedural shape. */
+export function bindRampPath(project, entity, pathId, { profile = 'ridge' } = {}) {
+  const path = (project.paths || []).find(item => item.id === pathId);
+  if (!path || path.points.length < 2) throw new Error('Choose a path with at least two waypoints');
+  const first = path.points[0];
+  const floor = sectorAt(sectorGeometry(project), first.x, first.y)?.floorHeight || 0;
+  entity.x = first.x; entity.y = first.y; entity.angle = 0;
+  for (const key of ['z', 'rotation', 'modelOffset', 'modelSpin', 'path']) delete entity[key];
+  entity.elevation = (first.z || 0) - floor;
+  normalizeRamp(entity, { pathId, profile, pathOrigin: { x: first.x, y: first.y, z: first.z || 0 } });
+  ensureRampModel(project, entity);
   return entity;
 }
 
@@ -127,6 +148,7 @@ export function addRamp(project, { x = 0, y = 0, id, name, ...change } = {}) {
   while (used.has(rampId)) rampId = `${rampId}_x`;
   const entity = { id: rampId, name: name || 'Ramp', type: 'ramp', x, y, angle: 0 };
   normalizeRamp(entity, { ...RAMP_DEFAULTS, ...change });
+  if (change.pathId) bindRampPath(project, entity, change.pathId, { profile: change.profile || 'ridge' });
   // A ramp is a generated mesh: give it the model its numbers describe so it is placed, drawn and
   // collided like any other model.
   ensureRampModel(project, entity);

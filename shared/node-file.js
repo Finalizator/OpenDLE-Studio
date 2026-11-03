@@ -10,6 +10,7 @@ import { validateEntity, cloneProjectData } from './project.js';
 import { sceneEntityId, sceneSubtree, remapReferences, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
 import { MAX_JOINTS, validateJoint, newJointId } from './joints.js';
 import { MODEL_FACING_SEMANTICS, hasModelFacing } from './entity-visuals.js';
+import { bakePathRamp } from './paths.js';
 
 export const NODE_FILE_FORMAT = 'opendle-node';
 export const NODE_FILE_VERSION = 1;
@@ -127,6 +128,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
     // A route lives in the project's own path list and a group in its own group list, so neither
     // can be carried by a file that has to stand on its own.
     if (copy.path) { delete copy.path; droppedRoutes += 1; }
+    if (bakePathRamp(copy)) droppedRoutes += 1;
     if (copy.groupId) { delete copy.groupId; droppedGroups += 1; }
     return copy;
   });

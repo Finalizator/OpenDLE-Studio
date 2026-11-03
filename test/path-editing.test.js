@@ -38,7 +38,7 @@ test('a route reports every object and action that names it', () => {
   const { followers, actions } = pathReferences(project, 'route');
   assert.deepEqual(followers.map(entity => entity.id), [walker.id]);
   assert.equal(actions.length, 2, 'the event action and the timeline cue both count');
-  assert.deepEqual(pathReferences(project, 'other'), { followers: [], actions: [] });
+  assert.deepEqual(pathReferences(project, 'other'), { followers: [], ramps: [], actions: [] });
 });
 
 // A truck driven by a timeline used to look as if it followed nothing: the inspector only ever

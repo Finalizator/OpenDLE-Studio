@@ -13,7 +13,7 @@ import {
 import { areaVolume, areaYaw, overlayVolumes } from '/shared/areas.js';
 import { facingArrowPose, hasModelFacing, playerStartPose } from '/shared/entity-visuals.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
-import { samplePath, sampleLengths, pointAlong } from '/shared/paths.js';
+import { samplePath, sampleLengths, pointAlong, pathSignature as curveSignature } from '/shared/paths.js';
 import {
   GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formDrag,
   rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
@@ -199,8 +199,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   let pathSignature = '';
   /** A path's own update key: any change to a waypoint or its curvature invalidates it. */
   function pathsSignature() {
-    return (project.paths || []).map(path => `${path.id}:${path.closed ? 1 : 0}:` +
-      path.points.map(point => `${point.id}@${point.x},${point.y},${point.z || 0},${point.curve ?? 1}`).join(';')).join('|') +
+    return (project.paths || []).map(path => `${path.id}:${curveSignature(path)}:` +
+      path.points.map(point => point.id).join(';')).join('|') +
       `#${selected?.kind === 'pathPoint' || selected?.kind === 'path' ? `${selected.kind}:${selected.id}` : ''}`;
   }
   /**
