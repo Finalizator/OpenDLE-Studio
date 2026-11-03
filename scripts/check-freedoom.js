@@ -10,12 +10,12 @@ for (const map of maps) {
   try {
     const { project, warnings } = importWad(buffer, map);
     assert.equal(project.hud.reserveBottom, 32, 'Classic status-bar viewport reservation');
-    assert.equal(project.hud.fonts.length, 2, 'Imported raster digit fonts');
-    assert.equal(project.hud.animations.length, 5, 'Editable pain-band face clips');
+    assert.equal(project.hud.fonts.filter(font => font.name !== 'Imported menu small font').length, 2, 'Imported raster digit fonts');
+    assert.equal(project.hud.animations.filter(clip => clip.phase !== 'interface').length, 5, 'Editable pain-band face clips');
     assert.ok(project.hud.elements.some(element => element.name === 'WAD status-bar artwork'), 'Original WAD status-bar artwork');
     assert.ok(project.events.some(event => event.actions.some(action => action.type === 'selectWeapon')), 'Editable weapon selection');
     const omissions = warnings.filter(warning => warning.includes('omitted floor/ceiling'));
-    console.log(`${map}: ${project.map.sectors.length} sectors, ${project.assets.length} assets, ${project.hud.elements.length} HUD elements, ${project.hud.fonts.length} digit fonts, ${project.hud.animations.length} face clips${omissions.length ? `; ${omissions.join(' ')}` : ''}`);
+    console.log(`${map}: ${project.map.sectors.length} sectors, ${project.assets.length} assets, ${project.hud.elements.length} HUD elements, ${project.hud.fonts.length} HUD/menu fonts, ${project.hud.animations.length} animations${omissions.length ? `; ${omissions.join(' ')}` : ''}`);
   } catch (error) { console.error(`${map}: ${error.message}`); failures++; }
 }
 console.log(`${maps.length - failures}/${maps.length} maps imported; ${failures} failed.`);

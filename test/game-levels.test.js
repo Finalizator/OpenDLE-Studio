@@ -26,6 +26,18 @@ function game() {
     'MAP01', 'Two-level game').project;
 }
 
+test('campaign assembly retains shared SNDINFO aliases through map switching and JSON export', () => {
+  const a = level(), b = level();
+  a.soundAliases = { aliases: { 'terminal/beep': 'DSBEEP' }, random: { 'guard/sight': ['DSGUARD1', 'DSGUARD2'] } };
+  b.soundAliases = structuredClone(a.soundAliases);
+  const p = assembleGameLevels([{ id: 'MAP01', project: a }, { id: 'MAP02', project: b }], 'MAP01', 'Sounds').project;
+  assert.deepEqual(p.soundAliases, a.soundAliases);
+  assert.notEqual(p.soundAliases, a.soundAliases);
+  for (const map of p.game.levels) assert.equal(map.data.soundAliases, undefined);
+  selectGameLevel(p, 'MAP02');
+  assert.deepEqual(JSON.parse(JSON.stringify(p)).soundAliases, a.soundAliases);
+});
+
 test('all levels remain editable across switching, serialization, MCP selection and disk persistence', () => {
   const p = game(); validateProject(p);
   p.map.entities.find(entity => entity.type === 'player').x = 42;

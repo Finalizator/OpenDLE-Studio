@@ -6,6 +6,7 @@ import { ACTIONS, CONDITIONS, createProject, validateProject } from '../shared/p
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createPhysics } from '../shared/physics.js';
 import { installWallWalkDemo } from '../shared/engine-script.js';
+import { captureGameSave, restoreGameSave } from '../shared/save-game.js';
 
 await R.init();
 const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),
@@ -45,6 +46,38 @@ const withPhysics = (project, t) => {
   t.after(() => state.physics.dispose());
   return state;
 };
+
+test('periodic rules keep separate clocks per instance and per condition, including inherited children', () => {
+  const project = bareRoom();
+  project.map.entities.push({ ...structuredClone(project.map.entities[1]), id: 'crate2', x: 150 });
+  const actions = [{ type: 'rotateEntityBy', entityId: '$self', angle: 10 }];
+  project.events = [
+    rule('periodic', { type: 'everySeconds', seconds: .5 }, actions, { forEachType: 'decoration' }),
+    rule('parent', { type: 'always' }, [], { forEachType: 'decoration' }),
+    rule('child', { type: 'everySeconds', seconds: .5 }, actions, { parentId: 'parent', forEachType: 'decoration' }),
+    rule('multiple', { type: 'everySeconds', seconds: .5 }, [{ type: 'addVariable', variable: 'ticks', value: 1 }],
+      { conditions: [{ type: 'everySeconds', seconds: .5 }] }),
+  ];
+  validateProject(project);
+  const state = createRuntime(project);
+  tick(project, state, 61);
+  for (const entity of state.entities.filter(entity => entity.type === 'decoration')) assert.equal(entity.angle, 60, entity.id);
+  assert.equal(state.variables.ticks, 3);
+});
+
+test('game saves retain a periodic rule deadline instead of firing it early on load', () => {
+  const project = bareRoom();
+  project.events = [rule('interval', { type: 'everySeconds', seconds: .5 },
+    [{ type: 'addVariable', variable: 'ticks', value: 1 }])];
+  const state = createRuntime(project);
+  tick(project, state, 15);
+  const restored = restoreGameSave(project, JSON.parse(JSON.stringify(captureGameSave(project, state, 'interval'))), 'interval').runtime;
+  tick(project, state, 10); tick(project, restored, 10);
+  assert.equal(restored.variables.ticks, state.variables.ticks, 'no extra firing before the deadline');
+  tick(project, state, 10); tick(project, restored, 10);
+  assert.equal(restored.variables.ticks, 2);
+  assert.deepEqual(restored.intervals, state.intervals);
+});
 
 test('the wall-walking and area rules need no imported content', t => {
   const project = bareRoom();

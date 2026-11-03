@@ -12,6 +12,7 @@ import { loadacsNames, acsLibrariesFromWad, selectAcsLibraries } from '../shared
 import { createProgram, findScript } from '../shared/acs.js';
 import { executeSpecial, specialName, unsupportedSpecials } from '../shared/line-specials.js';
 import { importWadMap, readWad } from '../shared/wad.js';
+import { captureGameSave, restoreGameSave } from '../shared/save-game.js';
 
 const P = Object.fromEntries(PCODE_NAMES.map((name, code) => [name, code]));
 
@@ -19,7 +20,7 @@ const P = Object.fromEntries(PCODE_NAMES.map((name, code) => [name, code]));
  * Minimal ACS assembler for tests: real ACC output is a header, a code block and
  * named chunks, which is exactly what this writes.
  */
-function behavior({ code = [], scripts = [], strings = [], mapVars = [], functions = [] }) {
+function behavior({ code = [], scripts = [], strings = [], mapVars = [], functions = [], requiredLibraries = [] }) {
   const bytes = [];
   const word = value => bytes.push(value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff, (value >> 24) & 0xff);
   const chars = text => bytes.push(...[...text].map(char => char.charCodeAt(0)));
@@ -57,6 +58,7 @@ function behavior({ code = [], scripts = [], strings = [], mapVars = [], functio
     }
     chunk('FUNC', data);
   }
+  if (requiredLibraries.length) chunk('LOAD', [...requiredLibraries.join('\0'), '\0'].map(char => char.charCodeAt(0)));
   if (mapVars.length) {
     chunk('MINI', [...wordBytes(0), ...mapVars.flatMap(wordBytes)]);
   }
@@ -426,6 +428,154 @@ test('printing scripts reach the HUD message channel', () => {
   assert.ok(state.scriptState.active === undefined || Array.isArray(state.scriptState.active));
 });
 
+test('a game save resumes delayed ACS at the saved instruction without replaying OPEN scripts', () => {
+  const asm = emitter();
+  asm.ins('INCMAPVAR').byte(0).ins('DELAYDIRECT', 12).ins('INCMAPVAR').byte(0).ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] })).mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.scripts.vm.mapVars[0][0], 1);
+  const record = JSON.parse(JSON.stringify(captureGameSave(project, state, 'acs')));
+  const restored = restoreGameSave(project, record, 'acs').runtime;
+  assert.deepEqual(restored.scriptState, state.scriptState);
+  for (let index = 0; index < 12; index++) {
+    stepRuntime(project, state, 1 / 35, new Set());
+    stepRuntime(project, restored, 1 / 35, new Set());
+    assert.deepEqual(restored.scriptState, state.scriptState);
+  }
+  assert.equal(restored.scripts.vm.mapVars[0][0], 2);
+});
+
+test('ACS saves preserve fractional tics, RNG, dynamic strings and every array scope', () => {
+  const asm = emitter();
+  asm.ins('DELAYDIRECT', 12).ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] })).mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, .04, new Set());
+  const vm = state.scripts.vm;
+  vm.random(); vm.random();
+  vm.pool = Array.from({ length: 300 }, (_, i) => `text${i}`);
+  vm.poolIndex = new Map(vm.pool.map((text, i) => [text, i]));
+  vm.mapArrays[0] = new Map([[0, new Map([[2, 42]])]]);
+  vm.worldArrays.set(1, new Map([[3, 43]]));
+  vm.globalArrays.set(2, new Map([[4, 44]]));
+  vm.active[0].scriptArrays.set(3, new Map([[5, 45]]));
+  const restored = restoreGameSave(project, JSON.parse(JSON.stringify(captureGameSave(project, state, 'acs'))), 'acs').runtime;
+  assert.equal(restored.scripts.acc, state.scripts.acc);
+  assert.equal(restored.scripts.vm.tics, vm.tics);
+  assert.equal(restored.scripts.vm.random(), vm.random());
+  for (const key of ['pool', 'poolIndex', 'mapArrays', 'worldArrays', 'globalArrays']) assert.deepEqual(restored.scripts.vm[key], vm[key], key);
+  assert.deepEqual(restored.scripts.vm.active[0].scriptArrays, vm.active[0].scriptArrays);
+  vm.mapArrays[0].get(0).set(2, 999);
+  assert.equal(restored.scripts.vm.mapArrays[0].get(0).get(2), 42, 'snapshots do not share array storage');
+});
+
+test('ACS resumes a delayed function and restores its caller locals and script arrays', () => {
+  const asm = emitter();
+  asm.push(42).ins('ASSIGNSCRIPTVAR').byte(0)
+    .push(0).push(7).ins('ASSIGNSCRIPTARRAY').byte(1)
+    .byte(P.CALL).byte(0).ins('DROP')
+    .ins('PUSHSCRIPTVAR').byte(0).ins('ASSIGNMAPVAR').byte(0)
+    .push(0).ins('PUSHSCRIPTARRAY').byte(1).ins('ASSIGNMAPVAR').byte(1).ins('TERMINATE');
+  const functionAt = asm.at();
+  asm.push(99).ins('ASSIGNSCRIPTVAR').byte(0).ins('DELAYDIRECT', 3).push(1).ins('RETURNVAL');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }],
+    functions: [{ args: 0, locals: 2, returns: true, address: functionAt }] })).mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.scripts.vm.active[0].calls.length, 1);
+  const restored = restoreGameSave(project, JSON.parse(JSON.stringify(captureGameSave(project, state, 'acs'))), 'acs').runtime;
+  for (let i = 0; i < 3; i++) {
+    stepRuntime(project, state, 1 / 35, new Set());
+    stepRuntime(project, restored, 1 / 35, new Set());
+  }
+  for (const runtime of [state, restored]) {
+    assert.equal(runtime.scripts.vm.mapVars[0][0], 42, 'the caller, not the callee, owns the restored locals');
+    assert.equal(runtime.scripts.vm.mapVars[0][1], 7);
+    assert.deepEqual(runtime.scripts.errors, []);
+  }
+});
+
+test('a delayed library function resumes in its own module before returning to the map after load', () => {
+  const map = emitter();
+  map.byte(P.CALL).byte(0).ins('ASSIGNMAPVAR').byte(0).ins('TERMINATE');
+  const library = emitter();
+  library.ins('DELAYDIRECT', 2).ins('PUSHMAPVAR').byte(0).ins('RETURNVAL');
+  const bytes = behavior({ code: map.code, scripts: [{ number: 1, type: 1, args: 0, address: 8 }],
+    requiredLibraries: ['Helpers'], functions: [{ args: 0, locals: 0, returns: true, import: 1, address: 0 }] });
+  const helper = behavior({ code: library.code, mapVars: [77],
+    functions: [{ args: 0, locals: 0, returns: true, address: 8 }] });
+  const project = room(0, [], { withScripts: describeMapScripts(bytes, [{ name: 'Helpers', bytes: helper }]).mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.scripts.vm.active[0].activeModuleIndex, 1);
+  const restored = restoreGameSave(project, JSON.parse(JSON.stringify(captureGameSave(project, state, 'library'))), 'library').runtime;
+  for (let i = 0; i < 2; i++) {
+    stepRuntime(project, state, 1 / 35, new Set());
+    stepRuntime(project, restored, 1 / 35, new Set());
+  }
+  for (const runtime of [state, restored]) {
+    assert.equal(runtime.scripts.vm.mapVars[0][0], 77);
+    assert.deepEqual(runtime.scripts.errors, []);
+  }
+});
+
+test('ACS array operands use index then value, non-map slots are direct, and script arrays are private', () => {
+  const asm = emitter();
+  for (const scope of ['SCRIPT', 'MAP', 'WORLD', 'GLOBAL']) {
+    asm.push(2).push(7).ins(`ASSIGN${scope}ARRAY`).byte(3)
+      .push(2).push(5).ins(`ADD${scope}ARRAY`).byte(3)
+      .push(2).ins(`PUSH${scope}ARRAY`).byte(3).ins('ASSIGNMAPVAR').byte(4 + ['SCRIPT', 'MAP', 'WORLD', 'GLOBAL'].indexOf(scope));
+  }
+  asm.ins('DELAYDIRECT', 3).push(2).ins('PUSHSCRIPTARRAY').byte(3).ins('ASSIGNMAPVAR').byte(8).ins('TERMINATE');
+  const second = asm.at();
+  asm.push(2).push(99).ins('ASSIGNSCRIPTARRAY').byte(3).ins('TERMINATE');
+  const vm = createAcsVm(parseBehavior(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 0, args: 0, address: 8 }, { number: 2, type: 0, args: 0, address: second }] })));
+  startScript(vm, 1); tickAcs(vm);
+  for (let slot = 4; slot < 8; slot++) assert.equal(vm.mapVars[0][slot], 12, `scope result ${slot}`);
+  assert.equal(vm.worldArrays.get(3).get(2), 12, 'world slots do not read a variable to obtain their array id');
+  assert.equal(vm.globalArrays.get(3).get(2), 12);
+  startScript(vm, 2);
+  for (let i = 0; i < 3; i++) tickAcs(vm);
+  assert.equal(vm.mapVars[0][8], 12, 'another script cannot overwrite a local array');
+  assert.deepEqual(vm.errors, []);
+});
+
+test('ACS restores legacy snapshots and rejects malformed state without changing the live interpreter', () => {
+  const asm = emitter();
+  asm.ins('DELAYDIRECT', 12).ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] })).mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  const saved = state.scriptState;
+  for (const change of [
+    copy => { copy.active[0].pc = 10000000; },
+    copy => { copy.active[0].moduleIndex = 99; },
+    copy => { copy.active[0].state = 'unknown'; },
+    copy => { copy.active[0].sp = 3; },
+    copy => { copy.mapVars[0][0] = NaN; },
+    copy => { copy.worldArrays = [[0, [[1, 'bad']]]]; },
+  ]) {
+    const invalid = structuredClone(saved); change(invalid);
+    assert.throws(() => state.scripts.restore(invalid), /Invalid ACS snapshot/);
+    assert.deepEqual(state.scriptState, saved);
+  }
+  const legacy = structuredClone(saved);
+  for (const key of ['acc', 'tics', 'seed', 'mapArrays', 'worldArrays', 'globalArrays']) delete legacy[key];
+  for (const script of legacy.active) for (const key of ['calls', 'scriptArrays', 'activeModuleIndex', 'kind']) delete script[key];
+  const fresh = createRuntime(project);
+  fresh.scripts.restore(legacy);
+  assert.equal(fresh.scriptState.opened, true);
+  assert.equal(fresh.scriptState.active[0].pc, saved.active[0].pc);
+  state.scripts.vm.active[0].pc = 10000000;
+  assert.throws(() => captureGameSave(project, state, 'acs'), /Invalid ACS snapshot/);
+});
+
 test('a pressed door lowers the ceiling of its tagged sector', () => {
   const project = room(11, [1, 16]);
   const state = createRuntime(project);
@@ -502,6 +652,13 @@ test('imported UDMF maps carry their ACS module and run its OPEN script', { skip
   stepRuntime(project, state, 1 / 35, new Set());
   assert.ok(state.scripts?.active);
   assert.equal(state.scriptState.opened, true, 'OPEN/ENTER scripts started');
+  const restored = restoreGameSave(project, JSON.parse(JSON.stringify(captureGameSave(project, state, 'imported-acs'))), 'imported-acs').runtime;
+  assert.deepEqual(restored.scriptState, state.scriptState, 'real imported ACS resumes from its saved state');
+  for (let i = 0; i < 3; i++) {
+    stepRuntime(project, state, 1 / 35, new Set());
+    stepRuntime(project, restored, 1 / 35, new Set());
+    assert.deepEqual(restored.scriptState, state.scriptState);
+  }
 });
 
 /** Tiny DOM stub so the editor panel is exercised without a browser. */

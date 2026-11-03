@@ -258,6 +258,15 @@ Elevator conditions `sectorElevatorRaised`, `sectorElevatorLowered` and
 `sectorElevatorMoving` similarly take `sectorId` and target an imported moving
 floor/lift or a configured `elevator`.
 
+`everySeconds` fires immediately on its first evaluation, then waits for its
+interval. Each condition and each object instance has an independent clock,
+including sub-events of for-each rules. Game saves retain those deadlines, so
+loading does not cause an extra early firing.
+
+`wallActivated` in `cross` mode is a movement-edge trigger: standing still after
+crossing a line does not activate it again. Moving back across it can trigger a
+repeatable rule again.
+
 | Trigger / comparison | Type | Needs object | Parameters |
 | --- | --- | --- | --- |
 | a named signal is emitted | `onSignal` | yes | signal |

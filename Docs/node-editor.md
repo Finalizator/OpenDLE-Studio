@@ -18,6 +18,10 @@ rules, see the [visual scripting reference](visual-scripting.md).
 A scene is a reusable group, not a live-linked prefab: editing its source does
 not update copies already placed in the layout. Each placed copy has its own
 local variables and remapped object references.
+Nested visual-script branches are copied as complete trees: each sub-event points
+to its copied parent, never to a rule on the original instance. Duplicating or
+nesting a scene that would exceed the event limit is refused before adding nodes,
+rather than placing an unscripted or partly scripted copy.
 
 ### Placed scenes are one layout object
 

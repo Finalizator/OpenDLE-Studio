@@ -459,18 +459,18 @@ export function applyNodeFile(scene, document, {
     for (const joint of joints) scene.joints.push(joint);
   }
 
-  const stamp = () => globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6);
   const events = [];
   const stripped = { commands: 0, rules: 0, types: new Set() };
   const known = knownTypes ? (knownTypes instanceof Set ? knownTypes : new Set(knownTypes)) : null;
-  const keptIds = new Set();
+  const keptIds = new Map();
   // Sub-events travel with their parent or not at all: a child alone would arrive with a parent the
   // destination does not have.
   for (const event of document.events || []) {
     const parentKept = event.parentId === undefined || keptIds.has(event.parentId);
     if (!parentKept) { stripped.rules += 1; continue; }
     const copy = remapReferences(cloneProjectData(event), mapping);
-    copy.id = `${event.id}_import_${stamp()}`.slice(0, 120);
+    copy.id = freshId(event.id);
+    if (event.parentId !== undefined) copy.parentId = keptIds.get(event.parentId);
     if (event.ownerId) copy.ownerId = mapping.get(event.ownerId);
     // The script keeps its sheet and its group; an id the destination could not offer is dropped
     // rather than left dangling.
@@ -498,7 +498,7 @@ export function applyNodeFile(scene, document, {
       // is left, the same way deleting an addon leaves the rules that still mean something.
       if ((hadActions && !copy.actions.length) || !keptConditions.length) { stripped.rules += 1; continue; }
     }
-    keptIds.add(event.id);
+    keptIds.set(event.id, copy.id);
     events.push(copy);
   }
   if (events.length) {

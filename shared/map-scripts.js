@@ -691,48 +691,100 @@ export function createMapScripts(project, state, callbacks = {}) {
   /** Plain snapshot of the interpreter: variables plus every live script's position. */
   function capture() {
     if (!api.vm) return null;
+    const arrays = bag => [...(bag || [])].map(([slot, values]) => [slot, [...values]]);
     return {
+      acc: api.acc, tics: api.vm.tics, seed: api.vm.seed,
       mapVars: api.vm.mapVars.map(store => Array.from(store || [])),
       worldVars: Array.from(api.vm.worldVars),
       globalVars: Array.from(api.vm.globalVars),
-      pool: api.vm.pool.slice(0, 256),
+      mapArrays: api.vm.program.modules.map((_, index) => arrays(api.vm.mapArrays[index])),
+      worldArrays: arrays(api.vm.worldArrays), globalArrays: arrays(api.vm.globalArrays),
+      pool: api.vm.pool.slice(),
       opened: api.opened,
-      active: api.vm.active.map(script => ({
-        number: script.number, name: script.name ?? null, moduleIndex: script.moduleIndex ?? 0,
-        pc: script.pc, state: script.state === 'running' ? 'running' : script.state,
-        delay: script.delay, stateData: script.stateData, result: script.result,
-        locals: Array.from(script.locals), sp: script.sp, stack: script.stack.slice(0, script.sp),
-      })),
+      active: api.vm.active.map(script => {
+        const { entry, locals, stack, calls, scriptArrays, ...fields } = script;
+        return { ...structuredClone(fields), name: script.name ?? null,
+          locals: Array.from(locals), stack: stack.slice(0, script.sp),
+          scriptArrays: arrays(scriptArrays),
+          calls: calls.map(({ module, locals: frameLocals, arrays: frameArrays, ...frame }) => ({
+            ...frame, locals: Array.from(frameLocals), arrays: arrays(frameArrays),
+          })),
+        };
+      }),
     };
   }
 
   function restore(saved) {
-    if (!api.vm || !saved) return;
-    saved.mapVars?.forEach((store, index) => {
-      const target = api.vm.mapVars[index] ||= new Int32Array(128);
-      (store || []).forEach((value, slot) => { target[slot] = value; });
+    if (saved === null || saved === undefined) return;
+    const check = (ok, message) => { if (!ok) throw new Error(`Invalid ACS snapshot: ${message}`); };
+    check(api.vm && typeof saved === 'object' && !Array.isArray(saved), 'missing program or state');
+    const int = value => Number.isInteger(value) && value >= -2147483648 && value <= 2147483647;
+    const integers = (values, max) => {
+      check(Array.isArray(values) && values.length <= max && values.every(int), 'invalid variables or stack');
+      return values;
+    };
+    const moduleAt = index => {
+      check(Number.isInteger(index) && index >= 0 && index < api.program.modules.length, 'unknown module');
+      return api.program.modules[index].module;
+    };
+    const arrays = (values = []) => {
+      check(Array.isArray(values), 'invalid arrays');
+      return new Map(values.map(pair => {
+        check(Array.isArray(pair) && pair.length === 2 && int(pair[0]) && Array.isArray(pair[1]), 'invalid array slot');
+        return [pair[0], new Map(pair[1].map(cell => {
+          check(Array.isArray(cell) && cell.length === 2 && cell.every(int), 'invalid array value');
+          return cell.slice();
+        }))];
+      }));
+    };
+    check(typeof saved.opened === 'boolean' && Array.isArray(saved.active) && saved.active.length <= 65, 'invalid active scripts');
+    check(Array.isArray(saved.mapVars) && saved.mapVars.length <= api.program.modules.length, 'invalid map variables');
+    check(Array.isArray(saved.pool) && saved.pool.every(text => typeof text === 'string'), 'invalid string pool');
+    const acc = saved.acc ?? 0, tics = saved.tics ?? 0, seed = saved.seed ?? api.vm.seed;
+    check(Number.isFinite(acc) && acc >= -1e-8 && acc < 1 && Number.isSafeInteger(tics) && tics >= 0 && int(seed), 'invalid clock or RNG');
+    const mapVars = api.program.modules.map((_, index) => new Int32Array(integers(
+      saved.mapVars[index] ?? Array.from(api.vm.mapVars[index]), 128)));
+    const worldVars = new Int32Array(integers(saved.worldVars, 256));
+    const globalVars = new Int32Array(integers(saved.globalVars, 64));
+    check(saved.mapArrays === undefined || Array.isArray(saved.mapArrays) && saved.mapArrays.length <= api.program.modules.length, 'invalid module arrays');
+    const mapArrays = api.program.modules.map((_, index) => arrays(saved.mapArrays?.[index]));
+    const worldArrays = arrays(saved.worldArrays), globalArrays = arrays(saved.globalArrays);
+    const active = saved.active.map(entry => {
+      check(entry && typeof entry === 'object' && int(entry.number), 'invalid script');
+      const definition = findEntry(entry);
+      check(definition, 'unknown script');
+      const moduleIndex = entry.moduleIndex ?? 0;
+      moduleAt(moduleIndex);
+      const module = moduleAt(entry.activeModuleIndex ?? moduleIndex);
+      check(Number.isInteger(entry.pc) && entry.pc >= 0 && entry.pc <= module.dataSize, 'invalid program counter');
+      const locals = new Int32Array(integers(entry.locals, 65536)), stack = integers(entry.stack, 4096).slice();
+      check(Number.isInteger(entry.sp) && entry.sp >= 0 && entry.sp === stack.length, 'invalid stack pointer');
+      check(['running', 'delayed', 'suspended', 'tagwait', 'scriptwaitpre', 'scriptwait', 'terminated'].includes(entry.state), 'invalid script state');
+      check(int(entry.delay) && int(entry.stateData) && int(entry.result), 'invalid script progress');
+      check(entry.calls === undefined || Array.isArray(entry.calls), 'invalid function calls');
+      const calls = (entry.calls || []).map(frame => {
+        check(frame && typeof frame === 'object', 'invalid function frame');
+        const callerModule = moduleAt(frame.moduleIndex ?? 0);
+        check(Number.isInteger(frame.pc) && frame.pc >= 0 && frame.pc <= callerModule.dataSize &&
+          typeof frame.discard === 'boolean', 'invalid function return');
+        return { ...frame, module: callerModule,
+          locals: new Int32Array(integers(frame.locals, 65536)), arrays: arrays(frame.arrays) };
+      });
+      return { kind: definition.type, activator: 'player', line: null, backSide: false,
+        print: '', hudStart: -1, hudWidth: 0, hudHeight: 0, startedAt: 0,
+        ...structuredClone(entry), name: entry.name ?? undefined,
+        entry: { ...definition }, moduleIndex, moduleName: api.program.modules[moduleIndex].name,
+        locals, stack, calls, scriptArrays: arrays(entry.scriptArrays) };
     });
-    for (const text of saved.pool || []) api.vm.pool.push(text);
-    saved.worldVars?.forEach((value, index) => { api.vm.worldVars[index] = value; });
-    saved.globalVars?.forEach((value, index) => { api.vm.globalVars[index] = value; });
-    api.opened = Boolean(saved.opened);
-    api.vm.active = (saved.active || []).map(entry => {
-      const script = {
-        number: entry.number, name: entry.name ?? undefined, entry: { ...findEntry(entry) },
-        moduleIndex: entry.moduleIndex ?? 0, moduleName: api.vm.program.modules[entry.moduleIndex ?? 0]?.name,
-        locals: new Int32Array(entry.locals || []), stack: (entry.stack || []).slice(), sp: entry.sp || 0,
-        calls: [], scriptArrays: new Map(), pc: entry.pc, state: entry.state, delay: entry.delay || 0,
-        stateData: entry.stateData || 0, result: entry.result ?? 1, activator: 'player', line: null,
-        backSide: false, print: '', hudStart: -1, hudWidth: 0, hudHeight: 0, startedAt: 0,
-      };
-      return script;
-    });
+    Object.assign(api.vm, { mapVars, worldVars, globalVars, mapArrays, worldArrays, globalArrays, active,
+      pool: saved.pool.slice(), poolIndex: new Map(saved.pool.map((text, index) => [text, index])), tics, seed });
+    api.opened = saved.opened;
+    api.acc = acc;
   }
 
   function findEntry(entry) {
     return api.program?.scripts.find(script => script.number === entry.number &&
-      (script.moduleIndex ?? 0) === (entry.moduleIndex ?? 0)) ||
-      { number: entry.number, type: 'closed', argCount: 0, address: entry.pc, varCount: 20, moduleIndex: 0 };
+      (script.moduleIndex ?? 0) === (entry.moduleIndex ?? 0));
   }
 
   return api;

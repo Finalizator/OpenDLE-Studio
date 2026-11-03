@@ -196,7 +196,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
   Object.defineProperty(state, 'scriptState', {
     configurable: true, enumerable: false,
     get: () => state.scripts?.capture() ?? null,
-    set: () => {},
+    set: saved => state.scripts?.restore(saved),
   });
   // The slowest step so far and its stage breakdown, for the frame report.
   Object.defineProperty(state, 'slowStep', {
@@ -831,7 +831,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // Nothing can be crossed by a player who has not moved, and walking the whole wall
   // list every frame is the single most expensive per-frame check on a big map.
   state.worldTriggers.cross = previousPosition.x === player.x && previousPosition.y === player.y
-    ? state.worldTriggers.cross : crossedWalls(state, previousPosition);
+    ? new Set() : crossedWalls(state, previousPosition);
   // ACS `Use`/`PlayerUse` sees the same line the visual rules see, which is the one
   // with the special when the player is not aiming straight at a plain wall.
   for (const id of new Set([usedWall?.use, usedWall?.special].filter(Boolean))) {
@@ -984,8 +984,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       return false;
     }
     let statChanges = null;
-    const matchOne = condition => condition.inverted ? !matchCondition(condition) : Boolean(matchCondition(condition));
-    function matchCondition(condition) {
+    const matchOne = (condition, index) => condition.inverted ? !matchCondition(condition, index) : Boolean(matchCondition(condition, index));
+    function matchCondition(condition, index) {
       condition = resolveCommand(condition);
       if (condition.type === 'onSignal') return currentSignal &&
         currentSignal.entityId === resolveEntityId(event, condition.entityId) && currentSignal.signal === condition.signal;
@@ -1003,9 +1003,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // Construct's "Every X seconds": the first tick fires immediately, then the
         // interval restarts, so a rule cannot drift or fire twice for one interval.
         const intervals = state.intervals ||= new Map();
-        const due = intervals.get(event.id) || 0;
+        const key = `${keyOf()}:${index}`;
+        const due = intervals.get(key) || 0;
         if (state.time + 1e-9 < due) return false;
-        intervals.set(event.id, state.time + condition.seconds);
+        intervals.set(key, state.time + condition.seconds);
         return true;
       }
       if (condition.type === 'randomChance') return nextRandom(state) < condition.probability;
@@ -1177,11 +1178,11 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     // fresh array for every rule on every frame.
     let matches;
     if (event.conditionMode === 'or') {
-      matches = matchOne(event.condition);
-      if (!matches) for (const condition of event.conditions || []) if (matchOne(condition)) { matches = true; break; }
+      matches = matchOne(event.condition, 0);
+      if (!matches) for (let i = 0; i < (event.conditions?.length || 0); i++) if (matchOne(event.conditions[i], i + 1)) { matches = true; break; }
     } else {
-      matches = matchOne(event.condition);
-      if (matches) for (const condition of event.conditions || []) if (!matchOne(condition)) { matches = false; break; }
+      matches = matchOne(event.condition, 0);
+      if (matches) for (let i = 0; i < (event.conditions?.length || 0); i++) if (!matchOne(event.conditions[i], i + 1)) { matches = false; break; }
     }
     if (!matches) return;
     if (event.once) state.fired.add(keyOf());

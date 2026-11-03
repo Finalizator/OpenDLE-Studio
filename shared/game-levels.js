@@ -28,7 +28,7 @@ export function applyLevelMusic(data, levelId, explicit, assets, warnings) {
   return data;
 }
 
-function levelData(project) {
+export function levelData(project) {
   return Object.fromEntries(Object.entries(project).filter(([key]) => !sharedKeys.has(key)));
 }
 
@@ -115,7 +115,7 @@ function classicNext(id, secret) {
 
 export function assembleGameLevels(entries, entryId, title, routes = new Map()) {
   const assets = [], byId = new Map(), byContent = new Map(), levels = [], warnings = new Set(), ids = new Set();
-  let version, sharedActors = null, sharedStrings = null, sharedAddons = null;
+  let version, sharedActors = null, sharedStrings = null, sharedAddons = null, sharedSounds = null;
   const repeatedWarnings = new Set();
   for (const entry of entries) {
     if (levels.length >= 128) throw new Error('A game must contain 1–128 levels');
@@ -128,6 +128,7 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
     if (!sharedActors && project.actors?.length) sharedActors = structuredClone(project.actors);
     if (!sharedStrings && project.strings) sharedStrings = { ...project.strings };
     if (!sharedAddons && project.addons?.length) sharedAddons = structuredClone(project.addons);
+    if (!sharedSounds && project.soundAliases) sharedSounds = structuredClone(project.soundAliases);
     for (const asset of project.assets) {
       const { id: originalId, ...content } = asset;
       const signature = JSON.stringify(content), existing = byContent.get(signature);
@@ -185,6 +186,7 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
   const project = { version, title: title.slice(0, 100), assets,
     ...(sharedStrings ? { strings: sharedStrings } : {}), ...(sharedActors ? { actors: sharedActors } : {}),
     ...(sharedAddons ? { addons: sharedAddons } : {}),
+    ...(sharedSounds ? { soundAliases: sharedSounds } : {}),
     ...structuredClone(active.data), game: { version: 1, entry: entryId, active: entryId, levels } };
   if (JSON.stringify(project).length > LIMITS.gameBytes) {
     throw new Error(`Imported game exceeds the ${LIMITS.gameBytes / 1024 / 1024} MiB portable project limit`);

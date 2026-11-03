@@ -51,6 +51,39 @@ test('identity covers all content, uses stable object order and ignores active c
   assert.notEqual(await gameSaveIdentity(changed), await gameSaveIdentity(project));
 });
 
+test('campaign save identity includes shared game metadata without attaching it to the selected level', async () => {
+  const a = createProject(), b = createProject();
+  a.assets = []; b.assets = [];
+  a.actors = [{ id: 'guard', name: 'Guard' }];
+  a.strings = { title: 'Arrival' };
+  a.addons = [{ id: 'test_addon', name: 'Tools' }];
+  const project = assembleGameLevels([{ id: 'A', project: a }, { id: 'B', project: b }], 'A', 'Shared campaign').project;
+  project.soundAliases = { aliases: { 'terminal/beep': 'DSBEEP' }, random: {} };
+  const identity = await gameSaveIdentity(project);
+  selectGameLevel(project, 'B');
+  assert.equal(await gameSaveIdentity(project), identity);
+  selectGameLevel(project, 'A');
+  assert.equal(await gameSaveIdentity(project), identity);
+  for (const key of ['actors', 'strings', 'addons', 'soundAliases']) {
+    const changed = structuredClone(project);
+    delete changed[key];
+    assert.notEqual(await gameSaveIdentity(changed), identity, key);
+  }
+});
+
+test('periodic clocks validate strictly while older saves without clocks still load', () => {
+  const { project, state } = fixture();
+  state.intervals = new Map([['event:0', 2]]);
+  const record = captureGameSave(project, state, 'id');
+  const old = json(record);
+  old.snapshot.value = old.snapshot.value.filter(([key]) => key !== 'intervals');
+  assert.doesNotThrow(() => restoreGameSave(project, resign(old), 'id'));
+  state.intervals.set('event:0', Infinity);
+  assert.throws(() => captureGameSave(project, state, 'id'), /invalid periodic clock/);
+  state.intervals = [];
+  assert.throws(() => captureGameSave(project, state, 'id'), /invalid periodic clocks/);
+});
+
 test('JSON round trip preserves collections, nonfinite timers, inventory, scripts, HUD and gameplay state', async () => {
   const { project, state } = fixture(), identity = await gameSaveIdentity(project);
   project.events.push({ id: 'once' }, { id: 'each', forEachType: 'enemy' });

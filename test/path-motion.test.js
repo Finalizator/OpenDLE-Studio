@@ -70,6 +70,25 @@ test('height comes with the route', () => {
   assert.equal(followPath(stair, length).z, 0);
 });
 
+test('ping-pong followers face backward on the return leg and keep model-facing offsets', () => {
+  const path = createPath({ id: 'route', name: 'Line', points: [point(0, 0, 0), point(100, 0, 0)] });
+  assert.equal(followPath(path, 125, { mode: 'pingpong' }).angle, 180);
+  assert.equal(followPath(path, -25, { mode: 'pingpong' }).angle, 180);
+  assert.equal(followPath(path, 225, { mode: 'pingpong' }).angle, 0);
+  for (const options of [{}, { modelAsset: 'mesh', modelFacing: 90 }, { modelAsset: 'mesh', angle: 30 }]) {
+    const entity = { ...follower({ id: 'route', speed: 100, mode: 'pingpong', yawOffset: 10 }), ...options };
+    const state = { entities: [entity] };
+    advancePathMotion(project(path), state, .5);
+    const outbound = entity.angle;
+    advancePathMotion(project(path), state, 1);
+    assert.equal(entity.x, 50);
+    assert.equal(entity.angle, (outbound + 180) % 360);
+  }
+  const entity = { ...follower({ id: 'route', speed: 100, mode: 'pingpong', faceDirection: false }), angle: 42 };
+  advancePathMotion(project(path), { entities: [entity] }, 1.5);
+  assert.equal(entity.angle, 42);
+});
+
 test('advancing moves the model at its own speed and turns it', () => {
   const path = square();
   const state = { entities: [follower({ id: 'route', speed: 100, mode: 'loop' })], time: 0 };

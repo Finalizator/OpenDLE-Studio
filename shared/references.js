@@ -98,15 +98,20 @@ export function hasEntityReferences(project, ids, options = {}) {
 export function stripEntityReferences(project, ids, { scene = null } = {}) {
   const wanted = ids instanceof Set ? ids : new Set([].concat(ids));
   const removed = { events: 0, commands: 0, cues: 0, actions: 0 };
+  const events = (scene || project).events || [];
+  const parents = new Set(events.map(event => event.parentId).filter(Boolean));
   const clean = (list, counter) => list.filter(command => {
     const named = commandTargets(command).some(target => wanted.has(target.id));
     if (named) removed[counter] += 1;
     return !named;
   });
-  // A rule that has just lost its only action can never do anything, so it goes with it — but a
-  // rule that was already empty before this delete is not ours to tidy away.
+  // Empty leaves go with their last action; parents can still gate surviving sub-events.
+  const dropped = new Set();
   const keepEvent = event => {
-    if (event.ownerId && wanted.has(event.ownerId)) { removed.events += 1; return false; }
+    if (dropped.has(event.parentId)) {
+      dropped.add(event.id); removed.events += 1; return false;
+    }
+    if (event.ownerId && wanted.has(event.ownerId)) { dropped.add(event.id); removed.events += 1; return false; }
     const conditionsBefore = [event.condition, ...(event.conditions || [])].filter(Boolean);
     const before = (event.actions || []).length + conditionsBefore.length;
     event.actions = clean(event.actions || [], 'commands');
@@ -116,7 +121,9 @@ export function stripEntityReferences(project, ids, { scene = null } = {}) {
     const after = event.actions.length + keptConditions.length;
     // Only a rule this delete gutted is dropped: one that can no longer act, or has lost its
     // trigger. A rule that was already idle is none of this delete's business.
-    if (after < before && (!event.actions.length || !keptConditions.length)) { removed.events += 1; return false; }
+    if (after < before && (!event.actions.length && !parents.has(event.id) || !keptConditions.length)) {
+      dropped.add(event.id); removed.events += 1; return false;
+    }
     return true;
   };
   if (scene) { scene.events = (scene.events || []).filter(keepEvent); return removed; }

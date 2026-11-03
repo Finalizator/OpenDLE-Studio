@@ -93,19 +93,21 @@ export function setEventParent(project, id, parentId = null) {
     const remaining = project.events.filter(item => !moved.has(item.id));
     // Sub-events must stay contiguous with their parent, so the branch goes after the
     // parent's existing children.
-    const lastChild = remaining.findLastIndex(item => item.parentId === parentId);
-    const at = lastChild >= 0 ? lastChild + 1 : remaining.findIndex(item => item.id === parentId) + 1;
+    const descendants = eventBranch(remaining, parentId);
+    const at = remaining.findLastIndex(item => descendants.has(item.id)) + 1;
     remaining.splice(at, 0, ...branch);
     project.events = remaining;
     return;
   }
   if (event.parentId === undefined) return;
-  const oldParent = event.parentId;
+  let oldParent = project.events.find(item => item.id === event.parentId);
+  while (oldParent.parentId) oldParent = project.events.find(item => item.id === oldParent.parentId);
   delete event.parentId;
   const branch = project.events.filter(item => moved.has(item.id));
   const remaining = project.events.filter(item => !moved.has(item.id));
-  // Outdenting keeps the branch together and puts it straight after its old parent.
-  const lastOfParent = remaining.findLastIndex(item => eventBranch(remaining, oldParent).has(item.id));
+  // A top-level branch must follow the entire ancestor tree, not split its old siblings.
+  const ancestorBranch = eventBranch(remaining, oldParent.id);
+  const lastOfParent = remaining.findLastIndex(item => ancestorBranch.has(item.id));
   const at = lastOfParent >= 0 ? lastOfParent + 1 : remaining.length;
   remaining.splice(at, 0, ...branch);
   project.events = remaining;

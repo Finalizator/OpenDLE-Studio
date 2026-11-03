@@ -53,6 +53,23 @@ export function remapReferences(value, mapping, depth = 0) {
   return result;
 }
 
+function copySceneEvents(events, mapping, idFor, { stripSheet = true } = {}) {
+  const eventIds = new Map(events.map(event => {
+    const id = idFor(event);
+    return [event.id, id.length <= ID_LIMIT ? id : `${id.slice(0, ID_LIMIT - 17)}_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`];
+  }));
+  return events.map(event => {
+    const copy = remapReferences(structuredClone(event), mapping);
+    copy.id = eventIds.get(event.id);
+    if (event.parentId !== undefined) {
+      if (!eventIds.has(event.parentId)) throw new Error('Cannot copy a sub-event without its parent rule');
+      copy.parentId = eventIds.get(event.parentId);
+    }
+    if (stripSheet) delete copy.sheetId;
+    return copy;
+  });
+}
+
 /**
  * Captures the given objects (and the events that own them) into a scene. Object
  * coordinates become relative to the scene origin, so placing the scene anywhere
@@ -115,12 +132,7 @@ export function instantiateScene(scene, { x = 0, y = 0, angle = 0, prefix = newS
     copy.angle = (Number(entity.angle) || 0) + angle;
     return copy;
   });
-  const events = (scene.events || []).map(event => {
-    const copy = remapReferences(structuredClone(event), mapping);
-    copy.id = `${prefix}_${event.id}`.slice(0, ID_LIMIT);
-    if (event.sheetId !== undefined) delete copy.sheetId;
-    return copy;
-  });
+  const events = copySceneEvents(scene.events || [], mapping, event => `${prefix}_${event.id}`);
   // A placed copy keeps its joints, re-pointed at the copied objects.
   const joints = (scene.joints || []).map(joint => remapJoint(joint, mapping, { id: `${prefix}_${joint.id}` }));
   return { entities, events, joints, prefix };
@@ -233,16 +245,14 @@ export function removeSceneObjects(scene, ids) {
   const removing = new Set();
   for (const id of [].concat(ids)) for (const entity of sceneSubtree(scene, id)) removing.add(entity.id);
   if (!removing.size) return { removed: 0, events: 0 };
-  const events = (scene.events || []).filter(event => event.ownerId && removing.has(event.ownerId));
   // A node another node's rule still names has to lose those names in the same pass: a scene is
   // not validated against its own event targets, so a leftover reference would sit there silently
   // and the rule would do nothing at play time.
-  stripEntityReferences({ events: [] }, removing, { scene });
-  scene.events = (scene.events || []).filter(event => !event.ownerId || !removing.has(event.ownerId));
+  const stripped = stripEntityReferences({ events: [] }, removing, { scene });
   scene.entities = scene.entities.filter(entity => !removing.has(entity.id));
   const joints = (scene.joints || []).length;
   scene.joints = pruneJoints(scene.joints, scene.entities.map(entity => entity.id));
-  return { removed: removing.size, events: events.length, joints: joints - scene.joints.length };
+  return { removed: removing.size, events: stripped.events, joints: joints - scene.joints.length };
 }
 
 /** Copies an object (and its group) with fresh ids, nudged so the copy is visible. */
@@ -251,6 +261,9 @@ export function duplicateSceneObject(scene, id, { offset = 32 } = {}) {
   if (!subtree.length) throw new Error('That object no longer exists');
   const added = subtree.length;
   if (scene.entities.length + added > MAX_SCENE_ENTITIES) throw new Error(`A scene holds at most ${MAX_SCENE_ENTITIES} objects`);
+  const owned = new Set(subtree.map(entity => entity.id));
+  const sourceEvents = (scene.events || []).filter(event => event.ownerId && owned.has(event.ownerId));
+  if ((scene.events || []).length + sourceEvents.length > MAX_SCENE_EVENTS) throw new Error(`A scene holds at most ${MAX_SCENE_EVENTS} events`);
   const mapping = new Map();
   for (const entity of subtree) mapping.set(entity.id, sceneEntityId(scene, `${entity.id}_copy`));
   const copies = subtree.map(entity => {
@@ -264,13 +277,9 @@ export function duplicateSceneObject(scene, id, { offset = 32 } = {}) {
   });
   scene.entities.push(...copies);
   const idMap = mapping;
-  const events = (scene.events || []).filter(event => event.ownerId && mapping.has(event.ownerId)).map(event => {
-    const copy = remapReferences(structuredClone(event), idMap);
-    copy.id = `${event.id}_copy_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`.slice(0, ID_LIMIT);
-    copy.ownerId = idMap.get(event.ownerId);
-    return copy;
-  });
-  if ((scene.events || []).length + events.length <= MAX_SCENE_EVENTS) scene.events = [...(scene.events || []), ...events];
+  const events = copySceneEvents(sourceEvents, idMap,
+    event => `${event.id}_copy_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`, { stripSheet: false });
+  scene.events = [...(scene.events || []), ...events];
   // Only joints whose two ends were both copied can be duplicated.
   const joints = (scene.joints || []).filter(joint => mapping.has(joint.a) && mapping.has(joint.b))
     .map(joint => remapJoint(joint, idMap, { id: `${joint.id}_copy_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6)}` }));
@@ -441,6 +450,9 @@ export function nestScene(scene, source, { x = 0, y = 0, parentId = null } = {})
   if ((scene.entities || []).length + source.entities.length + 1 > MAX_SCENE_ENTITIES) {
     throw new Error(`A scene holds at most ${MAX_SCENE_ENTITIES} objects`);
   }
+  const owned = new Set(source.entities.map(entity => entity.id));
+  const events = (source.events || []).filter(event => event.ownerId && owned.has(event.ownerId));
+  if ((scene.events || []).length + events.length > MAX_SCENE_EVENTS) throw new Error(`A scene holds at most ${MAX_SCENE_EVENTS} events`);
   const group = addSceneObject(scene, {
     type: 'decoration', name: uniqueSceneName(scene, source.name).slice(0, 100), x, y, parentId,
   });
@@ -455,17 +467,8 @@ export function nestScene(scene, source, { x = 0, y = 0, parentId = null } = {})
     return copy;
   });
   scene.entities.push(...copies);
-  const events = (source.events || []).filter(event => event.ownerId && mapping.has(event.ownerId));
-  const room = MAX_SCENE_EVENTS - (scene.events || []).length;
-  if (events.length && room > 0) {
-    scene.events = [...(scene.events || []), ...events.slice(0, room).map(event => {
-      const copy = remapReferences(structuredClone(event), mapping);
-      copy.id = `${event.id}_nest_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`.slice(0, ID_LIMIT);
-      copy.ownerId = mapping.get(event.ownerId);
-      if (event.sheetId !== undefined) delete copy.sheetId;
-      return copy;
-    })];
-  }
+  scene.events = [...(scene.events || []), ...copySceneEvents(events, mapping,
+    event => `${event.id}_nest_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 6)}`)];
   const jointCopies = (source.joints || []).filter(joint => mapping.has(joint.a) && mapping.has(joint.b))
     .map(joint => remapJoint(joint, mapping, { id: `${group.id}_${joint.id}` }));
   if ((scene.joints || []).length + jointCopies.length <= MAX_JOINTS) scene.joints = [...(scene.joints || []), ...jointCopies];

@@ -98,6 +98,28 @@ test('deleting with "keep the rules" re-points every reference at an empty objec
   assert.equal(project.timesheets[0].cues.length, 2, 'and no cue was deleted');
 });
 
+test('dropping a referenced trigger also drops its descendants, but retains partially cleaned branches', () => {
+  for (const inScene of [false, true]) {
+    const project = createProject(), target = project.map.entities.find(entity => entity.type === 'pickup');
+    const action = { type: 'showMessage', message: 'survives' };
+    const events = [
+      rule('root', undefined, { condition: { type: 'nearEntity', entityId: target.id, distance: 32 }, actions: [action] }),
+      rule('child', undefined, { parentId: 'root', actions: [action] }),
+      rule('grandchild', undefined, { parentId: 'child', actions: [action] }),
+      rule('keep', undefined, { actions: [action, { type: 'removeEntity', entityId: target.id }] }),
+      rule('keep_child', undefined, { parentId: 'keep', actions: [action] }),
+      rule('gate', undefined, { actions: [{ type: 'removeEntity', entityId: target.id }] }),
+      rule('gate_child', undefined, { parentId: 'gate', actions: [action] }),
+    ];
+    const holder = inScene ? { events } : project;
+    holder.events = events;
+    const removed = stripEntityReferences(project, target.id, inScene ? { scene: holder } : {});
+    assert.deepEqual(holder.events.map(event => event.id), ['keep', 'keep_child', 'gate', 'gate_child']);
+    assert.equal(removed.events, 3, 'descendants count as removed rules');
+    if (!inScene) { removeEntity(project, target.id); validateProject(project); }
+  }
+});
+
 // A scene keeps its own rule list, and a scene's rules are not validated against their own
 // targets — so a node the rules still named simply stopped working with no complaint.
 test('deleting a scene node takes the rules that named it with it', () => {

@@ -55,6 +55,30 @@ test('a rule can be indented under another and outdented again', () => {
   check(project);
 });
 
+test('indenting a branch follows all existing descendants, including when moved within the tree', () => {
+  const project = script();
+  project.events.splice(2, 0, { ...project.events[1], id: 'a11', parentId: 'a1' });
+  project.events.splice(4, 0, { ...project.events[1], id: 'b1', parentId: 'b' });
+  setEventParent(project, 'b', 'a');
+  assert.deepEqual(ids(project), ['a', 'a1', 'a11', 'b', 'b1', 'c', 'other']);
+  check(project);
+  setEventParent(project, 'a11', 'a');
+  assert.deepEqual(ids(project), ['a', 'a1', 'b', 'b1', 'a11', 'c', 'other']);
+  check(project);
+  setEventParent(project, 'b');
+  assert.deepEqual(ids(project), ['a', 'a1', 'a11', 'b', 'b1', 'c', 'other']);
+  check(project);
+});
+
+test('outdenting a deeply nested rule to root never splits its ancestor branch', () => {
+  const project = script();
+  project.events.splice(2, 0, { ...project.events[1], id: 'a11', parentId: 'a1' });
+  project.events.splice(3, 0, { ...project.events[1], id: 'a2', parentId: 'a' });
+  setEventParent(project, 'a11');
+  assert.deepEqual(ids(project), ['a', 'a1', 'a2', 'a11', 'b', 'c', 'other']);
+  check(project);
+});
+
 test('conditions and actions keep the first condition and reorder the rest', () => {
   const event = { condition: { type: 'onStart' }, conditions: [{ type: 'keyHeld', key: 'KeyW' }, { type: 'playerAlive' }],
     actions: [{ type: 'a' }, { type: 'b' }, { type: 'c' }] };

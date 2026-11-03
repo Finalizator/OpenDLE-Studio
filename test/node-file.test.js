@@ -584,3 +584,26 @@ test('a sub-event does not arrive without the rule that held it', () => {
   assert.equal(container.events.filter(event => ['Parent', 'Child'].includes(event.name)).length, 0);
   assert.equal(added.stripped.rules, 2);
 });
+
+test('portable node imports remap every sub-event parent independently for each instance', () => {
+  const source = createProject(), crate = source.map.entities.find(item => item.type !== 'player');
+  source.events = ['parent', 'child', 'grandchild'].map((name, i) => ({
+    id: `${'a'.repeat(114)}${i}`, name, enabled: true, once: false, ownerId: crate.id,
+    ...(i ? { parentId: `${'a'.repeat(114)}${i - 1}` } : {}),
+    condition: { type: 'always' }, actions: [{ type: 'addVariable', variable: 'score', value: 1 }],
+  }));
+  const document = parseNodeFile(nodeFileText(exportNodeFile(layoutContainer(source), crate.id, { assets: source.assets })));
+  const destination = createProject(), container = layoutContainer(destination);
+  for (let instance = 0; instance < 2; instance++) {
+    applyNodeFile(container, document, { knownTypes: knownCommandTypes(destination), maxEntities: 100000, maxEvents: 100000 });
+  }
+  destination.events = container.events;
+  assert.equal(new Set(destination.events.map(event => event.id)).size, destination.events.length);
+  assert.doesNotThrow(() => validateProject(destination));
+  const copied = destination.events.filter(event => ['parent', 'child', 'grandchild'].includes(event.name));
+  assert.equal(copied.length, 6);
+  for (let offset = 0; offset < copied.length; offset += 3) {
+    assert.equal(copied[offset + 1].parentId, copied[offset].id);
+    assert.equal(copied[offset + 2].parentId, copied[offset + 1].id);
+  }
+});

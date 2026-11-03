@@ -621,7 +621,7 @@ function variableFor(vm, script, scope) {
 }
 
 function arrayFor(vm, script, scope) {
-  const bag = scope === 'script' ? vm.scriptArrays
+  const bag = scope === 'script' ? script.scriptArrays
     : scope === 'map' ? (vm.mapArrays[vm.moduleIndex] ||= new Map())
       : scope === 'world' ? vm.worldArrays : vm.globalArrays;
   return {
@@ -653,26 +653,22 @@ for (const [suffix, scope] of Object.entries(VARIABLE_SCOPES)) {
       define(arrayCode, 'b', (vm, script, [slot]) => {
         const target = arrayFor(vm, script, scope);
         const id = targetId(vm, script, scope, slot);
-        const index = pop(vm, script);
-        if (kind === 'ASSIGN') {
-          const value = pop(vm, script);
-          target.set(id, index, value);
-          return;
-        }
         if (kind === 'INC' || kind === 'DEC') {
+          const index = pop(vm, script);
           target.set(id, index, target.get(id, index) + (kind === 'INC' ? 1 : -1));
           return;
         }
         const value = pop(vm, script);
-        target.set(id, index, apply(kind, target.get(id, index), value));
+        const index = pop(vm, script);
+        target.set(id, index, kind === 'ASSIGN' ? value : apply(kind, target.get(id, index), value));
       });
     }
   }
 }
 
-/** Map/world/global arrays are indexed by the *value* of a variable slot. */
+/** Only map arrays use the value of a variable slot; other scopes name the array directly. */
 function targetId(vm, script, scope, slot) {
-  if (scope === 'script') return slot;
+  if (scope !== 'map') return slot;
   return variableFor(vm, script, scope).get(slot);
 }
 
@@ -861,11 +857,12 @@ function callFunction(vm, script, index, discard) {
   if (script.sp + fn.localCount + 64 > STACK_LIMIT) { fail(vm, 'out of stack space'); return; }
   // A function's arguments live at the bottom of its own locals.
   const args = script.stack.slice(script.sp - fn.argCount, script.sp);
+  const callerLocals = script.locals;
   script.locals = new Int32Array(fn.argCount + fn.localCount);
   for (let position = 0; position < fn.argCount; position++) script.locals[position] = args[position] | 0;
   script.stack.length = script.sp - fn.argCount;
   script.sp -= fn.argCount;
-  script.calls.push({ pc: vm.pc, locals: script.locals, arrays: script.scriptArrays, discard,
+  script.calls.push({ pc: vm.pc, locals: callerLocals, arrays: script.scriptArrays, discard,
     module: vm.module, moduleIndex: vm.moduleIndex });
   script.scriptArrays = new Map();
   // The callee runs with its own module active, so its map variables and strings
@@ -1497,7 +1494,7 @@ function startEntry(vm, entry, { args = [], activator = null, line = null, backS
 
 function runScript(vm, script) {
   vm.script = script;
-  vm.moduleIndex = script.moduleIndex ?? 0;
+  vm.moduleIndex = script.activeModuleIndex ?? script.moduleIndex ?? 0;
   vm.module = vm.program.modules[vm.moduleIndex]?.module ?? vm.program.primary;
   vm.pc = script.pc;
   let executed = 0;
@@ -1524,6 +1521,7 @@ function runScript(vm, script) {
   // every script; publishing it on the script lets saves and the editor resume
   // (and inspect) the exact instruction each script stopped on.
   script.pc = vm.pc;
+  script.activeModuleIndex = vm.moduleIndex;
 }
 
 /** Advances every live script by one tic. */

@@ -111,7 +111,9 @@ export function followPath(path, distance, { mode = 'loop', lengths = null, samp
   const travelled = pathDistance(distance, length, mode);
   const where = pointAlong(path, travelled / length, { samples: chain, lengths: distances });
   if (!where) return null;
-  return { ...where, distance: travelled, length };
+  const phase = ((distance % (length * 2)) + length * 2) % (length * 2);
+  const angle = mode === 'pingpong' && phase > length ? wrap360(where.angle + 180) : where.angle;
+  return { ...where, angle, distance: travelled, length };
 }
 
 /**

@@ -1066,6 +1066,32 @@ things happen — including time.
   fog, the tic counter); real state that a save should keep belongs in `optional` (a boss's
   `bossDefeated` latch, an ACS caption). `test/save-game.test.js` pins that a save taken while
   those effects were running still loads.
+- **ACS saves are explicit snapshots.** `scriptState` is a non-enumerable,
+  on-demand accessor, so enumerating runtime fields alone does not capture it.
+  Saves explicitly include its snapshot and restore it into the new interpreter:
+  active instructions, delayed scripts, function returns, local and shared arrays,
+  variables, dynamic strings, RNG and fractional tic progress all resume together.
+  Function frames retain the caller's locals and module; script-local arrays are
+  private to their script/function. Array writes consume an index followed by a
+  value; only map arrays obtain their id through a variable slot. Invalid ACS
+  snapshots fail before replacing interpreter state; older snapshots without the
+  newer optional fields remain readable.
+- **Campaign metadata is shared consistently.** Save identities use the same
+  level-data partition as level switching: actors, language strings, sound aliases
+  and addons belong to the game, not whichever map is selected. Switching maps
+  without edits therefore leaves the save namespace unchanged. Campaign assembly
+  retains the imported SNDINFO alias/random table instead of dropping it when
+  building the shared project.
+- **Event branches stay intact.** Indent/outdent moves a complete branch outside
+  existing descendant ranges. Deleting an object's referenced trigger removes
+  its dependent sub-events, while a parent with surviving conditions and children
+  can remain as a gate even after its last action is removed. Scene placement,
+  duplication, nesting and portable `.node` imports assign fresh rule ids and
+  remap every child to its copied parent; event-capacity errors never silently
+  turn scene copies into unscripted nodes.
+- **The all-map check distinguishes HUD and menu artwork.** `npm run test:freedoom`
+  counts the two status-bar digit fonts and five pain-band face clips separately
+  from the menu's small font and interface cursor animation.
 
 **Which way a moved object faces** depends on what it is, because the two kinds disagree about
 where "forward" is. A sprite's forward is the engine's — Doom's 0° is east and the frames are drawn
@@ -1076,6 +1102,9 @@ given and is turned by however much the route bends** (`tweenAngle` in `shared/t
 `facingAngle` in `shared/path-motion.js`). A model whose own axis is still wrong takes one number —
 **Facing offset (degrees)** — on the object's route following and on the `followPath` action; the
 "drive this route on a timesheet" recipe carries that offset into the cue it writes.
+Ping-pong followers reverse their route heading by 180 degrees on the return leg,
+while keeping authored model-facing and yaw offsets; disabling **Face direction**
+still preserves the object's angle.
 
 **Model facing** is the better answer to the same problem, and the one to reach for first. The
 model's Properties carry **Model facing (degrees)**: how far the file's own forward is turned from

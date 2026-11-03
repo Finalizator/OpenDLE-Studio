@@ -4,10 +4,11 @@ import { readFileSync } from 'node:fs';
 import {
   newScene, addSceneObject, removeSceneObjects, duplicateSceneObject, reparentSceneObject,
   moveSceneObject, placeSceneObject, renameSceneObject, sceneChildren, sceneDepths, sceneSubtree, sceneDescendants,
-  instantiateScene, captureScene, MAX_SCENE_ENTITIES,
+  instantiateScene, captureScene, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS,
   sceneAssetUse, setSceneObjectAsset, addSceneObjectFromAsset, addSceneObjectFromEntity, nestScene, sceneArtwork,
 } from '../shared/scenes.js';
 import { createProject, validateProject } from '../shared/project.js';
+import { validateEventStructure } from '../shared/events.js';
 
 /** A scene with two roots and a two level group under the second root. */
 function groupedScene() {
@@ -18,6 +19,56 @@ function groupedScene() {
   const spark = addSceneObject(scene, { type: 'light', name: 'Spark', x: 32, y: 32, parentId: imp.id });
   return { scene, crate, lamp, imp, spark };
 }
+
+test('instancing, duplicating, nesting and capturing preserve complete event branches with local parent ids', () => {
+  const { scene, imp } = groupedScene();
+  const rule = (id, extra = {}) => ({ id, ownerId: imp.id, enabled: true, once: false,
+    condition: { type: 'always' }, actions: [], ...extra });
+  scene.events = [rule('root'), rule('child', { parentId: 'root' }), rule('grandchild', { parentId: 'child' })];
+  const check = events => validateEventStructure({ events }, (ok, message) => assert.ok(ok, message));
+  const placed = instantiateScene(scene, { prefix: 'placed' });
+  check(placed.events);
+  assert.equal(placed.events[1].parentId, placed.events[0].id);
+  const copy = duplicateSceneObject(scene, imp.id);
+  const copied = scene.events.filter(event => event.ownerId === copy.root);
+  check(copied);
+  assert.equal(copied[1].parentId, copied[0].id);
+  const target = newScene('Target');
+  nestScene(target, scene);
+  check(target.events);
+  const project = createProject();
+  project.map.entities.push(...placed.entities);
+  project.events = placed.events;
+  assert.equal(captureScene(project, [placed.entities.find(entity => entity.name === 'Imp').id]).events.length, 3);
+});
+
+test('copying a scripted node refuses overflowing event capacity without mutating the scene', () => {
+  const { scene, imp } = groupedScene();
+  scene.events = Array.from({ length: MAX_SCENE_EVENTS }, (_, i) => ({ id: `rule${i}`, ownerId: imp.id }));
+  const before = structuredClone(scene);
+  assert.throws(() => duplicateSceneObject(scene, imp.id), /at most 256 events/);
+  assert.deepEqual(scene, before);
+  const source = newScene('Source');
+  const node = addSceneObject(source, { name: 'Scripted' });
+  source.events = [{ id: 'one', ownerId: node.id }];
+  assert.throws(() => nestScene(scene, source), /at most 256 events/);
+  assert.deepEqual(scene, before);
+});
+
+test('long copied event ids remain distinct and never remap an object id as an event id', () => {
+  const scene = newScene('Long ids');
+  const node = addSceneObject(scene, { id: 'root', name: 'Root' });
+  const common = 'a'.repeat(115);
+  scene.events = [{ id: 'root', ownerId: node.id },
+    { id: `${common}x`, ownerId: node.id, parentId: 'root' },
+    { id: `${common}y`, ownerId: node.id, parentId: `${common}x` }];
+  const placed = instantiateScene(scene, { prefix: 'instance' });
+  assert.notEqual(placed.events[0].id, placed.events[1].id);
+  assert.ok(placed.events.every(event => event.id.length <= 120));
+  assert.equal(placed.events[1].parentId, placed.events[0].id);
+  assert.equal(placed.events[2].parentId, placed.events[1].id);
+  assert.equal(placed.events[0].ownerId, placed.entities[0].id);
+});
 
 test('a new scene object starts empty with an origin and no nodes', () => {
   const scene = newScene('Doors');

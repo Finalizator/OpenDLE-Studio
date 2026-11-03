@@ -1,7 +1,7 @@
 import { createRuntime } from './runtime.js';
 import { initialiseActorEntities } from './actor-runtime.js';
 import { HL2_MOVEMENT } from './source-motion.js';
-import { selectGameLevel } from './game-levels.js';
+import { selectGameLevel, levelData } from './game-levels.js';
 import { validatePhysicsState, physicsEntityIds } from './physics.js';
 import { gameSettings } from './game-settings.js';
 import { KEYS, WEAPONS } from './player-state.js';
@@ -14,7 +14,7 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // rebuilt as problems occur, and the weapon machine is re-entered on load.
 const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus',
   'worldTerminalActive', 'worldTerminalId',
-  'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'areaEntries', 'surfaces', 'intervals',
+  'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'areaEntries', 'surfaces',
   // Diagnostics describe the session, not the game; they are rebuilt on load. Leaving
   // them in the payload made restoring any save written after a decal or a grounded
   // actor fail with "unknown runtime field".
@@ -32,7 +32,7 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.
-const optional = new Set(['decalCounter', 'lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
+const optional = new Set(['intervals', 'decalCounter', 'lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
   // A boss death is a latch the game keeps, and an ACS HudMessage is a caption with a hold time, so
   // both are carried rather than dropped — unlike the transients above.
   'bossDefeated', 'acsMessages',
@@ -61,9 +61,9 @@ function canonical(value) {
 export async function gameSaveIdentity(project) {
   let content = project;
   if (project.game) {
-    const shared = new Set(['version', 'title', 'assets', 'game']);
-    const activeData = Object.fromEntries(Object.entries(project).filter(([key]) => !shared.has(key)));
-    content = { version: project.version, title: project.title, assets: project.assets,
+    const activeData = levelData(project);
+    const shared = Object.fromEntries(Object.entries(project).filter(([key]) => !Object.hasOwn(activeData, key)));
+    content = { ...shared,
       game: { ...project.game, active: project.game.entry, levels: project.game.levels.map(level =>
         level.id === project.game.active ? { ...level, data: activeData } : level) } };
   }
@@ -206,6 +206,10 @@ function validateRuntime(project, state, baseline) {
     }
   }
   for (const [id, value] of state.timers) if (typeof id !== 'string' || typeof value !== 'number' || Number.isNaN(value)) fail('invalid script timer');
+  if (state.intervals !== undefined) {
+    if (!(state.intervals instanceof Map)) fail('invalid periodic clocks');
+    for (const [key, due] of state.intervals) if (typeof key !== 'string' || !Number.isFinite(due) || due < 0) fail('invalid periodic clock');
+  }
   for (const [id, enabled] of state.groups) if (!baseline.groups.has(id) || typeof enabled !== 'boolean') fail('invalid event group');
   // The objects this level has, plus the ones it made while playing: a spawned enemy is a real
   // object with its own animation, its own per-object rules and its own fired marks, and a save
@@ -307,6 +311,10 @@ function validateRuntime(project, state, baseline) {
       try { JSON.stringify(value); } catch { fail('invalid addon state'); }
     }
   }
+  if (state.scriptState !== undefined && state.scriptState !== null) {
+    try { baseline.scripts.restore(state.scriptState); }
+    catch (error) { fail(error.message); }
+  }
 }
 
 /** Capture only portable runtime data; assets, project documents and GPU/physics handles are excluded. */
@@ -314,6 +322,8 @@ export function captureGameSave(project, state, identity) {
   if (typeof identity !== 'string' || !identity.length) fail('missing game identity');
   if (!state.hasGame || !(state.playerStats?.health > 0) || state.intermission) fail('only a living game outside intermission can be saved');
   const portable = Object.fromEntries(Object.entries(state).filter(([key]) => !omitted.has(key)));
+  const scriptState = state.scriptState;
+  if (scriptState !== null && scriptState !== undefined) portable.scriptState = scriptState;
   portable.gameScreen = 'playing';
   portable.hudState = { ...state.hudState, cursor: false };
   portable.menuRequests = [];

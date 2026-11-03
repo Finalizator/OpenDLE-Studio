@@ -115,6 +115,24 @@ test('crossing tagged lift triggers only the tagged sector and one-shot/repeatab
   assert.equal(s.sectors[1].floorHeight, 0);
   assert.equal(s.sectors[0].floorHeight, 0); assert.equal(s.sectors[2].floorHeight, 0);
 });
+
+test('a repeatable crossing event does not repeat while the player stands still', () => {
+  const p = corridor();
+  p.map.sectors[1].ceilingHeight = 128;
+  p.variables.crossings = 0;
+  p.events = [...p.events.filter(event => !event.id.startsWith('world_special_')),
+    { id: 'cross', enabled: true, once: false, condition: { type: 'wallActivated', wallId: 'w1', mode: 'cross' },
+      actions: [{ type: 'addVariable', variable: 'crossings', value: 1 }] }];
+  const s = createRuntime(p);
+  for (let frame = 0; frame < 60 && s.player.x <= -32; frame++) tick(p, s, 1, ['KeyW']);
+  assert.ok(s.player.x > -32, 'the player crossed the line');
+  assert.equal(s.variables.crossings, 1);
+  s.momentum = { x: 0, y: 0, z: 0 };
+  tick(p, s, 5);
+  assert.equal(s.variables.crossings, 1);
+  assert.equal(s.worldTriggers.cross.size, 0);
+});
+
 test('perpetual platforms use distinct low/high neighboring heights even when starting at the low point', () => {
   const p = corridor();
   p.events = p.events.filter(e => !e.id.startsWith('world_special_'));
