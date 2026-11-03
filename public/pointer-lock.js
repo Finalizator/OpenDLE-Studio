@@ -6,7 +6,7 @@ export function requestMouseLock(document, canvas, report) {
   }
   report('Requesting mouse capture. Your browser may ask for permission.');
   const failure = error => report(error.name === 'WrongDocumentError'
-    ? `This embedded browser cannot capture the mouse (${error.name}: ${error.message}). Use Open in system browser for native capture, or drag-look here.`
+    ? `This embedded browser cannot capture the mouse (${error.name}: ${error.message}). Use Open Studio window or Open in system browser for native capture, or drag-look here.`
     : `Mouse capture was denied (${error.name}: ${error.message}). Retry Capture mouse, use drag-look, or open this URL in Chrome/Firefox.`, true);
   try {
     const pending = canvas.requestPointerLock();

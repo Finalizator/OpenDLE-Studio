@@ -6,10 +6,11 @@
   "license": "SEE LICENSE IN LICENSE",
   "description": "OpenDLE: Studio - source-available browser-native visual game engine with local DeepSeek and MCP tools",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "scripts": {
-    "start": "node --env-file-if-exists=.env server/index.js",
+    "start": "node --env-file-if-exists=.env scripts/launch.js",
+    "serve": "node --env-file-if-exists=.env server/index.js",
     "test": "node --test test/*.test.js",
     "test:freedoom": "node scripts/check-freedoom.js",
     "check": "node scripts/check.js",
@@ -22,6 +23,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.0",
     "@dimforge/rapier3d-compat": "^0.19.3",
+    "electron": "^45.2.1",
     "express": "^5.1.0",
     "pngjs": "^7.0.0",
     "three": "^0.180.0",

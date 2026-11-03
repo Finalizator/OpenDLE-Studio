@@ -251,7 +251,7 @@ opening a window.
 | --- | --- |
 | \`launch.cmd\`, \`launch.sh\` | Start scripts for Windows and macOS/Linux |
 | \`server/export-launcher.js\` | Dependency-free local server and browser launcher |
-| \`server/store.js\`, \`server/version.js\`, \`server/browser.js\` | Project storage, version and default-browser helpers |
+| \`server/store.js\`, \`server/version.js\`, \`server/browser.js\` | Project storage, version and app-window/default-browser helpers |
 | \`shared/\` | Engine modules shared by the runtime and the game |
 | \`public/\` | Game client, styles and bundled \`public/vendor\` renderer assets |
 | \`data/project.json\` | The exported project; saves are written back here |

@@ -47,7 +47,8 @@ page.
 
 ## Try it locally
 
-Requires **Node.js 22+** and **npm**.
+Requires **Node.js 22.12+** and **npm**. The Electron desktop runtime is installed
+as a project dependency (its binary downloads on first desktop launch).
 
 ```sh
 git clone https://github.com/Finalizator/OpenDLE-Studio.git
@@ -56,8 +57,23 @@ npm ci
 npm start
 ```
 
-Open **http://127.0.0.1:3000/** 
-On Linux/macOS, `./launch.sh` also handles dependency setup and browser launch.
+Studio opens in its **own window**, without browser tabs or an address bar.
+It uses a dedicated **Electron desktop shell**, with a separate persistent app profile
+instead of your personal browser session. No Chrome/Brave installation is needed.
+On Linux/macOS, `./launch.sh` also
+handles dependency setup and opens the same Studio window.
+
+Use `npm start -- --browser` for a normal browser tab, or
+`npm start -- --no-browser` for the local service only. `npm run serve` starts
+only the server without automatically restarting an existing instance.
+The editor remains available at **http://127.0.0.1:3000/**.
+Project edits autosave to the local project folder after a short idle period,
+including large campaigns. Closing the Studio window waits for pending saves;
+save failures keep it open with an error. **Save** is still available at any time.
+Save any unsaved browser drafts before switching to the Studio window; its
+profile does not inherit your browser's local storage or license acceptance.
+The launcher prints errors rather than silently falling back to a browser tab
+if the desktop runtime cannot start.
 Use **Play level** to test the current map or **Play game** to open its menus.
 DeepSeek is optional; configure it using [.env.example](./.env.example).
 

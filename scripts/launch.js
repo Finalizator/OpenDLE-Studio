@@ -4,10 +4,11 @@ import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { restartExisting, listenerPID } from './restart.js';
 import { openLocalBrowser } from '../server/browser.js';
+import { openStudioWindow } from '../server/studio-launcher.js';
 
 const args = process.argv.slice(2);
-if (args.some(arg => arg !== '--no-browser')) {
-  console.error('Usage: ./launch.sh [--no-browser]');
+if (args.some(arg => !['--no-browser', '--browser'].includes(arg)) || args.includes('--browser') && args.includes('--no-browser')) {
+  console.error('Usage: ./launch.sh [--browser | --no-browser]');
   process.exitCode = 1;
 } else {
   await launch();
@@ -33,8 +34,16 @@ async function launch() {
     return true;
   }
   async function openBrowser() {
-    if (args.includes('--no-browser')) return;
-    try { await openLocalBrowser(url); console.log(`Opened editor in the system browser: ${url}`); }
+    if (args.includes('--no-browser') || process.env.OPENDLE_NO_BROWSER === '1') return;
+    try {
+      if (args.includes('--browser')) {
+        await openLocalBrowser(url);
+        console.log(`Opened editor in the system browser: ${url}`);
+      } else {
+        await openStudioWindow(url);
+        console.log('Opened OpenDLE: Studio in its own window.');
+      }
+    }
     catch (error) { console.error(error.message); }
   }
   if (await probe()) {

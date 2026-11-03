@@ -26,6 +26,7 @@ import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog, openNodeEventSheet } from './event-sheet.js';
 import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
+import { createProjectAutosave } from './project-autosave.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
   removeEventBranch, setEventParent, eventScope } from '/shared/events.js';
 import { editInline, installRowDrag } from './row-drag.js';
@@ -91,6 +92,16 @@ let project, token, revision = 0, dirty = false, selection = null, editVersion =
 // is what decides whether Save updates the open project or stores a new one.
 let projectId = null;
 let documentGeneration = 0, documentSession = {}, projectOperationBusy = false;
+let projectOperationPending = null;
+const projectAutosave = createProjectAutosave({
+  isDirty: () => Boolean(project && dirty),
+  isBusy: () => projectOperationBusy || Boolean(liveEditState),
+  save: async () => {
+    while (projectOperationPending) await projectOperationPending;
+    if (dirty) await saveProject();
+  },
+  onError: error => status(`Automatic save failed: ${error.message}. Your edits are still open; retry Save or export a backup before closing.`, true),
+});
 // The Project tree lists timelines, but the tree can be drawn before the timeline panel exists;
 // this flag is what stops the first render from reading a binding that has not been set yet.
 let timesheetPanelBuilt = false;
@@ -373,16 +384,17 @@ async function api(path, options = {}) {
 }
 // A 60-70 MB imported campaign can never fit in localStorage: serializing it
 // costs seconds per edit and always ends in a quota error. Above this size the
-// draft backup is skipped deliberately; Save and Export remain authoritative.
+// draft backup is skipped deliberately; disk autosave and Save do not have this limit.
 function draftTooLarge() {
   return (project?.assets?.length || 0) > 300 || (project?.game?.levels?.length || 0) > 4;
 }
 let draftSkipNoted = false;
 function persistDraft() {
+  projectAutosave.schedule();
   if (draftTooLarge()) {
     if (!draftSkipNoted) {
       draftSkipNoted = true;
-      status('Browser draft backup is off for large projects (it cannot fit in browser storage). Use Save or Export project to keep your edits.');
+      status('Browser draft backup is off for this large project. Changes are saved automatically to the local project folder.');
     }
     return;
   }
@@ -685,8 +697,8 @@ async function withProjectOperation(operation) {
   if (projectOperationBusy) throw new Error('A project save or open is already in progress. Wait for it to finish and retry.');
   projectOperationBusy = true;
   $('save').disabled = true;
-  try { return await operation(); }
-  finally { projectOperationBusy = false; $('save').disabled = false; }
+  try { projectOperationPending = operation(); return await projectOperationPending; }
+  finally { projectOperationPending = null; projectOperationBusy = false; $('save').disabled = false; }
 }
 /** How many steps an edit may keep: a campaign edit deep-copies the game, so it keeps few. */
 function editHistoryLimit(candidate, deepGame) {
@@ -808,6 +820,18 @@ function replace(next, message) {
   if (!$('scene-panel').hidden) showTab('map');
   renderSceneObjectTabs();
   fitMap();
+}
+async function savePendingProject() {
+  document.activeElement?.blur();
+  if (liveEditState) liveFinish('Edit applied');
+  while (projectOperationPending) await projectOperationPending;
+  await projectAutosave.flush();
+}
+async function replaceDocument(next, message) {
+  const generation = documentGeneration;
+  await savePendingProject();
+  if (generation !== documentGeneration) throw new Error('A different document was opened while saving. Retry opening this project.');
+  replace(next, message);
 }
 /**
  * Stores the document that was just opened as the studio's project, so the next start
@@ -1962,9 +1986,9 @@ function renderScriptlets() {
     card.append(install);
     // Some scriptlets can build a whole map to try themselves on — the surf one needs an empty
     // room rather than ramps jammed into an imported WAD.
-    if (scriptlet.build) card.append(button(scriptlet.buildLabel || 'Build a new map', () => {
+    if (scriptlet.build) card.append(button(scriptlet.buildLabel || 'Build a new map', async () => {
       if (!confirm(`${scriptlet.buildDetail || 'Replace this project with a new one?'} You can undo this change.`)) return;
-      replace(scriptlet.build(createProject()), `${scriptlet.name}: new empty map built`);
+      await replaceDocument(scriptlet.build(createProject()), `${scriptlet.name}: new empty map built`);
       renderScriptlets();
     }, 'primary'));
     if (installed) card.append(button('Remove its rules', () => {
@@ -3695,6 +3719,7 @@ async function reloadProject(initial = false) {
     // The 3D view of a different map starts framed on that map, not on the last one's camera.
     scenePose = null;
     render(); fitMap();
+    projectAutosave.schedule();
     status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'
       : recovery?.warning || 'Server project loaded', Boolean(recovery?.warning));
   });
@@ -3974,20 +3999,22 @@ $('show-statusbar').addEventListener('click', () => {
   mouseStatus('Status bar shown again. Screen size is 10.');
 });
 $('capture-mouse').addEventListener('click', captureMouse);
-$('system-browser').addEventListener('click', guard(async () => {
+async function openEditorWindow(buttonId, route, destination) {
   if (dirty) {
-    if (!confirm('Save the current project before opening it in your system browser? Your unsaved edits must be saved to transfer them.')) return;
-    await saveProject();
-    if (dirty) throw new Error('Newer edits remain unsaved. Save again before opening the system browser.');
+    if (!confirm(`Save the current project before opening it in ${destination}? Your unsaved edits must be saved to transfer them.`)) return;
+    await savePendingProject();
+    if (dirty) throw new Error(`Newer edits remain unsaved. Save again before opening ${destination}.`);
   }
-  $('system-browser').disabled = true;
+  $(buttonId).disabled = true;
   try {
-    const result = await api('/api/open-browser', { method: 'POST', body: '{}' });
-    mouseStatus(`Opened ${result.url} in your system browser. Click Play there, then Capture mouse. This preview is still open.`);
+    const result = await api(route, { method: 'POST', body: '{}' });
+    mouseStatus(`Opened ${result.url} in ${destination}. Click Play there, then Capture mouse. This preview is still open.`);
   } catch (error) {
-    mouseStatus(`Cannot open the system browser: ${error.message}. Open ${location.origin} manually in Chrome/Firefox. If you just updated OpenDLE, restart the local service first.`, true);
-  } finally { $('system-browser').disabled = false; }
-}));
+    mouseStatus(`Cannot open ${destination}: ${error.message}. Open ${location.origin} manually in Chrome/Firefox. If you just updated OpenDLE, restart the local service first.`, true);
+  } finally { $(buttonId).disabled = false; }
+}
+$('studio-window').addEventListener('click', guard(() => openEditorWindow('studio-window', '/api/open-window', 'a Studio window')));
+$('system-browser').addEventListener('click', guard(() => openEditorWindow('system-browser', '/api/open-browser', 'your system browser')));
 async function beginPreview(gameMode = false, resumeSettings, start = false, levelId, progress, savedGame) {
   if (previewLoading) return;
   if (!project.gameMenus) {
@@ -4421,26 +4448,28 @@ $('fit').addEventListener('click', fitMap);
 $('grid').addEventListener('change', () => { mapNeedsDraw = true; });
 $('save').addEventListener('click', guard(saveProject));
 $('reload').addEventListener('click', guard(() => reloadProject()));
-$('projects').addEventListener('change', guard(() => withProjectOperation(async () => {
+$('projects').addEventListener('change', guard(async () => {
   const id = $('projects').value;
   if (!id || id === projectId) return;
-  if (dirty && !confirm('Discard unsaved edits and open this stored project? Your draft stays in browser storage.')) {
+  try { await savePendingProject(); }
+  catch (error) { await refreshProjects(); throw error; }
+  return withProjectOperation(async () => {
+    const version = editVersion;
+    const result = await api('/api/projects/open', { method: 'POST', body: JSON.stringify({ id }) });
+    if (version !== editVersion) throw new Error('Project changed while opening another project. Your current edits were kept; retry opening when ready.');
+    cutTool?.cancel();
+    project = validateProject(result.project);
+    documentGeneration++; documentSession = {}; bindProject(result);
+    dirty = Boolean(upgradeSceneInstances(project));
+    editVersion++;
+    history = []; future = []; selection = null; scriptScope = '$all';
+    $('dirty').textContent = badgeText();
+    render(); fitMap();
+    projectAutosave.schedule();
     await refreshProjects();
-    return;
-  }
-  const version = editVersion;
-  const result = await api('/api/projects/open', { method: 'POST', body: JSON.stringify({ id }) });
-  if (version !== editVersion) throw new Error('Project changed while opening another project. Your current edits were kept; retry opening when ready.');
-  cutTool?.cancel();
-  project = validateProject(result.project);
-  documentGeneration++; documentSession = {}; bindProject(result);
-  dirty = Boolean(upgradeSceneInstances(project));
-  editVersion++;
-  history = []; future = []; selection = null; scriptScope = '$all';
-  $('dirty').textContent = badgeText();
-  render(); fitMap();
-  status(`Opened stored project "${project.title}"; it reopens next time`);
-})));
+    status(`Opened stored project "${project.title}"; it reopens next time`);
+  });
+}));
 $('undo').addEventListener('click', () => {
   if (!history.length) return;
   // Projects are never mutated in place (see cloneProjectForEdit), so the current
@@ -4453,17 +4482,17 @@ $('redo').addEventListener('click', () => {
   history.push(historySnapshot()); restoreHistory(future.pop()); dirty = true; editVersion++; clearDraft();
   persistDraft(); render(); status('Redone');
 });
-$('new').addEventListener('click', guard(() => {
-  if (confirm('Create a new project? You can undo this change.')) replace(installEngineScripts(createProject(), { organizeStarter: true }), 'New project created with editable Engine sheets');
+$('new').addEventListener('click', guard(async () => {
+  if (confirm('Create a new project? You can undo this change.')) await replaceDocument(installEngineScripts(createProject(), { organizeStarter: true }), 'New project created with editable Engine sheets');
 }));
-$('restore').addEventListener('click', guard(() => {
+$('restore').addEventListener('click', guard(async () => {
   const draft = localStorage.getItem('opendle-draft');
   if (!draft) throw new Error('There is no local draft in this browser');
   if (!confirm('Restore your last browser draft? You can undo this change.')) return;
   let parsed;
   try { parsed = draftProject(draft); }
   catch (error) { throw new Error(`The browser draft is not valid JSON (${error.message}). Export or clear it before restoring.`); }
-  replace(parsed, 'Browser draft restored; save to keep it on the server');
+  await replaceDocument(parsed, 'Browser draft restored');
 }));
 // Export is the project folder, zipped: `project.json` and one file per model, texture, sprite
 // and sound. A single JSON held those as base64, which made a document nobody could open, diff or
@@ -4525,7 +4554,7 @@ $('project-file').addEventListener('change', guard(async event => {
     next = validateProject(payload.project);
   } else next = validateProject(JSON.parse(await file.text()));
   if (!confirm('Open this project? You can undo this change.')) return;
-  replace(next, 'Project opened');
+  await replaceDocument(next, 'Project opened');
   await adoptDocument();
 }));
 $('wad').addEventListener('click', () => $('wad-file').click());
@@ -4592,7 +4621,7 @@ $('import-map').addEventListener('click', async () => {
     if (version !== editVersion) throw new Error('Project changed during import. Retry to avoid overwriting new edits.');
     const cacheNote = result.cached ? ` Loaded from the decompiled import cache (${Math.round(result.cached.bytes / 1024)} KiB, imported ${new Date(result.cached.importedAt).toLocaleString()}) in place of a full conversion.` : '';
     const summary = `Imported ${result.project.game?.levels.length || 1} level(s), starting at ${map}: ${result.project.assets.length} shared assets.${cacheNote} Use Editing level to edit another map, Play game for the game entry, or the in-game Level selector to play any imported map.`;
-    replace(result.project, summary);
+    await replaceDocument(result.project, summary);
     await adoptDocument();
     $('import-summary').textContent = `${summary} Import notes`;
     $('import-warnings').textContent = result.warnings.join('\n');
@@ -4698,7 +4727,7 @@ async function quickImport() {
         if (version !== editVersion) throw new Error('Project changed during import. Retry to avoid overwriting new edits.');
         const levels = result.project.game?.levels.length || 1;
         const summary = `Imported ${result.project.title}: ${levels} level(s), ${result.project.assets.length} shared assets.${result.cached ? ' Served from the decompiled import cache.' : ''}`;
-        replace(result.project, summary);
+        await replaceDocument(result.project, summary);
         await adoptDocument();
         status(summary);
         dialog.close();
@@ -4773,7 +4802,7 @@ $('package-import').addEventListener('click', async () => {
       summary = result.entry
         ? `Imported ${result.project.title}: ${result.project.game?.levels.length || 1} level(s), entry ${result.entry.map}, ${result.project.assets.length} shared assets.${result.cached ? ' Loaded from the decompiled import cache.' : ''}`
         : `Imported package map: ${result.project.assets.length} images, ${result.project.hud.elements.length} HUD elements.`;
-      replace(result.project, summary);
+      await replaceDocument(result.project, summary);
       await adoptDocument();
     } else {
       const assets = result.assets.map(asset => kind ? { ...asset, kind } : asset);
@@ -5375,7 +5404,7 @@ $('ask-ai').addEventListener('click', guard(async () => {
   if (!confirm('Send the project and your instruction to DeepSeek? Current edits will first be saved to the local server.')) return;
   $('ask-ai').disabled = true;
   try {
-    await saveProject();
+    await savePendingProject();
     if (dirty) throw new Error('Project changed while saving. Save the new edits and request a fresh proposal.');
     const baseVersion = editVersion;
     $('ai-result').textContent = 'DeepSeek is preparing a tool-driven draft...';
@@ -5400,7 +5429,7 @@ $('apply-ai').addEventListener('click', guard(async () => {
   if (!pendingAI || pendingAI.baseVersion !== editVersion) throw new Error('Draft is stale; request a fresh proposal');
   const snapshot = await api('/api/project');
   if (snapshot.revision !== pendingAI.revision) throw new Error('Server project changed. Reload it and request a fresh proposal.');
-  replace(pendingAI.project, 'AI draft applied locally. Review the world, then save when ready.');
+  await replaceDocument(pendingAI.project, 'AI draft applied. Changes will be saved automatically; Undo restores the previous document.');
   $('ai-result').textContent = 'Draft applied. You can undo this change.';
 }));
 /* ---------------------------------------------------------------------------
@@ -6342,7 +6371,18 @@ function dismissUnhandledContextMenu(event) {
 }
 
 installContextMenus();
-window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
+window.opendleSaveBeforeClose = async () => {
+  if (!project) return true;
+  const shell = $('editor-shell'), wasInert = shell.inert;
+  document.activeElement?.blur();
+  shell.inert = true;
+  try { await savePendingProject(); return !dirty; }
+  finally { shell.inert = wasInert; }
+};
+window.addEventListener('beforeunload', event => {
+  if (dirty || projectOperationBusy) { projectAutosave.schedule(); event.preventDefault(); event.returnValue = ''; }
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden) projectAutosave.schedule(); });
 
 async function start() {
   const accepted = await requireLicenseAgreement({

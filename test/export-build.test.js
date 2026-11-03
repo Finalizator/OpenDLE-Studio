@@ -167,6 +167,11 @@ test('build ships launch scripts, license, runtime modules and the exported proj
 
   const names = [...entries.keys()];
   assert.equal(names.filter(name => name.includes('node_modules')).length, 0, 'no npm dependencies are copied');
+  for (const desktopOnly of ['scripts/studio-desktop.js', 'server/studio-launcher.js', 'server/studio-window.js']) {
+    assert.equal(entries.has(`${slug}/${desktopOnly}`), false, `${desktopOnly} is desktop-only`);
+  }
+  assert.doesNotMatch(entries.get(`${slug}/server/browser.js`).data.toString('utf8'), /['"]electron['"]/,
+    'shared launch helpers cannot depend on the Electron runtime');
   assert.equal(names.filter(name => !name.startsWith(`${slug}/`)).length, 0, 'every entry lives under the build folder');
   const sharedFiles = readdirSync(resolve(root, 'shared')).filter(name => name.endsWith('.js'));
   for (const name of sharedFiles) assert.ok(entries.has(`${slug}/shared/${name}`), `shared/${name} is bundled`);

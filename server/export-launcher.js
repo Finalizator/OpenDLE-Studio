@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, openSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -9,7 +8,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ProjectStore } from './store.js';
 import { addonFile } from '../shared/addons.js';
 import { readEngineVersion } from './version.js';
-import { openLocalBrowser } from './browser.js';
+import { openLocalBrowser, openInAppWindow } from './browser.js';
+export { chromiumCandidates, openInAppWindow } from './browser.js';
 
 const MAX_BODY = 128 * 1024 * 1024;
 const LICENSE_ID = 'opendle-studio-commercial-1.0';
@@ -203,62 +203,6 @@ export function createGameHandler({ root = bundleRoot, store, token, version, li
       return sendJson(response, status, { error: status === 413 ? 'Request is too large' : error.message });
     }
   };
-}
-
-function defaultSpawn(command, args) {
-  return new Promise(resolveSpawn => {
-    const child = spawn(command, args, { stdio: 'ignore' });
-    child.once('error', error => resolveSpawn(error));
-    child.once('spawn', () => {
-      child.unref();
-      resolveSpawn(null);
-    });
-  });
-}
-
-export function chromiumCandidates(platform = process.platform, env = process.env) {
-  if (env.OPENDLE_BROWSER) return [env.OPENDLE_BROWSER];
-  if (platform === 'win32') {
-    const home = env.USERPROFILE || homedir(), candidates = [];
-    for (const base of [env.LOCALAPPDATA, env.ProgramFiles, env['ProgramFiles(x86)']]) {
-      if (!base) continue;
-      candidates.push(
-        join(base, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-        join(base, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-        join(base, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
-      );
-    }
-    if (env.LOCALAPPDATA) candidates.push(join(env.LOCALAPPDATA, 'Chromium', 'Application', 'chrome.exe'));
-    candidates.push(join(home, 'scoop', 'apps', 'googlechrome', 'current', 'chrome.exe'));
-    return [...candidates, 'chrome.exe', 'msedge.exe', 'brave.exe'];
-  }
-  if (platform === 'darwin') {
-    const home = env.HOME || homedir();
-    return [
-      join(home, 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'),
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-      '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
-      '/Applications/Chromium.app/Contents/MacOS/Chromium',
-      'google-chrome', 'chromium', 'microsoft-edge',
-    ];
-  }
-  return ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser',
-    'microsoft-edge', 'microsoft-edge-stable', 'brave-browser'];
-}
-
-export async function openInAppWindow(url, { platform = process.platform, env = process.env, spawnImpl = defaultSpawn } = {}) {
-  const failures = [];
-  for (const candidate of chromiumCandidates(platform, env)) {
-    if ((candidate.includes('/') || candidate.includes('\\')) && !existsSync(candidate)) {
-      failures.push(`${candidate} (not installed)`);
-      continue;
-    }
-    const error = await spawnImpl(candidate, [`--app=${url}`, '--no-first-run', '--no-default-browser-check']);
-    if (!error) return { opened: true, command: candidate, failures };
-    failures.push(`${candidate} (${error.code || error.message})`);
-  }
-  return { opened: false, failures };
 }
 
 function writable(file) {

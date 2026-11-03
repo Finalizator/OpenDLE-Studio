@@ -13,6 +13,7 @@ import { proposeChanges } from './deepseek.js';
 import { importWad } from './import.js';
 import { readWad } from '../shared/wad.js';
 import { openLocalBrowser } from './browser.js';
+import { openStudioWindow } from './studio-launcher.js';
 import { readEngineVersion } from './version.js';
 import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, inspectPackage, importPackage } from './packages.js';
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
@@ -40,6 +41,7 @@ export function createApp({
   fetchImpl = fetch,
   projectsDir = resolve(root, 'Projects'),
   openBrowser = openLocalBrowser,
+  openWindow = openStudioWindow,
   versionFile = resolve(root, 'version.ini'),
   importCache,
   playtestLogs = createPlaytestLogStore({ directory: resolve(root, DEFAULT_LOG_DIRECTORY) }),
@@ -99,16 +101,18 @@ export function createApp({
   const archiveLimit = `${LIMITS.archiveBytes / (1024 * 1024)}mb`;
   app.use(express.json({ limit: archiveLimit }));
   let browserBusy = false;
-  app.post('/api/open-browser', async (req, res) => {
-    if (browserBusy) return res.status(429).json({ error: 'A browser launch is already in progress' });
-    browserBusy = true;
-    try {
-      const port = req.socket.localPort;
-      const url = `http://127.0.0.1:${port}/`;
-      await openBrowser(url);
-      res.json({ url });
-    } finally { browserBusy = false; }
-  });
+  for (const [route, open] of [['/api/open-browser', openBrowser], ['/api/open-window', openWindow]]) {
+    app.post(route, async (req, res) => {
+      if (browserBusy) return res.status(429).json({ error: 'An editor window launch is already in progress' });
+      browserBusy = true;
+      try {
+        const port = req.socket.localPort;
+        const url = `http://127.0.0.1:${port}/`;
+        await open(url);
+        res.json({ url });
+      } finally { browserBusy = false; }
+    });
+  }
   app.get('/api/wads', (req, res) => {
     const files = readdirSync(projectsDir, { withFileTypes: true }).filter(file => file.isFile() && /\.wad$/i.test(file.name));
     res.json({ files: files.map(file => file.name) });

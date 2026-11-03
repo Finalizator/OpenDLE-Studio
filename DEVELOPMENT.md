@@ -133,43 +133,60 @@ importing another game (or reimporting the same one) replaces it instead of
 piling up an entry per import, and the status badge reads **Temporary** while the
 open project lives there.
 
-**Save** promotes the temporary project into a real one under its title
+**Save**, or the first automatic save after editing, promotes the temporary project into a real one under its title
 (`imported-wad-game`), removes the temporary file and reports the new id, after
 which a later import cannot overwrite it. A document that never had a file of its
-own (**New project**, **Restore local draft**) is stored by the first **Save** the
+own (**New project**, **Restore local draft**) is stored by the first automatic or manual save the
 same way. A new document or promoted import never overwrites a same-title saved project:
 collisions receive a numbered id (`imported-wad-game-2`) and the menu disambiguates matching
 titles with their ids. Saving an already-bound project still updates that project.
 **Menu → Stored project** lists everything and switches between them;
-switching asks before discarding unsaved edits, and the browser draft is kept
+switching saves pending edits before opening the next project, and the browser draft is kept
 under the project id it came from, so a draft is never restored into a different
 project. Save requests carry both `projectId` and `revision`; the HTTP API rejects missing
 identity or a stale project/revision pair. The temporary slot keeps a revision watermark
 through promotion, so a stale tab cannot overwrite a later import at a reused revision.
 
-The editor permits only one save/open request at a time. Responses for a document since
-replaced are not rebound to the new document, and edits made while a save is in flight remain
-unsaved with a draft based on the returned revision. Undo/redo across imports restores the
+The editor permits only one save/open request at a time. Edits autosave to the local
+project folder after one idle second; live geometry drags are saved after they finish.
+New/Open/import/Restore also save the previous document before replacing it.
+Responses for a document since replaced are not rebound to the new document, and edits
+made while a save is in flight trigger another save using the returned revision.
+Undo/redo across imports restores the
 document's own binding. A recovery draft for another project is detached rather than bound
 to the currently saved project.
 
 Small browser drafts store data and identity together in one localStorage write; older
 two-key drafts remain readable. Large campaigns still skip browser draft backup, but no
-longer erase a previous draft when doing so. This is **not autosave**: large-project edits
-require Save or Export before closing/reloading, and localStorage has only one draft slot.
+longer erase a previous draft when doing so. Browser backup is secondary: automatic
+and manual saves write the complete project and its assets to disk without the
+localStorage size limit. Save errors remain explicit and leave the document dirty;
+they never silently overwrite revision conflicts. Save can retry, and Export can
+keep a separate backup. Browser tabs retain an unload warning until saving finishes;
+unlike the native Studio window, a browser cannot await an asynchronous save during unload.
 
-Requires Node.js 22 or newer and npm.
+Studio requires Node.js 22.12 or newer and npm (the desktop runtime's minimum).
+Portable exported games still require Node.js 22+ and do not bundle Electron.
 
 On Linux/macOS, run the executable [launch.sh](./launch.sh) (choose **Run as
 program** in your file manager, or use the terminal). It changes to the engine
-directory, installs locked dependencies if `node_modules` is absent, reads
+directory, installs locked dependencies if `node_modules` or the Electron package is absent, reads
 `.env`, starts the local editor/API/MCP service, waits for readiness and opens
-the browser. Keep its terminal open; Ctrl+C stops the server it started.
+**OpenDLE: Studio in a standalone app window**, without tabs or an address bar.
+`npm start` uses the same launcher on every supported desktop platform.
+Keep its terminal open; Ctrl+C stops the server it started. Closing the window
+does not stop the API/MCP service.
 
 ```sh
 ./launch.sh
+# Equivalent after dependency setup:
+npm start
+# Explicitly use your normal system browser instead:
+./launch.sh --browser
 # Headless / don't open a browser:
 ./launch.sh --no-browser
+# npm passes either option through, for example:
+npm start -- --no-browser
 # A different port (also configurable in .env):
 PORT=3001 ./launch.sh
 ```
@@ -177,34 +194,72 @@ PORT=3001 ./launch.sh
 On Linux, launching again **restarts** the existing OpenDLE server: the launcher
 identifies the listening PID and verifies it is Node running this workspace's
 server entry point before sending SIGTERM. It waits for shutdown, starts the
-updated backend, checks readiness, then opens the exact editor URL in your
-system browser. Unrelated listeners are never terminated; ambiguous ownership
+updated backend, checks readiness, then opens the exact editor URL in its
+Studio window. Unrelated listeners are never terminated; ambiguous ownership
 or a server that will not stop is an explicit error (no forced kill). Legacy
 instances with authenticated health endpoints are supported through the same
 process verification. Save/export edits before refreshing after a restart.
 Automatic legacy-process restart currently requires Linux; on other platforms
 stop the old server manually. Missing Node/npm, startup failure or a failed
-browser opener is reported explicitly. Browser-opening failure does not stop a healthy service; its URL
-can be opened manually. DeepSeek still requires your `.env` API key; the
+window opener is reported explicitly. Window-opening failure does not stop a healthy service;
+its URL can be opened manually, or `--browser` explicitly requests a normal browser.
+There is no silent fallback to a tab. DeepSeek still requires your `.env` API key; the
 launcher does not download game data or enable third-party requests.
 
 If **Local package library** reports a missing `/api/packages` endpoint or an
 older backend, save/export your edits, run `./launch.sh` again, and refresh the
 editor. Refreshing alone updates browser files but does not reload Node's server
-routes. `npm start` alone does not restart an existing process.
+routes. `npm start` uses the same checked restart as the launcher;
+`npm run serve` starts only the server and never restarts an existing process.
 
-The launcher and **Open in system browser** use the same browser helper. Linux
-tries `xdg-open`, then `gio open`, then available Brave/Firefox/Chrome/Chromium
-commands on failure, always with the full `http://127.0.0.1:PORT/` URL. Browser
-commands have a timeout and failures include the URL and desktop-association
-guidance. A successful OS launch request cannot prove that a visible tab opened;
-check the printed URL if your desktop has a broken default-browser association.
+The launcher and **Open Studio window** use `server/studio-launcher.js` to start
+the Electron dependency through `scripts/studio-desktop.js` and `server/studio-window.js`. Electron downloads its
+binary on first use; subsequent launches use the local copy. No personal-browser
+installation is required. The native window has the Studio title/icon, a
+1440-by-960 initial size, no application menu, and the `org.opendle.Studio` Linux
+desktop identity (Wayland/X11). Renderer Node integration is disabled; context isolation,
+web security and the Chromium sandbox remain enabled. No privileged preload
+bridge is exposed to project code. Remote navigation stays outside the desktop
+shell, and only local editor interaction permissions are granted.
+Immediate nonzero runtime exits are reported, not treated as an opened window.
+Existing Studio windows are focused rather than reloaded on relaunch, preserving
+unsaved edits. Closing a window first commits its focused input/live transform and
+waits for all pending edits to save. Save failures keep the window open with an
+explicit error so the author can retry or export. This handshake uses only a
+renderer save function; it exposes no Node or filesystem bridge.
+
+Studio uses its own persistent Electron profile, keeping it separate from personal
+tabs, extensions and browser settings. Its default location is:
+
+- Linux: `${XDG_CONFIG_HOME:-~/.config}/OpenDLE/Studio`
+- macOS: `~/Library/Application Support/OpenDLE/Studio`
+- Windows: `%LOCALAPPDATA%/OpenDLE/Studio`
+
+`OPENDLE_STUDIO_PROFILE` overrides that path. Keep it stable to retain preferences,
+license acceptance and small unsaved drafts. Existing projects on disk remain the
+same; regular-browser localStorage and license acceptance are **not** migrated.
+Save/export edits before switching profiles. No service worker caches editor code.
+
+**Open Studio window** asks to save changes before opening the same saved project
+in the app profile. It uses authenticated `POST /api/open-window`, never an arbitrary
+URL supplied by a caller. The existing **Open in system browser** button and
+`--browser` retain explicit tab-based launch through `POST /api/open-browser`.
+Both routes share a busy guard and local host/origin checks.
+The normal-browser helper tries Linux `xdg-open`, then `gio open`, then available
+Brave/Firefox/Chrome/Chromium commands. OS opener failures include the URL and
+desktop-association guidance. `OPENDLE_NO_BROWSER=1` suppresses all automatic
+window launch, like `--no-browser`.
+
+Exported games still use installed Chromium app windows with explicit default-browser
+fallback, without the desktop dependency. `OPENDLE_BROWSER` applies to those game
+launchers, not to the Studio desktop shell. The shared discovery implementation
+remains in `server/browser.js`, re-exported by `server/export-launcher.js`.
 
 Manual equivalent:
 
 ```sh
-npm install
-npm start
+npm ci
+npm run serve
 ```
 
 Open <http://127.0.0.1:3000>. The server binds only to `127.0.0.1`. No separate
@@ -418,8 +473,9 @@ provider credits or network access are required for tests.
   mouse-look (pitch limited to +/-85 degrees). Escape releases the cursor;
   Escape again opens the pause menu; Stop exits preview. **Capture mouse** also explicitly requests
   capture and the status inside the preview explains success or denial.
-  If an embedded browser refuses pointer lock, **Open in system browser**
-  opens the local editor in your desktop browser (asks to save unsaved edits
+  If an embedded browser refuses pointer lock, **Open Studio window** opens
+  the standalone editor, or **Open in system browser**
+  opens it in your desktop browser (both ask to save unsaved edits
   first); click Play and Capture mouse there. This does not bypass browser
   security or grant permissions automatically. With capture unavailable,
   right-drag looks in event-driven projects; legacy projects use left-drag.
@@ -438,7 +494,7 @@ provider credits or network access are required for tests.
   materials, node hierarchy, skins, morph targets and exported animation clips.
   Import by file picker, folder or drag & drop onto the asset browser. Instances
   have independent skeletons/mixers.
-- **Projects:** validated JSON import/export, explicit local-server saves,
+- **Projects:** validated JSON import/export, automatic and manual local-server saves,
   browser draft backups, revision conflict detection and explicit draft restore.
 - **WAD import:** map selection, bounded parsing of little-endian classic Doom
   records, `PLAYPAL` palettes, `PNAMES` and composed `TEXTURE1/2` wall textures,
@@ -449,8 +505,8 @@ provider credits or network access are required for tests.
   frames and actual inventory bindings, alongside editable pickup/input scripts.
 - **DeepSeek:** server-side function-calling loop with shared validated tools,
   bounded requests, explanatory drafts and explicit approval. An AI request saves
-  the current project locally first. Applying a draft is undoable and remains
-  unsaved until you save it.
+  the current project locally first. Applying a draft is undoable and autosaves
+  like other project edits.
 - **MCP:** authenticated Streamable HTTP tools and an active-project resource,
   tested using the official SDK client.
 
@@ -578,7 +634,7 @@ inside its dialog. Network/format failures leave the current project unchanged;
 retry remains available. Cancel/Escape aborts the browser request and discards
 late results (server-side decoding may finish independently). Requests time out
 after 90 seconds. Successful imports show expandable notes below the layout.
-The imported project remains unsaved until Save.
+The imported project is stored immediately; edits autosave, and Save is also available.
 
 If an old tab cannot import and reports a connection failure, run `npm start`
 and use the URL printed by that process (normally <http://127.0.0.1:3000>).
@@ -1461,7 +1517,7 @@ on the server, so there is one implementation of the format, not two).
 
 The editor uses `POST /api/export/project` and `POST /api/export/build` with `{ project }`,
 capturing the current editor state, including unsaved edits. Export does not change the stored
-project, its revision, or the editor's unsaved flag; use **Save** to make reload reopen those edits.
+project, its revision, or the editor's unsaved flag; automatic saves (or **Save**) persist edits for reopening.
 The corresponding `GET` routes still export the last server-saved snapshot for API clients.
 `X-Opendle-Assets` carries the project zip's file count, and `POST /api/project/unpack` takes raw
 zip bytes and returns the project with its assets inlined. All routes need the session token.
@@ -1538,10 +1594,10 @@ parameters as the editor. Save/export retains variables and expression source.
 
 ### Reloading and server restarts
 
-Save persists the complete project, including Engine rules, to the local server;
+Automatic saves and Save persist the complete project, including Engine rules, to the local server;
 opening the editor in another browser uses that saved project, not another
 browser's unsaved draft. At startup, a differing browser draft based on the
-current server revision is restored as unsaved work. Older/unversioned or
+current server revision is restored and scheduled for automatic saving. Older/unversioned or
 conflicting drafts prompt before replacement. Invalid drafts produce a warning
 and remain in storage. Explicit Reload still asks before discarding unsaved work.
 

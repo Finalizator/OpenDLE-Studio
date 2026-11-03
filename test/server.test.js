@@ -26,6 +26,35 @@ async function fixture(t, options = {}) {
   return { ...result, url: `http://127.0.0.1:${server.address().port}` };
 }
 const headers = { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' };
+test('standalone Studio launch is authenticated, origin-protected and uses only the bound editor URL', async t => {
+  const opened = [];
+  const { url } = await fixture(t, { openWindow: async target => opened.push(target) });
+  assert.equal((await fetch(`${url}/api/open-window`, { method: 'POST' })).status, 401);
+  assert.equal((await fetch(`${url}/api/open-window`, { method: 'POST', headers: { ...headers, Origin: 'https://other.example' } })).status, 403);
+  const response = await fetch(`${url}/api/open-window`, { method: 'POST', headers, body: '{"url":"https://other.example/"}' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(opened, [`${url}/`]);
+  assert.deepEqual(await response.json(), { url: `${url}/` });
+  const failed = await fixture(t, { openWindow: async () => { throw new Error('Studio runtime unavailable'); } });
+  const failure = await fetch(`${failed.url}/api/open-window`, { method: 'POST', headers });
+  assert.equal(failure.status, 400);
+  assert.match((await failure.json()).error, /Studio runtime unavailable/);
+});
+test('browser and standalone launches share a busy guard that resets after completion', async t => {
+  let finish, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const { url } = await fixture(t, {
+    openWindow: () => { started(); return new Promise(resolve => { finish = resolve; }); },
+    openBrowser: async () => {},
+  });
+  const pending = fetch(`${url}/api/open-window`, { method: 'POST', headers });
+  await ready;
+  const concurrent = await fetch(`${url}/api/open-browser`, { method: 'POST', headers });
+  assert.equal(concurrent.status, 429);
+  finish();
+  assert.equal((await pending).status, 200);
+  assert.equal((await fetch(`${url}/api/open-browser`, { method: 'POST', headers })).status, 200);
+});
 test('store saves atomically, reloads and rejects stale revisions without changing the project', () => {
   const directory = mkdtempSync(join(tmpdir(), 'opendle-test-'));
   try {
