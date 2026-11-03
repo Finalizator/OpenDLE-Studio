@@ -41,6 +41,11 @@ export const CORE_ACTIONS = ['showMessage', 'setVariable', 'addVariable', 'telep
   'rotateEntity', 'applyImpulse', 'applyForce', 'setVelocity', 'playAnimation', 'stopAnimation'];
 
 export const ENGINE_CONDITIONS = [
+  { type: 'interactingWithScreen', label: 'Player: Interacting with screen', fields: [] },
+  { type: 'onSignal', label: 'Signals: On signal', target: true,
+    fields: [{ name: 'signal', kind: 'text', value: 'submitted' }] },
+  { type: 'signalValueCompare', label: 'Signals: compare emitted value',
+    fields: [comparison(), { name: 'value', kind: 'value', value: '' }] },
   { type: 'levelTransition', label: 'Game: level entered with campaign inventory', fields: [] },
   { type: 'gameScreen', label: 'Game: active menu / gameplay screen', fields: [{ name: 'screen', kind: 'text', value: 'title' }] },
   { type: 'shaderEnabled', label: 'Shader: effect is enabled', fields: [] },
@@ -70,6 +75,12 @@ export const ENGINE_CONDITIONS = [
     fields: [choice('mode', 'use', ['use', 'cross', 'shoot'])] },
   { type: 'sectorMoving', label: 'World: sector surface is moving', sector: true,
     fields: [choice('surface', 'ceilingHeight', ['ceilingHeight', 'floorHeight'])] },
+  { type: 'sectorDoorOpen', label: 'Door: is open', sector: true, door: true, fields: [] },
+  { type: 'sectorDoorClosed', label: 'Door: is closed', sector: true, door: true, fields: [] },
+  { type: 'sectorDoorMoving', label: 'Door: is moving', sector: true, door: true, fields: [] },
+  { type: 'sectorElevatorLowered', label: 'Elevator: is lowered', sector: true, elevator: true, fields: [] },
+  { type: 'sectorElevatorRaised', label: 'Elevator: is raised', sector: true, elevator: true, fields: [] },
+  { type: 'sectorElevatorMoving', label: 'Elevator: is moving', sector: true, elevator: true, fields: [] },
   { type: 'enemySeesPlayer', label: 'Enemy: player visible in range', fields: [numeric('range', 1024, 1, 65536),
     { ...numeric('fov', 360, 0, 360), optional: true }], target: true },
   { type: 'enemyAttackChance', label: 'Enemy: Doom distance-based attack decision', fields: [], target: true },
@@ -102,6 +113,8 @@ export const ENGINE_CONDITIONS = [
   { type: 'variableCompare', label: 'System: compare variable', fields: [comparison(), { name: 'value', kind: 'value', value: 0 }], variable: true },
 ];
 export const ENGINE_ACTIONS = [
+  { type: 'emitSignal', label: 'Signals: emit signal', target: true,
+    fields: [{ name: 'signal', kind: 'text', value: 'submitted' }, { name: 'value', kind: 'value', value: '' }] },
   { type: 'saveGame', label: 'Game: save to slot', fields: [numeric('slot', 1, 1, 6)] },
   { type: 'loadGame', label: 'Game: load slot', fields: [numeric('slot', 1, 1, 6)] },
   { type: 'confirmSaveGame', label: 'Game: confirm overwriting save', fields: [] },
@@ -134,6 +147,12 @@ export const ENGINE_ACTIONS = [
     { ...numeric('returnHeight', undefined, -32768, 32767), optional: true },
     { name: 'sound', value: 'DSDOROPN', kind: 'string', optional: true },
   ] },
+  { type: 'openSectorDoor', label: 'Door: open', sector: true, door: true, fields: [] },
+  { type: 'raiseSectorElevator', label: 'Elevator: raise', sector: true, elevator: true, fields: [] },
+  { type: 'lowerSectorElevator', label: 'Elevator: lower', sector: true, elevator: true, fields: [] },
+  { type: 'toggleSectorElevator', label: 'Elevator: toggle', sector: true, elevator: true, fields: [] },
+  { type: 'closeSectorDoor', label: 'Door: close', sector: true, door: true, fields: [] },
+  { type: 'toggleSectorDoor', label: 'Door: toggle', sector: true, door: true, fields: [] },
   { type: 'playSound', label: 'Audio: play embedded sound by name', fields: [{ name: 'sound', value: 'DSPISTOL', kind: 'string' }, numeric('volume', .7, 0, 1)] },
   // An imported asset instead of a lump name: the audio player decodes whatever the browser
   // supports, so a WAV, Ogg Vorbis, Opus, FLAC or MP3 file dropped into the asset library plays

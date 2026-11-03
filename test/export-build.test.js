@@ -14,6 +14,9 @@ import { chromiumCandidates, contentSecurityPolicy, openInAppWindow, resolveData
 import { readPackageArchive } from '../server/packages.js';
 import { ACTIONS, CONDITIONS, createProject, validateProject } from '../shared/project.js';
 import { installAddon } from '../shared/addons.js';
+import { embedVideoFile } from '../shared/media-assets.js';
+import { MEDIA_NODE_DEFAULTS } from '../shared/media-nodes.js';
+import { packProject, unpackProject } from '../server/project-folder.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const exportedAt = new Date('2026-10-25T12:00:00.000Z');
@@ -167,6 +170,45 @@ test('build ships launch scripts, license, runtime modules and the exported proj
   assert.equal(names.filter(name => !name.startsWith(`${slug}/`)).length, 0, 'every entry lives under the build folder');
   const sharedFiles = readdirSync(resolve(root, 'shared')).filter(name => name.endsWith('.js'));
   for (const name of sharedFiles) assert.ok(entries.has(`${slug}/shared/${name}`), `shared/${name} is bundled`);
+});
+
+test('playable builds ship media helpers and preserve imported video descriptors through saves', async () => {
+  const file = {
+    name: 'local-screen.webm', type: 'video/webm', size: 4,
+    arrayBuffer: async () => Uint8Array.from([0, 1, 2, 3]).buffer,
+  };
+  const importedVideo = await embedVideoFile(file, 'video_screen');
+  const project = createProject();
+  project.assets = [];
+  project.assets.push(importedVideo);
+  const entity = project.map.entities[1];
+  entity.nodeKind = 'projector';
+  entity.projector = { ...MEDIA_NODE_DEFAULTS.projector, assetId: importedVideo.id };
+  validateProject(project);
+
+  const saved = packProject(project);
+  const restored = unpackProject(structuredClone(saved.document),
+    path => saved.files.find(candidate => candidate.path === path)?.bytes || null);
+  const restoredVideo = restored.project.assets.find(asset => asset.id === importedVideo.id);
+  assert.deepEqual(restoredVideo, importedVideo);
+  assert.equal(restored.project.map.entities[1].projector.assetId, importedVideo.id);
+
+  const app = readFileSync(resolve(root, 'public/app.js'), 'utf8');
+  assert.match(app, /for \(const file of files\) imported\.push\(await embedVideoFile\(file, newId\('video'\)\)\)/);
+  assert.match(app, /edit\(next => \{ next\.assets \|\|= \[\]; next\.assets\.push\(\.\.\.additions\); \}/);
+
+  const result = await build({ project: restored.project });
+  const entries = await readZip(result.bytes);
+  const slug = 'my-first-opendle-world';
+  for (const required of ['public/world-media.js', 'shared/media-nodes.js', 'shared/media-assets.js']) {
+    assert.ok(entries.has(`${slug}/${required}`), `playable build contains ${required}`);
+    assert.ok(result.manifest.files.some(fileEntry => fileEntry.path === `${slug}/${required}`),
+      `${required} is listed in the build manifest`);
+  }
+  const bundled = JSON.parse(entries.get(`${slug}/data/project.json`).data.toString('utf8')).project;
+  assert.equal(bundled.assets.find(asset => asset.id === importedVideo.id).src, importedVideo.src);
+  assert.equal(bundled.map.entities[1].projector.assetId, importedVideo.id);
+  validateProject(bundled);
 });
 
 test('zip round-trips through the studio package reader with matching contents', async () => {

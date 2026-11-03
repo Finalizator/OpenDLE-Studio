@@ -148,13 +148,19 @@
               <button data-scene-view="2d" class="active" title="Top-down view">2D</button>
               <button data-scene-view="3d" title="Preview the scene in 3D">3D</button>
               <span class="scene-view-separator" role="presentation"></span>
+              <button data-scene-transform="select" aria-pressed="false" title="Select nodes (Q)">Select</button>
+              <button data-scene-transform="move" class="active" aria-pressed="true" title="Move nodes (W)">Move</button>
+              <button data-scene-transform="rotate" aria-pressed="false" title="Rotate nodes (E)">Rotate</button>
+              <button data-scene-transform="scale" aria-pressed="false" title="Scale nodes (R)">Scale</button>
+              <button data-scene-transform="form" aria-pressed="false" title="Shape dimensions (T)">Shape</button>
+              <span class="scene-view-separator" role="presentation"></span>
               <button data-scene-camera="fly" class="active" aria-pressed="true"
                 title="WASD fly camera: right-drag looks around, WASD moves, Q/E lower and raise, Shift is faster, the wheel sets the speed">Fly</button>
               <button data-scene-camera="orbit" aria-pressed="false"
                 title="Orbit camera: left-drag circles the scene root, right-drag dollies, the wheel zooms">Orbit</button>
               <span class="scene-view-separator" role="presentation"></span>
               <button id="scene-view-grid" aria-pressed="true" title="Show the grid">Grid</button>
-              <button id="scene-view-snap" aria-pressed="true" title="Snap to the grid">Snap</button>
+              <button id="scene-view-snap" aria-pressed="true" title="Snap to the grid; Alt during 3D Move bypasses grid, Ctrl bypasses snapping; rotation has light 45-degree detents">Snap</button>
               <button id="scene-view-center" title="Center the view on the scene">Center</button>
               <span id="scene-view-zoom" class="scene-view-zoom">100%</span>
               <span class="scene-view-separator" role="presentation"></span>
@@ -194,10 +200,10 @@
       <section id="assets-panel" class="panel" hidden>
         <div class="dock-heading">Asset browser <button id="expand-assets" aria-expanded="false">Expand</button></div>
         <div class="asset-browser-body">
-        <div class="panel-heading"><div><h1>Assets & sectors</h1><p>Images, sounds, Blockbench .bbmodel and GLB/glTF models, animations and sector surfaces. Drop files or folders here to import.</p></div><button id="import-sound">Import sounds</button><button id="import-model">Import models</button><button id="import-model-folder">Model folder</button><button id="import-image" class="primary">Import images</button></div>
+        <div class="panel-heading"><div><h1>Assets & sectors</h1><p>Images, sounds, local MP4/WebM video, Blockbench .bbmodel and GLB/glTF models, animations and sector surfaces. Drop files or folders here to import.</p></div><button id="import-sound">Import sounds</button><button id="import-video">Import video</button><button id="import-model">Import models</button><button id="import-model-folder">Model folder</button><button id="import-image" class="primary">Import images</button></div>
         <div class="asset-toolbar">
           <label>Import as <select id="image-kind"><option value="texture">Wall texture</option><option value="flat">Floor / ceiling</option><option value="sky">Sky panorama / cube face</option><option value="sprite">Object sprite</option><option value="weapon">Weapon overlay</option></select></label>
-          <label>Filter <select id="asset-filter"><option value="all">All assets</option><option value="texture">Textures</option><option value="flat">Floors / ceilings</option><option value="sky">Skies</option><option value="sprite">Sprites</option><option value="weapon">Weapons</option><option value="sound">Sounds</option><option value="music">Music</option><option value="model">3D models</option><option value="scene">Scenes</option><option value="font">Fonts</option></select></label>
+          <label>Filter <select id="asset-filter"><option value="all">All assets</option><option value="texture">Textures</option><option value="flat">Floors / ceilings</option><option value="sky">Skies</option><option value="sprite">Sprites</option><option value="weapon">Weapons</option><option value="sound">Sounds</option><option value="music">Music</option><option value="video">Video</option><option value="model">3D models</option><option value="scene">Scenes</option><option value="font">Fonts</option></select></label>
           <label>Search <input id="asset-search" type="search" placeholder="Asset name"></label>
         </div>
         <!-- The categories and the tiles scroll on their own, so the import buttons, the filter row
@@ -219,6 +225,7 @@
         </div>
         <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
         <input id="sound-file" type="file" accept=".wav,.ogg,.opus,.flac,.mp3" multiple hidden>
+        <input id="video-file" type="file" accept="video/mp4,video/webm,.mp4,.webm" multiple hidden>
         <input id="model-file" type="file" accept=".glb,.gltf,.bbmodel,.bin,.png,.jpg,.jpeg,.webp" multiple hidden>
         <input id="model-directory" type="file" webkitdirectory multiple hidden>
       </section>

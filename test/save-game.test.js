@@ -78,6 +78,19 @@ test('JSON round trip preserves collections, nonfinite timers, inventory, script
   assert.ok(result.runtime.inventory.keys.has('blueCard'), 'save is a detached snapshot');
 });
 
+test('terminal surface focus is transient while its runtime variable is saved', async () => {
+  const { project, state } = fixture();
+  state.hasGame = true;
+  state.worldTerminalActive = true;
+  state.worldTerminalId = 'terminal';
+  state.variables.terminalUnlocked = 1;
+  const identity = await gameSaveIdentity(project);
+  const restored = restoreGameSave(project, json(captureGameSave(project, state, identity)), identity).runtime;
+  assert.equal(restored.worldTerminalActive, undefined);
+  assert.equal(restored.worldTerminalId, undefined);
+  assert.equal(restored.variables.terminalUnlocked, 1);
+});
+
 // Every one of these is created lazily — following a path, a sky flash, teleport fog, looking
 // through a camera line, a surface waggle, an ACS caption, a boss death — and each of them used to
 // make a save unreadable with "unknown runtime field ...", which is the one failure a save format

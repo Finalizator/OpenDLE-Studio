@@ -1,10 +1,11 @@
 // Scenes are reusable object groups: a scene holds objects (models, sprites, lights,
 // physics, interaction areas) plus the events that script them, so it can be dropped
 // into a map as one thing. Instances are copies, exactly like the rest of the editor
-// data, so every placed object stays individually editable.
+// data. A placed copy keeps one editor-only group so its parts cannot be moved apart.
 import { MAX_JOINTS, pruneJoints, remapJoint } from './joints.js';
 import { stripEntityReferences } from './references.js';
 import { bakePathRamp } from './paths.js';
+import { createSceneInstanceGroup } from './entity-groups.js';
 
 export const MAX_SCENES = 64;
 export const MAX_SCENE_ENTITIES = 128;
@@ -44,7 +45,11 @@ export function remapReferences(value, mapping, depth = 0) {
   }
   if (Array.isArray(value)) return value.map(child => remapReferences(child, mapping, depth + 1));
   const result = {};
-  for (const [key, child] of Object.entries(value)) result[key] = remapReferences(child, mapping, depth + 1);
+  for (const [key, child] of Object.entries(value)) {
+    const signalData = key === 'signal' && ['onSignal', 'emitSignal'].includes(value.type)
+      || key === 'value' && value.type === 'emitSignal';
+    result[key] = signalData ? structuredClone(child) : remapReferences(child, mapping, depth + 1);
+  }
   return result;
 }
 
@@ -77,6 +82,8 @@ export function captureScene(project, entityIds, { id = newSceneId(), name } = {
     origin,
     entities: entities.map(entity => {
       const copy = structuredClone({ ...entity, x: entity.x - origin.x, y: entity.y - origin.y });
+      delete copy.groupId;
+      if (copy.parentId && !owned.has(copy.parentId)) delete copy.parentId;
       bakePathRamp(copy);
       return copy;
     }),
@@ -101,8 +108,8 @@ export function instantiateScene(scene, { x = 0, y = 0, angle = 0, prefix = newS
     const offset = rotate(entity.x, entity.y, angle);
     const copy = structuredClone(entity);
     copy.id = mapping.get(entity.id);
-    // Grouping is an editing aid inside the scene; a placed copy joins the flat map.
-    delete copy.parentId;
+    if (entity.parentId) copy.parentId = mapping.get(entity.parentId);
+    delete copy.groupId;
     copy.x = round(x + offset.x);
     copy.y = round(y + offset.y);
     copy.angle = (Number(entity.angle) || 0) + angle;
@@ -117,6 +124,19 @@ export function instantiateScene(scene, { x = 0, y = 0, angle = 0, prefix = newS
   // A placed copy keeps its joints, re-pointed at the copied objects.
   const joints = (scene.joints || []).map(joint => remapJoint(joint, mapping, { id: `${prefix}_${joint.id}` }));
   return { entities, events, joints, prefix };
+}
+
+export function placeSceneInstance(project, scene, options = {}) {
+  const placed = instantiateScene(scene, options);
+  if (!placed.entities.length) throw new Error(`Scene ${scene.name} has no objects`);
+  project.map.entities.push(...placed.entities);
+  project.events.push(...placed.events);
+  if (placed.joints.length) project.map.joints = [...(project.map.joints || []), ...placed.joints];
+  const rootId = placed.entities.find(entity => !entity.parentId)?.id || placed.entities[0].id;
+  placed.group = createSceneInstanceGroup(project, placed.entities.map(entity => entity.id), {
+    name: scene.name, sceneId: scene.id, rootId, id: placed.prefix,
+  });
+  return placed;
 }
 
 /** True when the scene has something to draw, so empty scenes can be reported. */
@@ -333,14 +353,16 @@ export function renameSceneObject(scene, id, name) {
 
 const SPRITE_ASSET_KINDS = ['sprite', 'weapon', 'flat', 'texture', 'sky', 'image', 'hud'];
 
-/** 'sprite', 'model' or null for an asset a scene object cannot show. */
+/** The component that consumes an embedded scene resource. */
 export function sceneAssetUse(asset) {
   if (!asset || typeof asset !== 'object') return null;
   if (asset.kind === 'model') return 'model';
+  if (asset.kind === 'sound') return 'sound';
+  if (asset.kind === 'video') return 'projector';
   return SPRITE_ASSET_KINDS.includes(asset.kind) ? 'sprite' : null;
 }
 
-function uniqueSceneName(scene, base) {
+export function uniqueSceneName(scene, base) {
   const names = new Set((scene.entities || []).map(entity => entity.name));
   if (!names.has(base)) return base;
   for (let index = 2; ; index++) if (!names.has(`${base} ${index}`)) return `${base} ${index}`;
@@ -357,7 +379,18 @@ export function setSceneObjectAsset(scene, id, asset) {
   const entity = (scene?.entities || []).find(item => item.id === id);
   if (!entity) throw new Error('That object no longer exists');
   const use = sceneAssetUse(asset);
-  if (!use) throw new Error(`${asset?.name || 'That asset'} is not a picture or a model; drop a sprite, an image or a 3D model on a node`);
+  if (!use) throw new Error(`${asset?.name || 'That asset'} is not a picture, model, sound or video`);
+  if (use === 'sound') {
+    entity.sound = { autoplay: true, loop: true, volume: 1, radius: 1024, ...entity.sound, assetId: asset.id };
+    return `Sound ${asset.name} set on ${entity.name}`;
+  }
+  if (use === 'projector' || use === 'sprite' && entity.projector) {
+    entity.projector = { width: 128, height: 72, opacity: 1, autoplay: true, loop: true, muted: true,
+      ...entity.projector, assetId: asset.id };
+    delete entity.modelAsset;
+    delete entity.animation;
+    return `Projection ${asset.name} set on ${entity.name}`;
+  }
   if (use === 'model') {
     entity.modelAsset = asset.id;
     delete entity.animation;
@@ -372,12 +405,12 @@ export function setSceneObjectAsset(scene, id, asset) {
 /** Places a new object that already carries `asset`, at x/y, optionally under a parent. */
 export function addSceneObjectFromAsset(scene, asset, { x = 0, y = 0, parentId = null, type = 'decoration' } = {}) {
   const use = sceneAssetUse(asset);
-  if (!use) throw new Error(`${asset?.name || 'That asset'} is not a picture or a model`);
+  if (!use) throw new Error(`${asset?.name || 'That asset'} is not a picture, model, sound or video`);
   if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Drop the asset inside the scene view to place it');
-  const artwork = use === 'model' ? { modelAsset: asset.id, modelScale: 32 } : { spriteAsset: asset.id };
-  return addSceneObject(scene, {
-    type, name: uniqueSceneName(scene, sceneAssetName(asset)), x, y, parentId, ...artwork,
-  });
+  const entity = addSceneObject(scene, { type, name: uniqueSceneName(scene, sceneAssetName(asset)), x, y, parentId });
+  setSceneObjectAsset(scene, entity.id, asset);
+  if (use === 'model') entity.modelScale = 32;
+  return entity;
 }
 
 /** Copies a layout object into a scene, so dragging an object tile into a scene works. */

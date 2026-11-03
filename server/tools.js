@@ -87,6 +87,8 @@ export const toolDefinitions = [
   { name: 'playtest_log_read', description: 'Read one playtest log by session id from playtest_log_list. Returns the normalised error records (severity, category, message, details, repeat counts) with a summary, newest failures included.', shape: { session: z.string().min(1).max(64), limit: z.number().int().min(1).max(2000).optional() } },
   { name: 'variables_set', description: 'Replace global or object-local initial variables with a complete record of numbers, text or booleans. Omit entityId for globals. Existing script/expression references are validated; types stay fixed during Play.',
     shape: { entityId: z.string().optional(), variables: z.record(z.union([z.number().finite(), z.string().max(4096), z.boolean()])) } },
+  { name: 'signals_set', description: 'Declare the named signals emitted by an existing layout object. Names start with a letter/underscore, followed by letters, digits or underscores, max80. onSignal(entityId,signal) is the first condition of a top-level AND rule; emitSignal(entityId,signal,value) sends one primitive payload. Existing connections are validated transactionally. Terminal submitSignal is also declared by its component.',
+    shape: { entityId: z.string(), signals: z.array(z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]{0,79}$/)).max(32) } },
   { name: 'shaders_set', description: 'Replace portable GLSL effect definitions [{id,name,language:"glsl",source,uniforms:{name:number}}] and optionally select shaderId (null disables). Source defines vec4 effect(vec4 color, vec2 uv, float time); numeric uniform declarations are supplied by the engine. This portable GLSL subset is compiled for WebGPU/WebGL; unsupported syntax and broken references are rejected. Shader visual actions setShaderUniform(uniform,value) and setShaderEnabled(enabled:yes|no) remain editable.',
     shape: { shaders: z.array(z.record(z.unknown())), shaderId: z.string().nullable().optional() } },
   { name: 'hud_install_default', description: 'Explicitly install the original editable FPS HUD and visual feedback rules. Refuses to overwrite an authored HUD.', shape: {} },
@@ -126,10 +128,17 @@ export const toolDefinitions = [
     shape: { id: z.string(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
       height: z.number().min(8).max(4096).optional(), solid: z.boolean().optional(),
       assetId: z.string().nullable().optional(), right: z.record(z.unknown()).optional(), left: z.record(z.unknown()).optional() } },
-  { name: 'sector_update', description: 'Edit an existing sector floor/ceiling height, light (0-255), sky ceiling or floor/ceiling material by existing asset ID. Closed/inverted sectors are static closed doors; they do not open automatically.',
+  { name: 'sector_update', description: 'Edit a sector or override an automatically detected door/elevator. Native activation preserves imported triggers and locks; proximity, manual and event-only replace them. Null removes an override and restores imported behavior. Door and Elevator event commands accept detected or configured movers.',
     shape: { id: z.string(), floorHeight: z.number().min(-32768).max(32767).optional(), ceilingHeight: z.number().min(-32768).max(32767).optional(),
       floorAsset: z.string().nullable().optional(), ceilingAsset: z.string().nullable().optional(),
-      light: z.number().min(0).max(255).optional(), sky: z.boolean().optional() } },
+      light: z.number().min(0).max(255).optional(), sky: z.boolean().optional(),
+      door: z.object({ initial: z.enum(['native', 'open', 'closed']), activation: z.enum(['native', 'proximity', 'manual', 'event-only']),
+        radius: z.number().min(1).max(8192).optional(), openHeight: z.number().min(-32768).max(32767).optional(),
+        closedHeight: z.number().min(-32768).max(32767).optional(), speed: z.number().min(.1).max(4096).optional() }).nullable().optional(),
+      elevator: z.object({ initial: z.enum(['native', 'lower', 'upper']), activation: z.enum(['native', 'proximity', 'manual', 'event-only']),
+        radius: z.number().min(1).max(8192).optional(), lowerHeight: z.number().min(-32768).max(32767).optional(),
+        upperHeight: z.number().min(-32768).max(32767).optional(), speed: z.number().min(.1).max(4096).optional(),
+        moveCeiling: z.boolean().optional() }).nullable().optional() } },
   { name: 'entity_set_visual', description: 'Assign an existing sprite or GLB/glTF model asset, scale, floor-relative elevation and initial animation (clip,speed,loop,autoPlay) to an object, or configure a light. A model replaces the sprite; default modelScale=32 map units per glTF unit. animation:null clears clip settings. At most16 lights, no shadows.',
     shape: { id: z.string(), spriteAsset: z.string().nullable().optional(), spriteScale: z.number().min(.05).max(16).optional(),
       modelAsset: z.string().nullable().optional(), modelScale: z.number().min(.001).max(4096).optional(), elevation: z.number().min(-32768).max(32767).optional(),
@@ -345,6 +354,12 @@ export function applyTool(project, name, args, context = {}) {
       } else next.variables = input.variables;
       break;
     }
+    case 'signals_set': {
+      const entity = next.map.entities.find(entity => entity.id === input.entityId);
+      if (!entity) throw new Error('Entity not found');
+      entity.signals = input.signals;
+      break;
+    }
     case 'shaders_set':
       next.shaders = input.shaders;
       if (input.shaderId === null) delete next.environment.shaderId;
@@ -392,7 +407,12 @@ export function applyTool(project, name, args, context = {}) {
     case 'sector_update': {
       const sector = next.map.sectors?.find(sector => sector.id === input.id);
       if (!sector) throw new Error('Sector not found');
-      Object.assign(sector, input);
+      const { door, elevator, ...fields } = input;
+      Object.assign(sector, fields);
+      if (door === null) delete sector.door;
+      else if (door) sector.door = door;
+      if (elevator === null) delete sector.elevator;
+      else if (elevator) sector.elevator = elevator;
       break;
     }
     case 'entity_set_visual': {

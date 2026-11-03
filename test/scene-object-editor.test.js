@@ -202,11 +202,14 @@ test('a scene keeps the events a captured object already had', () => {
   assert.throws(() => validateProject(broken), /Unknown scene event action: nonsense/);
 });
 
-test('placing a scene drops the editing hierarchy but keeps every object', () => {
+test('placing a scene remaps its hierarchy and keeps every object', () => {
   const { scene } = groupedScene();
   const placed = instantiateScene(scene, { x: 100, y: 100 });
   assert.equal(placed.entities.length, 4);
-  assert.ok(placed.entities.every(entity => entity.parentId === undefined), 'a placed copy joins the flat map');
+  for (let index = 0; index < scene.entities.length; index++) {
+    const parentIndex = scene.entities.findIndex(entity => entity.id === scene.entities[index].parentId);
+    assert.equal(placed.entities[index].parentId, parentIndex >= 0 ? placed.entities[parentIndex].id : undefined);
+  }
   assert.equal(new Set(placed.entities.map(entity => entity.id)).size, 4, 'placed ids are fresh');
 });
 
@@ -253,7 +256,7 @@ test('the scene editor copies the Godot docking, not a plain form', () => {
   assert.match(editor, /drop-before/);
   assert.match(editor, /drop-after/);
   assert.match(editor, /placeSceneObject/);
-  assert.match(editor, /sceneSubtree\(next, drag\.id\)\.slice\(1\)/);
+  assert.match(editor, /transformSceneNodes\(draft, drag\.baseline/);
   // Arrow keys walk the tree, F2 renames, Delete removes.
   for (const key of ['ArrowDown', 'ArrowRight', 'F2', 'Delete', 'Home', 'End']) assert.match(editor, new RegExp(`'${key}'`), `${key} is handled`);
   // Ctrl+D duplicates and Ctrl+Up/Down reorders, which is what the toolbar tooltips promise.
@@ -307,7 +310,8 @@ test('an asset decides whether a node shows a sprite or a model', () => {
   assert.equal(sceneAssetUse(SPRITE), 'sprite');
   assert.equal(sceneAssetUse({ ...SPRITE, kind: 'flat' }), 'sprite');
   assert.equal(sceneAssetUse(MODEL), 'model');
-  assert.equal(sceneAssetUse(SOUND), null);
+  assert.equal(sceneAssetUse(SOUND), 'sound');
+  assert.equal(sceneAssetUse({ kind: 'video' }), 'projector');
   assert.equal(sceneAssetUse(null), null);
 });
 
@@ -323,7 +327,9 @@ test('assigning a sprite or a model replaces the other kind of artwork', () => {
   // Going back to a sprite drops the model so the node is not geometry any more.
   setSceneObjectAsset(scene, node.id, SPRITE);
   assert.equal(node.modelAsset, undefined);
-  assert.throws(() => setSceneObjectAsset(scene, node.id, SOUND), /not a picture or a model/);
+  setSceneObjectAsset(scene, node.id, SOUND);
+  assert.equal(node.sound.assetId, SOUND.id);
+  assert.throws(() => setSceneObjectAsset(scene, node.id, { kind: 'script', name: 'Script' }), /not a picture/);
   assert.throws(() => setSceneObjectAsset(scene, 'node_missing', SPRITE), /no longer exists/);
 });
 
@@ -341,7 +347,8 @@ test('dropping an asset places a node named after it, reusing names', () => {
   assert.equal(model.name, 'Crate');
   assert.equal(model.modelAsset, MODEL.id);
   assert.equal(model.modelScale, 32);
-  assert.throws(() => addSceneObjectFromAsset(scene, SOUND, { x: 0, y: 0 }), /not a picture or a model/);
+  const sound = addSceneObjectFromAsset(scene, SOUND, { x: 0, y: 0 });
+  assert.equal(sound.sound.assetId, SOUND.id);
   assert.throws(() => addSceneObjectFromAsset(scene, SPRITE, { x: Number.NaN, y: 0 }), /inside the scene view/);
 });
 
@@ -460,9 +467,9 @@ test('the 3D view flies with WASD by default and keeps the orbit camera as an op
   assert.match(editor, /function orbitFromFly\(\)/);
   // Right-drag looks around, and a right click that never moved still opens the menu.
   assert.match(editor, /kind: right \? 'look' : 'none'/);
-  // Map space is (x, y floor, z up), so the yaw turns the other way from the layout view.
-  assert.match(editor, /state\.fly\.yaw = drag\.yaw - dx \* \.003/);
-  assert.match(editor, /const right = \{ x: forward\.y, y: -forward\.x, z: 0 \};/);
+  // The scene preview uses the same positive map-Y/native-Z basis as play.
+  assert.match(editor, /state\.fly\.yaw = drag\.yaw \+ dx \* \.003/);
+  assert.match(editor, /const right = \{ x: -forward\.y, y: forward\.x, z: 0 \};/);
   assert.match(editor, /drag\.kind === 'look'\) && !drag\.moved/);
   // WASD/QE walking with the layout view's four-times Shift boost and capped frame step.
   assert.match(editor, /const speed = state\.fly\.speed \* Math\.min\(dt, \.05\)/);

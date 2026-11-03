@@ -2,12 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   GIZMO_AXES, GIZMO_LENGTH, angleDegrees, axisAmount, axisField, axisPressPoint, dragPlaneNormal,
-  formDrag, normalize, rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
+  formDrag, normalize, rayPlaneHit, ringDegrees, ringDelta, rotationDetent, scaleFactorFromDrag, screenAngle,
 } from '../shared/gizmo-math.js';
 
 // A pointer ray from a camera at `eye` through `point`: enough of a camera to test the drag maths
 // without a renderer, which is the whole reason the maths lives outside one.
 const rayThrough = (eye, point) => ({ rayOrigin: eye, rayDirection: normalize([point[0] - eye[0], point[1] - eye[1], point[2] - eye[2]]) });
+
+test('rotation detents lightly snap to every 45 degrees without quantizing other angles', () => {
+  for (let angle = -720; angle <= 720; angle += 45) {
+    assert.equal(rotationDetent(angle + 2.9), angle);
+    assert.equal(rotationDetent(angle - 2.9), angle);
+    assert.equal(rotationDetent(angle + 3.1), angle + 3.1);
+  }
+  assert.equal(rotationDetent(23.7), 23.7);
+  assert.equal(rotationDetent(26, 17), 28, 'the resulting angle, not just drag distance, snaps');
+  assert.equal(rotationDetent(9.5, 17), 9.5);
+});
 
 test('the gizmo uses the Godot axes and colours', () => {
   assert.deepEqual(GIZMO_AXES.map(axis => axis.key), ['x', 'y', 'z']);

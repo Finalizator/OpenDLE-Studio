@@ -10,7 +10,7 @@
  */
 
 import { startWaggle } from './plane-motion.js';
-import { moveSector, classicSpecialSupported } from './world-motion.js';
+import { moveSector, classicSpecialSupported, sectorMotionAllowed } from './world-motion.js';
 import { resetMomentum } from './player-motion.js';
 import { doomSpecialName } from './doom-specials.js';
 import { floorAt, sectorFloorAt, soundEvent } from './combat.js';
@@ -114,7 +114,7 @@ export const SUPPORTED_SPECIALS = new Set([
   62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 73, 74, 75, 80, 81, 82, 83, 84, 85, 95, 96, 99, 105, 106, 109, 110, 111,
   112, 113, 114, 115, 116, 117, 119, 125, 130, 131, 132, 133, 134, 135, 136, 137, 139, 192, 196, 202, 206, 214, 226,
   228, 230,
-  195, 203, 231, 232, 233, 234, 238, 241, 243, 244, 248, 249, 251, 252, 253, 254, 255, 257, 258, 259,
+  195, 203, 231, 232, 233, 234, 238, 241, 243, 244, 245, 246, 247, 248, 249, 251, 252, 253, 254, 255, 257, 258, 259,
   ...NOP_SPECIALS,
 ]);
 
@@ -175,6 +175,11 @@ function targetFor(kind, sector, surface, others, amount) {
     }
     default: return sector[surface];
   }
+}
+
+export function sectorPlaneTarget(project, sectors, sector, surface, kind, amount = 0) {
+  const others = planeHeights({ sectors }, project, sector, surface);
+  return targetFor(kind, sector, surface, others, amount);
 }
 
 function doorTarget(state, project, sector) {
@@ -250,13 +255,17 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
   const args = [0, 1, 2, 3, 4].map(index => Number(rawArgs[index]) | 0);
   const [arg1, arg2, arg3, arg4, arg5] = args;
   const scripts = options.scripts;
-  const sectors = arg1 ? taggedSectors(state, arg1) : [];
+  let sectors = arg1 ? taggedSectors(state, arg1) : [];
   const line = options.line ? project.map.walls.find(wall => wall.id === options.line) : null;
   // GZDoom converts every special's numbers before using them: SPEED(a) is a/8 units
   // per tic, TICS(a) is a tics and OCTICS(a) is a/8 seconds. Reading the raw argument
   // as units per tic made every door and lift eight times too fast, which is why a
   // 120-unit door snapped open in two frames.
   const zdoom = (options.format || line?.specialFormat) === 'zdoom';
+  if (zdoom && !arg1 && /^(Door_|Generic_Door)/.test(specialName(special))) {
+    const back = liveSector(state, line?.left?.sectorId);
+    if (back) sectors = [back];
+  }
   const doorSpeed = zdoom ? Math.max(1, arg2) / 8 : CLASSIC_DOOR_SPEED;
   const planeSpeed = zdoom ? Math.max(1, arg2) / 8 : CLASSIC_PLANE_SPEED;
   const waitTics = value => Math.max(0, value || 0) / TIC;
@@ -318,9 +327,11 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       return planes('absolute', 'floorHeight', arg4 ? -arg3 * (special === 68 ? 8 : 1) : arg3 * (special === 68 ? 8 : 1), { sound: 'DSPSTART' });
     case 66: case 67: { // Floor_LowerInstant / RaiseInstant
       for (const sector of sectors) {
+        if (!sectorMotionAllowed(sector, 'floorHeight')) continue;
         const others = planeHeights(state, project, sector, 'floorHeight');
         const target = special === 66 ? targetFor('toLowest', sector, 'floorHeight', others, 0)
           : targetFor('toHighest', sector, 'floorHeight', others, 0);
+        if (sector.elevator?.moveCeiling) sector.ceilingHeight += target - sector.floorHeight;
         sector.floorHeight = target;
         state.worldRevision++;
       }
@@ -386,6 +397,17 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 61: // Plat_Stop
       for (const sector of sectors) state.sectorMotions.delete(`${sector.id}:floorHeight`);
       return 1;
+    case 245: case 246: case 247: { // Elevators move both planes by the same amount.
+      for (const sector of sectors) {
+        const height = special === 246 ? liveSector(state, line?.right?.sectorId)?.floorHeight
+          : sectorPlaneTarget(project, state.sectors, sector, 'floorHeight', special === 245 ? 'toNearestUp' : 'toNearestDown');
+        if (!Number.isFinite(height)) continue;
+        const speed = Math.max(TIC, planeSpeed * TIC);
+        moveSector(state, { sectorId: sector.id, surface: 'floorHeight', height,
+          speed, wait: 0, returnMode: 'stay', sound: 'DSPSTART', moveCeiling: true });
+      }
+      return 1;
+    }
     case 231: { // Plat_ToggleCeiling
       for (const sector of sectors) {
         const open = Math.abs(sector.ceilingHeight - doorTarget(state, project, sector)) < 1;

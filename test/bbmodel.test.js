@@ -371,15 +371,16 @@ test('bundleModel imports a .bbmodel file into a self contained GLB asset', asyn
   validateProject(project);
 });
 
-test('dropped files are routed to models, images or sounds', () => {
+test('dropped files are routed to models, images, sounds or videos', () => {
   const file = name => ({ name, size: 10 });
-  assert.deepEqual(groupDroppedFiles([]), { models: [], images: [], sounds: [], nodes: [], ignored: [] });
+  assert.deepEqual(groupDroppedFiles([]), { models: [], images: [], sounds: [], videos: [], nodes: [], ignored: [] });
   const modelDrop = groupDroppedFiles([file('hero.gltf'), file('hero.bin'), file('atlas.png')]);
   assert.deepEqual(modelDrop.models.map(item => item.name), ['hero.gltf', 'hero.bin', 'atlas.png']);
   assert.deepEqual(modelDrop.images, []);
-  const mixed = groupDroppedFiles([file('wall.png'), file('roar.ogg'), file('notes.txt')]);
+  const mixed = groupDroppedFiles([file('wall.png'), file('roar.ogg'), file('screen.MP4'), file('notes.txt')]);
   assert.deepEqual(mixed.images.map(item => item.name), ['wall.png']);
   assert.deepEqual(mixed.sounds.map(item => item.name), ['roar.ogg']);
+  assert.deepEqual(mixed.videos.map(item => item.name), ['screen.MP4']);
   assert.deepEqual(mixed.ignored.map(item => item.name), ['notes.txt']);
   assert.equal(groupDroppedFiles([file('drone.BBMODEL')]).models.length, 1);
   // A saved node is its own kind of drop.

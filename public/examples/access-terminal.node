@@ -1,0 +1,76 @@
+{
+  "format": "opendle-node",
+  "version": 1,
+  "modelFacingSemantics": 2,
+  "name": "Access terminal",
+  "createdAt": "2026-11-03T18:08:56.608Z",
+  "origin": {
+    "x": 0,
+    "y": 0
+  },
+  "nodes": [
+    {
+      "id": "access_terminal",
+      "type": "decoration",
+      "name": "Access terminal",
+      "x": 0,
+      "y": 0,
+      "angle": 180,
+      "elevation": 32,
+      "nodeKind": "terminal",
+      "variables": {
+        "digits": ""
+      },
+      "signals": [
+        "submitted"
+      ],
+      "terminal": {
+        "width": 64,
+        "height": 80,
+        "resolutionWidth": 384,
+        "resolutionHeight": 512,
+        "mode": "keypad",
+        "title": "SECURE ACCESS",
+        "code": "1234",
+        "variable": null,
+        "background": "#0c151c",
+        "foreground": "#80ffbf",
+        "range": 160,
+        "inputVariable": "digits",
+        "submitSignal": "submitted",
+        "buttons": []
+      }
+    },
+    {
+      "id": "access_terminal_chassis",
+      "type": "decoration",
+      "name": "Terminal chassis",
+      "x": 0,
+      "y": 4,
+      "angle": 0,
+      "elevation": 30,
+      "parentId": "access_terminal",
+      "nodeKind": "mesh",
+      "mesh": {
+        "shape": "box",
+        "width": 68,
+        "height": 84,
+        "depth": 6,
+        "color": "#253440",
+        "opacity": 1
+      }
+    }
+  ],
+  "joints": [],
+  "events": [],
+  "script": {
+    "available": 0,
+    "included": 0
+  },
+  "clips": [],
+  "sheets": [],
+  "groups": [],
+  "assets": [],
+  "shaders": [],
+  "warnings": []
+}

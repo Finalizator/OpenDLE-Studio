@@ -18,6 +18,8 @@ import { nodeIcon } from './node-icons.js';
 import { askObjectExport, downloadNodeFile } from './export-object.js';
 import { askDeleteObject } from './delete-object.js';
 import { entityReferences, stripEntityReferences, rewriteEntityReferences, referenceLabel } from '/shared/references.js';
+import { SCENE_NODE_TYPES, createSceneNode, sceneNodeLabel, sceneNodeDimensions, sceneNodeSupportsTilt, transformSceneNodes } from '/shared/scene-nodes.js';
+import { rotationDetent } from '/shared/gizmo-math.js';
 
 // A scene object editor laid out like Godot's scene dock and inspector: the node tree
 // on the left with the node toolbar above it, the view in the middle, and the inspector
@@ -28,7 +30,7 @@ import { entityReferences, stripEntityReferences, rewriteEntityReferences, refer
 const TYPE_LABELS = { scene: 'Scene', enemy: 'Enemy', pickup: 'Pickup', light: 'Light', decoration: 'Decoration', ramp: 'Ramp', zone: 'Zone' };
 const GRID = 32;
 /** Godot's inspector groups; a row is only shown when the object has that data. */
-const CATEGORIES = ['Transform', 'Node', 'Visual', 'Panel', 'Model', 'Physics', 'Joints', 'Light', 'Interaction area', 'Script'];
+const CATEGORIES = ['Transform', 'Node', 'Visual', 'Mesh', 'Sprite plane', 'Sound', 'Projector', 'Terminal', 'Panel', 'Model', 'Physics', 'Joints', 'Light', 'Interaction area', 'Script'];
 
 export function createSceneObjectEditor({ callbacks }) {
   const state = {
@@ -42,6 +44,7 @@ export function createSceneObjectEditor({ callbacks }) {
     panY: 0,
     grid: true,
     snap: true,
+    tool: 'move',
     view3d: false,
     // Two 3D cameras, both offered in the toolbar. `fly` is the default because it is how
     // the layout's 3D view moves: right-drag looks around, WASD walks, Q/E change height.
@@ -63,7 +66,8 @@ export function createSceneObjectEditor({ callbacks }) {
   // Created on the first visit to the 3D tab: the renderer costs a GPU context and a
   // shader warm-up, so the 2D view never pays for it.
   let view3d = null, view3dPending = null;
-  const scene = () => callbacks.scenes().find(item => item.id === state.sceneId) || null;
+  let previewScene = null;
+  const scene = () => previewScene || callbacks.scenes().find(item => item.id === state.sceneId) || null;
   const selectedObject = () => {
     const current = scene();
     return current && state.selection && state.selection !== current.id
@@ -107,6 +111,7 @@ export function createSceneObjectEditor({ callbacks }) {
    * 3D view, canvas) still follows.
    */
   function select(id, { rebuildTree = true } = {}) {
+    if (state.drag?.kind === 'transform') cancelTransform();
     state.selection = id;
     if (id && id !== state.sceneId) revealInTree(id);
     if (rebuildTree) renderTree();
@@ -276,8 +281,8 @@ export function createSceneObjectEditor({ callbacks }) {
             renderTree();
           });
         }
-        row.append(twisty, glyph(entity.type), el('span', entity.name, 'node-name'));
-        const label = TYPE_LABELS[entity.type] || entity.type;
+        row.append(twisty, glyph(entity.nodeKind || entity.type), el('span', entity.name, 'node-name'));
+        const label = sceneNodeLabel(entity);
         row.title = `${entity.name} — ${label}`;
         // A node with a visual script wears the same mark Godot puts on nodes with a script.
         const events = (current.events || []).filter(event => event.ownerId === entity.id).length;
@@ -423,14 +428,50 @@ export function createSceneObjectEditor({ callbacks }) {
     // New nodes land in front of the view centre, or at the point the caller dropped on.
     const centre = point || (state.view3d ? { x: 0, y: 0 }
       : worldToScene({ x: activeCanvas().clientWidth / 2, y: activeCanvas().clientHeight / 2 }));
-    const snap = value => state.snap ? Math.round(value / GRID) * GRID : Math.round(value);
-    let created = null;
-    try {
-      editScene(next => {
-        created = addSceneObject(next, { type: 'decoration', name: 'New node', x: snap(centre.x), y: snap(centre.y), parentId });
-      }, 'Node added');
-    } catch (error) { callbacks.status(error.message, true); return; }
-    if (created) select(created.id);
+    const dialog = el('dialog', null, 'scene-node-dialog');
+    dialog.setAttribute('aria-label', 'Create new node');
+    const heading = el('h2', 'Create new node');
+    const search = el('input');
+    search.type = 'search'; search.placeholder = 'Search node types';
+    search.setAttribute('aria-label', 'Search node types');
+    const list = el('div', null, 'scene-node-catalog');
+    const close = el('button', 'Cancel');
+    close.addEventListener('click', () => dialog.close());
+    const create = kind => {
+      if (state.sceneId !== current.id) { dialog.close(); return; }
+      const snap = value => state.snap ? Math.round(value / GRID) * GRID : Math.round(value);
+      let created;
+      try {
+        editScene(next => { created = createSceneNode(next, kind,
+          { x: snap(centre.x), y: snap(centre.y), parentId }); }, 'Node added');
+      } catch (error) { callbacks.status(error.message, true); return; }
+      dialog.close();
+      select(created.id);
+    };
+    const render = () => {
+      list.replaceChildren();
+      const query = search.value.toLowerCase().trim();
+      let category = '';
+      for (const type of SCENE_NODE_TYPES.toSorted((a, b) => a.category.localeCompare(b.category))) {
+        if (query && !`${type.name} ${type.category} ${type.description}`.toLowerCase().includes(query)) continue;
+        if (category !== type.category) { list.append(el('h3', type.category)); category = type.category; }
+        const row = el('button', null, 'scene-node-choice');
+        row.dataset.nodeKind = type.id;
+        row.append(nodeIcon(type.defaults.nodeKind || type.defaults.type), el('strong', type.name), el('small', type.description));
+        row.addEventListener('click', () => create(type.id));
+        list.append(row);
+      }
+      if (!list.childElementCount) list.append(el('p', 'No node types match this search.', 'muted'));
+    };
+    search.addEventListener('input', render);
+    search.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); list.querySelector('button')?.click(); }
+      if (event.key === 'ArrowDown') { event.preventDefault(); list.querySelector('button')?.focus(); }
+    });
+    dialog.addEventListener('close', () => { dialog.remove(); activeCanvas()?.focus(); }, { once: true });
+    dialog.append(heading, search, list, close);
+    document.body.append(dialog);
+    render(); dialog.showModal(); search.focus();
   }
 
   /**
@@ -543,6 +584,12 @@ export function createSceneObjectEditor({ callbacks }) {
     const row = el('div', null, 'property-row');
     const name = el('label', label, 'property-name');
     name.title = label;
+    const control = editor.matches('input,select,button,textarea') ? editor : editor.querySelector('input,select,button,textarea');
+    if (control) {
+      control.id ||= `scene-property-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+      name.htmlFor = control.id;
+      control.setAttribute('aria-label', label);
+    }
     const valueCell = el('div', null, 'property-value');
     valueCell.append(editor);
     row.append(name, valueCell);
@@ -565,7 +612,7 @@ export function createSceneObjectEditor({ callbacks }) {
     if (max !== undefined) input.max = String(max);
     input.addEventListener('change', () => {
       const parsed = Number(input.value);
-      if (!Number.isFinite(parsed)) { input.value = String(value); return; }
+      if (!Number.isFinite(parsed)) { callbacks.status('Enter a finite number', true); input.value = String(value); return; }
       const clamped = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, parsed));
       if (clamped !== parsed) input.value = String(clamped);
       onChange(clamped);
@@ -608,23 +655,29 @@ export function createSceneObjectEditor({ callbacks }) {
   function assetEditor(kind, value, onChange, onClear) {
     const assets = callbacks.assets() || [];
     const asset = value ? assets.find(candidate => candidate.id === value) || null : null;
-    const kinds = kind === 'model' ? MODEL_KINDS : PICTURE_KINDS;
+    const kinds = kind === 'model' ? MODEL_KINDS : kind === 'sound' ? ['sound']
+      : kind === 'projector' ? [...PICTURE_KINDS, 'video'] : PICTURE_KINDS;
     const missing = value && !asset;
     return assetField(missing ? { name: `${value} (missing)`, kind } : asset, {
-      placeholder: kind === 'model' ? 'Choose a 3D model' : 'Choose a sprite',
+      placeholder: kind === 'model' ? 'Choose a 3D model' : kind === 'sound' ? 'Choose a sound'
+        : kind === 'projector' ? 'Choose an image or video' : 'Choose a sprite or texture',
       title: missing ? `${value} is not part of this project any more` : undefined,
       onOpen: button => openAssetPicker({
         anchor: button,
-        title: kind === 'model' ? 'Choose a 3D model' : 'Choose a sprite or image',
+        title: kind === 'model' ? 'Choose a 3D model' : kind === 'sound' ? 'Choose a sound'
+          : kind === 'projector' ? 'Choose an image or video' : 'Choose a sprite or image',
         assets, kinds, value,
-        noneLabel: kind === 'model' ? '(no model)' : '(no sprite)',
+        noneLabel: kind === 'model' ? '(no model)' : kind === 'sound' ? '(no sound)'
+          : kind === 'projector' ? '(no projection source)' : '(no sprite)',
         emptyText: kind === 'model'
           ? 'No 3D models yet. Import a glTF, glb, obj or bbmodel from the Assets tab.'
-          : 'No pictures yet. Import a WAD or images to get sprites.',
+          : kind === 'sound' || kind === 'projector' ? 'Import media from the Assets tab first.'
+            : 'No pictures yet. Import a WAD or images to get sprites.',
         onPick: chosen => onChange(chosen.id),
         ...(onClear ? { onClear } : {}),
       }),
-      ...(onClear ? { onClear, clearLabel: kind === 'model' ? 'Remove the model' : 'Remove the sprite' } : {}),
+      ...(onClear ? { onClear, clearLabel: kind === 'model' ? 'Remove the model' : kind === 'sound' ? 'Remove the sound'
+        : kind === 'projector' ? 'Remove the projection source' : 'Remove the sprite' } : {}),
     });
   }
 
@@ -695,7 +748,7 @@ export function createSceneObjectEditor({ callbacks }) {
     // Header: icon, editable name, type — Godot's inspector node header.
     if (dom.head) {
       dom.head.replaceChildren();
-      dom.head.append(glyph(isRoot ? 'scene' : target.type));
+      dom.head.append(glyph(isRoot ? 'scene' : target.nodeKind || target.type));
       const name = textEditor(target.name, value => {
         const clean = value.trim();
         if (!clean) { callbacks.status('An object name cannot be empty', true); renderInspector(); return; }
@@ -704,7 +757,7 @@ export function createSceneObjectEditor({ callbacks }) {
       name.className = 'scene-inspector-name';
       name.setAttribute('aria-label', 'Node name');
       dom.head.append(name);
-      dom.head.append(el('span', isRoot ? 'Scene' : TYPE_LABELS[target.type] || target.type, 'scene-inspector-type'));
+      dom.head.append(el('span', isRoot ? 'Scene' : sceneNodeLabel(target), 'scene-inspector-type'));
       const events = isRoot ? (current.events || []).length
         : (current.events || []).filter(event => event.ownerId === target.id).length;
       const link = el('button', `${events} event${events === 1 ? '' : 's'}`, 'scene-inspector-events');
@@ -734,9 +787,13 @@ export function createSceneObjectEditor({ callbacks }) {
     // The scene root has an origin instead of a position, so its transform edits that.
     const positionX = isRoot ? current.origin?.x ?? 0 : target.x;
     const positionY = isRoot ? current.origin?.y ?? 0 : target.y;
+    const transform = (mode, delta) => {
+      try { editScene(next => transformSceneNodes(next, current, target.id, mode, delta), 'Node transform updated'); }
+      catch (error) { callbacks.status(error.message, true); }
+    };
     const setPosition = (axis, value) => isRoot
       ? setPath(`origin.${axis}`, value, 'Scene origin moved')
-      : set(axis, value, 'Node moved');
+      : transform('move', { [axis]: value - (axis === 'z' ? target.z ?? target.elevation ?? 0 : target[axis]) });
     rows('Transform', () => {
       if (visible('Position X')) {
         shown++;
@@ -757,18 +814,26 @@ export function createSceneObjectEditor({ callbacks }) {
       if (!isRoot && visible('Elevation')) {
         shown++;
         propertyRow(dom.properties, {
-          label: 'Elevation', value: target.elevation ?? 0,
-          editor: numberEditor(target.elevation ?? 0, { min: -32768, max: 32767, onChange: value => set('elevation', value, 'Elevation updated') }),
-          reset: target.elevation ? () => set('elevation', 0, 'Elevation reset') : null,
+          label: 'Elevation', value: target.z ?? target.elevation ?? 0,
+          editor: numberEditor(target.z ?? target.elevation ?? 0, { min: -32768, max: 32767, onChange: value => setPosition('z', value) }),
+          reset: target.z || target.elevation ? () => setPosition('z', 0) : null,
         });
       }
       if (!isRoot && visible('Rotation')) {
         shown++;
         propertyRow(dom.properties, {
           label: 'Rotation', value: target.angle ?? 0,
-          editor: numberEditor(target.angle ?? 0, { min: -3600, max: 3600, step: 45, onChange: value => set('angle', value, 'Rotation updated') }),
-          reset: target.angle ? () => set('angle', 0, 'Rotation reset') : null,
+          editor: numberEditor(target.angle ?? 0, { min: -3600, max: 3600, step: 15, onChange: value => transform('rotate', { angle: value - (target.angle || 0) }) }),
+          reset: target.angle ? () => transform('rotate', { angle: -target.angle }) : null,
         });
+      }
+      if (!isRoot && sceneNodeSupportsTilt(target)) for (const [axis, field, label] of [['x', 'pitch', 'Pitch'], ['y', 'roll', 'Roll']]) {
+        if (!visible(label)) continue;
+        shown++;
+        propertyRow(dom.properties, { label, value: target.modelTilt?.[field] || 0,
+          editor: numberEditor(target.modelTilt?.[field] || 0, { min: -3600, max: 3600, step: 15,
+            onChange: value => transform('rotate', { axis, angle: value - (target.modelTilt?.[field] || 0), local: true }) }),
+          reset: target.modelTilt?.[field] ? () => transform('rotate', { axis, angle: -target.modelTilt[field], local: true }) : null });
       }
       if (!isRoot && visible('Parent')) {
         shown++;
@@ -870,6 +935,118 @@ export function createSceneObjectEditor({ callbacks }) {
       }
     });
 
+    if (!isRoot) for (const [component, title] of [['mesh', 'Mesh'], ['spritePlane', 'Sprite plane'],
+      ['sound', 'Sound'], ['projector', 'Projector'], ['terminal', 'Terminal']]) {
+      if (!target[component]) continue;
+      rows(title, () => {
+        const config = target[component];
+        const numeric = (key, label, min, max, step = 1) => {
+          if (!visible(label)) return;
+          shown++;
+          propertyRow(dom.properties, { label, value: config[key],
+            editor: numberEditor(config[key], { min, max, step, onChange: value => {
+              if (['width', 'height', 'depth'].includes(key)) {
+                transform('scale', { axis: key === 'width' ? 'x' : key === 'height' ? 'z' : 'y', scale: value / config[key] });
+              } else setPath(`${component}.${key}`, value, `${title} updated`);
+            } }) });
+        };
+        const text = (key, label, maxLength = 100) => {
+          if (!visible(label)) return;
+          shown++;
+          propertyRow(dom.properties, { label, value: config[key],
+            editor: textEditor(config[key], value => setPath(`${component}.${key}`, value, `${title} updated`), { maxLength }) });
+        };
+        for (const key of ['width', 'height', 'depth']) if (config[key] !== undefined) numeric(key, `${title} ${key}`, 1, 4096);
+        for (const key of ['opacity', 'volume']) if (config[key] !== undefined) numeric(key, `${title} ${key}`, 0, 1, .05);
+        if (component === 'mesh') {
+          shown++;
+          propertyRow(dom.properties, { label: 'Mesh shape', value: config.shape,
+            editor: selectEditor(['box', 'sphere', 'cylinder', 'cone', 'capsule', 'plane'].map(value => [value, value]),
+              config.shape, value => setPath('mesh.shape', value, 'Mesh shape updated')) });
+          text('color', 'Mesh color', 7);
+        }
+        if (component === 'sound' || component === 'projector') {
+          const label = component === 'sound' ? 'Audio stream' : 'Projection image/video';
+          if (visible(label)) {
+            shown++;
+            propertyRow(dom.properties, { label, value: config.assetId,
+              editor: assetEditor(component, config.assetId,
+                value => setPath(`${component}.assetId`, value, `${title} asset assigned`),
+                () => setPath(`${component}.assetId`, null, `${title} asset cleared`)) });
+          }
+        }
+        if (component === 'sound') numeric('radius', 'Sound radius', 1, 8192);
+        for (const key of ['billboard', 'doubleSided', 'autoplay', 'loop', 'muted']) if (config[key] !== undefined) {
+          const label = `${title} ${key}`;
+          if (!visible(label)) continue;
+          shown++;
+          propertyRow(dom.properties, { label, value: config[key],
+            editor: checkEditor(config[key], value => setPath(`${component}.${key}`, value, `${title} updated`), label) });
+        }
+        if (component === 'terminal') {
+          const editTerminal = (fn, message) => {
+            try { editScene(next => fn(next.entities.find(entity => entity.id === target.id)), message); }
+            catch (error) { callbacks.status(error.message, true); }
+          };
+          shown++;
+          propertyRow(dom.properties, { label: 'Screen mode', value: config.mode,
+            editor: selectEditor([['terminal', 'Computer / tablet'], ['keypad', 'Code lock']], config.mode,
+              value => setPath('terminal.mode', value, 'Screen mode updated')) });
+          text('title', 'Screen title'); text('code', 'Access code (digits)', 64);
+          propertyRow(dom.properties, { label: 'Legacy global output (optional)', value: config.variable || '',
+            editor: textEditor(config.variable || '', value => setPath('terminal.variable', value || null, 'Terminal output updated'), { maxLength: 80 }) });
+          propertyRow(dom.properties, { label: 'Digits local variable', value: config.inputVariable || '',
+            editor: textEditor(config.inputVariable || '', value => editTerminal(node => {
+              if (!value) { delete node.terminal.inputVariable; return; }
+              node.variables = { ...node.variables };
+              if (!Object.hasOwn(node.variables, value)) node.variables[value] = '';
+              node.terminal.inputVariable = value;
+            }, 'Terminal local digits updated'), { maxLength: 80 }) });
+          propertyRow(dom.properties, { label: 'Submit signal', value: config.submitSignal || '',
+            editor: textEditor(config.submitSignal || '', value => editTerminal(node => {
+              if (value) {
+                node.terminal.submitSignal = value;
+                node.signals = [...new Set([...(node.signals || []), value])];
+              } else delete node.terminal.submitSignal;
+            }, 'Terminal signal updated'), { maxLength: 80 }) });
+          text('background', 'Screen background', 7); text('foreground', 'Screen foreground', 7);
+          numeric('range', 'Interaction range', 1, 8192);
+          numeric('resolutionWidth', 'Screen resolution width', 64, 2048);
+          numeric('resolutionHeight', 'Screen resolution height', 64, 2048);
+          if (visible('Screen controls')) {
+            shown++;
+            const controls = el('div', null, 'scene-terminal-controls');
+            const buttons = config.buttons || [];
+            const update = (index, patch) => setPath('terminal.buttons',
+              buttons.map((button, at) => at === index ? { ...button, ...patch } : button), 'Screen control updated');
+            buttons.forEach((button, index) => {
+              const row = el('div', null, 'scene-terminal-control');
+              const label = textEditor(button.label, value => update(index, { label: value }), { maxLength: 32 });
+              label.setAttribute('aria-label', `Control ${index + 1} label`);
+              const type = typeof button.value;
+              const valueType = selectEditor([['number', 'Number'], ['string', 'Text'], ['boolean', 'Boolean']], type,
+                value => update(index, { value: value === 'number' ? 0 : value === 'boolean' ? false : '' }));
+              valueType.setAttribute('aria-label', `Control ${index + 1} value type`);
+              const value = type === 'boolean' ? checkEditor(button.value, next => update(index, { value: next }))
+                : type === 'number' ? numberEditor(button.value, { onChange: next => update(index, { value: next }) })
+                  : textEditor(button.value, next => update(index, { value: next }), { maxLength: 1000 });
+              (value.querySelector('input') || value).setAttribute('aria-label', `Control ${index + 1} value`);
+              const remove = iconButton('x', `Remove control ${index + 1}`,
+                () => setPath('terminal.buttons', buttons.filter((_, at) => at !== index), 'Screen control removed'));
+              row.append(label, valueType, value, remove);
+              controls.append(row);
+            });
+            const add = el('button', 'Add screen control');
+            add.disabled = buttons.length >= 12;
+            add.addEventListener('click', () => setPath('terminal.buttons',
+              [...buttons, { label: `Action ${buttons.length + 1}`, value: 1 }], 'Screen control added'));
+            controls.append(add);
+            propertyRow(dom.properties, { label: 'Screen controls', editor: controls });
+          }
+        }
+      });
+    }
+
     rows('Panel', () => {
       if (visible('Panel')) {
         shown++;
@@ -922,22 +1099,6 @@ export function createSceneObjectEditor({ callbacks }) {
         propertyRow(dom.properties, {
           label: 'Model scale', value: target.modelScale ?? 32,
           editor: numberEditor(target.modelScale ?? 32, { min: .001, max: 4096, step: 1, onChange: value => set('modelScale', value, 'Model scale updated') }),
-        });
-      }
-      if (!isRoot && target.modelAsset && visible('Model pitch')) {
-        shown++;
-        propertyRow(dom.properties, {
-          label: 'Model pitch', value: target.modelTilt?.pitch ?? 0,
-          editor: numberEditor(target.modelTilt?.pitch ?? 0, { min: -3600, max: 3600, step: 90, onChange: value => setPath('modelTilt.pitch', value, 'Model pitch updated') }),
-          reset: target.modelTilt?.pitch ? () => clear('modelTilt.pitch', 'Model pitch reset') : null,
-        });
-      }
-      if (!isRoot && target.modelAsset && visible('Model roll')) {
-        shown++;
-        propertyRow(dom.properties, {
-          label: 'Model roll', value: target.modelTilt?.roll ?? 0,
-          editor: numberEditor(target.modelTilt?.roll ?? 0, { min: -3600, max: 3600, step: 90, onChange: value => setPath('modelTilt.roll', value, 'Model roll updated') }),
-          reset: target.modelTilt?.roll ? () => clear('modelTilt.roll', 'Model roll reset') : null,
         });
       }
     });
@@ -1135,6 +1296,46 @@ export function createSceneObjectEditor({ callbacks }) {
     });
 
     rows('Script', () => {
+      if (!isRoot && visible('Signals')) {
+        shown++;
+        propertyRow(dom.properties, { label: 'Signals (comma-separated)', value: (target.signals || []).join(', '),
+          editor: textEditor((target.signals || []).join(', '), value => set('signals',
+            value.split(',').map(name => name.trim()).filter(Boolean), 'Node signals updated'), { maxLength: 2590 }) });
+      }
+      if (!isRoot && visible('Local variables')) {
+        shown++;
+        const values = target.variables || {};
+        for (const [name, value] of Object.entries(values)) {
+          const holder = el('div', null, 'scene-terminal-control');
+          const type = typeof value;
+          const update = value => set('variables', { ...values, [name]: value }, 'Local variable updated');
+          holder.append(selectEditor([['string', 'Text'], ['number', 'Number'], ['boolean', 'Boolean']], type,
+            next => update(next === 'number' ? 0 : next === 'boolean' ? false : '')));
+          const valueEditor = type === 'boolean' ? checkEditor(value, update, name) : type === 'number'
+            ? numberEditor(value, { min: -1e12, max: 1e12, onChange: update })
+            : textEditor(value, update, { maxLength: 4096 });
+          valueEditor.setAttribute('aria-label', `Local ${name} value`);
+          holder.append(valueEditor);
+          const remove = el('button', 'Remove');
+          remove.addEventListener('click', () => {
+            const next = { ...values }; delete next[name];
+            set('variables', next, 'Local variable removed');
+          });
+          holder.append(remove);
+          propertyRow(dom.properties, { label: `Local variable: ${name}`, value, editor: holder });
+        }
+        const holder = el('div', null, 'scene-terminal-control'), name = el('input');
+        name.placeholder = 'New local variable'; name.maxLength = 80;
+        const add = el('button', 'Add text variable');
+        add.addEventListener('click', () => {
+          if (!name.value || Object.hasOwn(values, name.value)) {
+            callbacks.status('Enter a new, unique local variable name', true); return;
+          }
+          set('variables', { ...values, [name.value]: '' }, 'Local variable added');
+        });
+        holder.append(name, add);
+        propertyRow(dom.properties, { label: 'Local variables', value: '', editor: holder });
+      }
       if (!visible('Events')) return;
       shown++;
       const events = isRoot ? (current.events || []).length
@@ -1210,6 +1411,7 @@ export function createSceneObjectEditor({ callbacks }) {
     const next = mode === 'orbit' ? 'orbit' : 'fly';
     if (next === state.camera) return;
     if (next === 'orbit') orbitFromFly(); else frameFlyFromOrbit();
+    cancelTransform();
     state.camera = next;
     state.drag = null;
     state.keys.clear();
@@ -1262,6 +1464,7 @@ export function createSceneObjectEditor({ callbacks }) {
   function showViewport() {
     if (dom.canvas) dom.canvas.hidden = state.view3d;
     if (dom.canvas3d) dom.canvas3d.hidden = !state.view3d;
+    view3d?.setActive(state.view3d && !dom.panel?.hidden);
     if (!state.view3d) return;
     ensure3d().then(() => { sync3d(true); render3d(); }).catch(() => {});
   }
@@ -1284,6 +1487,7 @@ export function createSceneObjectEditor({ callbacks }) {
     view3d.setScene(current.entities, callbacks.assets() || [], current.joints || [],
       callbacks.shaders?.() || []);
     view3d.select(state.selection);
+    view3d.setTool(state.tool);
     render3d();
   }
 
@@ -1448,6 +1652,16 @@ export function createSceneObjectEditor({ callbacks }) {
         ctx.lineWidth = selected?.id === entity.id ? 2 : 1;
         ctx.strokeRect(-panelWidth / 2, -panelDepth / 2, panelWidth, panelDepth);
         ctx.restore();
+      } else if (entity.mesh || entity.spritePlane || entity.projector || entity.terminal) {
+        const volume = sceneNodeDimensions(entity);
+        const width = Math.max(6, volume.width * zoom), depth = Math.max(6, volume.depth * zoom);
+        ctx.save(); ctx.translate(point.x, point.y); ctx.rotate((entity.angle || 0) * Math.PI / 180);
+        ctx.fillStyle = entity.mesh?.color || entity.terminal?.background || '#567ba2';
+        ctx.fillRect(-width / 2, -depth / 2, width, depth);
+        ctx.strokeStyle = selected?.id === entity.id ? '#fff' : '#a9c5e0';
+        ctx.lineWidth = selected?.id === entity.id ? 2 : 1;
+        ctx.strokeRect(-width / 2, -depth / 2, width, depth);
+        ctx.restore();
       } else if (picture) {
         // A sprite or model preview drawn at its real world size in the top-down view.
         const art = artworkOf(entity);
@@ -1491,6 +1705,7 @@ export function createSceneObjectEditor({ callbacks }) {
         ctx.setLineDash([]);
       }
     }
+    drawTransformHandles();
   }
 
   function empty(show) {
@@ -1509,12 +1724,129 @@ export function createSceneObjectEditor({ callbacks }) {
     }
     const point = worldToScene(local);
     const reach = Math.max(GRID * .6, 10 / state.zoom);
-    let best = null, bestDistance = reach;
+    let best = null, bestDistance = Infinity;
     for (const entity of current.entities) {
       const distance = Math.hypot(entity.x - point.x, entity.y - point.y);
-      if (distance <= bestDistance) { best = entity; bestDistance = distance; }
+      const size = sceneNodeDimensions(entity), art = artworkOf(entity);
+      const angle = -(entity.angle || 0) * Math.PI / 180;
+      const dx = point.x - entity.x, dy = point.y - entity.y;
+      const localX = dx * Math.cos(angle) - dy * Math.sin(angle), localY = dx * Math.sin(angle) + dy * Math.cos(angle);
+      const within = Math.abs(localX) <= Math.max(reach, (size?.width || art?.width || 0) / 2)
+        && Math.abs(localY) <= Math.max(reach, (size?.depth || art?.height || 0) / 2);
+      if (within && distance <= bestDistance) { best = entity; bestDistance = distance; }
     }
     return best;
+  }
+
+  function blueprintHandles() {
+    const node = selectedObject();
+    if (!node || state.tool === 'select') return [];
+    const origin = sceneToScreen(node), volume = sceneNodeDimensions(node);
+    if (state.tool === 'form' && !volume) return [];
+    const handles = state.tool === 'form'
+      ? [['x', 1, (volume.width / 2) * state.zoom + 16, 0],
+        ['x', -1, -volume.width / 2 * state.zoom - 16, 0],
+        ['y', 1, 0, volume.depth / 2 * state.zoom + 16],
+        ['y', -1, 0, -volume.depth / 2 * state.zoom - 16]]
+      : [['x', 1, 70, 0], ['y', 1, 0, 70]];
+    const angle = state.tool === 'form' ? (node.angle || 0) * Math.PI / 180 : 0;
+    return handles.map(([axis, side, x, y]) => ({ axis, side,
+      x: origin.x + x * Math.cos(angle) - y * Math.sin(angle),
+      y: origin.y + x * Math.sin(angle) + y * Math.cos(angle) }));
+  }
+
+  function drawTransformHandles() {
+    const node = selectedObject(), ctx = dom.canvas?.getContext('2d');
+    if (!node || !ctx || state.view3d || state.tool === 'select') return;
+    const origin = sceneToScreen(node), handles = blueprintHandles();
+    ctx.save(); ctx.lineWidth = 2;
+    if (state.tool === 'rotate') {
+      ctx.strokeStyle = '#5a8cf0'; ctx.beginPath(); ctx.arc(origin.x, origin.y, 56, 0, Math.PI * 2); ctx.stroke();
+    } else for (const handle of handles) {
+      ctx.strokeStyle = handle.axis === 'x' ? '#f55252' : '#8fdc7c';
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath(); ctx.moveTo(origin.x, origin.y); ctx.lineTo(handle.x, handle.y); ctx.stroke();
+      ctx.fillRect(handle.x - 5, handle.y - 5, 10, 10);
+      ctx.fillText(handle.axis.toUpperCase(), handle.x + 8, handle.y - 8);
+    }
+    ctx.restore();
+    dom.canvas.dataset.transformMode = state.tool;
+    dom.canvas.dataset.gizmoOrigin = `${Math.round(origin.x)},${Math.round(origin.y)}`;
+    dom.canvas.dataset.gizmoTips = handles.map(handle => `${handle.axis}:${Math.round(handle.x)},${Math.round(handle.y)}`).join(';');
+  }
+
+  function blueprintHandle(event) {
+    const node = selectedObject();
+    if (!node || state.tool === 'select') return null;
+    const point = localPoint(event), centre = sceneToScreen(node);
+    if (state.tool === 'rotate' && Math.abs(Math.hypot(point.x - centre.x, point.y - centre.y) - 56) < 10) return { axis: 'z' };
+    return blueprintHandles().find(handle => Math.hypot(point.x - handle.x, point.y - handle.y) < 12) || null;
+  }
+
+  function setTransformTool(tool) {
+    cancelTransform();
+    state.tool = tool;
+    for (const button of document.querySelectorAll('[data-scene-transform]')) {
+      const on = button.dataset.sceneTransform === tool;
+      button.classList.toggle('active', on); button.setAttribute('aria-pressed', String(on));
+    }
+    view3d?.setTool(tool);
+    draw();
+  }
+
+  function cancelTransform() {
+    if (state.drag?.kind !== 'transform') return;
+    state.drag = null; previewScene = null;
+    sync3d(true); renderInspector(); draw();
+  }
+
+  function beginNodeTransform(event, id, handle) {
+    const baseline = structuredClone(scene()), node = baseline.entities.find(item => item.id === id);
+    const centre = sceneToScreen(node);
+    state.drag = { kind: 'transform', id, mode: state.tool, baseline, handle,
+      moved: false, startX: event.clientX, startY: event.clientY,
+      centre: { x: centre.x + activeCanvas().getBoundingClientRect().left,
+        y: centre.y + activeCanvas().getBoundingClientRect().top },
+      ground: state.view3d && !handle ? view3d?.groundPoint(event.clientX, event.clientY) : null,
+      spatial: state.view3d && handle ? view3d?.beginTransform(event.clientX, event.clientY, handle) : null };
+  }
+
+  function previewTransform(event, drag) {
+    const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+    drag.moved = true;
+    let delta;
+    if (drag.spatial) delta = view3d.transformDelta(drag.spatial, event.clientX, event.clientY);
+    else {
+      const from = Math.atan2(drag.startY - drag.centre.y, drag.startX - drag.centre.x);
+      const to = Math.atan2(event.clientY - drag.centre.y, event.clientX - drag.centre.x);
+      const axis = drag.handle?.axis;
+      const yaw = drag.mode === 'form' ? (drag.baseline.entities.find(node => node.id === drag.id)?.angle || 0) * Math.PI / 180 : 0;
+      const localX = dx * Math.cos(yaw) + dy * Math.sin(yaw), localY = -dx * Math.sin(yaw) + dy * Math.cos(yaw);
+      const amount = (axis === 'y' ? localY : localX) / state.zoom;
+      delta = { x: axis === 'y' ? 0 : dx / state.zoom, y: axis === 'x' ? 0 : dy / state.zoom,
+        angle: Math.atan2(Math.sin(to - from), Math.cos(to - from)) * 180 / Math.PI,
+        scale: Math.max(.02, 1 + (axis === 'y' ? dy : dx) / 70),
+        axis: axis || (drag.mode === 'form' ? 'x' : undefined), side: drag.handle?.side ?? 1, amount };
+      if (state.view3d && drag.ground) {
+        const point = view3d.groundPoint(event.clientX, event.clientY);
+        if (!point) return;
+        delta.x = point.x - drag.ground.x; delta.y = point.y - drag.ground.y;
+      }
+    }
+    delta.symmetric = event.shiftKey;
+    if (drag.mode === 'rotate' && !event.ctrlKey) {
+      const root = drag.baseline.entities.find(node => node.id === drag.id);
+      const axis = delta.axis || 'z';
+      delta.angle = rotationDetent(delta.angle, axis === 'z' ? root.angle || 0
+        : root.modelTilt?.[axis === 'x' ? 'pitch' : 'roll'] || 0);
+    }
+    const draft = structuredClone(drag.baseline);
+    try { transformSceneNodes(draft, drag.baseline, drag.id, drag.mode, delta,
+      state.snap && !event.ctrlKey && !(drag.mode === 'move' && event.altKey) ? GRID : 0); }
+    catch (error) { cancelTransform(); callbacks.status(error.message, true); return; }
+    previewScene = draft;
+    sync3d(); draw();
   }
 
   function localPoint(event) {
@@ -1540,22 +1872,39 @@ export function createSceneObjectEditor({ callbacks }) {
       const current = scene();
       if (!current) return;
       canvas.focus();
+      if (event.button === 0 && (!event.altKey || state.view3d && state.tool === 'move')) {
+        const handle = state.view3d ? view3d?.hitHandle(event.clientX, event.clientY) : blueprintHandle(event);
+        if (handle && selectedObject()) {
+          beginNodeTransform(event, selectedObject().id, handle);
+          canvas.setPointerCapture(event.pointerId);
+          return;
+        }
+      }
       if (state.view3d) {
+        if (event.button === 1 || event.button === 0 && event.altKey && !(state.tool === 'move' && pickAt(event))) {
+          setCameraMode('orbit');
+          state.drag = { kind: 'orbit', startX: event.clientX, startY: event.clientY,
+            yaw: state.orbitYaw, pitch: state.orbitPitch, distance: state.orbitDistance, moved: false };
+          canvas.setPointerCapture(event.pointerId);
+          return;
+        }
         // Hit a node and drag it along the ground, otherwise move the camera. The fly
         // camera looks around on a right drag; the orbit camera dollies on one. Either
         // way a right click that does not move opens the node menu.
         const hit = event.button === 2 ? null : pickAt(event);
         const right = event.button === 2;
         state.drag = hit
-          ? { kind: 'move3d', id: hit.id, moved: false, startX: event.clientX, startY: event.clientY,
-            originX: hit.x, originY: hit.y }
+          ? null
           : state.camera === 'fly'
             ? { kind: right ? 'look' : 'none', startX: event.clientX, startY: event.clientY,
               yaw: state.fly.yaw, pitch: state.fly.pitch, moved: false }
             : { kind: right ? 'dolly' : 'orbit', startX: event.clientX, startY: event.clientY,
               yaw: state.orbitYaw, pitch: state.orbitPitch, distance: state.orbitDistance, moved: false };
         canvas.setPointerCapture(event.pointerId);
-        if (hit) select(hit.id);
+        if (hit) {
+          select(hit.id);
+          if (state.tool !== 'select') beginNodeTransform(event, hit.id, null);
+        }
         return;
       }
       if (event.button === 2) {
@@ -1572,14 +1921,14 @@ export function createSceneObjectEditor({ callbacks }) {
       if (event.shiftKey && event.detail === 0) return;
       if (!hit) { select(current.id); return; }
       select(hit.id);
-      const rect = canvas.getBoundingClientRect();
-      state.drag = { kind: 'move', id: hit.id, startX: event.clientX - rect.left, startY: event.clientY - rect.top,
-        originX: hit.x, originY: hit.y, moved: false };
+      if (state.tool === 'select') return;
+      beginNodeTransform(event, hit.id, null);
       canvas.setPointerCapture(event.pointerId);
     });
     canvas.addEventListener('pointermove', event => {
       const drag = state.drag;
-      if (!drag) return;
+      if (!drag) { if (state.view3d) view3d?.hitHandle(event.clientX, event.clientY); return; }
+      if (drag.kind === 'transform') { previewTransform(event, drag); return; }
       if (drag.kind === 'menu') {
         if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 3) drag.moved = true;
         return;
@@ -1588,10 +1937,7 @@ export function createSceneObjectEditor({ callbacks }) {
         const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
         if (!drag.moved && Math.hypot(dx, dy) < 3) return;
         drag.moved = true;
-        // Same sensitivity and clamp as the layout's 3D view. The yaw turns the other way
-        // here because map space is (x, y on the floor, z up): in Three's y-up space the
-        // camera's right is -z, which flips the sign the layout view can keep positive.
-        state.fly.yaw = drag.yaw - dx * .003;
+        state.fly.yaw = drag.yaw + dx * .003;
         state.fly.pitch = Math.max(-1.48, Math.min(1.48, drag.pitch - dy * .003));
         draw();
         return;
@@ -1607,57 +1953,34 @@ export function createSceneObjectEditor({ callbacks }) {
         draw();
         return;
       }
-      if (drag.kind === 'move3d') {
-        if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 3) return;
-        drag.moved = true;
-        const point = dropPointAt(event);
-        if (!point) return;
-        drag.nextX = point.x; drag.nextY = point.y;
-        // The real viewport moves the node as the pointer does; the edit lands on release.
-        view3d?.setNodePosition(drag.id, drag.nextX, drag.nextY);
-        draw();
-        if (!state.view3d) drawDragGhost(drag.nextX, drag.nextY);
-        return;
-      }
       if (drag.kind === 'pan') {
         state.panX = drag.panX - (event.clientX - drag.startX) / state.zoom;
         state.panY = drag.panY - (event.clientY - drag.startY) / state.zoom;
         draw();
         return;
       }
-      const rect = canvas.getBoundingClientRect();
-      const dx = (event.clientX - rect.left - drag.startX) / state.zoom;
-      const dy = (event.clientY - rect.top - drag.startY) / state.zoom;
-      if (!drag.moved && Math.hypot(dx, dy) * state.zoom < 3) return;
-      drag.moved = true;
-      const snap = value => state.snap ? Math.round(value / GRID) * GRID : Math.round(value);
-      drag.nextX = snap(drag.originX + dx);
-      drag.nextY = snap(drag.originY + dy);
-      draw();
-      drawDragGhost(drag.nextX, drag.nextY);
     });
     const finish = event => {
       const drag = state.drag;
       state.drag = null;
+      state.keys.clear();
       if (!drag) return;
       if ((drag.kind === 'menu' || drag.kind === 'dolly' || drag.kind === 'look') && !drag.moved) { canvasMenu(event); return; }
-      if (drag.kind !== 'move' && drag.kind !== 'move3d') return;
-      if (!drag.moved) return;
-      const current = scene();
-      const entity = current?.entities.find(item => item.id === drag.id);
-      if (!entity || (entity.x === drag.nextX && entity.y === drag.nextY)) { draw(); return; }
+      if ((drag.kind === 'none' || drag.kind === 'orbit') && !drag.moved) { select(scene()?.id); return; }
+      if (drag.kind !== 'transform') return;
+      const draft = previewScene;
+      previewScene = null;
+      if (!drag.moved || !draft || JSON.stringify(draft.entities) === JSON.stringify(drag.baseline.entities)) { sync3d(true); draw(); return; }
       try {
         editScene(next => {
-          const item = next.entities.find(candidate => candidate.id === drag.id);
-          const dx = drag.nextX - item.x, dy = drag.nextY - item.y;
-          // Moving a parent carries its group, like moving a Godot node.
-          const group = [item, ...sceneSubtree(next, drag.id).slice(1)];
-          for (const node of group) { node.x = Math.round(node.x + dx); node.y = Math.round(node.y + dy); }
-        }, 'Node moved');
-      } catch (error) { callbacks.status(error.message, true); }
+          const ids = new Set(sceneSubtree(next, drag.id).map(node => node.id));
+          next.entities = next.entities.map(node => ids.has(node.id) ? structuredClone(draft.entities.find(item => item.id === node.id)) : node);
+          next.joints = structuredClone(draft.joints || []);
+        }, `Node ${drag.mode} updated`);
+      } catch (error) { callbacks.status(error.message, true); sync3d(true); draw(); }
     };
     canvas.addEventListener('pointerup', finish);
-    canvas.addEventListener('pointercancel', finish);
+    canvas.addEventListener('pointercancel', () => { cancelTransform(); state.drag = null; });
     canvas.addEventListener('contextmenu', event => event.preventDefault());
     canvas.addEventListener('wheel', event => {
       event.preventDefault();
@@ -1688,9 +2011,9 @@ export function createSceneObjectEditor({ callbacks }) {
     const lift = Number(keys.has('KeyE')) - Number(keys.has('KeyQ'));
     if (!walk && !strafe && !lift) return false;
     const forward = flyDirection();
-    // Screen right in map space is (forward.y, -forward.x), so strafing never tilts and
+    // Screen right in map space is (-forward.y, forward.x), so strafing never tilts and
     // D walks right on screen instead of left.
-    const right = { x: forward.y, y: -forward.x, z: 0 };
+    const right = { x: -forward.y, y: forward.x, z: 0 };
     const rightLength = Math.hypot(right.x, right.y) || 1;
     const motion = {
       x: forward.x * walk + right.x / rightLength * strafe,
@@ -1714,26 +2037,22 @@ export function createSceneObjectEditor({ callbacks }) {
     for (const canvas of [dom.canvas, dom.canvas3d]) {
       if (!canvas) continue;
       canvas.addEventListener('keydown', keyEvent => {
+        if (keyEvent.key === 'Escape' || ((keyEvent.ctrlKey || keyEvent.metaKey) && keyEvent.key.toLowerCase() === 'z' && state.drag?.kind === 'transform')) {
+          keyEvent.preventDefault(); keyEvent.stopPropagation(); cancelTransform(); return;
+        }
+        const tool = { KeyQ: 'select', KeyW: 'move', KeyE: 'rotate', KeyR: 'scale', KeyT: 'form' }[keyEvent.code];
+        if (tool && !keyEvent.ctrlKey && !keyEvent.metaKey && !['look', 'dolly'].includes(state.drag?.kind)) {
+          keyEvent.preventDefault(); setTransformTool(tool); return;
+        }
+        if (!['look', 'dolly'].includes(state.drag?.kind)) return;
         if (!moving.includes(keyEvent.code)) return;
         keyEvent.preventDefault();
         state.keys.add(keyEvent.code);
       });
       canvas.addEventListener('keyup', keyEvent => state.keys.delete(keyEvent.code));
-      canvas.addEventListener('blur', () => state.keys.clear());
+      canvas.addEventListener('blur', () => { state.keys.clear(); cancelTransform(); });
     }
-    window.addEventListener('blur', () => state.keys.clear());
-  }
-
-  function drawDragGhost(x, y) {
-    draw();
-    const canvas = dom.canvas, ctx = canvas.getContext('2d');
-    const point = sceneToScreen({ x, y });
-    const size = Math.max(12, GRID * state.zoom * .8);
-    ctx.strokeStyle = '#d4c28e';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 3]);
-    ctx.strokeRect(point.x - size / 2, point.y - size / 2, size, size);
-    ctx.setLineDash([]);
+    window.addEventListener('blur', () => { state.keys.clear(); cancelTransform(); });
   }
 
   /* --------------------------------------------------------------- artwork */
@@ -1985,7 +2304,7 @@ export function createSceneObjectEditor({ callbacks }) {
       const asset = (callbacks.assets() || []).find(item => item.id === source.id);
       if (!asset) return { error: 'That asset is no longer part of this project' };
       const use = sceneAssetUse(asset);
-      if (!use) return { error: `${asset.name} is a ${asset.kind} asset; drop a picture or a model on a node` };
+      if (!use) return { error: `${asset.name} is a ${asset.kind} asset; drop a picture, model, sound or video on a node` };
       if (node) return { label: `Set ${use === 'model' ? 'model' : 'sprite'} ${asset.name} on ${node.name}`, asset, nodeId: node.id };
       return { label: `Place ${asset.name} at ${point.x}, ${point.y}`, asset, point };
     }
@@ -2000,6 +2319,8 @@ export function createSceneObjectEditor({ callbacks }) {
     const entity = (callbacks.entities?.() || []).find(item => item.id === source.id);
     if (!entity) return { error: 'That layout object no longer exists' };
     if (entity.type === 'player') return { error: 'A scene cannot contain the player object' };
+    const instance = callbacks.layoutScene?.(entity.id);
+    if (instance) return { label: `Nest ${instance.name}`, scene: instance, parentId: node?.id ?? null, point };
     return { label: node ? `Add ${entity.name} under ${node.name}` : `Add ${entity.name} at ${point.x}, ${point.y}`,
       entity, parentId: node?.id ?? null, point };
   }
@@ -2238,6 +2559,8 @@ export function createSceneObjectEditor({ callbacks }) {
 
   function bind() {
     cacheDom();
+    if (dom.panel) new MutationObserver(() => view3d?.setActive(state.view3d && !dom.panel.hidden))
+      .observe(dom.panel, { attributes: true, attributeFilter: ['hidden'] });
     bindCanvas();
     bindDropping();
     if (dom.panel && !dom.hint) {
@@ -2301,6 +2624,9 @@ export function createSceneObjectEditor({ callbacks }) {
     for (const button of document.querySelectorAll('[data-scene-tool]')) {
       button.addEventListener('click', () => runTool(button.dataset.sceneTool));
     }
+    for (const button of document.querySelectorAll('[data-scene-transform]')) {
+      button.addEventListener('click', () => setTransformTool(button.dataset.sceneTransform));
+    }
     document.getElementById('scene-view-grid')?.addEventListener('click', event => {
       state.grid = !state.grid;
       event.currentTarget.setAttribute('aria-pressed', String(state.grid));
@@ -2324,6 +2650,7 @@ export function createSceneObjectEditor({ callbacks }) {
     }
     for (const button of document.querySelectorAll('[data-scene-view]')) {
       button.addEventListener('click', () => {
+        cancelTransform();
         for (const peer of document.querySelectorAll('[data-scene-view]')) peer.classList.toggle('active', peer === button);
         state.view3d = button.dataset.sceneView === '3d';
         state.drag = null;
@@ -2382,6 +2709,7 @@ export function createSceneObjectEditor({ callbacks }) {
   return {
     /** Show the scene with this id; null closes the editor's view. */
     open(id) {
+      cancelTransform();
       state.sceneId = id;
       state.selection = id;
       state.filter = '';
@@ -2395,8 +2723,11 @@ export function createSceneObjectEditor({ callbacks }) {
     /** Closes the editor; `null` clears it whatever scene was open. */
     close(id) {
       if (id !== null && state.sceneId !== id) return;
+      cancelTransform();
       state.sceneId = null;
       state.selection = null;
+      view3d?.setActive(false);
+      view3d?.setScene([], []);
       renderAll();
     },
     selection: () => state.selection,
@@ -2412,6 +2743,7 @@ export function createSceneObjectEditor({ callbacks }) {
     },
     /** Re-render after any project change (undo, imported scene, rename elsewhere). */
     render() {
+      cancelTransform();
       renderAll();
       sync3d();
       draw();

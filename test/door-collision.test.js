@@ -15,9 +15,9 @@ const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(poin
  * Room A (west) | door sector | room B (east). The door starts closed (ceiling on the
  * floor) and moves through a line special, which is how every imported map works.
  */
-function doorway({ special = 202, args = [2, 32, 0, 16, 0], zdoom = true } = {}) {
+function doorway({ special = 202, args = [2, 32, 0, 16, 0], zdoom = true, doorConfig, events = [] } = {}) {
   const project = createProject();
-  project.events = [];
+  project.events = events;
   const points = { v1: [-256, -32], v2: [-64, -32], v3: [-64, 32], v4: [-256, 32],
     v5: [64, -32], v6: [64, 32], v7: [256, -32], v8: [256, 32] };
   project.map.vertices = Object.entries(points).map(([id, [x, y]]) => ({ id, x, y }));
@@ -32,7 +32,7 @@ function doorway({ special = 202, args = [2, 32, 0, 16, 0], zdoom = true } = {})
   }));
   project.map.sectors = [
     { id: 'roomA', floorHeight: 0, ceilingHeight: 128, light: 255, sky: false },
-    { id: 'door', floorHeight: 0, ceilingHeight: 0, light: 255, sky: false, tag: 2 },
+    { id: 'door', floorHeight: 0, ceilingHeight: 0, light: 255, sky: false, tag: 2, ...(doorConfig ? { door: doorConfig } : {}) },
     { id: 'roomB', floorHeight: 0, ceilingHeight: 128, light: 255, sky: false },
   ];
   project.map.entities = [{ ...project.map.entities[0], x: -200, y: 0, angle: 0 }];
@@ -40,8 +40,8 @@ function doorway({ special = 202, args = [2, 32, 0, 16, 0], zdoom = true } = {})
   const state = createRuntime(project);
   state.physics = createPhysics(project, state, R, triangulate);
   const door = () => state.sectors.find(sector => sector.id === 'door');
-  const tick = (count = 1, keys = new Set()) => {
-    for (let index = 0; index < count; index++) stepRuntime(project, state, 1 / 60, keys);
+  const tick = (count = 1, keys = new Set(), pressed = new Set()) => {
+    for (let index = 0; index < count; index++) stepRuntime(project, state, 1 / 60, keys, pressed);
   };
   const use = () => executeSpecial(project, state, special, args, { activator: 'player', line: 'wall1' });
   return { project, state, door, tick, use };
@@ -61,6 +61,24 @@ test('a sector moved by a line special updates its collision, so the player can 
   // The collision world must follow the moved sector, not only event-declared movers.
   scene.tick(180, new Set(['KeyW']));
   assert.ok(scene.state.player.x > 64, `walked through the open door (x=${scene.state.player.x})`);
+});
+
+test('an authored door action uses the same moving-sector collision path', t => {
+  const scene = doorway({
+    special: 0, doorConfig: { initial: 'closed', activation: 'event-only' },
+    events: [{ id: 'open-authored-door', enabled: true, once: false,
+      condition: { type: 'keyPressed', key: 'KeyQ' },
+      actions: [{ type: 'openSectorDoor', sectorId: 'door' }] }],
+  });
+  t.after(() => scene.state.physics.dispose());
+  scene.tick(10);
+  scene.tick(120, new Set(['KeyW']));
+  assert.ok(scene.state.player.x < -64, `the configured door is solid while closed (${scene.state.player.x})`);
+  scene.tick(1, new Set(), new Set(['KeyQ']));
+  scene.tick(120);
+  assert.ok(scene.door().ceilingHeight > 100, 'the authored action opened the door');
+  scene.tick(180, new Set(['KeyW']));
+  assert.ok(scene.state.player.x > 64, `the authored door collider moved with its sector (${scene.state.player.x})`);
 });
 
 test('the door collision closes again with the sector', t => {

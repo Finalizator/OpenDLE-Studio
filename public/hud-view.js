@@ -107,7 +107,8 @@ export function createHUDView(host, project, { editor = false, select, click, er
       // text. A title map IS the menu's backdrop — GZDoom shows it undimmed — so the panel
       // is skipped while that world is the one on screen.
       const dimsBackdrop = !state.ambientWorld || element.id !== backdropId;
-      const shown = dimsBackdrop && (!element.parentId || visibility.get(element.parentId)) &&
+      const shown = (editor || !state.worldTerminalActive || source.name !== 'Crosshair') &&
+        dimsBackdrop && (!element.parentId || visibility.get(element.parentId)) &&
         element.visible && boundVisibility && (editor || !element.statusbar || state.settings?.viewSize !== 11) && (!onMenu || menuElement) && (editor ||
         (element.display === 'always' || element.display === (cursor ? 'cursor' : 'game')));
       visibility.set(element.id, shown);

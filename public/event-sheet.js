@@ -1,10 +1,12 @@
-import { engineCommand } from '/shared/engine-script.js';
+import { engineCommand, defaultEngineCommand } from '/shared/engine-script.js';
 import { commandFields } from '/shared/command-fields.js';
+import { nodeSignals } from '/shared/signals.js';
+import { eventBranch } from '/shared/events.js';
 
 export { commandFields };
 import { isExpression, EXPRESSION_HELP } from '/shared/expressions.js';
 
-const triggers = new Set(['onStart', 'keyPressed', 'mouseMoved', 'collisionStarted', 'collisionEnded', 'animationFinished', 'hudClicked', 'hudAnimationFinished', 'hudStatChanged', 'entityDamaged', 'wallActivated']);
+const triggers = new Set(['onSignal', 'onStart', 'keyPressed', 'mouseMoved', 'collisionStarted', 'collisionEnded', 'animationFinished', 'hudClicked', 'hudAnimationFinished', 'hudStatChanged', 'entityDamaged', 'wallActivated']);
 const categoryOf = (type, label) => type.startsWith('key') ? 'Keyboard' : type === 'mouseMoved' ? 'Mouse'
   : label.includes(':') ? label.split(':')[0] : ['nearEntity', 'playerGrounded'].includes(type) ? 'Player' : 'System';
 const labelOf = label => label.includes(':') ? label.split(':').slice(1).join(':').trim() : label;
@@ -50,9 +52,9 @@ export function commandRow(command, labels, objectName, open, { inverted = false
   return row;
 }
 
-export function openCommandDialog({ kind, labels, command, defaults, entities, zones = [], playerId, variables, groups, clips, walls = [], sectors = [], spriteClips = [], images = [], hudElements = [], hudAnimations = [],
+export function openCommandDialog({ kind, labels, command, defaults, entities, zones = [], playerId, variables, groups, clips, walls = [], sectors = [], doorSectors = sectors, elevatorSectors = sectors, spriteClips = [], images = [], hudElements = [], hudAnimations = [],
   // Project data the newer commands point at: timelines, routes and imported sounds.
-  timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [],
+  timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [],
   // Engine commands plus the ones addons add; the parameter stage is built from this list.
   commands = null, submit, remove, move }) {
   const dialog = document.createElement('dialog'); dialog.className = 'command-dialog';
@@ -93,7 +95,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
     } else {
       const label = document.createElement('h3'); label.textContent = labels.find(([type]) => type === draft.type)?.[1] || draft.type;
       content.append(label);
-      for (const field of commandFields(draft, { entities, zones, playerId, variables, groups, clips, walls, sectors, spriteClips, images, hudElements, hudAnimations, timesheets, paths, sounds, pathPoints, entityVariableNames, commands })) {
+      for (const field of commandFields(draft, { entities, zones, playerId, variables, groups, clips, walls, sectors, doorSectors, elevatorSectors, spriteClips, images, hudElements, hudAnimations, timesheets, paths, sounds, pathPoints, entityVariableNames, entitySignalNames, commands })) {
         const label = document.createElement('label'); label.textContent = field.label || field.name;
         const valueType = field.value ? isExpression(draft[field.name]) ? 'expression' : typeof draft[field.name] : null;
         if (field.value) {
@@ -161,7 +163,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
           // route has to rebuild them — and the old waypoint numbers mean nothing on the new one.
           if (field.name === 'pathId') { draft.fromPoint = 0; draft.toPoint = -1; render(); }
           // Which local variables exist depends on the object, so the list below follows it.
-          if (field.name === 'entityId' && field.suggestions) render();
+          if (field.name === 'entityId' && (field.suggestions || ['onSignal', 'emitSignal'].includes(draft.type))) render();
         });
         label.append(input);
         if (list) label.append(list);
@@ -187,3 +189,104 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
   render(); dialog.showModal(); (stage === 'parameters' ? content.querySelector('input,select') : search)?.focus();
 }
 
+/** Reusable nodes edit their own script, not a similarly named layout instance. */
+export function openNodeEventSheet({ getScene, edit, ownerId, project, lists, conditionLabels, actionLabels, onError }) {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'command-dialog';
+  dialog.setAttribute('aria-label', 'Scene node visual script');
+  const heading = document.createElement('h2'), content = document.createElement('div'), footer = document.createElement('div');
+  const button = (label, action) => {
+    const element = document.createElement('button'); element.textContent = label;
+    element.addEventListener('click', () => { try { action(); } catch (error) { onError(error.message, true); } });
+    return element;
+  };
+  const modify = (id, fn) => { edit(scene => fn(scene.events.find(event => event.id === id)), 'Node visual script updated'); render(); };
+  function parameters(event) {
+    const scene = getScene(), owner = scene.entities.find(entity => entity.id === event.ownerId);
+    return { ...lists, entities: [...(owner ? [['$self', 'This object']] : []), ...scene.entities.map(entity => [entity.id, entity.name])],
+      zones: scene.entities.filter(entity => entity.type === 'zone').map(entity => [entity.id, entity.name]),
+      entityVariableNames: id => Object.keys((id === '$self' ? owner : scene.entities.find(entity => entity.id === id))?.variables || {}),
+      entitySignalNames: id => nodeSignals((id === '$self' ? owner : scene.entities.find(entity => entity.id === id)) || {}),
+      clips: id => {
+        const node = id === '$self' ? owner : scene.entities.find(entity => entity.id === id);
+        return project.assets?.find(asset => asset.id === node?.modelAsset)?.animations || [];
+      } };
+  }
+  function defaults(type, event) {
+    const definition = engineCommand(type, project), context = parameters(event), scene = getScene();
+    const result = definition ? defaultEngineCommand(type, project) : { type };
+    for (const field of commandFields(result, context)) {
+      if (result[field.name] !== undefined || field.optional) continue;
+      const option = field.options?.[0];
+      result[field.name] = option !== undefined ? Array.isArray(option) ? option[0] : option : field.numeric || field.value ? 0 : '';
+    }
+    if (type === 'showMessage') result.message = 'Message';
+    if (['onSignal', 'emitSignal'].includes(type)) {
+      const owner = scene.entities.find(entity => entity.id === event.ownerId);
+      const emitter = owner && nodeSignals(owner).length ? owner : scene.entities.find(entity => nodeSignals(entity).length);
+      if (!emitter) throw new Error('Declare a signal on a node first');
+      result.entityId = emitter === owner ? '$self' : emitter.id;
+      result.signal = nodeSignals(emitter)[0];
+    }
+    if (['objectVariableCompare', 'setObjectVariable', 'addObjectVariable'].includes(type)) {
+      const node = scene.entities.find(entity => entity.id === event.ownerId) || scene.entities[0];
+      const name = Object.keys(node?.variables || {}).find(name => type !== 'addObjectVariable' || typeof node.variables[name] === 'number');
+      if (!name) throw new Error('Declare a suitable local variable on this node first');
+      result.entityId = node.id === event.ownerId ? '$self' : node.id;
+      result.variable = name; result.value = type === 'addObjectVariable' ? 1 : node.variables[name];
+    }
+    return result;
+  }
+  function commandDialog(kind, event, command, submit, remove) {
+    const snapshot = getScene();
+    openCommandDialog({ kind, command, ...parameters(event), labels: kind === 'condition' ? conditionLabels : actionLabels,
+      defaults: type => defaults(type, event), remove,
+      submit: value => {
+        if (getScene() !== snapshot) throw new Error('Scene changed while editing the command. Cancel and reopen it.');
+        submit(value);
+      } });
+  }
+  function render() {
+    const scene = getScene();
+    if (!scene) { dialog.close(); return; }
+    heading.textContent = `${scene.entities.find(entity => entity.id === ownerId)?.name || scene.name} - Visual script`;
+    content.replaceChildren(); footer.replaceChildren();
+    for (const event of scene.events || []) {
+      if (!['$all', '$scene'].includes(ownerId) && event.ownerId !== ownerId) continue;
+      const card = document.createElement('section'); card.className = 'event-card';
+      const conditions = document.createElement('div'); conditions.className = 'event-conditions';
+      const actions = document.createElement('div'); actions.className = 'event-actions';
+      const objectName = id => id === '$self' ? 'This node' : scene.entities.find(node => node.id === id)?.name || id;
+      [event.condition, ...(event.conditions || [])].forEach((condition, index) => {
+        conditions.append(commandRow(condition, conditionLabels, objectName, () => commandDialog('condition', event, condition,
+          value => modify(event.id, rule => { if (!index) rule.condition = value; else rule.conditions[index - 1] = value; }),
+          index ? () => modify(event.id, rule => rule.conditions.splice(index - 1, 1)) : undefined)));
+      });
+      conditions.append(button('+ Add condition', () => commandDialog('condition', event, null,
+        value => modify(event.id, rule => (rule.conditions ||= []).push(value)))));
+      event.actions.forEach((action, index) => actions.append(commandRow(action, actionLabels, objectName,
+        () => commandDialog('action', event, action, value => modify(event.id, rule => { rule.actions[index] = value; }),
+          () => modify(event.id, rule => rule.actions.splice(index, 1))))));
+      actions.append(button('+ Add action', () => commandDialog('action', event, null,
+        value => modify(event.id, rule => rule.actions.push(value)))));
+      const controls = document.createElement('div'); controls.className = 'event-controls';
+      controls.append(button(event.enabled ? 'Disable' : 'Enable', () => modify(event.id, rule => { rule.enabled = !rule.enabled; })),
+        button(event.once ? 'Once: yes' : 'Once: no', () => modify(event.id, rule => { rule.once = !rule.once; })),
+        button('Delete rule', () => {
+          edit(scene => { const ids = eventBranch(scene.events, event.id); scene.events = scene.events.filter(rule => !ids.has(rule.id)); }, 'Node rule deleted');
+          render();
+        }));
+      card.append(conditions, actions, controls); content.append(card);
+    }
+    footer.append(button('+ Add event', () => {
+      const event = { id: `event_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`, enabled: true, once: false, actions: [] };
+      if (!['$all', '$scene'].includes(ownerId)) event.ownerId = ownerId;
+      commandDialog('condition', event, null, condition => {
+        edit(scene => (scene.events ||= []).push({ ...event, condition }), 'Node event added'); render();
+      });
+    }), button('Close', () => dialog.close()));
+  }
+  dialog.append(heading, content, footer);
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  document.body.append(dialog); render(); dialog.showModal();
+}

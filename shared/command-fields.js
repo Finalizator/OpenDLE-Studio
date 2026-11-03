@@ -17,7 +17,7 @@ import { pathPointOptions } from './paths.js';
 /** The commands whose `variable` field names an object's own variable rather than a global. */
 export const OBJECT_VARIABLE_COMMANDS = ['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'];
 
-export function commandFields(command, { entities, zones = [], playerId, variables, groups, clips, walls, sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], commands = null }) {
+export function commandFields(command, { entities, zones = [], playerId, variables, groups, clips, walls, sectors, doorSectors = sectors, elevatorSectors = sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [], commands = null }) {
   // `commands` is the project's whole catalogue, engine commands first and addon commands after it,
   // so an addon's fields are drawn by the same code as the engine's.
   const definition = (commands ? commands.find(entry => entry.type === command.type) : null) || engineCommand(command.type);
@@ -27,9 +27,11 @@ export function commandFields(command, { entities, zones = [], playerId, variabl
       // a waypoint picker cannot list the waypoints of a route that has not been chosen yet.
       ...(definition.spriteClip ? [{ name: 'clipId', label: 'Sprite clip', options: spriteClips }] : []),
       ...(definition.wall ? [{ name: 'wallId', label: 'Linedef', options: walls }] : []),
-      ...(definition.sector ? [{ name: 'sectorId', label: 'Sector', options: sectors }] : []),
+      ...(definition.door ? [{ name: 'sectorId', label: 'Door sector', options: doorSectors }] : []),
+      ...(definition.elevator ? [{ name: 'sectorId', label: 'Elevator sector', options: elevatorSectors }] : []),
+      ...(definition.sector && !definition.door && !definition.elevator ? [{ name: 'sectorId', label: 'Sector', options: sectors }] : []),
       ...(definition.zone ? [{ name: 'zoneId', label: 'Zone', options: zones }] : []),
-      ...(definition.target ? [{ name: 'entityId', label: 'Object', options: ['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(command.type) ? entities : entities.filter(([id]) => id !== playerId) }] : []),
+      ...(definition.target ? [{ name: 'entityId', label: 'Object', options: [...OBJECT_VARIABLE_COMMANDS, 'onSignal', 'emitSignal'].includes(command.type) ? entities : entities.filter(([id]) => id !== playerId) }] : []),
       ...(definition.variable ? [{ name: 'variable', options: variables }] : []),
       ...(definition.group ? [{ name: 'groupId', label: 'Group', options: groups }] : []),
       ...(definition.hudElement ? [{ name: 'elementId', label: 'HUD element', options: hudElements }] : []),
@@ -38,6 +40,7 @@ export function commandFields(command, { entities, zones = [], playerId, variabl
       ...(definition.path ? [{ name: 'pathId', label: 'Route', options: paths }] : []),
       ...(definition.sound ? [{ name: 'assetId', label: 'Sound', options: sounds }] : []),
       ...definition.fields.map(field => ({ ...field, value: field.kind === 'value',
+        ...(field.name === 'signal' ? { options: entitySignalNames(command.entityId) } : {}),
         numeric: field.kind === 'number' || field.kind === 'waypoint',
         // A waypoint field lists the waypoints of the route this action already points at, by name.
         // The route picker above paints its first option when the draft has none, so the waypoints

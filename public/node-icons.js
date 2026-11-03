@@ -41,6 +41,14 @@ const ICONS = {
   ramp: { paths: ['M2.5 11.4h9L2.5 5.1z'] },
   // An interaction area: a volume, dashed because it is not solid.
   zone: { paths: ['M2.6 3.4h8.8v7.2H2.6z'], dashed: true },
+  sound: { paths: ['M2 5h3l3-3v10l-3-3H2z', 'M10 4q4 3 0 6'] },
+  projector: { paths: ['M2 3h10v7H2z', 'M7 10v2M4 12h6', 'M5 5l4 2-4 2z'] },
+  terminal: { paths: ['M2 2h10v8H2z', 'M4 12h6', 'M4 4l2 2-2 2M8 8h2'] },
+  mesh: { paths: ['M7 1l5 3v6l-5 3-5-3V4z', 'M2 4l5 3 5-3M7 7v6'] },
+  node3d: { paths: ['M7 1v11M1 7h11M3 11l8-8'] },
+  marker: { circles: [[7, 7, 3]], paths: ['M7 1v12M1 7h12'] },
+  sprite: { paths: ['M2 2h10v10H2z', 'M3 9l3-3 2 2 3-4'], circles: [[4.5, 4.5, .8]] },
+  panel: { paths: ['M3 2l8 2v8l-8-2z'] },
 };
 
 const FALLBACK = { paths: ['M3.4 3.4h7.2v7.2H3.4z'] };

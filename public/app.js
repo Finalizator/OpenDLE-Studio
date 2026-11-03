@@ -6,7 +6,9 @@ import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
 import { undoDepthFor, UNDO_DEEP_GAME_STEPS } from '/shared/undo-depth.js';
-import { hasModelFacing, noseAngle } from '/shared/entity-visuals.js';
+import { entityOrigin, hasModelFacing, noseAngle } from '/shared/entity-visuals.js';
+import { doorHeights } from '/shared/doors.js';
+import { elevatorHeights, sectorMover, sectorMovers } from '/shared/sector-movers.js';
 import { addRamp, bindRampPath, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { createRampProfileEditor } from './ramp-profile-editor.js';
 import { geometryEdges, snapGeometryPoint, snapGeometrySurface, cutLevelGeometry } from '/shared/geometry-cut.js';
@@ -21,7 +23,7 @@ import {
 } from '/shared/entity-groups.js';
 import { requestMouseLock } from './pointer-lock.js';
 import { formDrag } from '/shared/gizmo-math.js';
-import { commandRow, openCommandDialog } from './event-sheet.js';
+import { commandRow, openCommandDialog, openNodeEventSheet } from './event-sheet.js';
 import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
@@ -37,6 +39,8 @@ import { readServiceResponse } from './service-response.js';
 import { requestWithSession } from './service-session.js';
 import { createAudioPlayer } from './audio.js';
 import { encodeSound } from '/shared/sound.js';
+import { embedVideoFile } from '/shared/media-assets.js';
+import { nodeSignals } from '/shared/signals.js';
 import { importedGameplayGaps } from './gameplay-readiness.js';
 import { createActorsPanel } from './actors-panel.js';
 import { createScriptsPanel } from './scripts-panel.js';
@@ -56,7 +60,9 @@ import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { upgradePickupReach } from '/shared/doom-hud.js';
 import { suggestedArea, ZONE_AREA } from '/shared/areas.js';
-import { captureScene, instantiateScene, sceneIsEmpty, newScene } from '/shared/scenes.js';
+import { captureScene, placeSceneInstance, sceneIsEmpty, newScene } from '/shared/scenes.js';
+import { layoutEntityIds, layoutSelection, sceneInstanceOf, upgradeSceneInstances } from '/shared/entity-groups.js';
+import { transformSelection } from '/shared/scene-edit.js';
 import { createSceneObjectEditor } from './scene-object-editor.js';
 import { contextMenu, closeContextMenu } from './context-menu.js';
 import { applyNodeFile, parseNodeFile, planNodeFileInstall, exportNodeFile, layoutContainer, nodeFileName } from '/shared/node-file.js';
@@ -477,6 +483,7 @@ async function refreshScene() {
     const editor = await createSceneEditor($('scene-3d'), snapshot, {
       selection: () => withSelectionGroup(selection),
       select: (value, options = {}) => {
+        value = layoutSelection(project, value);
         // Ctrl+click in the 3D view builds a set, the same as it does in the map and the list, so
         // objects can be grouped from the view the mapper is actually looking at.
         const entity = value?.kind === 'entity' ? project.map.entities.find(item => item.id === value.id) : null;
@@ -502,7 +509,8 @@ async function refreshScene() {
           sceneEditor?.select(withSelectionGroup(selection));
           return;
         }
-        selection = value;
+        selection = value ? { ...value } : null;
+        if (selection) delete selection.group;
         multiSelection = ['entity', 'path'].includes(value?.kind) ? [value.id] : [];
         multiSelectionKind = ['entity', 'path'].includes(value?.kind) ? value.kind : null;
         lastPrimarySelection = ['entity', 'path'].includes(value?.kind) ? value.id : null;
@@ -606,7 +614,8 @@ let toolListSignature = '';
 function syncTransformModes() {
   const mode = $('transform-mode');
   const item = selection?.kind === 'entity' ? project.map.entities.find(entity => entity.id === selection.id) : null;
-  const volume = Boolean(item?.area);
+  const instance = item && sceneInstanceOf(project, item.id);
+  const volume = Boolean(item?.area) && !instance;
   const tilts = Boolean(item) && !volume;
   for (const option of mode.options) {
     if (option.value === 'form') option.hidden = !volume;
@@ -783,6 +792,7 @@ function editActors(fn, message) {
 }
 function replace(next, message) {
   scenePose = null;
+  upgradeSceneInstances(next);
   validateProject(next);
   $('import-report').hidden = true;
   selection = null;
@@ -989,7 +999,7 @@ function selectedEntityIds() {
   syncMultiSelection();
   if (multiSelectionKind !== 'entity') return [];
   const ids = multiSelection.length ? multiSelection : (selection?.kind === 'entity' ? [selection.id] : []);
-  return ids.filter(id => project.map.entities.some(entity => entity.id === id));
+  return layoutEntityIds(project, ids);
 }
 /** The routes that are selected together, the same idea as `selectedEntityIds`. */
 function selectedPathIds() {
@@ -1007,7 +1017,7 @@ function selectedPathIds() {
 function withSelectionGroup(value) {
   if (value?.kind === 'entity') {
     const group = selectedEntityIds();
-    return group.length > 1 ? { ...value, group } : value;
+    return layoutSelection(project, group.length > 1 ? { ...value, group } : value);
   }
   if (value?.kind === 'path') {
     const group = selectedPathIds();
@@ -1020,6 +1030,7 @@ function selectedEntities() {
   return project.map.entities.filter(entity => ids.has(entity.id));
 }
 function selectObject(entity, additive = false, { keepSet = false } = {}) {
+  entity = project.map.entities.find(item => item.id === layoutSelection(project, { kind: 'entity', id: entity.id }).id);
   syncMultiSelection();
   if (!additive && keepSet && multiSelection.length > 1 && multiSelection.includes(entity.id)) {
     // Pressing a member of the set keeps the set: collapsing to the object under the pointer is
@@ -1036,9 +1047,10 @@ function selectObject(entity, additive = false, { keepSet = false } = {}) {
   if (additive && multiSelection.length) {
     // Ctrl+click toggles this object in the set and keeps the first one primary, so the
     // inspector does not jump around while a set is being built.
+    const instanceIds = new Set(layoutEntityIds(project, [entity.id]));
     multiSelection = multiSelection.includes(entity.id)
-      ? multiSelection.filter(id => id !== entity.id)
-      : [...multiSelection, entity.id];
+      ? multiSelection.filter(id => !instanceIds.has(id))
+      : [...multiSelection, ...instanceIds];
     if (!multiSelection.length) { selection = null; lastPrimarySelection = null; multiSelectionKind = null; render(); return; }
     if (!multiSelection.includes(selection?.id)) selection = { kind: 'entity', id: multiSelection[0] };
   } else {
@@ -1124,7 +1136,11 @@ function renderEntities() {
       if (!members.length) continue;
       for (const member of members) grouped.add(member.id);
       // The header selects the whole group, which is what makes a group one thing to grab.
-      const header = button('', () => {
+      const header = button('', event => {
+        if (group.kind === 'scene') {
+          selectObject(project.map.entities.find(entity => entity.id === group.rootId), event.ctrlKey || event.metaKey);
+          return;
+        }
         selection = { kind: 'entity', id: members[0].id };
         multiSelection = members.map(entity => entity.id);
         lastPrimarySelection = selection.id;
@@ -1134,12 +1150,13 @@ function renderEntities() {
       }, 'group-tile');
       header.setAttribute('aria-label', `${group.name}, ${members.length} objects`);
       header.dataset.groupId = group.id;
+      if (group.kind === 'scene') header.dataset.objectId = group.rootId;
       header.append(make('span', '\u25BE', 'group-symbol'), make('span', group.name, 'group-name'),
         make('small', `${members.length} objects`));
-      header.title = `${group.name}: click to select the group, double-click to rename`;
+      header.title = `${group.name}: click to select ${group.kind === 'scene' ? 'the scene instance' : 'the group'}, double-click to rename`;
       header.addEventListener('dblclick', event => { event.preventDefault(); renameGroupInline(group.id); });
       $('entities').append(header);
-      for (const member of members) {
+      for (const member of group.kind === 'scene' ? [] : members) {
         const tile = tileFor(member);
         tile.classList.add('grouped');
         $('entities').append(tile);
@@ -1157,12 +1174,25 @@ function renderEntities() {
       script.dataset.scriptScope = entity.id;
       $('object-scripts').append(script);
     }
-    for (const entity of project.map.entities.filter(item => grouped.has(item.id))) {
-      const count = counts.get(entity.id) || 0;
-      const tree = button(entity.name, event => selectObject(entity, event.ctrlKey || event.metaKey), 'tree-link');
-      tree.dataset.objectId = entity.id;
-      tree.addEventListener('dblclick', () => openScript(entity.id));
+    for (const group of entityGroups(project).filter(group => group.kind === 'scene')) {
+      const root = project.map.entities.find(entity => entity.id === group.rootId);
+      const tree = button(group.name, event => selectObject(root, event.ctrlKey || event.metaKey), 'tree-link');
+      tree.dataset.objectId = root.id;
+      tree.addEventListener('dblclick', () => {
+        if (project.scenes?.some(scene => scene.id === group.sceneId)) openSceneObject(group.sceneId);
+        else openScript(root.id);
+      });
       $('project-objects').append(tree);
+    }
+    for (const entity of project.map.entities.filter(item => grouped.has(item.id))) {
+      const instance = sceneInstanceOf(project, entity.id);
+      const count = counts.get(entity.id) || 0;
+      if (!instance) {
+        const tree = button(entity.name, event => selectObject(entity, event.ctrlKey || event.metaKey), 'tree-link');
+        tree.dataset.objectId = entity.id;
+        tree.addEventListener('dblclick', () => openScript(entity.id));
+        $('project-objects').append(tree);
+      }
       const script = button(`${entity.name} (${count})`, () => openScript(entity.id), 'tree-link');
       script.dataset.scriptScope = entity.id;
       $('object-scripts').append(script);
@@ -1205,6 +1235,63 @@ function filterProject() {
     for (const element of $(parent).children) element.hidden = query ? !element.textContent.toLowerCase().includes(query) : false;
   }
 }
+function renderDoorProperties(parent, sector) {
+  const section = make('div', undefined, 'property-section');
+  const native = sectorMovers(project).get(sector.id), mover = sectorMover(project, sector);
+  const kind = mover?.kind, elevator = kind === 'elevator', key = elevator ? 'elevator' : 'door';
+  const settings = sector[key] || { initial: 'native', activation: 'native' };
+  section.append(make('strong', `${elevator ? 'Elevator / moving floor' : kind ? 'Door' : 'Sector movement'} / ${sector.id}`));
+  const changeMover = patch => edit(next => {
+    const target = next.map.sectors.find(item => item.id === sector.id);
+    target[key] = { initial: native ? 'native' : elevator ? 'lower' : 'closed',
+      activation: native ? 'native' : 'manual', ...target[key], ...patch };
+  }, 'Sector movement properties updated');
+  if (!kind) {
+    field(section, 'Movement', select([['none', 'None'], ['door', 'Create ceiling door'], ['elevator', 'Create elevator']],
+      'none', value => {
+        if (value === 'none') return;
+        edit(next => {
+          const target = next.map.sectors.find(item => item.id === sector.id);
+          target[value] = value === 'door' ? { initial: 'closed', activation: 'manual' }
+            : { initial: 'lower', activation: 'manual', lowerHeight: sector.floorHeight, upperHeight: sector.floorHeight + 64 };
+        }, 'Sector movement created');
+      }, 'Sector movement'));
+    section.append(make('p', 'Existing imported doors and moving floors are detected automatically. Select the moving sector, not the surrounding room.', 'muted'));
+    parent.append(section);
+    return;
+  }
+  if (native) section.append(make('p', `Detected from ${native.sources.join('; ')}. Original triggers, locks and return cycles are retained with Imported activation.`, 'muted'));
+  const heights = elevator ? elevatorHeights(project, sector) : doorHeights(project, sector);
+  const initialOptions = elevator ? [['lower', 'Lowered'], ['upper', 'Raised']] : [['closed', 'Closed'], ['open', 'Open']];
+  const nativeState = elevator ? Math.abs(sector.floorHeight - heights.lower) < .5 ? 'lowered'
+    : Math.abs(sector.floorHeight - heights.upper) < .5 ? 'raised' : 'between endpoints'
+    : sector.ceilingHeight <= heights.closed + .5 ? 'closed' : sector.ceilingHeight >= heights.open - .5 ? 'open' : 'partly open';
+  if (native) initialOptions.unshift(['native', `Imported geometry (${nativeState})`]);
+  field(section, elevator ? 'Initial elevator state' : 'Initial door state', select(initialOptions, settings.initial,
+    value => changeMover({ initial: value }), 'Initial sector state'));
+  const activations = [['proximity', 'Player proximity'], ['manual', 'Manual use (E)'], ['event-only', 'Events only']];
+  if (native) activations.unshift(['native', 'Imported triggers / locks']);
+  field(section, 'Activation', select(activations, settings.activation,
+    value => changeMover({ activation: value }), 'Sector activation'));
+  field(section, 'Activation distance (map units)', input(heights.radius, 'number', value => changeMover({ radius: value })));
+  if (elevator) {
+    field(section, 'Lower floor height', input(heights.lower, 'number', value => changeMover({ lowerHeight: value })));
+    field(section, 'Upper floor height', input(heights.upper, 'number', value => changeMover({ upperHeight: value })));
+    section.append(checkbox('Move ceiling with floor', heights.moveCeiling, value => changeMover({ moveCeiling: value })));
+  } else {
+    field(section, 'Open ceiling height', input(heights.open, 'number', value => changeMover({ openHeight: value })));
+    field(section, 'Closed ceiling height', input(heights.closed, 'number', value => changeMover({ closedHeight: value })));
+  }
+  field(section, elevator ? 'Elevator speed (units / second)' : 'Door speed (units / second)',
+    input(heights.speed, 'number', value => changeMover({ speed: value })));
+  section.append(make('p', elevator ? 'Elevator actions raise, lower or toggle this floor. Choosing a custom activation mode replaces imported activation.'
+    : 'Door actions open, close or toggle this ceiling. Choosing a custom activation mode replaces imported activation.', 'muted'));
+  if (sector[key]) section.append(button(native ? 'Restore imported behavior' : 'Remove sector movement', () => edit(next => {
+    delete next.map.sectors.find(item => item.id === sector.id)[key];
+  }, native ? 'Imported sector behavior restored' : 'Sector movement removed')));
+  parent.append(section);
+}
+
 function renderInspector() {
   const parent = $('inspector');
   parent.replaceChildren();
@@ -1217,9 +1304,34 @@ function renderInspector() {
     return;
   }
   if (selection.kind === 'path' || selection.kind === 'pathPoint') { renderPathInspector(); return; }
+  selection = { ...selection, id: layoutSelection(project, selection).id };
+  delete selection.group;
   const collection = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' }[selection.kind];
   const item = project.map[collection]?.find(value => value.id === selection.id);
   if (!item) { selection = null; renderInspector(); return; }
+  const instance = selection.kind === 'entity' ? sceneInstanceOf(project, item.id) : null;
+  if (instance) {
+    $('selection-kind').textContent = 'Scene instance';
+    parent.append(make('h2', instance.name), make('p', 'Scene instance: transforms affect every part. Edit individual nodes in the scene editor.', 'muted'));
+    field(parent, 'Name', input(instance.name, 'text', value => edit(next => {
+      next.map.entityGroups.find(group => group.id === instance.id).name = value;
+    }, 'Scene instance renamed')));
+    const move = (axis, value) => edit(next => {
+      const delta = { [axis]: value - (axis === 'z' ? entityOrigin(item, sectorAt(mapSectors, item.x, item.y)?.floorHeight || 0)[1] : item[axis]) };
+      transformSelection(next, withSelectionGroup(selection), 'move', delta, 1);
+    }, 'Scene instance moved');
+    field(parent, 'X', input(item.x, 'number', value => move('x', value)));
+    field(parent, 'Y', input(item.y, 'number', value => move('y', value)));
+    field(parent, 'World height', input(entityOrigin(item, sectorAt(mapSectors, item.x, item.y)?.floorHeight || 0)[1],
+      'number', value => move('z', value)));
+    field(parent, 'Angle (degrees)', input(item.angle, 'number', value => edit(next => {
+      transformSelection(next, withSelectionGroup(selection), 'rotate', { angle: value - item.angle }, 0);
+    }, 'Scene instance rotated')));
+    if (project.scenes?.some(scene => scene.id === instance.sceneId)) parent.append(button('Open source scene', () => openSceneObject(instance.sceneId)));
+    parent.append(button('Capture as editable scene', () => captureSceneFromSelection('object')),
+      button('Edit root visual script', () => openScript(item.id)));
+    return;
+  }
   $('selection-kind').textContent = selection.kind;
   const update = (key, value) => edit(next => {
     const target = next.map[collection].find(value => value.id === item.id);
@@ -1243,6 +1355,7 @@ function renderInspector() {
   if (selection.kind === 'sector') {
     field(parent, 'Floor height', input(item.floorHeight, 'number', value => update('floorHeight', value)));
     field(parent, 'Ceiling height', input(item.ceilingHeight, 'number', value => update('ceilingHeight', value)));
+    renderDoorProperties(parent, item);
     field(parent, 'Floor material', assetSelect(item.floorAsset, value => update('floorAsset', value), ['flat', 'texture']));
     field(parent, 'Ceiling material', assetSelect(item.ceilingAsset, value => update('ceilingAsset', value), ['flat', 'texture']));
     // Texture scale is pixels-per-unit: 2 draws the artwork twice as large on the
@@ -1260,6 +1373,8 @@ function renderInspector() {
       if (!item[key]) continue;
       const part = make('div', undefined, 'property-section');
       part.append(make('strong', `${key === 'right' ? 'Front' : 'Back'} side / ${item[key].sectorId}`));
+      const sector = project.map.sectors.find(sector => sector.id === item[key].sectorId);
+      if (sector) renderDoorProperties(part, sector);
       const changeSide = (property, value) => edit(next => { next.map.walls.find(wall => wall.id === item.id)[key][property] = value; });
       for (const [property, name] of [['middle', 'Middle texture'], ['upper', 'Upper texture'], ['lower', 'Lower texture']]) {
         field(part, name, assetSelect(item[key][property], value => changeSide(property, value), ['texture', 'flat']));
@@ -1284,6 +1399,8 @@ function renderInspector() {
       field(parent, 'Elevation above sector floor', input(elevation, 'number', value => update('elevation', value)));
       parent.append(make('h3', 'Object-local variables'));
       renderVariables(parent, item.variables || {}, variables => update('variables', variables));
+      field(parent, 'Signals (comma-separated)', input((item.signals || []).join(', '), 'text',
+        value => update('signals', value.split(',').map(name => name.trim()).filter(Boolean))));
       if (item.type === 'enemy') field(parent, 'Initial health', input(item.health ?? 20, 'number', value => update('health', value)));
       // A zone has no artwork to assign: its whole identity is the volume further down, so the
       // sprite and model fields would be noise, and anything assigned there is never drawn.
@@ -2070,7 +2187,7 @@ function defaultCondition(type, ownerId) {
       command.groupId = project.eventGroups?.[0]?.id;
       if (!command.groupId) throw new Error('Add an event group first');
     }
-    if (engineCommand(type, project).target && !['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(type)) command.entityId = healthTarget(ownerId);
+    if (engineCommand(type, project).target && !['setObjectVariable', 'addObjectVariable', 'objectVariableCompare', 'onSignal', 'emitSignal'].includes(type)) command.entityId = healthTarget(ownerId);
     // A zone rule starts pointed at a zone, or the picker would open showing one and submit none.
     if (engineCommand(type, project).zone) {
       const zone = project.map.entities.find(entity => entity.type === 'zone');
@@ -2078,6 +2195,7 @@ function defaultCondition(type, ownerId) {
       command.zoneId = zone.id;
     }
     defaultObjectVariable(command, ownerId);
+    defaultSignal(command, ownerId);
     defaultShaderTarget(command);
     if (engineCommand(type, project).variable) {
       command.variable = Object.keys(project.variables)[0];
@@ -2112,8 +2230,9 @@ function defaultAction(type, ownerId) {
       command.groupId = project.eventGroups?.[0]?.id;
       if (!command.groupId) throw new Error('Add an event group first');
     }
-    if (engineCommand(type, project).target && !['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(type)) command.entityId = healthTarget(ownerId);
+    if (engineCommand(type, project).target && !['setObjectVariable', 'addObjectVariable', 'objectVariableCompare', 'onSignal', 'emitSignal'].includes(type)) command.entityId = healthTarget(ownerId);
     defaultObjectVariable(command, ownerId);
+    defaultSignal(command, ownerId);
     defaultShaderTarget(command);
     return command;
   }
@@ -2150,13 +2269,25 @@ function defaultWorldTarget(command) {
     if (!command.wallId) throw new Error('Add a wall first');
   }
   if (definition.sector) {
-    command.sectorId = project.map.sectors?.[0]?.id;
-    if (!command.sectorId) throw new Error('Add a sector first');
+    const sectors = (project.map.sectors || []).filter(sector =>
+      definition.door ? sectorMover(project, sector)?.kind === 'door' :
+        definition.elevator ? sectorMover(project, sector)?.kind === 'elevator' : true);
+    command.sectorId = sectors[0]?.id;
+    if (!command.sectorId) throw new Error(definition.door ? 'Select an existing door or create a ceiling door in sector Properties first' :
+      definition.elevator ? 'Select an existing elevator or create one in sector Properties first' : 'Add a sector first');
   }
   if (definition.spriteClip) {
     command.clipId = project.spriteClips?.[0]?.id;
     if (!command.clipId) throw new Error('Import sprite animation frames first');
   }
+}
+function defaultSignal(command, context) {
+  if (!['onSignal', 'emitSignal'].includes(command.type)) return;
+  const owner = project.map.entities.find(entity => entity.id === context);
+  const emitter = owner && nodeSignals(owner).length ? owner : project.map.entities.find(entity => nodeSignals(entity).length);
+  if (!emitter) throw new Error('Declare a named signal on an object first');
+  command.entityId = emitter === owner ? '$self' : emitter.id;
+  command.signal = nodeSignals(emitter)[0];
 }
 function defaultObjectVariable(command, context) {
   if (!['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(command.type)) return;
@@ -2213,6 +2344,8 @@ function commandLists(ownerId) {
       return [...catalogue.conditions, ...catalogue.actions];
     },
     sectors: (project.map.sectors || []).map(sector => [sector.id, sector.id]),
+    doorSectors: (project.map.sectors || []).filter(sector => sectorMover(project, sector)?.kind === 'door').map(sector => [sector.id, sector.id]),
+    elevatorSectors: (project.map.sectors || []).filter(sector => sectorMover(project, sector)?.kind === 'elevator').map(sector => [sector.id, sector.id]),
     spriteClips: (project.spriteClips || []).map(clip => [clip.id, clip.name]),
     images: imageAssetOptions(),
     hudElements: (project.hud?.elements || []).map(element => [element.id, element.name]),
@@ -2225,6 +2358,7 @@ function commandLists(ownerId) {
     // "Set / compare local variable" lists the variables of the object the rule acts on, and `$self`
     // means the rule's own object, so the owner is what to look at there.
     entityVariableNames: id => Object.keys((project.map.entities.find(entity => entity.id === (id === '$self' ? ownerId : id)) || {}).variables || {}),
+    entitySignalNames: id => nodeSignals(project.map.entities.find(entity => entity.id === (id === '$self' ? ownerId : id)) || {}),
     sounds: (project.assets || []).filter(asset => asset.kind === 'sound').map(asset => [asset.id, asset.name]),
     clips: id => {
       const entity = project.map.entities.find(entity => id === '$self'
@@ -2821,6 +2955,12 @@ function renderAssets() {
       audio.style.width = '100%';
       audio.addEventListener('error', () => status(`Cannot decode sound ${asset.name}`, true));
       tile.append(make('strong', asset.name), make('small', asset.generated ? 'Generated fallback sound' : 'Imported sound'), audio);
+    } else if (asset.kind === 'video') {
+      const video = document.createElement('video');
+      video.controls = true; video.preload = 'none'; video.playsInline = true; video.muted = true; video.src = asset.src;
+      video.style.width = '100%'; video.style.maxHeight = '160px';
+      video.addEventListener('error', () => status(`Cannot decode embedded video ${asset.name}`, true));
+      tile.append(make('strong', asset.name), make('small', `${asset.format.toUpperCase()} / embedded local video`), video);
     } else if (asset.kind === 'font') {
       tile.append(make('strong', 'Aa'), make('strong', asset.name), make('small', 'Embedded web font / assign in HUD'));
     } else if (asset.kind === 'model') {
@@ -3211,6 +3351,7 @@ function drawFacingArrow(ctx, entity, colour, zoom) {
 // model, physics, ramp numbers, script variables — and a copied group comes back as a group, so
 // pasting reproduces what the mapper built rather than a pile of look-alikes.
 let clipboardEntities = null;
+let clipboardSceneData = null;
 let pointerMapPoint = null;
 // The last press in client pixels, which is where a picker opened from a menu should appear.
 const pointerClient = { x: 40, y: 40 };
@@ -3223,6 +3364,7 @@ function copySelectedEntities() {
     return false;
   }
   clipboardEntities = entities.map(entity => structuredClone(entity));
+  clipboardSceneData = structuredClone({ groups: entityGroups(project), events: project.events, joints: project.map.joints || [] });
   status(entities.length === 1 ? `${entities[0].name} copied` : `${entities.length} objects copied`);
   return true;
 }
@@ -3232,8 +3374,10 @@ function pasteEntities() {
   let ids = [];
   try {
     edit(next => {
-      const { entities } = cloneEntitiesForPaste(next, clipboardEntities, point ? snap(point) : null);
+      const { entities, events, joints } = cloneEntitiesForPaste(next, clipboardEntities, point ? snap(point) : null, clipboardSceneData);
       next.map.entities.push(...entities);
+      next.events.push(...events);
+      if (joints.length) next.map.joints = [...(next.map.joints || []), ...joints];
       ids = entities.map(entity => entity.id);
     }, clipboardEntities.length === 1 ? `${clipboardEntities[0].name} copy pasted` : `${clipboardEntities.length} objects pasted`);
   } catch (error) { status(error.message, true); return false; }
@@ -3328,7 +3472,8 @@ canvas.addEventListener('pointerdown', guard(event => {
   }
   // The grips of a selected zone resize it; they are drawn only while it is selected, so a press
   // that lands on one is unambiguous.
-  const selectedZone = selection?.kind === 'entity' && project.map.entities.find(entity => entity.id === selection.id && entity.type === 'zone');
+  const selectedZone = selection?.kind === 'entity' && !sceneInstanceOf(project, selection.id)
+    && project.map.entities.find(entity => entity.id === selection.id && entity.type === 'zone');
   if (selectedZone) {
     const grip = zoneGripAt(point, selectedZone, 10 / camera.zoom);
     if (grip !== null) {
@@ -3345,7 +3490,7 @@ canvas.addEventListener('pointerdown', guard(event => {
       return;
     }
   }
-  const pressed = hitTest(point);
+  const pressed = layoutSelection(project, hitTest(point));
   if (pressed?.kind === 'pathPoint' && multiSelectionKind === 'path' && multiSelection.length > 1
     && multiSelection.includes(pressed.pathId)) {
     // Dragging any route of the set moves all of them; the press picks the route up whole.
@@ -3470,6 +3615,10 @@ canvas.addEventListener('pointerup', guard(event => {
         point.x += shift.x; point.y += shift.y;
         return;
       }
+      if (kind === 'entity' && [id, ...group].some(target => sceneInstanceOf(next, target))) {
+        transformSelection(next, withSelectionGroup(finished.selection), 'move', shift, 1);
+        return;
+      }
       const ids = group.length > 1 && group.includes(id) ? group : [id];
       for (const target of ids) {
         const item = (kind === 'entity' ? next.map.entities : next.map.vertices).find(value => value.id === target);
@@ -3536,6 +3685,7 @@ async function reloadProject(initial = false) {
     // Drafts and older imports can still carry the narrow pickup reach that made an
     // item on a ledge impossible to take.
     if (upgradePickupReach(project)) { dirty = true; status('Pickup reach widened so items on ledges can be collected; save to keep it.'); }
+    if (upgradeSceneInstances(project)) { dirty = true; status('Scene instances restored as single layout objects; save to keep it.'); }
     // Ramps saved before they were meshes get the model their numbers describe, so an old map
     // opens with the ramps drawn and collided the way the tool now builds them.
     const before = project.assets?.length || 0;
@@ -3915,7 +4065,9 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     try { nextRuntime.saveSlots = saveSlotLabels(await gameSaves.list(identity)); }
     catch (error) { nextRuntime.saveStatus = `Saved games unavailable: ${error.message}`; status(nextRuntime.saveStatus, true); }
     if (generation !== previewGeneration) throw new Error('Preview was stopped while loading.');
-    const preview = await createPreview($('preview'), snapshot, nextRuntime);
+    const preview = await createPreview($('preview'), snapshot, nextRuntime, {
+      onMediaError: message => mouseStatus(message, true),
+    });
     if (generation !== previewGeneration) { preview.dispose(); throw new Error('Preview was stopped while loading.'); }
     if (version !== editVersion) { preview.dispose(); throw new Error('Project changed while preview loaded. Play again.'); }
     previewRenderer = preview;
@@ -4077,6 +4229,10 @@ $('preview').addEventListener('pointerdown', event => {
     try { bindKey(runtime, `Mouse${event.button}`); } catch (error) { mouseStatus(error.message, true); }
     return;
   }
+  if (previewRenderer?.handlePointerDown?.(event)) {
+    keys.delete('Mouse0'); pressed.delete('Mouse0');
+    return;
+  }
   if (!runtime || runtime.hudState.cursor) return;
   if (runtime.scriptedInput && event.button === 2) {
     if (!keys.has('Mouse2')) pressed.add('Mouse2');
@@ -4167,6 +4323,7 @@ function frame(now) {
   if (runtime) {
     try {
       const onMenu = runtime.gameScreen !== 'playing';
+      previewRenderer?.updateScreenInteraction?.();
       addonHost.emit('beforeStep', runtime, dt);
       stepRuntime(previewProject, runtime, dt, onMenu ? keys : mappedKeys(keys, runtime.settings),
         onMenu ? pressed : mappedKeys(pressed, runtime.settings)); pressed.clear();
@@ -4277,7 +4434,7 @@ $('projects').addEventListener('change', guard(() => withProjectOperation(async 
   cutTool?.cancel();
   project = validateProject(result.project);
   documentGeneration++; documentSession = {}; bindProject(result);
-  dirty = false;
+  dirty = Boolean(upgradeSceneInstances(project));
   editVersion++;
   history = []; future = []; selection = null; scriptScope = '$all';
   $('dirty').textContent = badgeText();
@@ -4675,6 +4832,25 @@ $('sound-file').addEventListener('change', guard(async event => {
   const files = [...event.target.files]; event.target.value = '';
   await importSoundFiles(files);
 }));
+$('import-video').addEventListener('click', () => $('video-file').click());
+async function importVideoFiles(files) {
+  if (!files.length) return;
+  const version = editVersion;
+  if (files.length > 16) throw new Error('Import at most 16 videos at once');
+  const imported = [];
+  for (const file of files) imported.push(await embedVideoFile(file, newId('video')));
+  if (version !== editVersion) throw new Error('Project changed while videos were loading. Import them again.');
+  const additions = imported.filter(asset => !(project.assets || []).some(existing =>
+    existing.kind === 'video' && existing.name === asset.name && existing.src === asset.src));
+  if (!additions.length) { status('Those videos are already embedded in this project.'); return; }
+  edit(next => { next.assets ||= []; next.assets.push(...additions); },
+    `Imported ${additions.length} embedded video${additions.length === 1 ? '' : 's'}; assign one to a Projector node.`);
+  $('asset-filter').value = 'video'; renderAssets();
+}
+$('video-file').addEventListener('change', guard(async event => {
+  const files = [...event.target.files]; event.target.value = '';
+  await importVideoFiles(files);
+}));
 $('import-model-folder').addEventListener('click', () => $('model-directory').click());
 async function importModelFiles(files) {
   const version = editVersion;
@@ -4715,14 +4891,11 @@ function placeScene(sceneId) {
   if (!scene) throw new Error('That scene no longer exists');
   if (sceneIsEmpty(scene)) throw new Error(`Scene ${scene.name} has no objects`);
   const target = sceneTargetPoint();
-  const placed = instantiateScene(scene, { x: target.x, y: target.y });
+  let placed;
   edit(next => {
-    next.map.entities.push(...placed.entities);
-    next.events.push(...placed.events);
-    // A scene's joints come with it, re-pointed at the copied objects.
-    if (placed.joints.length) next.map.joints = [...(next.map.joints || []), ...placed.joints];
-  }, `Placed ${scene.name} (${placed.entities.length} objects) at ${target.x}, ${target.y}`);
-  selection = placed.entities.length ? { kind: 'entity', id: placed.entities[0].id } : selection;
+    placed = placeSceneInstance(next, scene, { x: target.x, y: target.y });
+  }, `Placed ${scene.name} at ${target.x}, ${target.y}`);
+  selection = { kind: 'entity', id: placed.group.rootId };
   render();
 }
 function captureSceneFromSelection(scope) {
@@ -4733,8 +4906,8 @@ function captureSceneFromSelection(scope) {
     if (selection.id === player?.id) throw new Error('The player object cannot be captured into a scene');
     const entity = project.map.entities.find(item => item.id === selection.id);
     if (!entity) throw new Error('That object no longer exists');
-    ids = [entity.id];
-    name = entity.name;
+    ids = layoutEntityIds(project, [entity.id]);
+    name = sceneInstanceOf(project, entity.id)?.name || entity.name;
   } else {
     const sectorId = selection?.kind === 'sector' ? selection.id
       : selection?.kind === 'entity' ? sectorAt(mapSectors, project.map.entities.find(item => item.id === selection.id)?.x, project.map.entities.find(item => item.id === selection.id)?.y)?.id
@@ -4932,6 +5105,13 @@ function ensureSceneObjectEditor() {
       eventSheets: () => project?.eventSheets || [],
       eventGroups: () => project?.eventGroups || [],
       entities: () => project?.map?.entities || [],
+      layoutScene: id => {
+        const instance = sceneInstanceOf(project, id);
+        if (!instance) return null;
+        const captured = captureScene(project, layoutEntityIds(project, [id]), { name: instance.name });
+        captured.origin = { x: 0, y: 0 };
+        return captured;
+      },
       editScene(id, fn, message) {
         editGame(next => {
           const scene = (next.scenes || []).find(item => item.id === id);
@@ -4991,7 +5171,17 @@ function ensureSceneObjectEditor() {
         renderSceneObjects();
       },
       importNode: (document, options) => importNodeDocument(document, options),
-      openEvents: ownerId => openScript(ownerId),
+      openEvents: ownerId => {
+        const sceneId = activeSceneId;
+        openNodeEventSheet({ ownerId, project,
+          getScene: () => project.scenes?.find(scene => scene.id === sceneId),
+          edit: (fn, message) => editGame(next => {
+            const scene = next.scenes?.find(scene => scene.id === sceneId);
+            if (!scene) throw new Error('That scene no longer exists');
+            fn(scene);
+          }, message),
+          lists: commandLists(), conditionLabels: conditionLabelsFor(), actionLabels: actionLabelsFor(), onError: status });
+      },
       status: (message, isError) => status(message, isError),
     },
   });
@@ -5119,9 +5309,13 @@ async function dropAssets(event) {
   const section = event.target.closest?.('.asset-folder')?.dataset.filter;
   if (group.nodes.length) return importDroppedNodes(group.nodes);
   if (group.models.length) return importModelFiles(group.models);
-  if (group.images.length) return importImageFiles(group.images, IMAGE_KINDS.has(section) ? section : $('image-kind').value);
-  if (group.sounds.length) return importSoundFiles(group.sounds);
-  throw new Error('Drop GLB, glTF, .bbmodel, PNG/JPEG/WebP images or WAV/OGG/MP3 sounds');
+  if (group.images.length || group.sounds.length || group.videos.length) {
+    if (group.images.length) await importImageFiles(group.images, IMAGE_KINDS.has(section) ? section : $('image-kind').value);
+    if (group.sounds.length) await importSoundFiles(group.sounds);
+    if (group.videos.length) await importVideoFiles(group.videos);
+    return;
+  }
+  throw new Error('Drop GLB, glTF, .bbmodel, PNG/JPEG/WebP images, WAV/OGG/MP3 sounds or MP4/WebM video');
 }
 /** A dropped `.node` file is a scene object: import it where the pointer is. */
 async function importDroppedNodes(files) {
@@ -5230,6 +5424,7 @@ function assetUseOf(asset) {
 function assignAssetToSelection(asset) {
   const entity = selectionEntity();
   if (!entity) throw new Error('Select an object in the layout first');
+  if (sceneInstanceOf(project, entity.id)) throw new Error('Edit scene artwork in the scene editor, not on an individual layout part');
   const use = assetUseOf(asset);
   if (!use) throw new Error(`${asset.name} is a ${asset.kind} asset; objects take pictures or models`);
   if (use === 'model' && entity.type === 'player') throw new Error('Assign world models to a non-player object');
@@ -5278,8 +5473,10 @@ function duplicateLayoutObject(id) {
     // every property, a free name, and a copied group when the object was in one.
     const group = next.map.entityGroups?.find(item => item.id === entity.groupId);
     const source = group ? next.map.entities.filter(item => item.groupId === group.id) : [next.map.entities.find(item => item.id === id)];
-    const { entities } = cloneEntitiesForPaste(next, source, { x: (source[0].x || 0) + 64, y: (source[0].y || 0) + 64 });
+    const { entities, events, joints } = cloneEntitiesForPaste(next, source, { x: (source[0].x || 0) + 64, y: (source[0].y || 0) + 64 });
     next.map.entities.push(...entities);
+    next.events.push(...events);
+    if (joints.length) next.map.joints = [...(next.map.joints || []), ...joints];
     copyId = entities[0].id;
   }, `${entity.name} duplicated`);
   selection = { kind: 'entity', id: copyId };
@@ -5338,7 +5535,7 @@ function flashElement(element) {
  * "I am done with this" and "I am swapping this out".
  */
 async function deleteObjects(ids) {
-  const targets = [].concat(ids).filter(id => project.map.entities.some(entity => entity.id === id));
+  const targets = layoutEntityIds(project, [].concat(ids));
   if (!targets.length) return;
   const player = targets.find(id => project.map.entities.find(entity => entity.id === id).type === 'player');
   if (player) throw new Error('The layout must keep the player object');
@@ -5376,7 +5573,10 @@ async function deleteObjects(ids) {
       edit(next => { stripEntityReferences(next, targets); }, 'Rules that named the object removed');
     }
   }
-  edit(next => { for (const id of targets) removeEntity(next, id); }, targets.length > 1 ? `${targets.length} objects deleted` : 'Object deleted');
+  edit(next => {
+    stripEntityReferences(next, targets);
+    for (const id of targets) removeEntity(next, id);
+  }, targets.length > 1 ? `${targets.length} objects deleted` : 'Object deleted');
   if (selection?.kind === 'entity' && targets.includes(selection.id)) selection = null;
   multiSelection = multiSelection.filter(id => !targets.includes(id));
   render();
@@ -5726,14 +5926,14 @@ function groupMenuItems(entity) {
   const chosen = selectedEntityIds();
   const group = entity ? groupOf(project, entity) : null;
   const items = [];
-  if (chosen.length >= 2) {
+  if (chosen.length >= 2 && !chosen.some(id => sceneInstanceOf(project, id))) {
     // Named "Group" straight away — the name is editable in the list by double-clicking it, which
     // is one step fewer than a dialog and works where prompt() does not exist.
     items.push({ label: `Group ${chosen.length} selected objects`, run: guard(() => groupSelection('Group')) });
   }
   if (group) {
     items.push({ label: `Rename "${group.name}"`, run: () => { renameGroupInline(group.id); } });
-    items.push({ label: `Remove from "${group.name}"`, run: guard(() => {
+    if (group.kind !== 'scene') items.push({ label: `Remove from "${group.name}"`, run: guard(() => {
       edit(next => { leaveGroup(next, entity.id); }, `${entity.name} left ${group.name}`);
     }) });
     items.push({ label: `Ungroup "${group.name}"`, run: guard(() => {
@@ -5751,8 +5951,10 @@ function groupMenuItems(entity) {
  */
 async function exportLayoutObject(entity) {
   if (!entity) return;
-  const events = (project.events || []).filter(event => event.ownerId === entity.id).length;
-  const answer = await askObjectExport({ name: entity.name, kind: 'Object', events });
+  const instance = sceneInstanceOf(project, entity.id);
+  const ids = new Set(layoutEntityIds(project, [entity.id]));
+  const events = (project.events || []).filter(event => ids.has(event.ownerId)).length;
+  const answer = await askObjectExport({ name: instance?.name || entity.name, kind: instance ? 'Scene instance' : 'Object', events });
   if (!answer) return;
   try {
     const document = exportNodeFile(layoutContainer(project), entity.id, {
@@ -5811,6 +6013,23 @@ async function importLayoutObjectFile() {
 }
 
 function objectMenuItems(entity) {
+  const instance = sceneInstanceOf(project, entity.id);
+  if (instance) {
+    const root = project.map.entities.find(item => item.id === instance.rootId);
+    return [
+      { label: 'Select scene instance', run: () => selectObject(root) },
+      ...(project.scenes?.some(scene => scene.id === instance.sceneId)
+        ? [{ label: 'Open source scene', run: () => openSceneObject(instance.sceneId) }] : []),
+      { label: 'Capture as editable scene', run: guard(() => { selectObject(root); captureSceneFromSelection('object'); }) },
+      { label: 'Edit root visual script', run: () => openScript(root.id) },
+      { separator: true },
+      { label: 'Duplicate scene instance', run: guard(() => duplicateLayoutObject(root.id)) },
+      { label: 'Export scene instance as a file\u2026', run: guard(() => exportLayoutObject(root)) },
+      { label: 'Ungroup into editable layout objects', run: guard(() => edit(next => { ungroup(next, instance.id); }, 'Scene instance ungrouped')) },
+      { separator: true },
+      { label: 'Delete scene instance', danger: true, run: guard(() => deleteLayoutObject(root.id)) },
+    ];
+  }
   const isPlayer = entity.type === 'player';
   return [
     ...groupMenuItems(entity),

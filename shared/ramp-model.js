@@ -194,6 +194,7 @@ export function ensureRampModel(project, entity) {
 /** Every ramp in the project gets the model its numbers describe. */
 export function syncRampModels(project) {
   for (const entity of project.map?.entities || []) ensureRampModel(project, entity);
+  for (const scene of project.scenes || []) for (const entity of scene.entities || []) ensureRampModel(project, entity);
   pruneRampModels(project);
 }
 

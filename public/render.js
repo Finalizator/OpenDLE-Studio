@@ -17,7 +17,7 @@ import { createPhysics } from '/shared/physics.js';
 import { eyePosition, upVector, viewDirection } from '/shared/gravity.js';
 import { restoreCulling, restoreVisibility, revealForWarmup, uncullDrawables } from '/shared/render-warmup.js';
 import { skyView } from '/shared/sky-view.js';
-import { liveProjectPlan, modelOrientation, modelWorldBox, entityOrigin, spriteWorldBox, spritePlacement } from '/shared/entity-visuals.js';
+import { liveProjectPlan, entityRepresentation, entityMediaSignature, modelOrientation, modelWorldBox, entityOrigin, spriteWorldBox, spritePlacement } from '/shared/entity-visuals.js';
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
@@ -31,6 +31,7 @@ import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 import { createSurfaceBatcher, mergePiece } from '/shared/surface-batch.js';
 import { viewBob, weaponBob } from '/shared/player-motion.js';
 import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
+import { createWorldNodeObject, createWorldTerminalController, gameplayCrosshairVisible, setWorldNodePose } from './world-media.js';
 
 export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc', ramp: '#c98b4b', zone: '#5ce1c6' };
 // Imported models are shaded as physical surfaces instead of Doom's flat light
@@ -42,7 +43,7 @@ export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd
 export const MODEL_LIGHTING = { environment: .18, fill: .9, key: 2.8, rim: .6, ambientFloor: .25 };
 let rapierReady;
 
-export async function createPreview(canvas, project, state, { editor = false } = {}) {
+export async function createPreview(canvas, project, state, { editor = false, onMediaError = () => {} } = {}) {
   if (!editor) {
     rapierReady ||= RAPIER.init();
     await rapierReady;
@@ -64,8 +65,15 @@ export async function createPreview(canvas, project, state, { editor = false } =
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(project.environment.sky);
   const camera = new THREE.PerspectiveCamera(70, 800 / 450, 1, 40000);
+  const mediaRaycaster = new THREE.Raycaster(), mediaPointer = new THREE.Vector2();
   let geometry = editor ? sectorGeometry(project) : state.sectors;
   const textures = new Map();
+  const worldNodes = new Map(), worldNodeList = [];
+  const videoPlayers = new Map();
+  let terminalController = null;
+  function closeWorldTerminal() {
+    return terminalController?.close() || false;
+  }
   let assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
   // Textures the engine draws itself, for marks no imported artwork exists for. A bullet hole
   // is the size of a thumbprint on a wall, and shipping a one-pixel idea as an asset would put
@@ -259,6 +267,20 @@ export async function createPreview(canvas, project, state, { editor = false } =
   const warmupScene = new THREE.Scene();
   const backgroundScene = new THREE.Scene(), backgroundCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const overlayScene = new THREE.Scene(), overlayCamera = new THREE.OrthographicCamera(0, 320, 200, 0, -1, 1);
+  const crosshair = new THREE.Group();
+  crosshair.position.set(160, 100, 0);
+  crosshair.visible = false;
+  const crosshairResources = [];
+  for (const [width, height, color, order] of [[7, 2, '#111111', 900], [2, 7, '#111111', 900],
+    [6, .7, '#ffffff', 901], [.7, 6, '#ffffff', 901]]) {
+    const geometry = new THREE.PlaneGeometry(width, height);
+    const material = new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false });
+    const part = new THREE.Mesh(geometry, material);
+    part.renderOrder = order;
+    crosshair.add(part);
+    crosshairResources.push(geometry, material);
+  }
+  overlayScene.add(crosshair);
   // A script's `FadeTo` covers the world, the weapon and the sky, and sits under the menu:
   // one quad in the overlay, in the same 320x200 space the weapon uses.
   const fadeGeometry = new THREE.PlaneGeometry(320, 200);
@@ -273,11 +295,19 @@ export async function createPreview(canvas, project, state, { editor = false } =
   function dispose() {
     if (disposed) return;
     disposed = true;
+    terminalController?.dispose();
+    for (const resource of crosshairResources) resource.dispose();
     for (const release of disposers.splice(0)) { try { release(); } catch { /* already gone */ } }
     // Projectile meshes share pooled geometries and materials tracked by the sets below.
     projectileMeshes.clear();
     for (const view of cameraViews.values()) for (const target of view.targets) target.dispose();
     physics?.dispose(); state.physics = null;
+    for (const entry of videoPlayers.values()) {
+      entry.video.pause();
+      entry.video.removeAttribute('src');
+      entry.video.load?.();
+    }
+    videoPlayers.clear();
     mixers.forEach(mixer => mixer.stopAllAction());
     scene.traverse(object => { if (object.isSkinnedMesh) object.skeleton.dispose(); });
     environmentTarget?.dispose();
@@ -301,7 +331,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     canvas.dataset.shaderError = '';
     // Load sequential batches to bound temporary decoded-image memory.
     const levelAssets = project.game ? new Set(gameLevelAssetIds(project)) : null;
-    const assets = (project.assets || []).filter(asset => !['model', 'font', 'sound', 'music'].includes(asset.kind) &&
+    const assets = (project.assets || []).filter(asset => !['model', 'font', 'sound', 'music', 'video'].includes(asset.kind) &&
       (!levelAssets || levelAssets.has(asset.id)));
     for (let offset = 0; offset < assets.length; offset += 16) await Promise.all(assets.slice(offset, offset + 16).map(async asset => {
       const texture = await loader.loadAsync(asset.src);
@@ -1130,7 +1160,72 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // destinations, deathmatch starts), so a play preview must not either; the editor
     // still needs a placholder to select and move them.
     const withoutArtwork = [];
+    const usesWorldNodeFactory = entity => entityRepresentation(entity) === 'media';
+    function mediaError(message) {
+      if (disposed) return;
+      canvas.dataset.mediaError = message;
+      onMediaError(message);
+    }
+    function projectorTexture(entity) {
+      const projector = entity.projector;
+      const asset = assetMap.get(projector.assetId);
+      if (!asset) {
+        if (projector.assetId) mediaError(`Projector ${entity.name || entity.id}: asset ${projector.assetId} is missing`);
+        return null;
+      }
+      if (asset.kind !== 'video') return textures.get(asset.id) || null;
+      let entry = videoPlayers.get(entity.id);
+      if (entry?.assetId === asset.id) return entry.texture;
+      if (entry) {
+        entry.video.pause(); entry.texture.dispose();
+        textures.delete(entry.textureKey);
+      }
+      const video = document.createElement('video');
+      video.preload = 'auto'; video.playsInline = true; video.loop = projector.loop !== false;
+      video.muted = projector.muted !== false; video.src = asset.src;
+      const texture = new THREE.VideoTexture(video);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.minFilter = THREE.LinearFilter; texture.magFilter = THREE.LinearFilter;
+      const textureKey = `video:${entity.id}`;
+      textures.set(textureKey, texture);
+      entry = { id: entity.id, assetId: asset.id, video, texture, textureKey, failed: false, requested: false };
+      videoPlayers.set(entity.id, entry);
+      video.addEventListener('error', () => {
+        if (entry.failed) return;
+        entry.failed = true;
+        mediaError(`Projector ${entity.name || entity.id}: video ${asset.name} could not be decoded`);
+      });
+      video.load();
+      return texture;
+    }
+    function addWorldNode(entity) {
+      const nodeTexture = entity.projector
+        ? projectorTexture(entity)
+        : entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
+      const built = createWorldNodeObject(THREE, entity, {
+        texture: nodeTexture,
+        materialFactory: config => withEffectFor(new THREE.MeshBasicNodeMaterial(config), entity),
+      });
+      if (!built) return false;
+      const object = built.object;
+      object.userData.entityId = entity.id;
+      object.userData.selection = { kind: 'entity', id: entity.id };
+      scene.add(object);
+      if (built.geometry) geometries.add(built.geometry);
+      if (built.material) materials.add(built.material);
+      const ownedTexture = built.terminal?.texture || null;
+      const textureKey = ownedTexture ? `terminal:${entity.id}` : null;
+      if (ownedTexture) textures.set(textureKey, ownedTexture);
+      const entry = { ...built, id: entity.id, entity, textureKey, camera, signature: entityMediaSignature(entity) };
+      worldNodes.set(entity.id, entry);
+      worldNodeList.push(entry);
+      return true;
+    }
     function addEntity(entity) {
+      if (usesWorldNodeFactory(entity)) {
+        addWorldNode(entity);
+        return;
+      }
       if (entity.panel) { addPanel(entity); return; }
       // A zone is a volume, not a thing: no artwork in play, a translucent box while editing.
       if (entity.type === 'zone') { if (editor) addZone(entity); return; }
@@ -1167,6 +1262,25 @@ export async function createPreview(canvas, project, state, { editor = false } =
       if (index >= 0) panelList.splice(index, 1);
     }
     function forgetEntity(id) {
+      const media = worldNodes.get(id);
+      if (media) {
+        media.object.removeFromParent();
+        worldNodes.delete(id);
+        const index = worldNodeList.indexOf(media);
+        if (index >= 0) worldNodeList.splice(index, 1);
+        if (media.geometry) { geometries.delete(media.geometry); media.geometry.dispose(); }
+        if (media.material) { materials.delete(media.material); media.material.dispose(); }
+        if (media.textureKey) {
+          const texture = textures.get(media.textureKey);
+          textures.delete(media.textureKey); texture?.dispose();
+        }
+      }
+      const video = videoPlayers.get(id);
+      if (video) {
+        video.video.pause(); video.video.removeAttribute('src'); video.video.load?.();
+        textures.delete(video.textureKey); video.texture.dispose();
+        videoPlayers.delete(id);
+      }
       const sprite = sprites.get(id);
       if (sprite) {
         scene.remove(sprite);
@@ -1206,6 +1320,12 @@ export async function createPreview(canvas, project, state, { editor = false } =
     function boundsOfEntity(id) {
       const entity = project.map.entities.find(candidate => candidate.id === id);
       if (!entity) return null;
+      const worldNode = worldNodes.get(id);
+      if (worldNode) {
+        setWorldNodePose(worldNode, entity, sectorIndex.at(entity.x, entity.y)?.floorHeight || 0, modelOrientation);
+        worldNode.object.updateWorldMatrix(true, true);
+        return new THREE.Box3().setFromObject(worldNode.object);
+      }
       const local = entity.modelAsset && modelBounds.get(entity.modelAsset);
       if (local) {
         const sector = sectorIndex.at(entity.x, entity.y);
@@ -1300,6 +1420,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
     // Everything below is scratch state reused by every frame: precomputed lookups,
     // pooled objects and cached DOM/style writes keep the loop allocation-light.
     const entityIndex = new Map(), activeLights = [];
+    terminalController = createWorldTerminalController({ state, getEntity: id => entityIndex.get(id) });
     const clearColors = new Map(), animatedMaterials = new Map();
     const cameraDirection = new THREE.Vector3();
     const viewUp = new THREE.Vector3(0, 1, 0), targetUp = new THREE.Vector3(0, 1, 0);
@@ -1435,9 +1556,55 @@ export async function createPreview(canvas, project, state, { editor = false } =
       }
     }
 
+    function updateScreenInteraction() {
+      if (editor || state.gameScreen !== 'playing' || state.hudState?.cursor ||
+        !worldNodeList.some(entry => entry.terminal)) {
+        terminalController?.close();
+        return null;
+      }
+      let range = 0;
+      for (const entry of worldNodeList) {
+        if (!entry.terminal) continue;
+        const entity = entityIndex.get(entry.id);
+        if (!entity?.terminal) continue;
+        const reach = entity.terminal.range || 160;
+        const radius = Math.hypot(entity.terminal.width, entity.terminal.height) / 2;
+        if (camera.position.distanceTo(entry.object.position) <= reach + radius) range = Math.max(range, reach);
+      }
+      if (!range) { terminalController?.close(); return null; }
+      mediaRaycaster.far = range;
+      mediaPointer.set(0, 0);
+      camera.updateMatrixWorld();
+      scene.updateMatrixWorld(true);
+      mediaRaycaster.setFromCamera(mediaPointer, camera);
+      const hit = mediaRaycaster.intersectObjects(scene.children, true)[0];
+      const entry = hit?.object?.userData?.entityId && worldNodes.get(hit.object.userData.entityId);
+      const entity = entry && entityIndex.get(entry.id);
+      if (!entry?.terminal || !entity?.terminal || !hit.uv || hit.distance > (entity.terminal.range || 160) ||
+        !terminalController?.open(entry, entity)) {
+        terminalController?.close();
+        return null;
+      }
+      terminalController.pointer(hit.uv.x, hit.uv.y);
+      return hit;
+    }
+
+    function handlePointerDown(event) {
+      if (event.button !== 0) return false;
+      const hit = updateScreenInteraction();
+      if (!hit) return false;
+      terminalController.hit(hit.uv.x, hit.uv.y);
+      const entry = worldNodes.get(hit.object.userData.entityId);
+      canvas.dataset.terminalStatus = entry.terminal.message;
+      event.preventDefault?.();
+      event.stopImmediatePropagation?.();
+      return true;
+    }
+
     function render(state, dt = 0) {
       const started = clock();
       renderFrame(state, dt);
+      terminalController?.update();
       const elapsed = clock() - started;
       frameStats.push(elapsed);
       if (elapsed >= frameStats.stallMs) slowFrame = {
@@ -1713,6 +1880,10 @@ export async function createPreview(canvas, project, state, { editor = false } =
         entityIndex.set(entity.id, entity);
         if (entity.type === 'player' && !editor) continue;
         if (unrenderable.has(entity.id)) continue;
+        if (usesWorldNodeFactory(entity)) {
+          if (!worldNodes.has(entity.id)) addEntity(entity);
+          continue;
+        }
         if (entity.modelAsset ? !models.has(entity.id) : !sprites.has(entity.id)) addEntity(entity);
       }
       for (let index = 0; index < modelList.length; index++) {
@@ -1759,6 +1930,38 @@ export async function createPreview(canvas, project, state, { editor = false } =
           } else entry.action = null;
         }
         if (entry.action) entry.mixer.update(Math.min(.05, dt));
+      }
+      for (const entry of worldNodeList) {
+        const entity = entityIndex.get(entry.id);
+        entry.object.visible = Boolean(entity);
+        if (!entity) continue;
+        const sector = sectorOf(entity);
+        setWorldNodePose(entry, entity, sector?.floorHeight || 0, modelOrientation);
+      }
+      const mediaActive = !editor && (state.gameScreen === 'playing' || state.ambientWorld);
+      for (const entry of videoPlayers.values()) {
+        const entity = entityIndex.get(entry.id);
+        const projector = entity?.projector;
+        const shouldPlay = Boolean(projector?.autoplay && mediaActive && !entry.failed);
+        entry.video.loop = projector?.loop !== false;
+        entry.video.muted = projector?.muted !== false;
+        if (!shouldPlay) {
+          if (!entry.video.paused) entry.video.pause();
+          entry.requested = false;
+        } else if (entry.video.paused && !entry.requested) {
+          entry.requested = true;
+          try {
+            const result = entry.video.play();
+            result?.catch(error => {
+              if (entry.failed) return;
+              entry.failed = true;
+              mediaError(`Projector ${entity.name || entity.id}: video playback failed — ${error.message}`);
+            });
+          } catch (error) {
+            entry.failed = true;
+            mediaError(`Projector ${entity.name || entity.id}: video playback failed — ${error.message}`);
+          }
+        }
       }
       for (let index = 0; index < panelList.length; index++) {
         const entry = panelList[index];
@@ -1960,6 +2163,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
         fadeMaterial.color.setRGB(fade.red / 255, fade.green / 255, fade.blue / 255);
         fadeMaterial.opacity = Math.min(1, fade.amount);
       }
+      updateScreenInteraction();
+      crosshair.visible = !editor && gameplayCrosshairVisible(project, state);
+      writeDataset('crosshair', state.worldTerminalActive ? 'screen' : crosshair.visible ? 'visible' : 'hidden');
       renderer.clearDepth(); renderer.render(overlayScene, overlayCamera);
       renderer.setScissorTest(false);
       if (shaderCompileError) throw new Error(`GPU shader compilation failed: ${shaderCompileError}`);
@@ -2012,8 +2218,9 @@ export async function createPreview(canvas, project, state, { editor = false } =
       // same full reload instead of silently staying a sprite forever.
       const plan = liveProjectPlan(next.map.entities, {
         hasModel: id => modelAssets.has(id),
-        drawn: id => (models.has(id) ? 'model' : panels.has(id) ? 'panel' : sprites.has(id) ? 'sprite' : null),
+        drawn: id => (worldNodes.has(id) ? 'media' : models.has(id) ? 'model' : panels.has(id) ? 'panel' : sprites.has(id) ? 'sprite' : null),
         drawnModel: id => models.get(id)?.assetId,
+        drawnMedia: id => worldNodes.get(id)?.signature,
       });
       if (plan.needsReload) return false;
       project = next;
@@ -2044,7 +2251,7 @@ export async function createPreview(canvas, project, state, { editor = false } =
       for (const id of plan.add) addEntity(byId.get(id));
       return true;
     }
-    return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity,
+    return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity, handlePointerDown, updateScreenInteraction, closeWorldTerminal,
       /** Editor only: hide a ceiling once the camera is above it, so rooms open up. */
       ceilings(visible) { ceilingsHidden = !visible; },
       /** Every object drawn without artwork, one record each, for the placeholder log. */

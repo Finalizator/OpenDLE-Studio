@@ -184,7 +184,7 @@ export function openAssetPicker({
     }
   });
   const onPointerDown = event => { if (!panel.contains(event.target)) closeAssetPicker(); };
-  const onBlur = () => closeAssetPicker();
+  const onBlur = event => { if (event.target === window) closeAssetPicker(); };
   const onResize = () => closeAssetPicker();
   const listeners = [
     [document, 'pointerdown', onPointerDown], [window, 'blur', onBlur], [window, 'resize', onResize],

@@ -12,11 +12,12 @@ import {
 } from './editor-drop.js';
 import { areaVolume, areaYaw, overlayVolumes } from '/shared/areas.js';
 import { entityOrigin, facingArrowPose, hasModelFacing, playerStartPose } from '/shared/entity-visuals.js';
-import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
+import { placeSceneInstance, sceneIsEmpty } from '/shared/scenes.js';
+import { layoutSelection, sceneInstanceOf, membersOf } from '/shared/entity-groups.js';
 import { samplePath, sampleLengths, pointAlong, pathSignature as curveSignature } from '/shared/paths.js';
 import {
   GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formDrag,
-  rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
+  rayPlaneHit, ringDegrees, ringDelta, rotationDetent, scaleFactorFromDrag, screenAngle,
 } from '/shared/gizmo-math.js';
 import { buildFaceArrows, buildGizmo, disposeHandles, handleKey, paintHandles } from './gizmo.js';
 import { geometryEdges, geometrySurfaceEdges, MAX_CUT_POINTS } from '/shared/geometry-cut.js';
@@ -527,7 +528,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     // A ceiling cut away by the shader is still geometry to a raycast, so a click where
     // the room is open must fall through to whatever is under it.
     if (selection?.kind === 'sector' && selection.surface === 'ceilingHeight' && !ceilingDrawn(selection.id)) return null;
-    return selection;
+    return layoutSelection(project, selection);
   }
   function parentSelection(object) {
     for (let node = object; node; node = node.parent) if (node.userData.selection) return node.userData.selection;
@@ -642,6 +643,13 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    */
   function outlineFor(selection) {
     const points = [];
+    const instance = selection.kind === 'entity' ? sceneInstanceOf(project, selection.id) : null;
+    if (instance) {
+      const box = new THREE.Box3();
+      for (const entity of membersOf(project, instance.id)) box.union(boundsFor({ kind: 'entity', id: entity.id }, new THREE.Box3()));
+      if (!box.isEmpty()) outlineBox(points, box);
+      return points;
+    }
     if (selection.kind === 'entity') {
       const entity = entityById.get(selection.id);
       const volume = entity?.area ? areaVolume(entity, sectorAt(sectors, entity.x, entity.y)?.floorHeight ?? 0) : null;
@@ -697,8 +705,17 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     const group = kind && Array.isArray(selection.group) ? selection.group : [];
     const points = [];
     const centres = [];
+    const instances = new Set();
+    const primaryInstance = kind === 'entity' ? sceneInstanceOf(project, selection.id)?.id : null;
     for (const id of group) {
       if (id === selection.id) continue;
+      const instance = kind === 'entity' ? sceneInstanceOf(project, id) : null;
+      if (instance && (instance.id === primaryInstance || instances.has(instance.id))) continue;
+      if (instance) {
+        instances.add(instance.id);
+        points.push(...outlineFor({ kind, id: instance.rootId }));
+        continue;
+      }
       boundsFor({ kind, id }, bounds);
       if (bounds.isEmpty()) continue;
       outlineBox(points, bounds);
@@ -772,6 +789,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   }
   /** The volume being formed, or null: Form needs a box, because it is its faces that are dragged. */
   function formVolume() {
+    if (selected?.kind === 'entity' && sceneInstanceOf(project, selected.id)) return null;
     if (mode !== 'form' || !hasVolume || selected?.kind !== 'entity') return null;
     const entity = entityById.get(selected.id);
     if (!entity?.area) return null;
@@ -894,7 +912,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     return total ? lengths[best] / total : .5;
   }
   function select(selection, { rebuildHandles = true } = {}) {
-    selected = selection;
+    selected = layoutSelection(project, selection);
     // A route's line is painted white while it is selected and purple otherwise, and only a
     // rebuild repaints it: selecting an object has to rebuild too, or the route stays lit up as
     // though it were still the selection.
@@ -1014,6 +1032,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    * nothing draws nothing, rather than an arrow that turns out to be inert.
    */
   function axesFor(kind) {
+    if (kind === 'entity' && sceneInstanceOf(project, selected.id) && mode === 'form') return [];
     if (kind === 'pathPoint' || kind === 'path') return mode === 'move' ? ['x', 'y', 'z'] : [];
     if (kind === 'sector') return mode === 'move' ? ['y'] : [];
     if (kind === 'vertex' || kind === 'wall') return mode === 'move' ? ['x', 'z'] : [];
@@ -1092,8 +1111,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
 
   // Vertical editing moves whole sector surfaces. Per-vertex (sloped floor/ceiling) heights are
   // intentionally not supported yet: the project model stores one height per sector.
-  function liveDrag(selection, baseline, mode, delta, message) {
-    callbacks.live(next => dragSelection(next, baseline, selection, mode, delta, callbacks.grid()), message);
+  function liveDrag(selection, baseline, mode, delta, message, grid = callbacks.grid()) {
+    callbacks.live(next => dragSelection(next, baseline, selection, mode, delta, grid), message);
   }
 
   function surfaceTargetFor(selection, point) {
@@ -1208,16 +1227,17 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       if (!scene) return { error: 'That scene is no longer part of this project' };
       if (sceneIsEmpty(scene)) return { error: `Scene ${scene.name} has no objects` };
       const point = floorPointAt(pick?.point || emptyDropPoint());
-      const placed = instantiateScene(scene, { x: point.x, y: point.y });
-      return { label: `Place ${scene.name} (${placed.entities.length} objects) at ${point.x}, ${point.y}`,
+      let placed;
+      return { label: `Place ${scene.name} at ${point.x}, ${point.y}`,
         highlight: selection, point: pick?.point || new THREE.Vector3(point.x, point.floor, point.y),
-        apply: next => { next.map.entities.push(...placed.entities); next.events.push(...placed.events); },
-        select: placed.entities.length ? { kind: 'entity', id: placed.entities[0].id } : null };
+        apply: next => { placed = placeSceneInstance(next, scene, { x: point.x, y: point.y }); },
+        get select() { return placed ? { kind: 'entity', id: placed.group.rootId } : null; } };
     }
     if (external.assetId) {
       const asset = (project.assets || []).find(item => item.id === external.assetId);
       if (!asset) return { error: 'That asset is no longer part of this project' };
       if (selection?.kind === 'entity') {
+        if (sceneInstanceOf(project, selection.id)) return { error: 'Edit scene artwork in the scene editor, not on an individual layout part' };
         const entity = entityById.get(selection.id);
         if (!entity) return { error: 'That object no longer exists' };
         if (asset.kind === 'model') {
@@ -1303,7 +1323,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (!active || !over) return;
     if (!plan) { callbacks.error('Drop targets are walls, floors, ceilings and objects in the 3D view'); return; }
     if (plan.error) { callbacks.error(plan.error); return; }
-    applyEdit(plan.apply, plan.label, plan.select ? () => callbacks.select?.(plan.select) : null);
+    applyEdit(plan.apply, plan.label, () => { if (plan.select) callbacks.select?.(plan.select); });
   });
   listen(document, 'pointercancel', () => { if (external.pointerId !== null) endExternalDrag(); });
   // Tiles contain images that browsers would otherwise drag natively, which cancels pointer moves.
@@ -1432,7 +1452,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       action.end.copy(point);
       const delta = { x: action.end.x - action.start.x, y: action.end.z - action.start.z, z: 0 };
       liveDrag(action.selection, action.baseline, 'move', delta,
-        `Waypoint ${Math.round(action.end.x)}, ${Math.round(action.end.z)}`);
+        `Waypoint ${Math.round(action.end.x)}, ${Math.round(action.end.z)}`, event.altKey ? 0 : callbacks.grid());
       handles.position.copy(action.end);
       return;
     }
@@ -1440,14 +1460,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       if (!action.moved && Math.hypot(event.clientX - action.x, event.clientY - action.y) < 4) return;
       action.moved = true;
       const distance = dragAlong(event, action.drag);
-      const height = snapValue(action.startHeight + distance, callbacks.grid());
+      const height = snapValue(action.startHeight + distance, event.altKey ? 0 : callbacks.grid());
       action.endHeight = height;
       const name = action.selection.surface === 'ceilingHeight' ? 'Ceiling' : 'Floor';
       showReadout(`${name} ${action.startHeight} → ${height}`);
       canvas.dataset.surfaceHeight = String(height);
       // Apply as the pointer moves: the world is rebuilt incrementally, so the
       // geometry follows the cursor instead of snapping when the button is released.
-      liveDrag(action.selection, action.baseline, 'move', { x: 0, y: 0, z: height - action.startHeight }, `3D ${name.toLowerCase()} height ${height}`);
+      liveDrag(action.selection, action.baseline, 'move', { x: 0, y: 0, z: height - action.startHeight }, `3D ${name.toLowerCase()} height ${height}`, event.altKey ? 0 : callbacks.grid());
       return;
     }
     if (!action.moved && Math.hypot(event.clientX - action.x, event.clientY - action.y) < 2) return;
@@ -1486,7 +1506,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const direction = axisDirection(action.axis);
       const delta = { x: direction[0] * amount, y: direction[2] * amount, z: direction[1] * amount };
       liveDrag(action.selection, action.baseline, 'move', delta,
-        `3D move ${axisByKey(action.axis)?.name} ${Math.round(amount)}`);
+        `3D move ${axisByKey(action.axis)?.name} ${Math.round(amount)}`, event.altKey ? 0 : callbacks.grid());
       return;
     }
     if (action.mode === 'rotate') {
@@ -1495,8 +1515,11 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const turn = ringDegrees({ axis: axisDirection(action.axis), viewDirection: viewDirection(),
         from: action.turn, to: screenAngle(screenXY(action.origin), pointerXY(event)) });
       const delta = ringDelta(action.axis, turn);
-      const label = delta.angle !== undefined ? `yaw ${Math.round(turn)}deg`
-        : delta.pitch !== undefined ? `pitch ${Math.round(turn)}deg` : `roll ${Math.round(turn)}deg`;
+      const base = action.baseline.map.entities.find(entity => entity.id === action.selection.id);
+      if (!event.ctrlKey) for (const key of Object.keys(delta)) delta[key] = rotationDetent(delta[key],
+        key === 'angle' ? base?.angle || 0 : base?.modelTilt?.[key] || 0);
+      const label = delta.angle !== undefined ? `yaw ${Math.round(delta.angle)}deg`
+        : delta.pitch !== undefined ? `pitch ${Math.round(delta.pitch)}deg` : `roll ${Math.round(delta.roll)}deg`;
       liveDrag(action.selection, action.baseline, 'rotate', delta, `3D rotate ${label}`);
       return;
     }

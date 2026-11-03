@@ -6,6 +6,7 @@ const MODEL_SOURCE = /\.(glb|gltf|bbmodel)$/i;
 const NODE_FILE = /\.node$/i;
 const IMAGE = /\.(png|jpe?g|webp)$/i;
 const SOUND = /\.(wav|ogg|mp3)$/i;
+const VIDEO = /\.(mp4|webm)$/i;
 
 export const IMAGE_KINDS = new Set(['texture', 'flat', 'sky', 'sprite', 'weapon']);
 
@@ -14,14 +15,16 @@ export function groupDroppedFiles(files) {
   const models = list.filter(file => MODEL_SOURCE.test(file.name));
   const images = list.filter(file => IMAGE.test(file.name));
   const sounds = list.filter(file => SOUND.test(file.name));
+  const videos = list.filter(file => VIDEO.test(file.name));
   const nodes = list.filter(file => NODE_FILE.test(file.name));
   return {
     // Everything travels with a model drop so .bin buffers and textures resolve.
     models: models.length ? list : [],
     images: models.length ? [] : images,
     sounds: models.length ? [] : sounds,
+    videos: models.length ? [] : videos,
     nodes: models.length ? [] : nodes,
-    ignored: list.filter(file => !MODEL_SOURCE.test(file.name) && !IMAGE.test(file.name) && !SOUND.test(file.name)
+    ignored: list.filter(file => !MODEL_SOURCE.test(file.name) && !IMAGE.test(file.name) && !SOUND.test(file.name) && !VIDEO.test(file.name)
       && !NODE_FILE.test(file.name)),
   };
 }

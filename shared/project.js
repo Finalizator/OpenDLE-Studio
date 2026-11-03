@@ -18,6 +18,9 @@ import { GAME_SETTINGS, validateSetting } from './game-settings.js';
 import { MAX_PATHS, MAX_PATH_POINTS, PATH_MODES as PATH_CURVE_MODES } from './paths.js';
 import { validateRampProfile, rampProfile, hasEditableProfile } from './ramp-profile.js';
 import { validateTimesheet, timesheetCueEvents, TIMESHEET_CUE_CONDITION } from './timesheet.js';
+import { NODE_KINDS } from './media-nodes.js';
+import { nodeSignals, SIGNAL_NAME, validateSignalEvent } from './signals.js';
+import { resolveDoorHeights, elevatorHeights, sectorMover } from './sector-movers.js';
 
 /** How many timelines one project may carry. */
 export const MAX_TIMESHEETS = 32;
@@ -136,6 +139,13 @@ function measureAssetPayload(asset) {
     assert(asset.src.length <= 12 * 1024 * 1024, 'Embedded sound budget exceeded (12 MiB each, 64 MiB total)');
     return { bucket: 'sound', bytes: asset.src.length };
   }
+  if (asset.kind === 'video') {
+    assert(['mp4', 'webm'].includes(asset.format), 'Invalid video format');
+    assert(isDataUri(asset.src, asset.format === 'mp4' ? ['video/mp4'] : ['video/webm']),
+      'Videos must be embedded MP4 or WebM files');
+    assert(asset.src.length <= 86 * 1024 * 1024, 'Embedded video budget exceeded (64 MiB per video, 256 MiB total)');
+    return { bucket: 'video', bytes: asset.src.length };
+  }
   if (asset.kind === 'font') {
     assert(isDataUri(asset.src, ['font/woff', 'font/woff2', 'font/ttf', 'font/otf']), 'Fonts must be embedded WOFF/WOFF2/TTF/OTF');
     assert(asset.src.length <= 6 * 1024 * 1024, 'Embedded font budget exceeded');
@@ -241,8 +251,18 @@ export function updateAsset(project, id, change) {
  * check still runs on save, import, export and MCP changes.
  */
 /** Shared object rules, used by map objects and by the objects inside a scene. */
+function validateLocalVariableCommand(command, targets) {
+  if (!['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(command?.type)) return;
+  assert(targets.length && targets.every(entity => Object.hasOwn(entity.variables || {}, command.variable)), 'Command references an unknown object variable');
+  if (!isExpression(command.value) && command.type !== 'objectVariableCompare') {
+    assert(targets.every(entity => typeof entity.variables[command.variable] === typeof command.value), 'Object variable assignment must preserve its type');
+  }
+  if (command.type === 'addObjectVariable') assert(targets.every(entity => typeof entity.variables[command.variable] === 'number'), 'Only numeric object variables can be added');
+}
+
 export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [], pathRef = null } = {}) {
   assert(ENTITY_TYPES.includes(entity.type), 'Unknown entity type');
+  if (entity.nodeKind !== undefined) assert(NODE_KINDS.includes(entity.nodeKind), 'Unknown node kind');
   // A ramp carries the four numbers a mapper edits and derives everything else from them, so a
   // ramp with no parameters (an old project, or a decoration switched to a ramp) is given the
   // defaults rather than loaded as a solid block with no slope.
@@ -308,7 +328,90 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
   }
   text(entity.name, 'Entity name', 100);
   if (entity.variables !== undefined) validateVariables(entity.variables);
+  if (entity.signals !== undefined) {
+    array(entity.signals, 'Object signals', 32);
+    assert(entity.signals.every(name => typeof name === 'string' && SIGNAL_NAME.test(name)), 'Invalid object signal name');
+    assert(new Set(entity.signals).size === entity.signals.length, 'Object signal names must be unique');
+  }
   assetRef(entity.spriteAsset, 'Sprite');
+  if (entity.spritePlane !== undefined) {
+    object(entity.spritePlane, 'Sprite plane');
+    number(entity.spritePlane.width, 'Sprite plane width', .1, 4096);
+    number(entity.spritePlane.height, 'Sprite plane height', .1, 4096);
+    if (entity.spritePlane.billboard !== undefined) assert(typeof entity.spritePlane.billboard === 'boolean', 'Sprite plane billboard must be boolean');
+    if (entity.spritePlane.opacity !== undefined) number(entity.spritePlane.opacity, 'Sprite plane opacity', 0, 1);
+    if (entity.spritePlane.doubleSided !== undefined) assert(typeof entity.spritePlane.doubleSided === 'boolean', 'Sprite plane doubleSided must be boolean');
+  }
+  if (entity.sound !== undefined) {
+    object(entity.sound, 'Sound node');
+    const sound = assets.find(asset => asset.id === entity.sound.assetId);
+    if (entity.sound.assetId !== undefined && entity.sound.assetId !== null) {
+      assert(sound, 'Sound node references an unknown asset');
+      assert(sound?.kind === 'sound', 'Sound node requires an embedded sound asset');
+    }
+    if (entity.sound.autoplay !== undefined) assert(typeof entity.sound.autoplay === 'boolean', 'Sound autoplay must be boolean');
+    if (entity.sound.loop !== undefined) assert(typeof entity.sound.loop === 'boolean', 'Sound loop must be boolean');
+    if (entity.sound.volume !== undefined) number(entity.sound.volume, 'Sound volume', 0, 1);
+    if (entity.sound.radius !== undefined) number(entity.sound.radius, 'Sound radius', 1, 8192);
+  }
+  if (entity.projector !== undefined) {
+    object(entity.projector, 'Projector');
+    const source = assets.find(asset => asset.id === entity.projector.assetId);
+    if (entity.projector.assetId !== undefined && entity.projector.assetId !== null) {
+      assert(source, 'Projector references an unknown asset');
+      assert(source && (source.kind === 'video' || !['model', 'font', 'sound', 'music'].includes(source.kind)),
+        'Projector requires an embedded image or video asset');
+    }
+    number(entity.projector.width, 'Projector width', .1, 4096);
+    number(entity.projector.height, 'Projector height', .1, 4096);
+    if (entity.projector.opacity !== undefined) number(entity.projector.opacity, 'Projector opacity', 0, 1);
+    if (entity.projector.autoplay !== undefined) assert(typeof entity.projector.autoplay === 'boolean', 'Projector autoplay must be boolean');
+    if (entity.projector.loop !== undefined) assert(typeof entity.projector.loop === 'boolean', 'Projector loop must be boolean');
+    if (entity.projector.muted !== undefined) assert(typeof entity.projector.muted === 'boolean', 'Projector muted must be boolean');
+  }
+  if (entity.terminal !== undefined) {
+    object(entity.terminal, 'Terminal');
+    const terminal = entity.terminal;
+    number(terminal.width, 'Terminal width', .1, 4096);
+    number(terminal.height, 'Terminal height', .1, 4096);
+    for (const key of ['resolutionWidth', 'resolutionHeight']) {
+      number(terminal[key], `Terminal ${key}`, 64, 2048);
+      assert(Number.isInteger(terminal[key]), `Terminal ${key} must be an integer`);
+    }
+    assert(['keypad', 'terminal'].includes(terminal.mode), 'Terminal mode must be keypad or terminal');
+    text(terminal.title, 'Terminal title', 100);
+    text(terminal.code, 'Terminal code', 64);
+    assert(/^\d*$/.test(terminal.code), 'Terminal code must contain only digits');
+    if (terminal.variable !== null) {
+      text(terminal.variable, 'Terminal variable', 80);
+      validateVariables({ [terminal.variable]: 0 });
+    }
+    if (terminal.inputVariable !== undefined) {
+      validateVariables({ [terminal.inputVariable]: '' });
+      assert(typeof entity.variables?.[terminal.inputVariable] === 'string', 'Terminal digits need a declared text local variable');
+    }
+    if (terminal.submitSignal !== undefined) {
+      assert(SIGNAL_NAME.test(terminal.submitSignal), 'Invalid terminal submit signal name');
+    }
+    assert(colorPattern.test(terminal.background), 'Terminal background must be #rrggbb');
+    assert(colorPattern.test(terminal.foreground), 'Terminal foreground must be #rrggbb');
+    number(terminal.range, 'Terminal interaction range', 1, 8192);
+    if (terminal.buttons !== undefined) {
+      array(terminal.buttons, 'Terminal buttons', 12);
+      for (const entry of terminal.buttons) {
+        object(entry, 'Terminal button');
+        text(entry.label, 'Terminal button label', 32);
+        validateVariables({ terminalButtonValue: entry.value });
+      }
+    }
+  }
+  if (entity.mesh !== undefined) {
+    object(entity.mesh, 'Mesh');
+    assert(['box', 'sphere', 'cylinder', 'cone', 'capsule', 'plane'].includes(entity.mesh.shape), 'Unknown mesh shape');
+    for (const key of ['width', 'height', 'depth']) number(entity.mesh[key], `Mesh ${key}`, .1, 4096);
+    assert(colorPattern.test(entity.mesh.color), 'Mesh color must be #rrggbb');
+    if (entity.mesh.opacity !== undefined) number(entity.mesh.opacity, 'Mesh opacity', 0, 1);
+  }
   if (entity.spriteStates !== undefined) {
     object(entity.spriteStates, 'Sprite state mappings');
     for (const [name, id] of Object.entries(entity.spriteStates)) {
@@ -519,7 +622,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   const assets = project.assets || [];
   array(assets, 'Assets', LIMITS.assets);
   const assetIds = new Set();
-  let assetBytes = 0, soundBytes = 0, musicBytes = 0;
+  let assetBytes = 0, soundBytes = 0, musicBytes = 0, videoBytes = 0;
   // Sound and music names must be unique. Counting them in one pass replaces a
   // `filter` over every asset for every asset, which is quadratic on an imported game
   // (hundreds of sounds x thousands of assets on every validation).
@@ -532,7 +635,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   for (const asset of assets) {
     unique(asset, 'Asset');
     text(asset.name, 'Asset name', 100);
-    assert(['texture', 'flat', 'sky', 'sprite', 'weapon', 'model', 'font', 'sound', 'music'].includes(asset.kind), 'Invalid asset kind');
+    assert(['texture', 'flat', 'sky', 'sprite', 'weapon', 'model', 'font', 'sound', 'music', 'video'].includes(asset.kind), 'Invalid asset kind');
     const payload = assetPayload(asset, fast);
     if (payload.bucket === 'music') {
       musicBytes += payload.bytes;
@@ -544,6 +647,11 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       soundBytes += payload.bytes;
       assert(soundBytes <= 64 * 1024 * 1024, 'Embedded sound budget exceeded (12 MiB each, 64 MiB total)');
       assert(nameCounts.get(`sound\u0000${asset.name}`) === 1, 'Sound names must be unique');
+      assetIds.add(asset.id); continue;
+    }
+    if (payload.bucket === 'video') {
+      videoBytes += payload.bytes;
+      assert(videoBytes <= 256 * 1024 * 1024, 'Embedded video budget exceeded (64 MiB each, 256 MiB total)');
       assetIds.add(asset.id); continue;
     }
     assetBytes += payload.bytes;
@@ -561,7 +669,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   const assetRef = (id, label) => {
     if (id !== undefined && id !== null) {
       assert(assetIds.has(id), `${label} references an unknown asset`);
-      if (label !== 'Model') assert(!['model', 'font', 'sound', 'music'].includes(assetById.get(id)?.kind), `${label} requires an image`);
+      if (label !== 'Model')       assert(!['model', 'font', 'sound', 'music', 'video'].includes(assetById.get(id)?.kind), `${label} requires an image`);
     }
   };
   for (const asset of assets) if (asset.rotations !== undefined) {
@@ -608,6 +716,36 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     assetRef(sector.ceilingAsset, 'Ceiling material');
     if (sector.textureScale !== undefined) assertTextureScale(sector.textureScale, 'Surface texture scale');
     if (sector.gravity !== undefined) number(sector.gravity, 'Sector gravity', 0, 10);
+    if (sector.door !== undefined) {
+      const door = sector.door;
+      object(door, 'Sector door');
+      assert(Object.keys(door).every(key => ['initial', 'activation', 'radius', 'openHeight', 'closedHeight', 'speed'].includes(key)),
+        'Sector door contains an unknown setting');
+      assert(['native', 'open', 'closed'].includes(door.initial), 'Sector door initial state must be native, open or closed');
+      assert(['native', 'proximity', 'manual', 'event-only'].includes(door.activation), 'Sector door activation must be native, proximity, manual or event-only');
+      if (door.radius !== undefined) number(door.radius, 'Sector door radius', 1, 8192);
+      if (door.openHeight !== undefined) number(door.openHeight, 'Sector door open height', -32768, 32767);
+      if (door.closedHeight !== undefined) number(door.closedHeight, 'Sector door closed height', -32768, 32767);
+      if (door.speed !== undefined) number(door.speed, 'Sector door speed', .1, 4096);
+      const heights = resolveDoorHeights(project, sector);
+      assert(heights.open > heights.closed, `Sector door open height must exceed its closed height (${sector.id}: ${heights.open} <= ${heights.closed})`);
+      assert(!sector.elevator, 'A sector cannot be both an authored ceiling door and an elevator');
+    }
+    if (sector.elevator !== undefined) {
+      const elevator = sector.elevator;
+      object(elevator, 'Sector elevator');
+      assert(Object.keys(elevator).every(key => ['initial', 'activation', 'radius', 'lowerHeight', 'upperHeight', 'speed', 'moveCeiling'].includes(key)),
+        'Sector elevator contains an unknown setting');
+      assert(['native', 'lower', 'upper'].includes(elevator.initial), 'Sector elevator initial state must be native, lower or upper');
+      assert(['native', 'proximity', 'manual', 'event-only'].includes(elevator.activation), 'Sector elevator activation must be native, proximity, manual or event-only');
+      if (elevator.radius !== undefined) number(elevator.radius, 'Sector elevator radius', 1, 8192);
+      if (elevator.lowerHeight !== undefined) number(elevator.lowerHeight, 'Sector elevator lower height', -32768, 32767);
+      if (elevator.upperHeight !== undefined) number(elevator.upperHeight, 'Sector elevator upper height', -32768, 32767);
+      if (elevator.speed !== undefined) number(elevator.speed, 'Sector elevator speed', .1, 4096);
+      if (elevator.moveCeiling !== undefined) assert(typeof elevator.moveCeiling === 'boolean', 'Sector elevator moveCeiling must be boolean');
+      const heights = elevatorHeights(project, sector);
+      assert(heights.upper > heights.lower, `Sector elevator upper height must exceed its lower height (${sector.id}: ${heights.upper} <= ${heights.lower})`);
+    }
   }
   const sectorIds = new Set(sectors.map(sector => sector.id));
   for (const wall of walls) {
@@ -665,6 +803,11 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     assert(!groupIds.has(group.id), `Duplicate object group ${group.id}`);
     groupIds.add(group.id);
     text(group.name, 'Object group name', 100);
+    if (group.kind !== undefined) assert(group.kind === 'scene', 'Unknown object group kind');
+    if (group.kind === 'scene') {
+      assert(entities.some(entity => entity.id === group.rootId && entity.groupId === group.id), 'Scene instance root must belong to its group');
+      if (group.sceneId !== undefined) identifier(group.sceneId, 'Scene instance source');
+    }
   }
   const pathIds = new Set((project.paths || []).map(path => path.id));
   for (const entity of entities) {
@@ -797,6 +940,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         const eventIds = new Set();
         for (const event of scene.events) {
           object(event, 'Scene event');
+          validateSignalEvent(event, scene.entities);
           identifier(event.id, 'Scene event ID');
           assert(!eventIds.has(event.id), `Duplicate event ID in scene ${scene.name}: ${event.id}`);
           eventIds.add(event.id);
@@ -818,6 +962,12 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           if (event.condition !== undefined) {
             assert(CONDITIONS.includes(event.condition?.type) || addonDeclared.has(event.condition?.type),
               `Unknown scene event condition: ${event.condition?.type}`);
+          }
+          for (const command of [event.condition, ...(event.conditions || []), ...(event.actions || [])]) {
+            const targets = scene.entities.filter(entity => command?.entityId === '$self'
+              ? event.forEachType ? entity.type === event.forEachType : entity.id === event.ownerId
+              : entity.id === command?.entityId);
+            validateLocalVariableCommand(command, targets);
           }
         }
       }
@@ -1001,6 +1151,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     };
     const expression = value => validateExpression(value, expressionContext(project, event));
     const numberOrExpression = (value, label, min, max) => isExpression(value) ? expression(value) : number(value, label, min, max);
+    validateSignalEvent(event, project.map.entities);
     const validateCommand = command => {
       const definition = engineCommand(command.type, project);
       if (!definition) return;
@@ -1027,7 +1178,12 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       }
       if (definition.target) {
         const targets = targetEntities(command.entityId);
-        assert(['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(command.type) || targets.every(entity => entity.type !== 'player'), 'Use player stat commands for the player, not object health');
+        assert(['setObjectVariable', 'addObjectVariable', 'objectVariableCompare', 'emitSignal', 'onSignal'].includes(command.type) || targets.every(entity => entity.type !== 'player'), 'Use player stat commands for the player, not object health');
+      }
+      if (['onSignal', 'emitSignal'].includes(command.type)) {
+        assert(SIGNAL_NAME.test(command.signal), 'Signal names must start with a letter/underscore and contain at most 80 letters, digits or underscores');
+        assert(targetEntities(command.entityId).every(entity => nodeSignals(entity).includes(command.signal)),
+          'Command references a signal not declared by its source object');
       }
       if (definition.variable) assert(Object.hasOwn(project.variables, command.variable), 'Condition references an unknown variable');
       if (['gameScreen', 'setGameScreen'].includes(command.type)) {
@@ -1042,12 +1198,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         if (command.type === 'setShaderUniform') assert(Object.hasOwn(shader.uniforms || {}, command.uniform), 'Shader command references an unknown uniform');
       }
       if (['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(command.type)) {
-        const targets = targetEntities(command.entityId);
-        assert(targets.every(entity => Object.hasOwn(entity.variables || {}, command.variable)), 'Command references an unknown object variable');
-        if (!isExpression(command.value) && command.type !== 'objectVariableCompare') {
-          assert(targets.every(entity => typeof entity.variables[command.variable] === typeof command.value), 'Object variable assignment must preserve its type');
-        }
-        if (command.type === 'addObjectVariable') assert(targets.every(entity => typeof entity.variables[command.variable] === 'number'), 'Only numeric object variables can be added');
+        validateLocalVariableCommand(command, targetEntities(command.entityId));
       }
       if (definition.wall) assert(walls.some(wall => wall.id === command.wallId), 'Command references an unknown wall');
       if (command.type === 'loadGameLevel')
@@ -1063,6 +1214,10 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           !project.game && !gameLevelIds && project.gameMenus?.episodes?.some(episode => episode.levelId === command.levelId),
         'Episode command references an unknown game level');
       if (definition.sector) assert(sectorIds.has(command.sectorId), 'Command references an unknown sector');
+      if (['sectorDoorOpen', 'sectorDoorClosed', 'sectorDoorMoving', 'openSectorDoor', 'closeSectorDoor', 'toggleSectorDoor'].includes(command.type))
+        assert(sectorMover(project, command.sectorId)?.kind === 'door', 'Door commands require an existing or configured sector door');
+      if (definition.elevator) assert(sectorMover(project, command.sectorId)?.kind === 'elevator',
+        'Elevator commands require an existing or configured sector elevator');
       if (definition.spriteClip) clipRef(command.clipId);
       for (const key of ['clipId', 'impactClipId']) if (['launchProjectile', 'enemyProjectile'].includes(command.type) && command[key] !== undefined) clipRef(command[key]);
       if (definition.group) assert(groups.some(group => group.id === command.groupId), 'Command references an unknown event group');
@@ -1402,6 +1557,9 @@ export function removeEntity(project, id) {
   if (project.map.entityGroups) {
     const used = new Set(project.map.entities.map(item => item.groupId).filter(Boolean));
     project.map.entityGroups = project.map.entityGroups.filter(group => used.has(group.id));
+    for (const group of project.map.entityGroups) {
+      if (group.kind === 'scene' && group.rootId === id) group.rootId = project.map.entities.find(item => item.groupId === group.id).id;
+    }
   }
   // A joint cannot hold an object that is gone.
   if (project.map.joints) project.map.joints = project.map.joints.filter(joint => joint.a !== id && joint.b !== id);

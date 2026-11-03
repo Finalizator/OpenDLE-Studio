@@ -1,4 +1,4 @@
-import { resolveEntityId } from './project.js';
+import { eventConditions, resolveEntityId } from './project.js';
 import { entitySector, sectorAt, sectorGeometry } from './sectors.js';
 import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
@@ -44,9 +44,14 @@ import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { BT } from './acs.js';
+import { initialiseAuthoredDoors, operateSectorDoor, sectorDoorClosed, sectorDoorMoving, sectorDoorOpen,
+  updateProximityDoors, useManualDoor } from './doors.js';
+import { initialiseElevators, operateSectorElevator, sectorElevatorAt, sectorElevatorMoving,
+  updateProximityElevators, useManualElevator } from './elevators.js';
 import { clipFrame, setSpriteState } from './sprite-animation.js';
 import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
 import { createLevelStatistics, updateLevelStatistics, recordRemovedEntity, beginIntermission, continueIntermission } from './intermission.js';
+import { emitSignal, signalBatch, hasSignalCondition, SIGNAL_LIMIT } from './signals.js';
 
 export function distanceToSegment(x, y, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -98,6 +103,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
   if (progress) inventory.keys.clear();
   const playerStats = progress ? structuredClone(progress.playerStats) : initialPlayerStats();
   const entities = initialiseActorEntities(project, runtimeEntities(project, settings));
+  const sectors = sectorGeometry(project);
+  initialiseAuthoredDoors(project, sectors);
+  initialiseElevators(project, sectors);
   const state = {
     settings: userSettings, settingsRevision: 0, gameScreen: screen, gameMode,
     hasGame: screen === 'playing', bindingKey: null,
@@ -162,7 +170,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     message: '',
     messageTime: 0,
     walls: wallSegments(project),
-    sectors: sectorGeometry(project),
+    sectors,
     animations: new Map(project.map.entities.filter(entity => entity.animation?.autoPlay).map(entity => [entity.id, { ...entity.animation, playing: true, revision: 0 }])),
     animationFinished: new Set(),
     physics: null,
@@ -597,14 +605,21 @@ function advanceScreenFade(state, dt) {
 }
 
 export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
+  if (state.worldTerminalActive) {
+    keys = new Set(keys); pressed = new Set(pressed);
+    for (const key of ['Mouse0', 'Mouse2']) { keys.delete(key); pressed.delete(key); }
+  }
   dt = Math.max(0, Math.min(0.05, dt));
   const stepStarted = performance.now(), stepParts = (cacheFor(state).stepParts ||= {});
   let stepMark = stepStarted;
   const stage = name => { const now = performance.now(); stepParts[name] = now - stepMark; stepMark = now; };
   const player = state.player, hud = state.hudState;
+  let currentSignal = null;
+  const deliveredSignals = new Set();
   state.sounds.length = 0;
   advanceHUD(project, state.hudState, dt, 'interface');
   runRules('interface');
+  dispatchSignals('interface');
   // A script's `FadeTo` keeps running whatever the screen is doing: a title map fades to
   // black, hands the view to a camera, ends its script, and fades back in five seconds later.
   advanceScreenFade(state, dt);
@@ -637,6 +652,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.feedback.attackTime = !hud.cursor && keys.has('Mouse0') ? state.feedback.attackTime + dt : 0;
   advanceHUD(project, hud, dt);
   stage('hud');
+  updateProximityDoors(project, state);
+  updateProximityElevators(project, state);
   advanceSectors(state, dt);
   // Waggling planes and the 3D floors built on them move every frame, not only on an event.
   advancePlaneMotion(state, dt);
@@ -650,7 +667,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // title map rains its stars. It runs after the planes so a star lands on the floor it sees.
   stepThingGravity(project, state, dt);
   stage('sectors');
-  const usedWall = !hud.cursor && state.playerStats.health > 0 && pressed.has('KeyE') ? useWall(state) : null;
+  const manualUse = !hud.cursor && state.playerStats.health > 0 && pressed.has('KeyE');
+  const usedWall = manualUse ? useWall(state) : null;
+  if (manualUse) { useManualDoor(project, state); useManualElevator(project, state); }
   stage('use');
   state.worldTriggers.use = usedWall?.use ?? null;
   // The nearest line that actually carries a special, so a plain wall in front of a door
@@ -658,6 +677,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.worldTriggers.useSpecial = usedWall?.special ?? null;
   state.worldTriggers.shoot.clear();
   runRules('beforePhysics');
+  dispatchSignals('beforePhysics');
   stage('rules');
   if (state.gameScreen !== 'playing' && !state.ambientWorld) { hud.clicked.clear(); return; }
   // Doom's player does not move at a speed the keys choose; it accumulates momentum one
@@ -823,13 +843,15 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   updateLevelStatistics(state);
   state.messageTime = Math.max(0, state.messageTime - dt);
   runRules('afterPhysics');
+  dispatchSignals('afterPhysics');
   stage('afterRules');
   if (state.gameScreen !== 'playing') { hud.clicked.clear(); return; }
   // Imported actor definitions (DECORATE/ZScript) drive enemy and weapon state
   // machines; they run at Doom's 35 Hz tic rate next to the frame update.
   if (project.actors?.length) {
     stepActors(project, state, dt);
-    stepWeapon(project, state, dt, !hud.cursor && state.playerStats.health > 0 && keys.has('Mouse0'));
+    if (!state.worldTerminalActive) stepWeapon(project, state, dt, !hud.cursor && state.playerStats.health > 0 && keys.has('Mouse0'));
+    else { state.weaponTriggerHeld = false; state.weaponAttack = null; }
     applyWeaponAttack(project, state);
     tickMorphs(project, state);
   }
@@ -849,7 +871,19 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.started = true;
   stage('effects');
   recordStep(state, stepStarted, stepParts);
-  function runRules(phase) {
+  function dispatchSignals(phase) {
+    let batch;
+    while ((batch = signalBatch(state, phase)).length) {
+      for (const signal of batch) {
+        deliveredSignals.add(signal);
+        if (deliveredSignals.size > SIGNAL_LIMIT) throw new Error(`Signal dispatch exceeded ${SIGNAL_LIMIT} emissions in one tick; check for a signal loop`);
+        currentSignal = signal;
+        runRules(phase, true);
+      }
+    }
+    currentSignal = null;
+  }
+  function runRules(phase, signalDispatch = false) {
     const tree = ruleTree(project), roots = tree.phases.get(phase);
     if (!roots?.length) return;
     const instances = cacheFor(state).instances ||= new Map();
@@ -898,6 +932,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
     }
     for (const source of roots) {
+      if (hasSignalCondition(source) !== signalDispatch) continue;
       visit(source, undefined);
       if (phase !== 'interface' && state.gameScreen !== 'playing') break;
     }
@@ -940,10 +975,23 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (typeof a !== typeof b || !['number', 'string', 'boolean'].includes(typeof a) || typeof a === 'boolean' && !['=', '!='].includes(operator)) throw new Error(`Event "${event.name || event.id}": incompatible comparison types`);
       return compareValues(a, operator, b);
     }
+    function hasWallActivationParent() {
+      let current = event;
+      while (current) {
+        if (eventConditions(current).some(condition => condition?.type === 'wallActivated')) return true;
+        current = current.parentId ? project.events.find(candidate => candidate.id === current.parentId) : null;
+      }
+      return false;
+    }
     let statChanges = null;
     const matchOne = condition => condition.inverted ? !matchCondition(condition) : Boolean(matchCondition(condition));
     function matchCondition(condition) {
       condition = resolveCommand(condition);
+      if (condition.type === 'onSignal') return currentSignal &&
+        currentSignal.entityId === resolveEntityId(event, condition.entityId) && currentSignal.signal === condition.signal;
+      if (condition.type === 'signalValueCompare') return currentSignal &&
+        typeof currentSignal.value === typeof condition.value && compare(currentSignal.value, condition.operator, condition.value);
+      if (condition.type === 'interactingWithScreen') return Boolean(state.worldTerminalActive);
       if (condition.type === 'gameScreen') return state.gameScreen === condition.screen;
       if (condition.type === 'shaderEnabled') return state.shaderEnabled;
       if (condition.type === 'expressionCompare') return compare(condition.left, condition.operator, condition.right);
@@ -1038,6 +1086,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         return state.worldTriggers[condition.mode].has(condition.wallId);
       }
       if (condition.type === 'sectorMoving') return state.sectorMotions.has(`${condition.sectorId}:${condition.surface}`);
+      if (condition.type === 'sectorDoorOpen') return sectorDoorOpen(project, state, condition.sectorId);
+      if (condition.type === 'sectorDoorClosed') return sectorDoorClosed(project, state, condition.sectorId);
+      if (condition.type === 'sectorDoorMoving') return sectorDoorMoving(state, condition.sectorId);
+      if (condition.type === 'sectorElevatorLowered') return sectorElevatorAt(project, state, condition.sectorId, 'lower');
+      if (condition.type === 'sectorElevatorRaised') return sectorElevatorAt(project, state, condition.sectorId, 'upper');
+      if (condition.type === 'sectorElevatorMoving') return sectorElevatorMoving(state, condition.sectorId);
       if (condition.type === 'enemySeesPlayer') {
         const entity = findTarget(condition.entityId);
         const alerted = entity && state.time < (state.timers.get(`${entity.id}:alert`) || 0);
@@ -1134,6 +1188,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     for (const sourceAction of event.actions) {
       const action = resolveCommand(sourceAction);
       switch (action.type) {
+        case 'emitSignal': emitSignal(state, resolveEntityId(event, action.entityId), action.signal, action.value); break;
         case 'saveGame':
           if (!state.hasGame || state.intermission || state.playerStats.health <= 0) {
             state.saveStatus = 'Start or resume a living game before saving.'; break;
@@ -1262,7 +1317,19 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           state.physics?.gravityScale(resolveEntityId(event, action.entityId), action.scale); break;
         case 'setDamping':
           state.physics?.damping(resolveEntityId(event, action.entityId), action.damping); break;
-        case 'moveSector': moveSector(state, action); break;
+        case 'moveSector': {
+          const sector = state.sectors.find(sector => sector.id === action.sectorId), door = sector?.door;
+          const authoredDoor = door?.activation === 'event-only' && !hasWallActivationParent();
+          const authoredElevator = sector?.elevator?.activation === 'event-only' && !hasWallActivationParent();
+          moveSector(state, action, { authoredDoor, authoredElevator });
+          break;
+        }
+        case 'raiseSectorElevator': operateSectorElevator(project, state, action.sectorId, 'raise'); break;
+        case 'lowerSectorElevator': operateSectorElevator(project, state, action.sectorId, 'lower'); break;
+        case 'toggleSectorElevator': operateSectorElevator(project, state, action.sectorId, 'toggle'); break;
+        case 'openSectorDoor': operateSectorDoor(project, state, action.sectorId, 'open'); break;
+        case 'closeSectorDoor': operateSectorDoor(project, state, action.sectorId, 'close'); break;
+        case 'toggleSectorDoor': operateSectorDoor(project, state, action.sectorId, 'toggle'); break;
         case 'setWeaponOwned': {
           if (action.owned === 'yes') {
             if (!state.inventory.weapons.has(action.weapon)) state.feedback.weaponPickupTime = state.time;
@@ -1370,7 +1437,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (entity) enemyHitscan(state, entity, action);
           break;
         }
-        case 'launchProjectile': launchProjectile(state, action); break;
+        case 'launchProjectile': if (!state.worldTerminalActive) launchProjectile(state, action); break;
         case 'enemyProjectile': {
           const entity = findTarget(action.entityId);
           if (entity && entity.health > 0 && canSeePlayer(state, entity, 65536)) launchProjectile(state, action, entity);
@@ -1381,7 +1448,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (target) target.health = action.health;
           break;
         }
-        case 'hitscan': fireHitscan(project, state, action); break;
+        case 'hitscan': if (!state.worldTerminalActive) fireHitscan(project, state, action); break;
         case 'startTimer': state.timers.set(`${event.ownerId || '$scene'}:${action.timer}`, state.time + action.seconds); break;
         case 'clearTimer': state.timers.delete(`${event.ownerId || '$scene'}:${action.timer}`); break;
         case 'showPlayerHUD': state.hud = action.visible === 'yes'; break;
@@ -1535,6 +1602,7 @@ function applyWeaponAttack(project, state) {
   const attack = state.weaponAttack;
   if (!attack) return;
   state.weaponAttack = null;
+  if (state.worldTerminalActive) return;
   if (attack.kind === 'hitscan') {
     fireHitscan(project, state, { damage: attack.damage[0], diceSides: attack.damage[1], pellets: attack.pellets,
       spread: attack.spread, range: attack.range });

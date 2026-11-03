@@ -11,6 +11,8 @@ import { sceneEntityId, sceneSubtree, remapReferences, MAX_SCENE_ENTITIES, MAX_S
 import { MAX_JOINTS, validateJoint, newJointId } from './joints.js';
 import { MODEL_FACING_SEMANTICS, hasModelFacing } from './entity-visuals.js';
 import { bakePathRamp } from './paths.js';
+import { validateSignalEvent } from './signals.js';
+import { createSceneInstanceGroup, sceneInstanceOf, membersOf } from './entity-groups.js';
 
 export const NODE_FILE_FORMAT = 'opendle-node';
 export const NODE_FILE_VERSION = 1;
@@ -87,6 +89,7 @@ export function layoutContainer(project) {
     spriteClips: project.spriteClips,
     eventSheets: project.eventSheets,
     eventGroups: project.eventGroups,
+    layoutProject: project,
   };
 }
 
@@ -106,6 +109,16 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   // Selecting the scene root means "save the whole scene", so the top-level nodes are
   // wrapped in a group named after the scene and travel as one object.
   const wholeScene = nodeId === scene?.id;
+  const instance = scene.layoutProject ? sceneInstanceOf(scene.layoutProject, nodeId) : null;
+  if (instance) {
+    const members = membersOf(scene.layoutProject, instance.id).map(entity => {
+      const copy = cloneProjectData(entity);
+      delete copy.groupId;
+      return copy;
+    });
+    return exportNodeFile({ ...scene, layoutProject: null, id: instance.id, name: instance.name, entities: members },
+      instance.id, { name, assets, shaders, clips, eventSheets, eventGroups, includeEvents });
+  }
   const subtree = wholeScene ? [...(scene.entities || [])] : sceneSubtree(scene, nodeId);
   if (!subtree.length) throw new Error('That node no longer exists');
   const root = wholeScene ? { id: `${scene.id}_root`, type: 'decoration', name: name || scene.name || 'Scene',
@@ -168,6 +181,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   for (const node of subtree) {
     if (node.spriteAsset) assetIds.add(node.spriteAsset);
     if (node.modelAsset) assetIds.add(node.modelAsset);
+    for (const component of [node.sound, node.projector]) if (component?.assetId) assetIds.add(component.assetId);
     if (node.shaderId) shaderIds.add(node.shaderId);
   }
   for (const clip of carriedClips) for (const frame of clip.frames) assetIds.add(frame);
@@ -356,6 +370,7 @@ export function validateNodeFile(document) {
     const groupIds = new Set((document.groups || []).map(group => group.id));
     for (const event of document.events) {
       if (!event || typeof event !== 'object') fail('every event must be an object');
+      validateSignalEvent(event, document.nodes);
       if (event.ownerId !== undefined && !ids.has(event.ownerId)) fail(`event ${event.id} is owned by an object the file does not contain`);
       if (event.sheetId !== undefined && !sheetIds.has(event.sheetId)) fail(`event ${event.id} belongs to a sheet the file does not describe`);
       if (event.groupId !== undefined && !groupIds.has(event.groupId)) fail(`event ${event.id} belongs to a group the file does not describe`);
@@ -413,6 +428,9 @@ export function applyNodeFile(scene, document, {
     // An asset that clashed with different artwork in the destination got a new id.
     if (copy.spriteAsset && assetRemap.has(copy.spriteAsset)) copy.spriteAsset = assetRemap.get(copy.spriteAsset);
     if (copy.modelAsset && assetRemap.has(copy.modelAsset)) copy.modelAsset = assetRemap.get(copy.modelAsset);
+    for (const component of [copy.sound, copy.projector]) {
+      if (component?.assetId && assetRemap.has(component.assetId)) component.assetId = assetRemap.get(component.assetId);
+    }
     if (copy.spriteStates) {
       for (const [state, id] of Object.entries(copy.spriteStates)) {
         if (clipRemap.has(id)) copy.spriteStates[state] = clipRemap.get(id);
@@ -488,7 +506,9 @@ export function applyNodeFile(scene, document, {
     for (const event of events) scene.events.push(event);
   }
 
-  return { ids: copies.map(copy => copy.id), root: roots.length ? mapping.get(roots[0].id) : null,
+  const root = roots.length ? mapping.get(roots[0].id) : copies[0]?.id;
+  if (scene.layoutProject) createSceneInstanceGroup(scene.layoutProject, copies.map(copy => copy.id), { name: document.name, rootId: root });
+  return { ids: copies.map(copy => copy.id), root,
     assets: document.assets || [], shaders: document.shaders || [], clips: document.clips || [],
     sheets: document.sheets || [], groups: document.groups || [],
     stripped: { ...stripped, types: [...stripped.types] } };

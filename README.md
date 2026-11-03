@@ -22,10 +22,14 @@ page.
 
 - **Visual world editing:** build and edit sectors, rooms, materials, lighting
   and objects in 2D and 3D.
-- **Editable gameplay:** attach visual events to objects, use local variables
-  and expressions, and customize imported gameplay. Game-wide and object-local
+- **Editable gameplay:** attach visual events to objects, use local variables,
+  expressions and named signals, and customize imported gameplay. Game-wide and object-local
   scripts are separate authoring scopes; see
   [visual scripting](Docs/visual-scripting.md).
+- **Reusable scene nodes:** manipulate models, sprite planes, meshes, sound and
+  video surfaces; save groups as portable `.node` files. Build mouse-operated
+  terminals directly on 3D surfaces and connect them to configurable sector doors.
+  Start with the [node editor and terminal guide](Docs/node-editor.md).
 - **Choose the movement:** Doom's thrust-and-friction, or Half-Life / Source
   movement with its air-strafing and surf. The scriptlet installs the rule, and can
   build a new empty map with two surf ramps to try it on; every constant is editable.
@@ -56,6 +60,21 @@ Open **http://127.0.0.1:3000/**
 On Linux/macOS, `./launch.sh` also handles dependency setup and browser launch.
 Use **Play level** to test the current map or **Play game** to open its menus.
 DeepSeek is optional; configure it using [.env.example](./.env.example).
+
+## Documentation
+
+- [Node editor, terminals and doors](Docs/node-editor.md): viewport controls,
+  reusable node import/export, local variables, signals and a step-by-step code lock.
+- [Visual scripting reference](Docs/visual-scripting.md): event scopes, phases,
+  conditions/actions and command parameters.
+- [GZDoom compatibility](Docs/gzdoom-parity.md): implementation status and gaps.
+- [Development Guide](DEVELOPMENT.md): setup, persistence, architecture, MCP and
+  contributor workflows.
+
+The ready-made [Access terminal node](public/examples/access-terminal.node) uses
+PIN **1234**, per-instance `digits` and a `submitted` signal. Its door connection
+is authored in the destination layout; see the
+[setup walkthrough](Docs/node-editor.md#connect-the-terminal-to-one-specific-door).
 
 ## Where we're heading
 

@@ -113,6 +113,12 @@ export function ringDelta(axisKey, degrees) {
   return { roll: degrees };
 }
 
+export function rotationDetent(degrees, start = 0) {
+  const target = start + degrees;
+  const snapped = Math.round(target / 45) * 45 || 0;
+  return Math.abs(target - snapped) <= 3 ? snapped - start : degrees;
+}
+
 /**
  * What a face drag does to a volume, worked out on one axis.
  *

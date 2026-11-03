@@ -13,6 +13,7 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // Diagnostics and derived handles stay out of saves: the unsupported-action set is
 // rebuilt as problems occur, and the weapon machine is re-entered on load.
 const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus',
+  'worldTerminalActive', 'worldTerminalId',
   'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'areaEntries', 'surfaces', 'intervals',
   // Diagnostics describe the session, not the game; they are rebuilt on load. Leaving
   // them in the payload made restoring any save written after a decal or a grounded
@@ -264,7 +265,8 @@ function validateRuntime(project, state, baseline) {
   for (const [key, motion] of state.sectorMotions) {
     if (!plain(motion) || !sectorIds.has(motion.sectorId) || !['floorHeight', 'ceilingHeight'].includes(motion.surface) ||
       key !== `${motion.sectorId}:${motion.surface}` || !['out', 'return'].includes(motion.direction) ||
-      !['origin', 'waiting', 'height', 'speed'].every(field => Number.isFinite(motion[field]))) fail('invalid sector motion');
+      !['origin', 'waiting', 'height', 'speed'].every(field => Number.isFinite(motion[field])) ||
+      motion.moveCeiling !== undefined && (typeof motion.moveCeiling !== 'boolean' || motion.surface !== 'floorHeight')) fail('invalid sector motion');
   }
   if (state.hudState.elements.size !== baseline.hudState.elements.size) fail('missing HUD elements');
   for (const [id, element] of state.hudState.elements) {

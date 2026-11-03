@@ -85,6 +85,19 @@ test('a plain WAD import runs Doom weapon states instead of scripted firing rule
     'a project without an actor table still gets the scripted rules');
 });
 
+test('screen interaction suppresses classic weapon fire and ammo consumption until aim leaves', () => {
+  const project = plainProject(), state = armed(project);
+  state.worldTerminalActive = true;
+  for (const slot of SLOTS) {
+    const projectiles = state.projectiles.length;
+    assert.deepEqual(hold(project, state, slot, 60), {}, `${slot} does not spend ammo at a screen`);
+    assert.equal(state.projectiles.length, projectiles, `${slot} does not emit a projectile`);
+  }
+  assert.equal(state.lastShot, undefined);
+  state.worldTerminalActive = false;
+  assert.ok(hold(project, state, 'pistol', 60).bullets > 0, 'normal weapon input resumes off the screen');
+});
+
 test('classic weapon cadences come from their own frame durations', () => {
   const project = plainProject();
   const state = armed(project);

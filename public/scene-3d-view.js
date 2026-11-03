@@ -7,7 +7,7 @@
 // owns the 3D canvas, so the two never fight over a rendering context.
 //
 // Coordinates: a scene object lives in Doom map space (x, y on the floor, z up) while
-// Three is y-up. Node groups are Z-up children of a rotated world group, so their
+// Three is y-up. Node groups are Z-up children of a Y/Z-swapped world group, so their
 // transforms stay readable; only raycast results and the camera are converted, by
 // `toMap` and `toThree`.
 import * as THREE from 'three/webgpu';
@@ -19,6 +19,11 @@ import { PANEL_DEFAULTS } from '/shared/panel.js';
 import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { mix, output, screenUV, uniform, uv, vec4, viewportUV } from 'three/tsl';
+import { buildGizmo, buildFaceArrows, disposeHandles, handleKey, paintHandles } from './gizmo.js';
+import { axisAmount, ringDegrees, scaleFactorFromDrag, GIZMO_LENGTH } from '/shared/gizmo-math.js';
+import { sceneNodeDimensions, sceneNodePivot, sceneNodeSupportsTilt } from '/shared/scene-nodes.js';
+import { modelOrientation } from '/shared/entity-visuals.js';
+import { createWorldNodeObject, setWorldNodePose } from './world-media.js';
 
 const MODEL_LIGHTING = { fill: .9, key: 2.8, rim: .6 };
 /** Doom sprites are one pixel to the unit, so artwork with no size still draws. */
@@ -26,12 +31,12 @@ const DEFAULT_SPRITE = { width: 32, height: 40 };
 
 /** Map space -> Three space. */
 export function toThree(point) {
-  return { x: point.x, y: point.z || 0, z: -point.y };
+  return { x: point.x, y: point.z || 0, z: point.y };
 }
 
 /** Three space -> map space. */
 export function toMap(point) {
-  return { x: point.x, y: -point.z, z: point.y };
+  return { x: point.x, y: point.z, z: point.y };
 }
 
 export async function createScene3dView(canvas) {
@@ -64,11 +69,18 @@ export async function createScene3dView(canvas) {
   // Nodes live in map space inside this group, so their transforms read like the data.
   const world = new THREE.Group();
   world.rotation.x = -Math.PI / 2;
+  world.scale.y = -1;
   scene.add(world);
 
   const loader = new GLTFLoader();
   const modelCache = new Map(), textureCache = new Map();
   const groups = new Map();
+  const mediaEntries = new Map(), videos = new Map();
+  const usedVideos = new Set();
+  let active = true;
+  const gizmo = new THREE.Group();
+  world.add(gizmo);
+  let tool = 'move', handleMeshes = [], handleSignature = '';
   // Sprite nodes are billboards: quads that are turned towards the camera every frame,
   // which a mesh does reliably with either renderer backend.
   const billboards = new Set();
@@ -186,7 +198,7 @@ export async function createScene3dView(canvas) {
         return loaded;
       })();
       // A model that failed to parse must not poison the cache: the next edit retries it.
-      pending.catch(() => modelCache.delete(asset.id));
+      pending.catch(() => { if (modelCache.get(asset.id) === pending) modelCache.delete(asset.id); });
       modelCache.set(asset.id, pending);
     }
     return pending;
@@ -204,6 +216,20 @@ export async function createScene3dView(canvas) {
     return texture;
   }
 
+  function disposeCachedModel(pending) {
+    pending.then(loaded => {
+      const textures = new Set();
+      loaded.scene.traverse(node => {
+        const materials = node.material ? Array.isArray(node.material) ? node.material : [node.material] : [];
+        for (const material of materials) for (const value of Object.values(material)) {
+          if (value?.isTexture) textures.add(value);
+        }
+      });
+      disposeGroup(loaded.scene);
+      for (const texture of textures) texture.dispose();
+    }, () => { /* Failed loads were already reported by their nodes. */ });
+  }
+
   function disposeGroup(group) {
     group.traverse(node => {
       node.geometry?.dispose?.();
@@ -213,13 +239,87 @@ export async function createScene3dView(canvas) {
     group.removeFromParent();
   }
 
+  function nativeSpace(group) {
+    // The map and native Three spaces swap Y/Z. Two reflections preserve native artwork.
+    const native = new THREE.Group();
+    native.rotation.x = Math.PI / 2;
+    native.scale.z = -1;
+    group.rotation.set(0, 0, 0);
+    group.add(native);
+    return native;
+  }
+
+  function mediaTexture(entity, group) {
+    const id = entity.projector?.assetId || entity.spriteAsset;
+    const asset = id && assetsById.get(id);
+    if (!asset) return null;
+    if (asset.kind !== 'video') return spriteTexture(asset);
+    const key = `${entity.id}/${asset.id}`;
+    usedVideos.add(key);
+    let entry = videos.get(key);
+    if (entry && (entry.src !== asset.src || entry.loop !== entity.projector.loop)) {
+      disposeVideo(entry); videos.delete(key); entry = null;
+    }
+    if (!entry) {
+      const video = document.createElement('video');
+      video.muted = true; video.playsInline = true; video.loop = entity.projector.loop !== false;
+      video.preload = 'auto'; video.src = asset.src;
+      const texture = new THREE.VideoTexture(video);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      entry = { video, texture, src: asset.src, loop: entity.projector.loop, autoplay: entity.projector.autoplay !== false };
+      video.addEventListener('error', () => {
+        if (entry.disposed) return;
+        entry.group.userData.error = `Video ${asset.name} could not decode (${video.error?.message || 'unsupported media'})`;
+        canvas.dataset.mediaError = entry.group.userData.error;
+        console.warn(canvas.dataset.mediaError); report();
+      });
+      videos.set(key, entry);
+    }
+    entry.group = group;
+    entry.autoplay = entity.projector.autoplay !== false;
+    if (!active || !entry.autoplay) entry.video.pause();
+    else if (entry.video.paused) entry.video.play().catch(error => {
+      if (entry.disposed || !active || !entry.autoplay || error.name === 'AbortError' && entry.video.paused) return;
+      canvas.dataset.mediaError = `Video ${asset.name}: ${error.message}`;
+      console.warn(canvas.dataset.mediaError);
+    });
+    return entry.texture;
+  }
+
+  function disposeVideo(entry) {
+    entry.disposed = true;
+    entry.video.pause(); entry.video.removeAttribute('src'); entry.video.load(); entry.texture.dispose();
+  }
+
+  function setActive(value) {
+    if (active === value) return;
+    active = value;
+    for (const entry of videos.values()) {
+      if (!value) entry.video.pause();
+      else if (entry.autoplay) entry.video.play().catch(error => {
+        if (entry.disposed || !active || !entry.autoplay || error.name === 'AbortError' && entry.video.paused) return;
+        canvas.dataset.mediaError = error.message; console.warn(`Scene video: ${error.message}`);
+      });
+    }
+  }
+
   function buildEntity(entity) {
     const group = new THREE.Group();
-    group.position.set(entity.x, entity.y, entity.elevation || 0);
+    group.position.set(entity.x, entity.y, entity.z ?? entity.elevation ?? 0);
     group.rotation.z = (Number(entity.angle) || 0) * Math.PI / 180;
     group.userData.entityId = entity.id;
     const modelAsset = entity.modelAsset ? assetsById.get(entity.modelAsset) : null;
-    if (modelAsset) {
+    if (entity.spritePlane || entity.projector || entity.terminal || entity.mesh) {
+      const entry = createWorldNodeObject(THREE, entity, { texture: mediaTexture(entity, group),
+        materialFactory: config => withShader(entity.mesh ? new THREE.MeshStandardMaterial(config) : new THREE.MeshBasicMaterial(config), entity) });
+      setWorldNodePose(entry, { ...entity, x: 0, y: 0, z: 0, elevation: 0 }, 0, modelOrientation);
+      nativeSpace(group).add(entry.object);
+      if (entry.object.userData.billboard) billboards.add(entry.object);
+      if (screenMaterials.has(entry.material)) screenGroups.add(group);
+      mediaEntries.set(entity.id, entry);
+      group.userData.media = entry.nodeKind;
+    } else if (modelAsset) {
+      const native = nativeSpace(group);
       // A box stands in until the model is parsed, so the node is never invisible.
       const placeholder = new THREE.Mesh(new THREE.BoxGeometry(32, 32, 32),
         new THREE.MeshStandardMaterial({ color: '#7b7f8c', transparent: true, opacity: .35 }));
@@ -230,15 +330,14 @@ export async function createScene3dView(canvas) {
         const object = cloneModel(loaded.scene);
         object.userData.modelRoot = true;
         object.scale.setScalar(Number(entity.modelScale) || 32);
-        // Models are authored Y-up; inside the Z-up group that is a quarter turn.
-        object.rotation.x = Math.PI / 2;
-        const tilt = entity.modelTilt || {};
-        if (tilt.pitch) object.rotation.y += Number(tilt.pitch) * Math.PI / 180;
-        if (tilt.roll) object.rotation.z += Number(tilt.roll) * Math.PI / 180;
+        object.quaternion.fromArray(modelOrientation(entity));
         object.traverse(node => {
+          if (node.geometry) node.geometry = node.geometry.clone();
           if (!node.material) return;
-          const materials = Array.isArray(node.material) ? node.material : [node.material];
-          node.material = materials.map(material => {
+          const wasArray = Array.isArray(node.material);
+          const materials = wasArray ? node.material : [node.material];
+          node.material = materials.map(source => {
+            const material = source.clone();
             // Emissive is the selection tint, so remember what to restore it to.
             if (material.emissive) {
               material.userData.baseEmissive = material.emissive.getHex();
@@ -246,8 +345,9 @@ export async function createScene3dView(canvas) {
             }
             return withShader(material, entity);
           });
-          if (!Array.isArray(object.material) && materials.length === 1) node.material = node.material[0];
-          if (materials.some(material => screenMaterials.has(material))) screenGroups.add(group);
+          if (!wasArray) node.material = node.material[0];
+          const assigned = Array.isArray(node.material) ? node.material : [node.material];
+          if (assigned.some(material => screenMaterials.has(material))) screenGroups.add(group);
         });
         // Drop whatever stand-in the group still holds, then show the real mesh.
         for (const child of [...group.children]) {
@@ -256,7 +356,7 @@ export async function createScene3dView(canvas) {
           child.geometry?.dispose?.();
           child.material?.dispose?.();
         }
-        group.add(object);
+        native.add(object);
         report();
       }).catch(error => { group.userData.error = error.message; report(); });
     } else if (entity.panel) {
@@ -283,12 +383,12 @@ export async function createScene3dView(canvas) {
       }), entity);
       const quad = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
       // Doom sprites hang from their bottom edge, so the quad is raised by half a height.
-      quad.position.z = height / 2;
+      quad.position.y = height / 2;
       quad.userData.pickable = true;
       quad.userData.billboard = true;
       billboards.add(quad);
       if (screenMaterials.has(material)) screenGroups.add(group);
-      group.add(quad);
+      nativeSpace(group).add(quad);
     } else if (entity.physics?.shape === 'wedge') {
       // A ramp is drawn as the wedge it collides as, from the same six corners. The group is
       // Z-up here, so the ridge rises in local Z and the map's depth is local Y — the collider
@@ -318,12 +418,28 @@ export async function createScene3dView(canvas) {
         color: '#6f5bd0', transparent: true, opacity: .92, side: THREE.DoubleSide }));
       mesh.userData.pickable = true;
       group.add(mesh);
+    } else if (entity.type === 'light' || entity.sound || entity.nodeKind === 'node3d' || entity.nodeKind === 'marker' || entity.area) {
+      const color = entity.type === 'light' ? '#ffd06b' : entity.sound ? '#88ccff' : '#b2a1e8';
+      const dimension = sceneNodeDimensions(entity);
+      const geometry = entity.area
+        ? entity.area.shape === 'sphere' ? new THREE.SphereGeometry(dimension.width / 2, 16, 10)
+          : entity.area.shape === 'capsule' ? new THREE.CapsuleGeometry(dimension.width / 2,
+            Math.max(0, dimension.height - dimension.width), 4, 12).rotateX(Math.PI / 2)
+            : new THREE.BoxGeometry(dimension.width, dimension.depth, dimension.height)
+        : entity.type === 'light' ? new THREE.SphereGeometry(10, 12, 8)
+          : entity.sound ? new THREE.ConeGeometry(14, 24, 16) : new THREE.OctahedronGeometry(10);
+      const wire = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, wireframe: true }));
+      wire.position.z = entity.area ? dimension.height / 2 : 12;
+      group.add(wire);
     } else {
       const height = nodeHeight(entity);
-      const box = new THREE.Mesh(new THREE.BoxGeometry(24, 24, height),
-        new THREE.MeshStandardMaterial({ color: entity.type === 'light' ? '#a9beff' : '#9aa0b4', transparent: true, opacity: .55 }));
+      const geometry = entity.type === 'enemy' ? new THREE.CapsuleGeometry(12, Math.max(1, height - 24), 6, 12).rotateX(Math.PI / 2)
+        : entity.type === 'pickup' ? new THREE.OctahedronGeometry(16) : new THREE.BoxGeometry(24, 24, height);
+      const box = new THREE.Mesh(geometry,
+        new THREE.MeshStandardMaterial({ color: entity.type === 'enemy' ? '#d87568' : entity.type === 'pickup' ? '#7ddbb1' : '#9aa0b4', transparent: true, opacity: .8 }));
       box.position.z = height / 2;
       box.userData.pickable = true;
+      box.userData.placeholder = true;
       group.add(box);
     }
     if (entity.type === 'light' && entity.light) {
@@ -359,11 +475,59 @@ export async function createScene3dView(canvas) {
           if (material.emissive && material.userData.baseEmissive !== undefined) {
             material.emissive.setHex(selected ? 0x4a4230 : material.userData.baseEmissive);
           }
+
           // A selected sprite is tinted, because a billboard has no faces to light up.
           if (node.userData.billboard && material.color) material.color.set(selected ? '#ffe9a8' : '#ffffff');
         }
       });
     }
+  }
+
+  function updateGizmo() {
+    const entity = entities.find(item => item.id === selectionId);
+    const dimensions = entity && sceneNodeDimensions(entity);
+    gizmo.visible = Boolean(entity && tool !== 'select' && (tool !== 'form' || dimensions));
+    if (!gizmo.visible) return;
+    const axes = tool === 'rotate' && !sceneNodeSupportsTilt(entity) ? ['z'] : ['x', 'y', 'z'];
+    const signature = `${tool}/${axes}/${tool === 'form' ? JSON.stringify(dimensions) : ''}`;
+    if (signature !== handleSignature) {
+      disposeHandles(handleMeshes);
+      handleMeshes = tool === 'form' ? buildFaceArrows({ half: {
+        width: dimensions.width / 2, height: dimensions.depth / 2, depth: dimensions.height / 2,
+      } }) : buildGizmo(tool, axes);
+      gizmo.add(...handleMeshes);
+      handleSignature = signature;
+    }
+    const pivot = tool === 'rotate' ? sceneNodePivot(entity)
+      : { x: entity.x, y: entity.y, z: (entity.z ?? entity.elevation ?? 0) + (tool === 'form' ? dimensions.height / 2 : 0) };
+    gizmo.position.set(pivot.x, pivot.y, pivot.z);
+    if (tool === 'form') {
+      const q = modelOrientation(sceneNodeSupportsTilt(entity) ? entity : { angle: entity.angle });
+      gizmo.quaternion.set(-q[0], -q[2], -q[1], q[3]);
+    } else gizmo.rotation.set(0, 0, 0);
+    const position = gizmo.getWorldPosition(new THREE.Vector3());
+    const scale = Math.max(.1, camera.position.distanceTo(position) * Math.tan(camera.fov * Math.PI / 360) * 2 * 80 /
+      Math.max(1, canvas.clientHeight) / GIZMO_LENGTH);
+    gizmo.scale.setScalar(tool === 'form' ? 1 : scale);
+    if (tool === 'form') for (const handle of handleMeshes) handle.scale.setScalar(scale);
+    gizmo.updateMatrixWorld(true);
+    const project = point => {
+      const projected = point.project(camera);
+      return `${Math.round((projected.x + 1) * canvas.clientWidth / 2)},${Math.round((1 - projected.y) * canvas.clientHeight / 2)}`;
+    };
+    canvas.dataset.gizmoOrigin = project(position.clone());
+    if (tool === 'form') {
+      canvas.dataset.gizmoTips = handleMeshes.filter(mesh => mesh.userData.part === 'tip')
+        .map(mesh => `${handleKey(mesh)}:${project(mesh.localToWorld(new THREE.Vector3(0, 38, 0)))}`).join(';');
+    } else {
+      canvas.dataset.gizmoTips = axes.map(axis => {
+        const values = ['x', 'y', 'z'].map(key => tool === 'rotate'
+          ? key === axis ? 0 : GIZMO_LENGTH * .95 / Math.SQRT2
+          : key === axis ? GIZMO_LENGTH * (tool === 'scale' ? .8 : 1) : 0);
+        return `${axis}:${project(gizmo.localToWorld(new THREE.Vector3(...values)))}`;
+      }).join(';');
+    }
+    canvas.dataset.transformMode = tool;
   }
 
   /** Draws one dashed link per joint, from each object to the joint's anchor. */
@@ -405,12 +569,25 @@ export async function createScene3dView(canvas) {
   /** Replaces what the viewport draws, keeping the loaded models and textures. */
   function setScene(sceneEntities, assets, jointList = [], shaderList = []) {
     entities = sceneEntities || [];
-    assetsById = new Map((assets || []).map(asset => [asset.id, asset]));
+    const nextAssets = new Map((assets || []).map(asset => [asset.id, asset]));
+    for (const [id, texture] of textureCache) if (nextAssets.get(id)?.src !== assetsById.get(id)?.src) {
+      texture.dispose(); textureCache.delete(id);
+    }
+    for (const [id, pending] of modelCache) {
+      const next = nextAssets.get(id), previous = assetsById.get(id);
+      if (!next || next.src !== previous?.src || next.format !== previous?.format) {
+        modelCache.delete(id); disposeCachedModel(pending);
+      }
+    }
+    assetsById = nextAssets;
     const wantedShaders = new Map((shaderList || []).map(shader => [shader.id, shader]));
     // A different shader set means the cached wrappers are stale.
     for (const key of [...shaderEffects.keys()]) if (!wantedShaders.has(key.split('\u0000')[0])) shaderEffects.delete(key);
     shadersById = wantedShaders;
     screenGroups.clear();
+    for (const entry of mediaEntries.values()) entry.terminal?.dispose();
+    mediaEntries.clear();
+    usedVideos.clear();
     for (const group of groups.values()) { group.userData.disposed = true; disposeGroup(group); }
     groups.clear();
     billboards.clear();
@@ -419,6 +596,7 @@ export async function createScene3dView(canvas) {
       groups.set(entity.id, group);
       world.add(group);
     }
+    for (const [key, entry] of videos) if (!usedVideos.has(key)) { disposeVideo(entry); videos.delete(key); }
     // One grid square is 64 units, and the grid grows with the scene.
     const span = Math.max(512, ...entities.map(entity => Math.max(Math.abs(entity.x), Math.abs(entity.y)) * 2));
     grid.scale.setScalar(Math.max(1, Math.round(span / 4096 * 8) / 8));
@@ -452,6 +630,7 @@ export async function createScene3dView(canvas) {
 
   function render(dt = 0) {
     if (disposed || !resize()) return;
+    updateGizmo();
     effectTime.value += Math.min(.1, Math.max(0, dt));
     // Billboards keep their height and turn towards the camera, like a Doom sprite.
     for (const quad of billboards) if (quad.parent) quad.lookAt(camera.position);
@@ -463,6 +642,9 @@ export async function createScene3dView(canvas) {
     let panelGroups = 0;
     for (const group of groups.values()) if (group.children.some(child => child.userData.panel)) panelGroups++;
     canvas.dataset.panels = String(panelGroups);
+    for (const kind of ['mesh', 'spritePlane', 'projector', 'terminal']) {
+      canvas.dataset[kind] = String([...mediaEntries.values()].filter(entry => entry.nodeKind === kind).length);
+    }
     // What is behind a refractive object has to be drawn before the object itself, so
     // the screen-sampling panels are drawn into a target with themselves hidden.
     renderer.render(scene, camera);
@@ -487,12 +669,12 @@ export async function createScene3dView(canvas) {
       if (group.userData.error) failed++;
       // A model group also holds a temporary placeholder until the mesh arrives, so the
       // count walks every child instead of trusting the first one.
-      const children = group.children.filter(child => !child.isLight);
+      const children = [];
+      group.traverse(child => { if (!child.isLight) children.push(child); });
       if (!children.length) continue;
       if (children.some(child => child.userData.billboard)) sprites++;
       else if (children.some(child => child.userData.modelRoot)) models++;
-      else boxes++;
-      if (children.some(child => child.userData.placeholder)) boxes += 0;
+      if (children.some(child => child.userData.placeholder)) boxes++;
     }
     canvas.dataset.nodes = String(groups.size);
     canvas.dataset.models = String(models);
@@ -528,6 +710,40 @@ export async function createScene3dView(canvas) {
     return hit ? toMap(hit.point) : null;
   }
 
+  function hitHandle(clientX, clientY) {
+    if (!gizmo.visible) return null;
+    const hit = pointerRay(clientX, clientY).intersectObjects(handleMeshes, false)[0];
+    const key = hit && handleKey(hit.object);
+    paintHandles(handleMeshes, key || null);
+    canvas.dataset.gizmoHover = key || '';
+    return hit ? { axis: hit.object.userData.face?.axis || hit.object.userData.axis,
+      side: hit.object.userData.face?.side || 1 } : null;
+  }
+
+  function beginTransform(clientX, clientY, handle) {
+    const position = gizmo.getWorldPosition(new THREE.Vector3()), view = camera.getWorldDirection(new THREE.Vector3());
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(view, position);
+    const point = pointerRay(clientX, clientY).ray.intersectPlane(plane, new THREE.Vector3());
+    const origin = position.clone().project(camera), rect = canvas.getBoundingClientRect();
+    return { ...handle, plane, press: point ? toMap(point) : null,
+      direction: toMap(new THREE.Vector3(handle.axis === 'x' ? 1 : 0, handle.axis === 'y' ? 1 : 0,
+        handle.axis === 'z' ? 1 : 0).transformDirection(gizmo.matrixWorld)),
+      centre: [rect.left + (origin.x + 1) * rect.width / 2, rect.top + (1 - origin.y) * rect.height / 2],
+      view: toMap(view), reference: GIZMO_LENGTH * gizmo.scale.x, startX: clientX, startY: clientY };
+  }
+
+  function transformDelta(drag, clientX, clientY) {
+    const point = pointerRay(clientX, clientY).ray.intersectPlane(drag.plane, new THREE.Vector3());
+    const current = point && toMap(point), axis = [drag.direction.x, drag.direction.y, drag.direction.z];
+    const amount = axisAmount(current && [current.x, current.y, current.z],
+      drag.press && [drag.press.x, drag.press.y, drag.press.z], axis);
+    const from = Math.atan2(drag.startY - drag.centre[1], drag.startX - drag.centre[0]);
+    const to = Math.atan2(clientY - drag.centre[1], clientX - drag.centre[0]);
+    return { [drag.axis]: amount, amount, axis: drag.axis, side: drag.side,
+      angle: (drag.axis === 'z' ? -1 : 1) * ringDegrees({ axis, viewDirection: [drag.view.x, drag.view.y, drag.view.z], from, to }),
+      scale: scaleFactorFromDrag({ amount, reference: drag.reference }) };
+  }
+
   /** Aims the camera from a map-space eye and forward vector. */
   function aimCamera(eye, forward) {
     const position = toThree(eye), direction = toThree(forward);
@@ -547,6 +763,7 @@ export async function createScene3dView(canvas) {
     if (id === selectionId) return;
     selectionId = id;
     highlight();
+    updateGizmo();
     report();
   }
 
@@ -554,18 +771,22 @@ export async function createScene3dView(canvas) {
     if (disposed) return;
     disposed = true;
     screenGroups.clear();
+    for (const entry of mediaEntries.values()) entry.terminal?.dispose();
+    mediaEntries.clear();
+    for (const entry of videos.values()) disposeVideo(entry);
+    videos.clear();
+    disposeHandles(handleMeshes);
     screenTarget.dispose();
     for (const group of groups.values()) { group.userData.disposed = true; disposeGroup(group); }
     groups.clear();
     billboards.clear();
     for (const texture of textureCache.values()) texture.dispose();
     textureCache.clear();
-    for (const pending of modelCache.values()) {
-      pending.then(loaded => disposeGroup(loaded.scene)).catch(() => {});
-    }
+    for (const pending of modelCache.values()) disposeCachedModel(pending);
     modelCache.clear();
     renderer.dispose();
   }
 
-  return { scene, camera, renderer, setScene, render, resize, pickNode, groundPoint, aimCamera, setNodePosition, select, dispose };
+  return { scene, camera, renderer, setScene, render, resize, pickNode, groundPoint, aimCamera, setNodePosition, select, dispose,
+    setTool(value) { tool = value; updateGizmo(); }, hitHandle, beginTransform, transformDelta, setActive };
 }

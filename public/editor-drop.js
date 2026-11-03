@@ -1,5 +1,8 @@
-import { sectorAt } from '../shared/sectors.js';
+import { sectorAt, sectorGeometry } from '../shared/sectors.js';
 import { newId } from '../shared/project.js';
+import { sceneInstanceOf, layoutSelection } from '../shared/entity-groups.js';
+import { transformSelection } from '../shared/scene-edit.js';
+import { entityOrigin } from '../shared/entity-visuals.js';
 
 const IMAGE_KINDS = new Set(['texture', 'flat', 'sky', 'sprite', 'weapon']);
 const KIND_LABELS = {
@@ -118,6 +121,15 @@ export function applyEntityModel(project, entityId, assetId) {
 }
 
 export function moveEntityToFloor(project, entityId, x, y) {
+  const instance = sceneInstanceOf(project, entityId);
+  if (instance) {
+    const root = project.map.entities.find(entity => entity.id === instance.rootId);
+    const sectors = sectorGeometry(project);
+    const height = entityOrigin(root, sectorAt(sectors, root.x, root.y)?.floorHeight || 0)[1];
+    transformSelection(project, layoutSelection(project, { kind: 'entity', id: entityId }), 'move',
+      { x: x - root.x, y: y - root.y, z: (sectorAt(sectors, x, y)?.floorHeight || 0) - height }, 1);
+    return `${instance.name} moved to the floor at ${x}, ${y}`;
+  }
   const entity = project.map.entities.find(candidate => candidate.id === entityId);
   if (!entity) throw new Error('That object no longer exists');
   entity.x = x;

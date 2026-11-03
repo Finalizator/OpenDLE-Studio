@@ -2,12 +2,19 @@
 // renderer agree on the same rules and both stay testable without a GPU.
 
 import { spriteAnchor } from './sprite-anchor.js';
+import { isNonvisualMediaNode } from './media-nodes.js';
 
 export function entityRepresentation(entity) {
+  if (entity?.spritePlane || entity?.projector || entity?.terminal || entity?.mesh || entity && isNonvisualMediaNode(entity)) return 'media';
   // A panel is a translucent slab of its own; it has no artwork to load, so switching to
   // one from a sprite or a model is a swap like any other.
   if (entity?.panel) return 'panel';
   return entity?.modelAsset ? 'model' : 'sprite';
+}
+
+export function entityMediaSignature(entity) {
+  return JSON.stringify([entity.nodeKind, entity.spritePlane, entity.projector, entity.terminal, entity.mesh, entity.spriteAsset,
+    entity.terminal?.inputVariable ? entity.variables?.[entity.terminal.inputVariable] : null]);
 }
 
 /**
@@ -17,7 +24,7 @@ export function entityRepresentation(entity) {
  * full preview reload. Objects that switch between a sprite and a model, swap one
  * model for another, or appear for the first time are swapped in place.
  */
-export function liveProjectPlan(entities, { hasModel, drawn, drawnModel }) {
+export function liveProjectPlan(entities, { hasModel, drawn, drawnModel, drawnMedia }) {
   const swap = [], add = [];
   let needsReload = false;
   for (const entity of entities || []) {
@@ -26,14 +33,15 @@ export function liveProjectPlan(entities, { hasModel, drawn, drawnModel }) {
     const current = drawn(entity.id);
     // Replacing one model with another keeps the representation but needs a new object.
     const replaced = wanted === 'model' && current === 'model' && drawnModel && drawnModel(entity.id) !== entity.modelAsset;
-    if (current === wanted && !replaced) continue;
+    const changedMedia = wanted === 'media' && current === 'media' && drawnMedia && drawnMedia(entity.id) !== entityMediaSignature(entity);
+    if (current === wanted && !replaced && !changedMedia) continue;
     if (current) swap.push(entity.id);
     add.push(entity.id);
   }
   return { needsReload, swap, add };
 }
 
-function rotateQuaternion(vector, quaternion) {
+export function rotateQuaternion(vector, quaternion) {
   const [x, y, z, w] = quaternion;
   const tx = 2 * (y * vector[2] - z * vector[1]);
   const ty = 2 * (z * vector[0] - x * vector[2]);
@@ -46,12 +54,12 @@ function rotateQuaternion(vector, quaternion) {
 }
 
 /** Quaternion [x, y, z, w] for a rotation of `degrees` about `axis`. */
-function axisRotation(axis, degrees) {
+export function axisRotation(axis, degrees) {
   const half = (Number(degrees) || 0) * Math.PI / 360, sine = Math.sin(half);
   return [axis[0] * sine, axis[1] * sine, axis[2] * sine, Math.cos(half)];
 }
 
-function multiplyQuaternion(a, b) {
+export function multiplyQuaternion(a, b) {
   return [
     a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
     a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
@@ -82,6 +90,18 @@ export function modelOrientation(entity) {
   if (pitch) quaternion = multiplyQuaternion(quaternion, axisRotation([1, 0, 0], pitch));
   if (roll) quaternion = multiplyQuaternion(quaternion, axisRotation([0, 0, 1], roll));
   return quaternion;
+}
+
+/** Inverse of the authored yaw/pitch/roll part of modelOrientation (Y-X-Z order). */
+export function modelPoseFromOrientation([x, y, z, w]) {
+  const m11 = 1 - 2 * (y * y + z * z), m13 = 2 * (x * z + w * y);
+  const m21 = 2 * (x * y + w * z), m22 = 1 - 2 * (x * x + z * z);
+  const m23 = 2 * (y * z - w * x), m31 = 2 * (x * z - w * y), m33 = 1 - 2 * (x * x + y * y);
+  const pitch = Math.asin(-Math.max(-1, Math.min(1, m23)));
+  const yaw = Math.abs(m23) < .9999999 ? Math.atan2(m13, m33) : Math.atan2(-m31, m11);
+  const roll = Math.abs(m23) < .9999999 ? Math.atan2(m21, m22) : 0;
+  const degrees = value => Math.round(value * 180 / Math.PI * 1e8) / 1e8;
+  return { angle: degrees(-yaw), modelTilt: { pitch: degrees(pitch), roll: degrees(roll) } };
 }
 
 /**

@@ -88,12 +88,17 @@ test('every Engine command has shared editor defaults and validates after adding
       const enemyCommand = ['moveEnemy', 'enemySeesPlayer', 'enemyHitscan', 'enemyProjectile', 'enemyAlert', 'enemyAttackChance'].includes(command.type);
       if (enemyCommand) project.map.entities.push({ id: 'test_enemy', name: 'Enemy', type: 'enemy', x: 0, y: 0, angle: 0 });
       value.entityId = enemyCommand ? 'test_enemy' : 'pickup';
+      if (['onSignal', 'emitSignal'].includes(command.type)) project.map.entities.find(e => e.id === value.entityId).signals = ['submitted'];
       if (['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(command.type)) project.map.entities.find(e => e.id === value.entityId).variables = { value: 0 };
     }
     if (command.variable) value.variable = 'score';
     if (command.group) value.groupId = project.eventGroups[0].id;
     if (command.wall) value.wallId = project.map.walls[0].id;
     if (command.sector) value.sectorId = project.map.sectors[0].id;
+    if (['sectorDoorOpen', 'sectorDoorClosed', 'sectorDoorMoving', 'openSectorDoor', 'closeSectorDoor', 'toggleSectorDoor'].includes(command.type))
+      project.map.sectors[0].door = { initial: 'closed', activation: 'event-only' };
+    if (command.elevator) project.map.sectors[0].elevator = { initial: 'lower', activation: 'event-only',
+      lowerHeight: 0, upperHeight: 64 };
     if (command.spriteClip) {
       project.assets.push({ id: 'clip_image', name: 'Frame', kind: 'sprite', width: 1, height: 1, src: 'data:image/png;base64,AAAA' });
       project.spriteClips = [{ id: 'test_clip', name: 'Test clip', frames: ['clip_image'], seconds: .1, loop: false }];

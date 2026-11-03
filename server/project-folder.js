@@ -51,6 +51,7 @@ const MIME_EXTENSIONS = {
   'image/x-ms-bmp': 'bmp', 'image/svg+xml': 'svg', 'image/tga': 'tga', 'image/x-tga': 'tga',
   'audio/wav': 'wav', 'audio/wave': 'wav', 'audio/x-wav': 'wav', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3',
   'audio/ogg': 'ogg', 'audio/opus': 'opus', 'audio/flac': 'flac', 'audio/x-flac': 'flac', 'audio/mp4': 'm4a',
+  'video/mp4': 'mp4', 'video/webm': 'webm',
   'audio/midi': 'mid', 'audio/x-midi': 'mid', 'audio/x-mus': 'mus',
   'model/gltf-binary': 'glb', 'model/gltf+json': 'gltf', 'model/obj': 'obj',
   'font/woff2': 'woff2', 'font/woff': 'woff', 'font/ttf': 'ttf', 'font/otf': 'otf',
@@ -59,7 +60,8 @@ const MIME_EXTENSIONS = {
 const EXTENSION_MIME = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
   svg: 'image/svg+xml', tga: 'image/tga', wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', opus: 'audio/opus',
-  flac: 'audio/flac', m4a: 'audio/mp4', mid: 'audio/midi', mus: 'audio/x-mus', glb: 'model/gltf-binary', gltf: 'model/gltf+json',
+  flac: 'audio/flac', m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'video/webm',
+  mid: 'audio/midi', mus: 'audio/x-mus', glb: 'model/gltf-binary', gltf: 'model/gltf+json',
   obj: 'model/obj', woff2: 'font/woff2', woff: 'font/woff', ttf: 'font/ttf', otf: 'font/otf',
   json: 'application/json', txt: 'text/plain', bin: 'application/octet-stream',
 };

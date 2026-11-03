@@ -1,6 +1,8 @@
 import { sectorAt, sectorGeometry } from './sectors.js';
 import { axisField } from './gizmo-math.js';
 import { entityOrigin } from './entity-visuals.js';
+import { layoutSelection, sceneInstanceOf } from './entity-groups.js';
+import { transformSceneNodes } from './scene-nodes.js';
 
 const wrapAngle = value => ((value % 360) + 540) % 360 - 180;
 
@@ -85,7 +87,11 @@ function applyRotation(item, origin, delta) {
 }
 
 export function transformSelection(project, selection, mode, delta, grid) {
-  const snap = value => Math.round(value / grid) * grid;
+  selection = layoutSelection(project, selection);
+  if (selection?.kind === 'entity' && [selection.id, ...(selection.group || [])].some(id => sceneInstanceOf(project, id))) {
+    return dragSelection(project, structuredClone(project), selection, mode, delta, grid);
+  }
+  const snap = value => grid > 0 ? Math.round(value / grid) * grid : value;
   if (selection.kind === 'entity' && mode === 'move') {
     const baseline = { ...project, map: { ...project.map, entities: project.map.entities.map(entity => ({ ...entity })) } };
     return dragSelection(project, baseline, selection, mode, delta, grid);
@@ -178,7 +184,33 @@ function moveGroupBy(project, baseline, selection, shift) {
  * snapping stable (repeated sub-grid increments would otherwise never move).
  */
 export function dragSelection(project, baseline, selection, mode, delta, grid) {
-  const snap = value => Math.round(value / grid) * grid;
+  selection = layoutSelection(baseline, selection);
+  if (selection?.kind === 'entity' && [selection.id, ...(selection.group || [])].some(id => sceneInstanceOf(baseline, id))) {
+    if (mode === 'form') throw new Error('Edit individual scene geometry in the scene editor, not in the layout');
+    const ids = new Set(selection.group || [selection.id]);
+    const oldSectors = sectorGeometry(baseline), newSectors = sectorGeometry(project);
+    // The branch transformer uses absolute scene coordinates. Give it world heights so
+    // crossing a sector step cannot pull a terminal away from its chassis.
+    const before = { entities: baseline.map.entities.filter(entity => ids.has(entity.id)).map(entity => ({
+      ...structuredClone(entity), parentId: entity.id === selection.id ? undefined : selection.id,
+      z: entityOrigin(entity, sectorAt(oldSectors, entity.x, entity.y)?.floorHeight || 0)[1],
+    })), joints: structuredClone(baseline.map.joints || []) };
+    const draft = structuredClone(before);
+    const rotation = delta.pitch ? { axis: 'x', angle: delta.pitch } : delta.roll ? { axis: 'y', angle: delta.roll }
+      : { axis: 'z', angle: delta.angle };
+    transformSceneNodes(draft, before, selection.id, mode, mode === 'rotate' ? rotation : delta, grid);
+    for (const transformed of draft.entities) {
+      const entity = project.map.entities.find(item => item.id === transformed.id);
+      const original = baseline.map.entities.find(item => item.id === transformed.id);
+      const floor = sectorAt(newSectors, transformed.x, transformed.y)?.floorHeight || 0;
+      const { parentId, z, ...properties } = transformed;
+      Object.assign(entity, properties, { elevation: z - floor });
+      if (original.z !== undefined) entity.z = z;
+    }
+    if (baseline.map.joints?.length) project.map.joints = draft.joints;
+    return;
+  }
+  const snap = value => grid > 0 ? Math.round(value / grid) * grid : value;
   if (selection.kind === 'pathPoint') {
     if (mode !== 'move') throw new Error('Rotation and scale apply to objects only');
     const { point } = waypointOf(project, selection);

@@ -2474,6 +2474,35 @@ player no longer needs a perfect aim. Both ids reach the runtime as
 `state.worldTriggers.use` and `state.worldTriggers.useSpecial`, and the `wallActivated`
 "use" condition matches either, so imported door rules and authored ones keep working.
 
+`shared/sector-movers.js` derives doors and elevators from format-aware native
+linedefs and `moveSector` events without changing the saved map. Classic recognition
+shares the translator's semantic tables; inspectors and command target pickers use
+the same derived descriptors. Floor barriers are moving floors, not ceiling doors.
+An individual sector can optionally override its detected behavior in Properties.
+Its `door` record stores `initial: "native" | "open" | "closed"` and
+`activation: "native" | "proximity" | "manual" | "event-only"` (with optional `radius`,
+`openHeight`, `closedHeight` and `speed`). The inspector exposes initial state,
+activation, radius, heights and speed; the same settings are available through
+MCP `sector_update`. Proximity doors open within their radius
+and close when the player leaves; manual doors toggle with **E**; event-only doors
+respond only to event-sheet actions. The `Door: open`, `Door: close` and `Door: toggle`
+actions, plus the open/closed/moving conditions, target that sector directly.
+Custom activation modes take ownership of their ceiling plane, so imported linedef/ACS
+translations and `wallActivated` rules cannot bypass their activation setting.
+Deliberate non-wall event rules can still move an event-only door with `moveSector`;
+Native activation retains imported locks, waits and return cycles; explicit height
+overrides remap endpoints without changing the trigger. Removing the override
+restores native behavior. Detected doors accept Door actions without a `door` record.
+
+The analogous `elevator` override stores initial `native | lower | upper`, the same
+activation modes, optional `lowerHeight`, `upperHeight`, `speed`, `radius` and
+`moveCeiling`. Elevator commands and conditions target detected or configured
+moving floors. True ZDoom elevators (245-247) move both planes atomically through
+one floor motion with `moveCeiling: true`, preserving headroom and rider transport.
+Ordinary lifts and floor barriers retain floor-only motion. Runtime-only
+`moverOrigins` retain native endpoint identity across changed initial states and
+save/load; no derived descriptors or endpoints are written into the project.
+
 The player capsule is one unit shorter than the 56 unit player height. Doom only
 refuses a gap *smaller* than the player (`P_CheckPosition` compares with `<`), so a
 niche whose ceiling sits exactly 56 above the floor is walkable there. In the browser
@@ -2616,9 +2645,20 @@ the events that own them are copied into `project.scenes` as a reusable
 definition, centered on the selection's centroid so placing it lands where it was
 captured. **Place at view** (or dragging the scene tile into the 3D view) copies
 that definition into the map at the drop point, rotated to face the view. A scene
-instance is a plain copy with fresh ids — there is no live link back to the
-definition, which keeps every placed instance fully editable with the existing
-inspector, event editor and undo; re-placing is how you propagate a change.
+instance is a copy with fresh ids — there is no live link back to the definition;
+re-placing is how you propagate a source change. Placement and direct layout `.node`
+imports retain an editor-only `map.entityGroups` record with `kind: "scene"` and a
+`rootId`. Picking any member resolves to that stable root and selects every member;
+the layout lists and outline present one assembly. Move/rotate/scale (including
+numeric inspector edits and floor drops), copy, duplicate, export and delete operate
+on the whole instance. Local scripts and internal joints remap on copies. Runtime
+objects remain separate so terminal-local state, physics and script targets retain
+their normal semantics. Transform-only edits reuse media geometry; component
+changes replace it instead of appending duplicate meshes on each drag frame.
+Individual nodes are edited in the source scene, or after
+the explicit **Ungroup into editable layout objects** action. Hierarchy-bearing
+legacy node imports and recognizable `instance_<stamp>_<node>` placements are upgraded
+once per map (`sceneInstancesVersion: 1`); arbitrary loose objects are not inferred.
 Objects and events inside a scene cannot include the player. Captured events
 keep their actions but drop their HUD `sheetId`, because a scene can be placed
 in any level. Limits are 64 scenes, 128 objects and 256 events per scene.
@@ -2668,6 +2708,10 @@ arrays, so a layout import needs no copying back afterwards.
 
 ### The Scene Object editor
 
+For an author-facing walkthrough, see [Node editor, terminals and doors](Docs/node-editor.md).
+It covers the saved example, exact inspector controls, node-file downloads and
+the layout-specific terminal-to-door connection.
+
 A scene is not only a bag of objects to place: **Menu → Layouts → Scene Object**
 lists every scene in the project, and pressing one opens it in its own editor
 laid out like Godot's scene dock (`public/scene-object-editor.js`). New scenes come
@@ -2677,8 +2721,39 @@ the top keep several open, exactly like Godot's scene tabs.
 | dock | what it does |
 | --- | --- |
 | Scene (left) | the node toolbar (add child node, duplicate, move up/down, expand/collapse, rename, delete), the node filter, then the node tree — Godot's top-to-bottom order, not the toolbar under the list. Right-clicking a node opens the same actions. |
-| View (middle) | **2D** is a top-down blueprint: dot grid, scene bounds, parent links, facing ticks, interaction-area rings, drag to move (snapped), wheel to zoom, middle-drag or alt-drag to pan. **3D** draws the same nodes as boxes whose height is the node's collider or type height, so elevation, collider size and grouping are readable; dragging a node moves it along the ground plane and a right click that stays put opens the node menu. Both views draw the node's artwork — the sprite image at its real world size, or the model's preview picture — so assigning an asset visibly changes the view. |
-| Inspector (right) | the selected node's properties in folded categories — Transform, Node, Visual, Model, Physics, Light, Interaction area, Script — with Godot's right-aligned labels and per-row revert arrow, plus a property filter and an expand/collapse menu. Empty categories are not drawn. |
+| View (middle) | **2D** is a top-down blueprint with authored footprints, grid, bounds and hierarchy links. **3D** draws actual models, sprites, primitive meshes and media surfaces; nonvisual nodes use distinctive editor wireframes instead of anonymous cubes. Both views offer Select, Move, Rotate, Scale and Shape. The 3D viewport has pickable axis arrows, rotation rings, scale handles and six face-resize arrows. |
+| Inspector (right) | accessible, labeled properties in folded categories — Transform, Node, Visual, Mesh, Sprite plane, Sound, Projector, Terminal, Panel, Model, Physics, Joints, Light, Interaction area and Script — plus a property filter and an expand/collapse menu. Empty categories are not drawn. |
+
+**Add node opens a searchable creation catalog**, not an anonymous decoration. Presets include
+Node3D groups, markers, oriented Sprite3D planes, billboard sprites, six primitive mesh shapes,
+positional sound, image/video display projectors, interactive screens and code locks, point lights,
+interaction areas, fixed/dynamic physics bodies, enemies, pickups, ramps and panels.
+These are component presets over OpenDLE's existing entity types, not imported Godot classes.
+The editor follows Godot-inspired workflows; it does not claim complete Godot API or node parity.
+
+**Transform controls:** Q selects, W moves, E rotates, R scales and T shapes. While holding the
+right mouse button in Fly mode, WASD/QE instead move the camera. Move and scale axes are world
+axes; 3D Shape arrows follow the full visual orientation, while 2D Shape follows yaw.
+Position/elevation/rotation edits also carry descendants. Tilt controls are available for
+oriented geometry, models and spatial groups; Doom billboards, panels and interaction areas
+remain yaw-only. Scale carries child positions along world axes and multiplies authored
+width/depth/height; it does not apply affine shear to differently oriented children.
+Models and ordinary billboard sprites use their uniform visual scale.
+Sound and light scaling changes the actual attenuation/light radius.
+Shape pins the opposite face; Shift resizes symmetrically. Snap uses 32-unit positions/faces;
+Alt bypasses the position grid during a 3D Move drag in both editors. Rotation rings
+snap within 3 degrees of absolute 45-degree marks, without quantizing other angles;
+Ctrl bypasses detents (and scene-editor grid snapping). 2D handles operate on the floor plane;
+use the vertical 3D handle or Elevation for height.
+
+Drags preview a private scene snapshot, including the complete subtree, and commit one validated
+undo step on release. Escape, pointer cancellation, lost focus, view switches or external project
+updates discard the preview without modifying project data or history. Dragging the node body
+preserves the pointer's initial offset instead of jumping its origin under the pointer.
+
+The Sprite resource accepts all picture/texture kinds for enemies as well as decorations.
+The searchable resource picker ignores element-level blur while moving focus between its
+search and choices; only an actual window blur closes it.
 
 **The tree is read the way Godot's is read.** Each row is a twisty, a pictogram for the node's
 type, and the name: [public/node-icons.js](./public/node-icons.js) draws them as line art in the
@@ -2772,6 +2847,87 @@ picker** (`public/asset-picker.js`) instead of a `<select>` of every asset: an
 imported game has around 1500 sprites, and a list that long is unusable and slow to
 build. The picker shows the first 200 matches, filters as you type, and keeps the
 current value on top.
+
+### Runtime media and interactive scene nodes
+
+These are ordinary project entities decorated with media components, so they use the
+same project save, scene placement and playable-build paths as other objects.
+`public/world-media.js` supplies the shared geometry and terminal surface used by the
+game renderer and 3D scene preview.
+
+- **Sprite planes** display the entity's assigned image texture on a fixed-orientation,
+  bottom-anchored quad; PNG transparency is retained. They are geometry surfaces, not
+  camera-facing billboard sprites.
+- **Positional sound** uses an embedded sound asset. Autoplay begins from the Play
+  gesture, then the source is mixed by distance within its configured radius with
+  linear attenuation. Looping uses a native Web Audio loop. Leaving range or pausing
+  stops the source while preserving its playback offset; re-entering range or resuming
+  restarts it. Missing assets, decode failures and playback errors are reported in the
+  preview rather than silently ignored.
+- **Projectors** display an assigned image or an embedded local MP4/WebM video on an
+  oriented plane. Video imports are embedded (up to 64 MiB each), so a project and its
+  exported playable build need no external media URL. A projector is a display surface:
+  it is **not** a depth-projected decal, projector light or scene illumination.
+  Autoplay, looping, muting and opacity are node settings; browser playback failures
+  are surfaced to the preview.
+- **Terminals** render their CanvasTexture interface directly on the oriented 3D
+  surface, with no popup or HUD overlay. A centre-camera ray maps aim and clicks to
+  texture UVs; the pointer is painted on the surface, replacing the gameplay crosshair
+  in range. Pointer lock, look and movement remain active. `interactingWithScreen`
+  exposes the transient targeting state to visual scripts; attack inputs and player
+  weapon emission are blocked until aim leaves the screen. Walls occlude interaction,
+  as do leaving play, node removal or leaving interaction range. New keypad/screen presets declare a local
+  text variable `digits` and a named `submitted` signal. Each digit and Clear update
+  `entity.variables[terminal.inputVariable]` (including leading zeros); Enter emits
+  `terminal.submitSignal` with the entered text, even for an incorrect code.
+  The code still controls the screen's own unlocked display. Terminal mode can offer
+  up to 12 data-only buttons; once unlocked, a button emits its configured number,
+  string or boolean value through that signal. Legacy terminals without the new
+  fields still assign `1` or the button value to their configured global `variable`.
+  Setting `variable:null` disables that legacy global output. These controls do not
+  open web pages or execute scripts.
+
+Local digits are ordinary runtime state: game-save slots preserve them, and a
+recreated surface initializes its displayed input from that local variable.
+The unlocked display/focus and pending signal emissions are transient and are not
+replayed by a game save. Saving a project in the editor saves initial values, not a
+play session. Local video payloads and
+projector assignments do travel with project-folder saves and playable exports.
+
+#### Named signals and terminal connections
+
+The node inspector's **Script** section edits typed local variables and a
+comma-separated list of signal declarations (`entity.signals`, up to 32 unique
+names). Names start with a letter/underscore and contain up to 80 letters, digits
+or underscores. The **Events** button edits that reusable scene's own rules,
+not the layout instance. Layout objects expose the same declarations beside
+their local variables. MCP uses `signals_set` and ordinary `events_add_rule`.
+
+**Signals: On signal** (`onSignal`, fields `entityId,signal`) is the first
+condition of a top-level AND rule. Choose the emitting object, or **This object**
+in its own script. Add **Object: compare local variable** to check `digits`, or
+**Signals: compare emitted value** (`signalValueCompare`, fields `operator,value`)
+to filter the emission's immutable payload. Differently typed payloads do not
+match. **Signals: emit signal** (`emitSignal`, fields `entityId,signal,value`)
+sends a number, text or boolean. Ordinary sub-events beneath a signal listener
+inherit its object context and emitted value.
+
+This is a Godot-inspired named-signal/visual-connection workflow, not Godot's
+synchronous scripting API. Delivery is FIFO and one-shot per emission and enabled
+sheet phase. Listeners execute in their authored interface/before-physics/after-physics
+phase; emissions to an already completed phase wait until its next tick. Multiple
+subscribers receive each emission, and same-phase chains do not depend on rule
+order. Gameplay delivery pauses with gameplay; interface listeners can still run
+in menus. Queues and per-tick dispatch are bounded to 256 emissions and signal loops
+raise an explicit error. Source references remap when duplicating, nesting, placing
+or importing nodes; signal names and payload literals do not.
+
+[Access terminal](public/examples/access-terminal.node) is a saved, portable keypad
+with a chassis, local `digits`, `submitted`, default PIN **1234**, and no global
+output. Drag the file into a layout or import it into a scene. Connect **On signal**
+from its terminal instance plus **compare local digits = "1234"** to a door action
+in the destination layout. Door-sector references deliberately stay in the layout:
+a portable node cannot assume the receiving project has the same doors.
 
 ### Physics nodes: colliders and joints
 
@@ -5055,7 +5211,7 @@ version-controlled configuration.
 | `map_add_room` | Add a rectangular closed room |
 | `map_add_entity` | Place an object or move the single player start |
 | `map_update_wall` | Edit wall color, height and collision |
-| `sector_update` | Edit sector heights, surface image IDs, light and sky |
+| `sector_update` | Edit sector heights, surface image IDs, light, sky and optional native/custom door or elevator overrides |
 | `entity_set_visual` | Assign sprite/model, scale, elevation, animation or point light |
 | `entity_set_physics` | Configure an object's Rapier primitive rigid body or sensor |
 | `environment_set_visuals` | Choose sky projection/image and weapon overlay |

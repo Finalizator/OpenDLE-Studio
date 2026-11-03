@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { cloneProjectForEdit, createProject, validateProject } from '../shared/project.js';
 import { draftProject, recoverProject, writeProjectDraft } from '../public/project-recovery.js';
+import { upgradeSceneInstances } from '../shared/entity-groups.js';
 
 const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 function between(start, end) {
@@ -29,7 +30,7 @@ function fixture(api = async () => {}) {
     },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     status: (message, error = false) => notices.push({ message, error }),
-    api, validateProject, draftProject, recoverProject, writeProjectDraft, confirm: () => true,
+    api, validateProject, draftProject, recoverProject, writeProjectDraft, upgradeSceneInstances, confirm: () => true,
     draftTooLarge: () => (context.project.assets?.length || 0) > 300 || (context.project.game?.levels.length || 0) > 4,
     historyLimit: () => 10, syncRampModels() {}, render() {}, clearDraft() {}, fitMap() {}, renderSceneObjectTabs() {},
     upgradePickupReach: () => false, refreshProjects: async () => {}, badgeText: () => context.dirty ? 'Unsaved' : 'Saved',

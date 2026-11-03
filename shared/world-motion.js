@@ -65,8 +65,38 @@ export function crossedWalls(state, previous) {
   return crossed;
 }
 
-export function moveSector(state, action) {
+export function sectorMotionAllowed(sector, surface, { authoredDoor = false, authoredElevator = false } = {}) {
+  if (sector?.door && surface === 'ceilingHeight' && !authoredDoor && sector.door.activation !== 'native') return false;
+  return !(sector?.elevator && (surface === 'floorHeight' || sector.elevator.moveCeiling) &&
+    !authoredElevator && sector.elevator.activation !== 'native');
+}
+
+export function moveSector(state, action, { authoredDoor = false, authoredElevator = false } = {}) {
   const key = `${action.sectorId}:${action.surface}`, sector = state.sectors.find(sector => sector.id === action.sectorId);
+  // An authored door owns its ceiling movement. Legacy linedef/ACS translations and
+  // generic plane actions must not bypass its selected activation mode.
+  if (!sectorMotionAllowed(sector, action.surface, { authoredDoor, authoredElevator })) return false;
+  if (sector?.door && action.surface === 'ceilingHeight' && !authoredDoor) {
+    const door = sector.door, origins = sector.moverOrigins;
+    const endpoint = height => Math.abs(height - origins?.lower) < .5 ? door.closedHeight ?? height
+      : Math.abs(height - origins?.upper) < .5 ? door.openHeight ?? height : height;
+    action = { ...action, height: endpoint(action.height),
+      ...(action.returnMode !== 'stay' ? { returnHeight: endpoint(action.returnHeight ?? origins?.origin ?? sector.ceilingHeight) } : {}),
+      speed: door.speed ?? action.speed };
+  }
+  if (sector?.elevator && (action.surface === 'floorHeight' || sector.elevator.moveCeiling) && !authoredElevator) {
+    const elevator = sector.elevator;
+    const ceilingOffset = action.surface === 'ceilingHeight' ? sector.ceilingHeight - sector.floorHeight : 0;
+    const origins = sector.moverOrigins;
+    const endpoint = height => Math.abs(height - ceilingOffset - origins?.lower) < .5
+      ? (elevator.lowerHeight ?? height - ceilingOffset) + ceilingOffset
+      : Math.abs(height - ceilingOffset - origins?.upper) < .5
+        ? (elevator.upperHeight ?? height - ceilingOffset) + ceilingOffset : height;
+    action = { ...action, height: endpoint(action.height),
+      ...(action.returnMode !== 'stay' ? { returnHeight: endpoint(action.returnHeight ?? origins?.origin ?? sector.floorHeight) } : {}),
+      speed: elevator.speed ?? action.speed };
+  }
+  if (action.surface === 'floorHeight' && sector?.elevator?.moveCeiling) action = { ...action, moveCeiling: true };
   const existing = state.sectorMotions.get(key);
   if (existing) {
     if (action.surface === 'ceilingHeight' && existing.direction === 'return') existing.direction = 'out';
@@ -88,8 +118,10 @@ export function advanceSectors(state, dt) {
     if (motion.surface === 'ceilingHeight' && next < old && occupants.some(entity => floorAt(state, entity) + 56 > next)) {
       motion.direction = motion.direction === 'out' ? 'return' : 'out'; continue;
     }
-    if (motion.surface === 'floorHeight' && next > old && occupants.some(entity => Math.max(floorAt(state, entity), next) + 56 > sector.ceilingHeight)) continue;
+    const ceiling = sector.ceilingHeight + (motion.moveCeiling ? next - old : 0);
+    if (motion.surface === 'floorHeight' && next > old && occupants.some(entity => Math.max(floorAt(state, entity), next) + 56 > ceiling)) continue;
     sector[motion.surface] = next;
+    if (motion.moveCeiling && motion.surface === 'floorHeight') sector.ceilingHeight = ceiling;
     if (next !== old) {
       state.worldRevision++;
       if (motion.surface === 'floorHeight') for (const entity of [...state.entities.filter(e => e.type !== 'player'), state.player]) {
@@ -129,6 +161,16 @@ const lifts = new Map([[10, 'cross'], [21, 'use'], [62, 'use'], [88, 'cross'], [
 const floorLower = new Map([[19, 'cross'], [23, 'use'], [36, 'cross'], [37, 'cross'], [38, 'cross'], [60, 'use'], [70, 'use'], [71, 'use'], [82, 'cross'], [83, 'cross'], [84, 'cross'], [98, 'cross'], [102, 'use']]);
 const floorRaise = new Map([[5, 'cross'], [18, 'use'], [24, 'shoot'], [30, 'cross'], [45, 'use'], [56, 'cross'], [58, 'cross'], [59, 'cross'], [64, 'use'], [65, 'use'], [69, 'use'], [91, 'cross'], [92, 'cross'], [93, 'cross'], [94, 'cross'], [96, 'cross'], [101, 'use'], [119, 'cross'], [128, 'cross'], [129, 'cross'], [130, 'cross'], [131, 'use'], [132, 'use']]);
 const repeatable = new Set([1, 26, 27, 28, 42, 46, 60, 61, 62, 63, 64, 65, 69, 70, 75, 76, 82, 83, 84, 86, 88, 90, 91, 92, 93, 94, 96, 98, 105, 106, 107, 114, 115, 116, 117, 120, 123, 128, 129, 132]);
+
+export function classicSectorMover(special) {
+  const effect = doomSpecialBehaviour(special)?.effect;
+  if (manual.has(special) || doors.has(special) || effect?.kind === 'door')
+    return { kind: 'door', local: manual.has(special) || Boolean(effect?.key) };
+  if (lifts.has(special) || floorLower.has(special) || floorRaise.has(special) ||
+    special === 53 || special === 87 || effect?.kind === 'floor' || effect?.kind === 'ceilingThenFloor')
+    return { kind: 'elevator', local: false };
+  return null;
+}
 
 /**
  * Whether the classic rule translator performs a Doom special. Reporting uses it
