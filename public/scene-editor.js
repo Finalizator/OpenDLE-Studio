@@ -11,7 +11,7 @@ import {
   wallPartAt, wallTarget,
 } from './editor-drop.js';
 import { areaVolume, areaYaw, overlayVolumes } from '/shared/areas.js';
-import { facingArrowPose, hasModelFacing, playerStartPose } from '/shared/entity-visuals.js';
+import { entityOrigin, facingArrowPose, hasModelFacing, playerStartPose } from '/shared/entity-visuals.js';
 import { instantiateScene, sceneIsEmpty } from '/shared/scenes.js';
 import { samplePath, sampleLengths, pointAlong, pathSignature as curveSignature } from '/shared/paths.js';
 import {
@@ -912,7 +912,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (kind === 'entity') {
       const entity = entityById.get(id);
       if (!entity) { clearHandles(); return; }
-      position = new THREE.Vector3(entity.x, (sectorAt(sectors, entity.x, entity.y)?.floorHeight || 0) + (entity.elevation || 0), entity.y);
+      position = new THREE.Vector3(...entityOrigin(entity, sectorAt(sectors, entity.x, entity.y)?.floorHeight || 0));
     } else if (kind === 'vertex') {
       const vertex = vertexById.get(id); if (!vertex) { clearHandles(); return; }
       position = new THREE.Vector3(vertex.x, (vertexHeights.get(id) || 0) + 4, vertex.y);
@@ -1550,6 +1550,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   listen(canvas, 'blur', () => cancel({ keepCut: true }));
   listen(window, 'blur', cancel);
   listen(canvas, 'keydown', event => {
+    if (action && (event.ctrlKey || event.metaKey) && ['KeyZ', 'KeyY'].includes(event.code)) cancel();
     if (callbacks.tool() === 'cut' && ['Enter', 'Escape', 'Backspace', 'Delete'].includes(event.code)) {
       event.preventDefault(); event.stopPropagation();
       if (event.code === 'Enter') callbacks.cut?.finish(); else if (event.code === 'Escape') cancel(); else callbacks.cut?.back();

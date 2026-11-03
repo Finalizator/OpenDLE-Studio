@@ -303,6 +303,7 @@ export function createPhysics(project, state, R, triangulate) {
   const mesh = collisionMesh(project, triangulate, { sectors: state.sectors, moving });
   let worldCollider = createWorldCollider(mesh);
   const colliderIds = new Map(worldCollider ? [[worldCollider.handle, '$world']] : []), bodies = new Map(), colliders = new Map();
+  const unbodiedHeights = new WeakMap();
   /** Heights of the imported actors that block the player; see `solidActor`. */
   const actorHeights = new Map();
   // Impulse joints and the fixed bodies a world-side joint pins to.
@@ -429,7 +430,8 @@ export function createPhysics(project, state, R, triangulate) {
    * `spawnEntity` cue put a crate in the level with no body, and the player walked through it.
    */
   function addBody(entity) {
-    const player = entity.type === 'player', config = entity.physics;
+    if (Number.isFinite(entity.z)) entity.elevation = entity.z - floorAt(entity);
+    const player = entity.type === 'player', config = entity.physics?.body === 'none' ? null : entity.physics;
     // An imported actor is solid in Doom: a monster stops the player rather than being walked
     // through. Its size is the actor's own radius and height, and the body is kinematic
     // because the actor runtime moves the monster itself.
@@ -439,7 +441,7 @@ export function createPhysics(project, state, R, triangulate) {
     const radius = player ? 12 : config ? config.radius : actor.radius;
     const bodyType = player || actor ? 'kinematic' : config.body;
     const descriptor = bodyType === 'dynamic' ? R.RigidBodyDesc.dynamic() : bodyType === 'fixed' ? R.RigidBodyDesc.fixed() : R.RigidBodyDesc.kinematicPositionBased();
-    const bottom = floorAt(entity) + (entity.elevation || 0);
+    const bottom = entity.z ?? floorAt(entity) + (entity.elevation || 0);
     // A wedge's origin is its base on the floor; every other shape's is its centre.
     // A wedge's origin is its base on the floor and a model's is its own origin, which is where
     // the renderer puts it too; every other shape's origin is its centre.
@@ -555,7 +557,17 @@ export function createPhysics(project, state, R, triangulate) {
   /** Copies one entity's simulated position back onto the project data. */
   function syncEntity(entity) {
     const body = bodies.get(entity.id);
-    if (!body) { entity.z = floorAt(entity) + (entity.elevation || 0); return; }
+    if (!body) {
+      const floor = floorAt(entity);
+      // Route, cue and thing-gravity writers own Z; only an unchanged floor-relative object
+      // should be carried by a moving sector rather than have its new height overwritten.
+      if (Number.isFinite(entity.z) && (entity.z !== unbodiedHeights.get(entity) ||
+        state.pathMotions?.has(entity.id) || state.pathTweens?.some(tween => tween.entityId === entity.id) ||
+        state.pathCompleted?.includes(entity.id))) entity.elevation = entity.z - floor;
+      entity.z = floor + (entity.elevation || 0);
+      unbodiedHeights.set(entity, entity.z);
+      return;
+    }
     const actorHeight = actorHeights.get(entity.id);
     if (actorHeight !== undefined) {
       // An actor is moved by the actor runtime, not by Rapier, so its collider follows the
@@ -871,9 +883,10 @@ export function createPhysics(project, state, R, triangulate) {
       const bottom = z ?? floorAt({ x, y }) + (entity.elevation || 0);
       if (!body) { entity.x = x; entity.y = y; entity.z = bottom; entity.elevation = bottom - floorAt(entity); syncEntity(entity); return; }
       const height = entity.type === 'player' ? 56 : actorHeights.get(id) ?? entity.physics.height;
+      const baseAtOrigin = entity.physics?.shape === 'wedge' || entity.physics?.shape === 'model';
       const position = entity.type === 'player'
         ? { x: x / PHYSICS_SCALE, y: (bottom + PLAYER_CYLINDER.halfHeight * upMap[2] + .4) / PHYSICS_SCALE, z: y / PHYSICS_SCALE }
-        : { x: x / PHYSICS_SCALE, y: (bottom + height / 2 + .4) / PHYSICS_SCALE, z: y / PHYSICS_SCALE };
+        : { x: x / PHYSICS_SCALE, y: (bottom + (baseAtOrigin ? 0 : height / 2)) / PHYSICS_SCALE, z: y / PHYSICS_SCALE };
       body.setTranslation(position, true);
       if (body.isKinematic()) body.setNextKinematicTranslation(position);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);

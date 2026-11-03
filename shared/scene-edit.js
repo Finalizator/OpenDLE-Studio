@@ -1,5 +1,6 @@
 import { sectorAt, sectorGeometry } from './sectors.js';
 import { axisField } from './gizmo-math.js';
+import { entityOrigin } from './entity-visuals.js';
 
 const wrapAngle = value => ((value % 360) + 540) % 360 - 180;
 
@@ -70,7 +71,8 @@ export function volumeAxis(project, id, axis) {
   if (!entity) return { centre: 0, size };
   if (axis === 'x') return { centre: Number(entity.x) || 0, size };
   if (axis === 'z') return { centre: Number(entity.y) || 0, size };
-  return { centre: (Number(entity.elevation) || 0) + size / 2, size };
+  const floor = sectorAt(sectorGeometry(project), entity.x, entity.y)?.floorHeight || 0;
+  return { centre: entityOrigin(entity, floor)[1] + size / 2, size };
 }
 
 /** Yaw plus the model tilt a rotate drag asked for; a zero tilt is removed. */
@@ -84,27 +86,21 @@ function applyRotation(item, origin, delta) {
 
 export function transformSelection(project, selection, mode, delta, grid) {
   const snap = value => Math.round(value / grid) * grid;
+  if (selection.kind === 'entity' && mode === 'move') {
+    const baseline = { ...project, map: { ...project.map, entities: project.map.entities.map(entity => ({ ...entity })) } };
+    return dragSelection(project, baseline, selection, mode, delta, grid);
+  }
   if (selection.kind === 'pathPoint') {
     if (mode !== 'move') throw new Error('Rotation and scale apply to objects only');
     const { point } = waypointOf(project, selection);
     if (!point) throw new Error('Selected waypoint no longer exists');
-    point.x = snap(point.x + (delta.x || 0));
-    point.y = snap(point.y + (delta.y || 0));
-    point.z = snap((point.z || 0) + (delta.z || 0));
+    if (delta.x) point.x = snap(point.x + delta.x);
+    if (delta.y) point.y = snap(point.y + delta.y);
+    if (delta.z) point.z = snap((point.z || 0) + delta.z);
     return;
   }
   if (selection.kind === 'path') {
-    if (mode !== 'move') throw new Error('A route is turned and resized through its waypoints');
-    const path = (project.paths || []).find(item => item.id === selection.id);
-    const origin = (baseline?.paths || []).find(item => item.id === selection.id);
-    if (!path) throw new Error('Selected route no longer exists');
-    if (!origin) throw new Error('The drag started from a project state that no longer exists');
-    // The whole route moves as one: the *shift* is snapped, not each waypoint, or a route whose
-    // points sit off the grid would be reshaped every time it was moved.
-    const shift = { x: delta.x ? snap(delta.x) : 0, y: delta.y ? snap(delta.y) : 0, z: delta.z ? snap(delta.z) : 0 };
-    path.points = origin.points.map(point => ({ ...point,
-      x: point.x + shift.x, y: point.y + shift.y, z: (point.z || 0) + shift.z }));
-    return;
+    return dragSelection(project, { paths: structuredClone(project.paths || []) }, selection, mode, delta, grid);
   }
   const collections = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' };
   const item = project.map[collections[selection.kind]]?.find(item => item.id === selection.id);
@@ -137,17 +133,8 @@ export function transformSelection(project, selection, mode, delta, grid) {
       if (delta.y) vertex.y = snap(vertex.y + delta.y);
     }
   } else {
-    const oldFloor = selection.kind === 'entity' ? sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0 : 0;
-    const before = { x: item.x, y: item.y, elevation: item.elevation || 0, entity: item };
     if (delta.x) item.x = snap(item.x + delta.x);
     if (delta.y) item.y = snap(item.y + delta.y);
-    if (selection.kind === 'entity') {
-      const newFloor = sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0;
-      const elevation = (item.elevation || 0) + oldFloor - newFloor;
-      item.elevation = delta.z ? snap(elevation + delta.z) : elevation;
-      moveGroupBy(project, { map: { entities: [before.entity] } }, selection, { x: item.x - before.x, y: item.y - before.y,
-        elevation: (item.elevation || 0) - before.elevation });
-    }
   }
 }
 
@@ -157,13 +144,6 @@ export function transformSelection(project, selection, mode, delta, grid) {
  * The set travels by the same *shift*, not by its own snapped positions: snapping each member
  * separately would pull them together or apart by up to half a grid step on every drag, and the
  * arrangement between them is the whole point of selecting them together.
- */
-function moveWithSelection(project, baseline, origin, primary, selection) {
-  moveGroupBy(project, baseline, selection, { x: primary.x - origin.x, y: primary.y - origin.y,
-    elevation: (primary.elevation || 0) - (origin.elevation || 0) });
-}
-/**
- * The same shift for the rest of the set, given the primary's own travel.
  *
  * Positions come from the *baseline*, never from the object's current place: a live drag re-runs
  * this on every pointer move, and the draft it runs on already holds the previous frame's move.
@@ -173,7 +153,8 @@ function moveWithSelection(project, baseline, origin, primary, selection) {
 function moveGroupBy(project, baseline, selection, shift) {
   const group = Array.isArray(selection.group) ? selection.group : [];
   if (group.length < 2) return;
-  if (!shift.x && !shift.y && !shift.elevation) return;
+  if (!shift.x && !shift.y && !shift.z) return;
+  const oldSectors = sectorGeometry(baseline), newSectors = sectorGeometry(project);
   for (const id of group) {
     if (id === selection.id) continue;
     const entity = project.map.entities.find(candidate => candidate.id === id);
@@ -181,9 +162,11 @@ function moveGroupBy(project, baseline, selection, shift) {
     if (!entity || !base) continue;
     entity.x = base.x + shift.x;
     entity.y = base.y + shift.y;
-    // Height only moves when the drag asked for it, so a set dragged across a step keeps its own
-    // elevations instead of inheriting the primary's.
-    entity.elevation = (base.elevation || 0) + (shift.elevation || 0);
+    const oldFloor = sectorAt(oldSectors, base.x, base.y)?.floorHeight || 0;
+    const newFloor = sectorAt(newSectors, entity.x, entity.y)?.floorHeight || 0;
+    const height = entityOrigin(base, oldFloor)[1] + shift.z;
+    entity.elevation = height - newFloor;
+    if (base.z !== undefined) entity.z = height;
   }
 }
 
@@ -253,7 +236,11 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
       if (!offset) return;
       item.x = Math.round(origin.x + (Number(offset.x) || 0));
       item.y = Math.round(origin.y + (Number(offset.y) || 0));
-      item.elevation = Math.round((origin.elevation || 0) + (Number(offset.z) || 0));
+      const oldFloor = sectorAt(sectorGeometry(baseline), origin.x, origin.y)?.floorHeight || 0;
+      const newFloor = sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0;
+      const height = Math.round(entityOrigin(origin, oldFloor)[1] + (Number(offset.z) || 0));
+      item.elevation = height - newFloor;
+      if (origin.z !== undefined) item.z = height;
     };
     if (mode === 'scale' && Number.isFinite(Number(delta.scale))) {
       // The scale is relative to the size the drag started at, which is what makes it absolute.
@@ -296,8 +283,10 @@ export function dragSelection(project, baseline, selection, mode, delta, grid) {
     const baselineSectors = sectorGeometry(baseline);
     const oldFloor = sectorAt(baselineSectors, origin.x, origin.y)?.floorHeight || 0;
     const newFloor = sectorAt(sectorGeometry(project), item.x, item.y)?.floorHeight || 0;
-    const elevation = (origin.elevation || 0) + oldFloor - newFloor;
+    const elevation = entityOrigin(origin, oldFloor)[1] - newFloor;
     item.elevation = delta.z ? snap(elevation + delta.z) : elevation;
-    moveWithSelection(project, baseline, origin, item, selection);
+    if (origin.z !== undefined) item.z = newFloor + item.elevation;
+    moveGroupBy(project, baseline, selection, { x: item.x - origin.x, y: item.y - origin.y,
+      z: entityOrigin(item, newFloor)[1] - entityOrigin(origin, oldFloor)[1] });
   }
 }

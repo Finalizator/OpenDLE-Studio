@@ -117,6 +117,15 @@ test('object drops set sprites and models with kind validation and floor moves r
   validateProject(project);
 });
 
+test('floor drops and facing markers respect an objects authored world height', () => {
+  const project = createProject(), entity = project.map.entities[1];
+  Object.assign(entity, { z: 96, elevation: 16 });
+  assert.equal(facingArrowPose(entity, 32).y, 98);
+  moveEntityToFloor(project, entity.id, 128, -64);
+  assert.equal(entityOrigin(entity, 32)[1], 32);
+  assert.equal(entity.z, undefined, 'floor placement clears the previous absolute anchor');
+});
+
 test('dropping a model on the scene creates a decoration that already carries it', () => {
   const project = withAssets(createProject());
   assert.match(addEntityWithModel(project, { x: 128, y: -64, assetId: 'model' }), /Crate placed as a decoration at 128, -64/);

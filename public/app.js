@@ -533,7 +533,11 @@ async function refreshScene() {
           const position = snap(point), type = $('entity-type').value;
           edit(next => {
             const elevation = Math.round((point.z - (sectorAt(mapSectors, position.x, position.y)?.floorHeight || 0)) / Number($('grid').value)) * Number($('grid').value);
-            if (type === 'player') Object.assign(next.map.entities.find(entity => entity.type === 'player'), position, { elevation });
+            if (type === 'player') {
+              const player = next.map.entities.find(entity => entity.type === 'player');
+              Object.assign(player, position, { elevation });
+              delete player.z;
+            }
             else next.map.entities.push(newEntityOfType(type, position, { elevation }));
           }, 'Object placed in 3D');
         } catch (error) { status(error.message, true); }
@@ -688,11 +692,7 @@ function editHistoryLimit(candidate, deepGame) {
 let liveEditState = null;
 function liveBegin() {
   if (liveEditState) return;
-  liveEditState = { baseline: project, changed: false, wasDirty: dirty };
-  history.push(historySnapshot());
-  future = [];
-  const limit = historyLimit(project);
-  while (history.length > limit) history.shift();
+  liveEditState = { baseline: project, snapshot: historySnapshot(), changed: false, wasDirty: dirty };
 }
 function liveApply(fn, message) {
   liveBegin();
@@ -710,11 +710,14 @@ function liveFinish(message, { revert = false } = {}) {
   if (!active) { if (message) status(message); return; }
   if (revert || !active.changed) {
     if (active.changed) { project = active.baseline; dirty = active.wasDirty; editVersion++; }
-    history.pop();
     render();
     status(revert ? 'Edit cancelled' : 'No change');
     return;
   }
+  history.push(active.snapshot);
+  const limit = historyLimit(project);
+  while (history.length > limit) history.shift();
+  future = [];
   persistDraft();
   render();
   status(message || 'Edit applied');
@@ -1218,7 +1221,11 @@ function renderInspector() {
   const item = project.map[collection]?.find(value => value.id === selection.id);
   if (!item) { selection = null; renderInspector(); return; }
   $('selection-kind').textContent = selection.kind;
-  const update = (key, value) => edit(next => { next.map[collection].find(value => value.id === item.id)[key] = value; });
+  const update = (key, value) => edit(next => {
+    const target = next.map[collection].find(value => value.id === item.id);
+    target[key] = value;
+    if (selection.kind === 'entity' && key === 'elevation') delete target.z;
+  });
   parent.append(make('h2', `${selection.kind[0].toUpperCase()}${selection.kind.slice(1)}`), make('p', item.id, 'muted'));
   if (project.importSource) {
     const types = { entity: ['thing', /^thing(\d+)$/], vertex: ['vertex', /^v(\d+)$/],
@@ -1272,7 +1279,9 @@ function renderInspector() {
     parent.append(grid);
     if (selection.kind === 'entity') {
       field(parent, 'Angle (degrees)', input(item.angle, 'number', value => update('angle', value)));
-      field(parent, 'Elevation above sector floor', input(item.elevation || 0, 'number', value => update('elevation', value)));
+      const elevation = item.z === undefined ? item.elevation || 0
+        : item.z - (sectorAt(mapSectors, item.x, item.y)?.floorHeight || 0);
+      field(parent, 'Elevation above sector floor', input(elevation, 'number', value => update('elevation', value)));
       parent.append(make('h3', 'Object-local variables'));
       renderVariables(parent, item.variables || {}, variables => update('variables', variables));
       if (item.type === 'enemy') field(parent, 'Initial health', input(item.health ?? 20, 'number', value => update('health', value)));
@@ -3308,7 +3317,11 @@ canvas.addEventListener('pointerdown', guard(event => {
   if (toolMode() === 'entity') {
     const position = snap(point), type = $('entity-type').value;
     edit(next => {
-      if (type === 'player') Object.assign(next.map.entities.find(entity => entity.type === 'player'), position);
+      if (type === 'player') {
+        const player = next.map.entities.find(entity => entity.type === 'player');
+        Object.assign(player, position, { elevation });
+        delete player.z;
+      }
       else next.map.entities.push(newEntityOfType(type, position));
     }, `${type} placed`);
     return;

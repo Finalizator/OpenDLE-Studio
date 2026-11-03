@@ -299,3 +299,59 @@ test('routes selected together travel together, and never compound', () => {
   assert.deepEqual(project.paths[0].points.map(point => point.x), [48, 148]);
   assert.deepEqual(project.paths[1].points.map(point => point.x), [64, 164]);
 });
+
+test('incremental route and waypoint moves preserve untouched coordinates and move route sets', () => {
+  const project = createProject();
+  project.paths = ['a', 'b'].map(id => createPath({ id, points: [
+    { id: `${id}1`, x: 3, y: 7, z: 5, curve: 1 }, { id: `${id}2`, x: 71, y: 23, z: 21, curve: 1 },
+  ] }));
+  transformSelection(project, { kind: 'path', id: 'a', group: ['a', 'b'] }, 'move', delta({ x: 17 }), 16);
+  for (const path of project.paths) assert.deepEqual(path.points.map(point => [point.x, point.y, point.z]),
+    [[19, 7, 5], [87, 23, 21]]);
+  transformSelection(project, { kind: 'pathPoint', id: 'a1', pathId: 'a' }, 'move', delta({ z: 20 }), 16);
+  assert.deepEqual(project.paths[0].points.map(point => [point.x, point.y, point.z]), [[19, 7, 32], [87, 23, 21]]);
+});
+
+test('authored world heights move with both incremental transforms and absolute live drags', () => {
+  for (const live of [false, true]) {
+    const project = createProject(), entity = project.map.entities[1];
+    entity.z = 96;
+    const baseline = structuredClone(project), selection = { kind: 'entity', id: entity.id };
+    const move = values => live ? dragSelection(project, baseline, selection, 'move', delta(values), 16)
+      : transformSelection(project, selection, 'move', delta(values), 16);
+    move({ z: 32 });
+    assert.equal(entity.z, 128);
+    assert.equal(entity.elevation, 128);
+    if (live) { move({ z: 32 }); assert.equal(entity.z, 128, 'repeated live frames do not compound'); }
+    validateProject(project);
+  }
+});
+
+test('entity sets preserve each members world height across different floor transitions', () => {
+  for (const live of [false, true]) {
+    const project = createProject();
+    addRoom(project, { x: 512, y: -128, width: 256, depth: 256 });
+    project.map.sectors[1].floorHeight = 64;
+    const [first, second] = project.map.entities;
+    Object.assign(first, { x: 160, y: 0, elevation: 80 });
+    Object.assign(second, { x: 0, y: 0, elevation: 24 });
+    const baseline = structuredClone(project), selection = { kind: 'entity', id: first.id, group: [first.id, second.id] };
+    if (live) dragSelection(project, baseline, selection, 'move', delta({ x: 480 }), 16);
+    else transformSelection(project, selection, 'move', delta({ x: 480 }), 16);
+    assert.equal(first.elevation, 16, 'primary crossed onto the raised floor');
+    assert.equal(second.elevation, 24, 'member still above the old floor must not sink');
+    assert.equal(second.x, 480, 'incremental and live transforms both carry the set');
+  }
+});
+
+test('forming an elevated volume uses its actual world centre and moves explicit Z', () => {
+  const project = createProject(), entity = project.map.entities[1];
+  project.map.sectors[0].floorHeight = 64;
+  Object.assign(entity, { z: 112, elevation: 48, area: { shape: 'box', width: 128, height: 128, depth: 128, radius: 64 } });
+  assert.deepEqual(volumeAxis(project, entity.id, 'y'), { centre: 176, size: 128 });
+  const baseline = structuredClone(project);
+  dragSelection(project, baseline, { kind: 'entity', id: entity.id }, 'form',
+    { sizes: { height: 192 }, offset: { z: 32 } }, 16);
+  assert.equal(entity.z, 144);
+  assert.equal(entity.elevation, 80);
+});

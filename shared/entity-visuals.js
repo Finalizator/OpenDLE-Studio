@@ -162,7 +162,7 @@ export function facingArrowPose(entity, floorHeight = 0, { lift = 2 } = {}) {
   const angle = noseAngle(entity);
   return {
     x: Number(entity?.x) || 0,
-    y: (Number(floorHeight) || 0) + (Number(entity?.elevation) || 0) + lift,
+    y: (entity?.z ?? (Number(floorHeight) || 0) + (Number(entity?.elevation) || 0)) + lift,
     z: Number(entity?.y) || 0,
     // `-0` would print as a negative zero in a dataset and compare unequal to 0; a thing facing
     // east is exactly zero.

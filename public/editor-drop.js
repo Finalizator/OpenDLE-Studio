@@ -123,6 +123,7 @@ export function moveEntityToFloor(project, entityId, x, y) {
   entity.x = x;
   entity.y = y;
   entity.elevation = 0;
+  delete entity.z;
   return `${entity.name} moved to the floor at ${x}, ${y}`;
 }
 

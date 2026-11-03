@@ -16,6 +16,8 @@ import { sectorAt } from '../shared/sectors.js';
 import { proposeChanges } from '../server/deepseek.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { modelOrientation } from '../shared/entity-visuals.js';
+import { createPath } from '../shared/paths.js';
+import { startPathTween } from '../shared/timesheet.js';
 
 await R.init();
 const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),
@@ -47,6 +49,77 @@ test('Rapier gravity rests bodies on sector floors; capsule grounds, jumps and s
   tick(240, new Set(['KeyW']));
   assert.ok(state.player.x <= 372.1 && state.player.x > 340, `wall x=${state.player.x}`);
   assert.ok(Math.abs(state.player.z) < 1);
+});
+
+test('disabled rigid bodies create no collider or invalid coordinates, even with no shape settings', t => {
+  for (const physics of [{ body: 'none' }, { ...config, body: 'none' }]) {
+    const { state, tick } = scene(t, project => { project.map.entities[1].physics = physics; });
+    assert.equal(state.physics.bodies.has('pickup'), false);
+    tick(3);
+    assert.ok(Number.isFinite(state.entities[1].z));
+    assert.equal(state.entities[1].z, 0);
+  }
+});
+
+test('a route follower with its rigid body disabled moves along the route in the real physics runtime', t => {
+  const { state, tick } = scene(t, project => {
+    project.map.sectors[0].ceilingHeight = 512;
+    project.paths = [createPath({ id: 'route', points: [
+      { id: 'a', x: 160, y: 0, z: 64, curve: 0 }, { id: 'b', x: 260, y: 0, z: 96, curve: 0 },
+    ] })];
+    Object.assign(project.map.entities[1], { physics: { body: 'none' }, path: { id: 'route', speed: 100, mode: 'once' } });
+  });
+  tick(60);
+  assert.equal(state.physics.bodies.has('pickup'), false);
+  assert.ok(state.entities[1].x > 250, `follower x=${state.entities[1].x}`);
+  assert.ok(state.entities[1].z > 90, `follower z=${state.entities[1].z}`);
+});
+
+test('cue moves preserve floor-relative authored heights through the final physics frame', t => {
+  const { state, tick } = scene(t, project => {
+    Object.assign(project.map.sectors[0], { floorHeight: 64, ceilingHeight: 512 });
+    project.paths = [createPath({ id: 'route', points: [
+      { id: 'a', x: 160, y: 0, z: 64, curve: 0 }, { id: 'b', x: 260, y: 0, z: 96, curve: 0 },
+    ] })];
+    Object.assign(project.map.entities[1], { physics: { body: 'none' }, elevation: 48 });
+  });
+  startPathTween(state, { entityId: 'pickup', pathId: 'route', seconds: .5 });
+  tick(60);
+  assert.ok(Math.abs(state.entities[1].x - 260) < .001);
+  assert.ok(Math.abs(state.entities[1].z - 144) < .001, `cue endpoint z=${state.entities[1].z}`);
+  assert.equal(state.pathTweens.length, 0);
+});
+
+test('authored world Z agrees with play-mode spawn positions and unbodied moving-floor offsets', t => {
+  const { state, tick } = scene(t, project => {
+    project.map.sectors[0].ceilingHeight = 512;
+    project.map.entities[0].z = 96;
+    Object.assign(project.map.entities[1], { z: 112, elevation: 7 });
+    project.map.entities.push({ ...project.map.entities[1], id: 'body', x: 200, z: 144,
+      physics: { ...config, body: 'fixed' } });
+  });
+  assert.ok(Math.abs(state.player.z - 96) < 1);
+  assert.equal(state.entities[1].z, 112);
+  assert.ok(Math.abs(state.entities[2].z - 144) < .001);
+  state.sectors[0].floorHeight = 16; state.worldRevision++;
+  tick();
+  assert.equal(state.entities[1].z, 128, 'unbodied objects retain their authored floor-relative offset');
+});
+
+test('teleport uses a ramps base rather than the centre of its physics height', async t => {
+  const { asset } = await bundleModel(new File([modelFixture().glb], 'model.glb'), [], 'model');
+  for (const shape of ['wedge', 'model', 'box']) {
+    const { state } = scene(t, project => {
+      project.map.sectors[0].ceilingHeight = 512;
+      project.assets = [asset];
+      project.map.entities[1].modelAsset = asset.id;
+      project.map.entities[1].physics = { ...config, body: 'fixed', shape, wedge: { slope: 45, facing: 'left' } };
+    });
+    state.physics.teleport('pickup', 64, 32, 96);
+    const entity = state.entities[1];
+    assert.ok(Math.abs(entity.z - 96) < .001, `${shape} feet should be exactly at 96, got ${entity.z}`);
+    assert.equal(entity.x, 64); assert.equal(entity.y, 32);
+  }
 });
 
 test('capsule steps and jumps onto ledges but rejects excessive heights, low ceilings and closed sectors', t => {

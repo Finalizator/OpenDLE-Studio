@@ -258,6 +258,9 @@ provider credits or network access are required for tests.
   already carries it, selected and ready to retype in Properties. Transform handles
   and floors/ceilings follow the pointer while you drag: geometry, the selection
   box and the gizmo update every frame, and the whole drag is a single undo step.
+  Cancelled, rejected or empty drags leave both the undo stack and the redo branch intact;
+  history is recorded only when the drag is accepted. Undo/redo during a drag first cancels it.
+  Object sets preserve each member's world height when crossing different sector floors.
   Floors and ceilings can be raised and lowered in 3D with a live numeric readout
   (undone through the normal edit path), so imported geometry is movable
   vertically as well as horizontally; per-vertex slopes are not implemented. Ceilings are
@@ -2543,6 +2546,13 @@ and Z points up. A force applies for one fixed tick; repeat the action for a
 continuous force. Position action Z is an **absolute world height**, while
 Properties elevation is relative to the containing sector floor. Omitting Z
 on teleport places the object on its destination floor plus authored elevation.
+Authored absolute Z is honored when play starts, including objects above carved tunnels.
+The editor's handles, facing markers and volume centres use the same height as the artwork;
+vertical moves update absolute anchors, and floor drops or elevation edits replace them.
+A rigid body set to **none** creates no custom collider (solid Doom actors retain their native
+actor collision). Teleports position a wedge or model at its base, not half a collider above it.
+Physics synchronization preserves heights written by route followers, cue moves and thing
+gravity. Cue offsets include an object's authored floor height and elevation, not only explicit Z.
 The player capsule is radius 12, total height 56, with up to 24-unit autosteps.
 A step is decided by the map, not only by what the capsule can shape-cast over: when a walking
 player's move is refused, `stepUpOnto` in [`shared/physics.js`](./shared/physics.js) walks the

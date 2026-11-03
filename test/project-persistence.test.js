@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { createProject, validateProject } from '../shared/project.js';
+import { cloneProjectForEdit, createProject, validateProject } from '../shared/project.js';
 import { draftProject, recoverProject, writeProjectDraft } from '../public/project-recovery.js';
 
 const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -18,6 +18,7 @@ function fixture(api = async () => {}) {
   const project = createProject(); project.title = 'First';
   const context = vm.createContext({
     project, projectId: 'first', revision: 1, projectTemporary: false, dirty: true, editVersion: 1,
+    cloneProjectForEdit, UNDO_DEEP_GAME_STEPS: 10, undoDepthFor: () => 10,
     documentGeneration: 1, documentSession: { projectId: 'first', revision: 1, temporary: false },
     projectOperationBusy: false, draftSkipNoted: false, history: [], future: [], scenePose: null,
     cutResets: 0, cutTool: { cancel() { context.cutResets++; } },
@@ -40,6 +41,12 @@ function fixture(api = async () => {}) {
     between('async function saveProject()', '/**\n * Drains'),
   ].join('\n'), context);
   return { context, elements, storage, notices };
+}
+function liveFixture() {
+  const result = fixture();
+  vm.runInContext(between('function editHistoryLimit(', 'function renderLive('), result.context);
+  result.context.renderLive = () => {};
+  return result;
 }
 function deferred() {
   let resolve;
@@ -168,4 +175,34 @@ test('editing a large project does not delete a recoverable draft from another d
   context.project = { ...context.project, assets: Array(301).fill({}) };
   context.persistDraft();
   assert.equal(storage.get('opendle-draft'), draft);
+});
+
+test('cancelled and rejected live drags preserve undo depth and the redo branch', () => {
+  for (const action of ['cancel', 'reject', 'empty']) {
+    const { context } = liveFixture();
+    const original = context.project;
+    context.history = Array.from({ length: 10 }, () => context.historySnapshot());
+    const snapshots = [...context.history];
+    const redo = context.historySnapshot(); context.future = [redo];
+    if (action === 'cancel') context.liveApply(next => { next.title = 'Dragging'; });
+    else if (action === 'reject') context.liveApply(() => { throw new Error('Rejected drag'); });
+    else context.liveBegin();
+    context.liveFinish(null, { revert: true });
+    assert.equal(context.project, original);
+    assert.deepEqual([...context.history], snapshots, `${action}: no oldest undo entry was evicted`);
+    assert.deepEqual([...context.future], [redo], `${action}: redo remains available`);
+  }
+});
+
+test('an accepted multi-frame live drag records exactly one original snapshot', () => {
+  const { context, storage } = liveFixture();
+  const original = context.project;
+  context.future = [context.historySnapshot()];
+  context.liveApply(next => { next.title = 'Frame one'; });
+  context.liveApply(next => { next.title = 'Frame two'; });
+  context.liveFinish('Moved');
+  assert.equal(context.history.length, 1);
+  assert.equal(context.history[0].project, original);
+  assert.equal(context.future.length, 0);
+  assert.equal(JSON.parse(storage.get('opendle-draft')).project.title, 'Frame two');
 });

@@ -18,6 +18,7 @@
  */
 
 import { pointAlong, sampleLengths, samplePath, waypointDistances } from './paths.js';
+import { sectorAt, sectorGeometry } from './sectors.js';
 
 /** The private condition a cue's generated rule uses. Never offered in the editor. */
 export const TIMESHEET_CUE_CONDITION = 'timesheetCue';
@@ -366,6 +367,7 @@ export function advancePathTweens(project, state, dt) {
   if (!tweens?.length) return 0;
   const finished = [];
   let moved = 0;
+  let authoredSectors;
   const remaining = [];
   for (const tween of tweens) {
     const entity = (state.entities || []).find(item => item.id === tween.entityId);
@@ -388,7 +390,9 @@ export function advancePathTweens(project, state, dt) {
     const authored = (project.map.entities || []).find(item => item.id === tween.entityId);
     if (!tween.originFrom) {
       tween.originFrom = authored
-        ? { x: authored.x, y: authored.y, z: authored.z || 0 }
+        ? { x: authored.x, y: authored.y, z: authored.z ??
+          (sectorAt(authoredSectors ||= sectorGeometry(project), authored.x, authored.y)?.floorHeight || 0) +
+          (authored.elevation || 0) }
         // An object the level made during play has no authored position, so it keeps the one it
         // had when the trip started.
         : { ...(tween.origin || { x: 0, y: 0, z: 0 }) };
