@@ -1,12 +1,47 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+import { contextMenu } from '../public/context-menu.js';
 
 // The editor's context menu is shared by every panel and view, and the create-object submenu is
 // how an object is placed from a right click in either view. Both are DOM code driven by clicks,
 // so what can be checked without a browser is the contract between them: the menu can carry a
 // submenu at all, and the view menus offer the full list of things that can be created.
 const memo = path => readFileSync(new URL(`../public/${path}`, import.meta.url), 'utf8');
+
+test('unhandled editor right-clicks suppress native menus without blocking field or custom menus', () => {
+  const app = memo('app.js');
+  const start = app.indexOf('function dismissUnhandledContextMenu(');
+  const end = app.indexOf('\ninstallContextMenus();', start);
+  let closed = 0;
+  const context = vm.createContext({ closeContextMenu() { closed++; } });
+  vm.runInContext(app.slice(start, end), context);
+  const event = options => ({
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+    ...options,
+  });
+  const background = event({});
+  context.dismissUnhandledContextMenu(background);
+  assert.equal(background.defaultPrevented, true);
+  assert.equal(closed, 1);
+  const custom = event({ defaultPrevented: true });
+  context.dismissUnhandledContextMenu(custom);
+  assert.equal(closed, 1, 'an existing editor menu is left open');
+  const input = event({ target: { closest: () => ({}) } });
+  context.dismissUnhandledContextMenu(input);
+  assert.equal(input.defaultPrevented, false, 'native text editing remains available');
+  assert.equal(closed, 1);
+  assert.match(app, /window\.addEventListener\('contextmenu', dismissUnhandledContextMenu\)/,
+    'the fallback runs after document-level addon and editor menus');
+});
+
+test('empty and separator-only menus do not create panels or leave pointer listeners behind', () => {
+  // No DOM should be needed when there is nothing to show.
+  assert.equal(contextMenu({}, []), null);
+  assert.equal(contextMenu({}, [null, { separator: true }]), null);
+});
 
 test('the context menu can open a submenu from an item', () => {
   const menu = memo('context-menu.js');

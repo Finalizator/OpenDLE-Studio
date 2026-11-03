@@ -31,20 +31,54 @@ export function createTimesheetPanel(nodes, {
 } = {}) {
   if (!nodes?.root) throw new Error('The timesheet panel needs a root node');
   let selectedId = null, selectedCue = null, pixelsPerSecond = 60, playhead = 0;
+  let selectedCues = new Set(), selectionSheet = null, rangeAnchor = null, suppressClick = false;
   let cueClipboard = null;
   nodes.root.tabIndex = 0;
   nodes.root.addEventListener('keydown', handleClipboardKey);
+  nodes.root.addEventListener('pointerdown', () => { suppressClick = false; }, true);
+  nodes.root.addEventListener('click', event => {
+    if (!suppressClick || event.detail === 0) return;
+    suppressClick = false;
+    event.preventDefault(); event.stopPropagation();
+  }, true);
 
   const timesheets = () => project()?.timesheets || [];
   const current = () => timesheets().find(sheet => sheet.id === selectedId) || timesheets()[0] || null;
 
-  const newId = prefix => {
+  const newId = (prefix, reserved = new Set()) => {
     const used = new Set([...timesheets().map(sheet => sheet.id),
       ...timesheets().flatMap(sheet => [...(sheet.tracks || []).map(track => track.id), ...(sheet.cues || []).map(cue => cue.id)])]);
     let index = 1;
-    while (used.has(`${prefix}_${index}`)) index++;
-    return `${prefix}_${index}`;
+    while (used.has(`${prefix}_${index}`) || reserved.has(`${prefix}_${index}`)) index++;
+    const id = `${prefix}_${index}`;
+    reserved.add(id);
+    return id;
   };
+
+  const orderedCues = sheet => [...sheet.cues].sort((a, b) => a.time - b.time);
+  const chosenCues = sheet => orderedCues(sheet).filter(cue => selectedCues.has(cue.id));
+
+  function setSelection(ids, primary = ids.at(-1) || null) {
+    selectedCues = new Set(ids);
+    selectedCue = primary;
+  }
+
+  function selectCue(sheet, cue, event = {}) {
+    if (event.shiftKey && rangeAnchor && sheet.cues.some(item => item.id === rangeAnchor)) {
+      const cues = orderedCues(sheet);
+      const from = cues.findIndex(item => item.id === rangeAnchor), to = cues.findIndex(item => item.id === cue.id);
+      const ids = cues.slice(Math.min(from, to), Math.max(from, to) + 1).map(item => item.id);
+      setSelection(event.ctrlKey || event.metaKey ? [...selectedCues, ...ids] : ids, cue.id);
+    } else if (event.ctrlKey || event.metaKey) {
+      const ids = new Set(selectedCues);
+      if (ids.has(cue.id)) ids.delete(cue.id); else ids.add(cue.id);
+      setSelection([...ids], ids.has(cue.id) ? cue.id : [...ids].at(-1) || null);
+      rangeAnchor = cue.id;
+    } else {
+      setSelection([cue.id]); rangeAnchor = cue.id;
+    }
+    playhead = cue.time;
+  }
 
   /** Every mutation goes through the app's `edit`, so a timeline edit is one undo step. */
   function change(mutate, message) {
@@ -75,78 +109,130 @@ export function createTimesheetPanel(nodes, {
   function addCue(sheet, time = playhead, trackId = sheet.tracks[0]?.id) {
     const cue = { id: newId('cue'), name: `Cue ${sheet.cues.length + 1}`, trackId,
       time: Math.max(0, Math.min(sheet.duration, Math.round(time * 10) / 10)), ownerId: null, actions: [] };
-    selectedCue = cue.id;
+    setSelection([cue.id]); rangeAnchor = cue.id;
     change(next => {
       const target = next.timesheets.find(item => item.id === sheet.id);
       target.cues = [...target.cues, cue];
     }, `Cue added at ${seconds(cue.time)}`);
   }
 
-  function removeCue(sheet, cue) {
-    if (selectedCue === cue.id) selectedCue = null;
+  function removeCues(sheet) {
+    const ids = new Set(selectedCues);
+    if (!ids.size) { status('Select a cue to delete', true); return; }
     change(next => {
       const target = next.timesheets.find(item => item.id === sheet.id);
-      target.cues = target.cues.filter(item => item.id !== cue.id);
-    }, 'Cue deleted');
+      target.cues = target.cues.filter(item => !ids.has(item.id));
+    }, ids.size === 1 ? 'Cue deleted' : `${ids.size} cues deleted`);
   }
 
-  function copyCue(sheet, cue) {
-    cueClipboard = { sheetId: sheet.id, cue: structuredClone(cue), afterIds: [cue.id] };
-    status(`Copied cue "${cue.name}"`);
+  function copyCues(sheet) {
+    const cues = chosenCues(sheet);
+    if (!cues.length) { status('Select a cue to copy', true); return; }
+    cueClipboard = { sheetId: sheet.id, cues: structuredClone(cues), groups: [cues.map(cue => cue.id)] };
+    status(cues.length === 1 ? `Copied cue "${cues[0].name}"` : `Copied ${cues.length} cues`);
     render();
     nodes.root.focus({ preventScroll: true });
   }
 
-  function insertCue(sheet, cue, afterId, message) {
-    let copy;
+  function measureCues(cues) {
+    const container = element('div');
+    container.style.visibility = 'hidden';
+    const blocks = cues.map(cue => cueCard(cue));
+    container.append(...blocks);
+    nodes.root.append(container);
+    const measured = cues.map((cue, index) => ({ ...cue, width: blocks[index].getBoundingClientRect().width }));
+    container.remove();
+    return measured;
+  }
+
+  function insertCues(sheet, cues, afterIds, message) {
+    let copies;
     try {
-      if (sheet.cues.length >= TIMESHEET_LIMITS.cues) throw new Error(`A timesheet can have at most ${TIMESHEET_LIMITS.cues} cues`);
-      const after = sheet.cues.find(item => item.id === afterId);
-      // Cues are instants, not clips: the next tenth-second tick is immediately after one.
-      const time = Math.round(((after || cue).time + .1) * 1e9) / 1e9;
-      if (time > TIMESHEET_LIMITS.duration[1]) throw new Error('No time remains after this cue. Move it earlier before pasting.');
-      copy = { ...structuredClone(cue), id: newId('cue'),
-        name: `${cue.name.slice(0, TIMESHEET_LIMITS.name - 5)} copy`, time,
-        trackId: sheet.tracks.some(track => track.id === (after || cue).trackId) ? (after || cue).trackId : sheet.tracks[0].id };
+      if (!cues.length) throw new Error('Select at least one cue to duplicate');
+      if (sheet.cues.length + cues.length > TIMESHEET_LIMITS.cues) throw new Error(`A timesheet can have at most ${TIMESHEET_LIMITS.cues} cues`);
+      const after = afterIds.map(id => sheet.cues.find(cue => cue.id === id)).filter(Boolean);
+      const measured = measureCues(sheet.cues);
+      const source = after.length ? measured.filter(cue => afterIds.includes(cue.id)) : measureCues(cues);
+      const sourceEnd = Math.max(...source.map(cue => cue.time * pixelsPerSecond + cue.width));
+      const firstTime = Math.min(...cues.map(cue => cue.time)), reserved = new Set();
+      copies = cues.map(cue => {
+        const trackId = cues.length === 1 && after.length === 1 ? after[0].trackId : cue.trackId;
+        return { ...structuredClone(cue), id: newId('cue', reserved),
+          name: `${cue.name.slice(0, TIMESHEET_LIMITS.name - 5)} copy`,
+          trackId: sheet.tracks.some(track => track.id === trackId) ? trackId : sheet.tracks[0].id };
+      });
+      const widths = measureCues(copies).map(cue => cue.width);
+      const snapForward = time => Math.ceil((time - 1e-9) * 20) / 20;
+      let offset = snapForward((sourceEnd + 8) / pixelsPerSecond - firstTime);
+      // Move the entire group together until every destination card has horizontal clearance.
+      for (;;) {
+        let nextOffset = offset;
+        copies.forEach((cue, index) => {
+          const left = (cue.time + offset) * pixelsPerSecond, right = left + widths[index];
+          for (const other of measured) {
+            if (other.trackId !== cue.trackId) continue;
+            const otherLeft = other.time * pixelsPerSecond, otherRight = otherLeft + other.width;
+            if (left < otherRight + 8 - 1e-6 && right + 8 > otherLeft + 1e-6)
+              nextOffset = Math.max(nextOffset, snapForward((otherRight + 8) / pixelsPerSecond - cue.time));
+          }
+        });
+        if (nextOffset <= offset) break;
+        offset = nextOffset;
+      }
+      copies.forEach(cue => { cue.time = Math.round((cue.time + offset) * 1e9) / 1e9; });
+      const end = Math.max(...copies.map(cue => cue.time));
+      if (end > TIMESHEET_LIMITS.duration[1]) throw new Error('No time remains for these cues. Move the source earlier or zoom in before pasting.');
       edit(next => {
         const target = next.timesheets.find(item => item.id === sheet.id);
-        const index = target.cues.findIndex(item => item.id === afterId);
-        target.cues.splice(index < 0 ? target.cues.length : index + 1, 0, copy);
-        target.duration = Math.max(target.duration, time);
+        const index = Math.max(-1, ...afterIds.map(id => target.cues.findIndex(item => item.id === id)));
+        target.cues.splice(index < 0 ? target.cues.length : index + 1, 0, ...copies);
+        target.duration = Math.max(target.duration, end);
       }, message);
     } catch (error) {
       status(`Cue could not be pasted: ${error.message}`, true);
       return null;
     }
-    selectedCue = copy.id; playhead = copy.time;
+    setSelection(copies.map(cue => cue.id), copies[0].id);
+    rangeAnchor = selectedCue; playhead = copies[0].time;
     render();
     nodes.root.focus({ preventScroll: true });
     nodes.root.querySelector('.timesheet-cue.selected')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    return copy.id;
+    return copies.map(cue => cue.id);
   }
 
   function pasteCue(sheet) {
     if (!cueClipboard) return;
     const sameSheet = sheet.id === cueClipboard.sheetId;
-    const afterId = sameSheet ? cueClipboard.afterIds.findLast(id => sheet.cues.some(cue => cue.id === id)) : null;
-    const id = insertCue(sheet, cueClipboard.cue, afterId, 'Cue pasted after source');
-    if (id) {
-      cueClipboard.afterIds = [...(sameSheet ? cueClipboard.afterIds : []), id];
+    const afterIds = sameSheet ? cueClipboard.groups.findLast(ids => ids.some(id => sheet.cues.some(cue => cue.id === id))) || [] : [];
+    const ids = insertCues(sheet, cueClipboard.cues, afterIds, 'Cues pasted beside source');
+    if (ids) {
+      cueClipboard.groups = [...(sameSheet ? cueClipboard.groups : []), ids];
       cueClipboard.sheetId = sheet.id;
     }
   }
 
   function handleClipboardKey(event) {
-    if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey ||
+    if (event.defaultPrevented || event.altKey || event.shiftKey ||
       event.target?.closest?.('input, textarea, select, [contenteditable]')) return;
+    const sheet = current();
+    if (!sheet) return;
+    if (!(event.ctrlKey || event.metaKey)) {
+      if ((event.code === 'Delete' || event.code === 'Backspace') && selectedCues.size) {
+        event.preventDefault(); event.stopPropagation(); removeCues(sheet);
+      }
+      return;
+    }
+    if (event.code === 'KeyA') {
+      event.preventDefault(); event.stopPropagation();
+      setSelection(orderedCues(sheet).map(cue => cue.id)); rangeAnchor = selectedCue;
+      render(); nodes.root.focus({ preventScroll: true });
+      return;
+    }
     const key = event.code || (event.key?.toLowerCase() === 'c' ? 'KeyC' : event.key?.toLowerCase() === 'v' ? 'KeyV' : '');
     if (key !== 'KeyC' && key !== 'KeyV') return;
     event.preventDefault(); event.stopPropagation();
-    const sheet = current();
-    if (!sheet) return;
-    const cue = sheet.cues.find(item => item.id === selectedCue);
     if (key === 'KeyC') {
-      if (cue) copyCue(sheet, cue);
+      if (selectedCues.size) copyCues(sheet);
       else status('Select a cue to copy', true);
     } else if (cueClipboard) pasteCue(sheet);
     else status('Copy a timesheet cue first', true);
@@ -202,8 +288,16 @@ export function createTimesheetPanel(nodes, {
 
   function render() {
     const root = nodes.root;
-    root.replaceChildren();
     const sheet = current();
+    if (selectionSheet !== sheet?.id) {
+      selectionSheet = sheet?.id;
+      setSelection([]); rangeAnchor = null;
+    }
+    if (sheet) {
+      selectedCues = new Set([...selectedCues].filter(id => sheet.cues.some(cue => cue.id === id)));
+      if (!selectedCues.has(selectedCue)) selectedCue = [...selectedCues].at(-1) || null;
+    }
+    root.replaceChildren();
     if (!sheet && !timesheets().length) {
       const empty = element('div', 'timesheet-empty');
       empty.append(
@@ -223,7 +317,7 @@ export function createTimesheetPanel(nodes, {
     // Keep nearby instant cues readable without changing their authored track or time.
     for (const lane of root.querySelectorAll('.timesheet-lane')) {
       const ends = [];
-      const blocks = [...lane.children].map(block => ({ block, left: parseFloat(block.style.left), width: block.offsetWidth }))
+      const blocks = [...lane.children].map(block => ({ block, left: parseFloat(block.style.left), width: block.getBoundingClientRect().width }))
         .sort((a, b) => a.left - b.left);
       for (const { block, left, width } of blocks) {
         let row = ends.findIndex(end => end + 4 <= left);
@@ -246,7 +340,7 @@ export function createTimesheetPanel(nodes, {
       option.value = item.id; option.textContent = `${item.name} (${item.cues.length} cues)`; option.selected = item.id === sheet.id;
       picker.append(option);
     }
-    picker.addEventListener('change', () => { selectedId = picker.value; selectedCue = null; render(); });
+    picker.addEventListener('change', () => { selectedId = picker.value; setSelection([]); render(); });
     const add = element('button', '', 'New');
     add.type = 'button'; add.addEventListener('click', addTimesheet);
     const remove = element('button', '', 'Delete');
@@ -268,13 +362,13 @@ export function createTimesheetPanel(nodes, {
     loopLabel.append(loop, document.createTextNode(' Loop'));
     const cue = element('button', 'primary', 'Cue at playhead');
     cue.type = 'button'; cue.addEventListener('click', () => addCue(sheet, playhead));
-    const copy = element('button', '', 'Copy cue');
-    copy.type = 'button'; copy.title = 'Copy selected cue (Ctrl/Cmd+C)';
-    copy.disabled = !sheet.cues.some(item => item.id === selectedCue);
-    copy.addEventListener('click', () => copyCue(sheet, sheet.cues.find(item => item.id === selectedCue)));
+    const copy = element('button', '', selectedCues.size > 1 ? 'Copy cues' : 'Copy cue');
+    copy.type = 'button'; copy.title = 'Copy selected cues (Ctrl/Cmd+C)';
+    copy.disabled = !selectedCues.size;
+    copy.addEventListener('click', () => copyCues(sheet));
     const paste = element('button', '', 'Paste cue');
-    paste.type = 'button'; paste.title = 'Paste 0.1s after the source; repeated pastes follow the previous copy (Ctrl/Cmd+V)';
-    paste.disabled = !cueClipboard || sheet.cues.length >= TIMESHEET_LIMITS.cues;
+    paste.type = 'button'; paste.title = 'Paste visually beside the source, without overlapping existing cue cards (Ctrl/Cmd+V)';
+    paste.disabled = !cueClipboard || sheet.cues.length + cueClipboard.cues.length > TIMESHEET_LIMITS.cues;
     paste.addEventListener('click', () => pasteCue(sheet));
     const zoomOut = element('button', '', '\u2212');
     zoomOut.type = 'button'; zoomOut.title = 'Zoom out';
@@ -349,7 +443,12 @@ export function createTimesheetPanel(nodes, {
       const lane = element('div', 'timesheet-lane');
       lane.style.width = `${width}px`;
       lane.dataset.trackId = track.id;
-      for (const cue of sheet.cues.filter(item => item.trackId === track.id)) lane.append(cueBlock(sheet, cue, lane));
+      lane.addEventListener('click', event => {
+        if (event.target !== lane) return;
+        setSelection([]); rangeAnchor = null;
+        render(); nodes.root.focus({ preventScroll: true });
+      });
+      for (const cue of sheet.cues.filter(item => item.trackId === track.id)) lane.append(cueBlock(sheet, cue));
       row.append(head, lane);
       rows.append(row);
     });
@@ -369,72 +468,106 @@ export function createTimesheetPanel(nodes, {
     return wrap;
   }
 
-  function cueBlock(sheet, cue, lane) {
+  function cueCard(cue) {
     const block = element('button', 'timesheet-cue');
     block.type = 'button';
-    // Cue identity for anything that has to point at one cue — the delete confirmation links here.
     block.dataset.cueId = cue.id;
     block.style.left = `${cue.time * pixelsPerSecond}px`;
-    block.style.borderColor = TIMESHEET_TRACK_COLORS[Math.max(0, sheet.tracks.findIndex(track => track.id === cue.trackId)) % TIMESHEET_TRACK_COLORS.length];
-    block.classList.toggle('selected', cue.id === selectedCue);
     block.append(element('span', 'timesheet-cue-name', cue.name),
       element('span', 'timesheet-cue-time', clock(cue.time)),
       element('span', 'timesheet-cue-actions', `${cue.actions.length} action${cue.actions.length === 1 ? '' : 's'}`));
+    return block;
+  }
+
+  function cueBlock(sheet, cue) {
+    const block = cueCard(cue);
+    block.style.borderColor = TIMESHEET_TRACK_COLORS[Math.max(0, sheet.tracks.findIndex(track => track.id === cue.trackId)) % TIMESHEET_TRACK_COLORS.length];
+    block.classList.toggle('selected', selectedCues.has(cue.id));
+    block.setAttribute('aria-pressed', String(selectedCues.has(cue.id)));
     block.title = `${cue.name} at ${seconds(cue.time)} — double-click to edit its actions, drag to move`;
     block.addEventListener('click', event => {
       event.stopPropagation();
-      selectedCue = cue.id; playhead = cue.time; render();
+      selectCue(sheet, cue, event); render();
       nodes.root.focus({ preventScroll: true });
     });
     block.addEventListener('dblclick', event => { event.stopPropagation(); editAction(sheet, cue, null, null); });
     block.addEventListener('contextmenu', event => {
       event.preventDefault(); event.stopPropagation();
+      if (!selectedCues.has(cue.id)) selectCue(sheet, cue);
       selectedCue = cue.id; render();
+      const multiple = selectedCues.size > 1;
       const items = [
-        { label: 'Edit actions', run: () => editAction(sheet, cue, null, null) },
-        { label: 'Move to playhead', run: () => patchCue(sheet, cue.id, { time: Math.round(playhead * 10) / 10 }, 'Cue moved') },
-        { label: 'Copy cue', hint: 'Ctrl/Cmd+C', run: () => copyCue(sheet, cue) },
+        { label: 'Edit actions', disabled: multiple, run: () => editAction(sheet, cue, null, null) },
+        { label: 'Move to playhead', disabled: multiple, run: () => patchCue(sheet, cue.id, { time: Math.round(playhead * 10) / 10 }, 'Cue moved') },
+        { label: multiple ? 'Copy cues' : 'Copy cue', hint: 'Ctrl/Cmd+C', run: () => copyCues(sheet) },
         { label: 'Paste cue', hint: 'Ctrl/Cmd+V', disabled: !cueClipboard, run: () => pasteCue(sheet) },
-        { label: 'Duplicate', run: () => insertCue(sheet, cue, cue.id, 'Cue duplicated after source') },
+        { label: 'Duplicate', run: () => insertCues(sheet, chosenCues(sheet), [...selectedCues], 'Cues duplicated beside source') },
         { separator: true },
-        { label: 'Delete cue', danger: true, run: () => removeCue(sheet, cue) },
+        { label: multiple ? 'Delete cues' : 'Delete cue', danger: true, run: () => removeCues(sheet) },
       ];
       if (contextMenu) contextMenu(event, items);
       else items.forEach(() => {});
     });
-    // Dragging moves the cue in time and between tracks; the lane's own geometry is the scale.
+    // A group shares one clamped time/track delta, so its spacing survives a drag.
     block.addEventListener('pointerdown', event => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
       event.preventDefault();
-      const startX = event.clientX, startY = event.clientY, startTime = cue.time;
-      let targetTrack = cue.trackId, moved = false;
+      if (!selectedCues.has(cue.id)) selectCue(sheet, cue);
+      const moving = chosenCues(sheet);
+      const blocks = [...nodes.root.querySelectorAll('.timesheet-cue')].filter(item => selectedCues.has(item.dataset.cueId));
+      const startX = event.clientX, startY = event.clientY;
+      const indices = moving.map(item => sheet.tracks.findIndex(track => track.id === item.trackId));
+      let delta = 0, trackDelta = 0, moved = false;
       block.setPointerCapture(event.pointerId);
       const move = moveEvent => {
-        const delta = (moveEvent.clientX - startX) / pixelsPerSecond;
-        const time = Math.max(0, Math.min(sheet.duration, Math.round((startTime + delta) * 20) / 20));
-        block.style.left = `${time * pixelsPerSecond}px`;
-        block.querySelector('.timesheet-cue-time').textContent = clock(time);
+        const dx = moveEvent.clientX - startX;
         const dy = moveEvent.clientY - startY;
+        if (!moved && Math.abs(dx) <= 3 && Math.abs(dy) <= 3) return;
+        moved = true;
+        delta = Math.max(-Math.min(...moving.map(item => item.time)),
+          Math.min(sheet.duration - Math.max(...moving.map(item => item.time)), Math.round(dx / pixelsPerSecond * 20) / 20));
         if (Math.abs(dy) > 12) {
           const row = document.elementsFromPoint(moveEvent.clientX, moveEvent.clientY)
             .find(node => node.classList?.contains('timesheet-lane'));
-          if (row?.dataset.trackId) targetTrack = row.dataset.trackId;
+          if (row?.dataset.trackId) {
+            const requested = sheet.tracks.findIndex(track => track.id === row.dataset.trackId) -
+              sheet.tracks.findIndex(track => track.id === cue.trackId);
+            trackDelta = Math.max(-Math.min(...indices), Math.min(sheet.tracks.length - 1 - Math.max(...indices), requested));
+          }
         }
-        if (Math.abs(moveEvent.clientX - startX) > 1 || Math.abs(dy) > 1) moved = true;
-        block.dataset.pendingTime = String(time);
+        for (const item of blocks) {
+          const source = moving.find(cue2 => cue2.id === item.dataset.cueId);
+          const time = Math.round((source.time + delta) * 1e9) / 1e9;
+          item.style.left = `${time * pixelsPerSecond}px`;
+          item.querySelector('.timesheet-cue-time').textContent = clock(time);
+          item.classList.toggle('dragging', true);
+        }
       };
-      const up = () => {
+      const finish = cancelled => {
         block.removeEventListener('pointermove', move);
         block.removeEventListener('pointerup', up);
-        block.removeEventListener('pointercancel', up);
+        block.removeEventListener('pointercancel', cancel);
         if (!moved) return;
-        const time = Number(block.dataset.pendingTime || cue.time);
-        delete block.dataset.pendingTime;
-        patchCue(sheet, cue.id, { time, trackId: targetTrack }, `Cue moved to ${seconds(time)}`);
+        suppressClick = true;
+        if (cancelled) { render(); return; }
+        try {
+          change(next => {
+            const target = next.timesheets.find(item => item.id === sheet.id);
+            moving.forEach((source, index) => {
+              const item = target.cues.find(cue2 => cue2.id === source.id);
+              item.time = Math.round((source.time + delta) * 1e9) / 1e9;
+              item.trackId = target.tracks[indices[index] + trackDelta].id;
+            });
+          }, moving.length === 1 ? 'Cue moved' : `${moving.length} cues moved`);
+        } catch (error) {
+          status(`Cues could not be moved: ${error.message}`, true);
+          render();
+        }
       };
+      const up = () => finish(false), cancel = () => finish(true);
       block.addEventListener('pointermove', move);
       block.addEventListener('pointerup', up);
-      block.addEventListener('pointercancel', up);
+      block.addEventListener('pointercancel', cancel);
     });
     return block;
   }
@@ -442,8 +575,16 @@ export function createTimesheetPanel(nodes, {
   function inspector(sheet) {
     const cue = sheet.cues.find(item => item.id === selectedCue);
     const panel = element('div', 'timesheet-inspector');
+    if (selectedCues.size > 1) {
+      const remove = element('button', 'danger', 'Delete cues');
+      remove.type = 'button'; remove.addEventListener('click', () => removeCues(sheet));
+      panel.append(element('h3', '', `${selectedCues.size} cues selected`),
+        element('p', 'muted', 'Drag any selected cue to move the group. Copy, paste, duplicate and delete act on the whole selection.'),
+        remove);
+      return panel;
+    }
     if (!cue) {
-      panel.append(element('p', 'muted', 'Select a cue to edit it, or double-click the ruler to add one there. '
+      panel.append(element('p', 'muted', 'Select a cue to edit it; Ctrl/Cmd-click toggles cues, Shift-click selects a range, Ctrl/Cmd+A selects all. Double-click the ruler to add a cue. '
         + 'Cue actions are ordinary visual-script actions: set a variable, move an object, play a sound, start another timeline.'));
       return panel;
     }
@@ -508,7 +649,7 @@ export function createTimesheetPanel(nodes, {
     const add = element('button', 'primary', '+ Action at this cue');
     add.type = 'button'; add.addEventListener('click', () => editAction(sheet, cue, null, null));
     const remove = element('button', 'danger', 'Delete cue');
-    remove.type = 'button'; remove.addEventListener('click', () => removeCue(sheet, cue));
+    remove.type = 'button'; remove.addEventListener('click', () => removeCues(sheet));
     panel.append(heading, fields, list, (() => {
       const row = element('div', 'button-row'); row.append(add, remove); return row;
     })());
@@ -520,7 +661,7 @@ export function createTimesheetPanel(nodes, {
     handleClipboardKey,
     /** The panel is rebuilt from the project, so `refresh` is the same thing said plainly. */
     refresh: render,
-    select(id) { selectedId = id; selectedCue = null; render(); },
+    select(id) { selectedId = id; setSelection([]); rangeAnchor = null; render(); },
     /** Which timeline the panel is showing, so an outside list can mark it. */
     selectedId: () => current()?.id ?? null,
     /** Creates a timeline and opens it. The Project tree makes its own rows with this. */

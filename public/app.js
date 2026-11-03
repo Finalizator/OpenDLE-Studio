@@ -55,7 +55,7 @@ import { upgradePickupReach } from '/shared/doom-hud.js';
 import { suggestedArea, ZONE_AREA } from '/shared/areas.js';
 import { captureScene, instantiateScene, sceneIsEmpty, newScene } from '/shared/scenes.js';
 import { createSceneObjectEditor } from './scene-object-editor.js';
-import { contextMenu } from './context-menu.js';
+import { contextMenu, closeContextMenu } from './context-menu.js';
 import { applyNodeFile, parseNodeFile, planNodeFileInstall, exportNodeFile, layoutContainer, nodeFileName } from '/shared/node-file.js';
 import { askObjectExport, downloadNodeFile } from './export-object.js';
 import { askDeleteObject } from './delete-object.js';
@@ -5877,6 +5877,7 @@ function projectTreeMenu(event) {
 }
 
 function installContextMenus() {
+  window.addEventListener('contextmenu', dismissUnhandledContextMenu);
   $('asset-list').addEventListener('contextmenu', event => {
     const tile = event.target.closest('.asset-tile');
     if (!tile) return;
@@ -5941,6 +5942,13 @@ function installContextMenus() {
       }) },
     ], { label: `${scene.name} actions` });
   });
+}
+
+function dismissUnhandledContextMenu(event) {
+  if (event.defaultPrevented || event.target?.closest?.('input, textarea, [contenteditable]')) return;
+  // Empty editor surfaces must not open the host webview's native menu.
+  event.preventDefault();
+  closeContextMenu();
 }
 
 installContextMenus();

@@ -672,7 +672,7 @@ body.scene-dragging { cursor: grabbing; }
 .timesheet-track-remove:hover { color: #ffb5ab; background: #575757; }
 .timesheet-lane { position: relative; background: repeating-linear-gradient(to right, #3a3a3a 0, #3a3a3a calc(var(--timesheet-zoom, 18) * 5px), #414141 calc(var(--timesheet-zoom, 18) * 5px), #414141 calc(var(--timesheet-zoom, 18) * 5px + 1px)); border: 1px solid var(--border); }
 .timesheet-lane.drop-target { outline: 1px dashed var(--accent); outline-offset: -2px; }
-.timesheet-cue { position: absolute; top: 2px; bottom: 2px; display: grid; gap: 0; align-content: center; text-align: left; padding: 2px 5px; min-width: 34px; overflow: hidden; background: #4c4a3c; border: 1px solid #8a8160; border-radius: 2px; }
+.timesheet-cue { position: absolute; top: 2px; height: 40px; width: max-content; max-width: 240px; display: grid; gap: 0; align-content: center; text-align: left; padding: 2px 5px; min-width: 34px; overflow: hidden; background: #4c4a3c; border: 1px solid #8a8160; border-radius: 2px; }
 .timesheet-cue:hover { background: #5a5744; }
 .timesheet-cue.selected { border-color: var(--accent); background: #6a6758; box-shadow: 0 0 0 1px var(--accent); }
 .timesheet-cue.dragging { opacity: .7; }

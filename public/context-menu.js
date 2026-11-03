@@ -100,7 +100,7 @@ function moveFocus(menu, step) {
 export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
   closeContextMenu();
   const list = (items || []).filter(Boolean);
-  if (!list.length) return null;
+  if (!list.some(item => !item.separator)) return null;
   const state = { menu: null, children: [], anchor };
   let pointerMoved = false;
   const onFirstMove = () => { pointerMoved = true; document.removeEventListener('pointermove', onFirstMove, true); };

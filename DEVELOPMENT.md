@@ -918,18 +918,30 @@ event sheet uses, so a cue can set a global or an object's local variable, move 
 route, play an imported sound, or start another timeline — and every action keeps its tooltip,
 its validation and its editor.
 
-Select a cue and use **Copy cue / Paste cue**, **Ctrl+C / Ctrl+V** (Cmd on macOS), or the
-cue's right-click menu. The clipboard keeps a deep copy of its actions and target. Pasting
-creates a fresh cue id on the source track, 0.1 seconds after the source; repeated pastes
-follow the previous copy. **Duplicate** uses the same placement. The timeline grows if
-needed (up to its one-hour limit), existing cues are not shifted, and each paste is one
-undo step. The new cue is selected and can be dragged or retimed in its inspector.
+Select cues using **Ctrl/Cmd-click** to toggle individual cues, **Shift-click** for a time-ordered
+range, or **Ctrl/Cmd+A** for all cues. A plain click selects only that cue; clicking empty track
+space clears the selection. Right-clicking an already-selected cue keeps the group selected.
+Drag any selected cue to move the group while preserving its time and track spacing; movement
+is clamped as a group at the timeline/track edges. Delete/Backspace or **Delete cues** removes
+the selection in one undo step. Cancelling a drag does not change the project.
+
+Use **Copy cue(s) / Paste cue**, **Ctrl+C / Ctrl+V** (Cmd on macOS), or the cue's right-click menu.
+The clipboard keeps deep copies of all selected cues' actions and targets. Paste and **Duplicate**
+place fresh cue ids horizontally beside the source group's right edge, using actual card widths
+and an eight-pixel gap at the current zoom (rounded forward to the 0.05s time grid), rather than
+a fixed 0.1s offset. Occupied destination space is skipped without shifting existing cues. Group
+copies preserve their relative times and track assignments; repeated pastes follow the previous
+copy. The timeline grows if needed (up to its one-hour limit), and each group paste is one undo
+step. All pasted cues are selected.
 Nearby cue cards stack vertically within their track so each remains readable and clickable;
 this is display-only and does not change their times or track assignments.
 Clipboard shortcuts in text/number fields retain their normal browser behavior. The cue
 clipboard is editor-local; it is not the system text clipboard. Pasting into another
-timesheet uses the copied time plus 0.1 seconds and the matching track, or its first track;
+timesheet uses the copied group's visual right edge and matching tracks, or its first track;
 invalid object/action references are reported rather than silently removed.
+
+Unhandled editor right-clicks are dismissed instead of falling through to the embedded browser's
+native context menu. Text inputs retain their native editing menu; existing editor menus still win.
 
 **Nothing plays by itself.** The runtime only advances a timesheet that a rule started
 (`On start of layout` → `Timesheet: start`, written in the Events tab or by the object's
