@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import R from '@dimforge/rapier3d-compat';
 import { ShapeUtils, Vector2 } from 'three';
 import { createProject, validateProject } from '../shared/project.js';
-import { cutLevelGeometry, geometryBrush, geometryEdges, snapGeometryPoint } from '../shared/geometry-cut.js';
+import {
+  cutLevelGeometry, geometryBrush, geometryEdges, MAX_CUT_POINTS, snapGeometryPoint, snapGeometrySurface,
+} from '../shared/geometry-cut.js';
 import { containsPoint, sectorAt, sectorGeometry, sectorShapes } from '../shared/sectors.js';
 import { createPhysics } from '../shared/physics.js';
 import { createRuntime } from '../shared/runtime.js';
@@ -162,7 +164,7 @@ test('shared cutter authoring keeps settings and pending points, reports failure
   const source = readFileSync(new URL('../public/geometry-cut-tool.js', import.meta.url), 'utf8')
     .replace(/^import .*;\n/, '').replace('export function createGeometryCutTool', 'function createGeometryCutTool');
   const create = runInNewContext(`${source}\ncreateGeometryCutTool`, {
-    geometryBrush, document: { createElement: tag => new Element(tag) },
+    geometryBrush, MAX_CUT_POINTS, document: { createElement: tag => new Element(tag) },
   });
   let active = true;
   const host = new Element('div'), project = createProject(), messages = [], commits = [];
@@ -190,8 +192,166 @@ test('shared cutter authoring keeps settings and pending points, reports failure
   tool.click({ ...rect.a, kind: 'edge' }); tool.cancel(); assert.equal(tool.drawing, false);
   tool.click({ ...rect.a, kind: 'edge' }); mode.value = 'tunnel'; mode.events.change();
   assert.equal(tool.drawing, false);
+  mode.value = 'shape'; mode.events.change();
+  const shapePoint = (x, y) => ({ x, y, z: 0, sectorId: 'room0', surface: 'floor', kind: 'grid' });
+  tool.click(shapePoint(-160, -160)); tool.click(shapePoint(160, -160));
+  assert.equal(commits.length, 1, 'a shape must not commit after two or three clicks');
+  tool.click({ ...shapePoint(0, -180), sectorId: 'wrong' });
+  assert.match(messages.at(-1)[0], /starting sector surface/);
+  tool.click(shapePoint(0, -220));
+  tool.hover({ ...shapePoint(-160, -160), kind: 'close' });
+  assert.equal(tool.preview().segments.length, 3);
+  tool.click({ ...shapePoint(-160, -160), kind: 'close' });
+  assert.equal(commits.length, 2); assert.equal(commits[1].closed, true); assert.equal(commits[1].surface, 'floor');
+  assert.equal(tool.drawing, false);
+  const edgePoint = (x, y) => ({ ...shapePoint(x, y), kind: 'edge' });
+  tool.click(edgePoint(-384, 160)); tool.click(shapePoint(0, 180)); tool.click(edgePoint(384, 160));
+  tool.finish();
+  assert.equal(commits.length, 3); assert.equal(commits[2].closed, false, 'Enter joins boundary points without a closing chord');
+  tool.click(shapePoint(200, 200)); input('Shape surface').value = 'ceiling'; input('Shape surface').events.change();
+  assert.equal(tool.drawing, false, 'switching plane clears the old outline');
   active = false; tool.sync(); tool.click({ ...rect.a, kind: 'edge' });
   assert.equal(host.hidden, true); assert.equal(tool.drawing, false);
+});
+
+test('concave interior outlines in either winding make independently editable sector planes without filling the notch', () => {
+  const outline = [{ x: -120, y: -80 }, { x: 120, y: -80 }, { x: 120, y: 0 },
+    { x: 32, y: 0 }, { x: 32, y: 112 }, { x: -120, y: 112 }];
+  for (const points of [outline, [...outline].reverse()]) {
+    const project = createProject(), source = project.map.sectors[0];
+    Object.assign(source, { name: 'Source', tag: 42, textureScale: 2, ceilingHeight: 256 });
+    const original = structuredClone(source), entities = structuredClone(project.map.entities);
+    const result = cutLevelGeometry(project, { mode: 'shape', points, sectorId: source.id });
+    assertTopology(project); assert.equal(project.map.sectors.length, 2);
+    const child = project.map.sectors.find(sector => sector.id === result.sectorIds[0]);
+    assert.deepEqual({ ...child, id: original.id, name: original.name }, original);
+    assert.equal(sectorAt(sectorGeometry(project), 80, 80).id, source.id, 'the concave notch remains outside');
+    assert.equal(sectorAt(sectorGeometry(project), -40, 40).id, child.id);
+    child.floorHeight = 48; child.ceilingHeight = 192; child.textureScale = 1;
+    assert.equal(source.floorHeight, 0); assert.equal(source.ceilingHeight, 256); assert.equal(source.textureScale, 2);
+    assert.deepEqual(project.map.entities, entities);
+    for (const wall of project.map.walls.filter(wall => wall.right && wall.left)) {
+      assert.equal(wall.solid, false); assert.equal(wall.flags, 4);
+    }
+    assertTopology(project);
+  }
+});
+
+test('bent boundary cuts attach to both outer and inner sector rings, including the pictured platform-side outline', () => {
+  const paths = [
+    { points: [{ x: -384, y: -120 }, { x: -200, y: -120 }, { x: -160, y: 96 }, { x: -384, y: 160 }], source: 'room0' },
+    { points: [{ x: -32, y: 80 }, { x: -64, y: 144 }, { x: -32, y: 208 },
+      { x: 144, y: 192 }, { x: 160, y: 80 }, { x: 96, y: 0 }], source: 'room0' },
+    { points: [{ x: -96, y: -48 }, { x: 0, y: -32 }, { x: 16, y: 32 }, { x: -96, y: 48 }], source: 'platform' },
+  ];
+  for (const path of paths) for (const reverse of [false, true]) {
+    const { project, platformId } = platform(), sourceId = path.source === 'platform' ? platformId : path.source;
+    const unchangedId = sourceId === platformId ? 'room0' : platformId;
+    const original = structuredClone(project.map.sectors.find(sector => sector.id === unchangedId));
+    const result = cutLevelGeometry(project, { mode: 'shape', sectorId: sourceId,
+      points: reverse ? [...path.points].reverse() : path.points, closed: false });
+    assert.equal(result.sectorIds.length, 1); assert.equal(project.map.sectors.length, 3);
+    assertTopology(project);
+    assert.deepEqual(project.map.sectors.find(sector => sector.id === unchangedId), original);
+    const vertices = new Map(project.map.vertices.map(vertex => [vertex.id, vertex]));
+    for (let index = 1; index < path.points.length; index++)
+      assert.ok(project.map.walls.some(wall => [wall.a, wall.b].every(id => {
+        const point = vertices.get(id);
+        return lengthToSegment(point, path.points[index - 1], path.points[index]) < .001;
+      }) && wall.right && wall.left), 'every authored segment becomes a shared linedef');
+  }
+});
+
+function lengthToSegment(point, a, b) {
+  const t = Math.max(0, Math.min(1, ((point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y)) /
+    ((b.x - a.x) ** 2 + (b.y - a.y) ** 2)));
+  return Math.hypot(point.x - a.x - t * (b.x - a.x), point.y - a.y - t * (b.y - a.y));
+}
+
+test('closed shapes retain enclosed holes and boundary metadata rather than cutting neighbouring platforms', () => {
+  for (const points of [
+    [{ x: -160, y: -144 }, { x: 160, y: -144 }, { x: 160, y: 144 }, { x: -160, y: 144 }],
+    [{ x: -384, y: -256 }, { x: -160, y: -256 }, { x: -160, y: 0 }, { x: -384, y: 0 }],
+  ]) {
+    const { project, platformId } = platform(), before = structuredClone(project.map.sectors.find(sector => sector.id === platformId));
+    for (const wall of project.map.walls) if (wall.left) { wall.solid = true; wall.flags = 3; }
+    cutLevelGeometry(project, { mode: 'shape', sectorId: 'room0', points });
+    assertTopology(project);
+    assert.deepEqual(project.map.sectors.find(sector => sector.id === platformId), before);
+    for (const wall of project.map.walls.filter(wall => wall.flags === 3)) assert.equal(wall.solid, true);
+  }
+});
+
+test('surface picking snaps only to the chosen plane and hole boundaries, never to the other ledge height', () => {
+  const { project, platformId } = platform(), sectors = sectorGeometry(project);
+  const ground = snapGeometrySurface(sectors, { x: 30, y: 84 }, { tolerance: 8 });
+  assert.equal(ground.kind, 'edge'); assert.equal(ground.sectorId, 'room0'); assert.equal(ground.z, 0); assert.equal(ground.y, 80);
+  const top = snapGeometrySurface(sectors, { x: 30, y: 76 }, { tolerance: 8 });
+  assert.equal(top.sectorId, platformId); assert.equal(top.z, 96);
+  const locked = snapGeometrySurface(sectors, { x: 30, y: 76 }, { sectorId: 'room0', tolerance: 8 });
+  assert.equal(locked.sectorId, 'room0'); assert.equal(locked.z, 0);
+  assert.equal(snapGeometrySurface(sectors, { x: 0, y: 0 }, { sectorId: 'room0' }), null);
+  const ceiling = snapGeometrySurface(sectors, { x: -200, y: -130 }, { surface: 'ceiling' });
+  assert.equal(ceiling.surface, 'ceiling'); assert.equal(ceiling.z, 256);
+  const sampled = snapGeometrySurface(sectors, { x: -201, y: -131 }, { sectorId: 'room0', grid: 16 });
+  assert.equal(sampled.kind, 'grid'); assert.equal(sampled.x, -208); assert.equal(sampled.y, -128); assert.equal(sampled.z, 0);
+  const outside = snapGeometrySurface(sectors, { x: 388, y: 120 }, { tolerance: 8 });
+  assert.equal(outside.kind, 'edge'); assert.equal(outside.x, 384); assert.equal(outside.sectorId, 'room0');
+  assert.equal(snapGeometrySurface(sectors, { x: 500, y: 120 }), null);
+});
+
+test('invalid surface outlines are rejected atomically with bounded detail and useful errors', () => {
+  const { project } = platform(), snapshot = structuredClone(project);
+  const base = { mode: 'shape', sectorId: 'room0' };
+  for (const [options, error] of [
+    [{ points: [] }, /3 to/],
+    [{ points: [{ x: -200, y: -100 }, { x: -150, y: -100 }, { x: -150, y: -100 }] }, /one map unit/],
+    [{ points: [{ x: -300, y: -200 }, { x: -160, y: -200 }, { x: -240, y: -200 }] }, /overlap|non-zero/],
+    [{ points: [{ x: -300, y: -200 }, { x: -160, y: -120 }, { x: -300, y: -120 }, { x: -160, y: -200 }] }, /cross/],
+    [{ points: [{ x: -200, y: -160 }, { x: 200, y: -160 }, { x: 0, y: 0 }] }, /starting sector surface/],
+    [{ points: [{ x: -384, y: -256 }, { x: 384, y: -256 }, { x: 384, y: 256 }, { x: -384, y: 256 }] }, /entire sector/],
+    [{ points: [{ x: -320, y: -200 }, { x: -200, y: -160 }], closed: false }, /same boundary loop/],
+    [{ points: [{ x: -384, y: -120 }, { x: -200, y: 0 }, { x: -96, y: 0 }], closed: false }, /same boundary loop/],
+    [{ points: Array(MAX_CUT_POINTS + 1).fill({ x: -200, y: -100 }) }, /128/],
+    [{ points: [{ x: NaN, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }] }, /X must/],
+    [{ points: [{ x: -320, y: -200 }, { x: -200, y: -160 }], closed: false, sectorId: 'missing' }, /existing sector/],
+  ]) {
+    assert.throws(() => cutLevelGeometry(project, { ...base, ...options }), error);
+    assert.deepEqual(project, snapshot);
+  }
+});
+
+test('a maximum-detail surface outline remains welded and cannot silently lose corners', () => {
+  const project = createProject(), points = Array.from({ length: MAX_CUT_POINTS }, (_, index) => {
+    const angle = index * Math.PI * 2 / MAX_CUT_POINTS;
+    return { x: 80 * Math.cos(angle), y: 80 * Math.sin(angle) };
+  });
+  cutLevelGeometry(project, { mode: 'shape', points, sectorId: 'room0' });
+  assertTopology(project);
+  assert.equal(project.map.walls.filter(wall => wall.right && wall.left).length, MAX_CUT_POINTS);
+  assert.equal(sectorGeometry(project).find(sector => sector.id !== 'room0').rings[0].length, MAX_CUT_POINTS);
+});
+
+test('real collision respects independently raised floors and lowered ceilings of a concave cut, including its notch', async () => {
+  await R.init();
+  const project = createProject(); project.map.sectors[0].ceilingHeight = 256;
+  const result = cutLevelGeometry(project, { mode: 'shape', sectorId: 'room0', points: [
+    { x: -120, y: -80 }, { x: 120, y: -80 }, { x: 120, y: 0 },
+    { x: 32, y: 0 }, { x: 32, y: 112 }, { x: -120, y: 112 },
+  ] });
+  const child = project.map.sectors.find(sector => sector.id === result.sectorIds[0]);
+  child.floorHeight = 48; child.ceilingHeight = 192;
+  const state = createRuntime(project);
+  state.physics = createPhysics(project, state, R, triangulate);
+  try {
+    for (const [x, y, floor, ceiling] of [[-60, 60, 48, 192], [60, -40, 48, 192], [80, 80, 0, 256], [200, 80, 0, 256]]) {
+      for (const [direction, expected] of [[-1, floor], [1, ceiling]]) {
+        const hit = state.physics.world.castRay(new R.Ray({ x: x / 64, y: 100 / 64, z: y / 64 },
+          { x: 0, y: direction, z: 0 }), 4, true);
+        assert.ok(hit); near(100 + hit.timeOfImpact * 64 * direction, expected);
+      }
+    }
+  } finally { state.physics.dispose(); }
 });
 
 test('rotated and boundary-aligned stair brushes partition concave and holed sectors without overlaps', () => {
@@ -285,6 +445,27 @@ test('MCP cuts are transactional and persist their exact topology on disk', t =>
   assert.throws(() => applyTool(project, 'geometry_cut', { mode: 'cut', a: rect.a, b: rect.b }), /snap/);
   assert.deepEqual(project, snapshot);
   const directory = mkdtempSync(join(tmpdir(), 'opendle-cut-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'project.json'), store = new ProjectStore(file);
+  const saved = store.adopt(result.project);
+  assert.deepEqual(new ProjectStore(file).snapshot().project, saved.project);
+});
+
+test('MCP shape cuts validate the outline without a/b, preserve editable children on disk, and reject incomplete requests', t => {
+  const project = createProject(), snapshot = structuredClone(project);
+  const request = { mode: 'shape', sectorId: 'room0', points: [
+    { x: -160, y: -128 }, { x: 160, y: -128 }, { x: 80, y: 128 }, { x: -80, y: 64 },
+  ] };
+  const result = applyTool(project, 'geometry_cut', request);
+  assertTopology(result.project); assert.deepEqual(project, snapshot);
+  const child = result.project.map.sectors.find(sector => sector.id !== 'room0');
+  child.floorHeight = 32; child.ceilingHeight = 96;
+  for (const invalid of [{ ...request, points: [] }, { ...request, sectorId: 'missing' },
+    { ...request, closed: false }, { mode: 'cut' }, { mode: 'stairs' }]) {
+    assert.throws(() => applyTool(project, 'geometry_cut', invalid));
+    assert.deepEqual(project, snapshot);
+  }
+  const directory = mkdtempSync(join(tmpdir(), 'opendle-surface-cut-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const file = join(directory, 'project.json'), store = new ProjectStore(file);
   const saved = store.adopt(result.project);

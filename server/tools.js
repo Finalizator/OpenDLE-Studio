@@ -12,7 +12,7 @@ import { unsupportedSpecials, specialName } from '../shared/line-specials.js';
 import { unsupportedActorActions, usedActors } from '../shared/actor-runtime.js';
 import { addRamp, bindRampPath, normalizeRamp, syncRampModels } from '../shared/ramp.js';
 import { PROFILE_FIELDS, CORNER_STYLES, MAX_PROFILE_VERTICES } from '../shared/ramp-profile.js';
-import { cutLevelGeometry } from '../shared/geometry-cut.js';
+import { cutLevelGeometry, MAX_CUT_POINTS } from '../shared/geometry-cut.js';
 
 const coordinate = z.number().min(-65536).max(65536);
 const cutPointShape = z.object({ x: coordinate, y: coordinate, z: z.number().min(-32768).max(32767).optional() });
@@ -43,8 +43,9 @@ function scriptSpecials(project) {
 }
 
 export const toolDefinitions = [
-  { name: 'geometry_cut', description: 'Modify actual sector geometry, transactionally. mode cut: a,b must lie exactly on opposite edges/vertices of one sector (no hole crossing). mode stairs/tunnel: a,b define the starting width edge and end defines perpendicular depth, clipped to mapped sectors. Stairs use steps 1..64, startHeight (default a.z) and endHeight (default end.z); each tread advances toward the end height. Tunnel uses endHeight/end.z as floor and clearance as headroom, preserving an overhead slab where the original raised floor is high enough. No overlapping boxes; linedefs are split/welded, textures and tags retained, edited brush portals opened. Existing solid 3D-floor intersections fail explicitly. All points use map coordinates.', shape: {
-    mode: z.enum(['cut', 'stairs', 'tunnel']), a: cutPointShape, b: cutPointShape, end: cutPointShape.optional(),
+  { name: 'geometry_cut', description: 'Modify actual sector geometry, transactionally. mode cut: a,b must lie exactly on opposite edges/vertices of one sector (no hole crossing). mode shape: sectorId and points (2..128) define a freeform surface outline; closed defaults true and needs 3+ points, false joins two points on the same boundary loop by a bent cut. Concave outlines and enclosed holes work; outlines must not self-intersect or leave the chosen sector. Heights/materials remain unchanged so the new sector can be edited independently. mode stairs/tunnel: a,b define the starting width edge and end defines perpendicular depth, clipped to mapped sectors. Stairs use steps 1..64, startHeight (default a.z) and endHeight (default end.z); each tread advances toward the end height. Tunnel uses endHeight/end.z as floor and clearance as headroom, preserving an overhead slab where the original raised floor is high enough. No overlapping boxes; linedefs are split/welded, textures and tags retained, edited brush portals opened. Existing solid 3D-floor intersections fail explicitly. All points use map coordinates.', shape: {
+    mode: z.enum(['cut', 'shape', 'stairs', 'tunnel']), a: cutPointShape.optional(), b: cutPointShape.optional(), end: cutPointShape.optional(),
+    sectorId: z.string().min(1).max(80).optional(), points: z.array(cutPointShape).min(2).max(MAX_CUT_POINTS).optional(), closed: z.boolean().optional(),
     steps: z.number().int().min(1).max(64).optional(),
     startHeight: z.number().min(-32768).max(32767).optional(), endHeight: z.number().min(-32768).max(32767).optional(),
     clearance: z.number().min(8).max(4096).optional(),

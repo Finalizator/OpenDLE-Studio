@@ -9,7 +9,7 @@ import { undoDepthFor, UNDO_DEEP_GAME_STEPS } from '/shared/undo-depth.js';
 import { hasModelFacing, noseAngle } from '/shared/entity-visuals.js';
 import { addRamp, bindRampPath, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
 import { createRampProfileEditor } from './ramp-profile-editor.js';
-import { geometryEdges, snapGeometryPoint, cutLevelGeometry } from '/shared/geometry-cut.js';
+import { geometryEdges, snapGeometryPoint, snapGeometrySurface, cutLevelGeometry } from '/shared/geometry-cut.js';
 import { createGeometryCutTool } from './geometry-cut-tool.js';
 import { bundleModel } from '/shared/gltf.js';
 import { measureAssetForward } from '/shared/model-forward.js';
@@ -95,6 +95,13 @@ function cuttingEdges() {
   return cutEdges;
 }
 function mapCutPoint(point) {
+  const state = cutTool?.state, tolerance = 12 / camera.zoom;
+  if (state?.mode === 'shape') {
+    if (state.plane && Math.hypot(point.x - state.plane.x, point.y - state.plane.y) <= tolerance)
+      return { ...state.plane, kind: 'close' };
+    return snapGeometrySurface(mapSectors, point, { sectorId: state.plane?.sectorId, surface: state.surface,
+      tolerance, grid: Number($('grid').value) });
+  }
   return snapGeometryPoint(project, point, { tolerance: 12 / camera.zoom, grid: Number($('grid').value), edges: cuttingEdges(), sectors: mapSectors });
 }
 // Addons: the host that runs their scripts, the panel that manages them, and the tabs and menu
@@ -509,7 +516,8 @@ async function refreshScene() {
       liveFinish: (message, options) => liveFinish(message, options),
       grid: () => Number($('grid').value), tool: () => toolMode(),
       cut: { click: point => cutTool.click(point), hover: point => cutTool.hover(point),
-        preview: () => cutTool.preview(), cancel: () => cutTool.cancel(), back: () => cutTool.back() },
+        preview: () => cutTool.preview(), state: () => cutTool.state, finish: () => cutTool.finish(),
+        cancel: () => cutTool.cancel(), back: () => cutTool.back() },
       surface: () => $('sector-surface').value,
       script: openScript,
       remove: value => {
@@ -2924,17 +2932,20 @@ cutTool = createGeometryCutTool($('cut-tools'), {
   apply: options => {
     let result;
     edit(next => { result = cutLevelGeometry(next, options); },
-      options.mode === 'cut' ? 'Sector cut' : options.mode === 'stairs' ? 'Stair sectors created' : 'Tunnel carved');
-    selection = { kind: 'sector', id: result.sectorIds[0], surface: 'floorHeight' };
+      options.mode === 'shape' ? 'Surface shape cut; edit its heights and materials in the inspector'
+        : options.mode === 'cut' ? 'Sector cut' : options.mode === 'stairs' ? 'Stair sectors created' : 'Tunnel carved');
+    selection = { kind: 'sector', id: result.sectorIds[0], surface: options.surface === 'ceiling' ? 'ceilingHeight' : 'floorHeight' };
+    $('sector-surface').value = selection.surface;
     render();
   },
 });
 document.addEventListener('keydown', event => {
   if (!geometryCutActive() || $('map-panel').hidden || (runtime && $('play-dialog').open) ||
     event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
-  if (event.code === 'Escape' || event.code === 'Backspace' || event.code === 'Delete') {
+  if (event.code === 'Enter' && event.target?.closest?.('button')) return;
+  if (event.code === 'Enter' || event.code === 'Escape' || event.code === 'Backspace' || event.code === 'Delete') {
     event.preventDefault();
-    if (event.code === 'Escape') cutTool.cancel(); else cutTool.back();
+    if (event.code === 'Enter') cutTool.finish(); else if (event.code === 'Escape') cutTool.cancel(); else cutTool.back();
   }
 });
 /**
@@ -3064,9 +3075,13 @@ function drawMap() {
     ctx.strokeStyle = '#ff655b'; ctx.lineWidth = 2 / camera.zoom; ctx.beginPath();
     for (const [a, b] of preview.segments) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
     ctx.stroke();
+    ctx.fillStyle = '#ff655b';
+    for (const point of preview.points || []) {
+      ctx.beginPath(); ctx.arc(point.x, point.y, 3 / camera.zoom, 0, Math.PI * 2); ctx.fill();
+    }
     if (preview.point) {
       const point = preview.point;
-      ctx.strokeStyle = point.kind === 'vertex' ? '#78e8f4' : point.kind === 'edge' ? '#ffd34d' : '#ffffff';
+      ctx.strokeStyle = ['vertex', 'close'].includes(point.kind) ? '#78e8f4' : point.kind === 'edge' ? '#ffd34d' : '#ffffff';
       ctx.beginPath(); ctx.arc(point.x, point.y, 6 / camera.zoom, 0, Math.PI * 2); ctx.stroke();
     }
   }
@@ -3350,7 +3365,9 @@ canvas.addEventListener('pointermove', event => {
   if (geometryCutActive() && drag?.kind !== 'pan') {
     const snapped = mapCutPoint(point);
     cutTool.hover(snapped);
-    $('coordinates').textContent = `${snapped.kind} snap / X ${snapped.x.toFixed(2)} / Y ${snapped.y.toFixed(2)} / Z ${snapped.z.toFixed(2)}`;
+    $('coordinates').textContent = snapped
+      ? `${snapped.kind} snap / X ${snapped.x.toFixed(2)} / Y ${snapped.y.toFixed(2)} / Z ${snapped.z.toFixed(2)}`
+      : 'Aim at the starting sector surface';
   }
   if (!drag) return;
   if (drag.kind === 'pan') {

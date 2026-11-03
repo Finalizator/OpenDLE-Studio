@@ -4078,6 +4078,22 @@ work in both 2D and 3D:
 - **Cut sector:** click two boundary points to divide one sector along a straight line.
   Cyan marks a snapped vertex; yellow marks an exact point on an edge. Endpoints must snap.
   The chord must cross only that sector, without following a boundary or crossing a hole.
+- **Draw surface shape:** choose **Floor** or **Ceiling**, then click corners on the surface
+  as when drawing a path. The first point locks the source sector and its plane; subsequent
+  points never jump onto a neighbouring ledge, prop or a different-height floor. Ordinary
+  corners use grid snapping, while the source sector's edges and vertices snap exactly.
+  Cyan on the first corner marks closure: click it, or use **Close shape**, to create a
+  closed outline. Concave outlines and outlines enclosing existing holes are supported.
+  Alternatively, start and finish on the same boundary loop and choose **Finish boundary cut**
+  to make a bent cut, including an outline attached to two points on a platform's boundary.
+  **Enter** finishes this open boundary cut when both endpoints are snapped, or closes an
+  interior outline otherwise. A boundary cut may touch the boundary only at its endpoints;
+  outlines cannot cross themselves, a hole, or a different sector. Up to 128 corners are
+  supported. In 3D, aim at the actual chosen floor/ceiling; show ceilings when cutting one.
+  This partitions the whole sector column without changing heights or materials. The new
+  region is selected immediately: change its **Floor height**, **Ceiling height**, **Floor
+  material**, **Ceiling material** or light in the inspector, independently of the surrounding
+  surface. Choose **Select / move** to manipulate its boundary vertices afterward.
 - **Create stairs:** click the two ends of the stair width, then its destination. The depth
   runs perpendicular to the width edge, including diagonal edges. **Stair steps** accepts
   1–64 treads. The first snapped height and destination height supply the default start/end
@@ -4091,7 +4107,8 @@ work in both 2D and 3D:
   Insufficient headroom or an intersecting existing solid slab fails without changing the map.
 
 The rectangular stair/tunnel footprint is clipped to existing mapped sectors; it does not
-create a new room outside them. In 2D, a shared floor edge prefers its higher ledge. In 3D,
+create a new room outside them. In 2D, the straight-cut/stair/tunnel shared floor edge prefers
+its higher ledge; freeform shape cuts instead snap only to their locked source surface. In 3D,
 visible floor, ceiling and solid-platform edges snap within 12 screen pixels; hidden ceilings
 and geometry behind the visible surface are excluded. White marks ordinary grid snapping.
 The red wire preview shows tread heights or the tunnel volume before committing.
@@ -4110,8 +4127,10 @@ retains that ID. Sector tags are copied, but explicit sector-ID visual actions a
 automatically expanded to every child: select the intended new sectors when authoring those actions.
 This tool edits sector geometry, not model meshes or arbitrary free-form solids.
 
-MCP/DeepSeek uses `geometry_cut` with `mode: 'cut'|'stairs'|'tunnel'`,
-`a`/`b: {x,y,z?}`, and `end: {x,y,z?}` for stairs/tunnels. Optional fields are
+MCP/DeepSeek uses `geometry_cut` with `mode: 'cut'|'shape'|'stairs'|'tunnel'`.
+Shape mode takes `sectorId`, `points: [{x,y,z?}]` (2–128 points), and optional `closed`
+(default `true`, requiring at least 3 points; `false` makes a bent boundary cut). Other modes take
+`a`/`b: {x,y,z?}`, and `end: {x,y,z?}` for stairs/tunnels. Optional brush fields are
 `steps` (1–64), `startHeight`, `endHeight`, and `clearance` (8–4096). MCP coordinates
 are exact authored coordinates; clients may use the shared snapping helpers to select edges.
 The operation validates its closed topology and project budgets before replacing the map.

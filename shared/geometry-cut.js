@@ -15,6 +15,7 @@ const coordinate = point => {
   finite(point?.x, 'X', -65536, 65536); finite(point?.y, 'Y', -65536, 65536);
 };
 const id = prefix => `${prefix}_${globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+export const MAX_CUT_POINTS = 128;
 
 export function closestEdgePoint(point, a, b) {
   const delta = sub(b, a), squared = delta.x * delta.x + delta.y * delta.y;
@@ -63,6 +64,34 @@ export function snapGeometryPoint(project, point, { tolerance = 8, grid = 16, ed
   if (vertex || edge) return vertex || edge;
   const x = Math.round(point.x / grid) * grid, y = Math.round(point.y / grid) * grid;
   return { x, y, z: sectorAt(sectors || sectorGeometry(project), x, y)?.floorHeight ?? point.z ?? 0, kind: 'grid' };
+}
+
+export function geometrySurfaceEdges(sector, surface = 'floor') {
+  const z = surface === 'ceiling' ? sector.ceilingHeight : sector.floorHeight;
+  return sector.rings.flatMap(ring => ring.map((point, index) => ({ a: { ...point, z },
+    b: { ...ring[(index + 1) % ring.length], z }, sectorId: sector.id, surface })));
+}
+
+/** Freeform authoring stays on one actual sector plane, including exact hole boundaries. */
+export function snapGeometrySurface(sectors, point, { sectorId, surface = 'floor', tolerance = 8, grid = 16 } = {}) {
+  let sector = sectorId ? sectors.find(item => item.id === sectorId) : sectorAt(sectors, point.x, point.y);
+  if (!sector && !sectorId) {
+    let nearest = tolerance + EPS;
+    for (const candidate of sectors) {
+      const bounds = candidate.bounds;
+      if (candidate.wallsOnly || point.x < bounds.minX - tolerance || point.x > bounds.maxX + tolerance ||
+        point.y < bounds.minY - tolerance || point.y > bounds.maxY + tolerance) continue;
+      for (const edge of geometrySurfaceEdges(candidate, surface)) {
+        const distance = length(point, closestEdgePoint(point, edge.a, edge.b));
+        if (distance < nearest) { nearest = distance; sector = candidate; }
+      }
+    }
+  }
+  if (!sector || sector.wallsOnly) return null;
+  const edges = geometrySurfaceEdges(sector, surface);
+  const snapped = snapGeometryPoint(null, point, { edges, sectors, tolerance, grid });
+  if (snapped.kind === 'grid' && !containsPoint(sector.rings, snapped.x, snapped.y)) return null;
+  return { ...snapped, sectorId: sector.id, surface, z: edges[0]?.a.z };
 }
 
 /** First two clicks set the width; the third sets perpendicular depth on either side. */
@@ -136,6 +165,71 @@ function validateChord(sectors, a, b) {
   return sector;
 }
 
+function outlineSegments(points, closed) {
+  return points.slice(0, closed ? points.length : -1).map((a, index) =>
+    ({ a, b: points[(index + 1) % points.length] }));
+}
+const area = ring => ring.reduce((sum, point, index) => sum + cross(point, ring[(index + 1) % ring.length]), 0) / 2;
+
+function shapePartition(sectors, { points, sectorId, closed = true }) {
+  if (typeof closed !== 'boolean') fail('closed must be true or false');
+  if (!Array.isArray(points) || points.length < (closed ? 3 : 2) || points.length > MAX_CUT_POINTS)
+    fail(`a ${closed ? 'closed outline' : 'boundary cut'} needs ${closed ? 3 : 2} to ${MAX_CUT_POINTS} points`);
+  points.forEach(coordinate);
+  const target = sectors.find(sector => sector.id === sectorId);
+  if (!target || target.wallsOnly || !target.rings.length) fail('choose an existing sector surface to cut');
+  const segments = outlineSegments(points, closed);
+  for (const [index, segment] of segments.entries()) {
+    if (length(segment.a, segment.b) < 1) fail('outline points must be at least one map unit apart');
+    for (let other = index + 1; other < segments.length; other++) {
+      const next = segments[other], adjacent = other === index + 1 || closed && index === 0 && other === segments.length - 1;
+      const hits = intersections(segment.a, segment.b, next.a, next.b);
+      if (hits.length && (!adjacent || hits.some(([t, u]) =>
+        !((t < EPS || t > 1 - EPS) && (u < EPS || u > 1 - EPS)))))
+        fail('the outline must not cross, overlap or touch itself');
+    }
+  }
+  if (closed && Math.abs(area(points)) < .01) fail('the outline must enclose a non-zero area');
+  const boundaries = target.rings.flatMap(ring => outlineSegments(ring, true));
+  const onBoundary = point => boundaries.some(edge => length(point, closestEdgePoint(point, edge.a, edge.b)) < EPS);
+  for (const [index, segment] of segments.entries()) {
+    const split = { ...segment, cuts: [0, 1] };
+    for (const boundary of boundaries) for (const [t] of intersections(segment.a, segment.b, boundary.a, boundary.b)) {
+      split.cuts.push(t);
+      if (!closed && !(index === 0 && t < EPS || index === segments.length - 1 && t > 1 - EPS))
+        fail('keep a boundary cut inside its surface; only its first and last points may touch the boundary');
+    }
+    for (const part of pieces(split)) {
+      const mid = lerp(part.a, part.b, .5);
+      if (!containsPoint(target.rings, mid.x, mid.y) && !(closed && onBoundary(mid)))
+        fail('keep the outline on its starting sector surface; it cannot cross a hole or another sector');
+    }
+  }
+  if (closed) return { target, ring: points, segments };
+  const anchor = (ring, point) => {
+    for (let index = 0; index < ring.length; index++) {
+      const closest = closestEdgePoint(point, ring[index], ring[(index + 1) % ring.length]);
+      if (length(point, closest) < EPS) return (index + closest.t) % ring.length;
+    }
+    return null;
+  };
+  for (const boundary of target.rings) {
+    const start = anchor(boundary, points[0]), end = anchor(boundary, points.at(-1));
+    if (start === null || end === null) continue;
+    const arc = (ring, from, to) => {
+      const stop = to > from ? to : to + ring.length, vertices = [];
+      for (let index = Math.floor(from + EPS) + 1; index < stop - EPS; index++) vertices.push(ring[index % ring.length]);
+      return vertices;
+    };
+    const forward = [...points, ...arc(boundary, end, start)];
+    const backward = [...points, ...arc(boundary, start, end).reverse()];
+    const ring = Math.abs(area(forward)) <= Math.abs(area(backward)) ? forward : backward;
+    if (Math.abs(area(ring)) < .01) fail('the boundary cut must separate a non-zero area');
+    return { target, ring, segments };
+  }
+  fail('an open outline must start and finish on the same boundary loop; close the outline to cut an interior shape');
+}
+
 function shiftedSide(side, sectorId, offset) {
   const copy = structuredClone(side); copy.sectorId = sectorId; copy.offsetX += offset;
   for (const slot of Object.values(copy.slots || {})) slot.offsetX += offset;
@@ -143,18 +237,21 @@ function shiftedSide(side, sectorId, offset) {
 }
 
 /**
- * Overlay a convex brush partition onto existing sidedefs. Splitting every intersection first
+ * Overlay a surface outline or brush partition onto existing sidedefs. Splitting every intersection first
  * lets adjacent sectors share the same vertices and linedefs, without overlapping floor polygons.
  * The replacement map is installed only after all derived loops validate.
  */
 export function cutLevelGeometry(project, options) {
   const { mode = 'cut', a, b, end, steps = 8, startHeight, endHeight, clearance = 64 } = options;
-  if (!['cut', 'stairs', 'tunnel'].includes(mode)) fail('choose cut, stairs or tunnel');
+  if (!['cut', 'shape', 'stairs', 'tunnel'].includes(mode)) fail('choose cut, shape, stairs or tunnel');
   const sectors = sectorGeometry(project);
   const sourceById = new Map(project.map.sectors.map(sector => [sector.id, sector]));
   const vertices = new Map(project.map.vertices.map(vertex => [vertex.id, vertex]));
-  let rings = [], target, brush, from, to;
+  let rings = [], target, brush, shape, from, to;
   if (mode === 'cut') target = validateChord(sectors, a, b);
+  else if (mode === 'shape') {
+    shape = shapePartition(sectors, options); target = shape.target; rings = [shape.ring];
+  }
   else {
     brush = geometryBrush({ a, b, end, steps: mode === 'stairs' ? steps : 1 }); rings = brush.rings;
     from = startHeight ?? a.z ?? sectorAt(sectors, a.x, a.y)?.floorHeight ?? 0;
@@ -170,6 +267,7 @@ export function cutLevelGeometry(project, options) {
     cutterKeys.add(edgeKey); cutters.push({ a, b, cuts: [0, 1] });
   };
   if (mode === 'cut') addCutter(a, b);
+  else if (mode === 'shape') for (const segment of shape.segments) addCutter(segment.a, segment.b);
   else for (const ring of rings) ring.forEach((point, index) => addCutter(point, ring[(index + 1) % ring.length]));
   const wallSegments = project.map.walls.map(wall => ({ wall, a: vertices.get(wall.a), b: vertices.get(wall.b), cuts: [0, 1] }));
   for (const segment of wallSegments) for (const cutter of cutters) {
@@ -183,6 +281,7 @@ export function cutLevelGeometry(project, options) {
   }
   const region = (sourceId, point) => {
     if (mode === 'cut') return sourceId === target.id && cross(sub(b, a), sub(point, a)) > 0 ? 0 : -1;
+    if (mode === 'shape' && sourceId !== target.id) return -1;
     return rings.findIndex(ring => containsPoint([ring], point.x, point.y));
   };
   const children = new Map(), newSectors = [], affected = new Set();
@@ -271,6 +370,7 @@ export function cutLevelGeometry(project, options) {
   if (!newSectors.length) fail('the cut did not create any new sector region');
   const boundaryIds = new Set(outputWalls.filter(wall => wall.right?.sectorId !== wall.left?.sectorId)
     .flatMap(wall => [wall.right?.sectorId, wall.left?.sectorId]).filter(Boolean));
+  if (mode === 'shape' && !boundaryIds.has(target.id)) fail('the outline must separate part of the surface, not replace the entire sector');
   const remap = new Map();
   for (const sourceId of affected) if (!boundaryIds.has(sourceId)) {
     const child = Array.from({ length: mode === 'cut' ? 1 : rings.length }, (_, index) =>
@@ -280,7 +380,7 @@ export function cutLevelGeometry(project, options) {
   for (const wall of changedWalls) for (const side of [wall.right, wall.left])
     if (remap.has(side?.sectorId)) side.sectorId = remap.get(side.sectorId);
   const cutIds = new Set(newSectors.map(sector => sector.id));
-  if (mode !== 'cut') for (const wall of changedWalls) if (wall.right && wall.left &&
+  if (['stairs', 'tunnel'].includes(mode)) for (const wall of changedWalls) if (wall.right && wall.left &&
     (cutIds.has(wall.right.sectorId) || cutIds.has(wall.left.sectorId))) {
     wall.solid = false;
     if (wall.flags !== undefined) wall.flags = (wall.flags & ~3) | 4;

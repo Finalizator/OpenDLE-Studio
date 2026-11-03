@@ -3,7 +3,7 @@ import { createPreview } from './render.js';
 import { selectionAtTriangle } from '/shared/surface-batch.js';
 import { createRuntime, runtimeEntities } from '/shared/runtime.js';
 import { newId } from '/shared/project.js';
-import { sectorAt, sectorGeometry } from '/shared/sectors.js';
+import { containsPoint, sectorAt, sectorGeometry } from '/shared/sectors.js';
 import { dragSelection, volumeAxis } from '/shared/scene-edit.js';
 import {
   addEntityWithModel, applyEntityModel, applyEntitySprite, applySurfaceAsset, describeSurfaceTarget,
@@ -19,7 +19,7 @@ import {
   rayPlaneHit, ringDegrees, ringDelta, scaleFactorFromDrag, screenAngle,
 } from '/shared/gizmo-math.js';
 import { buildFaceArrows, buildGizmo, disposeHandles, handleKey, paintHandles } from './gizmo.js';
-import { geometryEdges } from '/shared/geometry-cut.js';
+import { geometryEdges, geometrySurfaceEdges, MAX_CUT_POINTS } from '/shared/geometry-cut.js';
 
 const SELECT_COLOR = '#ffd34d', DROP_COLOR = '#7fe6ff';
 /** How long a gizmo arm should be on screen, as a share of the viewport's shorter side. */
@@ -61,12 +61,33 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   cutGeometry.setDrawRange(0, 0);
   const cutLines = new THREE.LineSegments(cutGeometry, own(new THREE.LineBasicMaterial({ color: '#ff655b', depthTest: false })));
   cutLines.renderOrder = 215; cutLines.frustumCulled = false; cutLines.visible = false; scene.add(cutLines);
+  const cutCornerPositions = new Float32Array(MAX_CUT_POINTS * 3);
+  const cutCornerGeometry = own(new THREE.BufferGeometry());
+  cutCornerGeometry.setAttribute('position', new THREE.BufferAttribute(cutCornerPositions, 3).setUsage(THREE.DynamicDrawUsage));
+  cutCornerGeometry.setDrawRange(0, 0);
+  const cutCorners = new THREE.Points(cutCornerGeometry, own(new THREE.PointsMaterial({
+    color: '#ff655b', size: 6, sizeAttenuation: false, depthTest: false,
+  })));
+  cutCorners.renderOrder = 215; cutCorners.frustumCulled = false; scene.add(cutCorners);
   const cutMarker = new THREE.Mesh(own(new THREE.SphereGeometry(3, 10, 6)),
     own(new THREE.MeshBasicMaterial({ color: '#78e8f4', depthTest: false })));
   cutMarker.renderOrder = 216; cutMarker.visible = false; scene.add(cutMarker);
 
   function cutPoint(event) {
-    const hit = worldHit(), rect = canvas.getBoundingClientRect();
+    let hit = worldHit();
+    const rect = canvas.getBoundingClientRect(), cutState = callbacks.cut?.state();
+    let plane = cutState?.plane;
+    if (cutState?.mode === 'shape' && !plane) {
+      // Props must not lift a surface outline off the floor beneath them.
+      hit = ray.intersectObjects(pickables, true).find(value => {
+        const selection = visibleThrough(value.object) && selectionOf(value);
+        return selection && selection.kind !== 'entity';
+      });
+      const selection = selectionOf(hit), surface = cutState.surface;
+      if (selection?.kind !== 'sector' || selection.surface !== `${surface}Height`) return null;
+      const sector = sectorById.get(selection.id);
+      plane = { sectorId: sector.id, surface, z: surface === 'ceiling' ? sector.ceilingHeight : sector.floorHeight };
+    }
     const pointerX = event.clientX - rect.left, pointerY = event.clientY - rect.top;
     let vertex = null, edge = null;
     const closestRay = new THREE.Vector3(), closestSegment = new THREE.Vector3();
@@ -75,19 +96,22 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       if (screen.z < -1 || screen.z > 1) return Infinity;
       return Math.hypot((screen.x + 1) * rect.width / 2 - pointerX, (1 - screen.y) * rect.height / 2 - pointerY);
     };
+    if (cutState?.plane && screenDistance(new THREE.Vector3(plane.x, plane.z, plane.y)) <= 12)
+      return { ...plane, kind: 'close' };
     const candidate = (point, boundary, kind, vertexId) => {
       const position = new THREE.Vector3(point.x, point.z, point.y), distance = screenDistance(position);
       if (distance > 12) return;
       const depth = position.clone().sub(camera.position).dot(ray.ray.direction);
       if (depth < 0 || hit && depth > hit.distance + Math.max(4, hit.distance * .015)) return;
       const value = { x: point.x, y: point.y, z: point.z, wallId: boundary.wallId, sectorId: boundary.sectorId,
-        kind, ...(vertexId ? { vertexId } : {}), distance, depth };
+        surface: boundary.surface, kind, ...(vertexId ? { vertexId } : {}), distance, depth };
       if (kind === 'vertex') {
         if (!vertex || distance < vertex.distance - .5 || Math.abs(distance - vertex.distance) <= .5 && depth < vertex.depth) vertex = value;
       } else if (!edge || distance < edge.distance - .5 || Math.abs(distance - edge.distance) <= .5 && depth < edge.depth) edge = value;
     };
     cutEdges ||= geometryEdges(project, { ceilings: true });
-    for (const boundary of cutEdges) {
+    const boundaries = plane ? geometrySurfaceEdges(sectorById.get(plane.sectorId), plane.surface) : cutEdges;
+    for (const boundary of boundaries) {
       if (boundary.surface === 'ceiling' && !ceilingDrawn(boundary.sectorId)) continue;
       candidate(boundary.a, boundary, 'vertex', boundary.a.id); candidate(boundary.b, boundary, 'vertex', boundary.b.id);
       const a = new THREE.Vector3(boundary.a.x, boundary.a.z, boundary.a.y), b = new THREE.Vector3(boundary.b.x, boundary.b.z, boundary.b.y);
@@ -95,10 +119,11 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       candidate({ x: closestSegment.x, y: closestSegment.z, z: closestSegment.y }, boundary, 'edge');
     }
     if (vertex || edge) return vertex || edge;
-    const point = hit?.point || planePoint(0);
+    const point = plane ? planePoint(plane.z) : hit?.point || planePoint(0);
     if (!point) return null;
     const x = snapValue(point.x, callbacks.grid()), y = snapValue(point.z, callbacks.grid());
-    return { x, y, z: point.y, kind: 'grid' };
+    if (plane && !containsPoint(sectorById.get(plane.sectorId).rings, x, y)) return null;
+    return { x, y, z: point.y, kind: 'grid', ...(plane ? { sectorId: plane.sectorId, surface: plane.surface } : {}) };
   }
   function updateCutPreview() {
     const preview = callbacks.tool() === 'cut' ? callbacks.cut?.preview() : null;
@@ -112,11 +137,16 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       }
       cutGeometry.attributes.position.needsUpdate = true;
       cutGeometry.setDrawRange(0, offset / 3);
+      let corner = 0;
+      for (const point of preview?.points || []) {
+        cutCornerPositions[corner++] = point.x; cutCornerPositions[corner++] = point.z + .5; cutCornerPositions[corner++] = point.y;
+      }
+      cutCornerGeometry.attributes.position.needsUpdate = true; cutCornerGeometry.setDrawRange(0, corner / 3);
     }
     if (preview?.point) {
       cutMarker.position.set(preview.point.x, preview.point.z || 0, preview.point.y);
       cutMarker.scale.setScalar(Math.max(.5, camera.position.distanceTo(cutMarker.position) / Math.max(1, canvas.clientHeight)));
-      cutMarker.material.color.set(preview.point.kind === 'vertex' ? '#78e8f4' : preview.point.kind === 'edge' ? '#ffd34d' : '#ffffff');
+      cutMarker.material.color.set(['vertex', 'close'].includes(preview.point.kind) ? '#78e8f4' : preview.point.kind === 'edge' ? '#ffd34d' : '#ffffff');
     }
     canvas.dataset.cutSnap = preview?.point?.kind || '';
     canvas.dataset.cutSnapAt = preview?.point ? `${preview.point.x},${preview.point.y},${preview.point.z}` : '';
@@ -1308,7 +1338,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     const tool = callbacks.tool();
     if (tool === 'cut') {
       const point = cutPoint(event);
-      if (!point) { callbacks.error('Aim at level geometry or the ground plane'); return; }
+      if (!point) { callbacks.cut?.click(null); return; }
       callbacks.cut?.click(point); return;
     }
     if (tool !== 'select') {
@@ -1520,9 +1550,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   listen(canvas, 'blur', () => cancel({ keepCut: true }));
   listen(window, 'blur', cancel);
   listen(canvas, 'keydown', event => {
-    if (callbacks.tool() === 'cut' && ['Escape', 'Backspace', 'Delete'].includes(event.code)) {
+    if (callbacks.tool() === 'cut' && ['Enter', 'Escape', 'Backspace', 'Delete'].includes(event.code)) {
       event.preventDefault(); event.stopPropagation();
-      if (event.code === 'Escape') cancel(); else callbacks.cut?.back();
+      if (event.code === 'Enter') callbacks.cut?.finish(); else if (event.code === 'Escape') cancel(); else callbacks.cut?.back();
       return;
     }
     if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'].includes(event.code)) { event.preventDefault(); keys.add(event.code); }
