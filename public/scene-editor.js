@@ -277,6 +277,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       lines.userData.temporary = true;
       // Map space is (x, y) with z up; the scene draws it as (x, height, y).
       lines.position.set(plan.center.x, plan.center.z, plan.center.y);
+      lines.rotation.y = areaYaw(plan);
       lines.renderOrder = 204; lines.frustumCulled = false;
       overlayGroup.add(lines);
     }
@@ -286,7 +287,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (!showAreas && !showPhysics) return '';
     const selectedId = selected?.kind === 'entity' ? selected.id : '';
     return `${showAreas}/${showPhysics}/${selectedId}/` + project.map.entities.map(entity =>
-      `${entity.id}:${entity.x},${entity.y},${entity.elevation || 0}:${entity.area ? `${entity.area.shape}/${entity.area.width}/${entity.area.height}/${entity.area.depth}/${entity.area.radius}` : ''}:${entity.physics && entity.physics.body !== 'none' ? `${entity.physics.body}/${entity.physics.shape}/${entity.physics.width}/${entity.physics.height}/${entity.physics.depth}/${entity.physics.radius}` : ''}`
+      `${entity.id}:${entity.x},${entity.y},${entity.z ?? ''},${entity.elevation || 0},${entity.angle || 0}:${entity.area ? `${entity.area.shape}/${entity.area.width}/${entity.area.height}/${entity.area.depth}/${entity.area.radius}` : ''}:${entity.physics && entity.physics.body !== 'none' ? `${entity.physics.body}/${entity.physics.shape}/${entity.physics.width}/${entity.physics.height}/${entity.physics.depth}/${entity.physics.radius}` : ''}`
     ).join('|');
   }
   // One curve per path, rebuilt whenever the layout changes. The line is what the mapper

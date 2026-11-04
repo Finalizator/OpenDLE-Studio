@@ -90,7 +90,7 @@ export function parseMidi(data, name = 'music') {
   if (!tracks || tracks > MAX_TRACKS) throw new Error(`${name}: unsupported MIDI track count ${tracks}`);
   if (division <= 0) throw new Error(`${name}: SMPTE MIDI timing is not supported`);
   const events = [];
-  let offset = 8 + headerLength;
+  let offset = 8 + headerLength, endTick = 0;
   for (let track = 0; track < tracks; track++) {
     while (offset + 8 <= data.length && text(data, offset, 4) !== 'MTrk') offset++;
     if (offset + 8 > data.length) throw new Error(`${name}: missing MIDI track ${track}`);
@@ -99,6 +99,7 @@ export function parseMidi(data, name = 'music') {
     let cursor = offset + 8, tick = 0, running = 0;
     while (cursor < end) {
       const delta = variableLength(data, cursor, end); cursor = delta.offset; tick += delta.value;
+      endTick = Math.max(endTick, tick);
       if (cursor >= end) break;
       let status = data[cursor];
       if (status & 0x80) cursor++; else status = running;
@@ -133,23 +134,36 @@ export function parseMidi(data, name = 'music') {
   }
   const ticksToSeconds = tempoConverter(events.filter(event => event.type === 'tempo'), division);
   const active = new Map(), notes = [], programs = new Map();
-  let endTick = 0;
+  events.sort((a, b) => a.tick - b.tick);
   for (const event of events) {
     endTick = Math.max(endTick, event.tick);
     if (event.type === 'program') { programs.set(event.channel, event.program); continue; }
     if (event.type === 'tempo') continue;
     const key = `${event.channel}:${event.note}`;
-    if (event.type === 'on') { active.set(key, { start: event.tick, velocity: event.velocity, program: programs.get(event.channel) || 0 }); continue; }
-    const start = active.get(key);
-    if (!start) continue;
-    active.delete(key);
-    const program = start.program;
-    notes.push({ time: secondsAt(ticksToSeconds, start.start),
-      duration: secondsAt(ticksToSeconds, event.tick) - secondsAt(ticksToSeconds, start.start),
-      channel: event.channel, program, family: midiProgramFamily(program), drum: event.channel === 9,
-      note: event.note, velocity: start.velocity / 127 });
+    if (event.type === 'on') {
+      if (!active.has(key)) active.set(key, { notes: [], offset: 0 });
+      active.get(key).notes.push({ start: event.tick, velocity: event.velocity, program: programs.get(event.channel) || 0 });
+      continue;
+    }
+    release(event.channel, event.note, event.tick);
+  }
+  for (const [key, pending] of active) {
+    const [channel, note] = key.split(':').map(Number);
+    while (pending.offset < pending.notes.length) release(channel, note, endTick);
   }
   return score(notes, secondsAt(ticksToSeconds, endTick), 'midi', name);
+
+  function release(channel, note, tick) {
+    const key = `${channel}:${note}`, pending = active.get(key);
+    if (!pending) return;
+    const start = pending.notes[pending.offset++];
+    if (pending.offset === pending.notes.length) active.delete(key);
+    const program = start.program;
+    notes.push({ time: secondsAt(ticksToSeconds, start.start),
+      duration: secondsAt(ticksToSeconds, tick) - secondsAt(ticksToSeconds, start.start),
+      channel, program, family: midiProgramFamily(program), drum: channel === 9,
+      note, velocity: start.velocity / 127 });
+  }
 }
 
 /**

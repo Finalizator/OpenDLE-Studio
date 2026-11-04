@@ -37,12 +37,9 @@ export function rangeNames({ from, to }) {
 
 /** Strips comments the way the engine's own parsers do, so quoting does not confuse them. */
 function tokenize(text) {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/\/\/[^\n]*/g, ' ')
-    .replace(/"[^"]*"/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean);
+  return (text.match(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|[{}]|[^\s{}"]+/g) || [])
+    .filter(token => !token.startsWith('/*') && !token.startsWith('//'))
+    .map(token => token.startsWith('"') ? token.slice(1, -1).replace(/\\(["\\])/g, '$1') : token);
 }
 
 /**
@@ -87,7 +84,7 @@ export function parseSurfaceAnimations(sources = [], { warn } = {}) {
               if ((tokens[cursor] || '').toLowerCase() === 'tics') { frameTics = Number(tokens[cursor + 1]) || tics; cursor += 2; }
               if (frame) frames.push({ name: frame, tics: frameTics });
             } else if (directive === 'allowdecals') continue;
-            else if (directive === 'tics') { tics = Number(tokens[cursor + 1]) || tics; cursor += 2; }
+            else if (directive === 'tics') { tics = Number(tokens[cursor]) || tics; cursor++; }
             else if (directive === 'rand') cursor++;   // GZDoom random frames: keep the order it lists
           }
         } else {
@@ -98,10 +95,7 @@ export function parseSurfaceAnimations(sources = [], { warn } = {}) {
         framesSeen += frames.length;
         if (!frames.length || frames.length > 64 || framesSeen > MAX_FRAMES) continue;
         if (sequences.length >= MAX_SEQUENCES) break;
-        // Consecutive duplicates are what a `range` over missing artwork produces; they are
-        // harmless but pointless, so they collapse to one frame (a still picture).
-        const cleaned = frames.filter((frame, position) => frame.name !== frames[position - 1]?.name);
-        if (cleaned.length) sequences.push({ kind, frames: cleaned, ...(range ? { range } : {}) });
+        sequences.push({ kind, frames, ...(range ? { range } : {}) });
       } else if (['warp', 'warp2', 'fbm', 'noise', 'stripe'].includes(keyword)) {
         // `warp picture X` / `warp2 texture X` / `fbm flat X` …: a shader over one image.
         const target = tokens[index + 2] || tokens[index + 1];

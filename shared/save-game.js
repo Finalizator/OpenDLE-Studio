@@ -25,7 +25,7 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // loader did not know and refused the whole file ("unknown runtime field pathCompleted"). A saved
   // game that cannot be loaded is the worst failure this format has, so the list is explicit here
   // and a test plays a state with all of them set.
-  'pathCompleted', 'pathSampler', 'viewCameraHeight', 'teleportFog', 'lightning', 'waggles',
+  'pathCompleted', 'pathSampler', 'viewCameraHeight', 'teleportFog', 'lightning',
   // The speed the player is travelling at is read off the momentum every tic, so it is derived
   // rather than part of the game state.
   'speed']);
@@ -46,7 +46,7 @@ const optional = new Set(['areaEntries', 'intervals', 'decalCounter', 'lastShot'
   'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock', 'gravityClock',
   // Where an addon keeps state of its own. Rules and scripts write the engine's fields through the API;
   // this one bag is theirs, so their data travels with a save without a field per addon.
-  'addonState']);
+  'addonState', 'waggles']);
 const fail = message => { throw new Error(`Invalid game save: ${message}`); };
 const plain = value => value !== null && typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -270,6 +270,19 @@ function validateRuntime(project, state, baseline) {
   objectMap(state.enemyMoves, entityIds, { direction: 'number', remaining: 'number' }, 'enemy movement');
   objectMap(state.animations, entityIds, { clip: 'string', speed: 'number', loop: 'boolean', playing: 'boolean', revision: 'number' }, 'model animations');
   const sectorIds = new Set(project.map.sectors.map(sector => sector.id));
+  if (state.waggles !== undefined) {
+    if (!Array.isArray(state.waggles)) fail('invalid plane waggles');
+    for (const waggle of state.waggles) {
+      if (!plain(waggle) || !Array.isArray(waggle.sectorIds) ||
+        !waggle.sectorIds.every(id => sectorIds.has(id)) ||
+        !(waggle.original instanceof Map) || waggle.original.size !== waggle.sectorIds.length ||
+        !waggle.sectorIds.every(id => Number.isFinite(waggle.original.get(id))) ||
+        !['floorHeight', 'ceilingHeight'].includes(waggle.property) ||
+        typeof waggle.ceiling !== 'boolean' || waggle.ceiling !== (waggle.property === 'ceilingHeight') ||
+        !['accumulator', 'accDelta', 'scale', 'targetScale', 'scaleDelta', 'timer', 'tics', 'pending']
+          .every(key => Number.isFinite(waggle[key]))) fail('invalid plane waggle');
+    }
+  }
   for (const [key, motion] of state.sectorMotions) {
     if (!plain(motion) || !sectorIds.has(motion.sectorId) || !['floorHeight', 'ceilingHeight'].includes(motion.surface) ||
       key !== `${motion.sectorId}:${motion.surface}` || !['out', 'return'].includes(motion.direction) ||

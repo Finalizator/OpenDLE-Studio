@@ -23,13 +23,21 @@ const IDENTIFIER = /^\*?[a-z0-9_][a-z0-9_/*#-]*$/i;
  */
 export function parseSndInfo(text) {
   const aliases = {}, random = {};
-  for (const raw of String(text ?? '').split(/\r?\n/)) {
-    const line = raw.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*$/, '').trim();
+  const source = String(text ?? '').replace(/"(?:\\.|[^"\\])*"|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,
+    token => token.startsWith('"') ? token : ' ')
+    .replace(/\$random\s+(\S+)\s*\{([^}]*)\}/gi,
+      (_token, name, members) => `\n$random ${name} { ${members.replace(/\s+/g, ' ')} }\n`);
+  for (const raw of source.split(/\r?\n/)) {
+    const line = raw.trim();
     if (!line) continue;
     const group = /^\$random\s+(\S+)\s*\{([^}]*)\}/i.exec(line);
     if (group) {
       const members = group[2].trim().split(/\s+/).map(name => name.toLowerCase()).filter(Boolean);
-      if (members.length) random[group[1].toLowerCase()] = members;
+      if (members.length) {
+        const name = group[1].toLowerCase();
+        delete aliases[name];
+        random[name] = members;
+      }
       continue;
     }
     // `$playersound <class> <gender> <name> <lump>` defines the same logical name
@@ -53,13 +61,17 @@ export function parseSndInfo(text) {
     const alias = /^\$alias\s+(\S+)\s+(\S+)/i.exec(line);
     if (alias) {
       const [, name, target] = alias;
-      if (IDENTIFIER.test(name) && IDENTIFIER.test(target)) aliases[name.toLowerCase()] = target;
+      if (IDENTIFIER.test(name) && IDENTIFIER.test(target)) {
+        delete random[name.toLowerCase()];
+        aliases[name.toLowerCase()] = target;
+      }
       continue;
     }
     if (COMMAND.test(line)) continue;
     const [name, target] = line.split(/\s+/);
     if (!name || !target || !IDENTIFIER.test(name) || /\.(wav|ogg|flac|mp3)$/i.test(target)) continue;
     if (target === '{' || target === '}') continue;
+    delete random[name.toLowerCase()];
     aliases[name.toLowerCase()] = target.toUpperCase();
   }
   return { aliases, random };

@@ -39,6 +39,10 @@ export function soundEvent(state, name, volume = 1, position) {
 export function floorAt(state, position) {
   return position.z ?? (sectorAt(state.sectors, position.x, position.y)?.floorHeight ?? 0) + (position.elevation || 0);
 }
+
+export function entityHeight(entity) {
+  return entity.type === 'player' ? 56 : entity.height ?? (entity.physics?.body !== 'none' ? entity.physics?.height : undefined) ?? 56;
+}
 /**
  * Sector floor directly under a position, ignoring the height the thing occupies.
  *
@@ -65,8 +69,8 @@ export function playerReachesEntity(state, entity, distance, height, below, { ov
   const origin = { x: state.player.x, y: state.player.y, z: Math.max(playerFloor, itemFloor) + 1 };
   return geometryDistance(state, origin, { x: dx / (range || 1), y: dy / (range || 1), z: 0 }, range + .01, true) >= range;
 }
-export function entityDistance(state, origin, direction, entity, range, radius = 20) {
-  const bottom = floorAt(state, entity), top = bottom + 56;
+export function entityDistance(state, origin, direction, entity, range, radius = entity.radius ?? 20) {
+  const bottom = floorAt(state, entity), top = bottom + entityHeight(entity);
   const ox = origin.x - entity.x, oy = origin.y - entity.y;
   const a = direction.x ** 2 + direction.y ** 2, b = 2 * (ox * direction.x + oy * direction.y), c = ox ** 2 + oy ** 2 - radius ** 2;
   const discriminant = b * b - 4 * a * c;

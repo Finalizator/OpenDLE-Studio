@@ -24,8 +24,10 @@ function findClosingQuote(text) {
  */
 export function parseLanguage(text) {
   const strings = {};
+  const priorities = new Map();
   let section = 'default';
-  const lines = String(text).split(/\r?\n/);
+  const lines = String(text).replace(/"(?:\\.|[^"\\])*"|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,
+    token => token.startsWith('"') ? token : token.replace(/[^\n]/g, ' ')).split(/\r?\n/);
   for (let index = 0; index < lines.length; index++) {
     const raw = lines[index];
     const line = raw.trim();
@@ -36,21 +38,34 @@ export function parseLanguage(text) {
     if (!assignment) continue;
     let value = assignment[2].trim();
     if (value.startsWith('"')) {
-      // Quoted values end at the closing quote; they may continue on later lines.
-      let collected = value.slice(1);
-      let closing = findClosingQuote(collected);
-      while (closing < 0 && index + 1 < lines.length) {
-        index++;
-        collected += `\n${lines[index]}`;
-        closing = findClosingQuote(collected);
+      let joined = '';
+      while (value.startsWith('"')) {
+        let collected = value.slice(1);
+        let closing = findClosingQuote(collected);
+        while (closing < 0 && index + 1 < lines.length) {
+          collected += `\n${lines[++index]}`;
+          closing = findClosingQuote(collected);
+        }
+        joined += closing < 0 ? collected : collected.slice(0, closing);
+        value = closing < 0 ? '' : collected.slice(closing + 1).trim();
+        if (!value) {
+          let next = index + 1;
+          while (next < lines.length && !lines[next].trim()) next++;
+          if (lines[next]?.trim().startsWith('"')) {
+            index = next;
+            value = lines[index].trim();
+          }
+        }
       }
-      value = (closing < 0 ? collected : collected.slice(0, closing))
-        .replace(/\\"/g, '"').replace(/\\n/gi, '\n');
-    } else {
-      value = value.replace(/;\s*$/, '').replace(/\\"/g, '"').replace(/\\n/gi, '\n');
-    }
-    if (section === 'default' || section.includes('default') || section === 'enu' || !strings[assignment[1]]) {
+      value = joined;
+    } else value = value.replace(/;\s*$/, '');
+    value = value.replace(/\\([\\"nrt])/g, (_escape, char) =>
+      ({ '\\': '\\', '"': '"', n: '\n', r: '\r', t: '\t' })[char]);
+    const languages = section.split(/\s+/);
+    const priority = languages.includes('enu') ? 2 : languages.includes('default') ? 1 : 0;
+    if (priority >= (priorities.get(assignment[1]) ?? -1)) {
       strings[assignment[1]] = value;
+      priorities.set(assignment[1], priority);
     }
   }
   return strings;

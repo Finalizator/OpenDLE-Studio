@@ -131,12 +131,13 @@ export function physicsVolume(entity, floorHeight = 0) {
   const physics = entity?.physics;
   if (!physics || physics.body === 'none') return null;
   const height = Number(physics.height) || 0, radius = Number(physics.radius) || 0;
-  const base = (floorHeight || 0) + (entity.elevation || 0);
+  const base = Number.isFinite(entity.z) ? entity.z : (floorHeight || 0) + (entity.elevation || 0);
   const shape = physics.shape === 'ball' ? 'sphere' : physics.shape === 'capsule' ? 'capsule' : 'box';
   const half = shape === 'box'
     ? { width: physics.width / 2, depth: physics.depth / 2, height: height / 2 }
     : { width: radius, depth: radius, height: (shape === 'sphere' ? radius * 2 : height) / 2 };
-  return { shape, radius, body: physics.body, sensor: Boolean(physics.sensor), center: { x: entity.x, y: entity.y, z: base + half.height }, half };
+  return { shape, radius, body: physics.body, sensor: Boolean(physics.sensor),
+    center: { x: entity.x, y: entity.y, z: base + half.height }, half, angle: Number(entity.angle) || 0 };
 }
 
 /**
@@ -150,7 +151,7 @@ export function overlayVolumes(entities, { areas = false, physics = false, playe
     if (entity.type === 'player') {
       // The player capsule shows where an interaction area has to be to catch it.
       if (player) plans.push({ kind: 'player', id: entity.id, name: entity.name, shape: 'capsule', body: 'kinematic',
-        center: { x: entity.x, y: entity.y, z: (floorOf(entity) || 0) + PLAYER_CYLINDER.halfHeight },
+        center: { x: entity.x, y: entity.y, z: (entity.z ?? (floorOf(entity) || 0) + (entity.elevation || 0)) + PLAYER_CYLINDER.halfHeight },
         half: { width: PLAYER_CYLINDER.radius, depth: PLAYER_CYLINDER.radius, height: PLAYER_CYLINDER.halfHeight },
         radius: PLAYER_CYLINDER.radius, selected: false });
       continue;
@@ -159,12 +160,12 @@ export function overlayVolumes(entities, { areas = false, physics = false, playe
     if (areas) {
       const volume = areaVolume(entity, floor);
       if (volume) plans.push({ kind: 'area', id: entity.id, name: entity.name, shape: volume.shape,
-        center: volume.center, half: volume.half, radius: volume.radius, selected: entity.id === selectedId });
+        center: volume.center, half: volume.half, radius: volume.radius, angle: volume.angle, selected: entity.id === selectedId });
     }
     if (physics) {
       const volume = physicsVolume(entity, floor);
       if (volume) plans.push({ kind: 'physics', id: entity.id, name: entity.name, shape: volume.shape, body: volume.body,
-        sensor: volume.sensor, center: volume.center, half: volume.half, radius: volume.radius, selected: entity.id === selectedId });
+        sensor: volume.sensor, center: volume.center, half: volume.half, radius: volume.radius, angle: volume.angle, selected: entity.id === selectedId });
     }
   }
   return plans;

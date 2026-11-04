@@ -1,3 +1,5 @@
+import { projectIds } from './project-ids.js';
+
 /**
  * The container signatures a sound may arrive in.
  *
@@ -68,9 +70,7 @@ export const ENGINE_SOUNDS = ['DSPUNCH', 'DSPISTOL', 'DSSHOTGN', 'DSSGT2F', 'DSR
 
 export function installEngineSounds(project) {
   project.assets ||= [];
-  const used = new Set([...['vertices', 'walls', 'sectors', 'entities'].flatMap(key => project.map[key] || []),
-    ...project.assets, ...(project.events || []), ...(project.eventSheets || []), ...(project.eventGroups || []),
-    ...(project.hud ? [...project.hud.elements, ...project.hud.fonts, ...project.hud.animations] : [])].map(item => item.id));
+  const used = projectIds(project);
   ENGINE_SOUNDS.forEach((name, index) => {
     if (project.assets.some(asset => asset.kind === 'sound' && asset.name === name)) return;
     const samples = new Uint8Array(1600);

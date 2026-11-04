@@ -2,6 +2,7 @@ import { LIMITS } from './limits.js';
 import { cloneProjectForEdit } from './project.js';
 import { resolveMusicAsset, musicReport } from './music.js';
 import { resolveString } from './language.js';
+import { engineCommand } from './engine-script.js';
 
 // `actors` describes the game as a whole (monster and weapon state machines),
 // so it is stored once instead of being duplicated into every level.
@@ -113,6 +114,63 @@ function classicNext(id, secret) {
   return undefined;
 }
 
+function remapLevelAssets(data, replacements, project) {
+  const ref = id => replacements.get(id) || id;
+  const fields = (value, keys) => {
+    if (!value) return;
+    for (const key of keys) if (typeof value[key] === 'string') value[key] = ref(value[key]);
+  };
+  const command = value => {
+    if (!value) return;
+    const keys = (engineCommand(value.type, project)?.fields || [])
+      .filter(field => field.kind === 'image').map(field => field.name);
+    if (value.type === 'playAssetSound') keys.push('assetId');
+    fields(value, keys);
+  };
+  for (const holder of [data, ...(data.scenes || [])]) {
+    for (const entity of holder.map?.entities || holder.entities || []) {
+      fields(entity, ['spriteAsset', 'modelAsset']);
+      fields(entity.sound, ['assetId']);
+      fields(entity.projector, ['assetId']);
+    }
+    for (const event of holder.events || []) {
+      command(event.condition);
+      for (const condition of event.conditions || []) command(condition);
+      for (const action of event.actions || []) command(action);
+    }
+    for (const sheet of holder.timesheets || [])
+      for (const cue of sheet.cues || []) for (const action of cue.actions || []) command(action);
+    for (const clip of holder.spriteClips || []) clip.frames = clip.frames.map(ref);
+    for (const mapping of holder.materialAnimations || []) fields(mapping, ['assetId']);
+  }
+  for (const wall of data.map?.walls || []) {
+    fields(wall, ['assetId']);
+    for (const side of [wall.right, wall.left]) fields(side, ['upper', 'middle', 'lower']);
+  }
+  for (const sector of data.map?.sectors || []) fields(sector, ['floorAsset', 'ceilingAsset']);
+  for (const item of [...(data.hud?.elements || []), ...(data.hud?.fonts || [])]) fields(item, ['assetId']);
+  fields(data.environment, ['skyAsset', 'weaponAsset', 'musicAsset']);
+  if (data.environment?.weaponAssets)
+    for (const weapon of Object.keys(data.environment.weaponAssets)) data.environment.weaponAssets[weapon] = ref(data.environment.weaponAssets[weapon]);
+  fields(data.environment?.skybox, ['px', 'nx', 'py', 'ny', 'pz', 'nz']);
+  return data;
+}
+
+function assetSignature(asset, byId) {
+  const { id, ...content } = asset;
+  if (!asset.rotations?.length) return JSON.stringify(content);
+  // Equal rotation IDs do not imply equal artwork in another map; include the reachable graph.
+  const seen = new Set([id]), pending = [asset], related = [];
+  for (let index = 0; index < pending.length; index++) for (const view of pending[index].rotations || []) {
+    if (seen.has(view.assetId)) continue;
+    seen.add(view.assetId);
+    const target = byId.get(view.assetId);
+    if (target) { pending.push(target); related.push(target); }
+  }
+  related.sort((a, b) => a.id.localeCompare(b.id));
+  return JSON.stringify([content, related]);
+}
+
 export function assembleGameLevels(entries, entryId, title, routes = new Map()) {
   const assets = [], byId = new Map(), byContent = new Map(), levels = [], warnings = new Set(), ids = new Set();
   let version, sharedActors = null, sharedStrings = null, sharedAddons = null, sharedSounds = null;
@@ -121,7 +179,8 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
     if (levels.length >= 128) throw new Error('A game must contain 1–128 levels');
     if (ids.has(entry.id)) throw new Error(`Duplicate game level ${entry.id}`);
     ids.add(entry.id);
-    const project = entry.project, replacements = new Map(), assetIds = [];
+    const project = entry.project, replacements = new Map(), assetIds = [], added = [];
+    const sourceAssets = new Map(project.assets.map(asset => [asset.id, asset]));
     version = project.version;
     // The actor table describes the whole game (monster and weapon state
     // machines), so it is taken from the first level that has one.
@@ -130,26 +189,23 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
     if (!sharedAddons && project.addons?.length) sharedAddons = structuredClone(project.addons);
     if (!sharedSounds && project.soundAliases) sharedSounds = structuredClone(project.soundAliases);
     for (const asset of project.assets) {
-      const { id: originalId, ...content } = asset;
-      const signature = JSON.stringify(content), existing = byContent.get(signature);
+      const originalId = asset.id;
+      const signature = assetSignature(asset, sourceAssets), existing = byContent.get(signature);
       let id = existing;
       if (!id) {
         id = asset.id;
         let suffix = 0;
         while (byId.has(id)) id = `level_${levels.length}_${suffix++}_${originalId}`.slice(0, 80);
-        const copy = { ...asset, id };
-        assets.push(copy); byId.set(id, copy); byContent.set(signature, id);
+        const copy = structuredClone({ ...asset, id });
+        assets.push(copy); added.push(copy); byId.set(id, copy);
+        byContent.set(signature, id);
       }
       replacements.set(asset.id, id); assetIds.push(id);
     }
-    function remap(value) {
-      if (typeof value === 'string') return replacements.get(value) || value;
-      if (Array.isArray(value)) return value.map(remap);
-      if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, remap(child)]));
-      return value;
-    }
+    for (const asset of added)
+      for (const view of asset.rotations || []) view.assetId = replacements.get(view.assetId) || view.assetId;
     const route = routes.get(entry.id);
-    const data = remap(levelData(project));
+    const data = remapLevelAssets(structuredClone(levelData(project)), replacements, project);
     applyLevelMusic(data, entry.id, route?.music, assets, warnings);
     // The map's own lighting model travels with the level, the way its sky does: `lightmode = 2`
     // is Doom's crushed brightness curve, which is the difference between a dark room and black.
@@ -216,15 +272,19 @@ export function parseLevelRoutes(sources) {
       const id = match[1].replaceAll('"', '').toUpperCase(), route = { ...routes.get(id) };
       if (match[2]) route.name = match[2];
       const body = clean.slice(map.lastIndex, end - 1);
+      const fields = [];
+      const assignments = /"(?:\\.|[^"\\])*"|\b(next|secretnext|music|sky1|lightmode)\s*=\s*("(?:\\.|[^"\\])*"|[a-zA-Z0-9_.-]+)(?:\s*,\s*(-?[\d.]+))?/gi;
+      for (const field of body.matchAll(assignments)) if (field[1]) fields.push(field);
       // `lightmode` is a number, not a name, so it is read on its own: Doom's own lighting is
       // the difference between a dark room and a black one.
-      const lightMode = /\blightmode\s*=\s*(\d+)/i.exec(body);
-      if (lightMode) route.lightMode = Number(lightMode[1]);
+      const lightMode = fields.find(field => field[1].toLowerCase() === 'lightmode');
+      if (lightMode && /^\d+$/.test(lightMode[2])) route.lightMode = Number(lightMode[2]);
       // `sky1 = "NEBUSKY4", 0.1` slides the sky sideways: the number is GZDoom's scroll speed,
       // and a title map that names one has a turning sky rather than a still picture.
-      const skyScroll = /\bsky1\s*=\s*"[^"]*"\s*,\s*(-?[\d.]+)/i.exec(body);
-      if (skyScroll && Number.isFinite(Number(skyScroll[1]))) route.skyScroll = Number(skyScroll[1]);
-      for (const field of body.matchAll(/\b(next|secretnext|music|sky1)\s*=\s*("[^"]*"|[a-zA-Z0-9_-]+)/gi)) {
+      const skyScroll = fields.find(field => field[1].toLowerCase() === 'sky1' && field[3] !== undefined);
+      if (skyScroll && Number.isFinite(Number(skyScroll[3]))) route.skyScroll = Number(skyScroll[3]);
+      for (const field of fields) {
+        if (field[1].toLowerCase() === 'lightmode') continue;
         const value = field[2].replaceAll('"', '').toUpperCase();
         const key = field[1].toLowerCase();
         if (key === 'music') { route.music = value; continue; }

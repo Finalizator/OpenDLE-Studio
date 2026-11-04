@@ -100,11 +100,18 @@ export function timesheetSignature(timesheets = []) {
  */
 const safeId = value => String(value).replace(/[^a-zA-Z0-9_-]/g, '_');
 
-export function timesheetCueEvents(timesheets = []) {
-  const events = [];
+export function timesheetCueEvents(timesheets = [], reservedIds = []) {
+  const events = [], used = new Set(reservedIds);
   for (const sheet of timesheets) for (const cue of sheet.cues || []) {
+    const base = `timesheet_${safeId(sheet.id)}__${safeId(cue.id)}`.slice(0, 80);
+    let id = base, suffix = 1;
+    while (used.has(id)) {
+      const tail = `_${suffix++}`;
+      id = `${base.slice(0, 80 - tail.length)}${tail}`;
+    }
+    used.add(id);
     events.push({
-      id: `timesheet_${safeId(sheet.id)}__${safeId(cue.id)}`,
+      id,
       enabled: true,
       once: false,
       // `undefined`, not null: an owner-less rule must not claim an owner it does not have.
@@ -122,7 +129,8 @@ export function timesheetCueEvents(timesheets = []) {
 
 /** Cues whose time falls in `(from, to]`, which is how a clock crossing them is detected. */
 export function cuesBetween(cues, from, to) {
-  return (cues || []).filter(cue => cue.time > from + 1e-9 && cue.time <= to + 1e-9);
+  return (cues || []).filter(cue => cue.time > from + 1e-9 && cue.time <= to + 1e-9)
+    .sort((a, b) => a.time - b.time);
 }
 
 function runs(state) {
@@ -144,7 +152,7 @@ export function timesheetRun(state, id) {
  */
 export function cueDue(state, timesheetId, cueId) {
   const run = state.timesheets?.get(timesheetId);
-  if (!run?.due?.has(cueId)) return false;
+  if (run?.paused || !run?.due?.has(cueId)) return false;
   run.due.delete(cueId);
   return true;
 }
@@ -409,8 +417,9 @@ export function advancePathTweens(project, state, dt) {
     entity.x = origin.x + (where.x - anchor.x);
     entity.y = origin.y + (where.y - anchor.y);
     entity.z = origin.z + ((where.z || 0) - (anchor.z || 0));
-    if (tween.startHeading === null || tween.startHeading === undefined) tween.startHeading = where.angle;
-    if (tween.faceDirection) entity.angle = tweenAngle(entity, tween, where.angle);
+    const heading = endDistance < startDistance ? wrap360(where.angle + 180) : where.angle;
+    if (tween.startHeading === null || tween.startHeading === undefined) tween.startHeading = heading;
+    if (tween.faceDirection) entity.angle = tweenAngle(entity, tween, heading);
     moved++;
     if (tween.elapsed >= tween.seconds - 1e-9) finished.push(tween.entityId);
     else remaining.push(tween);

@@ -1,4 +1,5 @@
 import { parseShaderSource, validShaderUniformName } from './shader-language.js';
+import { projectIds } from './project-ids.js';
 
 // Pair this source with uniforms: { strength: 1 } for a live-editable tint gain.
 export const shaderTemplate = `vec4 effect(vec4 color, vec2 uv, float time) {
@@ -124,8 +125,9 @@ export function curtainShaderId(project) {
   // an older preset would otherwise keep that older look forever, because the shader is
   // stored in the project and every edit here would silently do nothing.
   if (existing) { existing.source = curtainShaderTemplate; existing.uniforms ||= {}; return existing.id; }
-  const id = 'plastic_curtain';
-  if (project.shaders.some(shader => shader.id === id)) return project.shaders[0]?.id || '';
+  const used = projectIds(project);
+  let id = 'plastic_curtain', suffix = 1;
+  while (used.has(id)) id = `plastic_curtain_${suffix++}`;
   project.shaders.push({ id, name: CURTAIN_SHADER_NAME, language: 'glsl', source: curtainShaderTemplate, uniforms: {} });
   return id;
 }

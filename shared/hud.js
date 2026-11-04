@@ -2,6 +2,8 @@ import { LIMITS } from './limits.js';
 import { validateHUDStyle } from './hud-style.js';
 import { HUD_PLAYER_BINDINGS, playerBinding, initialPlayerStats } from './player-state.js';
 import { GAME_HUD_BINDINGS, GAME_SETTINGS } from './game-settings.js';
+import { isImageAsset } from './media-assets.js';
+import { projectIds } from './project-ids.js';
 
 export const HUD_PROPERTIES = ['x', 'y', 'width', 'height', 'opacity', 'scale', 'rotation', 'value', 'frame', 'fontSize'];
 export const HUD_STATS = ['health', 'armor', 'bullets'];
@@ -19,23 +21,28 @@ const limits = {
  * a rule that was already idle is none of its business.
  */
 function releaseCommands(project, matches, removed) {
-  const keepEvent = event => {
-    const conditionsBefore = [event.condition, ...(event.conditions || [])].filter(Boolean);
-    const before = (event.actions || []).length + conditionsBefore.length;
-    const drop = list => list.filter(command => {
-      if (!matches(command)) return true;
-      removed.commands += 1;
-      return false;
+  const drop = list => list.filter(command => {
+    if (!matches(command)) return true;
+    removed.commands += 1;
+    return false;
+  });
+  for (const holder of [project, ...(project.scenes || [])]) {
+    const parents = new Set((holder.events || []).map(event => event.parentId).filter(Boolean));
+    const dropped = new Set();
+    holder.events = (holder.events || []).filter(event => {
+      const conditionsBefore = [event.condition, ...(event.conditions || [])].filter(Boolean);
+      const before = (event.actions || []).length;
+      event.actions = drop(event.actions || []);
+      const keptConditions = drop(conditionsBefore);
+      if (dropped.has(event.parentId) || keptConditions.length < conditionsBefore.length ||
+        before && !event.actions.length && !parents.has(event.id)) {
+        dropped.add(event.id); removed.rules += 1; return false;
+      }
+      return true;
     });
-    event.actions = drop(event.actions || []);
-    const keptConditions = drop(conditionsBefore);
-    event.condition = keptConditions[0] || null;
-    event.conditions = keptConditions.slice(1);
-    const after = event.actions.length + keptConditions.length;
-    if (after < before && (!event.actions.length || !keptConditions.length)) { removed.rules += 1; return false; }
-    return true;
-  };
-  project.events = (project.events || []).filter(keepEvent);
+  }
+  for (const sheet of project.timesheets || [])
+    for (const cue of sheet.cues || []) cue.actions = drop(cue.actions || []);
 }
 
 /**
@@ -123,7 +130,7 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
   const list = (value, max, label) => assert(Array.isArray(value) && value.length <= max, `HUD ${label} must contain at most ${max} items`);
   const image = id => {
     const asset = assets.find(asset => asset.id === id);
-    assert(asset && !['model', 'font', 'sound'].includes(asset.kind), 'HUD image references an unknown image asset');
+    assert(isImageAsset(asset), 'HUD image references an unknown image asset');
     return asset;
   };
   const color = value => assert(/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value), 'HUD color must be #rrggbb or #rrggbbaa');
@@ -346,7 +353,10 @@ export function playHUDAnimation(project, hud, id) {
 }
 
 export function advanceHUD(project, hud, dt, phase = 'game') {
-  hud.finished.clear();
+  for (const id of hud.finished) {
+    const clip = project.hud.animations.find(clip => clip.id === id);
+    if (!clip || (clip.phase || 'game') === phase) hud.finished.delete(id);
+  }
   for (const [id, playback] of hud.playing) {
     const clip = project.hud.animations.find(clip => clip.id === id);
     if ((clip.phase || 'game') !== phase) continue;
@@ -360,10 +370,7 @@ export function advanceHUD(project, hud, dt, phase = 'game') {
 
 export function installDefaultHUD(project) {
   if (project.hud) throw new Error('HUD already exists; edit it rather than replacing authored content');
-  const used = new Set([
-    ...['vertices', 'walls', 'sectors', 'entities'].flatMap(key => (project.map[key] || []).map(item => item.id)),
-    ...['assets', 'events', 'eventSheets', 'eventGroups'].flatMap(key => (project[key] || []).map(item => item.id)),
-  ]);
+  const used = projectIds(project);
   const id = name => {
     name = name.replace(/[^a-zA-Z0-9_-]/g, '_');
     let value = name, suffix = 1;

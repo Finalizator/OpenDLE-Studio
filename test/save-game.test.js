@@ -151,7 +151,6 @@ test('a save taken while transient effects were running still loads', () => {
     viewCameraHeight: 41,
     teleportFog: { x: 1, y: 2, z: 3 },
     lightning: 1,
-    waggles: [{ sectorIds: ['room'], property: 'floorHeight', original: new Map([['room', 0]]), tics: 3 }],
     bossDefeated: true,
     acsMessages: [{ text: 'Hold the line', start: 0, hold: 4 }],
   });
@@ -160,7 +159,7 @@ test('a save taken while transient effects were running still loads', () => {
   // What the game is in is carried; what one frame was doing is rebuilt.
   assert.equal(runtime.bossDefeated, true, 'a boss latch survives');
   assert.deepEqual(runtime.acsMessages, [{ text: 'Hold the line', start: 0, hold: 4 }], 'a caption keeps its hold time');
-  for (const transient of ['pathCompleted', 'pathSampler', 'viewCameraHeight', 'teleportFog', 'lightning', 'waggles']) {
+  for (const transient of ['pathCompleted', 'pathSampler', 'viewCameraHeight', 'teleportFog', 'lightning']) {
     assert.equal(runtime[transient], undefined, `${transient} is not part of a save`);
   }
   // And the level goes on playing from it.

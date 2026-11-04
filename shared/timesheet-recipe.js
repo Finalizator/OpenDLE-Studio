@@ -11,7 +11,7 @@
  */
 
 import { pathLength } from './paths.js';
-import { createTimesheet, createCue } from './timesheet.js';
+import { createTimesheet, createCue, TIMESHEET_LIMITS } from './timesheet.js';
 import { followPath } from './path-motion.js';
 import { hasModelFacing } from './entity-visuals.js';
 
@@ -92,7 +92,8 @@ export function driveRouteTimesheet({ entity, path, nextId, alignToRoute = false
   // is the correction that makes an imported model's forward axis line up with its route. Once the
   // facing is declared that correction is exact, so carrying the offset as well would over-turn it.
   const yawOffset = alignment ? 0 : Number(entity.path?.yawOffset) || 0;
-  const sheet = createTimesheet({ id: nextId('timesheet'), name: `${entity.name} drives ${path.name}` });
+  const sheet = createTimesheet({ id: nextId('timesheet'),
+    name: `${entity.name} drives ${path.name}`.slice(0, TIMESHEET_LIMITS.name) });
   sheet.duration = Math.min(3600, Math.max(10, Math.ceil(seconds / 5) * 5));
   sheet.cues = [{
     ...createCue({ id: nextId('cue'), name: 'Drive', trackId: sheet.tracks[0].id, time: 0, ownerId: entity.id }),

@@ -1,5 +1,5 @@
 import { sectorAt } from './sectors.js';
-import { floorAt, soundEvent } from './combat.js';
+import { floorAt, entityHeight, soundEvent } from './combat.js';
 import { doomSpecialBehaviour, doomSpecialName } from './doom-specials.js';
 
 function intersection(a, b, wall) {
@@ -110,16 +110,21 @@ export function moveSector(state, action, { authoredDoor = false, authoredElevat
 export function advanceSectors(state, dt) {
   for (const [key, motion] of state.sectorMotions) {
     const sector = state.sectors.find(sector => sector.id === motion.sectorId);
-    if (motion.waiting > 0) { motion.waiting -= dt; continue; }
+    let remaining = dt;
+    if (motion.waiting > 0) {
+      const waited = Math.min(motion.waiting, remaining);
+      motion.waiting -= waited; remaining -= waited;
+      if (remaining <= 0) continue;
+    }
     const old = sector[motion.surface], target = motion.direction === 'out' ? motion.height : motion.origin;
-    const next = old + Math.sign(target - old) * Math.min(Math.abs(target - old), motion.speed * dt);
+    const next = old + Math.sign(target - old) * Math.min(Math.abs(target - old), motion.speed * remaining);
     const occupants = [...state.entities.filter(entity => entity.type === 'enemy' && entity.health > 0), state.player]
       .filter(entity => sectorAt(state.sectors, entity.x, entity.y)?.id === sector.id);
-    if (motion.surface === 'ceilingHeight' && next < old && occupants.some(entity => floorAt(state, entity) + 56 > next)) {
+    if (motion.surface === 'ceilingHeight' && next < old && occupants.some(entity => floorAt(state, entity) + entityHeight(entity) > next)) {
       motion.direction = motion.direction === 'out' ? 'return' : 'out'; continue;
     }
     const ceiling = sector.ceilingHeight + (motion.moveCeiling ? next - old : 0);
-    if (motion.surface === 'floorHeight' && next > old && occupants.some(entity => Math.max(floorAt(state, entity), next) + 56 > ceiling)) continue;
+    if (motion.surface === 'floorHeight' && next > old && occupants.some(entity => Math.max(floorAt(state, entity), next) + entityHeight(entity) > ceiling)) continue;
     sector[motion.surface] = next;
     if (motion.moveCeiling && motion.surface === 'floorHeight') sector.ceilingHeight = ceiling;
     if (next !== old) {
@@ -128,7 +133,7 @@ export function advanceSectors(state, dt) {
         if (sectorAt(state.sectors, entity.x, entity.y)?.id !== sector.id) continue;
         const bottom = entity.z ?? old + (entity.elevation || 0);
         if (Math.abs(bottom - old) > 2 && bottom > next) continue;
-        const z = bottom + next - old;
+        const z = bottom <= old + 2 ? bottom + next - old : next;
         if (entity === state.player) {
           entity.z = z;
           const playerEntity = state.entities.find(e => e.type === 'player');

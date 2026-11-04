@@ -22,6 +22,7 @@ import { NODE_KINDS } from './media-nodes.js';
 import { isImageAsset } from './media-assets.js';
 import { nodeSignals, SIGNAL_NAME, validateSignalEvent } from './signals.js';
 import { resolveDoorHeights, elevatorHeights, sectorMover } from './sector-movers.js';
+import { projectIds } from './project-ids.js';
 
 /** How many timelines one project may carry. */
 export const MAX_TIMESHEETS = 32;
@@ -1131,7 +1132,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   }
   // Timeline cues are validated as the rules they become, so a cue cannot carry an action an
   // event sheet would refuse.
-  for (const event of [...project.events, ...timesheetCueEvents(project.timesheets)]) {
+  for (const event of [...project.events, ...timesheetCueEvents(project.timesheets, projectIds(project))]) {
     unique(event, 'Event');
     if (event.name !== undefined) text(event.name, 'Event name', 100);
     if (event.comment !== undefined) assert(typeof event.comment === 'string' && event.comment.length <= 2000, 'Event comment must be text up to 2000 characters');
@@ -1544,7 +1545,7 @@ export function removeEntities(project, ids, { keepReferences = false } = {}) {
   assert(targets.every(entity => entity && entity.type !== 'player'), 'Select non-player entities to delete');
   if (keepReferences) {
     const mapping = new Map();
-    const events = [...project.events, ...timesheetCueEvents(project.timesheets)];
+    const events = [...project.events, ...timesheetCueEvents(project.timesheets, projectIds(project))];
     for (const entity of targets) {
       const keepModel = events.some(event => [event.condition, ...(event.conditions || []), ...event.actions].some(command =>
         ['animationFinished', 'playAnimation', 'stopAnimation'].includes(command.type) &&

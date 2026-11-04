@@ -388,7 +388,9 @@ provider credits or network access are required for tests.
   DECORATE syntax) and by the `actor_list`, `actor_get`, `actor_unsupported`,
   `actor_update` and `actor_reset` MCP tools. `DoomEdNums` blocks bind editor numbers, and LANGUAGE
   keyword strings (`$TXT_MAP01`, `$GOTSHOTGUN`) resolve through the project
-  string table. DEHACKED patches are applied too: `Thing N` (mobjinfo indexes and
+  string table. Adjacent quoted LANGUAGE strings concatenate, escape sequences are decoded
+  once, and English entries take precedence over defaults regardless of section order.
+  DEHACKED patches are applied too: `Thing N` (mobjinfo indexes and
   editor numbers), `Misc`, `Ammo`, `Weapon`, `[CODEPTR]`/`Pointer` and the
   classic fullbright frame usage. ACS map scripts run natively (below) and ZScript code beyond
   defaults/state blocks are still not executed.
@@ -542,6 +544,10 @@ status bar (save/export edits first), or choose **Install editable game HUD**
 for the generic overlay. HUDs share project save/export, draft backup,
 undo/redo and approved AI/MCP edits. They composite above the WebGL scene and its
 weapon overlay; they are not text below the game canvas.
+
+Deleting HUD content releases references in layout rules, reusable scenes and timeline cues.
+Rules gated by the deleted content lose their whole branch, not just their condition.
+Animation completion remains observable across the game and interface clock phases.
 
 - Add **text, panel, image, bar or button** elements. Select in the element list
   or canvas; drag to move and use the cyan corner to resize. Properties expose
@@ -716,7 +722,8 @@ marker. Physics bodies stay at their authored positions while editing.
   box, sphere or capsule, and **Show physics** draws physics colliders in cyan,
   with the player capsule in yellow as the volume events have to catch. Both are view-only overlays: they are
   drawn in a separate group, stay visible through geometry, are never exported
-  and never affect selection or the playtest.
+  and never affect selection or the playtest. Box outlines retain the object's yaw, and
+  elevated objects and the player retain their absolute height.
 
 This retains the sector map's editing model: planar walls, horizontal floors
 and ceilings, object yaw and uniform visual scaling. It is not a general
@@ -1074,13 +1081,15 @@ things happen — including time.
   rule whose condition is the private `timesheetCue` condition (id, cue id). The rule tree merges
   those generated rules with the project's own events and caches on a signature of the timelines,
   so a cue runs through the same condition/action pipeline as a hand-written rule and can carry a
-  target object (`ownerId`), in which case `$self` means that object.
+  target object (`ownerId`), in which case `$self` means that object. Generated IDs stay within
+  the event ID limit and avoid authored IDs, including sanitisation and truncation collisions.
 - **A cue fires once per pass.** `cuesBetween` reports the cues in a step's half-open interval, so
   a cue at 0 s fires as soon as the clock starts and a cue that lands exactly on the loop boundary
   belongs to the step that ends there. A step that straddles the wrap is split, so nothing is
-  skipped when a frame is long.
+  skipped when a frame is long. Actions execute in crossing order, not cue-list order; the
+  end-of-pass cues run before the next pass's zero-time cues.
 - **`stop` and `pause`** are actions too: `stopTimesheet` forgets the run, `setTimesheetPaused`
-  holds the clock where it is and resumes from there.
+  holds the clock where it is and resumes from there, including any pending zero-time cue.
 - **Timelines are saved.** The run clock is part of the game save: reloading a saved game resumes
   the timeline where it was, paused or playing.
 - **A runtime field has to be declared before it can be saved.** `captureGameSave` packs every
@@ -1708,7 +1717,9 @@ remain single-map APIs; `importWad` without a map imports the full WAD.
 A portable `project.game` stores entry/active level IDs, level names, normal and
 secret exit destinations, and native per-level data. Assets are shared and
 deduplicated; colliding generated atlases receive distinct IDs and their
-references are remapped. All maps keep their editable geometry, environment,
+references are remapped. Only typed asset references are rewritten: literal messages and
+variable values are never treated as IDs. Directional sprite tables retain their own artwork,
+while identical rotation graphs still deduplicate between maps. All maps keep their editable geometry, environment,
 variables, visual scripts, HUD/menu layouts, animation clips and provenance.
 The root project is authoritative for the currently edited level; switching
 levels stores those edits before restoring another level. Inactive snapshots
@@ -1784,12 +1795,13 @@ visual scripts, HUD and menus — so repeating that conversion for the same sour
 is wasted work. `server/import-cache.js` stores the finished import result under
 `data/import-cache/<key>.json` and serves it on the next request:
 
-- the key covers the source (SHA-256 of a WAD/archive, or a size+mtimestamp
+- the key covers the source (SHA-256 of a WAD/archive, or a relative-path+size+mtimestamp
   signature for unpacked package folders), map/scope/base options, and an
   engine fingerprint built from the importer source files plus `version.ini`, so
   upgrading engine code automatically invalidates stale entries;
 - hits skip package reading and conversion entirely and answer immediately;
-- entries are bounded (16 files / 384 MiB by default) and pruned oldest-first;
+- entries are bounded (16 files / 384 MiB by default) and pruned oldest-first,
+  independently of the hit/miss counters and even when several entries must be removed;
 - a corrupt, tampered or version-mismatched entry is treated as a miss, never
   as data; a read-only or full data folder silently degrades to a normal import;
 - `POST /api/import/...?fresh=1` (or `{"fresh":true}`) forces a real
@@ -2071,6 +2083,9 @@ as playable audio. OpenDLE imports every music lump as a `music` asset (bounded:
   those events carry a variable-length delay, a note byte with bit 7 set is
   followed by a velocity byte (otherwise the channel keeps its last velocity), and
   a bar line (`0x50`), score end (`0x60`) or the unused `0x70` all stop playback.
+  MIDI channel events merge chronologically across tracks; overlapping notes retain
+  their own program and release, held notes close at song end, and trailing rests
+  remain part of the loop length.
   Reading a delay after every event — the original bug — swallowed the next event's
   descriptor and made every Doom II MUS track either run millions of ticks past its
   length or look unsupported, which is why `Doom2.wad` imported 35 tracks and played
@@ -2369,6 +2384,9 @@ game's own SNDINFO files, the base IWAD's `SNDINFO` lump and gzdoom.pk3's shared
 and per-game filter tables into `project.soundAliases`. Later definitions replace
 earlier ones outright, so a mod that redefines `grunt/sight` does not keep the
 vanilla random group.
+
+Random groups may span lines. Block comments are removed before line parsing, so
+commented mappings cannot override live declarations.
 
 The table is a game-wide shared value (one copy per campaign, like the actor
 table). A small built-in vanilla table ships with the engine, so a project
@@ -3684,6 +3702,10 @@ control sector, because a 3D floor *is* its control sector's planes rather than 
 their heights. Two bugs on that path were the reason imported scripts looked broken:
 `SetActorPosition` read its arguments in push order (so an actor landed at `x = fog`), and the
 coordinates ACS passes are 16.16 fixed point while the world is in map units.
+Riders are matched to each individual solid platform; non-solid planes do not carry
+objects, and the player entity and physics body receive only one displacement.
+Game saves retain the active waggle thinker as well as the displaced plane heights,
+so loading resumes the motion rather than freezing it halfway through.
 
 **A Doom light multiplies the colour you see, not the linear colour behind it.** Doom's colormap
 scales palette entries: light 87 draws a surface at 87/255 of its full-light colour. Three.js
@@ -4616,6 +4638,9 @@ exactly how it looked.
 `noise`, `stripe`) by name instead of faking them: those move texels over a still image and need a
 shader, not a frame swap. `Switch` definitions are counted and skipped, because a switch is not an
 animation.
+
+Quoted frame names and braces adjacent to names are accepted. Repeated consecutive
+pictures retain their authored durations rather than being deduplicated.
 
 Two details decide whether the animation is visible at all:
 

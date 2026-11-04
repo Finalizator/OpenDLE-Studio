@@ -43,6 +43,7 @@ import {
 import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
+import { projectIds } from './project-ids.js';
 import { BT } from './acs.js';
 import { initialiseAuthoredDoors, operateSectorDoor, sectorDoorClosed, sectorDoorMoving, sectorDoorOpen,
   updateProximityDoors, useManualDoor } from './doors.js';
@@ -424,23 +425,24 @@ function nextRandom(state) {
  * sheets are compared field by field because a sheet toggle can reuse the array.
  */
 const ruleTreeCache = new WeakMap();
+const EMPTY_RULE_LIST = Object.freeze([]);
 export function ruleTree(project) {
   // Timeline cues are rules too: each one is compiled into an ordinary event whose condition
   // asks whether the clock just crossed it, so the same runner, expressions and action set
   // apply. `authored` is what the editor shows and edits; `events` is what runs.
-  const authored = project.events || [], sheets = project.eventSheets || [];
-  const timesheets = project.timesheets || [];
-  const cueEvents = timesheetCueEvents(timesheets);
-  const events = cueEvents.length ? [...authored, ...cueEvents] : authored;
+  const authored = project.events || EMPTY_RULE_LIST, sheets = project.eventSheets || EMPTY_RULE_LIST;
+  const timesheets = project.timesheets || EMPTY_RULE_LIST;
   const cached = ruleTreeCache.get(authored);
   // `count`/`last` catch a rule appended or removed in place, which tooling and tests
   // do without replacing the array; field edits need no invalidation because the tree
-  // holds references to the rule objects themselves. A timeline edit replaces the
-  // `timesheets` array (the editor never mutates it in place), so its signature is enough.
+  // holds references to the rule objects themselves. Timeline edits replace their array;
+  // the signature also catches cues appended in place by tooling.
   const signature = timesheetSignature(timesheets);
-  if (cached && cached.count === events.length && cached.last === events[events.length - 1] &&
+  if (cached && cached.project === project && cached.last === authored[authored.length - 1] && cached.timesheets === timesheets &&
     cached.signature === signature && cached.authoredCount === authored.length &&
     cached.sheets === sheets && cached.sheetCount === sheets.length && sheetsUnchanged(cached.sheetState, sheets)) return cached;
+  const cueEvents = timesheetCueEvents(timesheets, projectIds(project));
+  const events = cueEvents.length ? [...authored, ...cueEvents] : authored;
   const children = new Map();
   for (const event of events) {
     const list = children.get(event.parentId);
@@ -463,8 +465,13 @@ export function ruleTree(project) {
     if (!phases.has(phase)) phases.set(phase, []);
     phases.get(phase).push(event);
   }
-  const tree = { count: events.length, last: events[events.length - 1], authoredCount: authored.length,
-    signature, sheets, sheetCount: sheets.length, sheetState, children, phases };
+  const timelineEvents = new Map();
+  for (const event of cueEvents) {
+    if (!timelineEvents.has(event.timesheetId)) timelineEvents.set(event.timesheetId, new Map());
+    timelineEvents.get(event.timesheetId).set(event.cueId, event);
+  }
+  const tree = { count: events.length, last: authored[authored.length - 1], authoredCount: authored.length,
+    project, signature, timesheets, sheets, sheetCount: sheets.length, sheetState, children, phases, timelineEvents };
   ruleTreeCache.set(authored, tree);
   return tree;
 }
@@ -901,9 +908,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     function instanceFor(source, ownerId) {
       let byOwner = instances.get(source.id);
       if (!byOwner) instances.set(source.id, byOwner = new Map());
-      let instance = byOwner.get(ownerId);
-      if (!instance) { instance = { ...source, ownerId }; byOwner.set(ownerId, instance); }
-      return instance;
+      let cached = byOwner.get(ownerId);
+      if (cached?.source !== source) {
+        cached = { source, event: { ...source, ownerId } };
+        byOwner.set(ownerId, cached);
+      }
+      return cached.event;
     }
     function visit(source, ownerId) {
       if (source.groupId && !state.groups.get(source.groupId)) return;
@@ -940,9 +950,20 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
     }
     for (const source of roots) {
+      if (source.timesheetId) continue;
       if (hasSignalCondition(source) !== signalDispatch) continue;
       visit(source, undefined);
       if (phase !== 'interface' && state.gameScreen !== 'playing') break;
+    }
+    if (!signalDispatch && phase === 'afterPhysics' && state.gameScreen === 'playing') {
+      for (const [id, events] of tree.timelineEvents) {
+        const due = state.timesheets?.get(id)?.due;
+        for (const cueId of [...(due || [])]) {
+          const event = events.get(cueId);
+          if (event) visit(event, undefined);
+          if (state.gameScreen !== 'playing') return;
+        }
+      }
     }
   }
   function runEvent(event, perInstance, phase) {
@@ -1276,6 +1297,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (entity) {
             entity.angle = (Number(entity.angle) || 0) + action.angle;
             if (entity.type === 'player') player.angle += action.angle * Math.PI / 180;
+            state.physics?.rotate(entity.id, entity.angle);
           }
           break;
         }
@@ -1477,6 +1499,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'addVariable': assignVariable(state.variables, action.variable, action.value, true); break;
         case 'teleport':
           player.x = action.x; player.y = action.y;
+          if (!state.physics) {
+            const entity = state.entities.find(item => item.type === 'player');
+            const floor = sectorAt(state.sectors, action.x, action.y)?.floorHeight ?? 0;
+            const z = action.z ?? floor + (entity.elevation || 0);
+            Object.assign(entity, { x: action.x, y: action.y, z, elevation: z - floor });
+            player.z = z;
+          }
           // Doom drops the player's momentum when it teleports them.
           resetMomentum(state);
           if (action.angle !== undefined) player.angle = action.angle * Math.PI / 180;
@@ -1495,7 +1524,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           const target = findTarget(action.entityId);
           if (target) {
             target.x = action.x; target.y = action.y;
-            if (target.type === 'player') { player.x = action.x; player.y = action.y; }
+            if (target.type === 'player') {
+              player.x = action.x; player.y = action.y;
+              if (!state.physics) {
+                const floor = sectorAt(state.sectors, action.x, action.y)?.floorHeight ?? 0;
+                player.z = target.z = action.z ?? floor + (target.elevation || 0);
+                target.elevation = target.z - floor;
+              }
+            }
             if (action.z !== undefined) target.z = action.z;
             state.physics?.teleport(target.id, action.x, action.y, action.z);
           }

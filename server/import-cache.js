@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 
 // Bump when the on-disk cache layout or the meaning of a cache key changes.
 const CACHE_VERSION = 1;
@@ -25,7 +25,7 @@ export function directorySignature(root, { maxEntries = 20000 } = {}) {
       if (entry.isDirectory()) visit(full);
       else if (entry.isFile()) {
         const info = statSync(full, { throwIfNoEntry: false });
-        if (info) hash.update(`${entry.name}\0${info.size}\0${info.mtimeMs}\n`);
+        if (info) hash.update(`${relative(root, full)}\0${info.size}\0${info.mtimeMs}\n`);
       }
     }
   };
@@ -72,10 +72,11 @@ export function createImportCache({ directory, fingerprint = '', maxEntries = 16
   function prune() {
     const entries = files();
     let total = entries.reduce((sum, entry) => sum + entry.size, 0);
+    let remaining = entries.length;
     for (const entry of entries) {
-      if (entries.length - stats.misses <= maxEntries && total <= maxBytes) break;
+      if (remaining <= maxEntries && total <= maxBytes) break;
       rmSync(entry.path, { force: true });
-      total -= entry.size; entries.shift();
+      total -= entry.size; remaining--;
     }
     stats.bytes = total;
   }

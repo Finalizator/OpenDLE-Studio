@@ -77,7 +77,7 @@ export function advancePlaneMotion(state, dt) {
   // where it is now. GZDoom pushes them through `P_ChangeSector`, including floating ones.
   const tops = new Map();
   for (const sector of state.sectors || []) {
-    for (const floor of sector.threeDFloors || []) tops.set(sector.id, Math.max(tops.get(sector.id) ?? -Infinity, floor.top));
+    for (const floor of sector.threeDFloors || []) if (floor.solid) tops.set(floor, floor.top);
   }
   let moved = false;
   const waggles = state.waggles;
@@ -124,19 +124,26 @@ export function syncThreeDFloors(sectors, byId) {
 
 /** Moves everything that was standing on a 3D floor by however far that floor moved. */
 function carryOccupants(state, tops) {
+  const playerEntity = state.entities?.find(entity => entity.type === 'player');
+  const occupants = [...(state.entities || []).filter(entity => entity.type !== 'player'), state.player];
   for (const sector of state.sectors || []) {
-    const previous = tops.get(sector.id);
-    const floor = sector.threeDFloors?.[0];
-    if (previous === undefined || !floor || !Number.isFinite(previous)) continue;
-    const delta = floor.top - previous;
-    if (Math.abs(delta) < 1e-6) continue;
-    for (const entity of [...(state.entities || []), state.player]) {
+    for (const entity of occupants) {
       if (!entity || sectorAt(state.sectors, entity.x, entity.y)?.id !== sector.id) continue;
-      const bottom = entity.z ?? previous;
-      if (Math.abs(bottom - previous) > 8) continue;
+      const bottom = entity.z ?? sector.floorHeight + (entity.elevation || 0);
+      const floor = (sector.threeDFloors || []).filter(floor => tops.has(floor) &&
+        Math.abs(bottom - tops.get(floor)) <= 8).sort((a, b) => tops.get(b) - tops.get(a))[0];
+      if (!floor) continue;
+      const delta = floor.top - tops.get(floor);
+      if (Math.abs(delta) < 1e-6) continue;
       entity.z = bottom + delta;
       entity.elevation = (entity.elevation || 0) + delta;
-      if (entity !== state.player) state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
+      if (entity === state.player) {
+        if (playerEntity) {
+          playerEntity.z = entity.z;
+          playerEntity.elevation = entity.elevation;
+          state.physics?.teleport(playerEntity.id, entity.x, entity.y, entity.z);
+        }
+      } else state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
     }
   }
 }
