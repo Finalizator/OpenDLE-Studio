@@ -2,9 +2,11 @@ import { installEngineScripts, addSurfRamp, surfRampGeometry, surfRampSurface } 
 import { AIR_SPEED_CAP, HL2_GRAVITY, SV_ACCELERATE, SV_AIRACCELERATE, SV_FRICTION, SV_STOPSPEED } from '../shared/source-motion.js';
 import { sectorGeometry } from '../shared/sectors.js';
 import { createProject, removeEntities } from '../shared/project.js';
-import { removeScriptletSheet, scriptletRuleCount } from '../shared/scriptlets.js';
+import { findScriptletSheet, installScriptletRules, removeScriptletSheet, scriptletRuleCount } from '../shared/scriptlets.js';
+import { LIMITS } from '../shared/limits.js';
 
 export const SOURCE_MOVEMENT_SHEET = 'Half-Life movement (Source)';
+const ID = 'source-movement';
 
 /** Whether a point is inside a sector's outline, which decides where a ramp will fit. */
 function pointInsideSector(sector, x, y) {
@@ -20,17 +22,9 @@ function pointInsideSector(sector, x, y) {
 
 /** Installs ordinary editable movement rules; optional ramps are ordinary map objects. */
 export function installSourceMovementScriptlet(project, { ramps = 0 } = {}) {
-  const used = new Set([...(project.eventSheets || []).map(item => item.id), ...project.events.map(item => item.id)]);
-  const id = name => {
-    let result = name, suffix = 1;
-    while (used.has(result)) result = `${name}_${suffix++}`;
-    used.add(result); return result;
-  };
-  const existing = (project.eventSheets || []).find(sheet => sheet.name === SOURCE_MOVEMENT_SHEET);
-  const sheet = existing || { id: id('engine_source_movement'), name: SOURCE_MOVEMENT_SHEET, section: 'engine',
-    enabled: true, phase: 'beforePhysics' };
-  if (!existing) project.eventSheets = [...(project.eventSheets || []), sheet];
-  project.events = project.events.filter(event => event.sheetId !== sheet.id);
+  if (!Number.isSafeInteger(ramps) || ramps < 0 || ramps + project.map.entities.length > LIMITS.entities) {
+    throw new Error(`Source movement ramp count must be a nonnegative integer within the ${LIMITS.entities}-entity map limit`);
+  }
 
   const movement = {
     type: 'setMotionModel', model: 'source',
@@ -38,13 +32,14 @@ export function installSourceMovementScriptlet(project, { ramps = 0 } = {}) {
     accelerate: SV_ACCELERATE, airAccelerate: SV_AIRACCELERATE, friction: SV_FRICTION,
     stopSpeed: SV_STOPSPEED, airSpeedCap: AIR_SPEED_CAP,
   };
-  project.events = [...project.events,
-    { id: id('engine_source_movement_model'), sheetId: sheet.id, enabled: true, once: false,
+  const sheetId = installScriptletRules(project, { id: ID, name: SOURCE_MOVEMENT_SHEET,
+    sheetId: 'engine_source_movement', phase: 'beforePhysics' }, [
+    { id: 'engine_source_movement_model',
       name: 'source_movement', condition: { type: 'onStart' }, conditions: [], actions: [movement] },
-    { id: id('engine_source_movement_hint'), sheetId: sheet.id, enabled: true, once: false,
+    { id: 'engine_source_movement_hint',
       name: 'surf_hint', condition: { type: 'onStart' }, conditions: [],
       actions: [{ type: 'showMessage',
-        message: 'Half-Life movement: hold a strafe key into a steep ramp to surf it.' }] }];
+        message: 'Half-Life movement: hold a strafe key into a steep ramp to surf it.' }] }]);
 
   if (ramps > 0) {
     const start = (project.map.entities || []).find(entity => entity.type === 'player') || { x: 0, y: 0 };
@@ -61,9 +56,9 @@ export function installSourceMovementScriptlet(project, { ramps = 0 } = {}) {
       created.push(addSurfRamp(project, { x, y, angle: 0, slope: 50,
         facing: side > 0 ? 'right' : 'left', seat: true }));
     }
-    project.sourceMovementRamps = created.map(ramp => ramp.id);
+    project.sourceMovementRamps = [...new Set([...(project.sourceMovementRamps || []), ...created.map(ramp => ramp.id)])];
   }
-  return sheet.id;
+  return sheetId;
 }
 
 /** Removes the sheet, rules and ramps the Half-Life movement scriptlet installs. */
@@ -71,7 +66,7 @@ export function removeSourceMovement(project) {
   const ramps = new Set(project.sourceMovementRamps || []);
   const targets = project.map.entities.filter(entity => ramps.has(entity.id));
   if (targets.some(entity => entity.type === 'player')) throw new Error('Source movement ramps cannot include the player');
-  const removed = removeScriptletSheet(project, SOURCE_MOVEMENT_SHEET);
+  const removed = removeScriptletSheet(project, SOURCE_MOVEMENT_SHEET, ID);
   if (targets.length) removeEntities(project, targets.map(entity => entity.id));
   delete project.sourceMovementRamps;
   delete project.sourceMovementSurfRamp;
@@ -168,7 +163,7 @@ export function buildSurfTestMap(project) {
 }
 
 export default {
-  id: 'source-movement',
+  id: ID,
   name: 'Half-Life movement and surf',
   summary: 'Half-Life / Source movement — the acceleration, air-strafing and surf of the Source engine.',
   detail: 'Adds the "Half-Life movement (Source)" engine sheet. The separate map-building action adds surf ramps. The player moves '
@@ -191,6 +186,9 @@ export default {
     + 'quickest way to try surfing. Undo restores what was open before.',
   remove(project) { return removeSourceMovement(project); },
   installed(project) {
-    return scriptletRuleCount(project, SOURCE_MOVEMENT_SHEET);
+    return scriptletRuleCount(project, SOURCE_MOVEMENT_SHEET, ID);
+  },
+  present(project) {
+    return Boolean(findScriptletSheet(project, SOURCE_MOVEMENT_SHEET, ID)) || Boolean(project.sourceMovementRamps?.length);
   },
 };

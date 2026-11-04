@@ -19,6 +19,7 @@ import { MAX_PATHS, MAX_PATH_POINTS, PATH_MODES as PATH_CURVE_MODES } from './pa
 import { validateRampProfile, rampProfile, hasEditableProfile } from './ramp-profile.js';
 import { validateTimesheet, timesheetCueEvents, TIMESHEET_CUE_CONDITION } from './timesheet.js';
 import { NODE_KINDS } from './media-nodes.js';
+import { isImageAsset } from './media-assets.js';
 import { nodeSignals, SIGNAL_NAME, validateSignalEvent } from './signals.js';
 import { resolveDoorHeights, elevatorHeights, sectorMover } from './sector-movers.js';
 
@@ -1179,8 +1180,8 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           // runtime reports which spray needed artwork when it is triggered.
           if (command[field.name] === '') continue;
           identifier(command[field.name], field.name);
-          assert((project.assets || []).some(asset => asset.id === command[field.name] &&
-            !['sound', 'music', 'model', 'font'].includes(asset.kind)), `${field.name} must be an imported image asset`);
+          assert((project.assets || []).some(asset => asset.id === command[field.name] && isImageAsset(asset)),
+            `${field.name} must be an imported image asset`);
         } else identifier(command[field.name], field.name);
       }
       if (definition.target) {

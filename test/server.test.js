@@ -96,7 +96,7 @@ test('scriptlet folder discovery reloads custom modules without registration or 
   assert.equal(registry.scriptlets.length, 1, 'a broken custom file must not disable good files');
   assert.deepEqual(registry.errors.map(error => error.name), ['broken.mjs', 'invalid.mjs', 'missing-import.mjs']);
   assert.ok(registry.errors.every(error => error.message.length > 0));
-  writeFileSync(join(scriptletsDir, 'broken.mjs'), example.replace("id: 'custom-greeting'", "id: 'repaired'"));
+  writeFileSync(join(scriptletsDir, 'broken.mjs'), example.replace("const ID = 'custom-greeting'", "const ID = 'repaired'"));
   await registry.load((await readManifest()).files, importLocal);
   assert.deepEqual(registry.scriptlets.map(scriptlet => scriptlet.id), ['repaired', 'custom-greeting'], 'corrected syntax errors can be retried');
   writeFileSync(join(scriptletsDir, 'duplicate.mjs'), example);

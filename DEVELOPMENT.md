@@ -1327,6 +1327,22 @@ many rules they added, can be reinstalled (replacing only their own sheet) and
 removed, with undo covering either. A scriptlet only ever produces ordinary
 editable events, so anything it installs can be inspected, changed or deleted like
 hand-written rules — the spray's artwork and key are edited in the event itself.
+Built-ins use `installScriptletRules`, which tags sheets with `scriptletId`,
+retains renamed sheet settings and allocates generated IDs against map objects,
+assets, clips, shaders, sheets, groups, HUD data and surviving rules. Legacy
+untagged sheets are adopted by their original name; ambiguous matches fail before
+mutation. Optional `present(project)` distinguishes content presence from a zero
+rule count, keeping empty sheets and leftover Source ramps removable. Source
+reinstallation with additional ramps retains all prior ramp IDs for later cleanup
+and rejects invalid/over-capacity counts before changing data.
+Scriptlet install/remove callbacks use fully cloned drafts (`cloneAll`), not the
+normal geometry editor's shared campaign/assets/actors optimization: custom code
+can edit any of those, and neither a failed callback nor a successful edit may
+corrupt live data or previous undo snapshots. Built-in rules and runtime behavior
+remain ordinary editable events.
+Spray installation, image-action validation and the image picker share
+`isImageAsset`: video, audio, font and model resources cannot masquerade as spray
+artwork, even if a movie is the first imported asset.
 Removing a scriptlet uses the same `removeEventSheet` helper as **Delete sheet and rules**:
 its sheet, groups and matching rules in layouts and reusable scenes are removed together.
 If another rule or timeline cue still names one of those groups, removal is refused before

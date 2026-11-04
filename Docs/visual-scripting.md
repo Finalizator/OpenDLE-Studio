@@ -143,6 +143,11 @@ Scriptlets execute with the editor's privileges: only use code you trust.
 Installation, reinstallation and removal remain undoable project edits.
 Installed events are saved with the project and run without the original module;
 deleting the module does not remove rules already installed.
+Built-in sheets keep a stable scriptlet identity, so renaming them does not create
+duplicates or redirect removal to an unrelated same-named sheet. Empty scriptlet
+sheets (and leftover surf ramps after deleting rules) remain removable from the
+window. Custom install/remove edits isolate campaign data, assets and actors so
+errors cannot leak changes into the live project or its undo history.
 
 Frame order in `stepRuntime`:
 

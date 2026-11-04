@@ -1,22 +1,242 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createProject, validateProject } from '../shared/project.js';
+import vm from 'node:vm';
+import { cloneProjectData, cloneProjectForEdit, createProject, validateProject } from '../shared/project.js';
 import { ENGINE_SCRIPTLETS, installScriptlet, removeScriptlet, scriptletById } from './scriptlet-library.js';
-import { buildSurfTestMap } from '../scriptlets/source-movement.js';
+import { buildSurfTestMap, installSourceMovementScriptlet } from '../scriptlets/source-movement.js';
 import { newScene, addSceneObject } from '../shared/scenes.js';
 import { newJoint } from '../shared/joints.js';
 import { createCue, createTimesheet } from '../shared/timesheet.js';
 import { createScriptletRegistry, validateScriptlet } from '../shared/scriptlets.js';
+import { LIMITS } from '../shared/limits.js';
+import { isImageAsset } from '../shared/media-assets.js';
 
 const wallWalking = () => ENGINE_SCRIPTLETS.find(scriptlet => scriptlet.id === 'wall-walking');
+const withArtwork = () => {
+  const project = createProject();
+  project.assets = [{ id: 'picture', name: 'Picture', kind: 'sprite', width: 1, height: 1,
+    src: 'data:image/png;base64,AAAA' }];
+  return project;
+};
+
+function panelFixture(project, scriptletLibrary) {
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const elements = new Map(), buttons = [], history = [];
+  const element = () => ({ children: [], append(...children) { this.children.push(...children); },
+    replaceChildren() { this.children = []; } });
+  const context = vm.createContext({
+    project, scriptletLibrary, scriptletsLoading: false, scriptletsLoaded: true, scriptletLoadError: '',
+    $: id => {
+      if (!elements.has(id)) elements.set(id, element());
+      return elements.get(id);
+    },
+    make: (tag, textContent) => ({ ...element(), tag, textContent }),
+    button: (textContent, action) => { const result = { textContent, action }; buttons.push(result); return result; },
+    cloneProjectData, cloneProjectForEdit, createProject,
+    editHistoryLimit: () => 10, confirm: () => true, openScript() {},
+    commit(next) { history.push(context.project); context.project = next; },
+    render() {},
+  });
+  vm.runInContext([
+    source.slice(source.indexOf('function edit('), source.indexOf('function editGame(')),
+    source.slice(source.indexOf('function renderScriptlets('), source.indexOf('function showTab(')),
+  ].join('\n'), context);
+  context.renderScriptlets();
+  return { context, elements, buttons, history };
+}
+
+test('renaming a built-in sheet does not detach its scriptlet or delete a different same-named sheet', () => {
+  for (const scriptlet of ENGINE_SCRIPTLETS) {
+    const project = withArtwork();
+    const sheetId = installScriptlet(project, scriptlet.id);
+    const sheet = project.eventSheets.find(item => item.id === sheetId), originalName = sheet.name;
+    sheet.name = 'My renamed behavior';
+    project.eventSheets.push({ id: 'unrelated_sheet', name: originalName, section: 'game',
+      enabled: true, phase: 'afterPhysics' });
+    project.events.push({ id: 'unrelated_rule', sheetId: 'unrelated_sheet', enabled: true, once: false,
+      condition: { type: 'always' }, actions: [] });
+    validateProject(project);
+    assert.equal(scriptlet.installed(project), scriptlet.rules, scriptlet.id);
+    assert.equal(installScriptlet(project, scriptlet.id), sheetId, 'reinstall the original renamed sheet');
+    assert.equal(project.eventSheets.find(item => item.id === sheetId).name, 'My renamed behavior');
+    validateProject(project);
+    assert.equal(removeScriptlet(project, scriptlet.id), true);
+    assert.ok(project.events.some(event => event.id === 'unrelated_rule'), 'same-named hand-authored sheet survives');
+    assert.ok(!project.eventSheets.some(item => item.id === sheetId));
+    validateProject(project);
+  }
+});
+
+test('built-in generators avoid collisions with every globally validated project ID', () => {
+  for (const scriptlet of ENGINE_SCRIPTLETS) {
+    for (const collision of ['sheet', 'event']) {
+      const project = withArtwork();
+      const reference = withArtwork();
+      const generatedSheet = installScriptlet(reference, scriptlet.id);
+      const reserved = collision === 'sheet' ? generatedSheet : reference.events.find(event => event.sheetId === generatedSheet).id;
+      project.assets[0].id = reserved;
+      validateProject(project);
+      installScriptlet(project, scriptlet.id);
+      assert.doesNotThrow(() => validateProject(project), `${scriptlet.id}: ${collision} collides with artwork`);
+    }
+  }
+});
+
+test('reinstalling legacy built-ins adopts their existing sheet without losing its settings or groups', () => {
+  for (const scriptlet of ENGINE_SCRIPTLETS) {
+    const project = withArtwork();
+    const sheetId = installScriptlet(project, scriptlet.id);
+    const sheet = project.eventSheets.find(item => item.id === sheetId);
+    delete sheet.scriptletId;
+    sheet.enabled = false;
+    project.eventGroups = [{ id: 'custom_group', name: 'Custom group', enabled: false, sheetId }];
+    assert.equal(installScriptlet(project, scriptlet.id), sheetId);
+    assert.equal(sheet.scriptletId, scriptlet.id);
+    assert.equal(sheet.enabled, false);
+    assert.equal(project.eventGroups[0].id, 'custom_group');
+    validateProject(project);
+  }
+});
+
+test('ambiguous legacy or tagged scriptlet sheets are refused before destructive edits', () => {
+  for (const tagged of [false, true]) {
+    for (const scriptlet of ENGINE_SCRIPTLETS) {
+      const project = withArtwork();
+      const sheetId = installScriptlet(project, scriptlet.id);
+      const sheet = project.eventSheets.find(item => item.id === sheetId);
+      if (!tagged) delete sheet.scriptletId;
+      project.eventSheets.push({ ...sheet, id: 'duplicate_scriptlet_sheet' });
+      validateProject(project);
+      const before = structuredClone(project);
+      assert.throws(() => installScriptlet(project, scriptlet.id), /Multiple event sheets/);
+      assert.deepEqual(project, before);
+      assert.throws(() => removeScriptlet(project, scriptlet.id), /Multiple event sheets/);
+      assert.deepEqual(project, before);
+    }
+  }
+});
+
+test('Source movement reinstall tracks every generated ramp for subsequent removal', () => {
+  const project = createProject();
+  installSourceMovementScriptlet(project, { ramps: 2 });
+  const first = [...project.sourceMovementRamps];
+  installSourceMovementScriptlet(project, { ramps: 2 });
+  assert.equal(project.sourceMovementRamps.length, 4);
+  assert.ok(first.every(id => project.sourceMovementRamps.includes(id)));
+  removeScriptlet(project, 'source-movement');
+  assert.equal(project.map.entities.filter(entity => entity.type === 'ramp').length, 0);
+  validateProject(project);
+});
+
+test('invalid or excessive Source ramp counts fail before modifying the sheet or map', () => {
+  for (const ramps of [-1, 1.5, NaN, Infinity, '2', LIMITS.entities]) {
+    const project = createProject(), before = structuredClone(project);
+    assert.throws(() => installSourceMovementScriptlet(project, { ramps }), /ramp count/);
+    assert.deepEqual(project, before);
+  }
+});
+
+test('the Scriptlets panel can remove empty sheets and leftover Source ramps with no rules', () => {
+  for (const scriptlet of ENGINE_SCRIPTLETS) {
+    const project = withArtwork();
+    const sheetId = installScriptlet(project, scriptlet.id);
+    project.events = project.events.filter(event => event.sheetId !== sheetId);
+    const fixture = panelFixture(project, { scriptlets: [scriptlet], errors: [], installScriptlet, removeScriptlet });
+    const remove = fixture.buttons.find(button => button.textContent === 'Remove its rules');
+    assert.ok(remove, `${scriptlet.id}: an empty sheet must still be removable`);
+    remove.action();
+    assert.ok(!fixture.context.project.eventSheets.some(sheet => sheet.id === sheetId));
+  }
+  const project = buildSurfTestMap(createProject());
+  const sheet = project.eventSheets.find(sheet => sheet.name === 'Half-Life movement (Source)');
+  project.events = project.events.filter(event => event.sheetId !== sheet.id);
+  project.eventSheets = project.eventSheets.filter(item => item !== sheet);
+  const scriptlet = scriptletById('source-movement');
+  const fixture = panelFixture(project, { scriptlets: [scriptlet], errors: [], installScriptlet, removeScriptlet });
+  const remove = fixture.buttons.find(button => button.textContent === 'Remove its rules');
+  assert.ok(remove, 'ramps must remain removable after deleting the sheet manually');
+  remove.action();
+  assert.ok(!fixture.context.project.map.entities.some(entity => entity.type === 'ramp'));
+  validateProject(fixture.context.project);
+});
+
+test('custom install and removal cannot mutate live shared campaign data when the edit fails', () => {
+  for (const operation of ['install', 'remove']) {
+    const project = withArtwork();
+    project.actors = { definitions: [{ name: 'Original actor' }] };
+    project.game = { levels: [{ name: 'Original level' }] };
+    const before = structuredClone(project);
+    const scriptlet = { ...wallWalking(), installed: () => operation === 'remove' ? 1 : 0 };
+    const mutate = draft => {
+      draft.assets[0].name = 'Leaked asset';
+      draft.actors.definitions[0].name = 'Leaked actor';
+      draft.game.levels[0].name = 'Leaked level';
+      throw new Error('Custom callback failed');
+    };
+    const fixture = panelFixture(project, { scriptlets: [scriptlet], errors: [],
+      installScriptlet: mutate, removeScriptlet: mutate });
+    const action = fixture.buttons.find(button => button.textContent === (operation === 'install' ? 'Add to project' : 'Remove its rules'));
+    assert.throws(() => action.action(), /Custom callback failed/);
+    assert.deepEqual(project, before, `${operation}: a refused edit must not change the live document`);
+    assert.equal(fixture.history.length, 0);
+  }
+});
+
+test('successful custom scriptlet edits leave their undo snapshots isolated', () => {
+  const project = withArtwork();
+  project.actors = { definitions: [{ name: 'Original actor' }] };
+  project.game = { levels: [{ name: 'Original level' }] };
+  const before = structuredClone(project);
+  const fixture = panelFixture(project, { scriptlets: [wallWalking()], errors: [],
+    installScriptlet(draft) {
+      draft.assets[0].name = 'New asset';
+      draft.actors.definitions[0].name = 'New actor';
+      draft.game.levels[0].name = 'New level';
+      return 'new_sheet';
+    } });
+  fixture.buttons.find(button => button.textContent === 'Add to project').action();
+  assert.deepEqual(fixture.history[0], before, 'undo must preserve all original data');
+  assert.equal(fixture.context.project.assets[0].name, 'New asset');
+});
+
+test('spray artwork selection and its image field never mistake imported videos for images', () => {
+  const project = withArtwork();
+  const video = { id: 'movie', name: 'Movie', kind: 'video', format: 'mp4', src: 'data:video/mp4;base64,AAAA' };
+  project.assets.unshift(video);
+  validateProject(project);
+  const sheetId = installScriptlet(project, 'spray');
+  const action = project.events.find(event => event.sheetId === sheetId).actions[0];
+  assert.equal(action.assetId, 'picture');
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const options = vm.runInNewContext(`${source.slice(source.indexOf('function imageAssetOptions()'),
+    source.indexOf('function readEngineTweaks()'))}\nimageAssetOptions()`, { project, isImageAsset });
+  assert.deepEqual(Array.from(options, option => option[0]), ['picture'], 'the image action picker excludes movies too');
+  action.assetId = video.id;
+  assert.throws(() => validateProject(project), /imported image asset/);
+  const onlyVideo = createProject();
+  onlyVideo.assets = [video];
+  const before = structuredClone(onlyVideo);
+  assert.throws(() => installScriptlet(onlyVideo, 'spray'), /Import an image/);
+  assert.deepEqual(onlyVideo, before);
+});
+
+test('invalid custom presence callbacks are reported without breaking other scriptlet cards', () => {
+  const project = withArtwork();
+  const broken = { ...wallWalking(), id: 'broken', name: 'Broken', present: () => 1 };
+  const fixture = panelFixture(project, { scriptlets: [broken, wallWalking()], errors: [] });
+  assert.equal(fixture.buttons.length, 1, 'the valid scriptlet still has its install button');
+  assert.match(fixture.elements.get('scriptlet-errors').children[0].textContent, /Broken: present.*boolean/);
+  assert.equal(project.events.length, 2);
+});
 
 test('scriptlet module validation rejects malformed metadata and asynchronous callbacks', () => {
   const valid = wallWalking();
   for (const value of [undefined, [], null, {}, { ...valid, id: '../bad' }, { ...valid, name: '' },
     { ...valid, summary: null }, { ...valid, detail: ' ' }, { ...valid, rules: -1 }, { ...valid, rules: 1.5 },
     { ...valid, install: null }, { ...valid, remove: async () => true }, { ...valid, installed: function* () {} },
-    { ...valid, build: 'not a function' }, { ...valid, buildDetail: 123 }]) {
+    { ...valid, build: 'not a function' }, { ...valid, buildDetail: 123 }, { ...valid, present: null },
+    { ...valid, present: async () => true }]) {
     assert.throws(() => validateScriptlet(value));
   }
   assert.equal(validateScriptlet(valid), valid);

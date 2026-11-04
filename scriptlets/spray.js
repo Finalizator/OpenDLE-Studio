@@ -1,33 +1,24 @@
-import { removeScriptletSheet, scriptletRuleCount } from '../shared/scriptlets.js';
+import { findScriptletSheet, installScriptletRules, removeScriptletSheet, scriptletRuleCount } from '../shared/scriptlets.js';
+import { isImageAsset } from '../shared/media-assets.js';
 
 export const SPRAY_SHEET = 'Spray (CS-style)';
+const ID = 'spray';
 
 export function installSprayScriptlet(project, { key = 'KeyT', assetId } = {}) {
-  const used = new Set([...(project.eventSheets || []).map(item => item.id), ...project.events.map(item => item.id)]);
-  const id = name => {
-    let result = name, suffix = 1;
-    while (used.has(result)) result = `${name}_${suffix++}`;
-    used.add(result); return result;
-  };
-  const existing = (project.eventSheets || []).find(sheet => sheet.name === SPRAY_SHEET);
-  const sheet = existing || { id: id('engine_spray'), name: SPRAY_SHEET, section: 'engine', enabled: true, phase: 'afterPhysics' };
-  if (!existing) project.eventSheets = [...(project.eventSheets || []), sheet];
-  project.events = project.events.filter(event => event.sheetId !== sheet.id);
-  const images = (project.assets || []).filter(asset => !['sound', 'music', 'model', 'font'].includes(asset.kind));
+  const images = (project.assets || []).filter(isImageAsset);
   const artwork = images.find(asset => (asset.width || 0) <= 256 && (asset.height || 0) <= 256)?.id || images[0]?.id || '';
-  const rule = { id: id('engine_spray_paint'), sheetId: sheet.id, enabled: true, once: false, name: 'spray_paint',
+  const rule = { id: 'engine_spray_paint', name: 'spray_paint',
     condition: { type: 'keyPressed', key }, conditions: [],
     actions: [{ type: 'sprayImage', assetId: assetId ?? artwork, distance: 96, size: 40, duration: 30 }] };
-  project.events = [...project.events, rule];
-  return sheet.id;
+  return installScriptletRules(project, { id: ID, name: SPRAY_SHEET, sheetId: 'engine_spray' }, [rule]);
 }
 
 export function removeSpray(project) {
-  return removeScriptletSheet(project, SPRAY_SHEET);
+  return removeScriptletSheet(project, SPRAY_SHEET, ID);
 }
 
 export default {
-  id: 'spray',
+  id: ID,
   name: 'Spray (Counter-Strike style)',
   summary: 'Press a key to paint an imported image onto the wall you are looking at.',
   detail: 'Adds the "Spray (CS-style)" engine sheet with one editable rule: "Key pressed" sprays the chosen '
@@ -36,11 +27,12 @@ export default {
     + 'event\'s "Key pressed" condition. The spray fades after the action\'s duration and survives saving.',
   rules: 1,
   install(project) {
-    if (!(project.assets || []).some(asset => !['sound', 'music', 'model', 'font'].includes(asset.kind))) {
+    if (!(project.assets || []).some(isImageAsset)) {
       throw new Error('Import an image (PNG, WebP or JPEG) into the asset library first: the spray needs artwork to paint.');
     }
     return installSprayScriptlet(project);
   },
   remove: removeSpray,
-  installed(project) { return scriptletRuleCount(project, SPRAY_SHEET); },
+  installed(project) { return scriptletRuleCount(project, SPRAY_SHEET, ID); },
+  present(project) { return Boolean(findScriptletSheet(project, SPRAY_SHEET, ID)); },
 };

@@ -24,13 +24,22 @@ Default-export an object with:
 | `install(project)` | Synchronously edit the supplied project; return its installed sheet ID |
 | `remove(project)` | Synchronously remove its own content; return whether anything changed |
 | `installed(project)` | Synchronously return its current nonnegative integer rule count |
+| `present(project)` | Optional synchronous boolean: whether removable content remains, even with zero rules; defaults to `installed(project) > 0` |
 | `build(project)` | Optional synchronous whole-map builder; return the replacement project |
 | `buildLabel`, `buildDetail` | Optional builder button and replacement-confirmation strings |
 
 Use ordinary supported conditions/actions and unique event/sheet IDs.
 Reinstalling should replace only your own rules. Reuse an existing sheet so its
-settings and groups survive. Do not retain or mutate the project outside these
-callbacks: Studio passes an edit draft, validates it and records undo.
+settings and groups survive. `installScriptletRules` below preserves those settings,
+allocates globally unique sheet/rule IDs and stores the stable `scriptletId` on the
+sheet, so renaming it does not detach its library card. Older untagged sheets are
+recognized by name and tagged on reinstall. If more than one sheet matches, an
+explicit error prevents arbitrary replacement or deletion.
+
+Do not retain or mutate the project outside install/remove/build callbacks.
+`installed` and `present` are read-only inspections. Studio fully isolates
+install/remove drafts, including campaign levels, artwork and actors, before
+validation and undo; a failed callback cannot mutate shared undo/live data.
 `removeScriptletSheet` uses normal sheet deletion, protecting externally referenced
 groups and cleaning rules in reusable scenes.
 
@@ -47,34 +56,29 @@ remain usable. A folder-read failure is reported explicitly with a retry button.
 Save this as `greeting.js` in this folder:
 
 ```js
-import { removeScriptletSheet, scriptletRuleCount } from '../shared/scriptlets.js';
+import { findScriptletSheet, installScriptletRules, removeScriptletSheet,
+  scriptletRuleCount } from '../shared/scriptlets.js';
 
+const ID = 'custom-greeting';
 const SHEET = 'Custom greeting';
 
 export default {
-  id: 'custom-greeting',
+  id: ID,
   name: 'Greeting',
   summary: 'Show a welcome message when the layout starts.',
   detail: 'Installs one editable On start of layout rule on its own engine sheet.',
   rules: 1,
   install(project) {
-    project.eventSheets ||= [];
-    let sheet = project.eventSheets.find(item => item.name === SHEET);
-    if (!sheet) {
-      sheet = { id: `sheet_${crypto.randomUUID()}`, name: SHEET, section: 'engine',
-        enabled: true, phase: 'afterPhysics' };
-      project.eventSheets.push(sheet);
-    }
-    project.events = project.events.filter(event => event.sheetId !== sheet.id);
-    project.events.push({
-      id: `event_${crypto.randomUUID()}`, sheetId: sheet.id, enabled: true, once: false,
+    return installScriptletRules(project, { id: ID, name: SHEET,
+      sheetId: 'custom_greeting', phase: 'afterPhysics' }, [{
+      id: 'custom_greeting_message',
       name: 'greeting', condition: { type: 'onStart' }, conditions: [],
       actions: [{ type: 'showMessage', message: 'Welcome to my game!' }],
-    });
-    return sheet.id;
+    }]);
   },
-  remove(project) { return removeScriptletSheet(project, SHEET); },
-  installed(project) { return scriptletRuleCount(project, SHEET); },
+  remove(project) { return removeScriptletSheet(project, SHEET, ID); },
+  installed(project) { return scriptletRuleCount(project, SHEET, ID); },
+  present(project) { return Boolean(findScriptletSheet(project, SHEET, ID)); },
 };
 ```
 

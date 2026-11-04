@@ -1,4 +1,8 @@
 export const VIDEO_MAX_BYTES = 64 * 1024 * 1024;
+export function isImageAsset(asset) {
+  return Boolean(asset) && ['texture', 'flat', 'sky', 'sprite', 'weapon'].includes(asset.kind);
+}
+
 const VIDEO_FORMATS = new Map([
   ['video/mp4', { format: 'mp4', extension: 'mp4' }],
   ['video/webm', { format: 'webm', extension: 'webm' }],

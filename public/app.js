@@ -1,4 +1,4 @@
-import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntities, eventConditions, updateAsset, ENTITY_TYPES } from '/shared/project.js';
+import { createProject, validateProject, cloneProjectData, cloneProjectForEdit, addRoom, newId, removeEntities, eventConditions, updateAsset, ENTITY_TYPES } from '/shared/project.js';
 import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity, pathHandle, pathSteps, bakePathRamp, PATH_SINE_DEFAULTS } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment, setAddonHooks } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
@@ -40,7 +40,7 @@ import { readServiceResponse } from './service-response.js';
 import { requestWithSession } from './service-session.js';
 import { createAudioPlayer } from './audio.js';
 import { encodeSound } from '/shared/sound.js';
-import { embedVideoFile } from '/shared/media-assets.js';
+import { embedVideoFile, isImageAsset } from '/shared/media-assets.js';
 import { nodeSignals } from '/shared/signals.js';
 import { importedGameplayGaps } from './gameplay-readiness.js';
 import { createActorsPanel } from './actors-panel.js';
@@ -787,11 +787,11 @@ function commit(next, message = 'Project updated', limit = historyLimit(next), n
   status(message);
   render();
 }
-function edit(fn, message, { deepGame = false, cloneActors = false } = {}) {
-  const next = cloneProjectForEdit(project, { deepGame, shareActors: !cloneActors });
+function edit(fn, message, { deepGame = false, cloneActors = false, cloneAll = false } = {}) {
+  const next = cloneAll ? cloneProjectData(project) : cloneProjectForEdit(project, { deepGame, shareActors: !cloneActors });
   try {
     fn(next);
-    commit(next, message, editHistoryLimit(next, deepGame));
+    commit(next, message, editHistoryLimit(next, deepGame || cloneAll));
   } catch (error) {
     render();
     throw error;
@@ -1868,7 +1868,7 @@ function newEntityOfType(type, position, extra = {}) {
   return entity;
 }
 function imageAssetOptions() {
-  return (project?.assets || []).filter(asset => !['sound', 'music', 'model', 'font'].includes(asset.kind))
+  return (project?.assets || []).filter(isImageAsset)
     .map(asset => [asset.id, `${asset.name} (${asset.kind} ${asset.width}x${asset.height})`]);
 }
 function readEngineTweaks() {
@@ -1996,10 +1996,13 @@ function renderScriptlets() {
   if (scriptletsLoading || scriptletLoadError) return;
   for (const error of scriptletLibrary.errors) errors.append(make('p', `${error.name}: ${error.message}`));
   for (const scriptlet of scriptletLibrary.scriptlets) {
-    let installed;
+    let installed, present;
     try {
       installed = scriptlet.installed(project);
       if (!Number.isSafeInteger(installed) || installed < 0) throw new Error('installed(project) must return a nonnegative integer rule count');
+      present = scriptlet.present ? scriptlet.present(project) : installed > 0;
+      if (typeof present !== 'boolean') throw new Error('present(project) must return a boolean');
+      present ||= installed > 0;
     } catch (error) {
       errors.append(make('p', `${scriptlet.name}: ${error.message}`));
       continue;
@@ -2008,11 +2011,12 @@ function renderScriptlets() {
     card.append(make('h2', scriptlet.name),
       make('p', scriptlet.summary),
       make('p', scriptlet.detail, 'muted'),
-      make('p', installed ? `Installed: ${installed} rules in their own engine sheet.` : 'Not installed in this project.', installed ? 'scriptlet-state' : 'scriptlet-state muted'));
-    const install = button(installed ? 'Reinstall (replaces its rules)' : 'Add to project', () => {
+      make('p', installed ? `Installed: ${installed} rules in their own engine sheet.`
+        : present ? 'Installed content remains, but there are no layout rules.' : 'Not installed in this project.', present ? 'scriptlet-state' : 'scriptlet-state muted'));
+    const install = button(present ? 'Reinstall (replaces its rules)' : 'Add to project', () => {
       let sheetId;
       edit(next => { sheetId = scriptletLibrary.installScriptlet(next, scriptlet.id); },
-        `${scriptlet.name} scriptlet ${installed ? 'reinstalled' : 'installed'} — its rules are editable in the event sheets`);
+        `${scriptlet.name} scriptlet ${present ? 'reinstalled' : 'installed'} — its rules are editable in the event sheets`, { cloneAll: true });
       renderScriptlets();
       openScript(`$sheet:${sheetId}`);
     });
@@ -2024,9 +2028,9 @@ function renderScriptlets() {
       await replaceDocument(scriptlet.build(createProject()), `${scriptlet.name}: new empty map built`);
       renderScriptlets();
     }, 'primary'));
-    if (installed) card.append(button('Remove its rules', () => {
+    if (present) card.append(button('Remove its rules', () => {
       if (!confirm(`Remove the ${scriptlet.name} scriptlet and its ${installed} rules? Undo restores them.`)) return;
-      edit(next => scriptletLibrary.removeScriptlet(next, scriptlet.id), `${scriptlet.name} scriptlet removed`);
+      edit(next => scriptletLibrary.removeScriptlet(next, scriptlet.id), `${scriptlet.name} scriptlet removed`, { cloneAll: true });
       renderScriptlets();
     }, 'danger'));
     list.append(card);
