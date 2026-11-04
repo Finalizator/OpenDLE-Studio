@@ -1,4 +1,4 @@
-import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntity, eventConditions, updateAsset, standInFor, ENTITY_TYPES } from '/shared/project.js';
+import { createProject, validateProject, cloneProjectForEdit, addRoom, newId, removeEntities, eventConditions, updateAsset, ENTITY_TYPES } from '/shared/project.js';
 import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity, pathHandle, pathSteps, bakePathRamp, PATH_SINE_DEFAULTS } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment, setAddonHooks } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
@@ -69,7 +69,7 @@ import { contextMenu, closeContextMenu } from './context-menu.js';
 import { applyNodeFile, parseNodeFile, planNodeFileInstall, exportNodeFile, layoutContainer, nodeFileName } from '/shared/node-file.js';
 import { askObjectExport, downloadNodeFile } from './export-object.js';
 import { askDeleteObject } from './delete-object.js';
-import { entityReferences, stripEntityReferences, rewriteEntityReferences, referenceLabel } from '/shared/references.js';
+import { entityReferences, referenceLabel } from '/shared/references.js';
 import { openAssetPicker, PICTURE_KINDS, MODEL_KINDS } from './asset-picker.js';
 import { captureModelPreview } from './model-thumbnail.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
@@ -544,7 +544,7 @@ async function refreshScene() {
         // The 3D view may select a route or a waypoint as well as an object, so Delete means
         // whatever is selected there rather than always an object.
         const target = typeof value === 'string' ? { kind: 'entity', id: value } : value;
-        try { deleteSelectionObject(target); } catch (error) { status(error.message, true); }
+        void guard(deleteSelectionObject)(target);
       },
       pathPoint: point => addPathPoint(point),
       clearTool: () => { cutTool?.cancel(); finishPath(); },
@@ -5571,6 +5571,7 @@ async function deleteObjects(ids) {
     + (project.timesheets || []).reduce((total, sheet) => total + (sheet.cues || []).filter(cue => targets.includes(cue.ownerId)).length, 0);
   const sheetNames = new Map((project.eventSheets || []).map(sheet => [sheet.id, `${sheet.section} / ${sheet.name}`]));
   const outside = references.filter(reference => !reference.owned);
+  let keepReferences = false;
 
   if (!outside.length) {
     const detail = [targets.length > 1 ? `${targets.length} objects` : names[0],
@@ -5583,26 +5584,10 @@ async function deleteObjects(ids) {
     });
     if (!answer) return;
     if (answer.open) { revealReference(answer.open); return; }
-    if (answer.mode === 'replace') {
-      edit(next => {
-        const placeholders = new Map();
-        for (const id of targets) {
-          const original = next.map.entities.find(entity => entity.id === id);
-          if (!original) continue;
-          const stand = standInFor(original, newId('entity'));
-          next.map.entities.push(stand);
-          placeholders.set(id, stand.id);
-        }
-        rewriteEntityReferences(next, placeholders);
-      }, `Replaced ${targets.length > 1 ? `${targets.length} objects` : names[0]} with an empty object`);
-    } else {
-      edit(next => { stripEntityReferences(next, targets); }, 'Rules that named the object removed');
-    }
+    keepReferences = answer.mode === 'replace';
   }
-  edit(next => {
-    stripEntityReferences(next, targets);
-    for (const id of targets) removeEntity(next, id);
-  }, targets.length > 1 ? `${targets.length} objects deleted` : 'Object deleted');
+  edit(next => removeEntities(next, targets, { keepReferences }),
+    keepReferences ? 'Objects replaced; script references kept' : targets.length > 1 ? `${targets.length} objects deleted` : 'Object deleted');
   if (selection?.kind === 'entity' && targets.includes(selection.id)) selection = null;
   multiSelection = multiSelection.filter(id => !targets.includes(id));
   render();
@@ -5612,7 +5597,7 @@ function deleteLayoutObject(id) {
   const entity = project.map.entities.find(item => item.id === id);
   if (!entity) throw new Error('That object no longer exists');
   if (entity.type === 'player') throw new Error('The layout must keep the player object');
-  void deleteObjects([id]);
+  return deleteObjects([id]);
 }
 
 /**
@@ -5705,7 +5690,7 @@ function deletePathPoint(pathId, pointId) {
 function deleteSelectionObject(value) {
   if (value?.kind === 'path') { deleteSelectedPaths(value.id); return; }
   if (value?.kind === 'pathPoint') { deletePathPoint(value.pathId, value.id); return; }
-  if (value?.kind === 'entity') { deleteSelectedEntities(value.id); return; }
+  if (value?.kind === 'entity') return deleteSelectedEntities(value.id);
   throw new Error(`Nothing to delete for a ${value?.kind || 'empty'} selection`);
 }
 /**
@@ -5720,7 +5705,7 @@ function deleteSelectedEntities(primaryId) {
   const player = targets.find(id => project.map.entities.find(entity => entity.id === id)?.type === 'player');
   if (player) throw new Error('The layout must keep the player object');
   lastPrimarySelection = null;
-  void deleteObjects(targets);
+  return deleteObjects(targets);
 }
 
 function setSectorLight(sector) {

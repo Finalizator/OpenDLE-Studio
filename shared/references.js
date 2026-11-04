@@ -17,7 +17,10 @@
  * A reference is any command — a condition or an action — that names an object in `entityId`,
  * `otherId`, `templateId` or `zoneId`, plus the owner fields: an event's `ownerId` and a timeline cue's
  * `ownerId`. `$self`, `$player`, `$world` and `$all` are not objects and are left alone.
+ * Literal object/property references inside command expressions count too.
  */
+
+import { isExpression, expressionObjectReferences, rewriteExpressionObjects } from './expressions.js';
 
 /** The fields a command can name an object in. */
 export const REFERENCE_FIELDS = Object.freeze(['entityId', 'otherId', 'templateId', 'zoneId']);
@@ -28,6 +31,9 @@ const isObjectId = value => typeof value === 'string' && value.length > 0 && !va
 export function commandTargets(command) {
   const found = [];
   for (const field of REFERENCE_FIELDS) if (isObjectId(command?.[field])) found.push({ field, id: command[field] });
+  for (const [field, value] of Object.entries(command || {})) if (isExpression(value)) {
+    for (const { id } of expressionObjectReferences(value)) if (isObjectId(id)) found.push({ field, id });
+  }
   return found;
 }
 
@@ -90,10 +96,9 @@ export function hasEntityReferences(project, ids, options = {}) {
 /**
  * Removes every name of these objects, in the same pass that deletes them.
  *
- * The rules themselves are what goes: an event owned by the object is its script and is dropped
- * whole, an event someone else owns keeps everything and loses only the commands that named the
- * object. An event or cue left with nothing to do — no conditions, no actions — is dropped too,
- * because an empty rule is not a rule.
+ * Owned events and events with a condition that names the object lose their entire branch:
+ * removing a gate must never make its old actions unconditional. Action-only references are
+ * removed individually, keeping other work and parent gates that still have children.
  */
 export function stripEntityReferences(project, ids, { scene = null } = {}) {
   const wanted = ids instanceof Set ? ids : new Set([].concat(ids));
@@ -113,15 +118,12 @@ export function stripEntityReferences(project, ids, { scene = null } = {}) {
     }
     if (event.ownerId && wanted.has(event.ownerId)) { dropped.add(event.id); removed.events += 1; return false; }
     const conditionsBefore = [event.condition, ...(event.conditions || [])].filter(Boolean);
-    const before = (event.actions || []).length + conditionsBefore.length;
+    if (conditionsBefore.some(condition => commandTargets(condition).some(target => wanted.has(target.id)))) {
+      dropped.add(event.id); removed.events += 1; return false;
+    }
+    const before = (event.actions || []).length;
     event.actions = clean(event.actions || [], 'commands');
-    const keptConditions = clean(conditionsBefore, 'commands');
-    event.condition = keptConditions[0] || null;
-    event.conditions = keptConditions.slice(1);
-    const after = event.actions.length + keptConditions.length;
-    // Only a rule this delete gutted is dropped: one that can no longer act, or has lost its
-    // trigger. A rule that was already idle is none of this delete's business.
-    if (after < before && (!event.actions.length && !parents.has(event.id) || !keptConditions.length)) {
+    if (before && !event.actions.length && !parents.has(event.id)) {
       dropped.add(event.id); removed.events += 1; return false;
     }
     return true;
@@ -155,6 +157,9 @@ export function rewriteEntityReferences(project, mapping, { scene = null } = {})
     for (const field of REFERENCE_FIELDS) {
       const value = command[field];
       if (typeof value === 'string' && mapping.has(value)) command[field] = mapping.get(value);
+    }
+    for (const [field, value] of Object.entries(command)) {
+      if (isExpression(value)) command[field] = rewriteExpressionObjects(value, mapping);
     }
   };
   const rewrite = (event, ownersToo) => {

@@ -209,7 +209,8 @@ const namesSheet = (action, timesheetId) => Boolean(action) && SHEET_ACTIONS.has
  */
 export function timesheetReferences(project, timesheetId) {
   const actions = [];
-  for (const event of project.events || []) for (const action of event.actions || []) if (namesSheet(action, timesheetId)) actions.push(action);
+  for (const holder of [project, ...(project.scenes || [])])
+    for (const event of holder.events || []) for (const action of event.actions || []) if (namesSheet(action, timesheetId)) actions.push(action);
   for (const sheet of project.timesheets || [])
     for (const cue of sheet.cues || []) for (const action of cue.actions || []) if (namesSheet(action, timesheetId)) actions.push(action);
   return { actions };
@@ -230,19 +231,19 @@ export function removeTimesheet(project, timesheetId) {
   if (!sheet) return null;
   const { actions } = timesheetReferences(project, timesheetId);
   const drop = list => (list || []).filter(action => !namesSheet(action, timesheetId));
-  const emptied = new Set();
-  for (const event of project.events || []) {
-    const before = (event.actions || []).length;
-    event.actions = drop(event.actions);
-    if (before && !event.actions.length) emptied.add(event.id);
+  let rules = 0;
+  for (const holder of [project, ...(project.scenes || [])]) {
+    const parents = new Set((holder.events || []).map(event => event.parentId).filter(Boolean));
+    holder.events = (holder.events || []).filter(event => {
+      const before = (event.actions || []).length;
+      event.actions = drop(event.actions);
+      if (before && !event.actions.length && !parents.has(event.id)) { rules++; return false; }
+      return true;
+    });
   }
   for (const other of project.timesheets) for (const cue of other.cues || []) cue.actions = drop(cue.actions);
-  // A rule that owns sub-events is a parent, not a start button, so it survives.
-  const parents = new Set((project.events || []).map(event => event.parentId).filter(Boolean));
-  const before = (project.events || []).length;
-  project.events = (project.events || []).filter(event => !emptied.has(event.id) || parents.has(event.id));
   project.timesheets = project.timesheets.filter(item => item.id !== timesheetId);
-  return { sheet, actions: actions.length, rules: before - project.events.length };
+  return { sheet, actions: actions.length, rules };
 }
 
 /**

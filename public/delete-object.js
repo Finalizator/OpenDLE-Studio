@@ -79,10 +79,10 @@ export function askDeleteObject({ names = [], references = [], ownedEvents = 0, 
     };
     const strip = option('strip', 'Delete them too',
       ownedEvents
-        ? `The object's own ${ownedEvents} event${ownedEvents === 1 ? '' : 's'} go as well.`
-        : 'The rules and cue actions that name it are removed.', true);
+        ? `The object's own ${ownedEvents} event${ownedEvents === 1 ? '' : 's'} go as well; affected condition branches are removed.`
+        : 'Affected condition branches and actions that name it are removed.', true);
     const replace = option('replace', 'Keep them and put an empty object in its place',
-      'A blank object takes over the name, so every rule keeps a target you can re-point later.');
+      'A stand-in keeps the object type, local data, signals and body. A model stays only when animation rules need it.');
     // An object with no outside references still has a script of its own to account for.
     choices.append(legend, strip);
     if (namedCount) choices.append(replace);

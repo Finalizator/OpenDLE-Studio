@@ -6,6 +6,7 @@ import { MAX_JOINTS, pruneJoints, remapJoint } from './joints.js';
 import { stripEntityReferences } from './references.js';
 import { bakePathRamp } from './paths.js';
 import { createSceneInstanceGroup } from './entity-groups.js';
+import { isExpression, rewriteExpressionObjects } from './expressions.js';
 
 export const MAX_SCENES = 64;
 export const MAX_SCENE_ENTITIES = 128;
@@ -40,6 +41,7 @@ export function sceneOrigin(scene) {
 
 /** Rewrites every string that names a captured entity, so copied events follow their objects. */
 export function remapReferences(value, mapping, depth = 0) {
+  if (isExpression(value)) return rewriteExpressionObjects(value, mapping);
   if (depth > 12 || value === null || typeof value !== 'object') {
     return typeof value === 'string' && mapping.has(value) ? mapping.get(value) : value;
   }

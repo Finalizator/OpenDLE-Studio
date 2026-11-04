@@ -31,8 +31,9 @@ export function parseExpression(source) {
     if (rest[0] === '"') {
       const match = /^"(?:[^"\\\n\r]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"/.exec(rest);
       if (!match) throw new Error(`Invalid quoted text at ${cursor}`);
+      const start = cursor;
       cursor += match[0].length;
-      return token = { type: 'literal', value: JSON.parse(match[0]) };
+      return token = { type: 'literal', value: JSON.parse(match[0]), start, end: cursor };
     }
     const number = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(rest);
     if (number) { cursor += number[0].length; return token = { type: 'literal', value: scalar(Number(number[0])) }; }
@@ -48,7 +49,7 @@ export function parseExpression(source) {
     let left;
     if (token.type === 'op' && ['-', '+', '!'].includes(token.value)) { const op = token.value; next(); left = { op: 'unary', operator: op, value: expression(9) }; }
     else if (token.type === 'op' && token.value === '(') { next(); left = expression(); take(')'); }
-    else if (token.type === 'literal') { left = { op: 'literal', value: token.value }; next(); }
+    else if (token.type === 'literal') { left = { op: 'literal', value: token.value, start: token.start, end: token.end }; next(); }
     else if (token.type === 'name') {
       const name = token.value; next();
       if (token.type === 'op' && token.value === '(') {
@@ -153,6 +154,34 @@ function checkCall(node) {
   if (min === undefined || node.args.length < min || node.args.length > max) throw new Error(`Unknown function or invalid argument count: ${node.name}`);
   if (count && node.args.some(arg => arg.op !== 'literal' || typeof arg.value !== 'string')) throw new Error(`${node.name} references require literal quoted names`);
 }
+
+export function expressionObjectReferences(value) {
+  const found = [];
+  function visit(node) {
+    if (node.op === 'call') {
+      if (['object', 'property'].includes(node.name)) {
+        checkCall(node);
+        const { value: id, start, end } = node.args[0];
+        found.push({ id, start, end });
+      }
+      node.args.forEach(visit);
+    } else if (node.op === 'unary') visit(node.value);
+    else if (node.op === 'binary') { visit(node.left); visit(node.right); }
+    else if (node.op === 'if') { visit(node.condition); visit(node.yes); visit(node.no); }
+  }
+  visit(parseExpression(value.expr));
+  return found;
+}
+
+export function rewriteExpressionObjects(value, mapping) {
+  let source = value.expr;
+  for (const { id, start, end } of expressionObjectReferences(value).reverse()) {
+    if (!mapping.has(id)) continue;
+    source = source.slice(0, start) + JSON.stringify(mapping.get(id)) + source.slice(end);
+  }
+  return source === value.expr ? value : { expr: source };
+}
+
 export function validateExpression(value, context) {
   if (!isExpression(value)) throw new Error('Expression must be {expr: "expression text"}');
   const tree = parseExpression(value.expr);

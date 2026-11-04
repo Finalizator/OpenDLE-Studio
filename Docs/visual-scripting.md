@@ -64,6 +64,21 @@ Changing a root event's **Owner** or **For each** also updates its descendants;
 change the parent rather than assigning a child a different object context.
 Reusable scenes validate the same hierarchy before they are placed.
 
+Deleting an object used by scripts lists the affected rules and timeline cues,
+including `object("id", "variable")` and `property("id", "x")` references in
+expressions. **Delete them too** removes any affected condition's entire branch,
+not just the condition: its old actions must never become unconditional. Pure
+action references are removed individually; unrelated actions and parent gates
+with surviving children remain.
+
+**Keep them and put an empty object in its place** re-points explicit and
+expression references to a stand-in. It retains object type, local variables,
+declared signals, health, interaction area and rigid body so the kept script
+still validates. Artwork is removed unless model-animation rules need the model.
+Deletion or replacement is one undoable edit, restoring objects and scripts
+together. Removing a route or timeline also cleans its reusable-scene references;
+removing a waypoint adjusts scene-script indices as well.
+
 ---
 
 ## 2. Two authoring scopes

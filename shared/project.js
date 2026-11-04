@@ -1,6 +1,6 @@
 import { sectorGeometry } from './sectors.js';
 import { LIMITS } from './limits.js';
-import { entityReferences } from './references.js';
+import { entityReferences, stripEntityReferences, rewriteEntityReferences, commandTargets } from './references.js';
 import { decodeDataURI, readModel, validateModelDocument } from './gltf.js';
 import { CORE_ACTIONS, CORE_CONDITIONS, ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand } from './engine-script.js';
 import { validateEventStructure, TRIGGER_CONDITIONS } from './events.js';
@@ -1520,22 +1520,44 @@ export function addRoom(project, { x, y, width, depth, color = '#597b9a' }) {
 /**
  * A blank object to take a deleted object's place, when its rules are being kept.
  *
- * Everything that made the object itself — artwork, model, script, variables —
- * is gone; what stays is what its rules need in order to still be true. Position and angle keep it
- * where the author was working, and a **rigid body comes along** when the object had one, because a
- * collision rule that named it needs a target that is still solid: without the body the rule would
- * not even validate, and "keep the rules" would quietly mean "break them".
+ * Artwork and gameplay components are removed; type, local data, signals, interaction area and
+ * body remain so kept rules still have valid targets. A model stays only for animation rules.
  */
-export function standInFor(original, id) {
+export function standInFor(original, id, { keepModel = false } = {}) {
   const stand = {
-    id, name: `${original?.name || 'Object'} (empty)`.slice(0, 100), type: 'decoration',
+    id, name: `${original?.name || 'Object'} (empty)`.slice(0, 100), type: original?.type || 'decoration',
     x: Number(original?.x) || 0, y: Number(original?.y) || 0, angle: Number(original?.angle) || 0,
   };
   if (original?.elevation) stand.elevation = original.elevation;
   if (original?.physics) stand.physics = cloneProjectData(original.physics);
   if (original?.area) stand.area = cloneProjectData(original.area);
-  if (original?.type === 'zone') stand.type = 'zone';
+  if (original?.variables) stand.variables = cloneProjectData(original.variables);
+  if (original?.signals || original?.terminal?.submitSignal) stand.signals = nodeSignals(original);
+  if (original?.health !== undefined) stand.health = original.health;
+  if (keepModel && original?.modelAsset) stand.modelAsset = original.modelAsset;
   return stand;
+}
+
+export function removeEntities(project, ids, { keepReferences = false } = {}) {
+  const targets = [...new Set([].concat(ids))].map(id => project.map.entities.find(entity => entity.id === id));
+  assert(targets.every(entity => entity && entity.type !== 'player'), 'Select non-player entities to delete');
+  if (keepReferences) {
+    const mapping = new Map();
+    const events = [...project.events, ...timesheetCueEvents(project.timesheets)];
+    for (const entity of targets) {
+      const keepModel = events.some(event => [event.condition, ...(event.conditions || []), ...event.actions].some(command =>
+        ['animationFinished', 'playAnimation', 'stopAnimation'].includes(command.type) &&
+        (commandTargets(command).some(target => target.id === entity.id) ||
+          command.entityId === '$self' && (event.ownerId === entity.id || event.forEachType === entity.type))));
+      const stand = standInFor(entity, newId('entity'), { keepModel });
+      project.map.entities.push(stand);
+      mapping.set(entity.id, stand.id);
+    }
+    rewriteEntityReferences(project, mapping);
+  }
+  const removing = targets.map(entity => entity.id);
+  stripEntityReferences(project, removing);
+  for (const id of removing) removeEntity(project, id);
 }
 
 /**

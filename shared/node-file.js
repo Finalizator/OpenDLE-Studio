@@ -13,6 +13,7 @@ import { MODEL_FACING_SEMANTICS, hasModelFacing } from './entity-visuals.js';
 import { bakePathRamp } from './paths.js';
 import { validateSignalEvent } from './signals.js';
 import { createSceneInstanceGroup, sceneInstanceOf, membersOf } from './entity-groups.js';
+import { commandTargets } from './references.js';
 
 export const NODE_FILE_FORMAT = 'opendle-node';
 export const NODE_FILE_VERSION = 1;
@@ -27,12 +28,7 @@ const round = value => {
 
 /** The entity ids a command points at, ignoring the special `$self`/`$world` targets. */
 function commandReferences(command) {
-  const refs = [];
-  for (const key of ['entityId', 'otherId', 'templateId']) {
-    const value = command?.[key];
-    if (typeof value === 'string' && value && !value.startsWith('$')) refs.push(value);
-  }
-  return refs;
+  return commandTargets(command).map(target => target.id);
 }
 
 /** Every command of a rule, including the ones inside its sub-events. */

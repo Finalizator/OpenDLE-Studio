@@ -953,7 +953,8 @@ row *Open*, *Rename…* and *Delete timeline*, and the object and scene rows kee
 
 **Deleting an object takes its names with it, or asks first.** An object is named by more than the
 action target the old guard knew about: a condition's `entityId`, a condition's `otherId`, a
-`spawnEntity` `templateId`, an event's `ownerId`, and a timeline cue's `ownerId` or cue action all
+`spawnEntity` `templateId`, a zone condition's `zoneId`, object/property expression targets,
+an event's `ownerId`, and a timeline cue's `ownerId` or cue action all
 count, in the layout *and* in a scene object's own rule list. Three of those used to slip past
 `removeEntity` and leave a project that no longer validated — or, for a scene, one that validated
 and quietly stopped working, because a scene's rules are not checked against their own targets.
@@ -966,14 +967,16 @@ one a link that opens it — the event on its sheet with its card flashed, the c
 timeline. The author then picks one of two answers:
 
 - **Delete them too** — the rules that named it go with it: an event or cue owned by the object is
-  its script and is removed whole, while one owned by something else loses only the conditions and
-  actions that named the object. A rule or cue this leaves with nothing to do is dropped; one that
-  was already idle is left alone.
-- **Keep them and put an empty object in its place** — a blank decoration takes over the name and
+  its script and is removed whole. A condition naming it removes the whole event branch, so
+  deleting a filter cannot make its actions unconditional. Action-only references are removed
+  individually. Empty leaves are dropped; surviving parent gates and unrelated commands remain.
+- **Keep them and put an empty object in its place** — a stand-in takes over the name and
   every reference is re-pointed at it (`standInFor` in [`shared/project.js`](./shared/project.js)),
-  so the script survives and can be re-pointed later. The stand-in keeps the position, the angle
-  and **the rigid body**, because a collision rule that named the object needs a target that is
-  still solid — without it "keep the rules" would quietly mean "break them".
+  including literal targets in expressions without rewriting unrelated text or variable names.
+  The stand-in retains type, position, angle, health, local variables, signals, interaction area
+  and rigid body; a model stays only when animation rules require it. `removeEntities` performs
+  rewriting/cleanup and deletion in the same editor commit, so one Undo restores both the object
+  and its scripts. Async deletion errors are reported through the editor's normal error handler.
 
 **A name in the tree renames where it is read**: `beginInlineRename` in
 [`public/app.js`](./public/app.js) swaps the row's text for an input (Enter accepts, Escape
@@ -1266,10 +1269,11 @@ click landed on in 3D, so a route up a staircase is drawn by clicking the steps.
 Deleting has to clear what names the route, because a project that references a path it does not
 have is invalid — the delete would otherwise be rolled back with an error and appear to do nothing.
 `removePath` in `shared/paths.js` does it in one step: followers simply stop following, and every
-`followPath` action in the events and in the timeline cues is dropped; the counts come back so the
+`followPath` action in the events, reusable scenes and timeline cues is dropped; the counts come back so the
 status line can say what went with it. `removePathPoint` keeps a route at two waypoints or more and
-brings any action that named a now-missing waypoint index back inside the shorter route (`-1`,
-"the last waypoint", stays right by itself).
+brings any action, including reusable-scene actions, that named a now-missing waypoint index back
+inside the shorter route (`-1`, "the last waypoint", stays right by itself). Timeline deletion also
+cleans reusable-scene commands while retaining parent gates with surviving children.
 
 ### Editable Engine event sheets
 

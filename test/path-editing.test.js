@@ -93,6 +93,27 @@ test('a route that is already gone is not an error, it is nothing to do', () => 
   assert.equal(project.paths.length, 1, 'and the real route is untouched');
 });
 
+test('deleting a route cleans its reusable-scene actions and follower settings too', () => {
+  const { project, walker } = projectWithRoute();
+  project.scenes = [{ id: 'scene', name: 'Scene', entities: [structuredClone(walker)],
+    events: structuredClone(project.events) }];
+  validateProject(project);
+  removePath(project, 'route');
+  const scene = project.scenes[0];
+  assert.equal(scene.entities[0].path, undefined);
+  assert.deepEqual(scene.events[0].actions, []);
+  validateProject(project);
+});
+
+test('removing a waypoint also shifts reusable-scene action indices', () => {
+  const { project, walker } = projectWithRoute();
+  project.scenes = [{ id: 'scene', name: 'Scene', entities: [structuredClone(walker)],
+    events: structuredClone(project.events) }];
+  removePathPoint(project, 'route', 'b');
+  assert.equal(project.scenes[0].events[0].actions[0].toPoint, 1);
+  validateProject(project);
+});
+
 test('a waypoint can be deleted while the route keeps two of them', () => {
   const { project } = projectWithRoute();
   // Both actions name waypoint 2, which stops existing when the route drops to two points.

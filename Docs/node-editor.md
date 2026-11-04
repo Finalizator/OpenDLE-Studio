@@ -123,7 +123,8 @@ the current project. **Save** persists the project; **Export project** creates a
 portable project archive.
 
 Node files embed referenced artwork, models, sound/video, shaders and portable
-scripts. Internal object references are remapped on import. References to external
+scripts. Internal object references, including `object(...)` and `property(...)`
+expression targets, are remapped on import. References to external
 objects or level resources, including door sectors, cannot travel; affected rules
 are omitted and reported. Review export warnings. Bind a portable terminal to
 doors in the receiving layout instead.

@@ -299,10 +299,12 @@ export function pathBounds(path) {
  * has to know about its references before removing it rather than after.
  */
 export function pathReferences(project, pathId) {
-  const followers = (project.map?.entities || []).filter(entity => entity.path?.id === pathId);
-  const ramps = (project.map?.entities || []).filter(entity => entity.ramp?.pathId === pathId);
+  const entities = [...(project.map?.entities || []), ...(project.scenes || []).flatMap(scene => scene.entities || [])];
+  const followers = entities.filter(entity => entity.path?.id === pathId);
+  const ramps = entities.filter(entity => entity.ramp?.pathId === pathId);
   const actions = [];
-  for (const event of project.events || []) for (const action of event.actions || []) actions.push(action);
+  for (const holder of [project, ...(project.scenes || [])])
+    for (const event of holder.events || []) for (const action of event.actions || []) actions.push(action);
   for (const sheet of project.timesheets || []) for (const cue of sheet.cues || []) for (const action of cue.actions || []) actions.push(action);
   return { followers, ramps, actions: actions.filter(action => action?.type === 'followPath' && action.pathId === pathId) };
 }
@@ -362,9 +364,10 @@ export function removePath(project, pathId) {
   const { followers, actions, ramps } = pathReferences(project, pathId);
   // The mesh is already an ordinary model: deleting its source bakes it rather than losing it.
   for (const entity of ramps) bakePathRamp(entity);
-  for (const entity of project.map?.entities || []) if (entity.path?.id === pathId) delete entity.path;
+  for (const entity of followers) delete entity.path;
   const drop = list => (list || []).filter(action => !(action?.type === 'followPath' && action.pathId === pathId));
-  for (const event of project.events || []) event.actions = drop(event.actions);
+  for (const holder of [project, ...(project.scenes || [])])
+    for (const event of holder.events || []) event.actions = drop(event.actions);
   for (const sheet of project.timesheets || []) for (const cue of sheet.cues || []) cue.actions = drop(cue.actions);
   project.paths = (project.paths || []).filter(item => item.id !== pathId);
   return { path, followers: followers.length, actions: actions.length, ramps: ramps.length };
@@ -403,6 +406,7 @@ export function removePathPoint(project, pathId, pointId) {
 /** Every action, in events and in timeline cues, that points at one route. */
 function forEachPathAction(project, pathId, visit) {
   const seen = (list) => (list || []).filter(action => action?.type === 'followPath' && action.pathId === pathId).forEach(visit);
-  for (const event of project.events || []) seen(event.actions);
+  for (const holder of [project, ...(project.scenes || [])])
+    for (const event of holder.events || []) seen(event.actions);
   for (const sheet of project.timesheets || []) for (const cue of sheet.cues || []) seen(cue.actions);
 }

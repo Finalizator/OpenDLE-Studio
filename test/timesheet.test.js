@@ -41,6 +41,21 @@ test('a timesheet validates its clock, tracks and cues', () => {
   validateTimesheet({ ...base, cues: [{ id: 'a', name: 'A', trackId: 'track_1', time: 1, ownerId: 'pickup', actions: [] }] }, project);
 });
 
+test('deleting a timeline clears reusable-scene commands without orphaning their children', () => {
+  const { project } = withTimeline();
+  const rule = id => ({ id, enabled: true, once: false, condition: { type: 'always' },
+    actions: [{ type: 'startTimesheet', timesheetId: 'timeline', restart: 'yes' }] });
+  project.scenes = [{ id: 'scene', name: 'Scene', entities: [], events: [
+    rule('parent'), { ...rule('child'), parentId: 'parent', actions: [{ type: 'showMessage', message: 'kept' }] },
+    rule('leaf'),
+  ] }];
+  validateProject(project);
+  removeTimesheet(project, 'timeline');
+  assert.deepEqual(project.scenes[0].events.map(event => event.id), ['parent', 'child']);
+  assert.deepEqual(project.scenes[0].events[0].actions, []);
+  validateProject(project);
+});
+
 test('each cue becomes one ordinary rule that asks the clock', () => {
   const sheet = createTimesheet({ id: 'ts', name: 'Sheet' });
   sheet.cues = cues();

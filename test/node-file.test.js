@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { newScene, addSceneObject, reparentSceneObject } from '../shared/scenes.js';
+import { newScene, addSceneObject, reparentSceneObject, removeSceneObjects } from '../shared/scenes.js';
 import { newJoint, newJointId } from '../shared/joints.js';
 import { newPanel, validatePanel, panelPhysics, curtainStrips, PANEL_DEFAULTS } from '../shared/panel.js';
 import { createPath } from '../shared/paths.js';
@@ -158,6 +158,28 @@ test('events travel with a node only when they stay inside it', () => {
   const document = exportNodeFile(scene, frame.id, { assets: [sprite()] });
   assert.deepEqual(document.events.map(event => event.id), ['inside']);
   assert.match(document.warnings.join(' '), /1 event\(s\) left out/);
+});
+
+test('portable scripts find expression-only external targets and remap internal ones on import', () => {
+  const { scene, frame, lid } = nodeScene();
+  scene.events = [
+    { id: 'inside_expression', enabled: true, once: false, ownerId: frame.id, condition: { type: 'always' },
+      actions: [{ type: 'setEntityPosition', entityId: '$self', x: { expr: `property("${lid.id}", "x")` }, y: 0 }] },
+    { id: 'outside_expression', enabled: true, once: false, ownerId: frame.id, condition: { type: 'always' },
+      actions: [{ type: 'setEntityPosition', entityId: '$self', x: { expr: 'property("external", "x")' }, y: 0 }] },
+  ];
+  const document = exportNodeFile(scene, frame.id, { assets: [sprite()] });
+  assert.deepEqual(document.events.map(event => event.id), ['inside_expression']);
+  assert.match(document.warnings.join(' '), /outside this node/);
+  const parsed = parseNodeFile(nodeFileText(document));
+  const destination = newScene('Destination');
+  destination.entities.push({ id: lid.id, name: 'Existing', type: 'decoration', x: 0, y: 0, angle: 0 });
+  applyNodeFile(destination, parsed);
+  const copiedLid = destination.entities.find(entity => entity.name === 'Lid');
+  assert.notEqual(copiedLid.id, lid.id);
+  assert.equal(destination.events[0].actions[0].x.expr, `property("${copiedLid.id}", "x")`);
+  removeSceneObjects(destination, copiedLid.id);
+  assert.deepEqual(destination.events, [], 'deleting the imported target finds the remapped expression');
 });
 
 // A layout object is a node in everything but where its table lives, so the same file can be a
