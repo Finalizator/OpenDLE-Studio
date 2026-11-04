@@ -88,6 +88,64 @@ test('placing a scene re-points its joints at the copied objects', () => {
   assert.deepEqual(joint.axis, { x: 0, y: 0, z: 1 });
 });
 
+test('capture and rotated placement keep joint anchors and axes in the assembly coordinate space', () => {
+  const project = createProject();
+  const frame = { id: 'frame', name: 'Frame', type: 'decoration', x: 100, y: 200, angle: 0, physics: body('fixed') };
+  const leaf = { id: 'leaf', name: 'Leaf', type: 'decoration', x: 140, y: 200, angle: 0, physics: body() };
+  project.map.entities.push(frame, leaf);
+  project.map.joints = [newJoint({ a: frame.id, b: leaf.id, type: 'prismatic',
+    anchor: { x: 110, y: 200, z: 16 }, axis: { x: 1, y: 0, z: 0 } })];
+  const scene = captureScene(project, [frame.id, leaf.id]);
+  assert.deepEqual(scene.joints[0].anchor, { x: -10, y: 0, z: 16 });
+  const nested = newScene('Nested capture');
+  nestScene(nested, scene, { x: 500, y: 600 });
+  assert.deepEqual(nested.entities.slice(1).map(node => [node.x, node.y]), [[480, 600], [520, 600]]);
+  assert.deepEqual(nested.joints[0].anchor, { x: 490, y: 600, z: 16 });
+  const placed = instantiateScene(scene, { x: 500, y: 600, angle: 90 });
+  assert.deepEqual(placed.joints[0].anchor, { x: 500, y: 590, z: 16 });
+  assert.ok(Math.abs(placed.joints[0].axis.x) < 1e-8);
+  assert.ok(Math.abs(placed.joints[0].axis.y - 1) < 1e-8);
+  assert.deepEqual(project.map.joints[0].anchor, { x: 110, y: 200, z: 16 }, 'the source stays unchanged');
+});
+
+test('duplicated and nested assemblies carry joint anchor translations, including world pivots', () => {
+  const scene = newScene('Assembly');
+  const root = addSceneObject(scene, { name: 'Root', x: 100, y: 200, physics: body('fixed') });
+  const leaf = addSceneObject(scene, { name: 'Leaf', x: 140, y: 200, parentId: root.id, physics: body() });
+  scene.joints = [
+    newJoint({ a: root.id, b: leaf.id, anchor: { x: 110, y: 200, z: 16 } }),
+    newJoint({ a: leaf.id, b: null, type: 'revolute', anchor: { x: 140, y: 200, z: 16 } }),
+  ];
+  const duplicate = duplicateSceneObject(scene, root.id, { offset: 32 });
+  const copied = scene.joints.filter(joint => duplicate.ids.includes(joint.a));
+  assert.equal(copied.length, 2);
+  assert.deepEqual(copied.map(joint => joint.anchor), [{ x: 142, y: 232, z: 16 }, { x: 172, y: 232, z: 16 }]);
+  const outer = newScene('Outer');
+  nestScene(outer, scene, { x: 64, y: 96 });
+  assert.deepEqual(outer.joints[0].anchor, { x: 174, y: 296, z: 16 });
+  assert.equal(outer.joints.filter(joint => joint.b === null).length, 2, 'world pivots stay pinned in the copied assembly');
+  const project = createProject();
+  project.map.entities.push(...scene.entities);
+  project.map.joints = scene.joints;
+  const captured = captureScene(project, [root.id, leaf.id]);
+  assert.equal(captured.joints.length, 2, 'capturing a world-pinned assembly retains its pivot');
+});
+
+test('joint capacity failures reject complete duplication and nesting without losing constraints', () => {
+  const source = newScene('Source');
+  const root = addSceneObject(source, { name: 'Root', physics: body('fixed') });
+  addSceneObject(source, { name: 'Leaf', parentId: root.id, physics: body() });
+  const joint = newJoint({ a: root.id, b: source.entities[1].id });
+  source.joints = Array.from({ length: MAX_JOINTS }, (_, index) => ({ ...structuredClone(joint), id: `joint_${index}` }));
+  const before = structuredClone(source);
+  assert.throws(() => duplicateSceneObject(source, root.id), /256 joints/);
+  assert.deepEqual(source, before);
+  const outer = structuredClone(source);
+  outer.id = 'outer';
+  assert.throws(() => nestScene(outer, source), /256 joints/);
+  assert.deepEqual(outer, { ...before, id: 'outer' });
+});
+
 test('scene joints follow their objects through capture, duplicate, nesting and removal', () => {
   const project = createProject();
   // The player cannot live in a scene, so the two objects are ordinary ones.

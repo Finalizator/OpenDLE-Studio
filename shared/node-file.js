@@ -7,8 +7,8 @@
 // machine) and the events that only talk to objects inside the subtree. Coordinates are
 // stored relative to the group, so importing places the group wherever the pointer is.
 import { validateEntity, cloneProjectData } from './project.js';
-import { sceneEntityId, sceneSubtree, remapReferences, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
-import { MAX_JOINTS, validateJoint, newJointId } from './joints.js';
+import { sceneEntityId, sceneSubtree, sceneEventsForEntities, remapReferences, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
+import { MAX_JOINTS, validateJoint, newJointId, jointWithin, transformJoint } from './joints.js';
 import { MODEL_FACING_SEMANTICS, hasModelFacing } from './entity-visuals.js';
 import { bakePathRamp } from './paths.js';
 import { validateSignalEvent } from './signals.js';
@@ -112,7 +112,8 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
       delete copy.groupId;
       return copy;
     });
-    return exportNodeFile({ ...scene, layoutProject: null, id: instance.id, name: instance.name, entities: members },
+    const events = sceneEventsForEntities(scene.events || [], new Set(members.map(entity => entity.id)));
+    return exportNodeFile({ ...scene, layoutProject: null, id: instance.id, name: instance.name, entities: members, events },
       instance.id, { name, assets, shaders, clips, eventSheets, eventGroups, includeEvents });
   }
   const subtree = wholeScene ? [...(scene.entities || [])] : sceneSubtree(scene, nodeId);
@@ -122,6 +123,8 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   const carried = root ? [root, ...subtree] : subtree;
   if (carried.length > MAX_SCENE_ENTITIES) throw new Error(`A node file holds at most ${MAX_SCENE_ENTITIES} nodes`);
   const ids = new Set(subtree.map(node => node.id));
+  const owners = wholeScene ? scene.events || [] : sceneEventsForEntities(scene.events || [], ids);
+  const selectedEvents = new Set(owners);
   const carriedIds = new Set(carried.map(node => node.id));
   const minX = Math.min(...carried.map(node => node.x));
   const minY = Math.min(...carried.map(node => node.y));
@@ -144,8 +147,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
 
   // Joints with both ends in the subtree, plus the ones that hang it from the world.
   const joints = (scene.joints || [])
-    .filter(joint => (joint.a ? ids.has(joint.a) : true) && (joint.b ? ids.has(joint.b) : true)
-      && (ids.has(joint.a) || ids.has(joint.b)))
+    .filter(joint => jointWithin(joint, ids))
     .map(joint => {
       const copy = cloneProjectData(joint);
       if (copy.anchor) { copy.anchor.x = round(copy.anchor.x - minX); copy.anchor.y = round(copy.anchor.y - minY); }
@@ -161,8 +163,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   for (const node of subtree) {
     for (const id of Object.values(node.spriteStates || {})) if (typeof id === 'string' && id) wantedClips.add(id);
   }
-  for (const event of includeEvents ? (scene.events || []) : []) {
-    if (!event.ownerId || !ids.has(event.ownerId)) continue;
+  for (const event of includeEvents ? owners : []) {
     for (const command of eventCommands(event)) for (const key of CLIP_FIELDS) if (command[key]) wantedClips.add(command[key]);
   }
   const carriedClips = [], missingClips = [];
@@ -181,8 +182,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
     if (node.shaderId) shaderIds.add(node.shaderId);
   }
   for (const clip of carriedClips) for (const frame of clip.frames) assetIds.add(frame);
-  for (const event of includeEvents ? (scene.events || []) : []) {
-    if (!event.ownerId || !ids.has(event.ownerId)) continue;
+  for (const event of includeEvents ? owners : []) {
     for (const command of eventCommands(event)) for (const key of ASSET_FIELDS) if (command[key]) assetIds.add(command[key]);
   }
   const embeddedAssets = cloneProjectData((assets || []).filter(asset => assetIds.has(asset.id)));
@@ -190,14 +190,13 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   const embeddedShaders = cloneProjectData((shaders || []).filter(shader => shaderIds.has(shader.id)));
   const missingShaders = [...shaderIds].filter(id => !embeddedShaders.some(shader => shader.id === id));
 
-  const owners = (scene.events || []).filter(event => event.ownerId && ids.has(event.ownerId));
   const keptEvents = [], droppedEvents = [], droppedReasons = new Set();
   const keptEventIds = new Set();
   // Sub-events travel with their parent or not at all: a child alone would arrive with a parent
   // the destination does not have.
   for (const event of scene.events || []) {
     const parentKept = event.parentId === undefined || keptEventIds.has(event.parentId);
-    const isOwned = event.ownerId && ids.has(event.ownerId);
+    const isOwned = selectedEvents.has(event);
     if (!includeEvents || !isOwned || !parentKept) {
       if (isOwned) {
         droppedEvents.push(event.name || event.id);
@@ -402,10 +401,15 @@ export function applyNodeFile(scene, document, {
   if ((scene.entities || []).length + document.nodes.length > maxEntities) {
     throw new Error(`The destination holds at most ${maxEntities} objects`);
   }
+  if (parentId && !scene.entities.some(node => node.id === parentId)) throw new Error('Unknown parent object');
+  if ((scene.joints || []).length + (document.joints || []).length > MAX_JOINTS) {
+    throw new Error(`A scene holds at most ${MAX_JOINTS} joints`);
+  }
   const radians = (Number(degrees) || 0) * Math.PI / 180;
   const cos = Math.cos(radians), sin = Math.sin(radians);
   const mapping = new Map();
-  for (const node of document.nodes) mapping.set(node.id, sceneEntityId(scene, node.id));
+  const reserved = new Set();
+  for (const node of document.nodes) mapping.set(node.id, sceneEntityId(scene, node.id, reserved));
   const roots = document.nodes.filter(node => !node.parentId);
   // A file written before a facing stopped turning the mesh stored the pose the old renderer drew,
   // so its angle has to move over — otherwise the object lands visibly turned by its own facing.
@@ -436,24 +440,13 @@ export function applyNodeFile(scene, document, {
     if (copy.shaderId && shaderRemap.has(copy.shaderId)) copy.shaderId = shaderRemap.get(copy.shaderId);
     return copy;
   });
-  scene.entities.push(...copies);
-
   const joints = (document.joints || []).map(joint => {
     const copy = cloneProjectData(joint);
     copy.id = newJointId();
     if (copy.a) copy.a = mapping.get(copy.a);
     if (copy.b) copy.b = mapping.get(copy.b);
-    const local = { x: copy.anchor.x, y: copy.anchor.y };
-    copy.anchor.x = round(x + local.x * cos - local.y * sin);
-    copy.anchor.y = round(y + local.x * sin + local.y * cos);
-    return copy;
+    return transformJoint(copy, { x, y, angle: Number(degrees) || 0 });
   });
-  if (joints.length) {
-    if ((scene.joints || []).length + joints.length > MAX_JOINTS) throw new Error(`A scene holds at most ${MAX_JOINTS} joints`);
-    // Pushed into the destination's own array, so a container that hands over the project's
-    // arrays (the layout does) needs no copying back afterwards.
-    for (const joint of joints) scene.joints.push(joint);
-  }
 
   const events = [];
   const stripped = { commands: 0, rules: 0, types: new Set() };
@@ -490,17 +483,19 @@ export function applyNodeFile(scene, document, {
       const keptConditions = conditions.filter(keep);
       copy.condition = keptConditions[0] || null;
       copy.conditions = keptConditions.slice(1);
-      // A rule that lost everything it said is not a rule; one that still says something keeps what
-      // is left, the same way deleting an addon leaves the rules that still mean something.
-      if ((hadActions && !copy.actions.length) || !keptConditions.length) { stripped.rules += 1; continue; }
+      const hasChildren = (document.events || []).some(child => child.parentId === event.id);
+      // Losing a gate must never turn a constrained rule into an unconditional one.
+      if (keptConditions.length !== conditions.length || !keptConditions.length
+        || hadActions && !copy.actions.length && !hasChildren) { stripped.rules += 1; continue; }
     }
     keptIds.set(event.id, copy.id);
     events.push(copy);
   }
-  if (events.length) {
-    if ((scene.events || []).length + events.length > maxEvents) throw new Error(`The destination holds at most ${maxEvents} events`);
-    for (const event of events) scene.events.push(event);
-  }
+  if ((scene.events || []).length + events.length > maxEvents) throw new Error(`The destination holds at most ${maxEvents} events`);
+  scene.entities.push(...copies);
+  // Keep the destination arrays live: layout containers share these with the project.
+  if (joints.length) { scene.joints ||= []; scene.joints.push(...joints); }
+  if (events.length) { scene.events ||= []; scene.events.push(...events); }
 
   const root = roots.length ? mapping.get(roots[0].id) : copies[0]?.id;
   if (scene.layoutProject) createSceneInstanceGroup(scene.layoutProject, copies.map(copy => copy.id), { name: document.name, rootId: root });

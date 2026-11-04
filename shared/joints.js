@@ -129,6 +129,23 @@ export function remapJoint(joint, mapping, { id = joint.id, prefix = '' } = {}) 
   return copy;
 }
 
+/** True when all object endpoints travel together; an open endpoint stays pinned to the world. */
+export function jointWithin(joint, ids) {
+  return (!joint.a || ids.has(joint.a)) && (!joint.b || ids.has(joint.b))
+    && (ids.has(joint.a) || ids.has(joint.b));
+}
+
+/** Transforms a copied joint in map space, including its world-space hinge/slider direction. */
+export function transformJoint(joint, { x = 0, y = 0, angle = 0 } = {}) {
+  const radians = angle * Math.PI / 180, cos = Math.cos(radians), sin = Math.sin(radians);
+  const clean = value => Math.abs(value) < 1e-12 ? 0 : value;
+  const rotate = point => ({ x: clean(point.x * cos - point.y * sin), y: clean(point.x * sin + point.y * cos) });
+  const anchor = rotate(joint.anchor);
+  joint.anchor = { ...joint.anchor, x: x + anchor.x, y: y + anchor.y };
+  if (joint.axis) joint.axis = { ...joint.axis, ...rotate(joint.axis) };
+  return joint;
+}
+
 /** Joints that touch one object, in stored order. */
 export function jointsOf(joints, objectId) {
   return (joints || []).filter(joint => joint.a === objectId || joint.b === objectId);

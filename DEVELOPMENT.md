@@ -2800,6 +2800,9 @@ already has identically is reused, a clashing id gets a fresh one, sprite clips 
 along when they are not already there, and the layout's own limits (`LIMITS.entities`) are what the
 import is checked against rather than a scene's 128. The importer pushes into the project's own
 arrays, so a layout import needs no copying back afterwards.
+It prepares node, joint and event copies before mutating those arrays. Capacity errors therefore
+leave the destination unchanged. Missing addon conditions remove the whole guarded branch; missing
+actions are filtered individually, retaining gate-only parents when their sub-events survive.
 
 ### The Scene Object editor
 
@@ -2825,6 +2828,22 @@ positional sound, image/video display projectors, interactive screens and code l
 interaction areas, fixed/dynamic physics bodies, enemies, pickups, ramps and panels.
 These are component presets over OpenDLE's existing entity types, not imported Godot classes.
 The editor follows Godot-inspired workflows; it does not claim complete Godot API or node parity.
+
+**Complex assemblies:** native copies retain sheet/group membership and execution phases.
+Whole-scene nesting carries scene-level rules too; capture, subtree duplication, layout clipboard
+and portable exports also carry unowned connections whose explicit object targets all belong to
+the selection. Global for-each rules are not inferred as belonging to a selected subtree.
+`sceneEventsForEntities` shares this selection policy, while `remapReferences` rewrites explicit
+entity-reference fields and expression targets without modifying literal values or variable names.
+Copied node/event identifiers are reserved for the whole batch and fit the project's 80-character
+limit; event and entity mappings remain separate even when source identifiers coincide.
+
+Joint coordinates use the same scene/map space as object positions. `jointWithin` includes
+world-pinned constraints but excludes links to objects left outside the branch. Capture rebases
+anchors once; placement/import rotates anchors and axes; nesting/duplication translates them.
+The capture's recorded `origin` is provenance, not another offset to subtract during nesting.
+Node and layout transforms carry world pivots too. Joint capacity is checked before mutation,
+never by silently omitting constraints from an otherwise successful copy.
 
 **Transform controls:** Q selects, W moves, E rotates, R scales and T shapes. While holding the
 right mouse button in Fly mode, WASD/QE instead move the camera. Move and scale axes are world

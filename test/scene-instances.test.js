@@ -18,6 +18,9 @@ import { applyNodeFile, exportNodeFile, layoutContainer, nodeFileText, parseNode
 import { moveEntityToFloor } from '../public/editor-drop.js';
 import { packProject, unpackProject } from '../server/project-folder.js';
 import { stripEntityReferences } from '../shared/references.js';
+import { newJoint } from '../shared/joints.js';
+import { createRuntime, stepRuntime } from '../shared/runtime.js';
+import { emitSignal } from '../shared/signals.js';
 
 function fixture() {
   const project = createProject(), scene = newScene('Access terminal');
@@ -202,6 +205,47 @@ test('layout node imports and exports carry the entire instance, scene editor im
   const captured = captureScene(project, added.ids);
   assert.ok(captured.entities.every(entity => entity.groupId === undefined));
   assert.doesNotThrow(() => validateProject(project));
+});
+
+test('complex instances retain unowned signal branches, local data and world pivots through copy and portable round trips', () => {
+  const project = createProject(), source = newScene('Jointed terminal');
+  const mount = createSceneNode(source, 'static', { id: 'mount', signals: ['submitted'], elevation: 160 });
+  const part = createSceneNode(source, 'body', { id: 'part', parentId: mount.id, elevation: 80,
+    variables: { hits: 0, tag: 'mount' } });
+  source.joints = [newJoint({ a: part.id, b: null, type: 'spherical', anchor: { x: 0, y: 0, z: 144 } })];
+  source.events = [
+    { id: 'mount', enabled: true, once: false, condition: { type: 'onSignal', entityId: mount.id, signal: 'submitted' },
+      actions: [] },
+    { id: 'count', enabled: true, once: false, parentId: 'mount', condition: { type: 'always' },
+      actions: [{ type: 'addObjectVariable', entityId: part.id, variable: 'hits', value: 1 }] },
+  ];
+  const placed = placeSceneInstance(project, source, { x: 64, y: 96 });
+  const pasted = cloneEntitiesForPaste(project, placed.entities, { x: 160, y: 192 });
+  project.map.entities.push(...pasted.entities); project.events.push(...pasted.events); project.map.joints.push(...pasted.joints);
+  assert.equal(pasted.events.length, 2);
+  assert.equal(pasted.events[1].parentId, pasted.events[0].id, 'event and object namespaces are independent');
+  assert.deepEqual(pasted.joints[0].anchor, { x: 160, y: 192, z: 144 });
+  const baseline = structuredClone(project);
+  dragSelection(project, baseline, { kind: 'entity', id: pasted.entities[1].id }, 'move', { x: 16, z: 8 }, 0);
+  const joint = project.map.joints.find(item => item.id === pasted.joints[0].id);
+  assert.deepEqual(joint.anchor, { x: 176, y: 192, z: 152 });
+  assert.deepEqual(baseline.map.joints[1].anchor, { x: 160, y: 192, z: 144 });
+  const captured = captureScene(project, pasted.entities.map(entity => entity.id));
+  assert.equal(captured.events.length, 2);
+  assert.equal(captured.joints.length, 1);
+  const file = parseNodeFile(nodeFileText(exportNodeFile(layoutContainer(project), pasted.entities[1].id)));
+  assert.equal(file.events.length, 2);
+  for (let index = 0; index < 2; index++) applyNodeFile(layoutContainer(project), file, { x: -128, y: index * 64 });
+  validateProject(project);
+  const state = createRuntime(project);
+  const copyEmitter = pasted.entities.find(node => node.signals);
+  const copyReceiver = pasted.entities.find(node => node.variables);
+  emitSignal(state, copyEmitter.id, 'submitted');
+  stepRuntime(project, state, .016, new Set());
+  for (const entity of state.entities.filter(node => node.variables?.hits !== undefined)) {
+    assert.equal(entity.variables.hits, entity.id === copyReceiver.id ? 1 : 0, 'only the emitting instance reacts');
+    assert.equal(entity.variables.tag, 'mount');
+  }
 });
 
 test('older hierarchy imports and identifiable flattened placements are recovered once', () => {

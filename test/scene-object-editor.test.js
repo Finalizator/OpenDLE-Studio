@@ -9,6 +9,8 @@ import {
 } from '../shared/scenes.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { validateEventStructure } from '../shared/events.js';
+import { createRuntime, stepRuntime } from '../shared/runtime.js';
+import { emitSignal } from '../shared/signals.js';
 
 /** A scene with two roots and a two level group under the second root. */
 function groupedScene() {
@@ -68,6 +70,75 @@ test('long copied event ids remain distinct and never remap an object id as an e
   assert.equal(placed.events[1].parentId, placed.events[0].id);
   assert.equal(placed.events[2].parentId, placed.events[1].id);
   assert.equal(placed.events[0].ownerId, placed.entities[0].id);
+});
+
+test('deep nesting and repeated duplication keep node and event ids unique and project-valid', () => {
+  let source = newScene('Nested');
+  const root = addSceneObject(source, { name: 'Root', id: 'n'.repeat(75), x: 0, y: 0 });
+  addSceneObject(source, { name: 'Child', id: 'n'.repeat(74) + 'b', parentId: root.id });
+  source.events = [{ id: 'r'.repeat(75), ownerId: root.id, enabled: true, once: false,
+    condition: { type: 'always' }, actions: [] }];
+  for (let depth = 0; depth < 5; depth++) {
+    const target = newScene(`Layer ${depth}`);
+    nestScene(target, source);
+    const project = createProject();
+    project.scenes = [target];
+    validateProject(project);
+    const first = duplicateSceneObject(target, target.entities[0].id);
+    duplicateSceneObject(target, target.entities[0].id);
+    assert.equal(new Set(target.entities.map(node => node.id)).size, target.entities.length);
+    assert.ok(first.ids.every(id => id.length <= 80));
+    validateProject(project);
+    source = { ...target, entities: target.entities.slice(0, target.entities.length / 3),
+      events: target.events.slice(0, target.events.length / 3) };
+  }
+  const placed = instantiateScene(source);
+  const project = createProject();
+  project.map.entities.push(...placed.entities); project.events.push(...placed.events);
+  validateProject(project);
+});
+
+test('nested assemblies retain unowned signal connections, sheet phases and disabled groups', () => {
+  const source = newScene('Signal assembly');
+  const emitter = addSceneObject(source, { name: 'Emitter', signals: ['submitted'] });
+  const receiver = addSceneObject(source, { name: 'Receiver', variables: { hits: 0 } });
+  source.events = [{ id: 'on_submit', sheetId: 'source_sheet', groupId: 'source_group', enabled: true, once: false,
+    condition: { type: 'onSignal', entityId: emitter.id, signal: 'submitted' }, actions: [
+      { type: 'addObjectVariable', entityId: receiver.id, variable: 'hits', value: 1 },
+    ] }];
+  const outer = newScene('Outer');
+  nestScene(outer, source);
+  assert.equal(outer.events.length, 1, 'a scene-level signal connection is part of the assembly');
+  const placed = instantiateScene(outer);
+  const project = createProject();
+  project.eventSheets = [{ id: 'source_sheet', name: 'Source logic', section: 'game', enabled: true, phase: 'beforePhysics' }];
+  project.eventGroups = [{ id: 'source_group', name: 'Connection', sheetId: 'source_sheet', enabled: false }];
+  project.events = placed.events; project.map.entities.push(...placed.entities);
+  validateProject(project);
+  assert.equal(placed.events[0].sheetId, 'source_sheet');
+  assert.equal(placed.events[0].groupId, 'source_group');
+  const state = createRuntime(project);
+  emitSignal(state, placed.entities.find(node => node.name === 'Emitter').id, 'submitted');
+  stepRuntime(project, state, .016, new Set());
+  assert.equal(state.entities.find(node => node.name === 'Receiver').variables.hits, 0, 'copying never enables a disabled group');
+  state.groups.set('source_group', true);
+  emitSignal(state, placed.entities.find(node => node.name === 'Emitter').id, 'submitted');
+  stepRuntime(project, state, .016, new Set());
+  assert.equal(state.entities.find(node => node.name === 'Receiver').variables.hits, 1);
+});
+
+test('scene copying remaps reference fields without changing literal local data or command values', () => {
+  const source = newScene('Literal data');
+  const node = addSceneObject(source, { name: 'root', id: 'root', variables: { tag: 'root' } });
+  source.events = [{ id: 'rule', ownerId: node.id, enabled: true, once: false,
+    condition: { type: 'objectVariableCompare', entityId: '$self', variable: 'tag', operator: '=', value: 'root' },
+    actions: [{ type: 'setObjectVariable', entityId: '$self', variable: 'tag', value: 'root' },
+      { type: 'showMessage', message: 'root' }] }];
+  const placed = instantiateScene(source, { prefix: 'copy' });
+  assert.equal(placed.events[0].condition.value, 'root');
+  assert.equal(placed.events[0].actions[0].value, 'root');
+  assert.equal(placed.events[0].actions[1].message, 'root');
+  assert.equal(placed.entities[0].variables.tag, 'root');
 });
 
 test('a new scene object starts empty with an origin and no nodes', () => {

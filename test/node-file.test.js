@@ -433,6 +433,29 @@ test('an import can be rotated and grouped under an existing node', () => {
   assert.equal(lid.angle, 90);
 });
 
+test('rotated node imports turn joint axes along with their anchors', () => {
+  const { scene, frame, lid } = nodeScene();
+  scene.joints = [newJoint({ a: frame.id, b: lid.id, type: 'prismatic',
+    anchor: { x: 108, y: 50, z: 32 }, axis: { x: 1, y: 0, z: 0 } })];
+  const document = exportNodeFile(scene, frame.id, { assets: [sprite()] });
+  const target = newScene('Target');
+  applyNodeFile(target, document, { x: 100, y: 200, degrees: 90 });
+  assert.deepEqual(target.joints[0].anchor, { x: 100, y: 208, z: 32 });
+  assert.ok(Math.abs(target.joints[0].axis.x) < 1e-8);
+  assert.ok(Math.abs(target.joints[0].axis.y - 1) < 1e-8);
+});
+
+test('failed node imports leave no partial nodes or joints after event capacity errors', () => {
+  const { scene, frame, lid } = nodeScene();
+  scene.joints = [newJoint({ a: frame.id, b: lid.id })];
+  scene.events = [{ id: 'rule', ownerId: frame.id, enabled: true, once: false,
+    condition: { type: 'always' }, actions: [{ type: 'showMessage', message: 'ready' }] }];
+  const document = exportNodeFile(scene, frame.id, { assets: [sprite()] });
+  const target = newScene('Target'), before = structuredClone(target);
+  assert.throws(() => applyNodeFile(target, document, { maxEvents: 0 }), /events/);
+  assert.deepEqual(target, before);
+});
+
 test('importing reuses the destination artwork, and renames an id that clashes', () => {
   const { scene, frame } = nodeScene();
   const document = exportNodeFile(scene, frame.id, { assets: [sprite()] });
@@ -567,7 +590,7 @@ test('an object file naming a command the destination lacks is stripped, not imp
     [['sparkle:burst']]);
 });
 
-test('a rule that still says something keeps what is left when one command is unknown', () => {
+test('a rule that loses an unknown condition is omitted instead of losing its gate', () => {
   const source = createProject();
   const crate = source.map.entities.find(item => item.type !== 'player');
   source.events = [{ id: 'own', name: 'Mixed', enabled: true, once: false, ownerId: crate.id,
@@ -580,14 +603,12 @@ test('a rule that still says something keeps what is left when one command is un
   const added = applyNodeFile(container, document, { knownTypes: knownCommandTypes(destination), maxEntities: 100000, maxEvents: 100000 });
   destination.events = container.events;
   assert.deepEqual([...added.stripped.types].sort(), ['sparkle:burst', 'sparkle:check']);
-  assert.equal(added.stripped.rules, 0, 'the surviving condition and action are still a rule');
-  const landed = destination.events.find(event => event.name === 'Mixed');
-  assert.deepEqual(landed.actions.map(action => action.type), ['addVariable']);
-  assert.deepEqual(landed.conditions, [], 'the unknown condition is gone');
+  assert.equal(added.stripped.rules, 1);
+  assert.equal(destination.events.find(event => event.name === 'Mixed'), undefined);
   assert.doesNotThrow(() => validateProject(destination));
 });
 
-test('a sub-event does not arrive without the rule that held it', () => {
+test('a gate-only parent survives stripped actions when it still guards a sub-event', () => {
   const source = createProject();
   const crate = source.map.entities.find(item => item.type !== 'player');
   source.events = [
@@ -602,9 +623,44 @@ test('a sub-event does not arrive without the rule that held it', () => {
   const before = container.events.length;
   const added = applyNodeFile(container, document, { knownTypes: knownCommandTypes(destination), maxEntities: 100000, maxEvents: 100000 });
   destination.events = container.events;
-  assert.equal(container.events.length, before, 'neither the emptied parent nor its orphaned child came');
-  assert.equal(container.events.filter(event => ['Parent', 'Child'].includes(event.name)).length, 0);
-  assert.equal(added.stripped.rules, 2);
+  assert.equal(container.events.length, before + 2);
+  const parent = container.events.find(event => event.name === 'Parent');
+  const child = container.events.find(event => event.name === 'Child');
+  assert.deepEqual(parent.actions, []);
+  assert.equal(child.parentId, parent.id);
+  assert.equal(added.stripped.rules, 0);
+  validateProject(destination);
+});
+
+test('unknown parent gates omit their whole branch but unknown actions can be filtered individually', () => {
+  const source = createProject(), crate = source.map.entities.find(item => item.type !== 'player');
+  source.events = [
+    { id: 'parent', ownerId: crate.id, enabled: true, once: false, condition: { type: 'always' },
+      conditions: [{ type: 'addon:gate' }], actions: [] },
+    { id: 'child', ownerId: crate.id, enabled: true, once: false, parentId: 'parent', condition: { type: 'always' },
+      actions: [{ type: 'addVariable', variable: 'score', value: 100 }] },
+    { id: 'sibling', name: 'Safe', ownerId: crate.id, enabled: true, once: false, condition: { type: 'onStart' },
+      actions: [{ type: 'addon:action' }, { type: 'addVariable', variable: 'score', value: 1 }] },
+  ];
+  const document = exportNodeFile(layoutContainer(source), crate.id, { assets: source.assets });
+  const target = newScene('Target');
+  const result = applyNodeFile(target, document, { knownTypes: knownCommandTypes(source) });
+  assert.equal(result.stripped.rules, 2);
+  assert.deepEqual(target.events.map(event => event.name), ['Safe']);
+  assert.deepEqual(target.events[0].actions, [{ type: 'addVariable', variable: 'score', value: 1 }]);
+});
+
+test('node imports reserve colliding long identifiers for the whole incoming hierarchy', () => {
+  const { scene, frame, lid } = nodeScene();
+  frame.id = 'a'.repeat(120); lid.parentId = frame.id;
+  lid.id = 'a'.repeat(119) + 'b';
+  const document = exportNodeFile(scene, frame.id, { assets: [sprite()] });
+  const target = newScene('Target');
+  for (let index = 0; index < 3; index++) applyNodeFile(target, document);
+  assert.equal(new Set(target.entities.map(node => node.id)).size, 6);
+  const project = createProject(); project.scenes = [target]; project.assets = [sprite()];
+  validateProject(project);
+  for (let index = 0; index < 6; index += 2) assert.equal(target.entities[index + 1].parentId, target.entities[index].id);
 });
 
 test('portable node imports remap every sub-event parent independently for each instance', () => {

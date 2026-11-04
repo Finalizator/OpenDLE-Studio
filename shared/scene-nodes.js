@@ -2,6 +2,7 @@ import { addSceneObject, sceneSubtree, uniqueSceneName } from './scenes.js';
 import { formDrag } from './gizmo-math.js';
 import { modelOrientation, modelPoseFromOrientation, rotateQuaternion, multiplyQuaternion, axisRotation } from './entity-visuals.js';
 import { MEDIA_NODE_DEFAULTS } from './media-nodes.js';
+import { jointWithin } from './joints.js';
 
 const mesh = shape => ({ type: 'decoration', nodeKind: 'mesh',
   mesh: { ...MEDIA_NODE_DEFAULTS.mesh, shape } });
@@ -184,7 +185,7 @@ export function transformSceneNodes(scene, baseline, id, mode, delta, grid = 0) 
     }
   }
   for (const source of baseline.joints || []) {
-    if (!ids.has(source.a) || !ids.has(source.b)) continue;
+    if (!jointWithin(source, ids)) continue;
     const joint = (scene.joints || []).find(item => item.id === source.id);
     if (!joint || !source.anchor) continue;
     const anchor = source.anchor, x = anchor.x - root.x, y = anchor.y - root.y, z = (anchor.z || 0) - rootZ;

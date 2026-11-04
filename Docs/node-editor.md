@@ -19,9 +19,19 @@ A scene is a reusable group, not a live-linked prefab: editing its source does
 not update copies already placed in the layout. Each placed copy has its own
 local variables and remapped object references.
 Nested visual-script branches are copied as complete trees: each sub-event points
-to its copied parent, never to a rule on the original instance. Duplicating or
-nesting a scene that would exceed the event limit is refused before adding nodes,
-rather than placing an unscripted or partly scripted copy.
+to its copied parent, never to a rule on the original instance. Nesting preserves
+scene-level rules as well as object-owned scripts. Internal signal connections
+also follow an assembly through capture, duplication and node-file round trips.
+Sheet phases and disabled groups retain their behavior; literal text and local
+variable values are not rewritten as object references. Deeply nested copies get
+fresh identifiers within the project's length limit.
+
+Joint anchors follow capture, placement, nesting and duplication, and rotated
+copies also rotate hinge/slider axes. World-pinned joints travel with their
+assembly; joints to objects outside a copied branch do not. Captured coordinates
+are already scene-relative, so nesting does not subtract the capture origin again.
+Copies that would exceed event or joint capacity are refused before adding nodes,
+rather than silently discarding scripts or constraints.
 
 ### Placed scenes are one layout object
 
@@ -128,6 +138,12 @@ expression targets, are remapped on import. References to external
 objects or level resources, including door sectors, cannot travel; affected rules
 are omitted and reported. Review export warnings. Bind a portable terminal to
 doors in the receiving layout instead.
+
+Imports check capacity before changing the destination, so a failed import leaves
+no partial nodes or joints. If a required addon condition is unavailable, its entire
+rule branch is omitted and reported rather than running actions without that gate.
+Unsupported actions can be omitted individually; a parent with surviving child
+rules keeps its conditions even when all of its own actions were omitted.
 
 ## Projected terminal setup
 

@@ -6,8 +6,8 @@
 // stay ordinary objects that the renderer, the physics world and the event sheet know nothing
 // about, which is what keeps grouping from changing what the game does.
 import { newId } from './project.js';
-import { remapReferences } from './scenes.js';
-import { remapJoint } from './joints.js';
+import { remapReferences, sceneEventsForEntities } from './scenes.js';
+import { remapJoint, jointWithin, transformJoint } from './joints.js';
 
 export const GROUP_NAME_LIMIT = 100;
 
@@ -253,14 +253,15 @@ export function cloneEntitiesForPaste(project, entities, point, {
     }
     for (const member of members) instanceIds.add(member.id);
   }
-  const copiedEvents = events.filter(event => instanceIds.has(event.ownerId));
+  const copiedEvents = sceneEventsForEntities(events, instanceIds);
   const eventMapping = new Map(copiedEvents.map(event => [event.id, newId('event')]));
-  const copiedJoints = joints.filter(joint => instanceIds.has(joint.a) && instanceIds.has(joint.b));
+  const copiedJoints = joints.filter(joint => jointWithin(joint, instanceIds));
   return { entities: copies, group,
-    events: copiedEvents.map(event => remapReferences(event, new Map([...mapping, ...eventMapping]))),
-    joints: copiedJoints.map(joint => {
-      const copy = remapJoint(joint, mapping, { id: newId('joint') });
-      if (copy.anchor) { copy.anchor.x += dx; copy.anchor.y += dy; }
+    events: copiedEvents.map(event => {
+      const copy = remapReferences(event, mapping);
+      copy.id = eventMapping.get(event.id);
+      if (event.parentId !== undefined) copy.parentId = eventMapping.get(event.parentId);
       return copy;
-    }) };
+    }),
+    joints: copiedJoints.map(joint => transformJoint(remapJoint(joint, mapping, { id: newId('joint') }), { x: dx, y: dy })) };
 }
