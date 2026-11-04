@@ -172,7 +172,8 @@ function executeAcs(ctx, always, wantResult, named = false) {
   const selector = arg(ctx, 0, 0);
   const result = scripts.execute(named ? selector : Number(selector) || 0,
     [numArg(ctx, 2), numArg(ctx, 3), numArg(ctx, 4), numArg(ctx, 5)].slice(0, 4),
-    { always, wantResult, activator: 'player' });
+    // The actor running the state is the script's activator, as in GZDoom.
+    { always, wantResult, activator: !ctx.entity || ctx.entity.type === 'player' ? 'player' : ctx.entity.id });
   if (wantResult && ctx.named.Result !== undefined) ctx.named.Result = result;
 }
 

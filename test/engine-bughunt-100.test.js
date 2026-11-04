@@ -988,3 +988,161 @@ test('hunt 120: Thing_Damage hurts only the things it names, or the activator fo
   assert.equal(state.entities.find(entity => entity.id === 'imp').health, 50, 'tid 0 is the activating monster');
   assert.equal(state.playerStats.health, health, 'not the player');
 });
+
+/** Runs ACS with `strings` in the VM's string pool; `str(i)` pushes the i-th one. */
+function runAcsStrings(ops, strings, host = {}) {
+  const vm = createAcsVm(acsLump(ops), host);
+  vm.pool = [...strings];
+  vm.poolIndex = new Map(vm.pool.map((text, index) => [text, index]));
+  startScript(vm, 1);
+  tickAcs(vm);
+  return vm;
+}
+const str = index => 0x40000000 + index;
+
+function scriptRoom(entities = []) {
+  const project = specialRoom({ entities });
+  project.actors = [morphActor('actor_chicken', 'Chicken', 30), morphActor('actor_pig', 'Pig', 20)];
+  const state = createRuntime(project);
+  return { project, state, scripts: createMapScripts(project, state, {}) };
+}
+
+test('hunt 121: actor inventory and Thing_Damage2 instructions read their arguments in source order', () => {
+  const calls = [];
+  const host = { giveInventory: (...args) => calls.push(['give', ...args.slice(0, 2), args[3]]),
+    takeInventory: (...args) => calls.push(['take', ...args.slice(0, 2), args[3]]),
+    damageThing: (tid, amount, type) => (calls.push(['damage', tid, amount, type]), 1) };
+  runAcsStrings([5, str(0), 10, 'GIVEACTORINVENTORY', 5, str(0), 4, 'TAKEACTORINVENTORY', 5, 20, str(1), 'THINGDAMAGE2', 'DROP'],
+    ['Clip', 'Fire'], host);
+  assert.deepEqual(calls, [['give', 'Clip', 10, 5], ['take', 'Clip', 4, 5], ['damage', 5, 20, 'Fire']]);
+});
+
+test('hunt 122: CheckActorInventory replaces its two arguments with one result', () => {
+  const calls = [];
+  runAcsStrings([99, 5, str(0), 'CHECKACTORINVENTORY', 'SETLINEBLOCKING'], ['Clip'], {
+    checkInventory: (name, activator, tid) => (name === 'Clip' && tid === 5 ? 3 : 0),
+    setLineBlocking: (...args) => calls.push(args) });
+  assert.deepEqual(calls, [[99, 3]]);
+});
+
+test('hunt 123: MorphActor reads seven arguments and morphs monsters into the monster class', () => {
+  const calls = [];
+  runAcsStrings([7, str(0), str(1), 350, 0, str(2), str(2), 'MORPHACTOR', 'DROP'], ['Chicken', 'Pig', ''], {
+    morphActor: (...args) => (calls.push(args), 1) });
+  assert.deepEqual([calls[0][0], calls[0][1], calls[0][2], calls[0][5]], [7, 'Chicken', 350, 'Pig']);
+  const { state, scripts } = scriptRoom([{ id: 'a', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60, tid: 7 },
+    { id: 'b', type: 'enemy', name: 'Imp', x: -100, y: 40, health: 60, tid: 7 }]);
+  assert.equal(scripts.host.morphActor(7, 'Chicken', 0, 0, 'player', 'Pig'), 2, 'every thing with the tid morphs');
+  assert.deepEqual(state.entities.filter(entity => entity.tid === 7).map(entity => entity.actorName), ['Pig', 'Pig']);
+});
+
+test('hunt 124: SetCameraToTexture leaves nothing on the stack', () => {
+  const calls = [];
+  runAcsStrings([1, 2, 7, str(0), 90, 'SETCAMERATOTEXTURE', 'SETLINEBLOCKING'], ['CAMTEX'], {
+    setCameraToTexture: () => true, setLineBlocking: (...args) => calls.push(args) });
+  assert.deepEqual(calls, [[1, 2]]);
+});
+
+test('hunt 125: Thing_Damage2 hurts the activator for tid 0 and the player by tid', () => {
+  const { state, scripts } = scriptRoom([{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60 }]);
+  assert.equal(scripts.host.damageThing(0, 10, 'None', 'imp'), 1);
+  assert.equal(state.entities.find(entity => entity.id === 'imp').health, 50);
+  const player = state.entities.find(entity => entity.type === 'player');
+  player.tid = 3;
+  const health = state.playerStats.health;
+  scripts.host.damageThing(3, 10, 'None', 'imp');
+  assert.ok(state.playerStats.health < health, 'the player is hurt through its tid');
+});
+
+test('hunt 126: inventory given to a monster or a missing tid never reaches the player', () => {
+  const { state, scripts } = scriptRoom([{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60, tid: 5 }]);
+  state.playerStats.health = 50;
+  const bullets = state.playerStats.bullets;
+  scripts.host.giveInventory('Medikit', 1, 'player', 5);
+  scripts.host.giveInventory('Clip', 10, 'player', 9);
+  scripts.host.giveInventory('Clip', 10, 'imp', 0);
+  assert.equal(state.playerStats.health, 50);
+  assert.equal(state.playerStats.bullets, bullets);
+  scripts.host.giveInventory('Clip', 10, 'player', 0);
+  assert.equal(state.playerStats.bullets, bullets + 10);
+});
+
+test('hunt 127: CheckInventory reports health and armor amounts like GZDoom', () => {
+  const { state, scripts } = scriptRoom([{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60, tid: 5 }]);
+  state.playerStats.health = 73;
+  state.playerStats.armor = 42;
+  assert.equal(scripts.host.checkInventory('Health', 'player', 0), 73);
+  assert.equal(scripts.host.checkInventory('Health', 'player', 5), 60);
+  assert.equal(scripts.host.checkInventory('Armor', 'player', 0), 42);
+  assert.equal(scripts.host.checkInventory('Stimpack', 'player', 0), 0, 'health pickups are never held');
+  assert.equal(scripts.host.checkInventory('Clip', 'player', 5), 0, "a monster has none of the player's ammo");
+});
+
+test("hunt 128: ClearActorInventory on a monster leaves the player's inventory alone", () => {
+  const calls = [];
+  runAcs([5, 'CLEARACTORINVENTORY'], { clearInventory: (...args) => calls.push(args) });
+  assert.equal(calls[0][1], 5, 'the tid reaches the host');
+  const { state, scripts } = scriptRoom([{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60, tid: 5 }]);
+  state.inventory.keys.add('blueCard');
+  scripts.host.clearInventory('player', 5);
+  assert.ok(state.inventory.keys.has('blueCard'));
+  scripts.host.clearInventory('player', 0);
+  assert.equal(state.inventory.keys.size, 0);
+  assert.equal(state.playerStats.bullets, 0, 'ammo goes too');
+});
+
+test('hunt 129: SetLineSpecial and SetThingSpecial keep their five arguments in order', () => {
+  const calls = [];
+  runAcs([3, 80, 5, 0, 1, 2, 4, 'SETLINESPECIAL', 7, 80, 5, 0, 1, 2, 4, 'SETTHINGSPECIAL'], {
+    setLineSpecial: (...args) => calls.push(args), setThingSpecial: (...args) => calls.push(args.slice(0, 3)) });
+  assert.deepEqual(calls, [[3, 80, [5, 0, 1, 2, 4]], [7, 80, [5, 0, 1, 2, 4]]]);
+  const levels = [];
+  runAcsStrings([str(0), 2, 0, 3, 'CHANGELEVEL'], ['MAP02'], { changeLevel: (...args) => levels.push(args) });
+  assert.deepEqual(levels, [['MAP02', 3, 0, 2]], 'ChangeLevel(map, position, flags, skill) reaches the host as map, skill, flags, position');
+});
+
+test('hunt 130: SetMusic reads the song from its first argument', () => {
+  const calls = [];
+  runAcsStrings([str(0), 2, 0, 'SETMUSIC', str(1), 0, 0, 'LOCALSETMUSIC'], ['D_RUNNIN', 'D_STALKS'], {
+    setMusic: (...args) => calls.push(args) });
+  assert.deepEqual(calls, [['D_RUNNIN', 2], ['D_STALKS', 0]]);
+});
+
+test('hunt 131: SectorDamage reads the tag and amount from its first two arguments', () => {
+  const calls = [];
+  runAcsStrings([4, 25, str(0), str(1), 0, 'SECTORDAMAGE'], ['Slime', ''], { sectorDamage: (...args) => calls.push(args) });
+  assert.deepEqual(calls[0].slice(0, 3), [4, 25, 'Slime']);
+});
+
+test('hunt 132: GetPlayerInfo consumes both of its arguments', () => {
+  const calls = [];
+  runAcs([1, 0, 4, 'GETPLAYERINFO', 'SETLINEBLOCKING'], { setLineBlocking: (...args) => calls.push(args) });
+  assert.deepEqual(calls, [[1, 0]], 'the result replaces the two arguments');
+  runAcs([1, 3, 4, 'GETPLAYERINFO', 'SETLINEBLOCKING'], { setLineBlocking: (...args) => calls.push(args) });
+  assert.deepEqual(calls[1], [1, -1], 'a player that is not in the game answers -1');
+});
+
+test('hunt 133: Random with its bounds reversed still picks within them', () => {
+  const calls = [];
+  const vm = createAcsVm(acsLump([1, 10, 5, 'RANDOM', 'SETLINEBLOCKING']), { setLineBlocking: (...args) => calls.push(args) });
+  vm.random = () => 0.99;
+  startScript(vm, 1);
+  tickAcs(vm);
+  assert.deepEqual(calls, [[1, 10]]);
+});
+
+test('hunt 134: ActivatorTID reports the tid of a monster activator', () => {
+  const { scripts } = scriptRoom([{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60, tid: 12 }]);
+  assert.equal(scripts.host.activatorTid('imp'), 12);
+  assert.equal(scripts.host.activatorTid(null), 0, 'a script with no activator has tid 0');
+  const calls = [];
+  runAcs([0, 'ACTIVATORTID', 'SETLINEBLOCKING'], { activatorTid: () => 12, setLineBlocking: (...args) => calls.push(args) });
+  assert.deepEqual(calls, [[0, 12]]);
+});
+
+test('hunt 135: ACS_Execute from an actor state makes the actor the activator', () => {
+  const calls = [];
+  const state = { scripts: { execute: (...args) => calls.push(args) }, entities: [] };
+  ACTIONS.ACS_Execute({ project: {}, state, entity: { id: 'imp', type: 'enemy' }, actor: {}, args: [5, 0, 1], named: {} });
+  assert.equal(calls[0][2].activator, 'imp');
+});

@@ -480,6 +480,20 @@ provider credits or network access are required for tests.
   with the tag; and things spawned in the same tic get distinct ids. `GiveInventory` of a
   health item heals up to that item's own limit — stimpacks and medikits stop at 100,
   bonuses and spheres at 200 — and never lowers health that is already above it.
+  Every stack instruction reads its arguments in source order (the last one on top),
+  as GZDoom's `STACK(n)` does: `Give/Take/CheckActorInventory`, `Thing_Damage2`,
+  `SetLine/ThingSpecial`, `SetMusic` (whose third argument is unused), `SectorDamage`,
+  `ChangeLevel(map, position, flags, skill)`, `GetPlayerInfo` and the seven-argument
+  `MorphActor`, which turns players into its player class and everything else into
+  its monster class. Instructions that return nothing in GZDoom (`SetCameraToTexture`)
+  leave nothing on the stack, and `Random` with reversed bounds swaps them. Only the
+  player holds an inventory: items given to a monster or to a tid with no things are
+  dropped, `CheckInventory("Health")` is the target's health, `"Armor"` the armor
+  points, and health pickups are never held. `ClearInventory` takes keys, ammo and
+  armor (the runtime always keeps a selected weapon). `Thing_Damage2` works like
+  `Thing_Damage` and returns how many things it reached. A script started by an
+  actor's `ACS_Execute*` state action has that actor as its activator, and
+  `ActivatorTID` reports its tid.
 
   Binary Doom maps are a different language: their lines carry Doom's own
   numbers, where 19 lowers a floor and Hexen's 19 stops a thing. The importer

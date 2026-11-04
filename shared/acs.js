@@ -705,6 +705,13 @@ function pop(vm, script) {
   return script.stack[--script.sp];
 }
 
+/** Pops `count` arguments pushed in source order, so the first argument comes first. */
+function popArgs(vm, script, count) {
+  const values = new Array(count);
+  for (let index = count - 1; index >= 0; index--) values[index] = pop(vm, script);
+  return values;
+}
+
 /** 1-based access from the top of the stack, matching ACS's STACK(n). */
 function peek(vm, script, depth) {
   return script.stack[script.sp - depth] | 0;
@@ -1058,7 +1065,7 @@ function defineQueries() {
   define(P.BLUETEAMSCORE, '', (vm, script) => push(vm, script, 0));
   define(P.REDTEAMSCORE, '', (vm, script) => push(vm, script, 0));
   define(P.PLAYERNUMBER, '', (vm, script) => push(vm, script, 0));
-  define(P.ACTIVATORTID, '', (vm, script) => push(vm, script, script.activator?.tid || 0));
+  define(P.ACTIVATORTID, '', (vm, script) => push(vm, script, vm.host.activatorTid(script.activator)));
   define(P.GETSCREENWIDTH, '', (vm, script) => push(vm, script, 320));
   define(P.GETSCREENHEIGHT, '', (vm, script) => push(vm, script, 200));
   define(P.GETCVAR, '', (vm, script) => { pop(vm, script); push(vm, script, 0); });
@@ -1068,7 +1075,11 @@ function defineQueries() {
   define(P.PLAYERINGAME, '', (vm, script) => { setTop(vm, script, 1, peek(vm, script, 1) === 1 ? 1 : 0); });
   define(P.PLAYERISBOT, '', (vm, script) => push(vm, script, 0));
   define(P.PLAYERCLASS, '', (vm, script) => push(vm, script, 0));
-  define(P.GETPLAYERINFO, '', (vm, script) => { pop(vm, script); push(vm, script, 0); });
+  // GetPlayerInfo(player, info): only player 0 exists, and GZDoom answers -1 for the others.
+  define(P.GETPLAYERINFO, '', (vm, script) => {
+    const [player] = popArgs(vm, script, 2);
+    push(vm, script, player === 0 ? 0 : -1);
+  });
   // GetPlayerInput(player, input): buttons, view deltas and movement, so scripts
   // can react to jump/crouch/attack state.
   define(P.GETPLAYERINPUT, '', (vm, script) => {
@@ -1088,7 +1099,7 @@ function defineQueries() {
 }
 
 function randomBetween(vm, min, max) {
-  if (max < min) return 0;
+  if (max < min) [min, max] = [max, min];
   const span = max - min + 1;
   return min + Math.floor(vm.random() * span);
 }
@@ -1118,24 +1129,21 @@ function defineWorld() {
     vm.host.setLineMonsterBlocking(tag, Boolean(on));
   });
   define(P.SETLINESPECIAL, '', (vm, script) => {
-    const args = [pop(vm, script), pop(vm, script), pop(vm, script), pop(vm, script), pop(vm, script)];
-    const special = pop(vm, script), tag = pop(vm, script);
+    const [tag, special, ...args] = popArgs(vm, script, 7);
     vm.host.setLineSpecial(tag, special, args);
   });
   define(P.SETTHINGSPECIAL, '', (vm, script) => {
-    const args = [pop(vm, script), pop(vm, script), pop(vm, script), pop(vm, script), pop(vm, script)];
-    const special = pop(vm, script), tid = pop(vm, script);
+    const [tid, special, ...args] = popArgs(vm, script, 7);
     vm.host.setThingSpecial(tid, special, args, script.activator);
   });
+  // SetMusic(song, order, unused): the third argument is pushed but never read.
   define(P.SETMUSIC, '', (vm, script) => {
-    const order = pop(vm, script), name = pop(vm, script);
-    pop(vm, script);
+    const [name, order] = popArgs(vm, script, 3);
     vm.host.setMusic(vmString(vm, name), order);
   });
   define(P.SETMUSICDIRECT, 'www', (vm, script, [name, order]) => vm.host.setMusic(vmString(vm, name), order));
   define(P.LOCALSETMUSIC, '', (vm, script) => {
-    const order = pop(vm, script), name = pop(vm, script);
-    pop(vm, script);
+    const [name, order] = popArgs(vm, script, 3);
     vm.host.setMusic(vmString(vm, name), order);
   });
   define(P.LOCALSETMUSICDIRECT, 'www', (vm, script, [name, order]) => vm.host.setMusic(vmString(vm, name), order));
@@ -1160,8 +1168,10 @@ function defineWorld() {
   define(P.GETSECTORLIGHTLEVEL, '', (vm, script) => {
     setTop(vm, script, 1, vm.host.getSectorLight(peek(vm, script, 1)));
   });
+  // SectorDamage(tag, amount, type, protection, flags).
   define(P.SECTORDAMAGE, '', (vm, script) => {
-    vm.host.sectorDamage(pop(vm, script), pop(vm, script), pop(vm, script), pop(vm, script), pop(vm, script));
+    const [tag, amount, type, protection, flags] = popArgs(vm, script, 5);
+    vm.host.sectorDamage(tag, amount, vmString(vm, type), vmString(vm, protection), flags);
   });
   define(P.SECTORSOUND, '', (vm, script) => {
     const volume = pop(vm, script), sound = pop(vm, script);
@@ -1202,7 +1212,8 @@ function defineWorld() {
   define(P.CANCELFADE, '', () => {});
   define(P.PLAYMOVIE, '', (vm, script) => { pop(vm, script); push(vm, script, -1); });
   define(P.CHANGELEVEL, '', (vm, script) => {
-    const position = pop(vm, script), flags = pop(vm, script), skill = pop(vm, script), map = pop(vm, script);
+    // ChangeLevel(map, position, flags, skill).
+    const [map, position, flags, skill] = popArgs(vm, script, 4);
     vm.host.changeLevel(vmString(vm, map), skill, flags, position);
   });
   define(P.WRITETOINI, '', (vm, script) => { pop(vm, script); pop(vm, script); });
@@ -1212,11 +1223,6 @@ function defineWorld() {
 function defineActors() {
   // The stack forms take their arguments in source order, so the last one is on top. The
   // class is a string, positions are fixed point and angles are byte angles (0-255).
-  const popArgs = (vm, script, count) => {
-    const values = new Array(count);
-    for (let index = count - 1; index >= 0; index--) values[index] = pop(vm, script);
-    return values;
-  };
   const spawnArgs = (vm, [type, x, y, z, tid, angle]) => ({ type: vmString(vm, type), x: x / 65536, y: y / 65536,
     z: z / 65536, tid, angle: angle * 360 / 256 });
   const spotArgs = (vm, [type, spot, tid, angle = 0]) => ({ type: vmString(vm, type), spot, tid, angle: angle * 360 / 256 });
@@ -1274,10 +1280,10 @@ function defineActors() {
     push(vm, script, vm.host.getActorProperty(tid, property, script.activator));
   });
   define(P.THINGDAMAGE2, '', (vm, script) => {
-    const tid = pop(vm, script), amount = pop(vm, script), type = pop(vm, script);
+    const type = pop(vm, script), amount = pop(vm, script), tid = pop(vm, script);
     push(vm, script, vm.host.damageThing(tid, amount, vmString(vm, type), script.activator));
   });
-  define(P.CLEARINVENTORY, '', (vm, script) => vm.host.clearInventory(script.activator));
+  define(P.CLEARINVENTORY, '', (vm, script) => vm.host.clearInventory(script.activator, 0));
   define(P.GIVEINVENTORY, '', (vm, script) => {
     const amount = pop(vm, script), name = pop(vm, script);
     vm.host.giveInventory(vmString(vm, name), amount, script.activator);
@@ -1295,18 +1301,18 @@ function defineActors() {
   });
   define(P.CHECKINVENTORYDIRECT, 'w', (vm, script, [name]) =>
     push(vm, script, vm.host.checkInventory(vmString(vm, name), script.activator)));
-  define(P.CLEARACTORINVENTORY, '', (vm, script) => { pop(vm, script); vm.host.clearInventory(script.activator); });
+  define(P.CLEARACTORINVENTORY, '', (vm, script) => vm.host.clearInventory(script.activator, pop(vm, script)));
   define(P.GIVEACTORINVENTORY, '', (vm, script) => {
-    const tid = pop(vm, script), amount = pop(vm, script), name = pop(vm, script);
+    const amount = pop(vm, script), name = pop(vm, script), tid = pop(vm, script);
     vm.host.giveInventory(vmString(vm, name), amount, script.activator, tid);
   });
   define(P.TAKEACTORINVENTORY, '', (vm, script) => {
-    const tid = pop(vm, script), amount = pop(vm, script), name = pop(vm, script);
+    const amount = pop(vm, script), name = pop(vm, script), tid = pop(vm, script);
     vm.host.takeInventory(vmString(vm, name), amount, script.activator, tid);
   });
   define(P.CHECKACTORINVENTORY, '', (vm, script) => {
-    const tid = pop(vm, script), name = pop(vm, script);
-    setTop(vm, script, 1, vm.host.checkInventory(vmString(vm, name), script.activator, tid));
+    const name = pop(vm, script), tid = pop(vm, script);
+    push(vm, script, vm.host.checkInventory(vmString(vm, name), script.activator, tid));
   });
   define(P.CHECKWEAPON, '', (vm, script) => {
     setTop(vm, script, 1, vm.host.checkWeapon(vmString(vm, peek(vm, script, 1))));
@@ -1326,18 +1332,20 @@ function defineConversions() {
   define(P.TAGSTRING, '', (vm, script) => {
     setTop(vm, script, 1, internString(vm, lookupString(vm.module, peek(vm, script, 1))));
   });
-  // MorphActor(tid, class, duration, style, morphflash, unmorphflash) and
-  // UnMorphActor(tid, force): the flashes are decorative and skipped.
+  // MorphActor(tid, playerclass, monsterclass, duration, style, morphflash, unmorphflash)
+  // and UnMorphActor(tid, force): the flashes are decorative and skipped.
   define(P.MORPHACTOR, '', (vm, script) => {
     pop(vm, script); pop(vm, script);
-    const style = pop(vm, script), duration = pop(vm, script), name = pop(vm, script), tid = pop(vm, script);
-    push(vm, script, vm.host.morphActor(tid, vmString(vm, name), duration, style, script.activator) ? 1 : 0);
+    const style = pop(vm, script), duration = pop(vm, script);
+    const monsterClass = pop(vm, script), playerClass = pop(vm, script), tid = pop(vm, script);
+    push(vm, script, vm.host.morphActor(tid, vmString(vm, playerClass), duration, style, script.activator,
+      vmString(vm, monsterClass)) ? 1 : 0);
   });
   // SetCameraToTexture(camera_tid, "TEXTURE", fov): the renderer draws that
   // camera's view into the texture, which ANIMDEFS reserved.
   define(P.SETCAMERATOTEXTURE, '', (vm, script) => {
     const fov = pop(vm, script), name = pop(vm, script), tid = pop(vm, script);
-    push(vm, script, vm.host.setCameraToTexture(tid, vmString(vm, name), fov) ? 1 : 0);
+    vm.host.setCameraToTexture(tid, vmString(vm, name), fov);
   });
   define(P.UNMORPHACTOR, '', (vm, script) => {
     const force = pop(vm, script), tid = pop(vm, script);
@@ -1405,6 +1413,7 @@ const HOST_DEFAULTS = {
   useInventory: () => 0,
   levelInfo: () => 0,
   changeLevel: () => {},
+  activatorTid: activator => (activator && typeof activator === 'object' ? activator.tid || 0 : 0),
   sectorBusy: () => false,
   getSectorZ: () => 0,
   getSectorLight: () => -1,

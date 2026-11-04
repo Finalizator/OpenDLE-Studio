@@ -20,7 +20,7 @@ import { resetMomentum } from './player-motion.js';
 import { sectorAt } from './sectors.js';
 import { actorForThing } from './actors.js';
 import { doomThings } from './doom-assets.js';
-import { projectActorIndex, hurtActor } from './actor-runtime.js';
+import { projectActorIndex } from './actor-runtime.js';
 
 const TIC_RATE = 35;
 
@@ -290,21 +290,37 @@ export function createMapScripts(project, state, callbacks = {}) {
     getActor: (tid, kind, activator) => getActorValue(tid, kind, activator),
     setActorPosition: (tid, x, y, z, fog, activator) => setActorPosition(tid, x, y, z, fog, activator),
     getActorProperty: (tid, property, activator) => actorProperty(tid, property, activator),
-    morphActor: (tid, className, duration, style, activator) =>
-      morphEntity(project, state, morphTarget(state, tid, activator), className, { duration, style }),
+    // MorphActor turns players into `playerClass` and everything else into `monsterClass`,
+    // and a tid names every thing that carries it.
+    morphActor: (tid, playerClass, duration, style, activator, monsterClass = playerClass) => {
+      const targets = tid ? state.entities.filter(entity => entity.tid === tid) : [morphTarget(state, 0, activator)];
+      let changes = 0;
+      for (const entity of targets.filter(Boolean)) {
+        const className = entity.type === 'player' ? playerClass : monsterClass;
+        if (className && morphEntity(project, state, entity, className, { duration, style })) changes++;
+      }
+      return changes;
+    },
     unmorphActor: (tid, force, activator) => unmorphEntity(project, state, morphTarget(state, tid, activator), Boolean(force)),
     setCameraToTexture: (tid, name, fov) => bindCameraTexture(project, state, tid, name, fov),
     setActorProperty: (tid, property, value, activator) => setActorProperty(tid, property, value, activator),
+    // Thing_Damage2 is Thing_Damage with a result: how many things it reached.
+    activatorTid: activator => (activator ? activatorEntity(activator)?.tid || 0 : 0),
     damageThing: (tid, amount, type, activator) => {
-      const victims = tid ? state.entities.filter(entity => entity.tid === tid) : [];
-      let hits = 0;
-      for (const victim of victims) if (damageEntity(victim, amount)) hits++;
-      return hits;
+      const victims = tid ? state.entities.filter(entity => entity.tid === tid) : [activatorEntity(activator)].filter(Boolean);
+      runSpecial(119, [tid, amount, 0], { activator, format: 'zdoom' });
+      return victims.length;
     },
-    giveInventory: (name, amount, activator, tid) => giveInventory(name, amount, tid),
-    takeInventory: (name, amount, activator, tid) => giveInventory(name, -Math.abs(amount), tid),
-    checkInventory: (name, activator, tid) => checkInventory(name, tid),
-    clearInventory: () => { state.inventory.keys.clear(); },
+    giveInventory: (name, amount, activator, tid) => giveInventory(name, amount, tid, activator),
+    takeInventory: (name, amount, activator, tid) => giveInventory(name, -Math.abs(amount), tid, activator),
+    checkInventory: (name, activator, tid) => checkInventory(name, tid, activator),
+    // The runtime always holds a selected weapon, so the weapons stay; keys, ammo and armor go.
+    clearInventory: (activator, tid = 0) => {
+      if (!inventoryHolder(tid, activator)) return;
+      state.inventory.keys.clear();
+      for (const ammo of new Set(Object.values(AMMO_NAMES))) state.playerStats[ammo] = 0;
+      state.playerStats.armor = 0;
+    },
     checkWeapon: name => (state.inventory.weapons.has(WEAPON_NAMES[String(name).toLowerCase()]) ? 1 : 0),
     setWeapon: name => {
       const weapon = WEAPON_NAMES[String(name).toLowerCase()];
@@ -526,14 +542,6 @@ export function createMapScripts(project, state, callbacks = {}) {
     }
   }
 
-  function damageEntity(entity, amount) {
-    // Monsters take damage the way a shot hurts them, so a kill leaves a non-blocking corpse.
-    if (entity.type === 'enemy') return hurtActor(project, state, entity, amount);
-    if (!(amount > 0) || entity.health === undefined) return false;
-    entity.health = Math.max(0, entity.health - amount);
-    return true;
-  }
-
   function resolveActor(type, name) {
     const index = projectActorIndex(project);
     if (typeof type === 'string' && type) return index.byName.get(type.toLowerCase()) || null;
@@ -649,12 +657,15 @@ export function createMapScripts(project, state, callbacks = {}) {
     return 1;
   }
 
-  function giveInventory(name, amount, tid) {
+  /** The runtime models only the player's inventory, so other targets receive nothing. */
+  function inventoryHolder(tid, activator) {
+    const targets = tid ? state.entities.filter(candidate => candidate.tid === tid) : [activatorEntity(activator)];
+    return targets.find(entity => entity?.type === 'player') || null;
+  }
+
+  function giveInventory(name, amount, tid, activator) {
     const key = String(name || '').toLowerCase();
-    const entity = tid ? state.entities.find(candidate => candidate.tid === tid) : null;
-    if (entity && entity !== state.entities.find(candidate => candidate.type === 'player')) {
-      if (AMMO_NAMES[key] || WEAPON_NAMES[key] || KEY_NAMES[key]) return;
-    }
+    if (!inventoryHolder(tid, activator)) return;
     if (AMMO_NAMES[key] && amount) { addAmmo(state, AMMO_NAMES[key], amount); return; }
     if (WEAPON_NAMES[key] && amount > 0) { state.inventory.weapons.add(WEAPON_NAMES[key]); return; }
     if (KEY_NAMES[key] && amount > 0) { state.inventory.keys.add(KEY_NAMES[key]); return; }
@@ -667,13 +678,19 @@ export function createMapScripts(project, state, callbacks = {}) {
     }
   }
 
-  function checkInventory(name, tid) {
+  // GZDoom's CheckInventory: "Health" is the actor's health, "Armor" the armor points, and
+  // health pickups are used on the spot, so nobody ever holds one.
+  function checkInventory(name, tid, activator) {
     const key = String(name || '').toLowerCase();
+    const entity = tid ? state.entities.find(candidate => candidate.tid === tid) : activatorEntity(activator);
+    if (!entity) return 0;
+    if (key === 'health') return entity.type === 'player' ? state.playerStats.health : Math.max(0, entity.health ?? 0);
+    if (entity.type !== 'player') return 0;
+    if (key === 'armor' || key === 'basicarmor') return state.playerStats.armor || 0;
     if (AMMO_NAMES[key]) return state.playerStats[AMMO_NAMES[key]] || 0;
     if (WEAPON_NAMES[key]) return state.inventory.weapons.has(WEAPON_NAMES[key]) ? 1 : 0;
     if (KEY_NAMES[key]) return state.inventory.keys.has(KEY_NAMES[key]) ? 1 : 0;
     if (ARMOR_NAMES[key]) return state.playerStats.armor >= ARMOR_NAMES[key] ? 1 : 0;
-    if (HEALTH_NAMES[key]) return state.playerStats.health >= HEALTH_NAMES[key][0] ? 1 : 0;
     return 0;
   }
 
