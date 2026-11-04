@@ -25,6 +25,8 @@ import { translationLookup, packColour } from '../shared/translation.js';
 import { advanceSectors } from '../shared/world-motion.js';
 import { moveEnemy } from '../shared/combat.js';
 import { parseUDMF, udmfRecords } from '../shared/udmf.js';
+import { importActors } from '../shared/actors.js';
+import { weaponAmmo, beginWeapon, weaponTic } from '../shared/actor-runtime.js';
 
 /*
  * Hunts 42 onward: the second engine-wide bug hunt (100 bugs counted from #42).
@@ -609,4 +611,238 @@ test('hunt 93: SetLineMonsterBlocking blocks monsters without walling off the pl
   assert.equal(mid.flags & 2, 2);
   scripts.host.setLineMonsterBlocking(6, false);
   assert.equal(mid.flags & 2, 0);
+});
+
+
+test('hunt 94: ACS health gifts stop at the item\'s own maximum and never lower health', () => {
+  const project = specialRoom();
+  const state = createRuntime(project);
+  const scripts = createMapScripts(project, state, {});
+  state.playerStats.health = 95;
+  scripts.host.giveInventory('Stimpack', 1);
+  assert.equal(state.playerStats.health, 100, 'a stimpack heals up to 100');
+  state.playerStats.health = 150;
+  scripts.host.giveInventory('Medikit', 1);
+  assert.equal(state.playerStats.health, 150, 'a medikit does nothing above 100');
+  scripts.host.giveInventory('HealthBonus', 3);
+  assert.equal(state.playerStats.health, 153, 'bonuses go on to 200');
+  scripts.host.giveInventory('Soulsphere', 1);
+  assert.equal(state.playerStats.health, 200);
+});
+
+test('hunt 95: Weapon.AmmoUse 0 fires without spending ammo', () => {
+  const { actors } = importActors({ sources: [{ name: 'w.zs', text: `
+class Pistol : Weapon
+{
+  Default { Weapon.AmmoType "Clip"; Weapon.AmmoUse 0; }
+  States { Ready: PISG A 1 A_WeaponReady; Loop; Fire: PISG A 1 A_FirePistol; PISG A 1; Goto Ready; }
+}` }], warnings: [] });
+  const gun = actors.find(actor => actor.name === 'Pistol');
+  assert.equal(gun.weaponAmmoUse, 0);
+  assert.equal(weaponAmmo(gun).use, 0);
+  const project = specialRoom();
+  project.actors = actors;
+  const state = createRuntime(project);
+  const fire = bullets => {
+    state.playerStats.bullets = bullets;
+    state.weaponAttack = null;
+    beginWeapon(project, state, 'pistol');
+    state.weaponTriggerHeld = true;
+    for (let tic = 0; tic < 6 && !state.weaponAttack; tic++) weaponTic(project, state, true);
+  };
+  fire(0);
+  assert.ok(state.weaponAttack, 'the weapon fires with an empty clip');
+  fire(5);
+  assert.ok(state.weaponAttack);
+  assert.equal(state.playerStats.bullets, 5, 'and spends nothing');
+});
+
+test('hunt 96: A_KeenDie opens tag 666 when the last Keen dies and kills nobody', () => {
+  const project = specialRoom({ entities: [
+    { id: 'k1', type: 'enemy', name: 'Keen', x: -100, y: 0, health: 0 },
+    { id: 'k2', type: 'enemy', name: 'Keen', x: -50, y: 0, health: 100 },
+    { id: 'imp', type: 'enemy', name: 'Imp', x: 300, y: 0, health: 60 },
+  ] });
+  project.map.sectors.find(sector => sector.id === 's1').tag = 666;
+  const state = createRuntime(project);
+  const keen = id => state.entities.find(entity => entity.id === id);
+  for (const id of ['k1', 'k2']) keen(id).actorName = 'CommanderKeen';
+  keen('imp').actorName = 'DoomImp';
+  const actor = { name: 'CommanderKeen', states: { frames: [], labels: {} } };
+  ACTIONS.A_KeenDie({ project, state, entity: keen('k1'), actor, args: [], named: {} });
+  assert.equal(keen('imp').health, 60, 'other monsters live on');
+  assert.equal(keen('k2').health, 100, 'other Keens live on');
+  assert.equal(motion(state, 's1', 'ceilingHeight'), undefined, 'a Keen is still alive');
+  keen('k2').health = 0;
+  ACTIONS.A_KeenDie({ project, state, entity: keen('k2'), actor, args: [], named: {} });
+  assert.ok(motion(state, 's1', 'ceilingHeight'), 'the last Keen opens the tag 666 door');
+});
+
+test('hunt 97: A_JumpIfInventory with amount 0 needs the item at its maximum', () => {
+  const { project, state, ctxFor } = actorRoom([{ id: 'w', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -100, y: 0, health: 50 }]);
+  project.actors.push({ id: 'actor_token', name: 'Token', flags: { INVENTORY: true }, inventoryMaxAmount: 3, states: { frames: [], labels: {} } });
+  const watcher = state.entities.find(entity => entity.id === 'w');
+  const runtime = actorStateOf(watcher);
+  runtime.index = 0;
+  ACTIONS.A_JumpIfInventory(ctxFor('w', ['Token', 0, 'Seen']));
+  assert.equal(runtime.index, 0, 'no token, no jump');
+  runtime.inventory.set('Token', 2);
+  ACTIONS.A_JumpIfInventory(ctxFor('w', ['Token', 0, 'Seen']));
+  assert.equal(runtime.index, 0, 'two of three is not full');
+  runtime.inventory.set('Token', 3);
+  ACTIONS.A_JumpIfInventory(ctxFor('w', ['Token', 0, 'Seen']));
+  assert.equal(runtime.index, 2, 'a full token jumps');
+});
+
+test('hunt 98: conditional jumps never treat their pointer argument as another label', () => {
+  const { state, ctxFor } = actorRoom([{ id: 'w', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -100, y: 0, health: 50 }]);
+  const watcher = state.entities.find(entity => entity.id === 'w');
+  const runtime = actorStateOf(watcher);
+  runtime.inventory.set('Token', 1);
+  for (let attempt = 0; attempt < 24; attempt++) {
+    runtime.index = 0;
+    ACTIONS.A_JumpIfHealthLower(ctxFor('w', [60, 'Seen', 'AAPTR_DEFAULT']));
+    assert.equal(runtime.index, 2, 'A_JumpIfHealthLower always takes its label');
+    runtime.index = 0;
+    ACTIONS.A_JumpIfInventory(ctxFor('w', ['Token', 1, 'Seen', 'AAPTR_DEFAULT']));
+    assert.equal(runtime.index, 2, 'A_JumpIfInventory always takes its label');
+  }
+});
+
+test('hunt 99: A_TakeInventory without an amount takes every item', () => {
+  const { state, ctxFor } = actorRoom([{ id: 'w', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -100, y: 0, health: 50 }]);
+  const runtime = actorStateOf(state.entities.find(entity => entity.id === 'w'));
+  runtime.inventory.set('Token', 5);
+  ACTIONS.A_TakeInventory(ctxFor('w', ['Token']));
+  assert.equal(runtime.inventory.get('Token') || 0, 0);
+  runtime.inventory.set('Token', 5);
+  ACTIONS.A_TakeInventory(ctxFor('w', ['Token', 0]));
+  assert.equal(runtime.inventory.get('Token') || 0, 0);
+  runtime.inventory.set('Token', 5);
+  ACTIONS.A_TakeInventory(ctxFor('w', ['Token', 2]));
+  assert.equal(runtime.inventory.get('Token'), 3);
+});
+
+test('hunt 100: A_GiveInventory with amount 0 gives one item', () => {
+  const { state, ctxFor } = actorRoom([{ id: 'w', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -100, y: 0, health: 50 }]);
+  const runtime = actorStateOf(state.entities.find(entity => entity.id === 'w'));
+  ACTIONS.A_GiveInventory(ctxFor('w', ['Token', 0]));
+  assert.equal(runtime.inventory.get('Token'), 1);
+});
+
+test('hunt 101: A_GiveInventory respects the item\'s Inventory.MaxAmount', () => {
+  const { project, state, ctxFor } = actorRoom([{ id: 'w', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -100, y: 0, health: 50 }]);
+  project.actors.push({ id: 'actor_token', name: 'Token', flags: { INVENTORY: true }, inventoryMaxAmount: 3, states: { frames: [], labels: {} } });
+  const runtime = actorStateOf(state.entities.find(entity => entity.id === 'w'));
+  ACTIONS.A_GiveInventory(ctxFor('w', ['Token', 5]));
+  assert.equal(runtime.inventory.get('Token'), 3);
+});
+
+function spawnFixture() {
+  const { actors } = importActors({ sources: [{ name: 's.zs', text: `
+class TestPuff : Actor { States { Spawn: PUFF A 3; Stop; } }` }], warnings: [] });
+  const project = specialRoom({ entities: [{ id: 'm', type: 'enemy', name: 'Spawner', x: -100, y: 0, health: 50, angle: 90 }] });
+  project.actors = actors;
+  project.assets = ['PUFFA0'].map(name => ({ id: `asset_${name}`, name, kind: 'sprite', width: 16, height: 16,
+    offsetX: 8, offsetY: 16, src: 'data:image/png;base64,iVBORw0KGgo=' }));
+  const state = createRuntime(project);
+  const entity = state.entities.find(item => item.id === 'm');
+  entity.angle = 90; entity.z = 0;
+  const run = (name, args) => { state.impacts = []; ACTIONS[name]({ project, state, entity, actor: actors[0], args, named: {} }); return state.impacts[0]; };
+  return { run, entity };
+}
+
+test('hunt 102: A_SpawnItemEx offsets are forward (x) and right (y) of the spawner', () => {
+  const { run, entity } = spawnFixture();
+  let puff = run('A_SpawnItemEx', ['TestPuff', 32, 0, 0]);
+  assert.ok(puff, 'the puff spawned');
+  assert.ok(Math.abs(puff.x - entity.x) < 1e-6 && Math.abs(puff.y - (entity.y + 32)) < 1e-6, `x offset is forward (${puff.x}, ${puff.y})`);
+  puff = run('A_SpawnItemEx', ['TestPuff', 0, 16, 0]);
+  assert.ok(Math.abs(puff.x - (entity.x + 16)) < 1e-6 && Math.abs(puff.y - entity.y) < 1e-6, `positive y is to the right (${puff.x}, ${puff.y})`);
+  puff = run('A_SpawnItemEx', ['TestPuff', 32, 0, 0, 0, 0, 0, 90]);
+  assert.ok(Math.abs(puff.x - (entity.x - 32)) < 1e-6 && Math.abs(puff.y - entity.y) < 1e-6, `the angle turns the offset too (${puff.x}, ${puff.y})`);
+});
+
+test('hunt 103: A_SpawnItemEx velocity is relative to the spawner unless absolute', () => {
+  const { run } = spawnFixture();
+  let puff = run('A_SpawnItemEx', ['TestPuff', 0, 0, 0, 2, 0, 0]);
+  assert.ok(Math.abs(puff.vx) < 1e-6 && Math.abs(puff.vy - 2 * 35) < 1e-6, `forward velocity follows the facing (${puff.vx}, ${puff.vy})`);
+  puff = run('A_SpawnItemEx', ['TestPuff', 0, 0, 0, 0, 2, 0]);
+  assert.ok(Math.abs(puff.vx - 2 * 35) < 1e-6 && Math.abs(puff.vy) < 1e-6, `sideways velocity goes right (${puff.vx}, ${puff.vy})`);
+  puff = run('A_SpawnItemEx', ['TestPuff', 0, 0, 0, 2, 0, 0, 0, 'SXF_ABSOLUTEVELOCITY']);
+  assert.ok(Math.abs(puff.vx - 2 * 35) < 1e-6 && Math.abs(puff.vy) < 1e-6, `absolute velocity stays in map axes (${puff.vx}, ${puff.vy})`);
+});
+
+test('hunt 104: A_SpawnItem spawns at its distance ahead and its height', () => {
+  const { run, entity } = spawnFixture();
+  const puff = run('A_SpawnItem', ['TestPuff', 40, 8]);
+  assert.ok(Math.abs(puff.x - entity.x) < 1e-6 && Math.abs(puff.y - (entity.y + 40)) < 1e-6, `distance is ahead (${puff.x}, ${puff.y})`);
+  assert.equal(puff.z, 8, 'zheight raises the spawn');
+});
+
+const frameTrail = actor => actor.states.frames.map(frame => frame.kind === 'frame' ? `${frame.sprite}${frame.letter}` : frame.kind);
+
+test('hunt 105: a DECORATE state label sharing its line with frames keeps those frames', () => {
+  const { actors } = importActors({ sources: [{ name: 'DECORATE', text: `
+actor SameLine
+{
+  States
+  {
+  Spawn: POSS AB 10 A_Look
+    Loop
+  See: POSS C 4 A_Chase
+    Loop
+  }
+}` }], warnings: [] });
+  const actor = actors.find(item => item.name === 'SameLine');
+  assert.deepEqual(Object.keys(actor.states.labels), ['Spawn', 'See']);
+  assert.deepEqual(frameTrail(actor), ['POSSA', 'POSSB', 'loop', 'POSSC', 'loop']);
+  assert.equal(actor.states.frames[0].actions?.[0]?.name, 'A_Look');
+});
+
+test('hunt 106: a ZScript flow keyword followed by a label on the same line keeps the label', () => {
+  const { actors } = importActors({ sources: [{ name: 'a.zs', text: `
+class Packed : Actor
+{
+  States
+  {
+  Spawn:
+    PACK A 4; Loop; See: PACK B 4; Goto Spawn;
+  }
+}` }], warnings: [] });
+  const actor = actors.find(item => item.name === 'Packed');
+  assert.deepEqual(Object.keys(actor.states.labels), ['Spawn', 'See']);
+  assert.deepEqual(frameTrail(actor), ['PACKA', 'loop', 'PACKB', 'goto']);
+  assert.equal(actor.states.frames[3].targetIndex, 0, 'Goto Spawn resolves');
+});
+
+test('hunt 107: Goto Super::Label runs the parent class sequence', () => {
+  const { actors } = importActors({ sources: [{ name: 'a.zs', text: `
+class BaseThing : Actor
+{
+  States
+  {
+  Spawn:
+    BASE A 1;
+    Loop;
+  See:
+    BASE B 2;
+    BASE C 2;
+    Loop;
+  }
+}
+class KidThing : BaseThing
+{
+  States
+  {
+  See:
+    KIDS A 1; Goto Super::See;
+  }
+}` }], warnings: [] });
+  const actor = actors.find(item => item.name === 'KidThing');
+  const see = actor.states.labels.See;
+  const jump = actor.states.frames[see + 1];
+  assert.equal(jump.kind, 'goto', 'the same-line goto is parsed');
+  const target = actor.states.frames[jump.targetIndex];
+  assert.equal(`${target.sprite}${target.letter}`, 'BASEB', 'the goto lands on the parent See, not on its own See');
 });

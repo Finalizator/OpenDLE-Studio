@@ -24,6 +24,15 @@ const LABEL_ALIASES = { melee: 'Melee', missile: 'Missile', see: 'See', spawn: '
   ready: 'Ready', select: 'Select', deselect: 'Deselect', fire: 'Fire', flash: 'Flash' };
 
 /** Case-insensitive label lookup, because mods mix casing across files. */
+/**
+ * Line specials import this module, so importing them back would be a cycle that
+ * breaks module initialisation; line-specials.js hands its executor over instead.
+ * A function declaration is hoisted, so registration works in either load order.
+ */
+export function registerSpecialExecutor(run) {
+  registerSpecialExecutor.run = run;
+}
+
 export function labelIndex(actor, label) {
   if (!actor?.states) return null;
   const labels = actor.states.labels;
@@ -211,6 +220,33 @@ const numArg = (ctx, index, fallback = 0) => {
 };
 const truthyArg = value => value === true || (typeof value === 'string' ? /^(true|[1-9]\d*)$/i.test(value.trim()) : Number(value) !== 0 && Boolean(value));
 const projectilesByName = project => projectActorIndex(project);
+// A_SpawnItemEx flags that change how its offsets, angle and velocity are read.
+const SPAWN_FLAGS = { sxf_absoluteposition: 2, sxf_absoluteangle: 4, sxf_absolutemomentum: 8, sxf_absolutevelocity: 8 };
+/** A flags argument written as a number or as `NAME|NAME|4`; unknown names count as 0. */
+const flagArg = (ctx, index, names) => {
+  const value = arg(ctx, index, 0);
+  if (typeof value === 'number') return value | 0;
+  return String(value ?? '').split('|').reduce((flags, part) => {
+    const name = part.trim().replace(/^"|"$/g, '').toLowerCase();
+    const number = Number(name);
+    return flags | (Number.isFinite(number) ? number | 0 : names[name] || 0);
+  }, 0);
+};
+/** The direction a thing faces in degrees; a missile faces the way it flies. */
+const facingOf = entity => Number.isFinite(entity?.angle) ? entity.angle
+  : Number.isFinite(entity?.dx) && Number.isFinite(entity?.dy) && (entity.dx || entity.dy) ? Math.atan2(entity.dy, entity.dx) * 180 / Math.PI : 0;
+/** `Inventory.MaxAmount` of a named item class, or null when the project does not declare one. */
+const inventoryMaxAmount = (project, item) => {
+  const name = String(item || '').toLowerCase();
+  const actor = (project?.actors || []).find(candidate => String(candidate.name || '').toLowerCase() === name);
+  return Number.isFinite(actor?.inventoryMaxAmount) ? actor.inventoryMaxAmount : null;
+};
+/** GZDoom's CheckInventory: a positive amount needs that many, 0 needs the item at its maximum. */
+const hasInventory = (project, runtime, item, amount) => {
+  const held = runtime.inventory.get(item) || 0;
+  if (held <= 0) return false;
+  return amount > 0 ? held >= amount : held >= (inventoryMaxAmount(project, item) ?? 1);
+};
 
 const clampUnit = value => Math.max(-1, Math.min(1, value));
 const wrapRadians = angle => Math.atan2(Math.sin(angle), Math.cos(angle));
@@ -859,9 +895,14 @@ export const ACTIONS = {
   },
   A_VileTarget() {},
   A_VileStart() {},
+  // A_KeenDie(doortag = 666): when no other thing of the same class is alive, open the
+  // tagged doors. It never touches other monsters.
   A_KeenDie(ctx) {
-    ctx.state.entities.filter(candidate => candidate.type === 'enemy' && candidate.health > 0)
-      .forEach(candidate => { if (candidate !== ctx.entity) candidate.health = 0; });
+    const { project, state, entity } = ctx;
+    const kind = String(entity?.actorName || entity?.name || '').toLowerCase();
+    if (state.entities.some(candidate => candidate !== entity && candidate.type === 'enemy' && (candidate.health ?? 0) > 0 &&
+      String(candidate.actorName || candidate.name || '').toLowerCase() === kind)) return;
+    registerSpecialExecutor.run?.(project, state, 11, [numArg(ctx, 0, 666) || 666, 16], { format: 'zdoom' });
   },
   A_BossDeath(ctx) {
     const { state, entity } = ctx;
@@ -935,26 +976,23 @@ export const ACTIONS = {
   A_JumpIfHealthLower(ctx) {
     const { entity, actor } = ctx;
     if (entity.health >= numArg(ctx, 0, 0)) return;
-    ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(1)] });
+    ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(1, 2)] });
   },
   A_JumpIfNoAmmo(ctx) {
     // Weapons resolve ammo themselves; monsters have no ammo so this never fires.
     if (ctx.actor.flags?.WEAPON) return;
   },
   A_JumpIfInventory(ctx) {
+    // (item, amount, label, owner): the trailing pointer is not another label.
     const runtime = actorStateOf(ctx.entity);
-    const item = String(arg(ctx, 0) || '');
-    const amount = numArg(ctx, 1, 1);
-    if ((runtime.inventory.get(item) || 0) < amount) return;
-    ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(2)] });
+    if (!hasInventory(ctx.project, runtime, String(arg(ctx, 0) || ''), numArg(ctx, 1, 0))) return;
+    ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(2, 3)] });
   },
   A_JumpIfInTargetInventory(ctx) {
     const holder = inventoryHolder(ctx.state, actorTarget(ctx.state, ctx.entity));
     if (!holder) return;
-    const runtime = actorStateOf(holder);
-    const item = String(arg(ctx, 0) || '');
-    if ((runtime.inventory.get(item) || 0) < numArg(ctx, 1, 1)) return;
-    ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(2)] });
+    if (!hasInventory(ctx.project, actorStateOf(holder), String(arg(ctx, 0) || ''), numArg(ctx, 1, 0))) return;
+    ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(2, 3)] });
   },
   A_JumpIfTargetInLOS(ctx) {
     // (label, fov, flags, dist_max, dist_close): a fov or distance of 0 means no limit.
@@ -964,16 +1002,22 @@ export const ACTIONS = {
     if (!target || !canSeeTarget(state, entity, target, range > 0 ? range : Infinity, fov > 0 ? fov : 360)) return;
     ACTIONS.A_Jump({ ...ctx, args: [256, ctx.args[0]] });
   },
+  // An amount of 0 (the default) gives one; the item's MaxAmount caps the total.
   A_GiveInventory(ctx) {
     const runtime = actorStateOf(ctx.entity);
     const item = String(arg(ctx, 0) || '');
-    runtime.inventory.set(item, (runtime.inventory.get(item) || 0) + numArg(ctx, 1, 1));
+    const amount = Math.max(1, numArg(ctx, 1, 0));
+    const most = inventoryMaxAmount(ctx.project, item);
+    const held = runtime.inventory.get(item) || 0;
+    runtime.inventory.set(item, most === null ? held + amount : Math.max(held, Math.min(most, held + amount)));
   },
+  // An amount of 0 (the default) takes every one.
   A_TakeInventory(ctx) {
     const runtime = actorStateOf(ctx.entity);
     const item = String(arg(ctx, 0) || '');
-    const amount = numArg(ctx, 1, 1);
-    runtime.inventory.set(item, Math.max(0, (runtime.inventory.get(item) || 0) - amount));
+    const amount = numArg(ctx, 1, 0);
+    const held = runtime.inventory.get(item) || 0;
+    runtime.inventory.set(item, amount > 0 ? Math.max(0, held - amount) : 0);
   },
   A_GiveToTarget(ctx) {
     const holder = inventoryHolder(ctx.state, actorTarget(ctx.state, ctx.entity));
@@ -1004,28 +1048,29 @@ export const ACTIONS = {
     if (!spawned) return;
     const chance = numArg(ctx, 9, 0);
     if (chance > 0 && randomDamage(state, 1, 256) <= chance) return;
-    if (spawned.flags?.COUNTKILL === true || spawned.name.toLowerCase() === 'lostsoul') {
-      spawnProjectileEntity(project, state, entity, spawned);
-      return;
-    }
-    // Offsets and velocity are relative to the spawner's facing; the angle rotates
-    // the horizontal velocity, which is how trail particles are spread out.
-    const facing = (entity?.angle ?? 0) * Math.PI / 180;
-    const side = facing - Math.PI / 2;
-    const ox = numArg(ctx, 1, 0), oy = numArg(ctx, 2, 0);
-    const vx = numArg(ctx, 4, 0), vy = numArg(ctx, 5, 0), vz = numArg(ctx, 6, 0);
-    const spin = numArg(ctx, 7, 0) * Math.PI / 180;
-    const speed = Math.hypot(vx, vy);
-    const direction = spin || (speed ? Math.atan2(vy, vx) : facing);
-    spawnEffect(project, state, spawned.name, {
-      x: entity.x + Math.cos(facing) * oy + Math.cos(side) * ox,
-      y: entity.y + Math.sin(facing) * oy + Math.sin(side) * ox,
-      z: (entity.z ?? floorAt(state, entity)) + numArg(ctx, 3, 0),
-      vx: Math.cos(direction) * speed, vy: Math.sin(direction) * speed, vz,
-    });
+    // GZDoom: the angle adds to the spawner's facing, and in that frame x is forward and
+    // y is to the right, for both the offset and the velocity, unless flagged absolute.
+    const flags = flagArg(ctx, 8, SPAWN_FLAGS);
+    const angle = (numArg(ctx, 7, 0) + (flags & 4 ? 0 : facingOf(entity))) * Math.PI / 180;
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const xofs = numArg(ctx, 1, 0), yofs = numArg(ctx, 2, 0);
+    let vx = numArg(ctx, 4, 0), vy = numArg(ctx, 5, 0);
+    const [dx, dy] = flags & 2 ? [xofs, yofs] : [xofs * c + yofs * s, xofs * s - yofs * c];
+    if (!(flags & 8)) [vx, vy] = [vx * c + vy * s, vx * s - vy * c];
+    const position = { x: entity.x + dx, y: entity.y + dy, z: (entity.z ?? floorAt(state, entity)) + numArg(ctx, 3, 0) };
+    spawnItemAt(project, state, entity, spawned, position, { vx, vy, vz: numArg(ctx, 6, 0) });
   },
+  // A_SpawnItem(class, distance, zheight): straight ahead; a distance of 0 places it just
+  // clear of the spawner.
   A_SpawnItem(ctx) {
-    ACTIONS.A_SpawnItemEx(ctx);
+    const { project, state, entity } = ctx;
+    const name = String(arg(ctx, 0) || '').replace(/^"|"$/g, '');
+    const spawned = projectilesByName(project).byName.get(name.toLowerCase());
+    if (!spawned) return;
+    const distance = numArg(ctx, 1, 0) || (actorOf(project, entity)?.radius ?? entity.radius ?? 0) + (spawned.radius ?? 0);
+    const facing = facingOf(entity) * Math.PI / 180;
+    spawnItemAt(project, state, entity, spawned, { x: entity.x + Math.cos(facing) * distance,
+      y: entity.y + Math.sin(facing) * distance, z: (entity.z ?? floorAt(state, entity)) + numArg(ctx, 2, 0) });
   },
   A_CustomBulletAttack(ctx) {
     const pellets = Math.max(1, Math.min(20, numArg(ctx, 2, 1))), damage = numArg(ctx, 3, 3), spread = numArg(ctx, 0, 0) / 2;
@@ -1083,6 +1128,16 @@ export function saySound(state, name, entity, volume = 127) {
   // name (`DSPOSIT1`), and the audio player resolves both case-insensitively.
   state.sounds.push({ name: String(name), volume: Math.min(1, Math.max(0, volume / 127)),
     position: entity ? { x: entity.x, y: entity.y } : undefined });
+}
+
+/** Monsters spawned by an actor stay real things; anything else becomes an effect. */
+function spawnItemAt(project, state, owner, actor, position, velocity = {}) {
+  if (actor.flags?.COUNTKILL === true || actor.name.toLowerCase() === 'lostsoul') {
+    const entity = spawnProjectileEntity(project, state, owner, actor);
+    if (entity && state.entities.includes(entity)) Object.assign(entity, { x: position.x, y: position.y });
+    return;
+  }
+  spawnEffect(project, state, actor.name, { ...position, ...velocity });
 }
 
 /** Spawns a full actor entity (a Lost Soul, a projectile with states, ...). */
@@ -1523,7 +1578,7 @@ function teleportWeapon(runtime, actor, label) {
 function weaponHasAmmo(state, actor) {
   const { type, use } = weaponAmmo(actor);
   if (!type) return true;
-  return (state.playerStats[type] || 0) >= (use || 1);
+  return (state.playerStats[type] || 0) >= use;
 }
 
 /**
@@ -1548,9 +1603,9 @@ function fireWeapon(ctx, actionName) {
   const spendAmmo = !custom || !(arg(ctx, 2, true) === false || numArg(ctx, 2, 1) === 0);
   const { type, use } = weaponAmmo(actor);
   if (type && spendAmmo) {
-    const cost = use || 1;
-    if ((state.playerStats[type] || 0) < cost) { state.weaponTriggerHeld = false; return; }
-    state.playerStats[type] -= cost;
+    // `Weapon.AmmoUse 0` is a weapon that needs the ammo type but spends none.
+    if ((state.playerStats[type] || 0) < use) { state.weaponTriggerHeld = false; return; }
+    state.playerStats[type] -= use;
   }
   if (FIRE_SOUNDS[actionName]) saySound(state, FIRE_SOUNDS[actionName], null, 127);
   const missile = (name, damage, radius) => {

@@ -477,7 +477,9 @@ provider credits or network access are required for tests.
   stays a wall whatever is cleared. In ACS, a tid of 0 means the script's activator for
   `SetActorPosition`, `GetActor*` and `Get/SetActorProperty`; `FixedDiv` by zero
   terminates the script like integer division; `ThingCountSector` counts every sector
-  with the tag; and things spawned in the same tic get distinct ids.
+  with the tag; and things spawned in the same tic get distinct ids. `GiveInventory` of a
+  health item heals up to that item's own limit — stimpacks and medikits stop at 100,
+  bonuses and spheres at 200 — and never lowers health that is already above it.
 
   Binary Doom maps are a different language: their lines carry Doom's own
   numbers, where 19 lowers a floor and Hexen's 19 stops a thing. The importer
@@ -2241,6 +2243,19 @@ action functions and the decisions around them. `shared/actor-runtime.js` and
   vertical gap) to the actor's target, `A_JumpIfTargetInLOS(label, fov, flags,
   dist_max)` needs a clear line of sight to it (0 means no limit), and
   `A_JumpIfInTargetInventory`/`A_GiveToTarget` read and fill the *target's* inventory.
+- **Inventory actions.** `A_JumpIfInventory`/`A_JumpIfInTargetInventory` with amount 0
+  need the item at its `Inventory.MaxAmount` (1 by default), and an item that is not
+  held never jumps. `A_GiveInventory` gives one when the amount is 0 and stops at the
+  item's `MaxAmount`; `A_TakeInventory` without an amount takes all of it. Conditional
+  jumps read only their label argument, so a trailing pointer (`AAPTR_*`) is never
+  taken for a second label. `Weapon.AmmoUse 0` fires without spending ammo.
+- **Spawning.** `A_SpawnItemEx` offsets and velocity are relative to the spawner's
+  facing — x forward, y to the right, plus its own angle argument — unless
+  `SXF_ABSOLUTEPOSITION`, `SXF_ABSOLUTEANGLE` or `SXF_ABSOLUTEVELOCITY` say otherwise.
+  `A_SpawnItem(class, distance, zheight)` spawns that far ahead (0 meaning both radii)
+  and that high. A projectile faces the way it flies. `A_KeenDie(tag)` opens the
+  tagged doors once no other living Keen remains, as `Door_Open(tag, 16)`; it kills
+  nobody.
 - **Monster-blocking lines.** Lines flagged `BLOCKMONSTERS` (binary flag 2, UDMF
   `blockmonsters`, `SetLineMonsterBlocking`) stop a monster step that would cross or
   close in on them while leaving the line open to players.
@@ -2375,6 +2390,13 @@ put a flag before its action (`STEA A 2 Bright A_SpawnItemEx(...)`, which is how
 vanilla and every mod write them) lost both the flag and the action. The ZScript
 state parser now peels flags on either side of the call; Furdoom's projectile
 states went from no actions to their real `A_SpawnItemEx` and `A_Tracer` calls.
+
+Packed state lines parse the way GZDoom reads them: a label may share its line with
+the first frame (`Spawn: POSS AB 10 A_Look` in DECORATE), and a flow keyword may be
+followed by more states (`PACK A 4; Loop; See: PACK B 4;` in ZScript). Before, the
+DECORATE tokenizer swallowed the label's colon and the whole block lost its states.
+`Goto Super::See` jumps into the *parent's* See sequence, even when the class
+redefines See: the compiler appends the parent frames under a `Super::See` label.
 
 ### Sky changes
 

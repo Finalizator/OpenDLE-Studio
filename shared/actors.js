@@ -133,7 +133,7 @@ export function compileActorRecord(actor, { knownActors = new Map(), index = 0 }
     flags,
     sounds,
     weaponAmmoType: prop(properties, 'Weapon.AmmoType') ?? prop(properties, 'Weapon.AmmoType1') ?? null,
-    weaponAmmoUse: numberProp(properties, 'Weapon.AmmoUse', 1) || 1,
+    weaponAmmoUse: Math.max(0, numberProp(properties, 'Weapon.AmmoUse', 1)),
     weaponSlotNumber: numberProp(properties, 'Weapon.SlotNumber', 0) || null,
     weaponSelectionOrder: numberProp(properties, 'Weapon.SelectionOrder', 0) || null,
     inventoryAmount: numberProp(properties, 'Inventory.Amount', 0) || null,

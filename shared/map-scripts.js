@@ -33,7 +33,8 @@ const WEAPON_NAMES = { fist: 'fist', chainsaw: 'chainsaw', pistol: 'pistol', sho
 const KEY_NAMES = { bluecard: 'blueCard', yellowcard: 'yellowCard', redcard: 'redCard', blueskull: 'blueSkull',
   yellowskull: 'yellowSkull', redskull: 'redSkull', bluekey: 'blueCard', yellowkey: 'yellowCard', redkey: 'redCard' };
 const ARMOR_NAMES = { greenarmor: 100, bluearmor: 200, armor: 100 };
-const HEALTH_NAMES = { stimpack: 10, medikit: 25, healthbonus: 1, soulsphere: 100, megasphere: 200 };
+// Each health item's amount and the most it heals to (Health.MaxAmount, 0 meaning the player's 100).
+const HEALTH_NAMES = { stimpack: [10, 100], medikit: [25, 100], healthbonus: [1, 200], soulsphere: [100, 200], megasphere: [200, 200] };
 
 export function encodeBase64(bytes) {
   let binary = '';
@@ -648,7 +649,9 @@ export function createMapScripts(project, state, callbacks = {}) {
     if (KEY_NAMES[key] && amount > 0) { state.inventory.keys.add(KEY_NAMES[key]); return; }
     if (ARMOR_NAMES[key] && amount > 0) { state.playerStats.armor = Math.max(state.playerStats.armor, ARMOR_NAMES[key]); return; }
     if (HEALTH_NAMES[key] && amount > 0) {
-      state.playerStats.health = Math.min(200, state.playerStats.health + HEALTH_NAMES[key] * amount);
+      const [each, most] = HEALTH_NAMES[key];
+      if (state.playerStats.health >= most) return;
+      state.playerStats.health = Math.min(most, state.playerStats.health + each * amount);
       state.feedback.health = state.playerStats.health;
     }
   }
@@ -659,7 +662,7 @@ export function createMapScripts(project, state, callbacks = {}) {
     if (WEAPON_NAMES[key]) return state.inventory.weapons.has(WEAPON_NAMES[key]) ? 1 : 0;
     if (KEY_NAMES[key]) return state.inventory.keys.has(KEY_NAMES[key]) ? 1 : 0;
     if (ARMOR_NAMES[key]) return state.playerStats.armor >= ARMOR_NAMES[key] ? 1 : 0;
-    if (HEALTH_NAMES[key]) return state.playerStats.health >= HEALTH_NAMES[key] ? 1 : 0;
+    if (HEALTH_NAMES[key]) return state.playerStats.health >= HEALTH_NAMES[key][0] ? 1 : 0;
     return 0;
   }
 

@@ -65,8 +65,9 @@ export function tokenizeDecorate(text) {
     if (/[A-Za-z_$@#]/.test(char)) {
       let value = char; index++;
       while (index < text.length && /[A-Za-z0-9_$@#:.]/.test(text[index])) {
-        // `Label:` must not swallow the colon that ends a state label.
-        if (text[index] === ':' && !/[A-Za-z0-9_$]./.test(text[index - 1] + (text[index + 1] || ''))) break;
+        // `Label:` must not swallow the colon that ends a state label; only a `::` scope
+        // (`Super::Spawn`) belongs to the word.
+        if (text[index] === ':' && text[index + 1] !== ':' && text[index - 1] !== ':') break;
         value += text[index]; index++;
       }
       index--;
@@ -270,6 +271,8 @@ function parseStates(lines, start, { zscript = false } = {}) {
     if (first.kind === 'word' && line[1]?.kind === 'punct' && line[1].value === ':') {
       current = { label: first.value, frames: [], line: first.line };
       states.push(current);
+      // `Spawn: POSS AB 10 A_Look` puts the first frame on the label's line.
+      if (line.length > 2) { lines[index] = line.slice(2); continue; }
       index++; continue;
     }
     if (!current) { index++; continue; }
@@ -498,8 +501,7 @@ export function compileActorStates(actor, { parentLookup = () => null } = {}) {
   // duration and action, so every letter becomes its own executable frame and
   // `goto Label+2` / `A_Jump(256, 1)` count them individually.
   let lastSprite = null, lastLetter = null;
-  for (const [label, entries] of source) {
-    if (labels.has(label)) continue;
+  const append = (label, entries) => {
     labels.set(label, frames.length);
     for (const frame of entries) {
       if (frame.type === 'frame') {
@@ -520,6 +522,20 @@ export function compileActorStates(actor, { parentLookup = () => null } = {}) {
       if (!frame.keyword) continue;
       frames.push({ kind: frame.keyword, target: frame.target || null, label, line: frame.line });
     }
+  };
+  for (const [label, entries] of source) {
+    if (labels.has(label)) continue;
+    append(label, entries);
+  }
+  // `Goto Super::See` runs the parent's own See sequence even when this class
+  // redefines See, so the parent's frames are compiled in under that scoped name.
+  const parentActor = actor?.parent ? parentLookup(actor.parent) : null;
+  const parentLabels = parentActor?.labels instanceof Map ? parentActor.labels : null;
+  for (let index = 0; parentLabels && index < frames.length; index++) {
+    const scoped = frames[index].kind === 'goto' && /^super::([\w.]+?)(?:[+-]\d+)?$/i.exec(String(frames[index].target || '').trim());
+    if (!scoped || labels.has(`Super::${scoped[1]}`)) continue;
+    const key = [...parentLabels.keys()].find(name => name.toLowerCase() === scoped[1].toLowerCase());
+    if (key !== undefined) append(`Super::${scoped[1]}`, parentLabels.get(key));
   }
   // Resolve keysword targets to frame indexes.
   const resolveLabel = (target, from) => {
@@ -527,6 +543,11 @@ export function compileActorStates(actor, { parentLookup = () => null } = {}) {
     const clean = String(target).trim();
     const base = clean.replace(/[+-]\d+$/, '');
     const offset = Number(clean.slice(base.length)) || 0;
+    const scoped = /^super::([\w.]+)$/i.exec(base);
+    if (scoped) {
+      const index = labels.get(`Super::${scoped[1]}`);
+      return index === undefined ? null : index + offset;
+    }
     if (base.toLowerCase() === 'super') {
       const parent = parentLookup(actor?.parent);
       if (!parent) return null;

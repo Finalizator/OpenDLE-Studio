@@ -154,17 +154,18 @@ function parseStates(body) {
         if (!line) break;
         continue;
       }
-      const keyword = /^(loop|stop|wait|fail)\s*;?$/i.exec(line);
+      // A keyword ends its sequence, but a label may follow on the same line (`Loop; Fire: ...`).
+      const keyword = /^(loop|stop|wait|fail)\s*(?:;|$)/i.exec(line);
       if (keyword) {
         if (current) current.frames.push({ type: 'keyword', keyword: keyword[1].toLowerCase(), target: null });
-        line = '';
-        break;
+        line = line.slice(keyword[0].length).trim();
+        continue;
       }
-      const goto = /^goto\s+([\w.#+-]+)\s*;?$/i.exec(line);
+      const goto = /^goto\s+([\w.#+:-]+)\s*(?:;|$)/i.exec(line);
       if (goto) {
         if (current) current.frames.push({ type: 'keyword', keyword: 'goto', target: goto[1] });
-        line = '';
-        break;
+        line = line.slice(goto[0].length).trim();
+        continue;
       }
       const frame = /^([A-Za-z0-9_#-]{1,5})\s+([A-Za-z#-]+)\s+(-?[0-9.]+)/.exec(line);
       if (!frame) { line = ''; break; }
@@ -217,10 +218,10 @@ function parseStates(body) {
         const nextFrame = /^([A-Za-z0-9_#-]{1,5})\s+([A-Za-z#-]+)\s+(-?[0-9.]+)([\s\S]*)$/.exec(part);
         // Another frame on the same line: keep it and everything after it for
         // the next pass through the frame parser.
-        if (nextFrame) { line = [part, ...parts.slice(partIndex + 1)].join('; '); break; }
+        if (nextFrame || STATE_LABEL.test(part)) { line = [part, ...parts.slice(partIndex + 1)].join('; '); break; }
         const keyword = /^(loop|stop|wait|fail)$/i.exec(part);
         if (keyword) { if (current) current.frames.push({ type: 'keyword', keyword: keyword[1].toLowerCase(), target: null }); continue; }
-        const goto = /^goto\s+([\w.#+-]+)$/i.exec(part);
+        const goto = /^goto\s+([\w.#+:-]+)$/i.exec(part);
         if (goto) { if (current) current.frames.push({ type: 'keyword', keyword: 'goto', target: goto[1] }); continue; }
         const action = parseFrameAction(part, 0);
         if (action) {

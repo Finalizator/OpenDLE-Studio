@@ -15,7 +15,7 @@ import { resetMomentum } from './player-motion.js';
 import { doomSpecialName } from './doom-specials.js';
 import { floorAt, sectorFloorAt, soundEvent } from './combat.js';
 import { sectorAt } from './sectors.js';
-import { actorOf, hurtActor } from './actor-runtime.js';
+import { actorOf, hurtActor, registerSpecialExecutor } from './actor-runtime.js';
 
 const SPECIAL_NAMES = [
    'NOP', 'NOP', 'Polyobj_RotateLeft', 'Polyobj_RotateRight', 'Polyobj_Move', 'NOP', 'Polyobj_MoveTimes8',
@@ -293,6 +293,8 @@ function placeThing(state, entity, position) {
 function teleportSound(state) {
   soundEvent(state, 'DSTELEPT', .7);
 }
+
+registerSpecialExecutor(executeSpecial);
 
 /**
  * Runs a line special. Returns the special's result value, which only
