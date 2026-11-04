@@ -48,6 +48,21 @@ export function parseTranslationTable(sources) {
 const RANGE = /^(\d{1,3}):(\d{1,3})=(\d{1,3}):(\d{1,3})$/;
 const RANGE_TO_ONE = /^(\d{1,3}):(\d{1,3})=(\d{1,3})$/;
 const ONE = /^(\d{1,3})=(\d{1,3})$/;
+const RGB_RANGE = /^(\d{1,3}):(\d{1,3})=\[(\d{1,3}),(\d{1,3}),(\d{1,3})\]:\[(\d{1,3}),(\d{1,3}),(\d{1,3})\]$/;
+
+/** Splits a spec on the commas between entries, not the ones inside an `[r,g,b]` colour. */
+function specEntries(spec) {
+  const entries = [];
+  let depth = 0, current = '';
+  for (const char of spec) {
+    if (char === '[') depth++;
+    else if (char === ']') depth = Math.max(0, depth - 1);
+    if (char === ',' && !depth) { entries.push(current); current = ''; continue; }
+    current += char;
+  }
+  entries.push(current);
+  return entries.map(entry => entry.replace(/\s+/g, '')).filter(Boolean);
+}
 
 /**
  * Turns translation specs into a colour lookup for one palette.
@@ -60,9 +75,20 @@ export function translationLookup(specs, palette) {
     colours.push([palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2]]);
   }
   const remap = new Map(), unsupported = [];
-  const entries = specs.flatMap(spec => spec.split(',')).map(entry => entry.trim()).filter(Boolean);
+  const entries = specs.flatMap(spec => specEntries(spec));
   for (const entry of entries) {
     let match;
+    if ((match = RGB_RANGE.exec(entry))) {
+      // A gradient from the first colour at `from` to the second at `to`, as GZDoom's
+      // AddColorRange builds it.
+      const [from, to, ...rgb] = match.slice(1).map(Number);
+      if (from > to || [from, to, ...rgb].some(value => value > 255)) { unsupported.push(entry); continue; }
+      for (let index = from; index <= to; index++) {
+        const t = to === from ? 0 : (index - from) / (to - from);
+        remap.set(index, [0, 1, 2].map(channel => Math.round(rgb[channel] + (rgb[channel + 3] - rgb[channel]) * t)));
+      }
+      continue;
+    }
     if ((match = RANGE.exec(entry))) {
       const [from, to, targetFrom, targetTo] = match.slice(1).map(Number);
       if (from > to || targetFrom > targetTo) { unsupported.push(entry); continue; }
@@ -85,7 +111,10 @@ export function translationLookup(specs, palette) {
   }
   const lookup = new Map();
   for (const [from, to] of remap) {
-    if (from > 255 || to > 255) continue;
+    if (from > 255) continue;
+    // A direct RGB target is an exact colour; anything else is another palette index.
+    if (Array.isArray(to)) { lookup.set(packColour(...colours[from]), packColour(...to)); continue; }
+    if (to > 255) continue;
     lookup.set(packColour(...colours[from]), packColour(...colours[to]));
   }
   return { lookup, unsupported, changed: lookup.size };

@@ -209,6 +209,7 @@ const numArg = (ctx, index, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+const truthyArg = value => value === true || (typeof value === 'string' ? /^(true|[1-9]\d*)$/i.test(value.trim()) : Number(value) !== 0 && Boolean(value));
 const projectilesByName = project => projectActorIndex(project);
 
 const clampUnit = value => Math.max(-1, Math.min(1, value));
@@ -535,6 +536,12 @@ export function setActorTarget(entity, target) {
 }
 
 const targetPosition = (state, entity) => actorTarget(state, entity) || state.player;
+
+/** The entity whose actor inventory stands for `target`; the player is its map entity. */
+function inventoryHolder(state, target) {
+  if (target && target === state.player) return state.entities.find(entity => entity.type === 'player') || null;
+  return target || null;
+}
 
 /**
  * Who an explosion credits: the missile's owner when the blast comes from a
@@ -913,10 +920,17 @@ export const ACTIONS = {
     ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(1)] });
   },
   A_JumpIfCloser(ctx) {
-    const { state, entity, actor } = ctx;
+    // GZDoom's CheckIfCloser: the actor's target, 2D distance, and unless `noz` the vertical gap.
+    const { state, entity, project } = ctx;
+    const target = actorTarget(state, entity);
     const distance = numArg(ctx, 0, 0);
-    if (Math.hypot(state.player.x - entity.x, state.player.y - entity.y) > distance) return;
-    ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(1)] });
+    if (!target || Math.hypot(target.x - entity.x, target.y - entity.y) >= distance) return;
+    if (!truthyArg(arg(ctx, 2, false))) {
+      const z = entity.z ?? floorAt(state, entity), targetZ = target.z ?? floorAt(state, target);
+      const height = thing => (thing === state.player || thing.type === 'player' ? 56 : actorOf(project, thing)?.height ?? 56);
+      if (z > targetZ ? z - targetZ - height(target) >= distance : targetZ - z - height(entity) >= distance) return;
+    }
+    ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(1, 2)] });
   },
   A_JumpIfHealthLower(ctx) {
     const { entity, actor } = ctx;
@@ -935,12 +949,21 @@ export const ACTIONS = {
     ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(2)] });
   },
   A_JumpIfInTargetInventory(ctx) {
-    const runtime = actorStateOf(ctx.entity);
+    const holder = inventoryHolder(ctx.state, actorTarget(ctx.state, ctx.entity));
+    if (!holder) return;
+    const runtime = actorStateOf(holder);
     const item = String(arg(ctx, 0) || '');
     if ((runtime.inventory.get(item) || 0) < numArg(ctx, 1, 1)) return;
     ACTIONS.A_Jump({ ...ctx, args: [256, ...ctx.args.slice(2)] });
   },
-  A_JumpIfTargetInLOS(ctx) { ACTIONS.A_JumpIfCloser(ctx); },
+  A_JumpIfTargetInLOS(ctx) {
+    // (label, fov, flags, dist_max, dist_close): a fov or distance of 0 means no limit.
+    const { state, entity } = ctx;
+    const target = actorTarget(state, entity);
+    const fov = numArg(ctx, 1, 0), range = numArg(ctx, 3, 0);
+    if (!target || !canSeeTarget(state, entity, target, range > 0 ? range : Infinity, fov > 0 ? fov : 360)) return;
+    ACTIONS.A_Jump({ ...ctx, args: [256, ctx.args[0]] });
+  },
   A_GiveInventory(ctx) {
     const runtime = actorStateOf(ctx.entity);
     const item = String(arg(ctx, 0) || '');
@@ -952,7 +975,10 @@ export const ACTIONS = {
     const amount = numArg(ctx, 1, 1);
     runtime.inventory.set(item, Math.max(0, (runtime.inventory.get(item) || 0) - amount));
   },
-  A_GiveToTarget(ctx) { ACTIONS.A_GiveInventory(ctx); },
+  A_GiveToTarget(ctx) {
+    const holder = inventoryHolder(ctx.state, actorTarget(ctx.state, ctx.entity));
+    if (holder) ACTIONS.A_GiveInventory({ ...ctx, entity: holder });
+  },
   A_ClearTarget(ctx) { actorStateOf(ctx.entity).target = null; },
   A_SetScale(ctx) { ctx.entity.scale = numArg(ctx, 0, 1); },
   A_ChangeFlag(ctx) {

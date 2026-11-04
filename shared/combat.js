@@ -255,6 +255,14 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
       const dx = wall.end.x - wall.start.x, dy = wall.end.y - wall.start.y;
       const t = Math.max(0, Math.min(1, ((x - wall.start.x) * dx + (y - wall.start.y) * dy) / (dx * dx + dy * dy)));
       if (Math.hypot(x - wall.start.x - t * dx, y - wall.start.y - t * dy) >= 16) continue;
+      if (wall.flags & 2) {
+        // ML_BLOCKMONSTERS: stop a step that crosses the line or closes in on it, but let a
+        // monster that starts beside one walk away.
+        const length = Math.hypot(dx, dy) || 1;
+        const before = ((entity.x - wall.start.x) * dy - (entity.y - wall.start.y) * dx) / length;
+        const after = ((x - wall.start.x) * dy - (y - wall.start.y) * dx) / length;
+        if (Math.sign(before) !== Math.sign(after) || Math.abs(after) < Math.abs(before)) return false;
+      }
       const front = sectors.get(wall.right?.sectorId), back = sectors.get(wall.left?.sectorId);
       if (!wall.solid && front && back && Math.min(front.ceilingHeight, back.ceilingHeight) - Math.max(front.floorHeight, back.floorHeight) >= 56 &&
         Math.max(front.floorHeight, back.floorHeight) - entityFloor <= 24) continue;

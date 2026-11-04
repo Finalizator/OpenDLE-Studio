@@ -15,7 +15,7 @@ import { resetMomentum } from './player-motion.js';
 import { doomSpecialName } from './doom-specials.js';
 import { floorAt, sectorFloorAt, soundEvent } from './combat.js';
 import { sectorAt } from './sectors.js';
-import { actorOf } from './actor-runtime.js';
+import { actorOf, hurtActor } from './actor-runtime.js';
 
 const SPECIAL_NAMES = [
    'NOP', 'NOP', 'Polyobj_RotateLeft', 'Polyobj_RotateRight', 'Polyobj_Move', 'NOP', 'Polyobj_MoveTimes8',
@@ -74,9 +74,6 @@ const SPECIAL_NAMES = [
   'Sector_SetCeilingGlow', 'Floor_MoveToValueAndCrush', 'Ceiling_MoveToValueAndCrush', 'Line_SetAutomapFlags',
   'Line_SetAutomapStyle', 'Polyobj_StopSound', 'Generic_CrusherDist',
 ];
-
-/** Blocking modes for Line_SetBlocking. */
-const BLOCK_NOTHING = 0, BLOCK_CREATURES = 1, BLOCK_EVERYTHING = 2, BLOCK_RAILING = 3, BLOCK_PLAYERS = 4;
 
 /**
  * A special's name in the numbering of the map it came from. UDMF and Hexen maps
@@ -192,7 +189,7 @@ function floorLowest(state, project, sector) {
   return floors.length ? Math.min(...floors) : sector.floorHeight;
 }
 
-function damageActor(state, entity, amount, options) {
+function damageActor(project, state, entity, amount, options) {
   if (!entity || !(amount > 0)) return false;
   if (entity.type === 'player' || entity === state.player) {
     state.playerStats.health = Math.max(0, state.playerStats.health - amount);
@@ -200,9 +197,36 @@ function damageActor(state, entity, amount, options) {
     state.feedback.damage = { amount, time: state.time };
     return true;
   }
+  if (entity.type === 'enemy') {
+    // Monsters are hurt the way a shot hurts them, so a kill leaves a corpse that does not block.
+    if (!hurtActor(project, state, entity, amount)) return false;
+    if (!entity.health) options.onDeath?.(entity);
+    return true;
+  }
   if (entity.health === undefined) return false;
   entity.health = Math.max(0, entity.health - amount);
   if (!entity.health) options.onDeath?.(entity);
+  return true;
+}
+
+const TELEFRAG_DAMAGE = 1000000;
+
+/**
+ * GZDoom's `P_GiveBody` / HealThing: health rises toward `limit` but never past it, and a
+ * thing already at or above the limit is left alone. Monsters heal up to their spawn health.
+ */
+function healThing(project, state, entity, amount, limit) {
+  if (!entity || !(amount > 0)) return false;
+  if (entity.type === 'player') {
+    const stats = state.playerStats;
+    const max = limit || stats.healthMax || 100;
+    if (stats.health < max) stats.health = Math.min(max, stats.health + amount);
+    state.feedback.health = stats.health;
+    return true;
+  }
+  if (!(entity.health > 0)) return false;
+  const max = actorOf(project, entity)?.health ?? entity.spawnHealth ?? entity.health;
+  if (entity.health < max) entity.health = Math.min(max, entity.health + amount);
   return true;
 }
 
@@ -502,19 +526,16 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 244: // Exit_Secret
       options.finishLevel?.('secret');
       return 1;
-    case 73: { // DamageThing — damages the activating actor
-      const entity = state.entities.find(entity => entity.type === 'player');
-      if (entity) damageActor(state, entity, arg1, options);
-      else {
-        state.playerStats.health = Math.max(0, state.playerStats.health - arg1);
-        state.feedback.health = state.playerStats.health;
-        state.feedback.damage = { amount: arg1, time: state.time };
-      }
+    case 73: { // DamageThing (amount, mod) — hurts the activator; 0 kills, a negative amount heals
+      const victim = activatorThing(state, options.activator);
+      if (!victim) return 0;
+      if (arg1 < 0) healThing(project, state, victim, -arg1, 0);
+      else damageActor(project, state, victim, arg1 || TELEFRAG_DAMAGE, options);
       return 1;
     }
     case 119: { // Thing_Damage
       let damaged = 0;
-      for (const entity of actorsByTid(state, arg1)) if (damageActor(state, entity, arg2, options)) damaged++;
+      for (const entity of actorsByTid(state, arg1)) if (damageActor(project, state, entity, arg2, options)) damaged++;
       if (!damaged && (options.activator === 'player' || !arg1)) {
         state.playerStats.health = Math.max(0, state.playerStats.health - arg2);
         state.feedback.health = state.playerStats.health;
@@ -522,10 +543,13 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       }
       return damaged;
     }
-    case 248: // HealThing
-      state.playerStats.health = Math.min(state.playerStats.healthMax || 100, state.playerStats.health + arg1);
-      state.feedback.health = state.playerStats.health;
+    case 248: { // HealThing (amount, max) — max 0 is the normal maximum, 1 the soulsphere limit
+      const victim = activatorThing(state, options.activator);
+      if (!victim) return 0;
+      const limit = victim.type !== 'player' || !arg2 ? 0 : arg2 === 1 ? 200 : arg2;
+      healThing(project, state, victim, arg1, limit);
       return 1;
+    }
     case 130: case 131: { // Thing_Activate / Thing_Deactivate
       // Dormant monsters stand still until something activates them, which is
       // how Hexen maps stage reinforcements.
@@ -537,13 +561,25 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       }
       return changed;
     }
-    case 132: case 133: { // Thing_Remove / Thing_Destroy
+    case 132: { // Thing_Remove (tid) — tid 0 removes the activator; players are never removed
+      const self = arg1 ? null : activatorThing(state, options.activator);
+      const victims = arg1 ? actorsByTid(state, arg1) : self && self.type !== 'player' ? [self] : [];
       let removed = 0;
-      for (const entity of actorsByTid(state, arg1)) {
+      for (const entity of victims) {
+        if (entity.type === 'player') continue;
         options.onRemove?.(entity);
         removed++;
       }
-      return removed;
+      return arg1 ? removed : 1;
+    }
+    case 133: { // Thing_Destroy (tid, extreme, tag) — kills; tid 0 and tag 0 is a massacre
+      const alive = entity => entity.type !== 'player' && entity.health > 0;
+      const inTag = entity => !arg3 || sectorAt(state.sectors, entity.x, entity.y)?.tag === arg3;
+      const victims = arg1 ? actorsByTid(state, arg1).filter(entity => alive(entity) && inTag(entity))
+        : arg3 ? state.entities.filter(entity => alive(entity) && inTag(entity))
+          : state.entities.filter(entity => entity.type === 'enemy' && entity.health > 0);
+      for (const entity of victims) damageActor(project, state, entity, arg2 ? TELEFRAG_DAMAGE : entity.health, options);
+      return 1;
     }
     case 134: case 136: { // Thing_Projectile(+Gravity)
       const origin = actorByTid(state, arg1);
@@ -579,7 +615,7 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       const spots = actorsByTid(state, arg1);
       for (const spot of spots) {
         const angle = special === 139 ? spot.angle : arg3 * 360 / 256;
-        if (options.spawn?.({ x: spot.x, y: spot.y, z: sectorFloorAt(state, spot), type: arg2, angle, tid: 0 })) spawned++;
+        if (options.spawn?.({ x: spot.x, y: spot.y, z: sectorFloorAt(state, spot), type: arg2, angle, tid: arg4 })) spawned++;
       }
       return spawned;
     }
@@ -587,6 +623,15 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       const amount = arg2;
       for (const sector of sectors) {
         const before = sector.light;
+        // A new lighting special replaces a fade still in progress, as GZDoom's thinker does.
+        if (special !== 114 && special !== 115 && special !== 116) state.sectorMotions.delete(`${sector.id}:light`);
+        if (special === 113 && arg3 > 0) { // Light_Fade (tag, value, tics)
+          const target = Math.max(0, Math.min(255, amount));
+          state.sectorMotions.set(`${sector.id}:light`, { sectorId: sector.id, surface: 'light', height: target,
+            speed: Math.abs(target - sector.light) / (arg3 / TIC), wait: 0, returnMode: 'stay',
+            origin: sector.light, direction: 'out', waiting: 0 });
+          continue;
+        }
         if (special === 110) sector.light = Math.min(255, sector.light + amount);
         else if (special === 111) sector.light = Math.max(0, sector.light - amount);
         else if (special === 112 || special === 113) sector.light = Math.max(0, Math.min(255, amount));
@@ -624,13 +669,18 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       state.worldRevision++;
       return 1;
     }
-    case 55: { // Line_SetBlocking
+    case 55: { // Line_SetBlocking (id, setflags, clearflags)
+      // Flag masks, not a mode: 1 BLOCKING, 2 BLOCKMONSTERS, 4 BLOCK_PLAYERS, 32 BLOCKEVERYTHING and
+      // 64 RAILING stop players; monster-only blocking lives in the line's flags.
+      if (!arg1) return 0;
+      const BLOCKS_PLAYERS = 1 | 4 | 32 | 64;
       for (const wall of state.walls) {
         if (wall.tag !== arg1 && wall.id !== arg1) continue;
         const front = state.sectors.find(sector => sector.id === wall.right?.sectorId);
         const back = state.sectors.find(sector => sector.id === wall.left?.sectorId);
-        if (arg2 === BLOCK_NOTHING) wall.solid = !front || !back;
-        else if (arg2 === BLOCK_EVERYTHING || arg2 === BLOCK_PLAYERS || arg2 === BLOCK_CREATURES || arg2 === BLOCK_RAILING) wall.solid = true;
+        const blocking = (wall.solid && !(arg3 & BLOCKS_PLAYERS)) || Boolean(arg2 & BLOCKS_PLAYERS);
+        wall.solid = blocking || !front || !back;
+        wall.flags = ((Number(wall.flags) || 0) & ~(arg3 & 3)) | (arg2 & 3);
       }
       state.worldRevision++;
       return 1;

@@ -19,6 +19,12 @@ import { projectZipEntries } from '../server/project-folder.js';
 import { createZipArchive } from '../server/export-build.js';
 import { createPlaytestLogStore } from '../server/playtest-logs.js';
 import { createLogId, logFileName, normalizeLogEntry } from '../shared/playtest-log.js';
+import { createProgram, createAcsVm, startScript, tickAcs, PCODE_NAMES } from '../shared/acs.js';
+import { ACTIONS, actorStateOf } from '../shared/actor-runtime.js';
+import { translationLookup, packColour } from '../shared/translation.js';
+import { advanceSectors } from '../shared/world-motion.js';
+import { moveEnemy } from '../shared/combat.js';
+import { parseUDMF, udmfRecords } from '../shared/udmf.js';
 
 /*
  * Hunts 42 onward: the second engine-wide bug hunt (100 bugs counted from #42).
@@ -61,7 +67,7 @@ function specialRoom({ special = 0, args = [], s1 = {}, entities = [] } = {}) {
     { id: 'w8', a: 'v3', b: 'v4', right: side('s2'), left: null, solid: true },
     { id: 'w9', a: 'v4', b: 'v5', right: side('s2'), left: null, solid: true },
   ].map(wall => ({ color: '#888888', flags: 0, height: 160, ...wall }));
-  project.map.entities = [{ id: 'player', type: 'player', name: 'Player', x: -40, y: 0, angle: 0 }, ...entities];
+  project.map.entities = [{ id: 'player', type: 'player', name: 'Player', x: -40, y: 0, angle: 0 }, ...entities.map(entity => ({ angle: 0, ...entity }))];
   installEngineScripts(project);
   validateProject(project);
   return project;
@@ -323,4 +329,284 @@ test('hunt 72: a used Hexen door line with tag 0 opens the sector behind it', ()
   const door = motion(state, 's1', 'ceilingHeight');
   assert.ok(door, 'the back sector opens');
   assert.equal(door.speed, 8 * 35);
+});
+
+/** A one-script ACS module (script 1, closed) built from pcode names and pushed numbers. */
+function acsLump(ops) {
+  const code = [];
+  const word = value => code.push(value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff, (value >> 24) & 0xff);
+  for (const op of ops) {
+    if (typeof op === 'number') { code.push(PCODE_NAMES.indexOf('PUSHNUMBER')); word(op); continue; }
+    const pcode = PCODE_NAMES.indexOf(op);
+    if (pcode >= 240) code.push(0xf0, pcode - 240); else code.push(pcode);
+  }
+  code.push(PCODE_NAMES.indexOf('TERMINATE'));
+  const bytes = [0x41, 0x43, 0x53, 0, 0, 0, 0, 0, ...code];
+  const chunkStart = bytes.length;
+  bytes.push(...'SPTR'.split('').map(char => char.charCodeAt(0)), 8, 0, 0, 0, 1, 0, 0, 0, 8, 0, 0, 0);
+  while (bytes.length % 4) bytes.push(0);
+  bytes.push(chunkStart & 0xff, (chunkStart >> 8) & 0xff, 0, 0, ...'ACSe'.split('').map(char => char.charCodeAt(0)), 0, 0, 0, 0, 0, 0, 0, 0);
+  const dirofs = bytes.length - 8;
+  bytes[4] = dirofs & 0xff; bytes[5] = (dirofs >> 8) & 0xff;
+  return createProgram([{ name: 'BEHAVIOR', bytes: new Uint8Array(bytes) }]);
+}
+
+function runAcs(ops, host = {}) {
+  const vm = createAcsVm(acsLump(ops), host);
+  startScript(vm, 1);
+  tickAcs(vm);
+  return vm;
+}
+
+test('hunt 73: FixedDiv by zero terminates the script like integer division', () => {
+  const calls = [];
+  const vm = runAcs([65536, 0, 'FIXEDDIV', 'DROP', 7, 2, 'SETLINEBLOCKING'], { setLineBlocking: (...args) => calls.push(args) });
+  assert.deepEqual(calls, [], 'the script stops at the division');
+  assert.ok(vm.errors.some(error => /division by zero/.test(error)), vm.errors.join('\n'));
+});
+
+test('hunt 74: ThingCountSector counts things in every sector with the tag', () => {
+  const project = specialRoom({ entities: [
+    { id: 'a', type: 'pickup', name: 'A', x: 128, y: 0, doomType: 2011 },
+    { id: 'b', type: 'pickup', name: 'B', x: 384, y: 0, doomType: 2011 }] });
+  project.map.sectors.find(sector => sector.id === 's2').tag = 1;
+  const state = createRuntime(project);
+  const scripts = createMapScripts(project, state, {});
+  assert.equal(scripts.host.thingCount({ type: 2011, tid: 0, tag: 1 }), 2);
+});
+
+test('hunt 75: SetActorPosition with tid 0 moves the activator', () => {
+  const project = specialRoom({ entities: [{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60 }] });
+  const state = createRuntime(project);
+  const scripts = createMapScripts(project, state, {});
+  assert.equal(scripts.host.setActorPosition(0, -120 * 65536, 32 * 65536, 0, 0, 'player'), 1);
+  assert.deepEqual([state.player.x, state.player.y], [-120, 32]);
+  const imp = state.entities.find(entity => entity.id === 'imp');
+  assert.equal(scripts.host.setActorPosition(0, -90 * 65536, 10 * 65536, 0, 0, imp), 1);
+  assert.deepEqual([imp.x, imp.y], [-90, 10], 'a monster activator moves itself');
+  assert.equal(scripts.host.getActor(0, 'x', imp), -90 * 65536, 'GetActorX(0) reads the activator too');
+});
+
+function jumpActor() {
+  return { id: 'watcher', name: 'Watcher', flags: { MONSTER: true }, health: 50, radius: 16, height: 56,
+    states: { labels: { Spawn: 0, Seen: 2 }, frames: [
+      { kind: 'frame', sprite: 'MONS', letter: 'A', duration: 4, actions: [], label: 'Spawn' },
+      { kind: 'loop', label: 'Spawn' },
+      { kind: 'frame', sprite: 'MONS', letter: 'B', duration: 4, actions: [], label: 'Seen' },
+      { kind: 'stop' },
+    ] } };
+}
+
+function actorRoom(entities) {
+  const project = specialRoom({ entities });
+  project.actors = [jumpActor()];
+  const state = createRuntime(project);
+  const ctxFor = (id, args) => ({ project, state, entity: state.entities.find(entity => entity.id === id), actor: project.actors[0], args, named: {} });
+  return { project, state, ctxFor };
+}
+
+test('hunt 76: A_JumpIfTargetInLOS jumps to its label only when the target is in sight', () => {
+  const { state, ctxFor } = actorRoom([{ id: 'w', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -100, y: 0, health: 50 }]);
+  state.player.x = 200; state.player.y = 0;
+  const watcher = state.entities.find(entity => entity.id === 'w');
+  actorStateOf(watcher).index = 0;
+  ACTIONS.A_JumpIfTargetInLOS(ctxFor('w', ['Seen']));
+  assert.equal(actorStateOf(watcher).index, 2, 'the open room lets it see the player');
+  actorStateOf(watcher).index = 0;
+  state.walls.find(wall => wall.id === 'door').left = null;
+  ACTIONS.A_JumpIfTargetInLOS(ctxFor('w', ['Seen']));
+  assert.equal(actorStateOf(watcher).index, 0, 'a wall between them blocks the jump');
+});
+
+test('hunt 77: A_JumpIfInTargetInventory checks the target, not the caller', () => {
+  const { state, ctxFor } = actorRoom([
+    { id: 'w', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -100, y: 0, health: 50 },
+    { id: 'friend', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -60, y: 0, health: 50 }]);
+  const watcher = state.entities.find(entity => entity.id === 'w');
+  const friend = state.entities.find(entity => entity.id === 'friend');
+  watcher.targetId = 'friend';
+  actorStateOf(friend).inventory.set('Key', 1);
+  actorStateOf(watcher).index = 0;
+  ACTIONS.A_JumpIfInTargetInventory(ctxFor('w', ['Key', 1, 'Seen']));
+  assert.equal(actorStateOf(watcher).index, 2);
+});
+
+test('hunt 78: A_GiveToTarget gives the item to the target', () => {
+  const { state, ctxFor } = actorRoom([
+    { id: 'w', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -100, y: 0, health: 50 },
+    { id: 'friend', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -60, y: 0, health: 50 }]);
+  const watcher = state.entities.find(entity => entity.id === 'w');
+  const friend = state.entities.find(entity => entity.id === 'friend');
+  watcher.targetId = 'friend';
+  ACTIONS.A_GiveToTarget(ctxFor('w', ['Gem', 2]));
+  assert.equal(actorStateOf(friend).inventory.get('Gem'), 2);
+  assert.equal(actorStateOf(watcher).inventory.get('Gem') ?? 0, 0);
+});
+
+test('hunt 79: translations accept direct RGB gradients', () => {
+  const palette = new Uint8Array(768);
+  for (let index = 0; index < 256; index++) palette.fill(index, index * 3, index * 3 + 3);
+  const { lookup, unsupported } = translationLookup(['0:2=[0,0,0]:[200,100,50]', '9=4'], palette);
+  assert.deepEqual(unsupported, []);
+  assert.equal(lookup.get(packColour(1, 1, 1)), packColour(100, 50, 25));
+  assert.equal(lookup.get(packColour(2, 2, 2)), packColour(200, 100, 50));
+  assert.equal(lookup.get(packColour(9, 9, 9)), packColour(4, 4, 4));
+});
+
+test('hunt 80: DamageThing hurts its activator, and zero damage kills', () => {
+  const project = specialRoom({ entities: [{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60 }] });
+  const state = createRuntime(project);
+  executeSpecial(project, state, 73, [10], { format: 'zdoom', activator: 'imp' });
+  assert.equal(state.entities.find(entity => entity.id === 'imp').health, 50);
+  assert.equal(state.playerStats.health, 100, 'the player was not the activator');
+  executeSpecial(project, state, 73, [0], { format: 'zdoom', activator: 'player' });
+  assert.equal(state.playerStats.health, 0, 'zero damage is a guaranteed kill');
+});
+
+test('hunt 81: HealThing heals up to its max argument', () => {
+  const { state, project } = zdoomSpecial(0, []);
+  executeSpecial(project, state, 248, [50, 200], { format: 'zdoom', activator: 'player' });
+  assert.equal(state.playerStats.health, 150);
+  executeSpecial(project, state, 248, [100, 1], { format: 'zdoom', activator: 'player' });
+  assert.equal(state.playerStats.health, 200, 'max 1 is the soulsphere limit');
+});
+
+test('hunt 82: Thing_Destroy kills things instead of deleting them', () => {
+  const project = specialRoom({ entities: [
+    { id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60, tid: 4 },
+    { id: 'imp2', type: 'enemy', name: 'Imp', x: 128, y: 0, health: 60 }] });
+  const state = createRuntime(project);
+  executeSpecial(project, state, 133, [4, 0, 0], { format: 'zdoom' });
+  const imp = state.entities.find(entity => entity.id === 'imp');
+  assert.ok(imp, 'the thing is still there to play its death');
+  assert.equal(imp.health, 0);
+  executeSpecial(project, state, 133, [0, 0, 1], { format: 'zdoom' });
+  assert.equal(state.entities.find(entity => entity.id === 'imp2').health, 0, 'tid 0 with a tag kills in the tagged sectors');
+});
+
+test('hunt 83: Thing_Remove with tid 0 removes the activator', () => {
+  const project = specialRoom({ entities: [{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60 }] });
+  const state = createRuntime(project);
+  assert.equal(executeSpecial(project, state, 132, [0], { format: 'zdoom', activator: 'imp',
+    onRemove: entity => { state.entities = state.entities.filter(other => other !== entity); } }), 1);
+  assert.equal(state.entities.find(entity => entity.id === 'imp'), undefined);
+});
+
+test('hunt 84: Thing_Spawn gives the new thing its newtid', () => {
+  const spawned = [];
+  const project = specialRoom({ entities: [{ id: 'spot', type: 'decoration', name: 'Spot', x: -100, y: 0, tid: 3 }] });
+  const state = createRuntime(project);
+  executeSpecial(project, state, 135, [3, 1, 0, 9], { format: 'zdoom', spawn: payload => { spawned.push(payload); return 1; } });
+  executeSpecial(project, state, 139, [3, 1, 0, 11], { format: 'zdoom', spawn: payload => { spawned.push(payload); return 1; } });
+  assert.deepEqual(spawned.map(payload => payload.tid), [9, 11]);
+});
+
+test('hunt 85: Line_SetBlocking reads set and clear flag masks', () => {
+  const project = specialRoom();
+  project.map.walls.find(wall => wall.id === 'mid').tag = 5;
+  const state = createRuntime(project);
+  const mid = state.walls.find(wall => wall.id === 'mid');
+  executeSpecial(project, state, 55, [5, 32, 0], { format: 'zdoom' });
+  assert.equal(mid.solid, true, 'BLOCKEVERYTHING (32) blocks');
+  executeSpecial(project, state, 55, [5, 0, 32], { format: 'zdoom' });
+  assert.equal(mid.solid, false, 'clearing it unblocks');
+  executeSpecial(project, state, 55, [5, 2, 0], { format: 'zdoom' });
+  assert.equal(mid.solid, false, 'BLOCKMONSTERS leaves the line open to players');
+  assert.equal(mid.flags & 2, 2);
+});
+
+test('hunt 86: SetLineBlocking and SetLineMonsterBlocking pop line id and mode in call order', () => {
+  const calls = [];
+  runAcs([7, 2, 'SETLINEBLOCKING', 8, 1, 'SETLINEMONSTERBLOCKING'], {
+    setLineBlocking: (...args) => calls.push(['block', ...args]),
+    setLineMonsterBlocking: (...args) => calls.push(['monster', ...args]) });
+  assert.deepEqual(calls, [['block', 7, 2], ['monster', 8, true]]);
+});
+
+test('hunt 87: SetLineBlocking BLOCK_NOTHING keeps one-sided walls solid', () => {
+  const project = specialRoom();
+  project.map.walls.find(wall => wall.id === 'w0').tag = 6;
+  project.map.walls.find(wall => wall.id === 'mid').tag = 6;
+  const state = createRuntime(project);
+  const scripts = createMapScripts(project, state, {});
+  scripts.host.setLineBlocking(6, 2);
+  assert.equal(state.walls.find(wall => wall.id === 'mid').solid, true);
+  scripts.host.setLineBlocking(6, 0);
+  assert.equal(state.walls.find(wall => wall.id === 'w0').solid, true, 'a one-sided wall cannot be opened');
+  assert.equal(state.walls.find(wall => wall.id === 'mid').solid, false);
+});
+
+test('hunt 88: Light_Fade fades over its tics', () => {
+  const { state } = zdoomSpecial(113, [1, 64, 35]);
+  const sector = state.sectors.find(item => item.id === 's1');
+  assert.equal(sector.light, 160, 'nothing changes at once');
+  advanceSectors(state, .5);
+  assert.equal(Math.round(sector.light), 112);
+  advanceSectors(state, .6);
+  assert.equal(sector.light, 64);
+  assert.equal(state.sectorMotions.size, 0);
+});
+
+test('hunt 89: things spawned by ACS in one tic get distinct ids even after a removal', () => {
+  const project = specialRoom({ entities: [{ id: 'crate', type: 'decoration', name: 'Crate', x: 100, y: 0 }] });
+  const state = createRuntime(project);
+  const scripts = createMapScripts(project, state, {});
+  scripts.host.spawn({ type: 2011, x: -100, y: 0 });
+  state.entities = state.entities.filter(entity => entity.id !== 'crate');
+  scripts.host.spawn({ type: 2011, x: -120, y: 0 });
+  const ids = state.entities.filter(entity => entity.id.startsWith('acs_spawn')).map(entity => entity.id);
+  assert.equal(ids.length, 2);
+  assert.notEqual(ids[0], ids[1]);
+});
+
+test('hunt 90: a monster killed by a special stops blocking like one shot dead', () => {
+  const project = specialRoom({ entities: [{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 20, tid: 2 }] });
+  const state = createRuntime(project);
+  executeSpecial(project, state, 119, [2, 50], { format: 'zdoom' });
+  const imp = state.entities.find(entity => entity.id === 'imp');
+  assert.equal(imp.health, 0);
+  assert.equal(imp.solid, false);
+});
+
+test('hunt 91: A_JumpIfCloser measures the distance to the actor target', () => {
+  const { state, ctxFor } = actorRoom([
+    { id: 'w', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -100, y: 0, health: 50 },
+    { id: 'friend', type: 'enemy', name: 'Watcher', actor: 'watcher', x: -60, y: 0, health: 50 }]);
+  state.player.x = 384;
+  const watcher = state.entities.find(entity => entity.id === 'w');
+  watcher.targetId = 'friend';
+  actorStateOf(watcher).index = 0;
+  ACTIONS.A_JumpIfCloser(ctxFor('w', [100, 'Seen']));
+  assert.equal(actorStateOf(watcher).index, 2, 'its target is 40 away even though the player is far');
+});
+
+test('hunt 92: monsters do not walk through monster-blocking lines', () => {
+  const project = specialRoom();
+  const mid = project.map.walls.find(wall => wall.id === 'mid');
+  mid.flags = 2;
+  const state = createRuntime(project);
+  state.sectors.find(sector => sector.id === 's2').floorHeight = 16;
+  const imp = { id: 'imp', type: 'enemy', x: 240, y: 0, z: 16, health: 50, angle: 0 };
+  state.entities.push(imp);
+  let crossed = false;
+  for (let index = 0; index < 40 && !crossed; index++) {
+    moveEnemy(state, imp, 64, .1, { x: 400, y: 0 });
+    if (imp.x > 256) crossed = true;
+  }
+  assert.equal(crossed, false);
+  const udmf = udmfRecords(parseUDMF('namespace = "zdoom";\nvertex { x = 0; y = 0; }\nvertex { x = 64; y = 0; }\nsidedef { sector = 0; }\nsector { heightfloor = 0; heightceiling = 128; }\nlinedef { v1 = 0; v2 = 1; sidefront = 0; blockmonsters = true; }\n'));
+  assert.equal(udmf.lines[0].flags & 2, 2, 'UDMF keeps the monster-blocking flag');
+});
+
+test('hunt 93: SetLineMonsterBlocking blocks monsters without walling off the player', () => {
+  const project = specialRoom();
+  project.map.walls.find(wall => wall.id === 'mid').tag = 6;
+  const state = createRuntime(project);
+  const scripts = createMapScripts(project, state, {});
+  const mid = state.walls.find(wall => wall.id === 'mid');
+  scripts.host.setLineMonsterBlocking(6, true);
+  assert.equal(mid.solid, false, 'players still pass');
+  assert.equal(mid.flags & 2, 2);
+  scripts.host.setLineMonsterBlocking(6, false);
+  assert.equal(mid.flags & 2, 0);
 });

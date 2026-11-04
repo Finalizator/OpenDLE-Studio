@@ -184,7 +184,7 @@ export function udmfRecords(document) {
       activationModes: [['playercross', 'cross'], ['playeruse', 'use'], ['playeruseback', 'use'], ['impact', 'shoot']]
         .filter(([key]) => bool(p, key)).map(([, mode]) => mode),
       flags: (bool(p, 'blocking') || bool(p, 'blockplayers') || bool(p, 'blockeverything') ? 1 : 0) |
-        (bool(p, 'dontpegtop') ? 8 : 0) | (bool(p, 'dontpegbottom') ? 16 : 0) })),
+        (bool(p, 'blockmonsters') ? 2 : 0) | (bool(p, 'dontpegtop') ? 8 : 0) | (bool(p, 'dontpegbottom') ? 16 : 0) })),
     things: byType('thing').map(p => ({
       x: number(p, 'x'), y: number(p, 'y'), angle: number(p, 'angle', 0, { min: -3600, max: 3600 }),
       tid: number(p, 'id', 0, { integer: true, min: 0, max: 65535 }),

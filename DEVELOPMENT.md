@@ -467,6 +467,18 @@ provider credits or network access are required for tests.
   destination things (editor number 14) and UDMF thing IDs (`id` → TID) are
   imported so scripts can address things.
 
+  Thing and light specials follow GZDoom's arguments: `DamageThing`/`HealThing` act on
+  the activator (damage 0 kills, `HealThing`'s max 1 is the soulsphere limit of 200),
+  `Thing_Remove(0)` removes the activator, `Thing_Destroy` kills rather than deletes
+  (tid 0 with a tag kills in the tagged sectors, both 0 is a massacre), `Thing_Spawn*`
+  give the new thing its newtid, and `Light_Fade` fades over its tics as a `:light`
+  sector motion that any later light special replaces. `Line_SetBlocking(id, set,
+  clear)` takes flag masks; `BLOCKMONSTERS` only stops monsters, and a one-sided line
+  stays a wall whatever is cleared. In ACS, a tid of 0 means the script's activator for
+  `SetActorPosition`, `GetActor*` and `Get/SetActorProperty`; `FixedDiv` by zero
+  terminates the script like integer division; `ThingCountSector` counts every sector
+  with the tag; and things spawned in the same tic get distinct ids.
+
   Binary Doom maps are a different language: their lines carry Doom's own
   numbers, where 19 lowers a floor and Hexen's 19 stops a thing. The importer
   names them from Doom's table (`shared/doom-specials.js`), so a report never
@@ -2161,7 +2173,8 @@ no longer spawns actors inside the ground.
 
 A DECORATE/ZScript `Translation` repaints an actor's sprites by remapping palette
 colours (`128:151=80:111`), collapsing a range onto one colour (`208:223=1`) or
-mapping direct RGB. Sprites are decoded with the game's palette at import, so
+mapping direct RGB (`0:15=[0,0,0]:[255,255,255]`, a gradient across the range; the
+commas inside a colour do not split entries). Sprites are decoded with the game's palette at import, so
 `shared/translation.js` turns the specs into a colour lookup and the importer bakes
 translated copies of the affected frames as ordinary editable image assets. A
 placed actor gets its own translated clips, because the same sprite prefix may
@@ -2221,7 +2234,16 @@ action functions and the decisions around them. `shared/actor-runtime.js` and
   compass directions before reversing, which is what makes it round corners.
 - **Same damage rules everywhere.** Player hitscan, monster hitscan, projectiles,
   explosions, radius damage and the BFG spray all go through `hurtActor`, so
-  infighting, pain and death behave identically whoever caused them.
+  infighting, pain and death behave identically whoever caused them. Specials and
+  ACS (`Thing_Damage`, `DamageThing`, `Thing_Destroy`, `DamageActor`) use it too, so a
+  monster they kill leaves a corpse that no longer blocks.
+- **Target checks.** `A_JumpIfCloser` measures the 2D distance (and, unless `noz`, the
+  vertical gap) to the actor's target, `A_JumpIfTargetInLOS(label, fov, flags,
+  dist_max)` needs a clear line of sight to it (0 means no limit), and
+  `A_JumpIfInTargetInventory`/`A_GiveToTarget` read and fill the *target's* inventory.
+- **Monster-blocking lines.** Lines flagged `BLOCKMONSTERS` (binary flag 2, UDMF
+  `blockmonsters`, `SetLineMonsterBlocking`) stop a monster step that would cross or
+  close in on them while leaving the line open to players.
 
 One parser bug mattered even more than those: `A_Jump(128, "Missile")` lost its
 chance argument because only word/string arguments were stored, so **every**

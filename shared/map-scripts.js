@@ -20,7 +20,7 @@ import { resetMomentum } from './player-motion.js';
 import { sectorAt } from './sectors.js';
 import { actorForThing } from './actors.js';
 import { doomThings } from './doom-assets.js';
-import { projectActorIndex } from './actor-runtime.js';
+import { projectActorIndex, hurtActor } from './actor-runtime.js';
 
 const TIC_RATE = 35;
 
@@ -260,7 +260,7 @@ export function createMapScripts(project, state, callbacks = {}) {
     changeFlat: (tag, name, ceiling) => changeFlat(tag, name, ceiling),
     setLineTexture: (tag, side, part, name) => setLineTexture(tag, side, part, name),
     setLineBlocking: (tag, mode) => setLineBlocking(tag, mode),
-    setLineMonsterBlocking: (tag, on) => setLineBlocking(tag, on ? 2 : 0),
+    setLineMonsterBlocking: (tag, on) => setLineMonsterBlocking(tag, on),
     setLineSpecial: (tag, special, args) => setLineSpecial(tag, special, args),
     setThingSpecial: () => {},
     clearLineSpecial: line => clearLineSpecial(line),
@@ -287,7 +287,7 @@ export function createMapScripts(project, state, callbacks = {}) {
     },
     projectile: options => launchFromThing(options),
     getActor: (tid, kind, activator) => getActorValue(tid, kind, activator),
-    setActorPosition: (tid, x, y, z, fog) => setActorPosition(tid, x, y, z, fog),
+    setActorPosition: (tid, x, y, z, fog, activator) => setActorPosition(tid, x, y, z, fog, activator),
     getActorProperty: (tid, property, activator) => actorProperty(tid, property, activator),
     morphActor: (tid, className, duration, style, activator) =>
       morphEntity(project, state, morphTarget(state, tid, activator), className, { duration, style }),
@@ -401,10 +401,7 @@ export function createMapScripts(project, state, callbacks = {}) {
         const actor = actorForThing(index, entity.doomType);
         if (!actor || actor.name.toLowerCase() !== String(name).toLowerCase()) return false;
       }
-      if (tag) {
-        const sector = sectorsTagged(tag)[0];
-        if (!sector || sectorAt(state.sectors, entity.x, entity.y)?.id !== sector.id) return false;
-      }
+      if (tag && sectorAt(state.sectors, entity.x, entity.y)?.tag !== tag) return false;
       return true;
     }).length;
   }
@@ -434,9 +431,18 @@ export function createMapScripts(project, state, callbacks = {}) {
   function setLineBlocking(tag, mode) {
     for (const wall of state.walls) {
       if (wall.tag !== tag && wall.id !== tag) continue;
-      wall.solid = mode !== 0;
+      // A one-sided line is a wall whatever its flags say.
+      wall.solid = mode !== 0 || !wall.left || !wall.right;
     }
     state.worldRevision++;
+  }
+
+  // ML_BLOCKMONSTERS: only monsters are stopped, so the line's solidity is left alone.
+  function setLineMonsterBlocking(tag, on) {
+    for (const wall of state.walls) {
+      if (wall.tag !== tag && wall.id !== tag) continue;
+      wall.flags = on ? (Number(wall.flags) || 0) | 2 : (Number(wall.flags) || 0) & ~2;
+    }
   }
 
   function setLineSpecial(tag, special, args) {
@@ -472,9 +478,18 @@ export function createMapScripts(project, state, callbacks = {}) {
   const APROP = { health: 0, speed: 1, damage: 2, alpha: 3, ambush: 10, gravity: 15, spawnHealth: 17,
     scaleX: 29, scaleY: 30, dormant: 31, mass: 32, height: 35, radius: 36 };
 
+  /** The thing a tid of 0 names: the script's activator, or the player when none. */
+  function activatorEntity(activator) {
+    const id = activator && typeof activator === 'object' ? activator.id : activator;
+    if (id && id !== 'player') {
+      const entity = state.entities.find(candidate => candidate.id === id);
+      if (entity) return entity;
+    }
+    return state.entities.find(candidate => candidate.type === 'player') || null;
+  }
+
   function actorProperty(tid, property, activator) {
-    const entity = tid ? state.entities.find(candidate => candidate.tid === tid)
-      : state.entities.find(candidate => candidate.type === 'player');
+    const entity = tid ? state.entities.find(candidate => candidate.tid === tid) : activatorEntity(activator);
     if (!entity) return 0;
     const actor = projectActorIndex(project).byId.get(entity.actor) || null;
     const player = entity.type === 'player';
@@ -495,12 +510,13 @@ export function createMapScripts(project, state, callbacks = {}) {
   }
 
   function setActorProperty(tid, property, value, activator) {
-    if (!tid && property === APROP.health) {
+    const self = tid ? null : activatorEntity(activator);
+    if (!tid && property === APROP.health && (!self || self.type === 'player')) {
       state.playerStats.health = Math.max(0, value);
       state.feedback.health = state.playerStats.health;
       return;
     }
-    for (const entity of tid ? state.entities.filter(candidate => candidate.tid === tid) : []) {
+    for (const entity of tid ? state.entities.filter(candidate => candidate.tid === tid) : self && self.type !== 'player' ? [self] : []) {
       if (property === APROP.health) entity.health = value;
       else if (property === APROP.ambush) entity.ambush = Boolean(value);
       else if (property === APROP.dormant) entity.dormant = Boolean(value);
@@ -510,6 +526,8 @@ export function createMapScripts(project, state, callbacks = {}) {
   }
 
   function damageEntity(entity, amount) {
+    // Monsters take damage the way a shot hurts them, so a kill leaves a non-blocking corpse.
+    if (entity.type === 'enemy') return hurtActor(project, state, entity, amount);
     if (!(amount > 0) || entity.health === undefined) return false;
     entity.health = Math.max(0, entity.health - amount);
     return true;
@@ -532,9 +550,14 @@ export function createMapScripts(project, state, callbacks = {}) {
       return 0;
     }
     if (state.entities.length > 2000) return 0;
-    const spriteIndex = state.entities.length;
+    // A running counter: the entity count repeats after a removal in the same tic.
+    let id;
+    do {
+      state.spawnSequence = (state.spawnSequence || 0) + 1;
+      id = `acs_spawn_${state.spawnSequence}`;
+    } while (state.entities.some(candidate => candidate.id === id));
     const entity = {
-      id: `acs_spawn_${spriteIndex}_${Math.floor(state.time * 1000) % 100000}`,
+      id,
       name: actor?.name || mapping?.[0] || `Thing ${number}`,
       type: actorFamily(actor, mapping), doomType: number,
       x, y, z: Number.isFinite(z) ? z : floorAt(state, { x, y }),
@@ -572,8 +595,7 @@ export function createMapScripts(project, state, callbacks = {}) {
   }
 
   function getActorValue(tid, kind, activator) {
-    const entity = tid ? state.entities.find(candidate => candidate.tid === tid)
-      : state.entities.find(candidate => candidate.type === 'player');
+    const entity = tid ? state.entities.find(candidate => candidate.tid === tid) : activatorEntity(activator);
     if (!entity) return 0;
     const sector = sectorAt(state.sectors, entity.x, entity.y);
     switch (kind) {
@@ -591,8 +613,8 @@ export function createMapScripts(project, state, callbacks = {}) {
     }
   }
 
-  function setActorPosition(tid, x, y, z, fog) {
-    const entity = tid ? state.entities.find(candidate => candidate.tid === tid) : null;
+  function setActorPosition(tid, x, y, z, fog, activator) {
+    const entity = tid ? state.entities.find(candidate => candidate.tid === tid) : activatorEntity(activator);
     if (!entity) return 0;
     // ACS coordinates are 16.16 fixed point; the world is in map units.
     x /= 65536; y /= 65536; z /= 65536;

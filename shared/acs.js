@@ -757,7 +757,11 @@ function defineArithmetic() {
   define(P.NEGATEBINARY, '', (vm, script) => { setTop(vm, script, 1, ~peek(vm, script, 1)); });
   define(P.UNARYMINUS, '', (vm, script) => { setTop(vm, script, 1, -peek(vm, script, 1)); });
   define(P.FIXEDMUL, '', (vm, script) => binary(vm, script, (a, b) => INT32(Number((BigInt(a) * BigInt(b)) >> 16n))));
-  define(P.FIXEDDIV, '', (vm, script) => binary(vm, script, (a, b) => (b === 0 ? 0 : INT32(Number((BigInt(a) << 16n) / BigInt(b))))) );
+  define(P.FIXEDDIV, '', (vm, script) => {
+    // GZDoom terminates the script on a zero divisor, exactly as it does for DIVIDE.
+    if (peek(vm, script, 1) === 0) { fail(vm, 'division by zero'); return; }
+    binary(vm, script, (a, b) => INT32(Number((BigInt(a) << 16n) / BigInt(b))));
+  });
   define(P.SIN, '', (vm, script) => {
     const angle = pop(vm, script);
     push(vm, script, Math.round(Math.sin(((angle & 0xffff) / 65536) * Math.PI * 2) * 65536));
@@ -1104,12 +1108,13 @@ function defineWorld() {
     const texture = pop(vm, script), part = pop(vm, script), side = pop(vm, script), line = pop(vm, script);
     vm.host.setLineTexture(line, side, part, vmString(vm, texture));
   });
+  // Both take (line, value): the value is on top of the stack, so it is popped first.
   define(P.SETLINEBLOCKING, '', (vm, script) => {
-    const tag = pop(vm, script), mode = pop(vm, script);
+    const mode = pop(vm, script), tag = pop(vm, script);
     vm.host.setLineBlocking(tag, mode);
   });
   define(P.SETLINEMONSTERBLOCKING, '', (vm, script) => {
-    const tag = pop(vm, script), on = pop(vm, script);
+    const on = pop(vm, script), tag = pop(vm, script);
     vm.host.setLineMonsterBlocking(tag, Boolean(on));
   });
   define(P.SETLINESPECIAL, '', (vm, script) => {
