@@ -2,8 +2,8 @@ import * as THREE from 'three/webgpu';
 import { uniform, float, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, asin, cross, normalize, length, clamp, mix, fract } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
-import { createPostFxStack } from './post-fx-pass.js';
-import { activePostFxPasses, postFxParamDefault, postFxSignature, POST_FX_BY_KIND } from '/shared/post-fx.js';
+import { createPostFxStack, toDisplaySpace } from './post-fx-pass.js';
+import { LUT_SIZE, lutTableBytes, postFxParamDefault, postFxSignature } from '/shared/post-fx.js';
 import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv } from '/shared/uv.js';
@@ -196,11 +196,15 @@ export async function createPreview(canvas, project, state, { editor = false, on
   const postCopyQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false }));
   postCopyQuad.frustumCulled = false;
   postCopyScene.add(postCopyQuad);
+  const savedViewport = new THREE.Vector4(), savedScissor = new THREE.Vector4();
   const postNear = uniform(0.1), postFar = uniform(2000);
   const postProjection = uniform(new THREE.Vector2(1, 1));
   const postResolution = uniform(new THREE.Vector2(1, 1));
   const postTime = uniform(0);
   let postStack = null, postStackSignature = '', postUniforms = {}, postLut = null, postLutPreset = -1;
+  // Zero for the first frame after the motion-blur trail (re)starts: a fresh target holds
+  // nothing, and blending that in was a one-frame flash of nonsense.
+  const postHistoryReady = uniform(1);
   const screenSize = new THREE.Vector2();
   // `iResolution` for Shadertoy effects: one uniform shared by every compiled effect.
   const effectResolution = uniform(new THREE.Vector2(1280, 720));
@@ -1729,29 +1733,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
       if (styleRendering !== rendering) { styleRendering = rendering; canvas.style.imageRendering = rendering; }
       return size;
     }
-    /** The grade a lookup-table preset applies to one colour, in display space. */
-    function lutColor(preset, red, green, blue) {
-      if (preset === 1) return [Math.min(1, red * 1.1 + 0.02), Math.min(1, green * 1.02), Math.min(1, blue * 0.88)];
-      if (preset === 2) return [Math.min(1, red * 0.88), green, Math.min(1, blue * 1.12 + 0.03)];
-      if (preset === 3) {
-        const luma = red * 0.299 + green * 0.587 + blue * 0.114;
-        return [Math.min(1, luma * 1.08 + 0.06), Math.min(1, luma * 0.96 + 0.02), Math.min(1, luma * 0.78)];
-      }
-      return [red, green, blue];
-    }
-    /**
-     * The lookup-table pass samples a real 16x16x16 table laid out as a 256x16 strip —
-     * blue chooses the slice, red the column inside it, green the row — so the grade below
-     * is data the shader reads, exactly like the book's LUT texture.
-     */
+    /** The lookup-table pass samples a real 16x16x16 table, so the grade is data the shader reads. */
     function buildLutTexture(preset) {
-      const size = 16, data = new Uint8Array(size * size * size * 4);
-      for (let blue = 0; blue < size; blue++) for (let green = 0; green < size; green++) for (let red = 0; red < size; red++) {
-        const [r, g, b] = lutColor(preset, red / (size - 1), green / (size - 1), blue / (size - 1));
-        const at = ((green * size * size) + blue * size + red) * 4;
-        data[at] = Math.round(r * 255); data[at + 1] = Math.round(g * 255); data[at + 2] = Math.round(b * 255); data[at + 3] = 255;
-      }
-      const table = new THREE.DataTexture(data, size * size, size, THREE.RGBAFormat);
+      const table = new THREE.DataTexture(lutTableBytes(preset), LUT_SIZE * LUT_SIZE, LUT_SIZE, THREE.RGBAFormat);
       table.minFilter = THREE.LinearFilter; table.magFilter = THREE.LinearFilter;
       table.wrapS = THREE.ClampToEdgeWrapping; table.wrapT = THREE.ClampToEdgeWrapping;
       table.needsUpdate = true;
@@ -1779,14 +1763,25 @@ export async function createPreview(canvas, project, state, { editor = false, on
       if (signature === postStackSignature) return passes;
       postStackSignature = signature;
       if (preset >= 0 && preset !== postLutPreset) { postLut?.dispose?.(); postLut = buildLutTexture(preset); postLutPreset = preset; }
+      // A stack without the lookup-table pass has no use for the table; keeping it was a
+      // texture that never went away again.
+      if (preset < 0 && postLut) { postLut.dispose(); postLut = null; postLutPreset = -1; }
       if (!passes.length) { postStack = null; postUniforms = {}; return passes; }
       const built = createPostFxStack({ colorTexture: postTarget.texture, depthTexture: postTarget.depthTexture,
-        historyTexture: postLut ? postHistory.texture : postHistory.texture, lutTexture: postLut, passes,
-        near: postNear, far: postFar, projection: postProjection, resolution: postResolution, time: postTime });
+        historyTexture: postHistory.texture, lutTexture: postLut, passes,
+        near: postNear, far: postFar, projection: postProjection, resolution: postResolution, time: postTime,
+        historyReady: postHistoryReady });
       postStack = built; postUniforms = built.uniforms;
+      // Without the blur in the stack no trail is written, so whatever the target holds is
+      // stale: the next time the effect is switched on it starts from nothing rather than
+      // ghosting the frame from whenever it was last used.
+      if (!passes.some(pass => pass.kind === 'motionBlur')) postHistoryReady.value = 0;
       postQuad.material.colorNode = built.node;
       postQuad.material.needsUpdate = true;
-      postCopyQuad.material.colorNode = texture(postTarget.texture, screenUV);
+      // The chain works in display space, so the frame kept for the motion-blur trail has
+      // to be in display space too: mixing a linear history into a display-space picture
+      // darkened every frame, which is what motion blur looked like it was doing.
+      postCopyQuad.material.colorNode = toDisplaySpace(texture(postTarget.texture, screenUV));
       postCopyQuad.material.needsUpdate = true;
       return passes;
     }
@@ -2286,17 +2281,30 @@ export async function createPreview(canvas, project, state, { editor = false, on
       }
       if (usePost) {
         // The chain's result replaces the frame on the canvas, so the level drawn above is
-        // never shown unprocessed.
-        renderer.autoClear = true;
+        // never shown unprocessed. Nothing is cleared: the quad covers the game viewport
+        // exactly, and clearing would repaint the area around it (the HUD strip) in the sky
+        // colour and, worse, wipe the picture the overlay pass then draws on.
         renderer.render(postScene, postCamera);
-        // The overlay pass below must not clear the picture that was just assembled.
-        renderer.autoClear = false;
         if (postPasses.some(pass => pass.kind === 'motionBlur')) {
-          // Keep this frame for next frame's trail, in the same space the effect blends into.
-          if (postHistory.width !== screenSize.x || postHistory.height !== screenSize.y) postHistory.setSize(screenSize.x, screenSize.y);
+          // Keep this frame for next frame's trail. The target is the size of the whole
+          // drawing buffer, so the copy has to cover all of it, not just the game viewport.
+          if (postHistory.width !== screenSize.x || postHistory.height !== screenSize.y) {
+            postHistory.setSize(screenSize.x, screenSize.y);
+            postHistoryReady.value = 0;
+          }
+          renderer.getViewport(savedViewport);
+          renderer.getScissor(savedScissor);
+          const scissorTest = renderer.getScissorTest();
+          renderer.setScissorTest(false);
+          renderer.setViewport(0, 0, screenSize.x, screenSize.y);
           renderer.setRenderTarget(postHistory);
           renderer.render(postCopyScene, postCamera);
           renderer.setRenderTarget(null);
+          renderer.setViewport(savedViewport);
+          renderer.setScissor(savedScissor);
+          renderer.setScissorTest(scissorTest);
+          // The trail holds a frame now; from here on the blur mixes with it.
+          postHistoryReady.value = 1;
         }
       }
       // The fade a script asked for, unless the editor is showing the level without a game.

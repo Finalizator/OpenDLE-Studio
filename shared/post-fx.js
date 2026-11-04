@@ -214,11 +214,82 @@ export function activePostFxPasses(postFx) {
   return (postFx.passes || []).filter(pass => pass && pass.enabled !== false);
 }
 
-/** A stable signature, so the renderer rebuilds only when the stack really changed. */
+/**
+ * Turns one effect pass on or off. Switching a pass on always switches the stack on too:
+ * a checked card in a disabled stack is a switch that visibly does nothing, which is what
+ * made the panel feel broken.
+ */
+export function setPassEnabled(postFx, kind, enabled) {
+  const stack = { ...(postFx || defaultPostFx()) };
+  stack.passes = (stack.passes || []).map(pass => (pass.kind === kind ? { ...pass, enabled: Boolean(enabled) } : pass));
+  if (enabled) stack.enabled = true;
+  return stack;
+}
+
+/** Whether a technique can move one place in the stack; the panel disables the arrow otherwise. */
+export function canMovePass(postFx, kind, direction) {
+  const passes = postFx?.passes || [];
+  const index = passes.findIndex(pass => pass.kind === kind);
+  const target = index + direction;
+  return index >= 0 && target >= 0 && target < passes.length;
+}
+
+/** Reorders a pass, answering with the same stack when the move is not possible. */
+export function movePass(postFx, kind, direction) {
+  if (!canMovePass(postFx, kind, direction)) return postFx;
+  const passes = [...(postFx.passes || [])];
+  const index = passes.findIndex(pass => pass.kind === kind);
+  [passes[index], passes[index + direction]] = [passes[index + direction], passes[index]];
+  return { ...postFx, passes };
+}
+
+/** The lookup table's grade for one colour, in display space. */
+export function lutGrade(preset, red, green, blue) {
+  const clamp01 = value => Math.min(1, Math.max(0, value));
+  if (preset === 1) return [clamp01(red * 1.1 + 0.02), clamp01(green * 1.02), clamp01(blue * 0.88)];
+  if (preset === 2) return [clamp01(red * 0.88), clamp01(green), clamp01(blue * 1.12 + 0.03)];
+  if (preset === 3) {
+    const luma = red * 0.299 + green * 0.587 + blue * 0.114;
+    return [clamp01(luma * 1.08 + 0.06), clamp01(luma * 0.96 + 0.02), clamp01(luma * 0.78)];
+  }
+  return [clamp01(red), clamp01(green), clamp01(blue)];
+}
+
+/** The size of one axis of the 16×16×16 lookup table. */
+export const LUT_SIZE = 16;
+
+/**
+ * The table itself, laid out as the shader reads it: a 256-pixel wide, 16-pixel tall strip
+ * where blue chooses the slice, red the column inside it and green the row.
+ */
+export function lutTableBytes(preset) {
+  const size = LUT_SIZE, data = new Uint8Array(size * size * size * 4);
+  for (let blue = 0; blue < size; blue++) for (let green = 0; green < size; green++) for (let red = 0; red < size; red++) {
+    const [r, g, b] = lutGrade(preset, red / (size - 1), green / (size - 1), blue / (size - 1));
+    const at = ((green * size * size) + blue * size + red) * 4;
+    data[at] = Math.round(r * 255); data[at + 1] = Math.round(g * 255); data[at + 2] = Math.round(b * 255); data[at + 3] = 255;
+  }
+  return data;
+}
+
+/**
+ * A signature of the stack's *shape*: which passes run and in what order. Parameter values
+ * are deliberately left out — they are uniforms the frame loop writes, and every slider
+ * step used to rebuild and recompile the whole shader chain, which stuttered.
+ */
 export function postFxSignature(postFx) {
   if (!postFx) return '';
   return JSON.stringify([postFx.enabled !== false,
-    (postFx.passes || []).map(pass => [pass.kind, pass.enabled !== false, Object.entries(pass.params || {}).sort()])]);
+    (postFx.passes || []).map(pass => [pass.kind, pass.enabled !== false])]);
+}
+
+/**
+ * The lookup-table grade the stack asks for, or -1. This one *is* a rebuild: the grade is
+ * baked into a texture the shader samples, so a different grade means a different table.
+ */
+export function postFxLutPreset(postFx) {
+  const pass = (postFx?.passes || []).find(candidate => candidate.kind === 'lut');
+  return pass ? Math.round(pass.params?.preset ?? postFxParamDefault('lut', 'preset')) : -1;
 }
 
 export function validatePostFx(project) {

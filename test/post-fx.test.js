@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three/webgpu';
 import { uniform, vec2 } from 'three/tsl';
 import {
-  POST_FX_CATALOG, POST_FX_KINDS, POST_FX_PRESETS, activePostFxPasses, createPostFxPass, defaultPostFx,
-  postFxParamDefault, postFxPreset, postFxSignature, validatePostFx,
+  LUT_SIZE, POST_FX_CATALOG, POST_FX_KINDS, POST_FX_PRESETS, activePostFxPasses, canMovePass, createPostFxPass,
+  defaultPostFx, lutGrade, lutTableBytes, movePass, postFxLutPreset, postFxParamDefault, postFxPreset,
+  postFxSignature, setPassEnabled, validatePostFx,
 } from '../shared/post-fx.js';
 import { createPostFxStack } from '../public/post-fx-pass.js';
 import { createProject, validateProject } from '../shared/project.js';
@@ -85,7 +86,15 @@ test('the signature tracks what rebuilds a shader, and only that', () => {
   const base = postFxSignature(stack);
   assert.equal(postFxSignature({ ...stack }), base);
   assert.notEqual(postFxSignature({ ...stack, passes: [{ ...stack.passes[0], enabled: false }] }), base);
-  assert.notEqual(postFxSignature({ ...stack, passes: [{ ...stack.passes[0], params: { ...stack.passes[0].params, intensity: 1.4 } }] }), base);
+  assert.notEqual(postFxSignature({ ...stack, enabled: false }), base, 'the stack switch changes the shape');
+  assert.notEqual(postFxSignature({ enabled: true, passes: [createPostFxPass('bloom'), createPostFxPass('fog')] }), base);
+  // A parameter is a uniform, not a rebuild: dragging a slider must not recompile the chain.
+  assert.equal(postFxSignature({ ...stack, passes: [{ ...stack.passes[0], params: { ...stack.passes[0].params, intensity: 1.4 } }] }), base);
+  // The lookup table is the exception: its grade is baked into a texture.
+  const lut = { enabled: true, passes: [createPostFxPass('lut', { preset: 2 })] };
+  assert.equal(postFxLutPreset(lut), 2);
+  assert.equal(postFxLutPreset(stack), -1);
+  assert.equal(postFxLutPreset({ enabled: true, passes: [{ kind: 'lut', params: {} }] }), 4 - 3);
   assert.equal(activePostFxPasses({ enabled: true, passes: [{ kind: 'bloom', enabled: false }] }).length, 0);
   assert.equal(activePostFxPasses({ enabled: false, passes: [createPostFxPass('bloom')] }).length, 0);
   assert.equal(activePostFxPasses(undefined).length, 0);
@@ -108,6 +117,15 @@ test('every technique compiles into a node graph on its own and all together', (
   }
   const all = createPostFxStack({ ...sceneTextures(), passes: POST_FX_CATALOG.map(entry => createPostFxPass(entry.kind)) });
   assert.ok(all.node?.isNode);
+});
+
+test('the motion-blur trail can be faded in and out by its owner', () => {
+  // The renderer hands over a uniform that is zero until the trail holds a frame; without it
+  // the first blended frame mixed in whatever an empty target held.
+  const ready = uniform(0);
+  const built = createPostFxStack({ ...sceneTextures(), passes: [createPostFxPass('motionBlur')], historyReady: ready });
+  assert.ok(built.node?.isNode);
+  assert.ok(createPostFxStack({ ...sceneTextures(), passes: [createPostFxPass('motionBlur')] }).node?.isNode, 'a stack still builds without it');
 });
 
 test('an empty stack is a passthrough and needs no depth buffer', () => {
@@ -156,4 +174,56 @@ test('a shader command must name a real technique and a real parameter', () => {
   // The field's own choice list catches it first; either message is a rejection, not a
   // rule that quietly does nothing at play time.
   assert.throws(() => validateProject(unknown), /Unsupported kind|unknown effect sparkle/);
+});
+
+test('switching a pass on also switches the stack on', () => {
+  const off = { enabled: false, passes: [createPostFxPass('bloom'), createPostFxPass('fog')] };
+  const on = setPassEnabled(off, 'fog', true);
+  assert.equal(on.enabled, true, 'a checked card in a disabled stack would do nothing');
+  assert.deepEqual(on.passes.map(pass => pass.enabled), [true, true]);
+  // Switching one off leaves the stack alone, and the source stack is never mutated.
+  const half = setPassEnabled(on, 'bloom', false);
+  assert.equal(half.enabled, true);
+  assert.equal(half.passes[0].enabled, false);
+  assert.equal(off.passes[0].enabled, true);
+  assert.equal(setPassEnabled(undefined, 'bloom', true).passes.length, 0);
+});
+
+test('a pass only offers the moves the stack allows', () => {
+  const stack = { enabled: true, passes: [createPostFxPass('bloom'), createPostFxPass('fog')] };
+  assert.equal(canMovePass(stack, 'bloom', -1), false, 'the first pass cannot move up');
+  assert.equal(canMovePass(stack, 'fog', 1), false, 'the last pass cannot move down');
+  assert.equal(canMovePass(stack, 'bloom', 1), true);
+  assert.equal(canMovePass(stack, 'missing', 1), false);
+  assert.deepEqual(movePass(stack, 'bloom', 1).passes.map(pass => pass.kind), ['fog', 'bloom']);
+  assert.equal(movePass(stack, 'fog', 1), stack, 'an impossible move leaves the stack as it was');
+  assert.deepEqual(stack.passes.map(pass => pass.kind), ['bloom', 'fog']);
+});
+
+test('the lookup table is the layout the shader reads', () => {
+  const size = LUT_SIZE;
+  const neutral = lutTableBytes(0);
+  assert.equal(neutral.length, size * size * size * 4);
+  // Blue chooses the slice, red the column inside it, green the row.
+  const at = (r, g, b) => ((g * size * size) + b * size + r) * 4;
+  const corner = neutral.subarray(at(size - 1, size - 1, size - 1), at(size - 1, size - 1, size - 1) + 3);
+  assert.deepEqual([...corner], [255, 255, 255], 'the neutral table is the identity');
+  const origin = neutral.subarray(at(0, 0, 0), at(0, 0, 0) + 3);
+  assert.deepEqual([...origin], [0, 0, 0]);
+  const mid = neutral.subarray(at(8, 8, 8), at(8, 8, 8) + 3);
+  assert.deepEqual([...mid], [...mid].map(() => [...mid][0]), 'a grey stays grey');
+  for (const preset of [1, 2, 3]) {
+    const graded = lutTableBytes(preset);
+    assert.equal(graded.length, neutral.length);
+    assert.notDeepEqual([...graded], [...neutral], `preset ${preset} grades the frame`);
+    // Every entry stays a real colour: no wrapping, no NaN in the table.
+    for (let index = 0; index < graded.length; index += 4) {
+      assert.ok(Number.isInteger(graded[index]) && graded[index] >= 0 && graded[index] <= 255);
+    }
+  }
+  // Warm lifts red, cool lifts blue, sepia flattens the channels towards one another.
+  assert.ok(lutGrade(1, 0.5, 0.5, 0.5)[0] > 0.5);
+  assert.ok(lutGrade(2, 0.5, 0.5, 0.5)[2] > 0.5);
+  const sepia = lutGrade(3, 0.9, 0.1, 0.1);
+  assert.ok(sepia[0] - sepia[2] < 0.8, 'sepia pulls the channels together');
 });

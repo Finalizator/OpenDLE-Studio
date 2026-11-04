@@ -15,9 +15,16 @@ import {
   normalize, pow, select, sin, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4, screenUV,
   perspectiveDepthToViewZ,
 } from 'three/tsl';
-import { POST_FX_BY_KIND, activePostFxPasses, postFxParamDefault } from '../shared/post-fx.js';
+import { LUT_SIZE, POST_FX_BY_KIND, activePostFxPasses, postFxParamDefault } from '../shared/post-fx.js';
 
 const GOLDEN_ANGLE = 2.39996323;
+/**
+ * A render target holds linear light, but every technique in the book works on the picture
+ * as it is seen. The chain converts on the way in and back on the way out, and anything else
+ * that reads a frame — the motion-blur history, for one — has to use the same conversion.
+ */
+export const toDisplaySpace = color => pow(max(color, vec3(0)), vec3(1 / 2.2));
+export const toLinearSpace = color => pow(max(color, vec3(0)), vec3(2.2));
 const PI_OVER_4 = Math.PI / 4;
 const LUMA = vec3(0.21, 0.72, 0.07);
 
@@ -35,9 +42,6 @@ const valueNoise = Fn(([point]) => {
   return mix(mix(a, b, fade.x), mix(c, d, fade.x), fade.y);
 });
 
-/** The lookup-table grade: a 16×16×16 table laid out as a 256×16 strip, sampled per channel. */
-const LUT_SIZE = 16;
-
 /**
  * @param {object} options
  * @param {object} options.colorTexture the rendered frame
@@ -52,7 +56,7 @@ const LUT_SIZE = 16;
  * @param {object} options.time seconds since the level started
  */
 export function createPostFxStack({ colorTexture, depthTexture = null, historyTexture = null, lutTexture = null,
-  passes = [], near, far, projection, resolution, time }) {
+  passes = [], near, far, projection, resolution, time, historyReady = null }) {
   const uniforms = {};
   const params = new Map(passes.map(pass => [pass.kind, pass.params || {}]));
   const enabled = new Set(passes.map(pass => pass.kind));
@@ -70,14 +74,7 @@ export function createPostFxStack({ colorTexture, depthTexture = null, historyTe
   const has = kind => enabled.has(kind);
   const st = screenUV;
 
-  /**
-   * A render target holds linear light, but every technique in the book works on the
-   * picture as it is seen — posterisation bands in display space, gamma is display gamma.
-   * The chain therefore runs in display space and converts back at the end, where the
-   * renderer applies its own output transform on the way to the canvas.
-   */
-  const toDisplay = color => pow(max(color, vec3(0)), vec3(1 / 2.2));
-  const toLinear = color => pow(max(color, vec3(0)), vec3(2.2));
+  const toDisplay = toDisplaySpace, toLinear = toLinearSpace;
   const readColor = at => toDisplay(texture(colorTexture, at).rgb);
   const rawDepth = at => (depthTexture ? texture(depthTexture, at).x : float(1));
   /** Distance from the camera to the surface at a screen position, in world units. */
@@ -298,7 +295,11 @@ export function createPostFxStack({ colorTexture, depthTexture = null, historyTe
     motionBlur: () => {
       const amount = param('motionBlur', 'amount');
       if (!historyTexture) return color => color;
-      return color => mix(color, texture(historyTexture, st).rgb, amount);
+      // The history target holds last frame's display-space picture, like this one. The
+      // weight is zeroed for the first frame after the trail (re)starts: a target that has
+      // just been created or resized holds nothing, and blending that in flashed on screen.
+      const weight = historyReady ? amount.mul(historyReady) : amount;
+      return color => mix(color, texture(historyTexture, st).rgb, weight);
     },
     ssao: () => {
       const radius = param('ssao', 'radius'), intensity = param('ssao', 'intensity'), bias = param('ssao', 'bias');

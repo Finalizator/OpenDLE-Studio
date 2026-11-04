@@ -2657,6 +2657,29 @@ never overwritten. The renderer writes one uniform per parameter every frame and
 the graph only when the *shape* changes (a pass added, enabled or reordered, or a different
 lookup-table grade) — a slider never recompiles a shader.
 
+A bughunt over the engine found five defects worth remembering, because each one is a class
+rather than a typo:
+
+- **A checked pass in a disabled stack did nothing.** The card's On switch wrote
+  `pass.enabled` and left `postFx.enabled` false, so the panel showed a running effect that
+  the renderer skipped. `setPassEnabled` now switches the stack on whenever a pass is
+  switched on, and the panel uses it (as does "add a technique").
+- **The arrow buttons could not fail gracefully.** ↑ on the first card and ↓ on the last one
+  threw an error into the status bar; `canMovePass` decides the button's `disabled` state and
+  `movePass` answers with the same stack when a move is impossible.
+- **Motion blur darkened the whole picture.** The frame kept for the trail was copied from
+  the render target in linear light while the chain works in display space, so every frame
+  was `mix(display, linear, amount)` — a static scene came out visibly darker. The copy now
+  goes through the same display conversion, and it covers the whole drawing buffer (the copy
+  used to render inside the game viewport, leaving stale pixels around it).
+- **Every slider step recompiled the shader.** `postFxSignature` included the parameter
+  values, so dragging a slider rebuilt and re-linked the chain on each change. The signature
+  is now the stack's *shape* — order and which passes are on — and values are uniforms. The
+  lookup-table grade stays a rebuild because it bakes a texture.
+- **A brand-new motion-blur target was blended in before anything had been drawn into it.**
+  The trail now has a `historyReady` uniform that is zero until a frame has been copied, and
+  is reset whenever the blur leaves the stack or the target is resized.
+
 The **Shaders** tab (`public/shader-engine-panel.js`) is the editor for all of it: presets,
 a card per technique with its chapter, toggles, ordering and one slider per parameter, and a
 list of the techniques not yet in the stack. `Docs/shader-engine.md` is the player-facing

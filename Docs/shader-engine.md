@@ -86,6 +86,10 @@ Visual scripts can drive the stack while the game runs:
 | *Shaders: effect pass is enabled* (`postFxPassEnabled`) | True while a technique is running |
 | *Shaders: compare an effect parameter* (`postFxParamCompare`) | Compares a parameter's current value |
 
+A parameter change is a uniform update, not a shader rebuild, so a slider or a scripted value
+never recompiles the chain. The one exception is the lookup-table grade: it is baked into a
+texture, so switching grades rebuilds the pass.
+
 Runtime values start from the project's saved stack and reset when the level restarts;
 the project's own parameters are never overwritten by a running game. The commands are
 validated when the project is saved and when it is exported, so a misspelled technique or

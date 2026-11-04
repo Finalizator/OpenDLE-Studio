@@ -10,7 +10,8 @@
  * chapter it comes from so the source of the math is never a mystery.
  */
 import {
-  POST_FX_CATALOG, POST_FX_BY_KIND, POST_FX_PRESETS, createPostFxPass, defaultPostFx, postFxPreset,
+  POST_FX_CATALOG, POST_FX_BY_KIND, POST_FX_PRESETS, createPostFxPass, defaultPostFx, canMovePass, movePass,
+  postFxPreset, setPassEnabled,
 } from '/shared/post-fx.js';
 
 const node = (tag, text, className) => {
@@ -80,15 +81,8 @@ export function createShaderEnginePanel(host, { project: getProject, edit }) {
     return select;
   }
 
-  function movePass(kind, direction) {
-    change(next => {
-      const passes = [...(next.postFx?.passes || [])];
-      const index = passes.findIndex(pass => pass.kind === kind);
-      const target = index + direction;
-      if (index < 0 || target < 0 || target >= passes.length) throw new Error('That effect is already at the end of the stack');
-      [passes[index], passes[target]] = [passes[target], passes[index]];
-      next.postFx.passes = passes;
-    }, 'Shader stack reordered');
+  function reorder(kind, direction) {
+    change(next => { next.postFx = movePass(next.postFx, kind, direction); }, 'Shader stack reordered');
   }
 
   function card(pass) {
@@ -103,14 +97,18 @@ export function createShaderEnginePanel(host, { project: getProject, edit }) {
     link.target = '_blank'; link.rel = 'noreferrer noopener';
     title.append(link, node('small', `Chapter: ${entry.section.replace(/-/g, ' ')}`, 'muted'));
     const tools = node('div', undefined, 'shader-card-tools');
+    // Turning a pass on turns the stack on: a card checked inside a disabled stack is a
+    // control that visibly does nothing.
     tools.append(toggle('On', pass.enabled !== false, checked => change(next => {
-      const target = (next.postFx?.passes || []).find(candidate => candidate.kind === pass.kind);
-      if (target) target.enabled = checked;
+      next.postFx = setPassEnabled(next.postFx, pass.kind, checked);
     }, `${entry.name} ${checked ? 'enabled' : 'disabled'}`)));
+    const current = stack();
     const up = node('button', '↑'); up.type = 'button'; up.title = 'Move earlier in the stack';
-    up.addEventListener('click', () => movePass(pass.kind, -1));
+    up.disabled = !canMovePass(current, pass.kind, -1);
+    up.addEventListener('click', () => reorder(pass.kind, -1));
     const down = node('button', '↓'); down.type = 'button'; down.title = 'Move later in the stack';
-    down.addEventListener('click', () => movePass(pass.kind, 1));
+    down.disabled = !canMovePass(current, pass.kind, 1);
+    down.addEventListener('click', () => reorder(pass.kind, 1));
     const remove = node('button', 'Remove'); remove.type = 'button';
     remove.addEventListener('click', change(next => {
       next.postFx.passes = (next.postFx.passes || []).filter(candidate => candidate.kind !== pass.kind);
