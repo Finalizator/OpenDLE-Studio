@@ -42,12 +42,12 @@ export const POST_FX_CATALOG = [
     params: [param('gamma', 'Gamma', 2.2, 0.5, 4, 0.05)],
   },
   {
-    kind: 'blur', section: 'blur', name: 'Box blur',
+    kind: 'blur', reads: 'neighbours', section: 'blur', name: 'Box blur',
     summary: 'The mean of a square window around each fragment. Separation spreads the window out without taking more samples.',
     params: [param('size', 'Window half-size', 2, 1, 4, 1), param('separation', 'Separation (px)', 1, 1, 6, 0.1)],
   },
   {
-    kind: 'bloom', section: 'bloom', name: 'Bloom',
+    kind: 'bloom', reads: 'neighbours', section: 'bloom', name: 'Bloom',
     summary: 'Bright fragments are isolated, blurred, and added back so light bleeds into the nearby dark.',
     params: [param('threshold', 'Bright threshold', 0.55, 0, 1), param('intensity', 'Intensity', 0.75, 0, 3),
       param('separation', 'Spread (px)', 2.5, 1, 12, 0.1)],
@@ -59,13 +59,13 @@ export const POST_FX_CATALOG = [
       param('maxDistance', 'Max depth jump', 2.5, 0.05, 40, 0.05), param('strength', 'Line strength', 0.85, 0, 1)],
   },
   {
-    kind: 'dilation', section: 'dilation', name: 'Dilation',
+    kind: 'dilation', reads: 'neighbours', section: 'dilation', name: 'Dilation',
     summary: 'The window around each fragment keeps its brightest colour, which grows highlights and feeds the outline glow.',
     params: [param('size', 'Window half-size', 2, 1, 4, 1), param('separation', 'Separation (px)', 2, 1, 8, 0.1),
       param('threshold', 'Threshold', 0.2, 0, 1), param('strength', 'Strength', 0.7, 0, 1)],
   },
   {
-    kind: 'cel', section: 'cel-shading', name: 'Cel shading',
+    kind: 'cel', reads: 'neighbours', section: 'cel-shading', name: 'Cel shading',
     summary: 'Quantises the frame into flat bands of light and dark and inks the silhouette, the toon look the book builds from a gradient map and an outline. The banding keeps a floor so dim rooms stay readable.',
     params: [param('steps', 'Bands', 5, 2, 10, 1), param('edge', 'Ink strength', 0.6, 0, 1),
       param('edgeThreshold', 'Ink threshold (relative depth jump)', 0.12, 0.01, 1, 0.005)],
@@ -76,24 +76,24 @@ export const POST_FX_CATALOG = [
     params: [param('levels', 'Levels', 6, 2, 32, 1)],
   },
   {
-    kind: 'pixelization', section: 'pixelization', name: 'Pixelization',
+    kind: 'pixelization', reads: 'source', section: 'pixelization', name: 'Pixelization',
     summary: 'Samples one fragment per block, so the frame becomes chunky pixels of that size.',
     params: [param('size', 'Block size (px)', 4, 1, 32, 1)],
   },
   {
-    kind: 'sharpen', section: 'sharpen', name: 'Sharpen',
+    kind: 'sharpen', reads: 'neighbours', section: 'sharpen', name: 'Sharpen',
     summary: 'An unsharp mask: the frame plus the difference between itself and its blurred self.',
     params: [param('amount', 'Amount', 1.2, 0, 4), param('separation', 'Radius (px)', 1, 1, 4, 0.1)],
   },
   {
-    kind: 'chromaticAberration', section: 'chromatic-aberration', name: 'Chromatic aberration',
+    kind: 'chromaticAberration', reads: 'source', section: 'chromatic-aberration', name: 'Chromatic aberration',
     summary: 'Splits the colour channels radially, the way a real lens bends red and blue differently, strongest at the edges.',
     params: [param('amount', 'Amount', 0.0025, 0, 0.03, 0.0005), param('falloff', 'Edge falloff', 1.4, 0.2, 4)],
   },
   {
     kind: 'lut', section: 'lookup-table', name: 'Lookup table (colour grading)',
     summary: 'Maps every colour through a 16x16x16 table — the book\'s grading technique — with a few ready-made grades.',
-    params: [param('preset', 'Grade (0 neutral, 1 warm, 2 cool, 3 sepia)', 1, 0, 3, 1),
+    params: [param('preset', 'Grade (0 neutral, 1 warm, 2 cool, 3 sepia, 4 drained)', 1, 0, 4, 1),
       param('amount', 'Amount', 1, 0, 1)],
   },
   {
@@ -104,7 +104,7 @@ export const POST_FX_CATALOG = [
       param('blue', 'Fog blue', 0.68, 0, 1)],
   },
   {
-    kind: 'depthOfField', section: 'depth-of-field', name: 'Depth of field',
+    kind: 'depthOfField', reads: 'neighbours', section: 'depth-of-field', name: 'Depth of field',
     summary: 'A circle of confusion from the distance to the focus plane decides how far each fragment is blurred.',
     params: [param('focus', 'Focus distance', 700, 1, 4000, 10), param('range', 'Focus range', 900, 1, 4000, 10),
       param('blur', 'Blur strength (px)', 3, 0.5, 12, 0.1)],
@@ -121,13 +121,13 @@ export const POST_FX_CATALOG = [
       param('bias', 'Bias', 0.6, 0, 20, 0.1)],
   },
   {
-    kind: 'ssr', section: 'screen-space-reflection', name: 'Screen-space reflection',
+    kind: 'ssr', reads: 'neighbours', section: 'screen-space-reflection', name: 'Screen-space reflection',
     summary: 'Marches the reflected view ray through the depth buffer and picks up whatever surface it hits.',
     params: [param('strength', 'Strength', 0.6, 0, 1), param('rayLength', 'Ray length (world units)', 600, 10, 4000, 10),
       param('thickness', 'Surface thickness', 40, 1, 400, 1)],
   },
   {
-    kind: 'ssrRefraction', section: 'screen-space-refraction', name: 'Screen-space refraction',
+    kind: 'ssrRefraction', reads: 'source', section: 'screen-space-refraction', name: 'Screen-space refraction',
     summary: 'Bends the frame behind each surface with a normal taken from the depth buffer, glass and water without rendering the level twice.',
     params: [param('strength', 'Strength', 0.02, 0, 0.2, 0.001), param('dispersion', 'Dispersion', 0.35, 0, 2),
       param('depthScale', 'Thickness scale', 2, 0.1, 20, 0.1)],
@@ -144,7 +144,7 @@ export const POST_FX_CATALOG = [
       param('red', 'Rim red', 0.9, 0, 1), param('green', 'Rim green', 0.95, 0, 1), param('blue', 'Rim blue', 1, 0, 1)],
   },
   {
-    kind: 'flow', section: 'flow-mapping', name: 'Flow mapping',
+    kind: 'flow', reads: 'source', section: 'flow-mapping', name: 'Flow mapping',
     summary: 'Scrolls two noise layers across each other and bends the frame with them: water, heat haze and warped glass.',
     params: [param('strength', 'Strength', 0.01, 0, 0.1, 0.001), param('speed', 'Speed', 0.25, 0, 3),
       param('scale', 'Scale', 6, 0.5, 40, 0.1)],
@@ -183,6 +183,20 @@ export const POST_FX_PRESETS = [
     { kind: 'chromaticAberration', params: { amount: 0.004 } }, { kind: 'depthOfField', params: { focus: 600, range: 700, blur: 4 } }] },
   { id: 'noir', name: 'Noir', passes: [{ kind: 'lut', params: { preset: 3, amount: 0.9 } },
     { kind: 'sharpen', params: { amount: 1.6 } }, { kind: 'filmGrain', params: { amount: 0.1 } }] },
+  // Fog you cannot see through, colour drained out of the world, and grain over the whole
+  // picture: the look of a town that is not quite there. Depth of field, the aberration and
+  // the glow all sample neighbouring fragments — which sees the frame as it entered the
+  // chain — so every one of them runs before the grade and the fog, or it would partly undo
+  // them.
+
+  { id: 'silenthill', name: 'Silent Hill', passes: [
+    { kind: 'depthOfField', params: { focus: 320, range: 620, blur: 3.4 } },
+    { kind: 'chromaticAberration', params: { amount: 0.0024, falloff: 1.6 } },
+    { kind: 'bloom', params: { threshold: 0.7, intensity: 0.35, separation: 4 } },
+    { kind: 'lut', params: { preset: 4, amount: 0.9 } },
+    { kind: 'fog', params: { near: 40, far: 760, density: 0.97, red: 0.7, green: 0.72, blue: 0.75 } },
+    { kind: 'filmGrain', params: { amount: 0.15, scale: 1.2 } },
+  ] },
 ];
 
 /** A pass with the catalogue's default parameters. */
@@ -199,6 +213,32 @@ export function createPostFxPass(kind, overrides = {}) {
 /** The stack a project starts with: no passes, and the engine renders exactly as before. */
 export function defaultPostFx() {
   return { enabled: true, passes: [] };
+}
+
+/**
+ * What a pass does with the frame it is given. `neighbours` passes sample around the
+ * fragment and blend the result with the colour they were handed (a blur, a glow, depth of
+ * field); `source` passes take the sample flat out, so the colour they were handed is
+ * dropped. Both read the frame *as it entered the stack*, so a colour pass above them is
+ * partly or wholly undone — see `postFxOrderWarnings`.
+ */
+export const POST_FX_READS = { neighbours: 'neighbours', source: 'source' };
+
+/**
+ * Names the passes whose result is partly undone because a plain colour pass sits above
+ * them. One shader runs the whole stack, so looking at a neighbouring fragment means
+ * looking at the untouched frame rather than at the previous pass's output.
+ */
+export function postFxOrderWarnings(postFx) {
+  const warnings = [];
+  let colourPass = '';
+  for (const pass of postFx?.passes || []) {
+    if (pass.enabled === false) continue;
+    const entry = POST_FX_BY_KIND.get(pass.kind);
+    if (!entry?.reads) { colourPass = entry?.name || pass.kind; continue; }
+    if (colourPass) warnings.push({ kind: pass.kind, name: entry.name, after: colourPass });
+  }
+  return warnings;
 }
 
 /** A preset as project data. Unknown passes are dropped rather than smuggled in. */
@@ -251,6 +291,13 @@ export function lutGrade(preset, red, green, blue) {
   if (preset === 3) {
     const luma = red * 0.299 + green * 0.587 + blue * 0.114;
     return [clamp01(luma * 1.08 + 0.06), clamp01(luma * 0.96 + 0.02), clamp01(luma * 0.78)];
+  }
+  if (preset === 4) {
+    // Drained: most of the colour pulled out, the little that is left cooled towards grey.
+    // Sepia keeps too much warmth for a town that has been empty for a long time.
+    const luma = red * 0.299 + green * 0.587 + blue * 0.114;
+    const grey = luma * 0.9 + 0.07;
+    return [clamp01(grey * 0.97), clamp01(grey), clamp01(grey * 1.04 + 0.01)];
   }
   return [clamp01(red), clamp01(green), clamp01(blue)];
 }

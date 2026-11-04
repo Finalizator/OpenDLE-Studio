@@ -4,8 +4,8 @@ import * as THREE from 'three/webgpu';
 import { uniform, vec2 } from 'three/tsl';
 import {
   LUT_SIZE, POST_FX_CATALOG, POST_FX_KINDS, POST_FX_PRESETS, activePostFxPasses, canMovePass, createPostFxPass,
-  defaultPostFx, lutGrade, lutTableBytes, movePass, postFxLutPreset, postFxParamDefault, postFxPreset,
-  postFxSignature, setPassEnabled, validatePostFx,
+  POST_FX_READS, defaultPostFx, lutGrade, lutTableBytes, movePass, postFxLutPreset, postFxOrderWarnings,
+  postFxParamDefault, postFxPreset, postFxSignature, setPassEnabled, validatePostFx,
 } from '../shared/post-fx.js';
 import { createPostFxStack } from '../public/post-fx-pass.js';
 import { createProject, validateProject } from '../shared/project.js';
@@ -68,6 +68,41 @@ test('a project stack is validated: known techniques, no repeats, parameters in 
 test('a saved project with a broken stack is rejected by project validation', () => {
   assert.throws(() => validateProject(projectWith({ enabled: true, passes: [{ kind: 'sparkle' }] })), /not a technique/);
   assert.doesNotThrow(() => validateProject(projectWith({ enabled: true, passes: [createPostFxPass('bloom')] })));
+});
+
+test('the Silent Hill preset fogs, drains and grains the picture', () => {
+  const stack = postFxPreset('silenthill');
+  assert.deepEqual(stack.passes.map(pass => pass.kind), ['depthOfField', 'chromaticAberration', 'bloom', 'lut', 'fog', 'filmGrain']);
+  assert.deepEqual(postFxOrderWarnings(stack), [], 'every sampling pass runs before the grading');
+  const fog = stack.passes.find(pass => pass.kind === 'fog').params;
+  assert.ok(fog.density > 0.9 && fog.far < 1200, 'the fog closes in rather than tinting the distance');
+  assert.equal(stack.passes.find(pass => pass.kind === 'lut').params.preset, 4, 'the drained grade');
+  assert.ok(stack.passes.find(pass => pass.kind === 'filmGrain').params.amount >= 0.1);
+  assert.deepEqual(validatePostFx(projectWith(stack)), []);
+});
+
+test('a pass either reads its neighbours or it does not, and the vocabulary is closed', () => {
+  for (const entry of POST_FX_CATALOG) {
+    if (entry.reads === undefined) continue;
+    assert.ok(Object.values(POST_FX_READS).includes(entry.reads), `${entry.kind} reads ${entry.reads}`);
+  }
+  // The techniques that sample the frame are exactly the ones the shader builder samples in.
+  const reading = POST_FX_CATALOG.filter(entry => entry.reads).map(entry => entry.kind).sort();
+  assert.deepEqual(reading, ['bloom', 'blur', 'cel', 'chromaticAberration', 'depthOfField', 'dilation',
+    'flow', 'pixelization', 'sharpen', 'ssr', 'ssrRefraction']);
+});
+
+test('a colour pass above a pass that samples its neighbours is reported', () => {
+  assert.deepEqual(postFxOrderWarnings(postFxPreset('silenthill')), [], 'the shipped preset samples first, grades last');
+  assert.deepEqual(postFxOrderWarnings(postFxPreset('toon')).map(warning => warning.kind), []);
+  const broken = { enabled: true, passes: [createPostFxPass('fog'), createPostFxPass('pixelization')] };
+  assert.deepEqual(postFxOrderWarnings(broken).map(warning => `${warning.kind} after ${warning.after}`), ['pixelization after Fog']);
+  // A colour pass that is switched off cannot undo anything.
+  const disabled = { enabled: true, passes: [{ ...createPostFxPass('fog'), enabled: false }, createPostFxPass('blur')] };
+  assert.deepEqual(postFxOrderWarnings(disabled), []);
+  // A sampling pass that is switched off does not run, so it cannot be undone either.
+  const off = { enabled: true, passes: [createPostFxPass('fog'), { ...createPostFxPass('blur'), enabled: false }] };
+  assert.deepEqual(postFxOrderWarnings(off), []);
 });
 
 test('presets are ready-made stacks that validate', () => {
@@ -212,7 +247,7 @@ test('the lookup table is the layout the shader reads', () => {
   assert.deepEqual([...origin], [0, 0, 0]);
   const mid = neutral.subarray(at(8, 8, 8), at(8, 8, 8) + 3);
   assert.deepEqual([...mid], [...mid].map(() => [...mid][0]), 'a grey stays grey');
-  for (const preset of [1, 2, 3]) {
+  for (const preset of [1, 2, 3, 4]) {
     const graded = lutTableBytes(preset);
     assert.equal(graded.length, neutral.length);
     assert.notDeepEqual([...graded], [...neutral], `preset ${preset} grades the frame`);
@@ -226,4 +261,9 @@ test('the lookup table is the layout the shader reads', () => {
   assert.ok(lutGrade(2, 0.5, 0.5, 0.5)[2] > 0.5);
   const sepia = lutGrade(3, 0.9, 0.1, 0.1);
   assert.ok(sepia[0] - sepia[2] < 0.8, 'sepia pulls the channels together');
+  // The drained grade pulls the colour almost out and cools it a touch — a red stays grey.
+  const drained = lutGrade(4, 0.9, 0.1, 0.1);
+  assert.ok(drained[0] - drained[2] < 0.15, `drained keeps the channels together: ${drained}`);
+  assert.ok(drained[2] >= drained[0], 'and leans cool rather than warm');
+  assert.ok(lutGrade(4, 0.25, 0.25, 0.25)[0] > 0.25, 'dark values are lifted out of black');
 });

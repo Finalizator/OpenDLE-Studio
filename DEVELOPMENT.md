@@ -2680,9 +2680,28 @@ rather than a typo:
   The trail now has a `historyReady` uniform that is zero until a frame has been copied, and
   is reset whenever the blur leaves the stack or the target is resized.
 
+The lookup table carries five grades — neutral, warm, cool, sepia and **drained**. The
+drained one exists for the Silent Hill preset: sepia keeps a warmth that a fog-bound town
+should not have, so the drained grade pulls almost all the colour out, cools what is left
+and lifts the darks out of black.
+
 The **Shaders** tab (`public/shader-engine-panel.js`) is the editor for all of it: presets,
 a card per technique with its chapter, toggles, ordering and one slider per parameter, and a
-list of the techniques not yet in the stack. `Docs/shader-engine.md` is the player-facing
+list of the techniques not yet in the stack.
+
+- **The arrows, the On toggles and every slider were dead.** `change` returned a listener
+  wrapper and every call site that handed it to `addEventListener` worked, while the ones
+  that called it and dropped the return value — `reorder`, the toggle and slider callbacks —
+  edited nothing at all. Clicking an arrow was silently a no-op. `change` now performs the
+  edit, the listener sites wrap it, and `test/shader-panel.test.js` clicks the controls
+  against a small fake DOM so a dead control fails a test instead of a playtest.
+- **Passes sample the frame as it entered the chain.** A pass that reads neighbouring
+  fragments (blur, bloom, sharpen, cel, dilation, depth of field, SSR, refraction, flow,
+  pixelization, chromatic aberration) sees the *source*, not the pass above it, so a colour
+  pass placed above one is partly undone. The catalogue carries a `reads` marker per
+  technique, `postFxOrderWarnings` reports the stacks that break the rule, and the panel
+  prints the warning above the stack. Silent Hill is ordered around it: focus, aberration
+  and glow first, grade and fog last. `Docs/shader-engine.md` is the player-facing
 version, including which of the book's chapters are architecture rather than passes
 (deferred rendering, render-to-texture, reference frames).
 

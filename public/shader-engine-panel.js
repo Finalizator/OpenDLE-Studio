@@ -11,7 +11,7 @@
  */
 import {
   POST_FX_CATALOG, POST_FX_BY_KIND, POST_FX_PRESETS, createPostFxPass, defaultPostFx, canMovePass, movePass,
-  postFxPreset, setPassEnabled,
+  postFxOrderWarnings, postFxPreset, setPassEnabled,
 } from '/shared/post-fx.js';
 
 const node = (tag, text, className) => {
@@ -31,7 +31,10 @@ export function createShaderEnginePanel(host, { project: getProject, edit }) {
     } catch (error) { fail(error.message); }
   };
   let fail = () => {};
-  const change = (mutate, message) => safe(() => edit(mutate, message));
+  // Performs the edit now. Returning a listener from here read well at the call sites that
+  // handed it straight to addEventListener, but the ones that called it and dropped the
+  // return value did nothing at all — the arrows, the toggles and every slider among them.
+  const change = (mutate, message) => safe(() => edit(mutate, message))();
   const stack = () => getProject().postFx || defaultPostFx();
   const passOf = kind => (stack().passes || []).find(pass => pass.kind === kind) || null;
 
@@ -70,7 +73,7 @@ export function createShaderEnginePanel(host, { project: getProject, edit }) {
     select.append(new Option(available.length ? 'Add a technique…' : 'Every technique is in the stack', ''));
     for (const entry of available) select.append(new Option(entry.name, entry.kind));
     select.disabled = !available.length;
-    select.addEventListener('change', change(next => {
+    select.addEventListener('change', () => change(next => {
       const kind = select.value;
       if (!kind) return;
       next.postFx = next.postFx || defaultPostFx();
@@ -110,11 +113,11 @@ export function createShaderEnginePanel(host, { project: getProject, edit }) {
     down.disabled = !canMovePass(current, pass.kind, 1);
     down.addEventListener('click', () => reorder(pass.kind, 1));
     const remove = node('button', 'Remove'); remove.type = 'button';
-    remove.addEventListener('click', change(next => {
+    remove.addEventListener('click', () => change(next => {
       next.postFx.passes = (next.postFx.passes || []).filter(candidate => candidate.kind !== pass.kind);
     }, `${entry.name} removed from the stack`));
     const reset = node('button', 'Reset'); reset.type = 'button'; reset.title = 'Back to the book\'s starting values';
-    reset.addEventListener('click', change(next => {
+    reset.addEventListener('click', () => change(next => {
       const fresh = createPostFxPass(pass.kind);
       const target = (next.postFx.passes || []).find(candidate => candidate.kind === pass.kind);
       if (target) target.params = fresh.params;
@@ -154,11 +157,17 @@ export function createShaderEnginePanel(host, { project: getProject, edit }) {
       const button = node('button', preset.name);
       button.type = 'button';
       button.title = preset.passes.length ? preset.passes.map(pass => pass.kind).join(' → ') : 'No passes: the frame is drawn untouched';
-      button.addEventListener('click', change(next => { next.postFx = postFxPreset(preset.id); },
+      button.addEventListener('click', () => change(next => { next.postFx = postFxPreset(preset.id); },
         `Shader preset ${preset.name}`));
       presets.append(button);
     }
     children.push(presets);
+
+    const warnings = postFxOrderWarnings(current);
+    if (warnings.length) {
+      children.push(node('p', `Order warning: ${warnings.map(warning => `${warning.name} sits below ${warning.after}`).join(', ')}. `
+        + 'A pass that reads neighbouring pixels sees the frame as it entered the stack, so the colour work above it is partly undone. Move the sampling passes up.', 'muted'));
+    }
 
     const passes = current.passes || [];
     const list = node('div', undefined, 'shader-stack');

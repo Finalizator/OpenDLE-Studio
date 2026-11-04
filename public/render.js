@@ -2254,6 +2254,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // chain over that picture. With no passes the frame goes straight to the canvas.
       const postPasses = rebuildPostStack(state);
       const usePost = postPasses.length > 0;
+      // What the chain is actually running, for the playtest report and for the browser's
+      // own element inspector: "the effect is on but nothing happens" is answerable here.
+      writeDataset('postFxPasses', postPasses.map(pass => pass.kind).join(','));
+      writeDataset('postFxLutPreset', postLutPreset < 0 ? '' : String(postLutPreset));
       if (usePost) {
         sizePostTarget(screenSize.x, screenSize.y);
         postNear.value = camera.near;

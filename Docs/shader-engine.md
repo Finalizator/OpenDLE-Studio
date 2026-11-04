@@ -40,7 +40,7 @@ field of view changes.
 | Pixelization | pixelization | One sample per block, for chunky pixels |
 | Sharpen | sharpen | Unsharp mask against a blurred copy |
 | Chromatic aberration | chromatic aberration | Splits the channels radially, strongest at the edges |
-| Lookup table | lookup table | Grades every colour through a real 16×16×16 table (neutral, warm, cool, sepia) |
+| Lookup table | lookup table | Grades every colour through a real 16×16×16 table (neutral, warm, cool, sepia, drained) |
 | Fog | fog | Blends to a fog colour with distance |
 | Depth of field | depth of field | A circle of confusion from the focus distance decides the blur |
 | Motion blur | motion blur | Keeps part of the previous frame as a trail |
@@ -73,6 +73,8 @@ Presets are ordinary stacks and remain editable afterwards:
 - **Underwater** — refraction, flow, blue-green fog, foam
 - **Dream** — heavy bloom, chromatic aberration, depth of field
 - **Noir** — sepia table, sharpen, grain
+- **Silent Hill** — drained colour, fog that closes in a few hundred units away, shallow
+  focus, a little glow and chromatic aberration, heavy grain
 
 ## Events
 
@@ -94,6 +96,19 @@ Runtime values start from the project's saved stack and reset when the level res
 the project's own parameters are never overwritten by a running game. The commands are
 validated when the project is saved and when it is exported, so a misspelled technique or
 parameter is an error rather than a rule that silently does nothing.
+
+## Order
+
+Passes run top to bottom in one shader, so the ones that read *colour* from neighbouring
+fragments — blur, bloom, sharpen, cel, dilation, depth of field, SSR, refraction, flow,
+pixelization, chromatic aberration — sample the frame **as it entered the chain**, not what
+the pass above them produced. A colour or tone pass placed above one of those is therefore
+partly or wholly undone: put the sampling first and the grading last. Silent Hill is built
+that way on purpose — focus, aberration and glow, then the drained grade, fog and grain.
+
+The panel says so when a stack breaks that rule, and moving the offending card up clears it.
+Passes that only read *depth* around a fragment (outline, SSAO, foam, rim) are unaffected:
+they work on the colour they are handed.
 
 ## Cost
 
