@@ -32,7 +32,7 @@ import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, mo
 import { editInline, installRowDrag } from './row-drag.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, engineCommands, defaultEngineCommand, installEngineScripts, knownCommandTypes } from '/shared/engine-script.js';
 import { addonCommands } from '/shared/addons.js';
-import { ENGINE_SCRIPTLETS, installScriptlet, removeScriptlet } from '/shared/scriptlets.js';
+import { createScriptletRegistry } from '/shared/scriptlets.js';
 import { createHUDEditor } from './hud-editor.js';
 import { createHUDView } from './hud-view.js';
 import { WEAPONS } from '/shared/player-state.js';
@@ -87,6 +87,8 @@ const $ = id => document.getElementById(id);
 $('asset-dock').append($('assets-panel'));
 $('assets-panel').hidden = false;
 let project, token, revision = 0, dirty = false, selection = null, editVersion = 0;
+const scriptletLibrary = createScriptletRegistry();
+let scriptletsLoading = false, scriptletsLoaded = false, scriptletLoadError = '';
 // The stored project this document belongs to. Null means the document has no file of
 // its own yet (a new project, an import that was never stored, a restored draft), which
 // is what decides whether Save updates the open project or stores a new one.
@@ -1964,13 +1966,44 @@ function loadEngineVersion() {
     throw error;
   });
 }
-// Engine scriptlets: generators that install editable rules. The panel is built from
-// the shared registry, so adding another generator is one entry there plus nothing here.
+async function refreshScriptlets() {
+  if (scriptletsLoading) return;
+  scriptletsLoading = true; scriptletLoadError = '';
+  renderScriptlets();
+  try {
+    const manifest = await api('/api/scriptlets');
+    await scriptletLibrary.load(manifest.files);
+    scriptletsLoaded = true;
+    if (scriptletLibrary.errors.length) status('Some scriptlet files could not be loaded. See Engine scriptlets for details.', true);
+  } catch (error) {
+    scriptletLoadError = `Could not load scriptlets folder: ${error.message}`;
+    status(scriptletLoadError, true);
+  } finally {
+    scriptletsLoading = false;
+    renderScriptlets();
+  }
+}
+$('scriptlet-reload').addEventListener('click', () => void refreshScriptlets());
+
 function renderScriptlets() {
   const list = $('scriptlet-list');
   list.replaceChildren();
-  for (const scriptlet of ENGINE_SCRIPTLETS) {
-    const installed = scriptlet.installed(project);
+  $('scriptlet-reload').disabled = scriptletsLoading;
+  $('scriptlet-folder-status').textContent = scriptletsLoading ? 'Loading scriptlets folder...'
+    : scriptletLoadError || (scriptletsLoaded ? `${scriptletLibrary.scriptlets.length} scriptlets loaded from scriptlets/.` : 'Open this window or reload the folder to discover scriptlets.');
+  const errors = $('scriptlet-errors');
+  errors.replaceChildren();
+  if (scriptletsLoading || scriptletLoadError) return;
+  for (const error of scriptletLibrary.errors) errors.append(make('p', `${error.name}: ${error.message}`));
+  for (const scriptlet of scriptletLibrary.scriptlets) {
+    let installed;
+    try {
+      installed = scriptlet.installed(project);
+      if (!Number.isSafeInteger(installed) || installed < 0) throw new Error('installed(project) must return a nonnegative integer rule count');
+    } catch (error) {
+      errors.append(make('p', `${scriptlet.name}: ${error.message}`));
+      continue;
+    }
     const card = make('div', undefined, 'scriptlet-card');
     card.append(make('h2', scriptlet.name),
       make('p', scriptlet.summary),
@@ -1978,7 +2011,7 @@ function renderScriptlets() {
       make('p', installed ? `Installed: ${installed} rules in their own engine sheet.` : 'Not installed in this project.', installed ? 'scriptlet-state' : 'scriptlet-state muted'));
     const install = button(installed ? 'Reinstall (replaces its rules)' : 'Add to project', () => {
       let sheetId;
-      edit(next => { sheetId = installScriptlet(next, scriptlet.id); },
+      edit(next => { sheetId = scriptletLibrary.installScriptlet(next, scriptlet.id); },
         `${scriptlet.name} scriptlet ${installed ? 'reinstalled' : 'installed'} — its rules are editable in the event sheets`);
       renderScriptlets();
       openScript(`$sheet:${sheetId}`);
@@ -1993,12 +2026,12 @@ function renderScriptlets() {
     }, 'primary'));
     if (installed) card.append(button('Remove its rules', () => {
       if (!confirm(`Remove the ${scriptlet.name} scriptlet and its ${installed} rules? Undo restores them.`)) return;
-      edit(next => removeScriptlet(next, scriptlet.id), `${scriptlet.name} scriptlet removed`);
+      edit(next => scriptletLibrary.removeScriptlet(next, scriptlet.id), `${scriptlet.name} scriptlet removed`);
       renderScriptlets();
     }, 'danger'));
     list.append(card);
   }
-  if (!ENGINE_SCRIPTLETS.length) list.append(make('p', 'No scriptlets are available in this build.', 'muted'));
+  if (scriptletsLoaded && !scriptletLibrary.scriptlets.length) list.append(make('p', 'No valid scriptlets found. Add a scriptlet module to scriptlets/ and reload the folder.', 'muted'));
 }
 
 function showTab(tab) {
@@ -2027,7 +2060,7 @@ function showTab(tab) {
   if (tab === 'actors') actorsPanel.render();
   if (tab === 'scripts') scriptsPanel.render();
   if (tab === 'logs') playtestLogPanel.render();
-  if (tab === 'scriptlets') renderScriptlets();
+  if (tab === 'scriptlets') void refreshScriptlets();
   if (tab === 'timesheet') timesheetPanel.render();
   if (tab === 'tweaks') {
     try { renderEngineTweaks(); }

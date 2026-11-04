@@ -9,8 +9,9 @@ import {
 import { createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createPhysics } from '../shared/physics.js';
-import { installSourceMovementScriptlet, surfRampGeometry, surfRampSurface, SOURCE_MOVEMENT_SHEET } from '../shared/engine-script.js';
-import { ENGINE_SCRIPTLETS, buildSurfTestMap, installScriptlet, removeScriptlet } from '../shared/scriptlets.js';
+import { surfRampGeometry, surfRampSurface } from '../shared/engine-script.js';
+import { installSourceMovementScriptlet, SOURCE_MOVEMENT_SHEET, buildSurfTestMap } from '../scriptlets/source-movement.js';
+import { ENGINE_SCRIPTLETS, installScriptlet, removeScriptlet } from './scriptlet-library.js';
 
 await R.init();
 const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),

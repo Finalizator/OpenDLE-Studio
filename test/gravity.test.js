@@ -8,7 +8,7 @@ import {
 import { createPhysics, validatePhysicsState } from '../shared/physics.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
-import { installWallWalkDemo, WALL_WALK_SHEET } from '../shared/engine-script.js';
+import { installWallWalkDemo, WALL_WALK_SHEET } from '../scriptlets/wall-walking.js';
 import { projectUsesSurfaces } from '../shared/runtime.js';
 
 await R.init();

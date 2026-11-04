@@ -26,6 +26,7 @@ import { isLogId, normalizeLogEntry, LOG_LIMITS } from '../shared/playtest-log.j
 import { fetchShadertoy } from './shadertoy.js';
 import { fetchAddon } from './addons.js';
 import { addonFile, projectAddons } from '../shared/addons.js';
+import { scriptletFiles } from './scriptlets.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function equal(a, b) {
@@ -43,6 +44,7 @@ export function createApp({
   openBrowser = openLocalBrowser,
   openWindow = openStudioWindow,
   versionFile = resolve(root, 'version.ini'),
+  scriptletsDir = resolve(root, 'scriptlets'),
   importCache,
   playtestLogs = createPlaytestLogStore({ directory: resolve(root, DEFAULT_LOG_DIRECTORY) }),
   // Every object that had to be drawn as a grey placeholder — no artwork, no model, only a
@@ -100,6 +102,9 @@ export function createApp({
   // Imports are whole archives (see shared/limits.js); the body limit follows them.
   const archiveLimit = `${LIMITS.archiveBytes / (1024 * 1024)}mb`;
   app.use(express.json({ limit: archiveLimit }));
+  app.get('/api/scriptlets', (req, res) => {
+    res.json({ directory: 'scriptlets', files: scriptletFiles(scriptletsDir) });
+  });
   let browserBusy = false;
   for (const [route, open] of [['/api/open-browser', openBrowser], ['/api/open-window', openWindow]]) {
     app.post(route, async (req, res) => {
@@ -400,6 +405,7 @@ export function createApp({
   // editor show stale geometry with no visible sign that it is out of date.
   const revalidate = (res) => res.set('Cache-Control', 'no-cache');
   app.use('/shared', express.static(resolve(root, 'shared'), { setHeaders: revalidate }));
+  app.use('/scriptlets', express.static(scriptletsDir, { setHeaders: revalidate }));
   app.use('/vendor/three', express.static(resolve(root, 'node_modules/three/build')));
   app.get('/vendor/rapier/rapier.mjs', (req, res) => res.sendFile(resolve(root, 'node_modules/@dimforge/rapier3d-compat/rapier.mjs')));
   for (const module of ['loaders/GLTFLoader.js', 'utils/BufferGeometryUtils.js', 'utils/SkeletonUtils.js', 'environments/RoomEnvironment.js']) {

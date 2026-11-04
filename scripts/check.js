@@ -1,9 +1,9 @@
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-const directories = ['shared', 'server', 'public', 'test', 'scripts'];
+const directories = ['shared', 'server', 'public', 'test', 'scripts', 'scriptlets'];
 let failed = false;
 for (const directory of directories) {
-  for (const file of readdirSync(directory).filter(name => name.endsWith('.js'))) {
+  for (const file of readdirSync(directory, { recursive: directory === 'scriptlets' }).filter(name => /\.(?:js|mjs)$/.test(name))) {
     const result = spawnSync(process.execPath, ['--check', `${directory}/${file}`], { stdio: 'inherit' });
     if (result.status !== 0) failed = true;
   }

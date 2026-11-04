@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createProject, validateProject } from '../shared/project.js';
 import { wallQuadUv, flatUv } from '../shared/uv.js';
 import { parseUDMF, udmfRecords } from '../shared/udmf.js';
-import { installScriptlet, ENGINE_SCRIPTLETS } from '../shared/scriptlets.js';
+import { installScriptlet, ENGINE_SCRIPTLETS } from './scriptlet-library.js';
 
 test('surface texture scale changes how much map space one tile covers', () => {
   const tile = { textureWidth: 64, textureHeight: 64 };

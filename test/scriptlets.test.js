@@ -2,12 +2,65 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createProject, validateProject } from '../shared/project.js';
-import { ENGINE_SCRIPTLETS, buildSurfTestMap, installScriptlet, removeScriptlet, scriptletById } from '../shared/scriptlets.js';
+import { ENGINE_SCRIPTLETS, installScriptlet, removeScriptlet, scriptletById } from './scriptlet-library.js';
+import { buildSurfTestMap } from '../scriptlets/source-movement.js';
 import { newScene, addSceneObject } from '../shared/scenes.js';
 import { newJoint } from '../shared/joints.js';
 import { createCue, createTimesheet } from '../shared/timesheet.js';
+import { createScriptletRegistry, validateScriptlet } from '../shared/scriptlets.js';
 
 const wallWalking = () => ENGINE_SCRIPTLETS.find(scriptlet => scriptlet.id === 'wall-walking');
+
+test('scriptlet module validation rejects malformed metadata and asynchronous callbacks', () => {
+  const valid = wallWalking();
+  for (const value of [undefined, [], null, {}, { ...valid, id: '../bad' }, { ...valid, name: '' },
+    { ...valid, summary: null }, { ...valid, detail: ' ' }, { ...valid, rules: -1 }, { ...valid, rules: 1.5 },
+    { ...valid, install: null }, { ...valid, remove: async () => true }, { ...valid, installed: function* () {} },
+    { ...valid, build: 'not a function' }, { ...valid, buildDetail: 123 }]) {
+    assert.throws(() => validateScriptlet(value));
+  }
+  assert.equal(validateScriptlet(valid), valid);
+});
+
+test('scriptlet registries stay isolated and never import remote or malformed manifest entries', async () => {
+  const first = createScriptletRegistry(), second = createScriptletRegistry();
+  const url = `/scriptlets/custom.js?v=${'a'.repeat(64)}`;
+  let imports = 0;
+  const importModule = async () => { imports++; return { default: wallWalking() }; };
+  await first.load([{ name: 'custom.js', url }, { name: 'remote.js', url: 'https://example.com/remote.js' }, null], importModule);
+  assert.equal(imports, 1);
+  assert.equal(first.scriptlets.length, 1);
+  assert.deepEqual(first.errors.map(error => error.name), ['remote.js', 'Unknown file']);
+  assert.deepEqual(second.scriptlets, []);
+  assert.throws(() => second.scriptletById('wall-walking'), /Unknown engine scriptlet/);
+  await assert.rejects(first.load(undefined), /files list/);
+  assert.equal(first.scriptlets.length, 1, 'a failed manifest must not silently pretend loading succeeded');
+});
+
+test('a slower folder refresh cannot overwrite newer scriptlet results', async () => {
+  const registry = createScriptletRegistry();
+  const files = [{ name: 'custom.js', url: `/scriptlets/custom.js?v=${'a'.repeat(64)}` }];
+  let finish;
+  const slow = registry.load(files, () => new Promise(resolve => { finish = resolve; }));
+  await registry.load([]);
+  finish({ default: wallWalking() });
+  await slow;
+  assert.deepEqual(registry.scriptlets, []);
+  assert.deepEqual(registry.errors, []);
+});
+
+test('invalid custom callback results fail explicitly instead of reporting a successful project edit', async () => {
+  const registry = createScriptletRegistry();
+  const files = [{ name: 'custom.js', url: `/scriptlets/custom.js?v=${'a'.repeat(64)}` }];
+  for (const result of [undefined, 'missing_sheet', Promise.resolve('sheet')]) {
+    await registry.load(files, async () => ({ default: { ...wallWalking(), install: () => result } }));
+    assert.throws(() => registry.installScriptlet(createProject(), 'wall-walking'), /installed event sheet id/);
+  }
+  for (const result of [undefined, 1, Promise.resolve(true)]) {
+    await registry.load(files, async () => ({ default: { ...wallWalking(), remove: () => result } }));
+    assert.throws(() => registry.removeScriptlet(createProject(), 'wall-walking'), /boolean synchronously/);
+  }
+});
 
 test('scriptlets install editable rules of their own and report what they added', () => {
   const project = createProject();
@@ -122,5 +175,7 @@ test('the scriptlets live in their own editor tab, not in the event sheet tree',
   assert.match(html, /<button data-tab="scriptlets">Engine scriptlets<\/button>/);
   assert.match(html, /<section id="scriptlets-panel"/);
   assert.ok(!html.includes('id="add-wall-walk"'), 'the generator must not sit in the event sheet tree');
-  assert.ok(app.includes("if (tab === 'scriptlets') renderScriptlets();"));
+  assert.ok(app.includes("if (tab === 'scriptlets') void refreshScriptlets();"));
+  assert.match(html, /id="scriptlet-reload"/);
+  assert.match(html, /id="scriptlet-errors"[^>]+role="alert"/);
 });

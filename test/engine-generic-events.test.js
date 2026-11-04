@@ -5,7 +5,7 @@ import { ShapeUtils, Vector2 } from 'three';
 import { ACTIONS, CONDITIONS, createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createPhysics } from '../shared/physics.js';
-import { installWallWalkDemo } from '../shared/engine-script.js';
+import { installWallWalkDemo } from '../scriptlets/wall-walking.js';
 import { captureGameSave, restoreGameSave } from '../shared/save-game.js';
 import { buildVanillaActors } from '../shared/actors.js';
 

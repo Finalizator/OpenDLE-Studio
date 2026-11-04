@@ -282,10 +282,13 @@
         <div id="timesheet-root"></div>
       </section>
       <section id="scriptlets-panel" class="panel" hidden>
-        <div class="panel-heading"><div><h1>Engine scriptlets</h1><p>Ready-made rule sets that install as ordinary editable events.</p></div></div>
+        <div class="panel-heading"><div><h1>Engine scriptlets</h1><p>Ready-made rule sets that install as ordinary editable events.</p></div><button id="scriptlet-reload">Reload folder</button></div>
         <div class="prose">
           <p>Each scriptlet adds real events you can inspect, change, disable or delete — it never adds hidden engine behaviour. Generated rules use only the shared condition and action catalogue, so they work in any project, imported or built by hand. Reinstalling replaces that scriptlet's own sheet and leaves your other rules untouched.</p>
+          <p>To add a custom scriptlet, place its <code>.js</code> or <code>.mjs</code> module in the engine's <code>scriptlets/</code> folder, then click <strong>Reload folder</strong>. See <code>scriptlets/README.md</code> for the format. Only load trusted code: scriptlets run with the editor's privileges. Installed events stay in your project even if their source file is removed.</p>
         </div>
+        <p id="scriptlet-folder-status" role="status"></p>
+        <div id="scriptlet-errors" class="prose" role="alert"></div>
         <div id="scriptlet-list" class="scriptlet-list" role="list"></div>
       </section>
       <section id="tweaks-panel" class="panel" hidden>

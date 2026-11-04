@@ -130,6 +130,20 @@ removes the sheet's groups and its rules in reusable scenes. If another rule or 
 timeline cue still references one of those groups, deletion is refused without
 changing the project. Remove those references first.
 
+### Engine scriptlet files
+
+The **Engine scriptlets** window loads modules from the engine's top-level
+`scriptlets/` folder. Each built-in is a separate file. To add your own, place a
+`.js` or `.mjs` file there and open the window or click **Reload folder**; there is
+no central list to edit and no server restart required. Follow the
+[module format and example](../scriptlets/README.md).
+
+Invalid modules are reported by filename without hiding valid scriptlets.
+Scriptlets execute with the editor's privileges: only use code you trust.
+Installation, reinstallation and removal remain undoable project edits.
+Installed events are saved with the project and run without the original module;
+deleting the module does not remove rules already installed.
+
 Frame order in `stepRuntime`:
 
 1. advance HUD interface clock, run `interface` rules

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { addRoom, newId, validateProject, ENTITY_TYPES } from '../shared/project.js';
-import { ENGINE_ACTIONS, ENGINE_CONDITIONS, installEngineScripts, installWallWalkDemo } from '../shared/engine-script.js';
+import { ENGINE_ACTIONS, ENGINE_CONDITIONS, installEngineScripts } from '../shared/engine-script.js';
+import { installWallWalkDemo } from '../scriptlets/wall-walking.js';
 import { eventBranch } from '../shared/events.js';
 import { installDefaultHUD, hudElement } from '../shared/hud.js';
 import { parseHUDCSS } from '../shared/hud-style.js';

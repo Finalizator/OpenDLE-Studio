@@ -1304,15 +1304,25 @@ files so the stage cannot lose its positioning again.
 **Engine scriptlets** are generators that install ready-made rules. They live in
 their own **Engine scriptlets** tab next to Engine tweaks, not in the event-sheet
 tree, so the tree lists sheets and the tab lists things that create them. Each
-scriptlet is an entry in `shared/scriptlets.js` with an installer and a remover;
-the panel is generated from that registry, so adding a generator is one entry and
-no UI work. Three scriptlets ship: **Wall walking** installs the "Wall walking
+scriptlet is its own JavaScript module in the top-level `scriptlets/` folder, including
+its installer, remover and metadata. Opening the window or clicking **Reload folder**
+fetches the authenticated `/api/scriptlets` manifest and imports its files in the browser.
+There is no central registration list and no server restart needed for new files.
+See [the module format and complete example](scriptlets/README.md).
+`shared/scriptlets.js` supplies definition validation, isolated registries and safe
+sheet-removal helpers; `server/scriptlets.js` only lists and hashes files, never executes
+them. The known built-in wall-walking generator is also used directly by the existing
+`engine_add_wall_walk_demo` MCP tool; custom modules only execute in the browser.
+Content-versioned URLs reload edited entry modules. Broken imports, invalid
+definitions and duplicate IDs are reported by file in the window; valid files remain usable.
+Scriptlets are trusted local editor code, not sandboxed project data. Three scriptlets
+ship: **Wall walking** installs the "Wall walking
 (experiment)" sheet, **Half-Life movement and surf** installs the "Half-Life
 movement (Source)" sheet (see [Half-Life movement and surf](#half-life-movement-and-surf)),
 and **Spray (Counter-Strike style)** installs the
 "Spray (CS-style)" sheet with one rule: a `keyPressed` condition (`KeyT` by
 default) runs `sprayImage`, which paints a chosen image onto the wall under the
-crosshair, flat against the surface, for the action's duration. Both report how
+crosshair, flat against the surface, for the action's duration. All report how
 many rules they added, can be reinstalled (replacing only their own sheet) and
 removed, with undo covering either. A scriptlet only ever produces ordinary
 editable events, so anything it installs can be inspected, changed or deleted like
