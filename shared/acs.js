@@ -1265,7 +1265,8 @@ function defineActors() {
     push(vm, script, vm.host.setActorPosition(tid, x, y, z, fog, script.activator));
   });
   define(P.SETACTORANGLE, '', (vm, script) => {
-    pop(vm, script); pop(vm, script);
+    const [tid, angle] = popArgs(vm, script, 2);
+    vm.host.setActorAngle(tid, angle, script.activator);
   });
   define(P.SETACTORPITCH, '', (vm, script) => { pop(vm, script); pop(vm, script); });
   // SetActorProperty(tid, property, value) / GetActorProperty(tid, property):
@@ -1403,6 +1404,7 @@ const HOST_DEFAULTS = {
   getActorProperty: () => 0,
   setActorProperty: () => {},
   setActorPosition: () => false,
+  setActorAngle: () => {},
   damageThing: () => 0,
   giveInventory: () => {},
   takeInventory: () => {},

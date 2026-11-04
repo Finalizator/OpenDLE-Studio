@@ -1146,3 +1146,88 @@ test('hunt 135: ACS_Execute from an actor state makes the actor the activator', 
   ACTIONS.ACS_Execute({ project: {}, state, entity: { id: 'imp', type: 'enemy' }, actor: {}, args: [5, 0, 1], named: {} });
   assert.equal(calls[0][2].activator, 'imp');
 });
+
+test("hunt 136: GetActorAngle reads the player's current facing", () => {
+  const { state, scripts } = scriptRoom();
+  state.player.angle = Math.PI / 2;
+  assert.equal(scripts.host.getActor(0, 'angle', 'player'), 16384);
+});
+
+test('hunt 137: SetActorAngle turns the player and monsters', () => {
+  const calls = [];
+  runAcs([5, 16384, 'SETACTORANGLE'], { setActorAngle: (...args) => calls.push(args.slice(0, 2)) });
+  assert.deepEqual(calls, [[5, 16384]]);
+  const { state, scripts } = scriptRoom([{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60, tid: 5 }]);
+  scripts.host.setActorAngle(5, 32768, 'player');
+  assert.equal(state.entities.find(entity => entity.id === 'imp').angle, 180);
+  scripts.host.setActorAngle(0, 16384, 'player');
+  assert.ok(Math.abs(state.player.angle - Math.PI / 2) < 1e-9);
+});
+
+test('hunt 138: A_Explode does not reach through a closed door', () => {
+  const blast = open => {
+    const project = specialRoom({ s1: open ? {} : { ceilingHeight: 16 },
+      entities: [{ id: 'imp', type: 'enemy', name: 'Imp', x: 40, y: 0, health: 200 }] });
+    const state = createRuntime(project);
+    const rocket = { id: 'rocket', type: 'missile', x: -20, y: 0, angle: 0 };
+    ACTIONS.A_Explode({ project, state, entity: rocket, actor: {}, args: [128, 128], named: {} });
+    return state.entities.find(entity => entity.id === 'imp').health;
+  };
+  assert.ok(blast(true) < 200, 'an open doorway lets the blast through');
+  assert.equal(blast(false), 200);
+});
+
+test('hunt 139: Thing_Spawn, Thing_Projectile and ThingCount read Hexen spawn numbers, not editor numbers', () => {
+  const project = specialRoom({ entities: [
+    { id: 'spot', type: 'decoration', name: 'Spot', x: -100, y: 0, tid: 3 },
+    { id: 'imp', type: 'enemy', name: 'Imp', x: 100, y: 0, doomType: 3001, health: 60 },
+    { id: 'card', type: 'pickup', name: 'Blue card', x: 120, y: 0, doomType: 5 }] });
+  project.actors = [morphActor('actor_ball', 'DoomImpBall', 1)];
+  const state = createRuntime(project);
+  const scripts = createMapScripts(project, state, {});
+  // T_IMP is spawn number 5; editor number 5 is the blue keycard.
+  assert.equal(scripts.host.thingCount({ type: 5, tid: 0 }), 1);
+  assert.equal(scripts.host.thingCount({ type: 85, tid: 0 }), 1, 'T_BLUEKEYCARD counts the card');
+  scripts.special(135, [3, 5, 0, 7]);
+  const spawned = state.entities.find(entity => entity.tid === 7);
+  assert.equal(spawned?.doomType, 3001);
+  assert.equal(spawned.type, 'enemy');
+  assert.equal(scripts.host.thingCount({ type: 5, tid: 0 }), 2);
+  // T_IMPFIREBALL is spawn number 10 (editor number 10 is a gibbed marine).
+  const before = state.projectiles.length;
+  scripts.special(134, [3, 10, 0, 80, 0]);
+  assert.equal(state.projectiles.length, before + 1);
+  assert.equal(state.projectiles.at(-1).actor, 'actor_ball');
+});
+
+function sectorDamageRoom() {
+  const room = scriptRoom([{ id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60 }]);
+  room.state.sectors.find(sector => sector.id === 's0').tag = 7;
+  room.project.map.sectors.find(sector => sector.id === 's0').tag = 7;
+  room.imp = room.state.entities.find(entity => entity.id === 'imp');
+  return room;
+}
+
+test('hunt 140: SectorDamage hurts players and monsters only when its flags ask for them', () => {
+  const monsters = sectorDamageRoom();
+  monsters.scripts.host.sectorDamage(7, 20, '', '', 2); // DAMAGE_NONPLAYERS
+  assert.equal(monsters.imp.health, 40);
+  assert.equal(monsters.state.playerStats.health, 100);
+  const players = sectorDamageRoom();
+  players.scripts.host.sectorDamage(7, 20, '', '', 1); // DAMAGE_PLAYERS
+  assert.equal(players.imp.health, 60);
+  assert.equal(players.state.playerStats.health, 80);
+});
+
+test("hunt 141: SectorDamage goes through the player's armour and invulnerability", () => {
+  const armoured = sectorDamageRoom();
+  Object.assign(armoured.state.playerStats, { armor: 100, armorDivisor: 3 });
+  armoured.scripts.host.sectorDamage(7, 30, '', '', 1);
+  assert.deepEqual([armoured.state.playerStats.health, armoured.state.playerStats.armor], [80, 90]);
+  armoured.scripts.host.sectorDamage(7, 30, '', '', 1 | 16); // DAMAGE_NO_ARMOR
+  assert.deepEqual([armoured.state.playerStats.health, armoured.state.playerStats.armor], [50, 90]);
+  const god = sectorDamageRoom();
+  god.state.playerStats.invulnerable = 100;
+  god.scripts.host.sectorDamage(7, 30, '', '', 1);
+  assert.equal(god.state.playerStats.health, 100);
+});

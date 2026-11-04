@@ -918,12 +918,15 @@ export const ACTIONS = {
     const { project, state, entity } = ctx;
     const damage = numArg(ctx, 0, 128), radius = numArg(ctx, 1, 128);
     const falloff = distance => Math.max(0, Math.round(damage * (1 - distance / radius)));
+    // Like P_RadiusAttack, a blast only reaches what the explosion point can see: a wall
+    // between them shelters the thing behind it.
+    const reaches = target => canSeeTarget(state, entity, target, Infinity);
     const playerDistance = Math.hypot(state.player.x - entity.x, state.player.y - entity.y);
-    if (playerDistance < radius) damagePlayer(state, falloff(playerDistance));
+    if (playerDistance < radius && reaches(state.player)) damagePlayer(state, falloff(playerDistance));
     for (const other of state.entities) {
       if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
       const distance = Math.hypot(other.x - entity.x, other.y - entity.y);
-      if (distance < radius) hurtActor(project, state, other, falloff(distance), blastSource(state, entity));
+      if (distance < radius && reaches(other)) hurtActor(project, state, other, falloff(distance), blastSource(state, entity));
     }
     saySound(state, 'DSBAREXP', entity);
   },

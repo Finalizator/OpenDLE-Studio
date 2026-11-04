@@ -493,7 +493,15 @@ provider credits or network access are required for tests.
   armor (the runtime always keeps a selected weapon). `Thing_Damage2` works like
   `Thing_Damage` and returns how many things it reached. A script started by an
   actor's `ACS_Execute*` state action has that actor as its activator, and
-  `ActivatorTID` reports its tid.
+  `ActivatorTID` reports its tid. `GetActorAngle` reads the player's current facing
+  (kept on `state.player`, not on its entity), and `SetActorAngle` turns the player or
+  every thing with the tid. Numeric class arguments of `ThingCount`, `Thing_Spawn*` and
+  `Thing_Projectile` are Hexen spawn numbers (`T_IMP` is 5, `T_IMPFIREBALL` 10; the
+  table is `DOOM_SPAWN_NUMBERS` in `shared/doom-assets.js`), not editor numbers; a
+  number the table lacks still falls back to an editor number. `SectorDamage` follows
+  GZDoom's flags — `DAMAGE_PLAYERS` (1) and `DAMAGE_NONPLAYERS` (2) pick the victims,
+  things off the floor are spared unless `DAMAGE_IN_AIR` (4), and `DAMAGE_NO_ARMOR` (16)
+  skips armour — and its damage goes through armour and invulnerability like any hit.
 
   Binary Doom maps are a different language: their lines carry Doom's own
   numbers, where 19 lowers a floor and Hexen's 19 stops a thing. The importer
@@ -2386,7 +2394,8 @@ run with the projectile as `self`, which is what makes the rest of this work:
 - **`A_Explode`.** A rocket or barrel explodes from its own `Death` state instead
   of an invented splash radius, so a projectile that does not call it does not
   explode. Monster projectiles therefore no longer carry a fake splash of their
-  own damage.
+  own damage. As in `P_RadiusAttack`, the blast only reaches what the explosion
+  point can see, so a wall or closed door shelters whatever is behind it.
 - **`A_FireCustomMissile` / `A_FireProjectile`.** The class the mod names is
   spawned with that actor's damage, speed, artwork and states — no placeholder —
   honouring `angle`, `useammo` (a `false` third argument spends nothing),

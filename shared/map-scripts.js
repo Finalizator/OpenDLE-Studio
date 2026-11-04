@@ -15,12 +15,17 @@ import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 import { bindCameraTexture } from './cameratextures.js';
 import { requestSky } from './sky.js';
 import { addAmmo } from './player-state.js';
-import { soundEvent, floorAt, launchProjectile } from './combat.js';
+import { soundEvent, floorAt, launchProjectile, damagePlayer } from './combat.js';
 import { resetMomentum } from './player-motion.js';
 import { sectorAt } from './sectors.js';
 import { actorForThing } from './actors.js';
-import { doomThings } from './doom-assets.js';
-import { projectActorIndex } from './actor-runtime.js';
+import { doomThings, DOOM_SPAWN_NUMBERS } from './doom-assets.js';
+import { VANILLA_THINGS } from './dehacked.js';
+import { projectActorIndex, hurtActor } from './actor-runtime.js';
+
+const EDITOR_NUMBERS = new Map(Object.entries(VANILLA_THINGS).map(([number, name]) => [name.toLowerCase(), Number(number)]));
+/** The editor number of a stock class, so a project without actor records can still spawn it. */
+const editorNumber = name => EDITOR_NUMBERS.get(String(name || '').toLowerCase()) || 0;
 
 const TIC_RATE = 35;
 
@@ -270,7 +275,9 @@ export function createMapScripts(project, state, callbacks = {}) {
     changeSky: (first, second) => requestSky(state, first, second),
     setGravity: value => { state.gravity = Number.isFinite(value) ? value : state.gravity; },
     setAirControl: value => { state.airControl = Number.isFinite(value) ? value : state.airControl; },
-    sectorDamage: (tag, amount) => { for (const sector of sectorsTagged(tag)) damageInSector(sector, amount); },
+    sectorDamage: (tag, amount, type, protection, flags = 0) => {
+      for (const sector of sectorsTagged(tag)) damageInSector(sector, amount, protection, flags);
+    },
     sectorSound: (name, volume) => { if (name) soundEvent(state, name, Math.max(0, Math.min(1, volume / 127))); },
     thingSound: (tid, name, volume) => {
       if (!name) return;
@@ -289,6 +296,7 @@ export function createMapScripts(project, state, callbacks = {}) {
     projectile: options => launchFromThing(options),
     getActor: (tid, kind, activator) => getActorValue(tid, kind, activator),
     setActorPosition: (tid, x, y, z, fog, activator) => setActorPosition(tid, x, y, z, fog, activator),
+    setActorAngle: (tid, angle, activator) => setActorAngle(tid, angle, activator),
     getActorProperty: (tid, property, activator) => actorProperty(tid, property, activator),
     // MorphActor turns players into `playerClass` and everything else into `monsterClass`,
     // and a tid names every thing that carries it.
@@ -410,14 +418,12 @@ export function createMapScripts(project, state, callbacks = {}) {
 
   function countThings({ type, name, tid, tag }) {
     if (tag && !sectorsTagged(tag).length) return 0;
+    const spawnClass = type ? DOOM_SPAWN_NUMBERS[type] : null;
+    const className = String(name || spawnClass || '').toLowerCase();
     return state.entities.filter(entity => {
       if (tid && entity.tid !== tid) return false;
-      if (type && entity.doomType !== type) return false;
-      if (name) {
-        const index = projectActorIndex(project);
-        const actor = actorForThing(index, entity.doomType);
-        if (!actor || actor.name.toLowerCase() !== String(name).toLowerCase()) return false;
-      }
+      if (type && !spawnClass && entity.doomType !== type) return false;
+      if (className && entityClass(entity) !== className) return false;
       if (tag && sectorAt(state.sectors, entity.x, entity.y)?.tag !== tag) return false;
       return true;
     }).length;
@@ -482,13 +488,33 @@ export function createMapScripts(project, state, callbacks = {}) {
     if (source) source.special = 0;
   }
 
-  function damageInSector(sector, amount) {
-    if (!amount) return;
-    const entity = state.entities.find(entity => entity.type === 'player');
-    if (!entity || sectorAt(state.sectors, entity.x, entity.y)?.id !== sector.id) return;
-    state.playerStats.health = Math.max(0, state.playerStats.health - amount);
-    state.feedback.health = state.playerStats.health;
-    state.feedback.damage = { amount, time: state.time };
+  // SectorDamage flags, from GZDoom's p_spec.h.
+  const DAMAGE_PLAYERS = 1, DAMAGE_NONPLAYERS = 2, DAMAGE_IN_AIR = 4, DAMAGE_NO_ARMOR = 16;
+
+  /**
+   * GZDoom's DoSectorDamage: the flags pick players, non-players or both, things off the
+   * floor escape unless DAMAGE_IN_AIR is set, and the damage goes through armour (unless
+   * DAMAGE_NO_ARMOR) and invulnerability like any other hit.
+   */
+  function damageInSector(sector, amount, protection, flags) {
+    if (!(amount > 0)) return;
+    const inSector = thing => sectorAt(state.sectors, thing.x, thing.y)?.id === sector.id;
+    const inAir = flags & DAMAGE_IN_AIR;
+    if (flags & DAMAGE_PLAYERS && inSector(state.player) && (inAir || (state.physics ? state.physics.grounded : true))
+      && !(protection && checkInventory(protection, 0, 'player') > 0)) {
+      if (flags & DAMAGE_NO_ARMOR) {
+        const armor = state.playerStats.armor;
+        state.playerStats.armor = 0;
+        damagePlayer(state, amount);
+        state.playerStats.armor = armor;
+      } else damagePlayer(state, amount);
+    }
+    if (!(flags & DAMAGE_NONPLAYERS)) return;
+    for (const entity of state.entities) {
+      if (entity.type !== 'enemy' || !inSector(entity)) continue;
+      if (!inAir && Number.isFinite(entity.z) && entity.z > (sector.floorHeight ?? 0) + 1) continue;
+      hurtActor(project, state, entity, amount);
+    }
   }
 
   // APROP_* indexes from ACC's zdefs.acs, limited to what the engine tracks.
@@ -542,6 +568,16 @@ export function createMapScripts(project, state, callbacks = {}) {
     }
   }
 
+  function entityClass(entity) {
+    const actor = actorForThing(projectActorIndex(project), entity.doomType);
+    return String(actor?.name || VANILLA_THINGS[entity.doomType] || '').toLowerCase();
+  }
+
+  /** A specials' numeric type is a Hexen spawn number; numbers it lacks stay editor numbers. */
+  function spawnType(type) {
+    return typeof type === 'number' && DOOM_SPAWN_NUMBERS[type] || type;
+  }
+
   function resolveActor(type, name) {
     const index = projectActorIndex(project);
     if (typeof type === 'string' && type) return index.byName.get(type.toLowerCase()) || null;
@@ -550,9 +586,10 @@ export function createMapScripts(project, state, callbacks = {}) {
     return null;
   }
 
-  function spawnThing({ type, name, x, y, z, angle = 0, tid = 0 }) {
+  function spawnThing({ type: requested, name, x, y, z, angle = 0, tid = 0 }) {
+    const type = spawnType(requested);
     const actor = resolveActor(type, name);
-    const number = actor?.doomedNum || (Number.isFinite(Number(type)) ? Number(type) : 0);
+    const number = actor?.doomedNum || (Number.isFinite(Number(type)) ? Number(type) : editorNumber(type || name));
     const mapping = doomThings[number];
     if (!actor && !mapping) {
       api.errors.push(`Cannot spawn unknown actor ${typeof type === 'string' ? type : type}`);
@@ -567,7 +604,7 @@ export function createMapScripts(project, state, callbacks = {}) {
     } while (state.entities.some(candidate => candidate.id === id));
     const entity = {
       id,
-      name: actor?.name || mapping?.[0] || `Thing ${number}`,
+      name: actor?.name || (typeof type === 'string' && type) || mapping?.[0] || `Thing ${number}`,
       type: actorFamily(actor, mapping), doomType: number,
       x, y, z: Number.isFinite(z) ? z : floorAt(state, { x, y }),
       angle: Number.isFinite(angle) ? angle : 0, ...(tid ? { tid } : {}),
@@ -593,7 +630,7 @@ export function createMapScripts(project, state, callbacks = {}) {
    * in eighths of a unit per tic, the vertical one added on top of the horizontal.
    */
   function launchFromThing({ tid = 0, entity = null, activator = null, type, angle = 0, speed = 8, vspeed = 0, newTid = 0 }) {
-    const actor = resolveActor(type);
+    const actor = resolveActor(spawnType(type));
     const sources = entity ? [entity] : tid ? state.entities.filter(candidate => candidate.tid === tid)
       : [activatorEntity(activator)].filter(Boolean);
     const yaw = (angle * Math.PI * 2) / 256;
@@ -626,10 +663,25 @@ export function createMapScripts(project, state, callbacks = {}) {
       case 'z': return Math.round((entity.z ?? floorAt(state, entity)) * 65536);
       case 'floorZ': return Math.round((sector?.floorHeight ?? 0) * 65536);
       case 'ceilingZ': return Math.round((sector?.ceilingHeight ?? 0) * 65536);
-      case 'angle': return Math.round(((entity.angle || 0) / 360) * 65536) & 0xffff;
+      // The player's facing lives on `state.player` (radians); its entity keeps the spawn angle.
+      case 'angle': return Math.round((entityAngle(entity) / 360) * 65536) & 0xffff;
       case 'pitch': return 0;
       case 'light': return sector?.light ?? 0;
       default: return 0;
+    }
+  }
+
+  function entityAngle(entity) {
+    return entity.type === 'player' ? (state.player.angle || 0) * 180 / Math.PI : entity.angle || 0;
+  }
+
+  /** `SetActorAngle(tid, angle)`: the angle is a fixed-point fraction of a full turn. */
+  function setActorAngle(tid, angle, activator) {
+    const targets = tid ? state.entities.filter(candidate => candidate.tid === tid) : [activatorEntity(activator)];
+    const degrees = ((((angle & 0xffff) / 65536) * 360) % 360 + 360) % 360;
+    for (const entity of targets.filter(Boolean)) {
+      if (entity.type === 'player') state.player.angle = degrees * Math.PI / 180;
+      else entity.angle = degrees;
     }
   }
 
