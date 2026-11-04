@@ -91,6 +91,7 @@ body.splitter-dragging-y { cursor: row-resize; }
 #inspector > label:has(input[type=checkbox]) { display: flex; text-align: left; flex-direction: row-reverse; justify-content: end; }
 #inspector .field-grid { display: block; }
 #inspector button { width: 100%; margin-top: 5px; }
+#inspector .pixieditor-button { width: 20px; margin: 0; }
 .property-help { margin-top: auto; padding: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 .property-help p { margin-bottom: 0; }
 .property-section { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
@@ -645,7 +646,14 @@ dialog::backdrop { background: #111c; }
 .asset-picker-close:hover { color: var(--text); background: #575757; }
 .asset-picker-search { width: 100%; }
 .asset-picker-list { overflow: auto; display: grid; gap: 1px; align-content: start; min-height: 40px; }
-.asset-picker-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; text-align: left; background: transparent; border: 1px solid transparent; padding: 2px 4px; }
+.asset-picker-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; text-align: left; background: transparent; border: 1px solid transparent; padding: 2px 4px; cursor: pointer; }
+.asset-picker-edit { grid-column: 4; padding: 0 5px; background: #3a3a3a; border: 1px solid #555; line-height: 16px; }
+.asset-picker-edit:hover { background: #4c4c4c; }
+/* A picture field is the asset list plus the button that hands the picture to PixiEditor. */
+.asset-field-row { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.asset-field-row select { flex: 1; min-width: 0; }
+.pixieditor-button { flex: 0 0 auto; width: 20px; padding: 0; line-height: 16px; background: #3a3a3a; border: 1px solid #555; }
+.pixieditor-button:hover { background: #4c4c4c; }
 .asset-picker-row:hover, .asset-picker-row:focus-visible { background: #545454; }
 .asset-picker-row.selected { background: #6a6758; border-color: #8a8160; }
 .asset-picker-thumb { width: 26px; height: 26px; object-fit: contain; background: #2c2c2c; border: 1px solid #2a2a2a; image-rendering: pixelated; }

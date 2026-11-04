@@ -58,6 +58,9 @@ export function closeAssetPicker() {
 export function openAssetPicker({
   anchor, title = 'Choose an asset', assets = [], kinds = null, value = '', onPick, onClear,
   noneLabel = '(none)', emptyText = 'No asset matches. Import artwork first.',
+  // A row's pencil hands the picture to a desktop editor without choosing it; `editable`
+  // decides which rows offer it, so a model or a sound is never offered a paint program.
+  onEdit = null, editable = asset => Boolean(asset),
 } = {}) {
   closeAssetPicker();
   const panel = document.createElement('div');
@@ -127,12 +130,14 @@ export function openAssetPicker({
       list.append(none);
     }
     for (const asset of matches) {
-      const row = document.createElement('button');
-      row.type = 'button';
+      // A row carries its own edit button, and a button cannot nest inside a button, so the
+      // row itself is a focusable option rather than the control that picks.
+      const row = document.createElement('div');
       row.className = `asset-picker-row${asset.id === value ? ' selected' : ''}`;
       row.dataset.assetId = asset.id;
       row.setAttribute('role', 'option');
       row.setAttribute('aria-selected', String(asset.id === value));
+      row.tabIndex = 0;
       const name = document.createElement('span');
       name.className = 'asset-picker-name';
       name.textContent = asset.name;
@@ -140,7 +145,20 @@ export function openAssetPicker({
       meta.className = 'asset-picker-meta';
       meta.textContent = metaOf(asset);
       row.append(thumbOf(asset), name, meta);
+      if (onEdit && editable(asset)) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'asset-picker-edit';
+        edit.textContent = '\u270e';
+        edit.title = `Edit ${asset.name} in PixiEditor`;
+        edit.setAttribute('aria-label', `Edit ${asset.name} in PixiEditor`);
+        edit.addEventListener('click', event => { event.stopPropagation(); onEdit(asset); });
+        row.append(edit);
+      }
       row.addEventListener('click', () => pick(asset));
+      row.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(asset); }
+      });
       list.append(row);
     }
     if (!matches.length) {

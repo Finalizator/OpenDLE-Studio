@@ -13,7 +13,7 @@ const node = (tag, text, className) => {
   if (className) result.className = className;
   return result;
 };
-export function createHUDEditor(host, { project: getProject, edit, script, error }) {
+export function createHUDEditor(host, { project: getProject, edit, script, error, openInPixiEditor = null }) {
   let selectedId, clipId, view, state, current, stage, properties, animationPanel, drag, animationFrame;
   let previewAspect = '16 / 9';
   let previewScreen = 'playing';
@@ -37,6 +37,25 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
     input.value = value ?? '';
     input.addEventListener('change', safe(() => change(typeof value === 'number' ? input.valueAsNumber : input.value)));
     wrapper.append(input); host.append(wrapper); return input;
+  };
+  // A field whose options are pictures: the same select, plus the button that hands the
+  // chosen one to PixiEditor. The HUD designer draws armour and pickup art, so it needs the
+  // same round trip as the map inspector.
+  const imageField = (host, label, value, change, options) => {
+    const input = field(host, label, value, change, options);
+    if (!openInPixiEditor) return input;
+    const editButton = node('button', '\u270e');
+    editButton.type = 'button'; editButton.className = 'pixieditor-button';
+    editButton.title = 'Edit this image in PixiEditor';
+    editButton.setAttribute('aria-label', `Edit ${label} in PixiEditor`);
+    editButton.addEventListener('click', event => {
+      event.preventDefault(); event.stopPropagation();
+      const asset = (getProject().assets || []).find(item => item.id === input.value);
+      if (!asset) { error('Choose an image first, then edit it in PixiEditor'); return; }
+      openInPixiEditor(asset);
+    });
+    input.after(editButton);
+    return input;
   };
   const check = (host, label, value, change) => {
     const wrapper = node('label'), input = node('input'); input.type = 'checkbox'; input.checked = value;
@@ -189,13 +208,13 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
     if (element.type === 'bar') {
       field(properties, 'Fill direction', element.fillDirection || 'right',
         value => updateElement('fillDirection', value), ['right', 'left', 'up', 'down']);
-      field(properties, 'Fill image', element.fillAssetId || '', value => updateElement('fillAssetId', value),
+      imageField(properties, 'Fill image', element.fillAssetId || '', value => updateElement('fillAssetId', value),
         [['', 'Solid color'], ...imageOptions()]);
     }
     field(properties, 'Font', element.fontId || '', value => updateElement('fontId', value), [['', 'Built-in monospace'], ...current.hud.fonts.map(font => [font.id, font.name])]);
     field(properties, 'CSS class', element.styleClass || '', value => updateElement('styleClass', value),
       [['', 'None'], ...(current.hud.styles || []).map(style => style.name)]);
-    field(properties, 'Image / atlas', element.assetId || '', value => update(hud => {
+    imageField(properties, 'Image / atlas', element.assetId || '', value => update(hud => {
       const item = hud.elements.find(item => item.id === element.id);
       if (value) item.assetId = value; else delete item.assetId;
       delete item.slice; delete item.sprite;

@@ -27,6 +27,7 @@ import { fetchShadertoy } from './shadertoy.js';
 import { fetchAddon } from './addons.js';
 import { addonFile, projectAddons } from '../shared/addons.js';
 import { scriptletFiles } from './scriptlets.js';
+import { createPixiEditorBridge, PIXIEDITOR_KINDS } from './pixieditor.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function equal(a, b) {
@@ -51,6 +52,9 @@ export function createApp({
   // collider — is recorded here. It is the fastest way to answer "why does the map look
   // wrong": one file lists each such object with its name, type and position.
   placeholderLogs = createPlaytestLogStore({ directory: resolve(root, DEFAULT_PLACEHOLDER_DIRECTORY) }),
+  // Editable copies of the project's artwork, written out for PixiEditor. Outside
+  // `Projects/` on purpose: these are scratch files, not a second copy of the game.
+  pixiEditor = createPixiEditorBridge({ directory: resolve(root, 'data/pixieditor') }),
 } = {}) {
   readEngineVersion(versionFile);
   const app = express();
@@ -118,6 +122,23 @@ export function createApp({
       } finally { browserBusy = false; }
     });
   }
+  // PixiEditor: the project's bitmap artwork goes out as a PNG in a scratch folder and
+  // comes back through the same file. The client sends the asset itself (it holds the
+  // edit that may not be saved yet), so opening never depends on a save round trip.
+  const pixiProject = () => store.snapshot().projectId || projectSlug(store.snapshot().project?.title || 'project');
+  app.get('/api/pixieditor', (req, res) => res.json({ ...pixiEditor.status(), kinds: PIXIEDITOR_KINDS }));
+  app.post('/api/pixieditor/open', async (req, res) => {
+    try {
+      res.json({ ...(await pixiEditor.open(pixiProject(), req.body?.asset)), available: true });
+    } catch (error) {
+      res.status(400).json({ error: error.message, ...(error.path ? { path: error.path, available: false } : {}) });
+    }
+  });
+  app.post('/api/pixieditor/reload', (req, res) => {
+    try {
+      res.json(pixiEditor.reload(pixiProject(), req.body?.asset));
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
   app.get('/api/wads', (req, res) => {
     const files = readdirSync(projectsDir, { withFileTypes: true }).filter(file => file.isFile() && /\.wad$/i.test(file.name));
     res.json({ files: files.map(file => file.name) });

@@ -72,6 +72,7 @@ import { askDeleteObject } from './delete-object.js';
 import { entityReferences, referenceLabel } from '/shared/references.js';
 import { openAssetPicker, PICTURE_KINDS, MODEL_KINDS } from './asset-picker.js';
 import { captureModelPreview } from './model-thumbnail.js';
+import { createPixiEditor, isEditableImage, PIXIEDITOR_KINDS } from './pixieditor.js';
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
 import { installIntermission } from '/shared/intermission.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen, changeSetting, verticalFov } from '/shared/game-settings.js';
@@ -322,6 +323,7 @@ addonsPanel = createAddonsPanel({
 
 const hudEditor = createHUDEditor($('hud-editor'), {
   project: () => project, edit, script: openHUDScript, error: message => status(message, true),
+  openInPixiEditor: asset => pixiEditor.open(asset),
 });
 
 
@@ -987,6 +989,23 @@ function select(options, value, fn, label) {
   element.addEventListener('change', guard(() => fn(element.value)));
   return element;
 }
+// PixiEditor takes a texture out of the project and hands it back through the same PNG.
+const pixiEditor = createPixiEditor({ request: api, notify: status });
+
+/**
+ * A picture field: the asset list plus the button that opens the chosen picture in
+ * PixiEditor. Every inspector that picks artwork uses this, so the affordance is in the
+ * same place wherever a texture, flat, sprite, sky or weapon image is chosen.
+ */
+function imageRow(list) {
+  const row = make('div', undefined, 'asset-field-row');
+  row.append(list, pixiEditor.button(() => (project.assets || []).find(asset => asset.id === list.value) || null));
+  return row;
+}
+function imageAssetField(parent, text, value, fn, kinds = PIXIEDITOR_KINDS) {
+  field(parent, text, imageRow(assetSelect(value, fn, kinds)));
+}
+
 function field(parent, text, element) {
   const label = make('label', text);
   label.append(element);
@@ -1382,8 +1401,8 @@ function renderInspector() {
     field(parent, 'Floor height', input(item.floorHeight, 'number', value => update('floorHeight', value)));
     field(parent, 'Ceiling height', input(item.ceilingHeight, 'number', value => update('ceilingHeight', value)));
     renderDoorProperties(parent, item);
-    field(parent, 'Floor material', assetSelect(item.floorAsset, value => update('floorAsset', value), ['flat', 'texture']));
-    field(parent, 'Ceiling material', assetSelect(item.ceilingAsset, value => update('ceilingAsset', value), ['flat', 'texture']));
+    imageAssetField(parent, 'Floor material', item.floorAsset, value => update('floorAsset', value), ['flat', 'texture']);
+    imageAssetField(parent, 'Ceiling material', item.ceilingAsset, value => update('ceilingAsset', value), ['flat', 'texture']);
     // Texture scale is pixels-per-unit: 2 draws the artwork twice as large on the
     // floor and ceiling, 0.5 twice as fine, with no separate texture needed.
     field(parent, 'Texture scale (floors/ceilings)', input(item.textureScale ?? 1, 'number', value => update('textureScale', value)));
@@ -1394,7 +1413,7 @@ function renderInspector() {
     field(parent, 'Color', input(item.color, 'color', value => update('color', value)));
     field(parent, 'Height', input(item.height, 'number', value => update('height', value)));
     parent.append(checkbox('Blocks player', item.solid, value => update('solid', value)));
-    if (!item.right && !item.left) field(parent, 'Wall material', assetSelect(item.assetId, value => update('assetId', value), ['texture', 'flat']));
+    if (!item.right && !item.left) imageAssetField(parent, 'Wall material', item.assetId, value => update('assetId', value), ['texture', 'flat']);
     for (const key of ['right', 'left']) {
       if (!item[key]) continue;
       const part = make('div', undefined, 'property-section');
@@ -1403,7 +1422,7 @@ function renderInspector() {
       if (sector) renderDoorProperties(part, sector);
       const changeSide = (property, value) => edit(next => { next.map.walls.find(wall => wall.id === item.id)[key][property] = value; });
       for (const [property, name] of [['middle', 'Middle texture'], ['upper', 'Upper texture'], ['lower', 'Lower texture']]) {
-        field(part, name, assetSelect(item[key][property], value => changeSide(property, value), ['texture', 'flat']));
+        imageAssetField(part, name, item[key][property], value => changeSide(property, value), ['texture', 'flat']);
       }
       field(part, 'X texture offset', input(item[key].offsetX, 'number', value => changeSide('offsetX', value)));
       field(part, 'Y texture offset', input(item[key].offsetY, 'number', value => changeSide('offsetY', value)));
@@ -1440,9 +1459,9 @@ function renderInspector() {
         // A ramp is a shape, so its picture is a material on that shape rather than a sprite —
         // and any picture will do, including the wall textures and flats the asset library is
         // mostly made of, because a surf ramp is usually textured like the room it is in.
-        field(parent, item.type === 'ramp' ? 'Ramp texture' : 'Sprite image',
-          assetSelect(item.spriteAsset, value => update('spriteAsset', value),
-            item.type === 'ramp' ? ['sprite', 'texture', 'flat', 'image'] : ['sprite']));
+        imageAssetField(parent, item.type === 'ramp' ? 'Ramp texture' : 'Sprite image', item.spriteAsset,
+          value => update('spriteAsset', value),
+          item.type === 'ramp' ? ['sprite', 'texture', 'flat', 'image'] : ['sprite']);
         field(parent, 'Sprite scale', input(item.spriteScale || 1, 'number', value => update('spriteScale', value)));
         if (project.spriteClips?.length) for (const name of ['stand', 'walk', 'attack', 'pain', 'death']) {
           field(parent, `Sprite / ${name}`, select([['', 'No animation'], ...project.spriteClips.map(clip => [clip.id, clip.name])],
@@ -2874,23 +2893,23 @@ function renderEnvironment() {
   parent.append(make('p', 'Effect signature: vec4 effect(vec4 color, vec2 uv, float time). Shadertoy shaders can be pasted as they are: mainImage, iTime, iResolution, iMouse, if/else, bounded for loops and helper functions all compile, and iChannel0 is what the renderer drew behind the object, so an effect can refract the level instead of only being transparent. Uniform names are numeric parameters declared by the engine, not source declarations. This portable GLSL subset is not an unrestricted vertex/fragment pipeline.', 'muted'));
   for (const key of ['sky', 'floor']) field(parent, key === 'sky' ? 'Sky color' : 'Floor color',
     input(project.environment[key], 'color', value => edit(next => { next.environment[key] = value; })));
-  field(parent, 'Sky panorama', assetSelect(project.environment.skyAsset, value => edit(next => {
+  imageAssetField(parent, 'Sky panorama', project.environment.skyAsset, value => edit(next => {
     next.environment.skyAsset = value; delete next.environment.skybox;
-  }), ['sky']));
+  }), ['sky']);
   field(parent, 'Sky projection', select([['doom', 'Doom sky (90-degree horizontal repeat)'], ['panorama', '360-degree panorama']],
     project.environment.skyMode || 'panorama', value => edit(next => { next.environment.skyMode = value; })));
-  field(parent, 'Weapon overlay', assetSelect(project.environment.weaponAsset, value => edit(next => { next.environment.weaponAsset = value; }), ['weapon']));
+  imageAssetField(parent, 'Weapon overlay', project.environment.weaponAsset, value => edit(next => { next.environment.weaponAsset = value; }), ['weapon']);
   if (project.environment.weaponAssets) for (const weapon of WEAPONS) {
-    field(parent, `${weapon} overlay`, assetSelect(project.environment.weaponAssets[weapon], value => edit(next => {
+    imageAssetField(parent, `${weapon} overlay`, project.environment.weaponAssets[weapon], value => edit(next => {
       next.environment.weaponAssets[weapon] = value;
-    }), ['weapon']));
+    }), ['weapon']);
   }
   const cube = make('details');
   cube.append(make('summary', 'Six-face skybox'));
   const faces = {}, grid = make('div', undefined, 'skybox-grid');
   for (const face of ['px', 'nx', 'py', 'ny', 'pz', 'nz']) {
     faces[face] = assetSelect(project.environment.skybox?.[face], () => {}, ['sky']);
-    field(grid, face, faces[face]);
+    field(grid, face, imageRow(faces[face]));
   }
   cube.append(grid, button('Apply six-face skybox', () => edit(next => {
     const skybox = Object.fromEntries(Object.entries(faces).map(([face, element]) => [face, element.value || null]));
@@ -3030,6 +3049,13 @@ function renderAssets() {
       image.src = asset.src; image.alt = asset.name; image.loading = 'lazy';
       tile.append(image, make('strong', asset.name), make('small', `${asset.kind} / ${asset.width}x${asset.height}`));
     }
+    // Pictures get the same pencil the inspectors carry, so the asset browser is a way into
+    // PixiEditor and not only a place to look at artwork.
+    if (isEditableImage(asset)) {
+      const pencil = pixiEditor.button(() => asset);
+      pencil.title = `Edit ${asset.name} in PixiEditor`;
+      tile.append(pencil);
+    }
     if (asset.kind === 'weapon') tile.append(button('Use weapon overlay', () => edit(next => { next.environment.weaponAsset = asset.id; })));
     if (asset.kind === 'sky') tile.append(button('Use sky panorama', () => edit(next => {
       next.environment.skyAsset = asset.id; next.environment.skyMode = 'panorama'; delete next.environment.skybox;
@@ -3064,10 +3090,10 @@ function renderAssets() {
       details.append(checkbox('Loop', clip.loop, value => change('loop', value)));
       clip.frames.forEach((id, index) => {
         const row = make('div', undefined, 'field-grid');
-        field(row, `Frame ${index + 1}`, assetSelect(id, value => {
+        field(row, `Frame ${index + 1}`, imageRow(assetSelect(id, value => {
           if (!value) throw new Error('Each animation frame needs an image');
           const frames = [...clip.frames]; frames[index] = value; change('frames', frames);
-        }, ['sprite', 'weapon', 'texture', 'flat']));
+        }, ['sprite', 'weapon', 'texture', 'flat'])));
         if (clip.frames.length > 1) row.append(button('Remove frame', () => change('frames', clip.frames.filter((_, i) => i !== index))));
         details.append(row);
       });
@@ -5800,10 +5826,31 @@ function assetTileMenu(tile, event) {
       next.environment.skyAsset = asset.id; next.environment.skyMode = 'panorama'; delete next.environment.skybox;
     })) });
   }
+  if (isEditableImage(asset)) items.push(...pixiEditorItems(asset));
   items.push({ separator: true });
   items.push({ label: 'Rename asset\u2026', run: guard(() => renameAsset(asset)) });
   items.push({ label: 'Copy name', run: () => copyText(asset.name, `"${asset.name}"`) });
   contextMenu(event, items, { label: `${asset.name} actions` });
+}
+
+/**
+ * The two PixiEditor actions for a picture asset. Opening writes the PNG into the studio's
+ * scratch folder and starts the editor on it; reloading reads the file back after the
+ * artist exported over it, as one ordinary undoable asset change.
+ */
+function pixiEditorItems(asset) {
+  if (!isEditableImage(asset)) return [];
+  return [
+    { label: 'Open in PixiEditor', run: guard(() => pixiEditor.open(asset)) },
+    { label: 'Reload from PixiEditor', run: guard(async () => {
+      const result = await pixiEditor.reload(asset);
+      edit(next => {
+        const target = (next.assets || []).find(item => item.id === asset.id);
+        if (!target) throw new Error('That asset is no longer in the project');
+        target.src = result.src; target.width = result.width; target.height = result.height;
+      }, `${asset.name} reloaded from PixiEditor`);
+    }) },
+  ];
 }
 
 function objectTileMenu(id, event) {
@@ -5893,6 +5940,8 @@ function pickAssetForEntity(entity) {
     assets: project.assets || [],
     kinds: [...PICTURE_KINDS, ...MODEL_KINDS],
     value: entity.spriteAsset || entity.modelAsset || '',
+    onEdit: asset => { pixiEditor.open(asset).catch(error => status(error.message, true)); },
+    editable: isEditableImage,
     emptyText: 'No pictures or models yet. Import a WAD, images or a model first.',
     onPick: asset => { selection = { kind: 'entity', id: entity.id }; guard(() => assignAssetToSelection(asset))(); },
   });

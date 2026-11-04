@@ -3583,6 +3583,35 @@ above a block of collapsed summaries: the help is reached by scrolling to the en
 it always was. The hidden file inputs live outside the scrolling body, so a file picker cannot
 contribute a grid row.
 
+### Textures open in PixiEditor
+
+A project keeps every picture as PNG data inside the document — 734 assets in an
+imported game — so handing one to a desktop paint program means putting it on disk
+first. `server/pixieditor.js` does exactly that and nothing else: it writes
+`<name>-<digest of the asset id>.png` into `data/pixieditor/<project>/`, starts
+PixiEditor on that file (its command line opens the first supported image it is
+given, `FileViewModel.Owner_OnStartupEvent`), and reads the file back when the
+artist exports over it. The digest keeps two flats with the same name apart and keeps
+the file stable across a rename, so an editor that already has it open keeps
+receiving the same artwork.
+
+The client (`public/pixieditor.js`) is the same three calls everywhere: the asset
+browser's tile menu offers **Open in PixiEditor** and **Reload from PixiEditor**, the
+artwork picker puts a ✎ on every picture row, and every inspector picture field is
+built by `imageAssetField`, which renders the asset list plus the same button. The
+button reads the field's value when pressed, so it edits what the inspector currently
+shows. A reload is an ordinary `edit()` — `src`, `width` and `height` are replaced and
+the change is undoable — so the map, the HUD and events that use the texture redraw
+without a bespoke path.
+
+`OPENDLE_PIXIEDITOR` overrides the search (Windows install and Steam library,
+`/Applications` on macOS, `PATH`, `/opt`, `PixiEditor*.AppImage` and the Flatpak
+`net.pixieditor.PixiEditor` on Linux). A machine without PixiEditor still gets the PNG
+written, and the status bar says where it is — the artwork can then be edited by hand
+and brought back through the same reload. Only PNG artwork stored in the project is
+offered; a sound, a font, a video or a model gets no pencil. The scratch folder lives
+under the gitignored `data/`, so nothing is duplicated into `Projects/`.
+
 ### Model thumbnails
 
 The asset library shows a snapshot of each model instead of a "3D" placeholder.

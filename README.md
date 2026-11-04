@@ -45,7 +45,9 @@ page.
 - **AI-ready tools:** MCP integration and optional DeepSeek-assisted edits,
   with drafts reviewed before applying.
 - **Extend your workflow:** install project addons or add drop-in scriptlet
-  generators. See [extensions](Docs/extensions.md) and [scriptlets](Docs/scriptlets.md).
+  generators, and edit any texture, flat, sprite or sky in
+  [PixiEditor](Docs/pixieditor.md). See [extensions](Docs/extensions.md) and
+  [scriptlets](Docs/scriptlets.md).
 
 ## Try it locally
 
@@ -98,6 +100,8 @@ DeepSeek is optional; configure it using [.env.example](./.env.example).
   manifest and JavaScript API, local development and packaging.
 - [Adding and writing scriptlets](Docs/scriptlets.md): folder discovery,
   generator lifecycle, authoring helpers, testing and troubleshooting.
+- [Editing textures in PixiEditor](Docs/pixieditor.md): opening artwork from the
+  asset browser and inspectors, finding the editor, and the export/reload round trip.
 - [GZDoom compatibility](Docs/gzdoom-parity.md): implementation status and gaps.
 - [Development Guide](DEVELOPMENT.md): setup, persistence, architecture, MCP and
   contributor workflows.
