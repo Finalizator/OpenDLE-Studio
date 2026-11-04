@@ -3,7 +3,7 @@ import { LIMITS } from './limits.js';
 import { entityReferences } from './references.js';
 import { decodeDataURI, readModel, validateModelDocument } from './gltf.js';
 import { CORE_ACTIONS, CORE_CONDITIONS, ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand } from './engine-script.js';
-import { validateEventStructure } from './events.js';
+import { validateEventStructure, TRIGGER_CONDITIONS } from './events.js';
 import { MODEL_FACING_SEMANTICS } from './entity-visuals.js';
 import { ADDON_LIMITS, ADDON_VERSION, declaredAddonTypes, setProjectValidator, validateAddonManifest } from './addons.js';
 import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
@@ -82,6 +82,11 @@ function identifier(value, label) {
 
 export function eventConditions(event) {
   return [event.condition, ...(event.conditions || [])];
+}
+
+function validateConditionInversion(condition) {
+  if (condition.inverted !== undefined) assert(typeof condition.inverted === 'boolean', 'Condition inversion must be boolean');
+  assert(!condition.inverted || !TRIGGER_CONDITIONS.has(condition.type), 'Trigger conditions cannot be inverted');
 }
 
 export function resolveEntityId(event, id) {
@@ -963,6 +968,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
             assert(CONDITIONS.includes(event.condition?.type) || addonDeclared.has(event.condition?.type),
               `Unknown scene event condition: ${event.condition?.type}`);
           }
+          for (const condition of eventConditions(event).filter(Boolean)) validateConditionInversion(condition);
           for (const command of [event.condition, ...(event.conditions || []), ...(event.actions || [])]) {
             const targets = scene.entities.filter(entity => command?.entityId === '$self'
               ? event.forEachType ? entity.type === event.forEachType : entity.id === event.ownerId
@@ -970,6 +976,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
             validateLocalVariableCommand(command, targets);
           }
         }
+        validateEventStructure({ events: scene.events, eventSheets: project.eventSheets, eventGroups: project.eventGroups }, assert);
       }
     }
   }
@@ -1178,7 +1185,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       }
       if (definition.target) {
         const targets = targetEntities(command.entityId);
-        assert(['setObjectVariable', 'addObjectVariable', 'objectVariableCompare', 'emitSignal', 'onSignal'].includes(command.type) || targets.every(entity => entity.type !== 'player'), 'Use player stat commands for the player, not object health');
+        assert(['setObjectVariable', 'addObjectVariable', 'objectVariableCompare', 'emitSignal', 'onSignal', 'distanceBetween'].includes(command.type) || targets.every(entity => entity.type !== 'player'), 'Use player stat commands for the player, not object health');
       }
       if (['onSignal', 'emitSignal'].includes(command.type)) {
         assert(SIGNAL_NAME.test(command.signal), 'Signal names must start with a letter/underscore and contain at most 80 letters, digits or underscores');
@@ -1201,6 +1208,8 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         validateLocalVariableCommand(command, targetEntities(command.entityId));
       }
       if (definition.wall) assert(walls.some(wall => wall.id === command.wallId), 'Command references an unknown wall');
+      if (definition.zone) assert(entities.some(entity => entity.id === command.zoneId && entity.type === 'zone'),
+        'Zone condition must reference an existing zone');
       if (command.type === 'loadGameLevel')
         assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId), 'Command references an unknown game level');
       if (['saveGame', 'loadGame'].includes(command.type)) assert(Number.isInteger(command.slot), 'Game save slot must be an integer');
@@ -1267,10 +1276,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       // An addon's conditions are as real as the engine's; the type is checked against the
       // project's own catalogue so a project opened without its addon still reports the rule.
       assert(CONDITIONS.includes(condition.type) || addonDeclared.has(condition.type), 'Unknown condition');
-      if (condition.inverted !== undefined) {
-        assert(typeof condition.inverted === 'boolean', 'Condition inversion must be boolean');
-        assert(!condition.inverted || !['onStart', 'keyPressed', 'mouseMoved', 'collisionStarted', 'collisionEnded', 'animationFinished', 'hudClicked', 'hudAnimationFinished', 'hudStatChanged', 'entityDamaged', 'wallActivated'].includes(condition.type), 'Trigger conditions cannot be inverted');
-      }
+      validateConditionInversion(condition);
       validateCommand(condition);
       if (condition.type === 'keyPressed') {
         assert(INPUT_KEYS.includes(condition.key), 'Unsupported event key');
@@ -1514,7 +1520,7 @@ export function addRoom(project, { x, y, width, depth, color = '#597b9a' }) {
 /**
  * A blank object to take a deleted object's place, when its rules are being kept.
  *
- * Everything that made the object itself — artwork, model, script, variables, interaction area —
+ * Everything that made the object itself — artwork, model, script, variables —
  * is gone; what stays is what its rules need in order to still be true. Position and angle keep it
  * where the author was working, and a **rigid body comes along** when the object had one, because a
  * collision rule that named it needs a target that is still solid: without the body the rule would
@@ -1527,6 +1533,8 @@ export function standInFor(original, id) {
   };
   if (original?.elevation) stand.elevation = original.elevation;
   if (original?.physics) stand.physics = cloneProjectData(original.physics);
+  if (original?.area) stand.area = cloneProjectData(original.area);
+  if (original?.type === 'zone') stand.type = 'zone';
   return stand;
 }
 

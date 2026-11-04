@@ -1,12 +1,11 @@
 import { engineCommand, defaultEngineCommand } from '/shared/engine-script.js';
 import { commandFields } from '/shared/command-fields.js';
 import { nodeSignals } from '/shared/signals.js';
-import { eventBranch } from '/shared/events.js';
+import { eventBranch, TRIGGER_CONDITIONS } from '/shared/events.js';
 
 export { commandFields };
 import { isExpression, EXPRESSION_HELP } from '/shared/expressions.js';
 
-const triggers = new Set(['onSignal', 'onStart', 'keyPressed', 'mouseMoved', 'collisionStarted', 'collisionEnded', 'animationFinished', 'hudClicked', 'hudAnimationFinished', 'hudStatChanged', 'entityDamaged', 'wallActivated']);
 const categoryOf = (type, label) => type.startsWith('key') ? 'Keyboard' : type === 'mouseMoved' ? 'Mouse'
   : label.includes(':') ? label.split(':')[0] : ['nearEntity', 'playerGrounded'].includes(type) ? 'Player' : 'System';
 const labelOf = label => label.includes(':') ? label.split(':').slice(1).join(':').trim() : label;
@@ -170,7 +169,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
         if (field.hint) label.append(Object.assign(document.createElement('span'), { className: 'muted', textContent: field.hint }));
         content.append(label);
       }
-      if (kind === 'condition' && !triggers.has(draft.type)) {
+      if (kind === 'condition' && !TRIGGER_CONDITIONS.has(draft.type)) {
         const label = document.createElement('label'), input = document.createElement('input');
         input.type = 'checkbox'; input.checked = Boolean(draft.inverted);
         input.addEventListener('change', () => { draft.inverted = input.checked; });

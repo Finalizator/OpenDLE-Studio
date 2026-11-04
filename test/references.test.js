@@ -55,6 +55,25 @@ test('every way an object can be named is found, and nothing else is', () => {
   assert.deepEqual(commandTargets({ entityId: '$player', otherId: '$world' }), []);
 });
 
+test('zone conditions participate in reference guards, rewrite and branch deletion', () => {
+  const project = createProject();
+  const zone = { id: 'zone', name: 'Zone', type: 'zone', x: 0, y: 0, angle: 0,
+    area: { shape: 'box', width: 128, height: 128, depth: 128, radius: 64 } };
+  project.map.entities.push(zone, { ...structuredClone(zone), id: 'other_zone' });
+  project.events = [
+    rule('zone_rule', undefined, { condition: { type: 'playerEnteredZone', zoneId: zone.id },
+      actions: [{ type: 'addVariable', variable: 'score', value: 1 }] }),
+    rule('child', undefined, { parentId: 'zone_rule' }),
+  ];
+  assert.equal(entityReferences(project, zone.id).length, 1);
+  assert.throws(() => removeEntity(project, zone.id), /used by/);
+  rewriteEntityReferences(project, new Map([[zone.id, 'other_zone']]));
+  assert.equal(project.events[0].condition.zoneId, 'other_zone');
+  const stripped = stripEntityReferences(project, 'other_zone');
+  assert.equal(stripped.events, 2);
+  assert.deepEqual(project.events, []);
+});
+
 // The bug: three of these references used to slip past `removeEntity`, which only knew about an
 // action's `entityId`, so deleting left a project that no longer validated.
 test('the delete guard refuses every kind of reference, not just an action target', () => {
@@ -65,6 +84,22 @@ test('the delete guard refuses every kind of reference, not just an action targe
   }
   const { project, target } = projectNamingThePickup();
   assert.throws(() => removeEntity(project, target.id), /used by spawn, acts/, 'the message names the rules that use it');
+});
+
+test('keeping zone and area rules preserves their replacement trigger volumes', () => {
+  const project = createProject();
+  const zone = { id: 'zone', name: 'Zone', type: 'zone', x: 0, y: 0, angle: 0,
+    area: { shape: 'box', width: 128, height: 128, depth: 128, radius: 64 } };
+  project.map.entities.push(zone);
+  project.events = [rule('inside', undefined, { condition: { type: 'playerInZone', zoneId: zone.id } })];
+  const stand = standInFor(zone, 'replacement');
+  assert.equal(stand.type, 'zone');
+  assert.deepEqual(stand.area, zone.area);
+  assert.notEqual(stand.area, zone.area);
+  project.map.entities.push(stand);
+  rewriteEntityReferences(project, new Map([[zone.id, stand.id]]));
+  removeEntity(project, zone.id);
+  validateProject(project);
 });
 
 test('deleting with "drop the rules" leaves a project that validates', () => {

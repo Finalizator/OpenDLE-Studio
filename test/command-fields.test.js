@@ -7,6 +7,14 @@ const route = { id: 'route', name: 'Route', closed: false, points: [
 const paths = [['route', 'Route']];
 const base = { entities: [], playerId: 'player', variables: ['score'], paths, pathPoints: id => (id === 'route' ? route : null) };
 
+test('distance comparisons offer the player without enabling object-health actions on it', () => {
+  const entities = [['player', 'Player'], ['crate', 'Crate']];
+  const context = { ...base, entities };
+  const options = type => commandFields({ type }, context).find(field => field.name === 'entityId').options;
+  assert.deepEqual(options('distanceBetween'), entities);
+  assert.deepEqual(options('setEntityHealth'), [['crate', 'Crate']]);
+});
+
 // The parameter dialog reads these lists directly, so the lists are the feature: a waypoint the
 // author cannot see is a waypoint they cannot choose.
 test('a route action offers its waypoints by name, after the route itself', () => {

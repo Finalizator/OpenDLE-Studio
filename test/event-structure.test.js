@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
-import { eventBranch, eventDepth, moveEventBranch, removeEventBranch } from '../shared/events.js';
+import { eventBranch, eventDepth, moveEventBranch, removeEventBranch, setEventObjectContext } from '../shared/events.js';
 import { applyTool } from '../server/tools.js';
 import { requestMouseLock } from '../public/pointer-lock.js';
 
@@ -31,6 +31,18 @@ test('AND / OR and inverted comparisons are executable, while trigger inversion 
   project.events[0].condition = { type: 'onStart', inverted: true };
   assert.throws(() => validateProject(project), /Trigger/);
 });
+
+test('entry and periodic trigger inversion is rejected just like other edge triggers', () => {
+  const project = fixture(), target = project.map.entities.find(entity => entity.type !== 'player');
+  target.area = { shape: 'box', width: 128, height: 128, depth: 128, radius: 64 };
+  for (const condition of [
+    { type: 'everySeconds', seconds: .5 },
+    { type: 'playerEnteredArea', entityId: target.id },
+  ]) {
+    project.events = [rule('inverted', { condition: { ...condition, inverted: true } })];
+    assert.throws(() => validateProject(project), /Trigger conditions cannot be inverted/);
+  }
+});
 test('sub-events run immediately after matched parent actions, before the next sibling', () => {
   const project = fixture();
   project.events = [
@@ -47,6 +59,38 @@ test('sub-events run immediately after matched parent actions, before the next s
   project.events[0].enabled = false;
   stepRuntime(project, state, .01, new Set());
   assert.equal(state.variables.score, 33);
+});
+
+test('changing event object context updates the entire branch but not its siblings', () => {
+  const project = fixture(), ownerId = project.map.entities.find(entity => entity.type !== 'player').id;
+  project.events = [rule('root'), rule('child', { parentId: 'root' }),
+    rule('grandchild', { parentId: 'child' }), rule('sibling')];
+  for (const context of [{ ownerId }, { forEachType: 'decoration' }, {}]) {
+    setEventObjectContext(project, 'root', context);
+    for (const event of project.events.slice(0, 3)) {
+      assert.equal(event.ownerId, context.ownerId);
+      assert.equal(event.forEachType, context.forEachType);
+    }
+    assert.equal(project.events[3].ownerId, undefined);
+    assert.equal(project.events[3].forEachType, undefined);
+    validateProject(project);
+  }
+  assert.throws(() => setEventObjectContext(project, 'child', { ownerId }), /parent event/);
+  assert.throws(() => setEventObjectContext(project, 'missing', {}), /Unknown event/);
+});
+
+test('reusable scene events reject broken hierarchy and inverted triggers before placement', () => {
+  const project = fixture();
+  const scene = { id: 'scene', name: 'Scene', entities: [], events: [
+    rule('root'), rule('child', { parentId: 'root' }),
+  ] };
+  project.scenes = [scene];
+  validateProject(project);
+  scene.events[1].parentId = 'missing';
+  assert.throws(() => validateProject(project), /parent must precede/);
+  scene.events[1].parentId = 'root';
+  scene.events[0].condition = { type: 'everySeconds', seconds: 1, inverted: true };
+  assert.throws(() => validateProject(project), /Trigger conditions cannot be inverted/);
 });
 test('for-each children inherit only the matching parent instance and once flags stay instance-scoped', () => {
   const project = fixture();

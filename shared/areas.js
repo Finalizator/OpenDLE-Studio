@@ -34,7 +34,7 @@ export function areaSpec(area) {
 export function areaVolume(entity, floorHeight = 0) {
   const spec = areaSpec(entity?.area);
   if (!spec) return null;
-  const base = (floorHeight || 0) + (entity.elevation || 0);
+  const base = Number.isFinite(entity.z) ? entity.z : (floorHeight || 0) + (entity.elevation || 0);
   const half = spec.shape === 'box'
     ? { width: spec.width / 2, depth: spec.depth / 2, height: spec.height / 2 }
     : { width: spec.radius, depth: spec.radius, height: (spec.shape === 'sphere' ? spec.radius * 2 : spec.height) / 2 };

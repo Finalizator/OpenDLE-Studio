@@ -28,7 +28,7 @@ import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { createProjectAutosave } from './project-autosave.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
-  removeEventBranch, setEventParent, eventScope } from '/shared/events.js';
+  removeEventBranch, setEventParent, setEventObjectContext, eventScope } from '/shared/events.js';
 import { editInline, installRowDrag } from './row-drag.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, engineCommands, defaultEngineCommand, installEngineScripts, knownCommandTypes } from '/shared/engine-script.js';
 import { addonCommands } from '/shared/addons.js';
@@ -2559,13 +2559,10 @@ function renderEvents() {
     field(meta, 'Comment', input(event.comment || '', 'text', value => modify(item => { item.comment = value; })));
     field(meta, 'Condition logic', select([['and', 'All conditions (AND)'], ['or', 'Any condition (OR)']], event.conditionMode || 'and',
       value => modify(item => { item.conditionMode = value; })));
-    field(meta, 'For each', select([['', 'None'], 'enemy', 'pickup', 'decoration'], event.forEachType || '', value => modify(item => {
-      if (value) { item.forEachType = value; delete item.ownerId; } else delete item.forEachType;
-    })));
-    field(meta, 'Owner', ownerPicker(meta, event.ownerId, value => modify(item => {
-      if (value === '$scene') delete item.ownerId;
-      else { item.ownerId = value; delete item.forEachType; }
-    })));
+    field(meta, 'For each', select([['', 'None'], 'enemy', 'pickup', 'decoration'], event.forEachType || '', value => edit(next =>
+      setEventObjectContext(next, event.id, value ? { forEachType: value } : { ownerId: event.ownerId }))));
+    field(meta, 'Owner', ownerPicker(meta, event.ownerId, value => edit(next =>
+      setEventObjectContext(next, event.id, value === '$scene' ? { forEachType: event.forEachType } : { ownerId: value }))));
     if (event.ownerId) meta.classList.add('event-owner-object');
     meta.append(
       checkbox('Enabled', event.enabled, value => modify(item => { item.enabled = value; })),

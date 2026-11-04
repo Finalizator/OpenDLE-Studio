@@ -39,6 +39,8 @@ Project
 An event is a row of `condition → actions`. Conditions are evaluated with AND by
 default; set **Condition logic = Any condition (OR)** on the event, or invert an
 individual condition (**NOT**).
+One-shot/edge triggers cannot be inverted; the editor hides NOT for them and
+validation rejects it, including periodic, area-entry and zone-entry triggers.
 
 Every event has, at minimum:
 
@@ -58,6 +60,9 @@ Every event has, at minimum:
 
 Sub-events run only when their parent's conditions pass and its actions finished,
 which is how imported weapon and enemy state chains are expressed visually.
+Changing a root event's **Owner** or **For each** also updates its descendants;
+change the parent rather than assigning a child a different object context.
+Reusable scenes validate the same hierarchy before they are placed.
 
 ---
 
@@ -263,9 +268,28 @@ interval. Each condition and each object instance has an independent clock,
 including sub-events of for-each rules. Game saves retain those deadlines, so
 loading does not cause an extra early firing.
 
+For an eligible rule, periodic, entry, damage and HUD-stat samplers still observe
+the current frame when another AND/OR condition short-circuits the result.
+Changing a filter therefore does not replay an old entry or damage transition.
+Ordinary comparisons, random conditions and addon conditions retain short-circuit
+evaluation. Disabled rules and children of unmatched parents are not evaluated.
+
+Area/zone-entry samples are independent per condition and per for-each instance,
+and survive save/load while the player stays inside. Interaction areas use the
+object's live height after movement. Zones must reference existing zone objects;
+deleting a referenced zone offers the same reference protection as other objects.
+Keeping its rules preserves the replacement zone's trigger volume.
+`distanceBetween` reads the player's live position and accepts the player in
+either object slot.
+
 `wallActivated` in `cross` mode is a movement-edge trigger: standing still after
 crossing a line does not activate it again. Moving back across it can trigger a
 repeatable rule again.
+In `shoot` mode, gameplay hitscan shots (including automatic Doom weapons) are
+delivered on the next gameplay tick to both before/after-physics rules, regardless
+of rule order. Multiple pellets hitting one linedef in a frame coalesce into one
+pulse; pauses and saves retain pending pulses. Native ACS shoot specials still
+activate in the shot's original frame.
 
 | Trigger / comparison | Type | Needs object | Parameters |
 | --- | --- | --- | --- |

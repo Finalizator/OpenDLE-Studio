@@ -285,6 +285,12 @@ provider credits or network access are required for tests.
   enforce that they only contain object rules. See
   [Docs/visual-scripting.md](Docs/visual-scripting.md) for the model, phases,
   patterns and the complete generated condition/action catalogue.
+  Entry/damage samplers are condition- and instance-scoped, remain current through
+  AND/OR short-circuits, and area entries survive game saves. Area overlaps use live
+  object height; distance comparisons use the live player. Shoot-linedef events
+  receive buffered next-tick pulses from scripted and automatic weapons. Root
+  owner/type edits propagate to sub-events, reusable scene trees validate before
+  placement, and zone references participate in deletion/rewrite protection.
 
 - **Construct-inspired workspace:** compact neutral-gray panels, Properties
   on the left, Menu and document tabs across the top, a searchable Project

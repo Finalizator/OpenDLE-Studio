@@ -84,6 +84,20 @@ test('periodic clocks validate strictly while older saves without clocks still l
   assert.throws(() => captureGameSave(project, state, 'id'), /invalid periodic clocks/);
 });
 
+test('area-entry samples validate strictly while older saves without them still load', () => {
+  const { project, state } = fixture();
+  state.areaEntries = new Set(['entry:0']);
+  const record = captureGameSave(project, state, 'id');
+  assert.deepEqual(restoreGameSave(project, json(record), 'id').runtime.areaEntries, state.areaEntries);
+  const old = json(record);
+  old.snapshot.value = old.snapshot.value.filter(([key]) => key !== 'areaEntries');
+  assert.doesNotThrow(() => restoreGameSave(project, resign(old), 'id'));
+  state.areaEntries.add(123);
+  assert.throws(() => captureGameSave(project, state, 'id'), /invalid area entries/);
+  state.areaEntries = [];
+  assert.throws(() => captureGameSave(project, state, 'id'), /invalid area entries/);
+});
+
 test('JSON round trip preserves collections, nonfinite timers, inventory, scripts, HUD and gameplay state', async () => {
   const { project, state } = fixture(), identity = await gameSaveIdentity(project);
   project.events.push({ id: 'once' }, { id: 'each', forEachType: 'enemy' });

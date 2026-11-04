@@ -7,6 +7,7 @@ import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createPhysics } from '../shared/physics.js';
 import { installWallWalkDemo } from '../shared/engine-script.js';
 import { captureGameSave, restoreGameSave } from '../shared/save-game.js';
+import { buildVanillaActors } from '../shared/actors.js';
 
 await R.init();
 const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),
@@ -46,6 +47,174 @@ const withPhysics = (project, t) => {
   t.after(() => state.physics.dispose());
   return state;
 };
+
+test('area-entry conditions are independent per for-each object and per condition slot', () => {
+  const project = bareRoom();
+  project.map.entities[1].x = -100;
+  project.map.entities.push({ ...structuredClone(project.map.entities[1]), id: 'crate2' });
+  project.events = [
+    rule('each_entry', { type: 'playerEnteredArea', entityId: '$self' },
+      [{ type: 'addVariable', variable: 'entered', value: 1 }], { forEachType: 'decoration' }),
+    rule('both_entries', { type: 'playerEnteredArea', entityId: 'crate' },
+      [{ type: 'addVariable', variable: 'inside', value: 1 }],
+      { conditions: [{ type: 'playerEnteredArea', entityId: 'crate2' }] }),
+  ];
+  validateProject(project);
+  const state = createRuntime(project);
+  tick(project, state, 2);
+  assert.equal(state.variables.entered, 2);
+  assert.equal(state.variables.inside, 1);
+  state.player.x = 200;
+  tick(project, state, 1);
+  state.player.x = -100;
+  tick(project, state, 1);
+  assert.equal(state.variables.entered, 4, 'both instances can re-enter');
+});
+
+test('two health-decreased conditions on the same target do not consume each other', () => {
+  const project = bareRoom();
+  project.map.entities[1].health = 100;
+  project.events = [rule('damage', { type: 'entityDamaged', entityId: 'crate' },
+    [{ type: 'addVariable', variable: 'ticks', value: 1 }],
+    { conditions: [{ type: 'entityDamaged', entityId: 'crate' }] })];
+  validateProject(project);
+  const state = createRuntime(project);
+  tick(project, state, 1);
+  state.entities.find(entity => entity.id === 'crate').health -= 10;
+  tick(project, state, 1);
+  assert.equal(state.variables.ticks, 1);
+});
+
+test('AND and OR short-circuits do not defer entry observations or consume stale damage', () => {
+  for (const mode of ['and', 'or']) {
+    const project = bareRoom();
+    project.map.entities[1].health = 100;
+    project.variables.gate = mode === 'or' ? 1 : 0;
+    project.events = [rule('gated', { type: 'variableCompare', variable: 'gate', operator: '=', value: 1 },
+      [{ type: 'addVariable', variable: 'entered', value: 1 }], {
+        conditionMode: mode,
+        conditions: [{ type: 'playerEnteredArea', entityId: 'crate' }, { type: 'entityDamaged', entityId: 'crate' }],
+      })];
+    const state = createRuntime(project);
+    tick(project, state, 1);
+    state.player.x = 100;
+    state.entities.find(entity => entity.id === 'crate').health -= 10;
+    tick(project, state, 1);
+    const count = state.variables.entered;
+    state.variables.gate = mode === 'or' ? 0 : 1;
+    tick(project, state, 1);
+    assert.equal(state.variables.entered, count, `${mode} does not replay a trigger when a gate changes`);
+  }
+});
+
+test('removing a for-each object releases its entry samples and periodic clock', () => {
+  const project = bareRoom();
+  project.map.entities[1].x = -100;
+  project.events = [
+    rule('clock', { type: 'everySeconds', seconds: 10 }, [], { forEachType: 'decoration' }),
+    rule('entry', { type: 'playerEnteredArea', entityId: '$self' }, [], { forEachType: 'decoration' }),
+    rule('remove', { type: 'keyPressed', key: 'KeyE' }, [{ type: 'removeEntity', entityId: 'crate' }]),
+  ];
+  validateProject(project);
+  const state = createRuntime(project);
+  tick(project, state, 1);
+  assert.equal(state.intervals.size, 1);
+  assert.equal(state.areaEntries.size, 1);
+  stepRuntime(project, state, .016, new Set(['KeyE']), new Set(['KeyE']));
+  assert.equal(state.intervals.size, 0);
+  assert.equal(state.areaEntries.size, 0);
+});
+
+test('loading a game inside an area does not replay its entry trigger', () => {
+  const project = bareRoom();
+  project.map.entities[1].x = -100;
+  project.events = [rule('entry', { type: 'playerEnteredArea', entityId: 'crate' },
+    [{ type: 'addVariable', variable: 'entered', value: 1 }])];
+  const state = createRuntime(project);
+  tick(project, state, 1);
+  const restored = restoreGameSave(project, JSON.parse(JSON.stringify(captureGameSave(project, state, 'area'))), 'area').runtime;
+  tick(project, restored, 1);
+  assert.equal(restored.variables.entered, 1);
+  restored.player.x = 200; tick(project, restored, 1);
+  restored.player.x = -100; tick(project, restored, 1);
+  assert.equal(restored.variables.entered, 2);
+});
+
+test('distance comparisons involving the player read its live position after a teleport', () => {
+  for (const swap of [false, true]) {
+    const project = bareRoom(), playerId = project.map.entities[0].id;
+    project.events = [
+      rule('move', { type: 'onStart' }, [{ type: 'teleport', x: 100, y: 0 }]),
+      rule('distance', { type: 'distanceBetween', entityId: swap ? playerId : 'crate',
+        otherId: swap ? 'crate' : '$player', operator: '<=', distance: 1 },
+      [{ type: 'addVariable', variable: 'ticks', value: 1 }]),
+    ];
+    validateProject(project);
+    const state = createRuntime(project);
+    tick(project, state, 1);
+    assert.equal(state.variables.ticks, 1, `player is ${swap ? 'first' : 'second'} operand`);
+  }
+});
+
+test('moving an interaction area vertically changes its live overlap', () => {
+  const project = bareRoom();
+  project.map.entities[1].x = -100;
+  project.events = [
+    rule('lift_area', { type: 'onStart' }, [{ type: 'setEntityPosition', entityId: 'crate', x: -100, y: 0, z: 256 }]),
+    rule('inside', { type: 'playerInArea', entityId: 'crate' }, [{ type: 'addVariable', variable: 'inside', value: 1 }]),
+  ];
+  validateProject(project);
+  const state = createRuntime(project);
+  tick(project, state, 1);
+  assert.equal(state.variables.inside, 0, 'the area moved above the player');
+});
+
+test('shoot-linedef conditions receive one pulse regardless of rule order or gameplay phase', () => {
+  for (const fireFirst of [false, true]) {
+    const project = bareRoom();
+    project.eventSheets = [{ id: 'before', name: 'Before', enabled: true, section: 'game', phase: 'beforePhysics' }];
+    const fire = rule('fire', { type: 'onStart' },
+      [{ type: 'hitscan', damage: 1, diceSides: 1, pellets: 3, spread: 0, range: 1000 }]);
+    const listeners = [
+      rule('shot_before', { type: 'wallActivated', wallId: 'wall1', mode: 'shoot' },
+        [{ type: 'addVariable', variable: 'ticks', value: 1 }], { sheetId: 'before' }),
+      rule('shot_after', { type: 'wallActivated', wallId: 'wall1', mode: 'shoot' },
+        [{ type: 'addVariable', variable: 'inside', value: 1 }]),
+    ];
+    project.events = fireFirst ? [fire, ...listeners] : [...listeners, fire];
+    validateProject(project);
+    const state = createRuntime(project);
+    tick(project, state, 1);
+    assert.equal(state.variables.ticks, 0);
+    assert.equal(state.variables.inside, 0, 'shots are observed on the following gameplay tick');
+    const restored = restoreGameSave(project, JSON.parse(JSON.stringify(captureGameSave(project, state, 'shots'))), 'shots').runtime;
+    tick(project, restored, 2);
+    assert.equal(restored.variables.ticks, 1, 'saving before delivery does not lose a shot pulse');
+    assert.equal(restored.variables.inside, 1);
+    state.gameScreen = 'pause';
+    tick(project, state, 2);
+    assert.equal(state.variables.ticks, 0);
+    state.gameScreen = 'playing';
+    tick(project, state, 2);
+    assert.equal(state.variables.ticks, 1);
+    assert.equal(state.variables.inside, 1, 'pellets hitting one line in a frame coalesce into one pulse');
+  }
+});
+
+test('automatic Doom weapon attacks are visible to shoot-linedef rules on the next tick', () => {
+  const project = bareRoom();
+  project.actors = buildVanillaActors();
+  project.events = [rule('shot', { type: 'wallActivated', wallId: 'wall1', mode: 'shoot' },
+    [{ type: 'addVariable', variable: 'ticks', value: 1 }])];
+  const state = createRuntime(project);
+  let shots = 0, lastShot;
+  for (let frame = 0; frame < 110; frame++) {
+    stepRuntime(project, state, 1 / 35, new Set(frame < 80 ? ['Mouse0'] : []));
+    if (state.lastShot && state.lastShot.time !== lastShot) { lastShot = state.lastShot.time; shots++; }
+  }
+  assert.ok(shots > 0, 'the actor weapon state machine fired');
+  assert.equal(state.variables.ticks, shots, 'every automatic shot produces one visual event');
+});
 
 test('periodic rules keep separate clocks per instance and per condition, including inherited children', () => {
   const project = bareRoom();

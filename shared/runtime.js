@@ -334,6 +334,13 @@ function forgetEntity(state, id) {
   if (instances) for (const byOwner of instances.values()) byOwner.delete(id);
   for (const key of [...state.entitySamples.keys()]) if (key.endsWith(`:${id}`)) state.entitySamples.delete(key);
   for (const key of [...state.fired]) if (key.endsWith(`:${id}`)) state.fired.delete(key);
+  for (const samples of [state.areaEntries, state.intervals]) {
+    if (!samples) continue;
+    for (const key of samples.keys()) {
+      const parts = key.split(':');
+      if (parts.length === 3 && parts[1] === id) samples.delete(key);
+    }
+  }
 }
 
 /**
@@ -614,6 +621,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   let stepMark = stepStarted;
   const stage = name => { const now = performance.now(); stepParts[name] = now - stepMark; stepMark = now; };
   const player = state.player, hud = state.hudState;
+  const shotTriggers = state.worldTriggers.shoot;
   let currentSignal = null;
   const deliveredSignals = new Set();
   state.sounds.length = 0;
@@ -629,6 +637,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   if (state.gameScreen !== 'playing' && !state.ambientWorld) {
     state.hudState.clicked.clear(); return;
   }
+  state.worldTriggers.shoot = new Set();
   state.time += dt;
   // Timelines run on the game's clock, so they pause with the game and a save keeps their place.
   // Cues are executed later in the frame by the rule runner, which is why the due set outlives
@@ -675,7 +684,6 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // The nearest line that actually carries a special, so a plain wall in front of a door
   // does not swallow the press.
   state.worldTriggers.useSpecial = usedWall?.special ?? null;
-  state.worldTriggers.shoot.clear();
   runRules('beforePhysics');
   dispatchSignals('beforePhysics');
   stage('rules');
@@ -1054,7 +1062,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const centre = playerCentre(state.player);
         const inside = areaContains(volume, { x: centre[0], y: centre[1], z: centre[2] });
         if (condition.type === 'playerInArea' || condition.type === 'playerInZone') return inside;
-        return areaEntered(state.areaEntries ||= new Set(), event.id, inside);
+        return areaEntered(state.areaEntries ||= new Set(), `${keyOf()}:${index}`, inside);
       }
       if (condition.type === 'playerReachesEntity') {
         const entity = findTarget(condition.entityId);
@@ -1076,7 +1084,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // A thing without health can never lose any. Sampling it anyway would store
         // `undefined`, which the save format has to reject as a non-numeric sample.
         if (!entity || !Number.isFinite(entity.health)) return false;
-        const key = `${keyOf()}:${entity.id}`, old = state.entitySamples.get(key) ?? entity.health;
+        const key = `${keyOf()}:${index}:${entity.id}`;
+        const old = state.entitySamples.get(key) ?? state.entitySamples.get(`${keyOf()}:${entity.id}`) ?? entity.health;
         state.entitySamples.set(key, entity.health);
         return entity.health < old;
       }
@@ -1084,6 +1093,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // A use press activates both the nearest wall (for hand-written rules) and the
         // nearest wall with a special (for the generated door, lift and exit rules).
         if (condition.mode === 'use') return state.worldTriggers.use === condition.wallId || state.worldTriggers.useSpecial === condition.wallId;
+        if (condition.mode === 'shoot') return (state.gameScreen === 'playing' || state.ambientWorld) && shotTriggers.has(condition.wallId);
         return state.worldTriggers[condition.mode].has(condition.wallId);
       }
       if (condition.type === 'sectorMoving') return state.sectorMotions.has(`${condition.sectorId}:${condition.surface}`);
@@ -1149,7 +1159,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           ? state.entities.find(entity => entity.type === 'player')?.id
           : condition.otherId === '$self' ? event.ownerId : condition.otherId;
         const right = reference ? findTarget(reference) : null;
-        if (left && right) return compareValues(Math.hypot(left.x - right.x, left.y - right.y), condition.operator, condition.distance);
+        const a = left?.type === 'player' ? player : left, b = right?.type === 'player' ? player : right;
+        if (a && b) return compareValues(Math.hypot(a.x - b.x, a.y - b.y), condition.operator, condition.distance);
         return false;
       }
       if (condition.type === 'variableCompare') return compare(state.variables[condition.variable], condition.operator, condition.value);
@@ -1176,13 +1187,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     }
     // Evaluating the condition list without building it: `eventConditions` allocated a
     // fresh array for every rule on every frame.
-    let matches;
-    if (event.conditionMode === 'or') {
-      matches = matchOne(event.condition, 0);
-      if (!matches) for (let i = 0; i < (event.conditions?.length || 0); i++) if (matchOne(event.conditions[i], i + 1)) { matches = true; break; }
-    } else {
-      matches = matchOne(event.condition, 0);
-      if (matches) for (let i = 0; i < (event.conditions?.length || 0); i++) if (!matchOne(event.conditions[i], i + 1)) { matches = false; break; }
+    const or = event.conditionMode === 'or';
+    let matches = !or;
+    for (let index = 0; index <= (event.conditions?.length || 0); index++) {
+      const condition = index === 0 ? event.condition : event.conditions[index - 1];
+      // Edge samplers must observe the frame even when another predicate decides the result.
+      if (matches === or && !['everySeconds', 'playerEnteredArea', 'playerEnteredZone', 'entityDamaged', 'hudStatChanged'].includes(condition.type)) continue;
+      const matched = matchOne(condition, index);
+      matches = or ? matches || matched : matches && matched;
     }
     if (!matches) return;
     if (event.once) state.fired.add(keyOf());
@@ -1591,7 +1603,6 @@ function applySectorDamage(state, dt) {
 function activateWallTriggers(state) {
   if (state.worldTriggers.shoot.size) {
     for (const id of state.worldTriggers.shoot) state.scripts?.activate(state.walls.find(wall => wall.id === id), 'shoot');
-    state.worldTriggers.shoot.clear();
   }
   if (state.scripts?.errors?.length) {
     const latest = state.scripts.errors[state.scripts.errors.length - 1];

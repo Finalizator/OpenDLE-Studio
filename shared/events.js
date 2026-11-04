@@ -6,6 +6,10 @@
  * The runtime executes both in one top-to-bottom order; the split is authoring
  * structure, not a hidden engine difference.
  */
+export const TRIGGER_CONDITIONS = new Set(['onSignal', 'onStart', 'keyPressed', 'mouseMoved',
+  'collisionStarted', 'collisionEnded', 'animationFinished', 'hudClicked', 'hudAnimationFinished',
+  'hudStatChanged', 'entityDamaged', 'wallActivated', 'everySeconds', 'playerEnteredArea', 'playerEnteredZone']);
+
 export function eventScope(event) {
   return event.ownerId !== undefined || event.forEachType ? 'object' : 'game';
 }
@@ -32,6 +36,20 @@ export function eventBranch(events, id) {
 export function removeEventBranch(project, id) {
   const ids = eventBranch(project.events, id);
   project.events = project.events.filter(event => !ids.has(event.id));
+}
+
+export function setEventObjectContext(project, id, { ownerId, forEachType }) {
+  if (ownerId && forEachType) throw new Error('Choose an owner or a for-each type, not both');
+  const event = project.events.find(item => item.id === id);
+  if (!event) throw new Error('Unknown event');
+  if (event.parentId) throw new Error('Change the parent event to change its object context');
+  const ids = eventBranch(project.events, id);
+  for (const item of project.events) if (ids.has(item.id)) {
+    delete item.ownerId;
+    delete item.forEachType;
+    if (ownerId) item.ownerId = ownerId;
+    else if (forEachType) item.forEachType = forEachType;
+  }
 }
 
 export function moveEventBranch(project, id, direction) {

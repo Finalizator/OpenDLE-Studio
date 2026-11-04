@@ -216,14 +216,14 @@ test('a zone condition names a zone, and says so when it cannot', () => {
   project.map.entities.push({ id: 'zone_a', name: 'Zone A', type: 'zone', x: player.x, y: player.y, angle: 0, area: { ...ZONE_AREA } });
   project.events = [{ id: 'missing', name: 'missing zone', enabled: true, once: false, condition: { type: 'playerInZone', zoneId: 'zone_gone' },
     conditions: [], actions: [] }];
-  validateProject(project);
+  assert.throws(() => validateProject(project), /existing zone/);
   let state = createRuntime(project);
   assert.throws(() => stepRuntime(project, state, .016, new Set()), /no longer exists/);
 
   // Pointing a zone rule at an ordinary object is a mistake worth reporting, not a silent false.
   project.events[0].condition = { type: 'playerInZone', zoneId: project.map.entities[1].id };
   project.events[0].name = 'not a zone';
-  validateProject(project);
+  assert.throws(() => validateProject(project), /existing zone/);
   state = createRuntime(project);
   assert.throws(() => stepRuntime(project, state, .016, new Set()), /is a pickup/);
 });

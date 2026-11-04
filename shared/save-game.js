@@ -14,7 +14,7 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // rebuilt as problems occur, and the weapon machine is re-entered on load.
 const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus',
   'worldTerminalActive', 'worldTerminalId',
-  'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'areaEntries', 'surfaces',
+  'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'surfaces',
   // Diagnostics describe the session, not the game; they are rebuilt on load. Leaving
   // them in the payload made restoring any save written after a decal or a grounded
   // actor fail with "unknown runtime field".
@@ -32,7 +32,7 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.
-const optional = new Set(['intervals', 'decalCounter', 'lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
+const optional = new Set(['areaEntries', 'intervals', 'decalCounter', 'lastShot', 'playerNoise', 'soundFlood', 'menuHistory', 'bunnyhop', 'spawnSequence',
   // A boss death is a latch the game keeps, and an ACS HudMessage is a caption with a hold time, so
   // both are carried rather than dropped — unlike the transients above.
   'bossDefeated', 'acsMessages',
@@ -236,6 +236,10 @@ function validateRuntime(project, state, baseline) {
   const stringSet = (set, allowed, label) => {
     for (const id of set) if (typeof id !== 'string' || allowed && !allowed.has(id)) fail(`invalid ${label}`);
   };
+  if (state.areaEntries !== undefined) {
+    if (!(state.areaEntries instanceof Set)) fail('invalid area entries');
+    stringSet(state.areaEntries, null, 'area entries');
+  }
   const wallIds = new Set(project.map.walls.map(wall => wall.id));
   stringSet(state.animationFinished, entityIds, 'finished animations');
   stringSet(state.worldTriggers.cross, wallIds, 'crossed walls');

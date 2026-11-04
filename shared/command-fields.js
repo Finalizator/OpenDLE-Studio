@@ -31,7 +31,7 @@ export function commandFields(command, { entities, zones = [], playerId, variabl
       ...(definition.elevator ? [{ name: 'sectorId', label: 'Elevator sector', options: elevatorSectors }] : []),
       ...(definition.sector && !definition.door && !definition.elevator ? [{ name: 'sectorId', label: 'Sector', options: sectors }] : []),
       ...(definition.zone ? [{ name: 'zoneId', label: 'Zone', options: zones }] : []),
-      ...(definition.target ? [{ name: 'entityId', label: 'Object', options: [...OBJECT_VARIABLE_COMMANDS, 'onSignal', 'emitSignal'].includes(command.type) ? entities : entities.filter(([id]) => id !== playerId) }] : []),
+      ...(definition.target ? [{ name: 'entityId', label: 'Object', options: [...OBJECT_VARIABLE_COMMANDS, 'onSignal', 'emitSignal', 'distanceBetween'].includes(command.type) ? entities : entities.filter(([id]) => id !== playerId) }] : []),
       ...(definition.variable ? [{ name: 'variable', options: variables }] : []),
       ...(definition.group ? [{ name: 'groupId', label: 'Group', options: groups }] : []),
       ...(definition.hudElement ? [{ name: 'elementId', label: 'HUD element', options: hudElements }] : []),

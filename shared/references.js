@@ -15,12 +15,12 @@
  *   (`rewriteEntityReferences`).
  *
  * A reference is any command — a condition or an action — that names an object in `entityId`,
- * `otherId` or `templateId`, plus the owner fields: an event's `ownerId` and a timeline cue's
+ * `otherId`, `templateId` or `zoneId`, plus the owner fields: an event's `ownerId` and a timeline cue's
  * `ownerId`. `$self`, `$player`, `$world` and `$all` are not objects and are left alone.
  */
 
 /** The fields a command can name an object in. */
-export const REFERENCE_FIELDS = Object.freeze(['entityId', 'otherId', 'templateId']);
+export const REFERENCE_FIELDS = Object.freeze(['entityId', 'otherId', 'templateId', 'zoneId']);
 
 const isObjectId = value => typeof value === 'string' && value.length > 0 && !value.startsWith('$');
 

@@ -94,6 +94,11 @@ test('every Engine command has shared editor defaults and validates after adding
     if (command.variable) value.variable = 'score';
     if (command.group) value.groupId = project.eventGroups[0].id;
     if (command.wall) value.wallId = project.map.walls[0].id;
+    if (command.zone) {
+      project.map.entities.push({ id: 'test_zone', name: 'Zone', type: 'zone', x: 0, y: 0, angle: 0,
+        area: { shape: 'box', width: 128, height: 128, depth: 128, radius: 64 } });
+      value.zoneId = 'test_zone';
+    }
     if (command.sector) value.sectorId = project.map.sectors[0].id;
     if (['sectorDoorOpen', 'sectorDoorClosed', 'sectorDoorMoving', 'openSectorDoor', 'closeSectorDoor', 'toggleSectorDoor'].includes(command.type))
       project.map.sectors[0].door = { initial: 'closed', activation: 'event-only' };
