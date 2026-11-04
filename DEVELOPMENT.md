@@ -1309,6 +1309,7 @@ its installer, remover and metadata. Opening the window or clicking **Reload fol
 fetches the authenticated `/api/scriptlets` manifest and imports its files in the browser.
 There is no central registration list and no server restart needed for new files.
 See [the module format and complete example](scriptlets/README.md).
+For the end-to-end creator workflow, see [adding and writing scriptlets](Docs/scriptlets.md).
 `shared/scriptlets.js` supplies definition validation, isolated registries and safe
 sheet-removal helpers; `server/scriptlets.js` only lists and hashes files, never executes
 them. The known built-in wall-walking generator is also used directly by the existing
@@ -3242,6 +3243,11 @@ whole import — artwork, shaders and nodes — is one undoable edit, and a dama
 refused with a reason before anything reaches the project (`validateNodeFile`).
 
 ### Addons: extensions for a project
+
+Start with the [extension installation and authoring guide](Docs/extensions.md)
+for a working three-file addon, local archive workflow, complete manifest/API
+reference and troubleshooting. For generators of ordinary rules instead, see
+[scriptlets](Docs/scriptlets.md).
 
 **Menu → Addons** (top left, beside About) is where extensions are installed. An addon is a folder
 with an `opendle-addon.json` in it, and it may add:

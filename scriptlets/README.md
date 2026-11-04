@@ -1,5 +1,9 @@
 # Scriptlets
 
+For installation, built-in usage, updates, testing and troubleshooting, start
+with the [scriptlet guide](../Docs/scriptlets.md). For new runtime commands or
+project-carried editor extensions, see [addons](../Docs/extensions.md).
+
 Each top-level `.js` or `.mjs` file is a scriptlet module. Add a file here, then
 open **Engine scriptlets** or click **Reload folder**. No registry edit, build or
 server restart is required. Built-ins use exactly the same discovery mechanism.

@@ -137,6 +137,9 @@ The **Engine scriptlets** window loads modules from the engine's top-level
 `.js` or `.mjs` file there and open the window or click **Reload folder**; there is
 no central list to edit and no server restart required. Follow the
 [module format and example](../scriptlets/README.md).
+The [scriptlet guide](scriptlets.md) covers installation, updates, removal and
+testing; [extensions (addons)](extensions.md) explains how to add new condition
+and action types rather than just generate existing events.
 
 Invalid modules are reported by filename without hiding valid scriptlets.
 Scriptlets execute with the editor's privileges: only use code you trust.

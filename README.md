@@ -44,6 +44,8 @@ page.
   physics and portable GLSL effects.
 - **AI-ready tools:** MCP integration and optional DeepSeek-assisted edits,
   with drafts reviewed before applying.
+- **Extend your workflow:** install project addons or add drop-in scriptlet
+  generators. See [extensions](Docs/extensions.md) and [scriptlets](Docs/scriptlets.md).
 
 ## Try it locally
 
@@ -83,6 +85,10 @@ DeepSeek is optional; configure it using [.env.example](./.env.example).
   reusable node import/export, local variables, signals and a step-by-step code lock.
 - [Visual scripting reference](Docs/visual-scripting.md): event scopes, phases,
   conditions/actions and command parameters.
+- [Extensions (addons)](Docs/extensions.md): installation, a complete example,
+  manifest and JavaScript API, local development and packaging.
+- [Adding and writing scriptlets](Docs/scriptlets.md): folder discovery,
+  generator lifecycle, authoring helpers, testing and troubleshooting.
 - [GZDoom compatibility](Docs/gzdoom-parity.md): implementation status and gaps.
 - [Development Guide](DEVELOPMENT.md): setup, persistence, architecture, MCP and
   contributor workflows.
