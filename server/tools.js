@@ -92,6 +92,9 @@ export const toolDefinitions = [
     shape: { entityId: z.string(), signals: z.array(z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]{0,79}$/)).max(32) } },
   { name: 'shaders_set', description: 'Replace portable GLSL effect definitions [{id,name,language:"glsl",source,uniforms:{name:number}}] and optionally select shaderId (null disables). Source defines vec4 effect(vec4 color, vec2 uv, float time); numeric uniform declarations are supplied by the engine. This portable GLSL subset is compiled for WebGPU/WebGL; unsupported syntax and broken references are rejected. Shader visual actions setShaderUniform(uniform,value) and setShaderEnabled(enabled:yes|no) remain editable.',
     shape: { shaders: z.array(z.record(z.unknown())), shaderId: z.string().nullable().optional() } },
+  { name: 'postfx_set',
+    description: 'Set the shader engine stack: {enabled:boolean, passes:[{kind, enabled?, params?:{name:number}}]} in draw order. Kinds and parameter ranges are the Shader Engine catalogue: blinnPhong, normalMapping, gamma, blur, bloom, outline, dilation, cel, posterize, pixelization, sharpen, chromaticAberration, lut, fog, depthOfField, motionBlur, ssao, ssr, ssrRefraction, fresnel, rim, flow, foam, filmGrain. Unknown techniques, unknown parameters and out-of-range values are rejected. Visual commands setPostFxStack, setPostFxPass and setPostFxParam change the same stack while the game runs.',
+    shape: { postFx: z.record(z.unknown()) } },
   { name: 'hud_install_default', description: 'Explicitly install the original editable FPS HUD and visual feedback rules. Refuses to overwrite an authored HUD.', shape: {} },
   { name: 'hud_set_layout', description: 'Set a complete portable HUD: {width,height,scaleMode:fit|stretch|integer,elements:[],fonts:[],animations:[],styles?:[]}. Read project_get first. Elements have globally unique IDs, type panel|text|image|bar|button, name, anchors:{left,top,right,bottom} (0..1), pivotX/Y (0..1), x/y,width/height,z,opacity,scale,rotation,visible,interactive,display:always|game|cursor,text,binding,value,maximum,frame,fontSize,align:left|center|right,color/background:#rrggbb[aa], optional parentId (parent precedes child), assetId, fontId, styleClass, slice:{left,top,right,bottom} in source pixels or sprite:{columns,rows}. hud_element_add supplies defaults. Binding: health|armor|bullets|message|var:NAME or empty. Text supports {binding}. Fonts: {id,name,type:web,assetId} or {id,name,type:bitmap,assetId,cellWidth,cellHeight,columns,chars}. Web assets use kind:font and embedded data:font/woff|woff2|ttf|otf;base64. Animations: {id,name,duration,loop,autoPlay,tracks:[{elementId,property:x|y|width|height|opacity|scale|rotation|value|frame|fontSize,easing:linear|step|easeInOut,keys:[{time,value},...]}]}. Scoped styles: [{name,properties:{CSS-property:value}}]. All references are validated.',
     shape: { hud: z.record(z.unknown()) } },
@@ -366,6 +369,7 @@ export function applyTool(project, name, args, context = {}) {
       if (input.shaderId === null) delete next.environment.shaderId;
       else if (input.shaderId !== undefined) next.environment.shaderId = input.shaderId;
       break;
+    case 'postfx_set': next.postFx = input.postFx; break;
     case 'engine_install_starter': installEngineScripts(next); break;
     case 'engine_add_wall_walk_demo': installWallWalkDemo(next); break;
     case 'event_sheet_add':

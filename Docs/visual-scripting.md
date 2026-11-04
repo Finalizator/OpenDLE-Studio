@@ -342,6 +342,8 @@ activate in the shot's original frame.
 | active menu / gameplay screen | `gameScreen` | — | screen |
 | Interacting with screen (aiming at a reachable terminal; blocks weapon fire) | `interactingWithScreen` | — | — |
 | effect is enabled | `shaderEnabled` | — | — |
+| shader engine pass is on | `postFxPassEnabled` | — | kind |
+| compare a shader engine parameter | `postFxParamCompare` | — | kind, param, operator, value |
 | compare math / text expressions | `expressionCompare` | — | left, operator, right |
 | compare local variable | `objectVariableCompare` | yes | variable, operator, value |
 | overlaps pickup reach | `playerReachesEntity` | yes | distance, height, below |
@@ -455,6 +457,9 @@ keep their existing global-variable output.
 | toggle user setting | `toggleGameSetting` | — | setting |
 | enable / disable effect | `setShaderEnabled` | — | enabled |
 | set numeric uniform | `setShaderUniform` | — | uniform, value |
+| enable / disable the shader engine stack | `setPostFxStack` | — | enabled |
+| enable / disable one shader engine pass | `setPostFxPass` | — | kind, enabled |
+| set a shader engine parameter | `setPostFxParam` | — | kind, param, value |
 | set local variable | `setObjectVariable` | yes | variable, value |
 | add to local variable | `addObjectVariable` | yes | variable, value |
 | play sprite state | `setSpriteState` | yes | state, restart |

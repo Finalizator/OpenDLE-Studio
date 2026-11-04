@@ -2607,6 +2607,54 @@ advance allocations, and JSON `pairKey` collision keys. Measured on Doom II MAP0
 collider rebuild is not one of them: the static mesh costs 2.7 ms and the dynamic
 moving-sector mesh 0.1 ms, so opening a door cannot be the source of a stutter.
 
+### The Shader Engine: a pass stack from the book
+
+`project.postFx` holds an ordered stack of full-screen passes ported from *3D Game
+Shaders For Beginners*: `{ enabled, passes: [{ kind, enabled, params: {...} }] }`. The
+catalogue, the parameter ranges, the presets and the validation live in
+`shared/post-fx.js`; `public/post-fx-pass.js` compiles the enabled passes into one TSL
+node graph, in stack order, each pass reading what the one before produced.
+
+The renderer draws the level into `postTarget` — a HalfFloat target with a depth
+attachment — instead of straight to the canvas whenever the stack has a pass, then draws a
+full-screen quad whose `colorNode` is the chain. Three details cost real debugging and are
+worth keeping in mind:
+
+- **The depth attachment has to be resized by hand.** `RenderTarget.setSize` does not touch
+  a depth texture in this build, and a colour attachment larger than its depth attachment
+  is an incomplete framebuffer: every frame came back empty and black.
+- **The quad must not sit on a camera near plane of zero.** `OrthographicCamera(-1, 1, 1,
+  -1, -1, 1)` puts the plane at z=0 inside the frustum; with `near = 0` it was clipped and
+  the canvas showed only the clear colour.
+- **The overlay pass clears.** `drawWorld()` leaves `autoClear` off so the weapon and
+  crosshair overlays do not wipe the frame. The post render turns clearing back on for its
+  own quad and must turn it off again, or the overlay render erases the processed picture.
+
+A render target holds linear light, while the book's techniques are written against the
+picture as seen: posterisation bands in display space and gamma is display gamma. The chain
+therefore converts to display space on the way in (`pow(c, 1/2.2)`) and back on the way out,
+where the renderer applies its own output transform for the canvas.
+
+Depth-dependent passes have no position or normal buffer to read — a forward renderer does
+not have one — so they rebuild both from the depth buffer: `perspectiveDepthToViewZ` turns
+the stored depth into a view distance, and the projection scale (tan(fov/2)·aspect,
+tan(fov/2)) turns a screen position back into a view-space point. Outlining, cel ink, rim,
+foam, SSAO, SSR, DOF and fog all share that reconstruction.
+
+Runtime control is the Shader Engine's event group: `setPostFxStack`, `setPostFxPass` and
+`setPostFxParam` write into `state.postFx` (a stack switch, a per-kind disable map and a
+value map), and `postFxPassEnabled` / `postFxParamCompare` read them. Values a script sets
+start from the project's stack and reset with the level; the project's own parameters are
+never overwritten. The renderer writes one uniform per parameter every frame and rebuilds
+the graph only when the *shape* changes (a pass added, enabled or reordered, or a different
+lookup-table grade) — a slider never recompiles a shader.
+
+The **Shaders** tab (`public/shader-engine-panel.js`) is the editor for all of it: presets,
+a card per technique with its chapter, toggles, ordering and one slider per parameter, and a
+list of the techniques not yet in the stack. `Docs/shader-engine.md` is the player-facing
+version, including which of the book's chapters are architecture rather than passes
+(deferred rendering, render-to-texture, reference frames).
+
 ### Renderer selection and GLSL effects
 
 

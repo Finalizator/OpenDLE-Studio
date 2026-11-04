@@ -41,7 +41,8 @@ page.
 - **Design the interface:** edit HUDs and menus with responsive layouts,
   animations and gameplay bindings, including native browser save/load slots.
 - **Browser-native rendering:** WebGPU preferred, WebGL2 fallback, Rapier
-  physics and portable GLSL effects.
+  physics, portable GLSL effects and a [shader engine](Docs/shader-engine.md)
+  ported from *3D Game Shaders For Beginners* with events to drive it at play time.
 - **AI-ready tools:** MCP integration and optional DeepSeek-assisted edits,
   with drafts reviewed before applying.
 - **Extend your workflow:** install project addons or add drop-in scriptlet
@@ -102,6 +103,8 @@ DeepSeek is optional; configure it using [.env.example](./.env.example).
   generator lifecycle, authoring helpers, testing and troubleshooting.
 - [Editing textures in PixiEditor](Docs/pixieditor.md): opening artwork from the
   asset browser and inspectors, finding the editor, and the export/reload round trip.
+- [Shader engine](Docs/shader-engine.md): the pass stack, every technique and its
+  parameters, presets, and the events that control it while the game runs.
 - [GZDoom compatibility](Docs/gzdoom-parity.md): implementation status and gaps.
 - [Development Guide](DEVELOPMENT.md): setup, persistence, architecture, MCP and
   contributor workflows.

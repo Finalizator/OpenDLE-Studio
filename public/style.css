@@ -91,6 +91,23 @@ body.splitter-dragging-y { cursor: row-resize; }
 #inspector > label:has(input[type=checkbox]) { display: flex; text-align: left; flex-direction: row-reverse; justify-content: end; }
 #inspector .field-grid { display: block; }
 #inspector button { width: 100%; margin-top: 5px; }
+/* The Shader Engine panel: a stack of technique cards, each with its own parameters. */
+#shader-engine { padding: 12px 14px; overflow: auto; height: 100%; }
+.shader-presets { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 10px 0 14px; }
+.shader-presets button, .shader-card-tools button, .shader-add button { width: auto; }
+.shader-stack { display: grid; gap: 10px; max-width: 760px; }
+.shader-card { border: 1px solid var(--border); background: #3d3d3d; padding: 8px 10px; }
+.shader-card-head { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
+.shader-card-title { display: grid; gap: 2px; }
+.shader-card-title a { color: #d9c987; font-weight: 600; }
+.shader-card-tools { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: end; }
+.shader-summary { margin: 5px 0 8px; color: var(--muted); font-size: 10px; }
+.shader-param { margin: 5px 0; }
+.shader-param label { display: grid; grid-template-columns: minmax(0, 1fr) 58px; gap: 6px; align-items: center; font-size: 10px; text-align: left; }
+.shader-param input[type=range] { width: 100%; margin: 0; }
+.shader-param output { text-align: right; font-variant-numeric: tabular-nums; }
+.shader-toggle { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; white-space: nowrap; }
+.shader-add { margin-top: 14px; display: grid; gap: 8px; justify-items: start; max-width: 760px; }
 #inspector .pixieditor-button { width: 20px; margin: 0; }
 .property-help { margin-top: auto; padding: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 .property-help p { margin-bottom: 0; }

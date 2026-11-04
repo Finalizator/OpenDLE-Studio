@@ -2,6 +2,8 @@ import * as THREE from 'three/webgpu';
 import { uniform, float, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, asin, cross, normalize, length, clamp, mix, fract } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
+import { createPostFxStack } from './post-fx-pass.js';
+import { activePostFxPasses, postFxParamDefault, postFxSignature, POST_FX_BY_KIND } from '/shared/post-fx.js';
 import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv } from '/shared/uv.js';
@@ -168,6 +170,37 @@ export async function createPreview(canvas, project, state, { editor = false, on
   // pane of glass refracts the level instead of merely being see-through. It only costs
   // a second scene pass while such an object is on screen.
   const screenTarget = new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true });
+  // The Shader Engine's frame: the level is drawn here, its depth is kept, and the pass
+  // chain turns it into the picture on screen. A forward renderer has no position or normal
+  // buffer, so the screen-space passes rebuild both from this depth.
+  // The depth attachment is sized by hand: `RenderTarget.setSize` does not resize a
+  // depth texture in this build, and a colour attachment larger than its depth attachment
+  // is an incomplete framebuffer — which renders as an empty, black frame.
+  const postDepth = new THREE.DepthTexture(1, 1);
+  const postTarget = new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: true, depthTexture: postDepth });
+  function sizePostTarget(width, height) {
+    if (postTarget.width === width && postTarget.height === height) return;
+    postDepth.image.width = width; postDepth.image.height = height; postDepth.needsUpdate = true;
+    postTarget.setSize(width, height);
+    postTarget.dispose();
+  }
+  const postHistory = new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+  const postScene = new THREE.Scene();
+  // Near -1 puts the quad at z=0 inside the frustum: with near 0 it sits exactly on the
+  // near plane and is clipped away, which leaves the canvas cleared and nothing drawn.
+  const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+  const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false }));
+  postQuad.frustumCulled = false;
+  postScene.add(postQuad);
+  const postCopyScene = new THREE.Scene();
+  const postCopyQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false }));
+  postCopyQuad.frustumCulled = false;
+  postCopyScene.add(postCopyQuad);
+  const postNear = uniform(0.1), postFar = uniform(2000);
+  const postProjection = uniform(new THREE.Vector2(1, 1));
+  const postResolution = uniform(new THREE.Vector2(1, 1));
+  const postTime = uniform(0);
+  let postStack = null, postStackSignature = '', postUniforms = {}, postLut = null, postLutPreset = -1;
   const screenSize = new THREE.Vector2();
   // `iResolution` for Shadertoy effects: one uniform shared by every compiled effect.
   const effectResolution = uniform(new THREE.Vector2(1280, 720));
@@ -312,6 +345,11 @@ export async function createPreview(canvas, project, state, { editor = false, on
     scene.traverse(object => { if (object.isSkinnedMesh) object.skeleton.dispose(); });
     environmentTarget?.dispose();
     screenTarget.dispose();
+    postTarget.dispose();
+    postHistory.dispose();
+    postLut?.dispose?.();
+    postQuad.material.dispose(); postQuad.geometry.dispose();
+    postCopyQuad.material.dispose(); postCopyQuad.geometry.dispose();
     const images = new Set();
     for (const texture of textures.values()) { images.add(texture.image); texture.dispose(); }
     for (const image of images) image?.close?.();
@@ -1691,6 +1729,81 @@ export async function createPreview(canvas, project, state, { editor = false, on
       if (styleRendering !== rendering) { styleRendering = rendering; canvas.style.imageRendering = rendering; }
       return size;
     }
+    /** The grade a lookup-table preset applies to one colour, in display space. */
+    function lutColor(preset, red, green, blue) {
+      if (preset === 1) return [Math.min(1, red * 1.1 + 0.02), Math.min(1, green * 1.02), Math.min(1, blue * 0.88)];
+      if (preset === 2) return [Math.min(1, red * 0.88), green, Math.min(1, blue * 1.12 + 0.03)];
+      if (preset === 3) {
+        const luma = red * 0.299 + green * 0.587 + blue * 0.114;
+        return [Math.min(1, luma * 1.08 + 0.06), Math.min(1, luma * 0.96 + 0.02), Math.min(1, luma * 0.78)];
+      }
+      return [red, green, blue];
+    }
+    /**
+     * The lookup-table pass samples a real 16x16x16 table laid out as a 256x16 strip —
+     * blue chooses the slice, red the column inside it, green the row — so the grade below
+     * is data the shader reads, exactly like the book's LUT texture.
+     */
+    function buildLutTexture(preset) {
+      const size = 16, data = new Uint8Array(size * size * size * 4);
+      for (let blue = 0; blue < size; blue++) for (let green = 0; green < size; green++) for (let red = 0; red < size; red++) {
+        const [r, g, b] = lutColor(preset, red / (size - 1), green / (size - 1), blue / (size - 1));
+        const at = ((green * size * size) + blue * size + red) * 4;
+        data[at] = Math.round(r * 255); data[at + 1] = Math.round(g * 255); data[at + 2] = Math.round(b * 255); data[at + 3] = 255;
+      }
+      const table = new THREE.DataTexture(data, size * size, size, THREE.RGBAFormat);
+      table.minFilter = THREE.LinearFilter; table.magFilter = THREE.LinearFilter;
+      table.wrapS = THREE.ClampToEdgeWrapping; table.wrapT = THREE.ClampToEdgeWrapping;
+      table.needsUpdate = true;
+      return table;
+    }
+    /** The passes whose effect is on: project toggles, then the ones a running game changed. */
+    function activePostPasses(state) {
+      const postFx = project.postFx;
+      if (!postFx || postFx.enabled === false) return [];
+      const runtime = state?.postFx;
+      if (runtime && runtime.stackEnabled === false) return [];
+      return (postFx.passes || []).filter(pass => pass && pass.enabled !== false
+        && !(runtime?.disabled?.has?.(pass.kind) && runtime.disabled.get(pass.kind) === true));
+    }
+    /**
+     * Rebuilds the pass chain only when its shape changed — a new stack, a toggle, or a
+     * different lookup-table grade. Parameter values never rebuild anything; they are
+     * uniforms the frame loop writes.
+     */
+    function rebuildPostStack(state) {
+      const passes = activePostPasses(state);
+      const lutPass = passes.find(pass => pass.kind === 'lut');
+      const preset = lutPass ? Math.round(effectivePostValue(state, lutPass, 'preset')) : -1;
+      const signature = `${postFxSignature(project.postFx)}|${passes.map(pass => pass.kind).join(',')}|${preset}`;
+      if (signature === postStackSignature) return passes;
+      postStackSignature = signature;
+      if (preset >= 0 && preset !== postLutPreset) { postLut?.dispose?.(); postLut = buildLutTexture(preset); postLutPreset = preset; }
+      if (!passes.length) { postStack = null; postUniforms = {}; return passes; }
+      const built = createPostFxStack({ colorTexture: postTarget.texture, depthTexture: postTarget.depthTexture,
+        historyTexture: postLut ? postHistory.texture : postHistory.texture, lutTexture: postLut, passes,
+        near: postNear, far: postFar, projection: postProjection, resolution: postResolution, time: postTime });
+      postStack = built; postUniforms = built.uniforms;
+      postQuad.material.colorNode = built.node;
+      postQuad.material.needsUpdate = true;
+      postCopyQuad.material.colorNode = texture(postTarget.texture, screenUV);
+      postCopyQuad.material.needsUpdate = true;
+      return passes;
+    }
+    /** A parameter's value: what a running script set, otherwise what the project saved. */
+    function effectivePostValue(state, pass, name) {
+      const runtime = state?.postFx?.values?.get?.(`${pass.kind}.${name}`);
+      if (Number.isFinite(runtime)) return runtime;
+      const stored = pass.params?.[name];
+      return Number.isFinite(stored) ? stored : postFxParamDefault(pass.kind, name);
+    }
+    function applyPostValues(state, passes) {
+      for (const [key, node] of Object.entries(postUniforms)) {
+        const [kind, name] = key.split('.');
+        const pass = passes.find(candidate => candidate.kind === kind);
+        if (pass) node.value = effectivePostValue(state, pass, name);
+      }
+    }
     function renderFrame(state, dt) {
       const frameStarted = clock();
       if (state.settings) {
@@ -2142,7 +2255,23 @@ export async function createPreview(canvas, project, state, { editor = false, on
       };
       renderer.getDrawingBufferSize(screenSize);
       effectResolution.value.set(screenSize.x, screenSize.y);
-      drawWorld();
+      // The Shader Engine draws the level into a render target first, then runs its pass
+      // chain over that picture. With no passes the frame goes straight to the canvas.
+      const postPasses = rebuildPostStack(state);
+      const usePost = postPasses.length > 0;
+      if (usePost) {
+        sizePostTarget(screenSize.x, screenSize.y);
+        postNear.value = camera.near;
+        postFar.value = camera.far;
+        const halfFov = Math.tan((camera.fov * Math.PI) / 360);
+        postProjection.value.set(halfFov * camera.aspect, halfFov);
+        postResolution.value.set(screenSize.x, screenSize.y);
+        postTime.value = Number.isFinite(state.time) ? state.time : 0;
+        applyPostValues(state, postPasses);
+        renderer.setRenderTarget(postTarget);
+        drawWorld();
+        renderer.setRenderTarget(null);
+      } else drawWorld();
       // Captured for the next frame: sampling a target written in the same pass leaves the
       // strip with no fragment output, which is what made the curtain invisible.
       if (needsScreenPass()) {
@@ -2154,6 +2283,21 @@ export async function createPreview(canvas, project, state, { editor = false, on
         drawWorld();
         renderer.setRenderTarget(null);
         for (const object of hidden) object.visible = true;
+      }
+      if (usePost) {
+        // The chain's result replaces the frame on the canvas, so the level drawn above is
+        // never shown unprocessed.
+        renderer.autoClear = true;
+        renderer.render(postScene, postCamera);
+        // The overlay pass below must not clear the picture that was just assembled.
+        renderer.autoClear = false;
+        if (postPasses.some(pass => pass.kind === 'motionBlur')) {
+          // Keep this frame for next frame's trail, in the same space the effect blends into.
+          if (postHistory.width !== screenSize.x || postHistory.height !== screenSize.y) postHistory.setSize(screenSize.x, screenSize.y);
+          renderer.setRenderTarget(postHistory);
+          renderer.render(postCopyScene, postCamera);
+          renderer.setRenderTarget(null);
+        }
       }
       // The fade a script asked for, unless the editor is showing the level without a game.
       const fade = editor ? null : state.screenFadeNow;

@@ -4,6 +4,7 @@ import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
+import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
@@ -94,6 +95,23 @@ export function runtimeEntities(project, settings = {}) {
     .map(entity => ({ ...entity, variables: { ...(entity.variables || {}) } }));
 }
 
+/** Whether a Shader Engine pass is on: the project's toggle, then a script's override. */
+export function postFxPassEnabled(state, kind) {
+  const runtime = state.postFx, stack = state.projectPostFx;
+  if (runtime?.stackEnabled === false || !stack || stack.enabled === false) return false;
+  if (!(stack.passes || []).some(pass => pass.kind === kind && pass.enabled !== false)) return false;
+  return runtime?.disabled?.get?.(kind) !== true;
+}
+
+/** A pass parameter's current value: what a script set, otherwise the project's saved value. */
+export function postFxParamValue(state, kind, name) {
+  const runtime = state.postFx?.values?.get?.(`${kind}.${name}`);
+  if (Number.isFinite(runtime)) return runtime;
+  const pass = (state.projectPostFx?.passes || []).find(candidate => candidate.kind === kind);
+  const stored = pass?.params?.[name];
+  return Number.isFinite(stored) ? stored : postFxParamDefault(kind, name);
+}
+
 export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false, progress, addons = null } = {}) {
   // Missile artwork has to exist before the renderer builds its sprite index.
   installActorProjectileSprites(project);
@@ -141,6 +159,11 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     projectileSequence: 0,
     worldRevision: 0,
     shaderEnabled: true,
+    // The Shader Engine's runtime state: which passes a script switched off, and the values
+    // it set. The project's own stack stays the source of the enabled passes and defaults.
+    postFx: { stackEnabled: true, disabled: new Map(), values: new Map() },
+    // The stack as the project saved it; a script enables passes and sets values on top.
+    projectPostFx: project.postFx ? structuredClone(project.postFx) : null,
     shaderUniforms: new Map(Object.entries(project.shaders?.find(shader => shader.id === project.environment.shaderId)?.uniforms || {})),
     sectorMotions: new Map(),
     // How far each path follower has travelled: progress belongs to the run, not to the map.
@@ -1023,6 +1046,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (condition.type === 'interactingWithScreen') return Boolean(state.worldTerminalActive);
       if (condition.type === 'gameScreen') return state.gameScreen === condition.screen;
       if (condition.type === 'shaderEnabled') return state.shaderEnabled;
+      if (condition.type === 'postFxPassEnabled') return postFxPassEnabled(state, condition.kind);
+      if (condition.type === 'postFxParamCompare') return compare(postFxParamValue(state, condition.kind, condition.param),
+        condition.operator, condition.value);
       if (condition.type === 'expressionCompare') return compare(condition.left, condition.operator, condition.right);
       if (condition.type === 'objectVariableCompare') {
         const target = findTarget(condition.entityId);
@@ -1259,6 +1285,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'resetGameSettings': state.settings = gameSettings({ jumping: state.settings.jumping }); state.settingsRevision++; break;
         case 'setShaderEnabled': state.shaderEnabled = action.enabled === 'yes'; break;
         case 'setShaderUniform': state.shaderUniforms.set(action.uniform, action.value); break;
+        case 'setPostFxStack': state.postFx.stackEnabled = action.enabled === 'yes'; break;
+        case 'setPostFxPass': state.postFx.disabled.set(action.kind, action.enabled !== 'yes'); break;
+        case 'setPostFxParam': state.postFx.values.set(`${action.kind}.${action.param}`, action.value); break;
         case 'setObjectVariable': case 'addObjectVariable': {
           const entity = findTarget(action.entityId);
           if (entity) assignVariable(entity.variables, action.variable, action.value, action.type === 'addObjectVariable');

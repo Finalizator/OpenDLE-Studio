@@ -9,6 +9,7 @@ import { PLAYER_STATS, AMMO_TYPES, WEAPONS, KEYS, FACE_EXPRESSIONS } from './pla
 import { installEngineSounds } from './sound.js';
 import { doomWalk } from './sprite-animation.js';
 import { doomThings } from './doom-assets.js';
+import { POST_FX_KINDS } from './post-fx.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 import { addonCommands, addonCommand, declaredAddonTypes } from './addons.js';
 
@@ -48,6 +49,11 @@ export const ENGINE_CONDITIONS = [
   { type: 'levelTransition', label: 'Game: level entered with campaign inventory', fields: [] },
   { type: 'gameScreen', label: 'Game: active menu / gameplay screen', fields: [{ name: 'screen', kind: 'text', value: 'title' }] },
   { type: 'shaderEnabled', label: 'Shader: effect is enabled', fields: [] },
+  // The Shader Engine's chain: a pass is on, and what a parameter is worth right now.
+  { type: 'postFxPassEnabled', label: 'Shaders: effect pass is enabled', fields: [choice('kind', 'bloom', POST_FX_KINDS)] },
+  { type: 'postFxParamCompare', label: 'Shaders: compare an effect parameter', fields: [
+    choice('kind', 'bloom', POST_FX_KINDS), { name: 'param', kind: 'text', value: 'intensity' },
+    comparison(), { name: 'value', kind: 'value', value: 0 }] },
   { type: 'expressionCompare', label: 'System: compare math / text expressions', fields: [
     { name: 'left', kind: 'value', value: 0 }, comparison(), { name: 'right', kind: 'value', value: 0 }] },
   { type: 'objectVariableCompare', label: 'Object: compare local variable', target: true, fields: [
@@ -133,6 +139,12 @@ export const ENGINE_ACTIONS = [
   { type: 'setShaderEnabled', label: 'Shader: enable / disable effect', fields: [choice('enabled', 'yes', ['yes', 'no'])] },
   { type: 'setShaderUniform', label: 'Shader: set numeric uniform', fields: [
     { name: 'uniform', kind: 'text', value: 'strength' }, numeric('value', 1, -1e6, 1e6)] },
+  { type: 'setPostFxStack', label: 'Shaders: enable / disable the effect stack', fields: [choice('enabled', 'yes', ['yes', 'no'])] },
+  { type: 'setPostFxPass', label: 'Shaders: enable / disable one effect pass', fields: [
+    choice('kind', 'bloom', POST_FX_KINDS), choice('enabled', 'yes', ['yes', 'no'])] },
+  { type: 'setPostFxParam', label: 'Shaders: set an effect parameter', fields: [
+    choice('kind', 'bloom', POST_FX_KINDS), { name: 'param', kind: 'text', value: 'intensity' },
+    { name: 'value', kind: 'value', value: 1 }] },
   { type: 'setObjectVariable', label: 'Object: set local variable', target: true, fields: [
     { name: 'variable', kind: 'text', value: 'value' }, { name: 'value', kind: 'value', value: 0 }] },
   { type: 'addObjectVariable', label: 'Object: add to local variable', target: true, fields: [

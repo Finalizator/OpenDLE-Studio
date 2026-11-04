@@ -55,6 +55,7 @@ import { createAcsHud } from './acs-hud.js';
 import { createPlaytestLogPanel } from './playtest-log-panel.js';
 import { createTimesheetPanel } from './timesheet-panel.js';
 import { createAddonsPanel } from './addons-panel.js';
+import { createShaderEnginePanel } from './shader-engine-panel.js';
 import { createAddonHost } from './addons-host.js';
 import { alignModelToRoute, driveRouteTimesheet } from '/shared/timesheet-recipe.js';
 import { installGameMenu } from '/shared/game-menu.js';
@@ -321,6 +322,10 @@ addonsPanel = createAddonsPanel({
   host: addonHost,
 });
 
+const shaderEnginePanel = createShaderEnginePanel($('shader-engine'), {
+  project: () => project, edit,
+});
+
 const hudEditor = createHUDEditor($('hud-editor'), {
   project: () => project, edit, script: openHUDScript, error: message => status(message, true),
   openInPixiEditor: asset => pixiEditor.open(asset),
@@ -472,6 +477,7 @@ function render() {
   // redo have to refresh them too, not only opening the tab.
   if (!$('scriptlets-panel').hidden) renderScriptlets();
   // The HUD designer rebuilds its whole stage; only do that when it is visible.
+  if (!$('shaders-panel').hidden) shaderEnginePanel.render(message => status(message, true));
   if (!$('hud-panel').hidden) hudEditor.render();
   if (!$('actors-panel').hidden) actorsPanel.render();
   if (!$('scripts-panel').hidden) scriptsPanel.render();
@@ -2070,7 +2076,7 @@ function showTab(tab) {
   if (tab === 'assets') {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
-  for (const name of ['map', 'events', 'environment', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'addons', 'about', 'scene'])
+  for (const name of ['map', 'events', 'environment', 'shaders', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'addons', 'about', 'scene'])
     $(name + '-panel').hidden = tab !== name;
   // Tabs an addon added belong to the same strip and must close with it.
   for (const entry of addonTabs.values()) entry.panel.hidden = tab !== entry.id;
@@ -2078,6 +2084,7 @@ function showTab(tab) {
   if (tab === 'addons') addonsPanel.render();
   // The designer is only refreshed while its tab is visible, so opening the tab
   // has to build it once.
+  if (tab === 'shaders') shaderEnginePanel.render(message => status(message, true));
   if (tab === 'hud') hudEditor.render();
   if (tab === 'scene') { sceneObjectEditor?.render(); /* the scene editor's columns are fitted to the panel, so measure it now that it is visible */ splitters.refresh(); }
   if (tab === 'actors') actorsPanel.render();

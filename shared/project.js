@@ -10,6 +10,7 @@ import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
 import { WEAPONS } from './player-state.js';
 import { isExpression, validateExpression, validateVariables, scalar, expressionContext } from './expressions.js';
 import { validateShaders } from './shaders.js';
+import { POST_FX_BY_KIND, validatePostFx } from './post-fx.js';
 import { AREA_SHAPES } from './areas.js';
 import { MAX_SCENES, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
 import { MAX_JOINTS, validateJoint } from './joints.js';
@@ -985,6 +986,8 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   object(project.environment, 'Environment');
   const shaderErrors = validateShaders(project);
   assert(shaderErrors.length === 0, shaderErrors.join('; '));
+  const postFxErrors = validatePostFx(project);
+  assert(postFxErrors.length === 0, postFxErrors.join('; '));
   for (const shader of project.shaders || []) unique(shader, 'Shader');
   for (const key of ['sky', 'floor']) assert(colorPattern.test(project.environment[key]), `${key} must be #rrggbb`);
   assetRef(project.environment.skyAsset, 'Sky panorama');
@@ -1205,6 +1208,15 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         const shader = project.shaders?.find(shader => shader.id === project.environment.shaderId);
         assert(shader, 'Shader commands require a selected environment shader');
         if (command.type === 'setShaderUniform') assert(Object.hasOwn(shader.uniforms || {}, command.uniform), 'Shader command references an unknown uniform');
+      }
+      // The Shader Engine's commands name a technique and one of its parameters; a typo would
+      // otherwise be a command that quietly does nothing at play time.
+      if (['setPostFxPass', 'setPostFxParam', 'postFxPassEnabled', 'postFxParamCompare'].includes(command.type)) {
+        const technique = POST_FX_BY_KIND.get(command.kind);
+        assert(technique, `Shader command references an unknown effect ${command.kind}`);
+        if (command.type === 'setPostFxParam' || command.type === 'postFxParamCompare')
+          assert(technique.params.some(spec => spec.name === command.param),
+            `Shader command references an unknown ${command.kind} parameter ${command.param}`);
       }
       if (['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'].includes(command.type)) {
         validateLocalVariableCommand(command, targetEntities(command.entityId));
