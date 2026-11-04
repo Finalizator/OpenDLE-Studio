@@ -20,11 +20,16 @@ function slug(text) {
 function findMesh(files, file) {
   const wanted = String(file).replace(/\\/g, '/').toLowerCase();
   const base = wanted.split('/').pop();
+  const suffixMatches = [], basenameMatches = [];
   for (const [name, entry] of files) {
-    const path = name.toLowerCase();
-    if (path === wanted || path.endsWith(`/${wanted}`) || path.split('/').pop() === base) return { name, entry };
+    const path = name.replace(/\\/g, '/').toLowerCase();
+    if (path === wanted) return { name, entry };
+    if (path.endsWith(`/${wanted}`)) suffixMatches.push({ name, entry });
+    if (path.split('/').pop() === base) basenameMatches.push({ name, entry });
   }
-  return null;
+  const matches = suffixMatches.length ? suffixMatches : basenameMatches;
+  if (matches.length > 1) throw new Error(`ambiguous model path ${file}: ${matches.map(match => match.name).join(', ')}`);
+  return matches[0] || null;
 }
 
 /**
@@ -44,11 +49,6 @@ function skinTextures(project) {
 }
 
 function importMesh(project, files, file, { warnings, owner, textures }) {
-  const found = findMesh(files, file);
-  if (!found?.entry?.data) {
-    warnings.push(`${owner}: model ${file} is not in the package; the actor is drawn as a sprite.`);
-    return null;
-  }
   const format = String(file).split('.').pop().toLowerCase();
   if (!MESH_FORMATS.has(format)) {
     warnings.push(`${owner}: model ${file} uses .${format}, which is not imported yet; the actor is drawn as a sprite.`);
@@ -56,17 +56,23 @@ function importMesh(project, files, file, { warnings, owner, textures }) {
   }
   let bytes;
   try {
+    const found = findMesh(files, file);
+    if (!found?.entry?.data) {
+      warnings.push(`${owner}: model ${file} is not in the package; the actor is drawn as a sprite.`);
+      return null;
+    }
     bytes = objToGlb(Buffer.from(found.entry.data).toString('latin1'), { name: file, textures });
   } catch (error) {
     warnings.push(`${owner}: model ${file} could not be converted (${error.message}).`);
     return null;
   }
   const name = String(file).split('/').pop().slice(0, 100);
-  const existing = project.assets.find(asset => asset.kind === 'model' && asset.name === name);
+  const src = dataURI(bytes, 'model/gltf-binary');
+  const existing = project.assets.find(asset => asset.kind === 'model' && asset.src === src);
   if (existing) return existing.id;
   const id = `asset_model_${slug(file)}`;
   const unique = project.assets.some(asset => asset.id === id) ? `${id}_${project.assets.length}` : id;
-  project.assets.push({ id: unique, name, kind: 'model', format: 'glb', src: dataURI(bytes, 'model/gltf-binary'), animations: [] });
+  project.assets.push({ id: unique, name, kind: 'model', format: 'glb', src, animations: [] });
   return unique;
 }
 

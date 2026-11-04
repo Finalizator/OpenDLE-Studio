@@ -21,9 +21,19 @@ const ARRAY_BUFFER = 34962, ELEMENT_ARRAY_BUFFER = 34963;
 
 /** Resolves an OBJ index: positive is 1-based, negative counts back from the end. */
 function resolveIndex(value, length) {
+  if (!/^[+-]?\d+$/.test(value)) return null;
   const number = Number(value);
-  if (!Number.isFinite(number) || number === 0) return null;
-  return number > 0 ? number - 1 : length + number;
+  if (!Number.isSafeInteger(number) || number === 0) return null;
+  const index = number > 0 ? number - 1 : length + number;
+  return index >= 0 && index < length ? index : null;
+}
+
+function coordinate(value, label, line) {
+  const number = Number(value);
+  if (value === undefined || !Number.isFinite(Math.fround(number))) {
+    throw new Error(`Invalid ${label} coordinate at line ${line}`);
+  }
+  return number;
 }
 
 /**
@@ -37,25 +47,31 @@ export function parseObj(text) {
     if (!group) groups.push(group = { material: null, corners: [] });
     return group.corners;
   };
-  for (const raw of String(text).split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
+  const lines = String(text).split(/\r?\n/);
+  for (let at = 0; at < lines.length; at++) {
+    const line = lines[at].split('#', 1)[0].trim();
+    if (!line) continue;
     const parts = line.split(/\s+/);
     const keyword = parts[0].toLowerCase();
-    if (keyword === 'v') positions.push([Number(parts[1]) || 0, Number(parts[2]) || 0, Number(parts[3]) || 0]);
-    else if (keyword === 'vt') uvs.push([Number(parts[1]) || 0, Number(parts[2]) || 0]);
-    else if (keyword === 'vn') normals.push([Number(parts[1]) || 0, Number(parts[2]) || 0, Number(parts[3]) || 0]);
+    if (keyword === 'v') positions.push([1, 2, 3].map(index => coordinate(parts[index], 'vertex', at + 1)));
+    else if (keyword === 'vt') uvs.push([coordinate(parts[1], 'texture', at + 1), coordinate(parts[2] ?? '0', 'texture', at + 1)]);
+    else if (keyword === 'vn') normals.push([1, 2, 3].map(index => coordinate(parts[index], 'normal', at + 1)));
     else if (keyword === 'usemtl') { group = { material: parts.slice(1).join(' ') || null, corners: [] }; groups.push(group); }
     else if (keyword === 'f') {
       const corners = cornersOf();
       const face = [];
       for (const corner of parts.slice(1)) {
-        const [v, vt, vn] = corner.split('/');
+        const indices = corner.split('/');
+        const [v, vt, vn] = indices;
         const position = resolveIndex(v, positions.length);
-        if (position === null || position < 0) { badFaces++; face.length = 0; break; }
-        face.push({ position, uv: vt === undefined ? null : resolveIndex(vt, uvs.length),
-          normal: vn === undefined ? null : resolveIndex(vn, normals.length) });
+        const uv = vt ? resolveIndex(vt, uvs.length) : null;
+        const normal = vn ? resolveIndex(vn, normals.length) : null;
+        if (indices.length > 3 || position === null || vt && uv === null || vn && normal === null) {
+          face.length = 0; break;
+        }
+        face.push({ position, uv, normal });
       }
+      if (face.length < 3) { badFaces++; continue; }
       for (let corner = 2; corner < face.length; corner++) corners.push(face[0], face[corner - 1], face[corner]);
     }
   }
@@ -67,7 +83,6 @@ function uniqueVertices({ positions, uvs, normals }, corners) {
   const lookup = new Map(), vertices = [], indices = [];
   for (const corner of corners) {
     const position = positions[corner.position];
-    if (!position) continue;
     const key = `${corner.position}/${corner.normal ?? ''}/${corner.uv ?? ''}`;
     let at = lookup.get(key);
     if (at === undefined) {
@@ -93,6 +108,7 @@ const pad4 = length => (4 - (length % 4)) % 4;
  */
 export function objToGlb(text, { name = 'model', textures = new Map() } = {}) {
   const parsed = parseObj(text);
+  if (parsed.badFaces) throw new Error(`${name} has ${parsed.badFaces} invalid face(s)`);
   if (!parsed.groups.length) throw new Error(`${name} has no triangles`);
 
   const chunks = [];

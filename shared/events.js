@@ -38,6 +38,22 @@ export function removeEventBranch(project, id) {
   project.events = project.events.filter(event => !ids.has(event.id));
 }
 
+/** Removes a sheet's rules and groups only when no surviving commands reference those groups. */
+export function removeEventSheet(project, id) {
+  if (!(project.eventSheets || []).some(sheet => sheet.id === id)) throw new Error('Unknown event sheet');
+  const groups = new Set((project.eventGroups || []).filter(group => group.sheetId === id).map(group => group.id));
+  const holders = [project, ...(project.scenes || [])];
+  const surviving = holders.flatMap(holder => (holder.events || []).filter(event => event.sheetId !== id));
+  const cues = (project.timesheets || []).flatMap(sheet => sheet.cues || []);
+  if ([...surviving, ...cues].some(event =>
+    [event.condition, ...(event.conditions || []), ...(event.actions || [])].some(command => groups.has(command?.groupId)))) {
+    throw new Error('This sheet contains groups referenced by other rules. Remove those references first.');
+  }
+  for (const holder of holders) if (holder.events) holder.events = holder.events.filter(event => event.sheetId !== id);
+  project.eventSheets = project.eventSheets.filter(sheet => sheet.id !== id);
+  if (project.eventGroups) project.eventGroups = project.eventGroups.filter(group => !groups.has(group.id));
+}
+
 export function setEventObjectContext(project, id, { ownerId, forEachType }) {
   if (ownerId && forEachType) throw new Error('Choose an owner or a for-each type, not both');
   const event = project.events.find(item => item.id === id);

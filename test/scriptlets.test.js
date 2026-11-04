@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createProject, validateProject } from '../shared/project.js';
-import { ENGINE_SCRIPTLETS, installScriptlet, removeScriptlet, scriptletById } from '../shared/scriptlets.js';
+import { ENGINE_SCRIPTLETS, buildSurfTestMap, installScriptlet, removeScriptlet, scriptletById } from '../shared/scriptlets.js';
+import { newScene, addSceneObject } from '../shared/scenes.js';
+import { newJoint } from '../shared/joints.js';
+import { createCue, createTimesheet } from '../shared/timesheet.js';
 
 const wallWalking = () => ENGINE_SCRIPTLETS.find(scriptlet => scriptlet.id === 'wall-walking');
 
@@ -36,6 +39,81 @@ test('reinstalling replaces only the scriptlet own rules, and removing leaves no
   assert.deepEqual(project.events.map(event => event.id), ['welcome', 'collect', 'mine']);
   assert.equal(removeScriptlet(project, 'wall-walking'), false, 'removing twice is harmless');
   assert.throws(() => installScriptlet(project, 'no-such-scriptlet'), /Unknown engine scriptlet/);
+});
+
+test('removing grouped scriptlets removes their sheet groups and scene rules without invalidating the project', () => {
+  for (const id of ['wall-walking', 'spray', 'source-movement']) {
+    const project = createProject();
+    project.assets = [{ id: 'picture', name: 'Picture', kind: 'sprite', width: 1, height: 1,
+      src: 'data:image/png;base64,AAAA' }];
+    const sheetId = installScriptlet(project, id);
+    const group = { id: 'scriptlet_group', name: 'Customized rules', sheetId, enabled: true };
+    project.eventGroups = [group];
+    project.events.find(event => event.sheetId === sheetId).groupId = group.id;
+    const scene = newScene('Reusable behavior');
+    const node = addSceneObject(scene, { name: 'Node' });
+    scene.events = [{ id: 'scene_rule', sheetId, groupId: group.id, ownerId: node.id, enabled: true, once: false,
+      condition: { type: 'always' }, actions: [] }];
+    project.scenes = [scene];
+    validateProject(project);
+    removeScriptlet(project, id);
+    assert.deepEqual(project.eventGroups, [], id);
+    assert.deepEqual(scene.events, [], 'scene rules cannot retain the deleted sheet or group');
+    validateProject(project);
+  }
+});
+
+test('scriptlet removal rejects externally referenced groups before changing any project data', () => {
+  for (const scope of ['layout', 'scene', 'timeline']) {
+    const project = createProject();
+    const sheetId = installScriptlet(project, 'wall-walking');
+    const group = { id: 'scriptlet_group', name: 'Customized rules', sheetId, enabled: true };
+    project.eventGroups = [group];
+    const actions = [{ type: 'setGroupActive', groupId: group.id, active: 'no' }];
+    const rule = { id: 'outside', enabled: true, once: false, condition: { type: 'always' }, actions };
+    if (scope === 'layout') project.events.push(rule);
+    else if (scope === 'scene') project.scenes = [{ ...newScene('External'), events: [rule] }];
+    else {
+      const sheet = createTimesheet({ id: 'timeline' });
+      sheet.cues.push(createCue({ id: 'cue', trackId: sheet.tracks[0].id, actions }));
+      project.timesheets = [sheet];
+    }
+    validateProject(project);
+    const before = structuredClone(project);
+    assert.throws(() => removeScriptlet(project, 'wall-walking'), /groups referenced/, scope);
+    assert.deepEqual(project, before, 'a refusal must be atomic');
+  }
+});
+
+test('removing Source movement ramps clears their scripts and constraints through normal object deletion', () => {
+  const project = createProject();
+  buildSurfTestMap(project);
+  const rampId = project.sourceMovementRamps[0];
+  const other = project.map.entities.find(entity => entity.id !== rampId && entity.physics);
+  project.map.joints = [newJoint({ a: rampId, b: other.id })];
+  project.events.push({ id: 'ramp_script', ownerId: rampId, enabled: true, once: false,
+    condition: { type: 'always' }, actions: [] },
+  { id: 'ramp_gate', enabled: true, once: false, condition: { type: 'nearEntity', entityId: rampId, distance: 100 },
+    actions: [{ type: 'showMessage', message: 'near ramp' }] });
+  validateProject(project);
+  removeScriptlet(project, 'source-movement');
+  assert.ok(!project.events.some(event => ['ramp_script', 'ramp_gate'].includes(event.id)));
+  assert.deepEqual(project.map.joints, []);
+  assert.equal(project.sourceMovementSurfRamp, undefined);
+  validateProject(project);
+});
+
+test('refusing Source scriptlet removal also preserves its ramps and metadata', () => {
+  const project = createProject();
+  buildSurfTestMap(project);
+  const sheetId = project.eventSheets.find(sheet => sheet.name === 'Half-Life movement (Source)').id;
+  project.eventGroups.push({ id: 'source_group', name: 'Source group', sheetId, enabled: true });
+  project.events.push({ id: 'keep_source_group', enabled: true, once: false, condition: { type: 'always' },
+    actions: [{ type: 'setGroupActive', groupId: 'source_group', active: 'no' }] });
+  validateProject(project);
+  const before = structuredClone(project);
+  assert.throws(() => removeScriptlet(project, 'source-movement'), /groups referenced/);
+  assert.deepEqual(project, before);
 });
 
 test('the scriptlets live in their own editor tab, not in the event sheet tree', () => {

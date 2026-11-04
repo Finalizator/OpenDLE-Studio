@@ -1317,6 +1317,11 @@ many rules they added, can be reinstalled (replacing only their own sheet) and
 removed, with undo covering either. A scriptlet only ever produces ordinary
 editable events, so anything it installs can be inspected, changed or deleted like
 hand-written rules — the spray's artwork and key are edited in the event itself.
+Removing a scriptlet uses the same `removeEventSheet` helper as **Delete sheet and rules**:
+its sheet, groups and matching rules in layouts and reusable scenes are removed together.
+If another rule or timeline cue still names one of those groups, removal is refused before
+changing anything. Source-movement ramp removal uses normal object deletion, clearing their
+owned scripts, external references and joints instead of leaving an invalid project.
 `shared/spray.js` traces the 3D look direction against solid walls, keeps the hit
 inside the sector's floor/ceiling and returns the wall's own span, so the decal can
 be **clipped to the face it was painted on**: the rectangle is cut at the wall's ends
@@ -3610,6 +3615,14 @@ approximated. `Scale` and `Offset` from the block are applied too; a non-uniform
 thing drawn at 1:1 and said so in the warnings. Two import bugs had made all of this dead: the ZScript parser matched only a
 lowercase `class` (Lullaby writes `Class`), and an inherited record dropped its parent's
 functions.
+
+OBJ conversion accepts inline comments and valid negative position/UV/normal indices. Invalid
+face indices, incomplete faces and coordinates that cannot be represented as finite Float32
+values fail explicitly; MODELDEF reports the failed conversion and retains the sprite fallback
+instead of installing corrupted or partially stitched triangles. Declared mesh paths take
+precedence over basename fallbacks, and ambiguous fallback matches are reported rather than
+chosen by package entry order. Converted assets are reused by their payload, never just by a
+shared filename, so models from different directories remain distinct.
 
 **A surface that drifts is a thinker, not a recording.** `Ceiling_Waggle` (38) and
 `Floor_Waggle` (138) start a GZDoom plane thinker: the plane keeps its original distance, a

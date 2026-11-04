@@ -5,15 +5,19 @@
 
 import { installEngineScripts, installWallWalkDemo, installSprayScriptlet, installSourceMovementScriptlet,
   addSurfRamp, surfRampGeometry, surfRampSurface, WALL_WALK_SHEET, SPRAY_SHEET, SOURCE_MOVEMENT_SHEET } from './engine-script.js';
-import { createProject } from './project.js';
+import { createProject, removeEntities } from './project.js';
+import { removeEventSheet } from './events.js';
+
+function removeScriptletSheet(project, name) {
+  const sheet = (project.eventSheets || []).find(sheet => sheet.name === name);
+  if (!sheet) return false;
+  removeEventSheet(project, sheet.id);
+  return true;
+}
 
 /** Removes the sheet and rules the wall-walking scriptlet installs. */
 export function removeWallWalkDemo(project) {
-  const sheet = (project.eventSheets || []).find(sheet => sheet.name === WALL_WALK_SHEET);
-  if (!sheet) return false;
-  project.events = project.events.filter(event => event.sheetId !== sheet.id);
-  project.eventSheets = project.eventSheets.filter(item => item.id !== sheet.id);
-  return true;
+  return removeScriptletSheet(project, WALL_WALK_SHEET);
 }
 
 const wallWalking = {
@@ -32,11 +36,7 @@ const wallWalking = {
 
 /** Removes the sheet and rules the spray scriptlet installs. */
 export function removeSpray(project) {
-  const sheet = (project.eventSheets || []).find(sheet => sheet.name === SPRAY_SHEET);
-  if (!sheet) return false;
-  project.events = project.events.filter(event => event.sheetId !== sheet.id);
-  project.eventSheets = project.eventSheets.filter(item => item.id !== sheet.id);
-  return true;
+  return removeScriptletSheet(project, SPRAY_SHEET);
 }
 
 const spray = {
@@ -62,14 +62,14 @@ const spray = {
 
 /** Removes the sheet, rules and ramps the Half-Life movement scriptlet installs. */
 export function removeSourceMovement(project) {
-  const sheet = (project.eventSheets || []).find(sheet => sheet.name === SOURCE_MOVEMENT_SHEET);
   const ramps = new Set(project.sourceMovementRamps || []);
-  if (ramps.size) project.map.entities = project.map.entities.filter(entity => !ramps.has(entity.id));
+  const targets = project.map.entities.filter(entity => ramps.has(entity.id));
+  if (targets.some(entity => entity.type === 'player')) throw new Error('Source movement ramps cannot include the player');
+  const removed = removeScriptletSheet(project, SOURCE_MOVEMENT_SHEET);
+  if (targets.length) removeEntities(project, targets.map(entity => entity.id));
   delete project.sourceMovementRamps;
-  if (!sheet) return ramps.size > 0;
-  project.events = project.events.filter(event => event.sheetId !== sheet.id);
-  project.eventSheets = project.eventSheets.filter(item => item.id !== sheet.id);
-  return true;
+  delete project.sourceMovementSurfRamp;
+  return removed || ramps.size > 0;
 }
 
 /**

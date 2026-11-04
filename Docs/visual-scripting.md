@@ -125,6 +125,11 @@ Within a phase, sheets run in project order, and inside a sheet rules run top to
 bottom. A disabled sheet, or a disabled group, skips its rules without deleting
 them.
 
+**Delete sheet and rules**, including removal through Engine scriptlets, also
+removes the sheet's groups and its rules in reusable scenes. If another rule or a
+timeline cue still references one of those groups, deletion is refused without
+changing the project. Remove those references first.
+
 Frame order in `stepRuntime`:
 
 1. advance HUD interface clock, run `interface` rules

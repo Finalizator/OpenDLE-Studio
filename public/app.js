@@ -28,7 +28,7 @@ import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { createProjectAutosave } from './project-autosave.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
-  removeEventBranch, setEventParent, setEventObjectContext, eventScope } from '/shared/events.js';
+  removeEventBranch, removeEventSheet, setEventParent, setEventObjectContext, eventScope } from '/shared/events.js';
 import { editInline, installRowDrag } from './row-drag.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand, engineCommands, defaultEngineCommand, installEngineScripts, knownCommandTypes } from '/shared/engine-script.js';
 import { addonCommands } from '/shared/addons.js';
@@ -2497,15 +2497,7 @@ function renderEvents() {
     properties.append(checkbox('Sheet enabled', currentSheet.enabled, value => update('enabled', value)),
       button('Delete sheet and rules', () => {
         if (!confirm(`Delete ${currentSheet.name} and its rules? Undo restores them.`)) return;
-        edit(next => {
-          next.events = next.events.filter(event => event.sheetId !== currentSheet.id);
-          next.eventSheets = next.eventSheets.filter(sheet => sheet.id !== currentSheet.id);
-          const removed = new Set((next.eventGroups || []).filter(group => group.sheetId === currentSheet.id).map(group => group.id));
-          if (next.events.some(event => [...eventConditions(event), ...event.actions].some(command => removed.has(command.groupId)))) {
-            throw new Error('This sheet contains groups referenced by other rules. Remove those references first.');
-          }
-          next.eventGroups = (next.eventGroups || []).filter(group => !removed.has(group.id));
-        }, 'Event sheet deleted');
+        edit(next => removeEventSheet(next, currentSheet.id), 'Event sheet deleted');
       }, 'danger'));
   }
   $('script-scope').replaceChildren(...[['$all', 'All events'], ['$scene', 'Scene only'],
