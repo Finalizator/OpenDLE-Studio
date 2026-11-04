@@ -52,8 +52,31 @@ export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, she
       ).then(saved => {
         if (saved !== true) throw new Error('The project still has unsaved changes.');
         if (!window.isDestroyed()) { savedForClose = true; window.close(); }
-      }).catch(error => report(new Error(`The project could not be saved, so Studio was kept open. ${error.message}`)))
-        .finally(() => { closing = false; savedForClose = false; });
+      }).catch(async error => {
+        if (window.isDestroyed()) return;
+        // A save that cannot land — a full disk, a service that stopped answering — must not
+        // trap the person in an editor they asked to leave, but the offer has to be honest
+        // about what closing costs: a campaign too large for browser storage has no draft.
+        const backedUp = await window.webContents
+          .executeJavaScript('typeof window.opendleUnsavedEditsAreBackedUp === "function" ? window.opendleUnsavedEditsAreBackedUp() : false')
+          .catch(() => false);
+        const choice = dialog.showMessageBoxSync(window, {
+          type: 'warning', title: 'Unsaved changes',
+          message: 'The project could not be saved, so Studio was kept open.',
+          detail: `${error.message}\n\n${backedUp
+            ? 'Close OpenDLE: Studio anyway? Your unsaved edits stay in the browser draft and are offered back the next time this project is opened.'
+            : 'Close OpenDLE: Studio anyway? These edits are not kept anywhere else and will be lost — export a backup first if you want to keep them.'}`,
+          buttons: ['Keep editing', 'Close without saving'], defaultId: 0, cancelId: 0,
+        });
+        if (choice !== 1) { console.error(`OpenDLE Studio: ${error.message}`); return; }
+        // The renderer would otherwise ask a second time from its own beforeunload handler.
+        const discard = window.webContents.executeJavaScript('window.opendleCloseWithoutSaving = true');
+        return discard.catch(() => {}).then(() => {
+          if (window.isDestroyed()) return;
+          savedForClose = true;
+          window.close();
+        });
+      }).finally(() => { closing = false; savedForClose = false; });
     });
     window.webContents.on('will-prevent-unload', event => {
       const choice = dialog.showMessageBoxSync(window, { type: 'warning', title: 'Unsaved changes',

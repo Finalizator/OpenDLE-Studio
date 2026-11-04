@@ -104,7 +104,8 @@ const projectAutosave = createProjectAutosave({
     while (projectOperationPending) await projectOperationPending;
     if (dirty) await saveProject();
   },
-  onError: error => status(`Automatic save failed: ${error.message}. Your edits are still open; retry Save or export a backup before closing.`, true),
+  onError: error => status(`Automatic save failed: ${String(error?.message || 'unknown error').replace(/[.\s]+$/, '')}. `
+    + 'Your edits are still open; retry Save or export a backup before closing.', true),
 });
 // The Project tree lists timelines, but the tree can be drawn before the timeline panel exists;
 // this flag is what stops the first render from reading a binding that has not been set yet.
@@ -3728,14 +3729,32 @@ canvas.addEventListener('wheel', event => {
   mapNeedsDraw = true;
 }, { passive: false });
 
+/** A 409 the editor can answer itself: something else saved this project first. */
+const staleSave = error => error?.status === 409 && error?.body?.code === 'stale-revision';
+
 async function saveProject() {
   return withProjectOperation(async () => {
     const submittedVersion = editVersion, generation = documentGeneration, session = documentSession;
+    const write = replaceStale => api('/api/project', { method: 'PUT', body: JSON.stringify({
+      project, revision, projectId, ...(replaceStale ? { replaceStale: true } : {}) }) });
     // A document without a stored project gets its own file, so saving a fresh import no
     // longer overwrites whichever project happened to be open.
-    const result = projectId
-      ? await api('/api/project', { method: 'PUT', body: JSON.stringify({ project, revision, projectId }) })
-      : await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: project.title }) });
+    let result, superseded = null;
+    if (!projectId) {
+      result = await api('/api/project/adopt', { method: 'POST', body: JSON.stringify({ project, title: project.title }) });
+    } else {
+      try {
+        result = await write(false);
+      } catch (error) {
+        // Something else saved this project while this window held edits — a second
+        // window, the MCP client, an agent. The edits on screen are the ones the person
+        // in front of the studio meant to keep, so they win, and the server writes the
+        // copy they replace beside the project instead of dropping it.
+        if (!staleSave(error)) throw error;
+        result = await write(true);
+        superseded = result.superseded?.file || '';
+      }
+    }
     bindProject(result, session);
     if (generation !== documentGeneration) throw new Error('The earlier document was saved, but a different document is now open. The current document is not saved.');
     dirty = editVersion !== submittedVersion;
@@ -3743,9 +3762,14 @@ async function saveProject() {
     render();
     await refreshProjects();
     const folder = result.saved?.file;
-    status(result.warning || (dirty ? 'Earlier snapshot saved; newer edits are still unsaved'
-      : folder ? `Project saved as a folder (${folder} plus ${result.saved.assets} asset file(s)); it reopens next time as "${project.title}"`
-      : `Project saved to the local server; it reopens next time as "${project.title}"`), Boolean(result.warning));
+    // The replaced copy is named whenever it happened: a save that quietly overwrote
+    // someone else's work would be worse than a line of text saying so.
+    const replaced = superseded ? ` The copy this replaced was kept at ${superseded.split(/[\\/]/).pop()}.` : '';
+    const saved = folder
+      ? `Project saved as a folder (${folder} plus ${result.saved.assets} asset file(s)); it reopens next time as "${project.title}"`
+      : `Project saved to the local server; it reopens next time as "${project.title}"`;
+    status(result.warning || (replaced ? `Kept the edits in this window; another window or client had saved first.${replaced}`
+      : dirty ? 'Earlier snapshot saved; newer edits are still unsaved' : saved), Boolean(result.warning));
   });
 }
 async function reloadProject(initial = false) {
@@ -6438,6 +6462,18 @@ function dismissUnhandledContextMenu(event) {
 }
 
 installContextMenus();
+/**
+ * Whether the edits open in this window also exist somewhere durable.
+ *
+ * The desktop shell asks this before it offers to close without saving: a campaign too large
+ * for browser storage is deliberately not copied into a draft, and a dialog that promised a
+ * draft kept it would be lying about work about to be lost.
+ */
+window.opendleUnsavedEditsAreBackedUp = () => {
+  if (!project) return true;
+  if (draftTooLarge()) return false;
+  try { return Boolean(localStorage.getItem('opendle-draft')); } catch { return false; }
+};
 window.opendleSaveBeforeClose = async () => {
   if (!project) return true;
   const shell = $('editor-shell'), wasInert = shell.inert;
@@ -6447,6 +6483,9 @@ window.opendleSaveBeforeClose = async () => {
   finally { shell.inert = wasInert; }
 };
 window.addEventListener('beforeunload', event => {
+  // The desktop shell sets this when the person chose to close without saving: the shell has
+  // already said what closing costs, so asking the same question again from here is noise.
+  if (window.opendleCloseWithoutSaving) return;
   if (dirty || projectOperationBusy) { projectAutosave.schedule(); event.preventDefault(); event.returnValue = ''; }
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) projectAutosave.schedule(); });

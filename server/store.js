@@ -18,6 +18,14 @@ function prepareProceduralRamps(project) {
 
 /** The list of stored projects and which one the studio reopens on the next start. */
 const INDEX_NAME = 'projects.json';
+/**
+ * A save that lands over a copy another client saved keeps that copy beside the project,
+ * as `superseded-rev<revision>.json` plus a `.files` manifest naming the asset and section
+ * files it needs. The newest few are kept: a pair of windows fighting over one project must
+ * not fill the disk, and the manifests are what stop a later save from collecting files an
+ * older copy still names.
+ */
+const SUPERSEDED_KEPT = 3;
 /** The one slot an import is stored in until the user saves it. */
 export const TEMPORARY_ID = 'temporary';
 
@@ -25,6 +33,34 @@ export const TEMPORARY_ID = 'temporary';
 export function projectSlug(title) {
   const slug = String(title ?? '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
   return slug || 'project';
+}
+
+/** Files the superseded copies in a project folder still need, read from their manifests. */
+function supersededFiles(directory) {
+  const paths = new Set();
+  for (const name of readdirSync(directory)) {
+    if (!name.endsWith('.files') || !name.startsWith('superseded-rev')) continue;
+    try {
+      for (const path of JSON.parse(readFileSync(join(directory, name), 'utf8'))) paths.add(String(path));
+    } catch (error) {
+      // A manifest that cannot be read protects nothing; the project itself is unaffected.
+      console.error(`OpenDLE studio: unreadable superseded manifest ${name}: ${error.message}`);
+    }
+  }
+  return paths;
+}
+
+/** Retires the oldest superseded copies, so conflict saves cannot pile up forever. */
+function pruneSuperseded(directory, keep = SUPERSEDED_KEPT - 1) {
+  const revisions = readdirSync(directory)
+    .map(name => /^superseded-rev(\d+)\.json$/.exec(name))
+    .filter(Boolean)
+    .map(match => Number(match[1]))
+    .sort((left, right) => right - left);
+  for (const revision of revisions.slice(keep)) {
+    rmSync(join(directory, `superseded-rev${revision}.json`), { force: true });
+    rmSync(join(directory, `superseded-rev${revision}.files`), { force: true });
+  }
 }
 
 function unusedProjectId(title, index) {
@@ -156,7 +192,7 @@ export class ProjectStore {
    * written before and two assets with the same bytes share one file. Files this save no longer
    * names are removed, which is what keeps a folder from growing every time a texture is replaced.
    */
-  writeProject(entry, project, revision) {
+  writeProject(entry, project, revision, keep = null) {
     if (!this.directory) return { rollback() {}, cleanup() {} };
     const previous = this.fileFor(entry);
     // Everything new is written into a folder of its own, including a project that used to be
@@ -187,11 +223,15 @@ export class ProjectStore {
         } else rmSync(file, { force: true });
       },
       cleanup() {
+        // `keep` is the copy this save just replaced; the manifests cover the ones replaced
+        // before it, so an older backup is never left pointing at files removed since.
+        const kept = supersededFiles(directory);
+        const retained = path => written.has(path) || Boolean(keep?.has(path)) || kept.has(path);
         for (const name of readdirSync(assets)) {
-          if (!written.has(`${ASSET_DIRECTORY}/${name}`)) rmSync(join(assets, name), { force: true });
+          if (!retained(`${ASSET_DIRECTORY}/${name}`)) rmSync(join(assets, name), { force: true });
         }
         for (const name of readdirSync(directory)) {
-          if (/^(actors|game)(-[a-f0-9]{64})?\.json$/.test(name) && !written.has(name)) rmSync(join(directory, name));
+          if (/^(actors|game)(-[a-f0-9]{64})?\.json$/.test(name) && !retained(name)) rmSync(join(directory, name));
         }
         // Keep a portable game's seed; only retire the old studio single-file format.
         if (previous !== file && basename(previous) === `${entry.id}.json`) rmSync(previous, { force: true });
@@ -200,9 +240,9 @@ export class ProjectStore {
   }
 
   /** Publish memory only after both disk writes succeed; failed index writes restore the document. */
-  persist(entry, project, revision, index, temporary = null) {
+  persist(entry, project, revision, index, temporary = null, superseded = null) {
     const next = structuredClone(project);
-    const transaction = this.writeProject(entry, next, revision);
+    const transaction = this.writeProject(entry, next, revision, superseded?.keep);
     try { this.saveIndex(index); }
     catch (error) {
       try { transaction.rollback(); }
@@ -222,9 +262,14 @@ export class ProjectStore {
       if (temporary) {
         if (this.directory) {
           const file = this.fileFor(temporary);
-          if (file === join(this.directory, 'projects', TEMPORARY_ID, PROJECT_FILE)) {
-            rmSync(dirname(file), { recursive: true, force: true });
-          } else rmSync(file, { force: true });
+          // A replaced copy written in the slot's own folder keeps that folder: it is a
+          // complete project, and removing it would take the copy's assets with it.
+          const keeps = superseded && dirname(superseded.file) === dirname(file);
+          if (!keeps) {
+            if (file === join(this.directory, 'projects', TEMPORARY_ID, PROJECT_FILE)) {
+              rmSync(dirname(file), { recursive: true, force: true });
+            } else rmSync(file, { force: true });
+          }
         }
         this.documents.delete(temporary.id);
       }
@@ -232,7 +277,8 @@ export class ProjectStore {
       warning = `Project saved, but old files could not be cleaned up: ${error.message}`;
       console.error(warning);
     }
-    return { ...this.snapshot(), saved: transaction.saved, ...(warning ? { warning } : {}) };
+    return { ...this.snapshot(), saved: transaction.saved, ...(superseded ? { superseded: { file: superseded.file } } : {}),
+      ...(warning ? { warning } : {}) };
   }
 
   entryRevision(entry) {
@@ -324,10 +370,28 @@ export class ProjectStore {
     return this.persist(entry, project, revision, index);
   }
 
-  update(project, revision, projectId = this.index.active) {
-    if (projectId !== this.index.active || revision !== this.revision) {
+  /**
+   * Saves over the open project.
+   *
+   * `replaceStale` is how a studio that has been editing while something else — a second
+   * window, the MCP client, an agent — saved the same project gets its own edits to disk:
+   * the copy it replaces is written beside the project first, so a last-write-wins save
+   * still loses nothing. Identity is not negotiable that way: a save aimed at a project
+   * that is no longer the open one would write the wrong file.
+   */
+  update(project, revision, projectId = this.index.active, { replaceStale = false } = {}) {
+    if (projectId !== this.index.active) {
+      const error = new Error('Another window opened a different project. Open this project again before saving.');
+      error.status = 409;
+      error.code = 'inactive-project';
+      throw error;
+    }
+    const stale = revision !== this.revision;
+    if (stale && !replaceStale) {
       const error = new Error('Project changed in another client. Reload the server project before saving.');
       error.status = 409;
+      error.code = 'stale-revision';
+      error.revision = this.revision;
       throw error;
     }
     project = prepareProceduralRamps(project);
@@ -342,7 +406,33 @@ export class ProjectStore {
     const nextRevision = this.revision + 1;
     entry.title = project.title || entry.title;
     entry.updatedAt = new Date().toISOString();
-    return this.persist(entry, project, nextRevision, index, temporary?.id !== entry.id ? temporary : null);
+    // A promoted import keeps its replaced copy beside the temporary slot, where its assets
+    // already are; the destination folder has only the files the new document names.
+    const superseded = stale ? this.supersede(temporary && temporary.id !== entry.id ? temporary : entry) : null;
+    return this.persist(entry, project, nextRevision, index, temporary?.id !== entry.id ? temporary : null,
+      superseded);
+  }
+
+  /**
+   * Writes the document this save is about to replace beside the project, and answers with
+   * the files it names so the save's cleanup keeps them. Without that the backup would
+   * point at asset and section files the new document no longer uses, and be unreadable.
+   */
+  supersede(entry) {
+    if (!this.directory) return null;
+    const file = this.fileFor(entry);
+    if (!existsSync(file)) return null;
+    const directory = dirname(file);
+    const name = `superseded-rev${this.revision}.json`;
+    const { document, files } = packProject(this.project, { revision: this.revision, immutableSections: true });
+    const paths = files.map(payload => payload.path);
+    pruneSuperseded(directory);
+    writeFileSync(join(directory, `${name}.tmp`), documentBytes(document), { mode: 0o600 });
+    renameSync(join(directory, `${name}.tmp`), join(directory, name));
+    const manifest = `${join(directory, `superseded-rev${this.revision}`)}.files`;
+    writeFileSync(`${manifest}.tmp`, JSON.stringify(paths), { mode: 0o600 });
+    renameSync(`${manifest}.tmp`, manifest);
+    return { file: join(directory, name), keep: new Set(paths) };
   }
 
   /** Moves a temporary project into its own entry and removes the temporary slot. */

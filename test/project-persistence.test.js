@@ -62,7 +62,7 @@ function fixture(api = async () => {}) {
     between('function persistDraft()', 'function clearDraft()'),
     between('function bindProject(', '/** How many steps'),
     between('function commit(', '/** Stored projects, newest first'),
-    between('async function saveProject()', '/**\n * Drains'),
+    between('/** A 409 the editor can answer itself', '/**\n * Drains'),
     between("$('projects').addEventListener", "$('undo').addEventListener"),
     between('window.opendleSaveBeforeClose =', 'async function start()'),
   ].join('\n'), context);
@@ -330,12 +330,50 @@ test('New/Open saves the prior document and the new document receives a separate
   assert.equal(store.open(saved.projectId).project.title, 'Original edited before New');
 });
 
+test('a save another client got to first lands anyway and keeps the copy it replaced', async () => {
+  const requests = [];
+  const { context, notices } = fixture(async (path, options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    if (!body.replaceStale) {
+      const error = new Error('Project changed in another client. Reload the server project before saving.');
+      error.status = 409;
+      error.body = { code: 'stale-revision' };
+      throw error;
+    }
+    return { projectId: 'first', revision: 9, temporary: false,
+      superseded: { file: '/home/someone/projects/first/superseded-rev8.json' } };
+  });
+  await context.saveProject();
+  assert.equal(requests.length, 2, 'the stale revision is retried as a replacement, not given up on');
+  assert.equal(requests[0].replaceStale, undefined);
+  assert.equal(requests[1].replaceStale, true);
+  assert.equal(context.revision, 9);
+  assert.equal(context.dirty, false);
+  assert.match(notices.at(-1).message, /another window or client had saved first/);
+  assert.match(notices.at(-1).message, /kept at superseded-rev8\.json/);
+});
+
+test('a close over a project another window opened is reported instead of writing the wrong file', async () => {
+  const requests = [];
+  const { context } = fixture(async (path, options) => {
+    requests.push(JSON.parse(options.body));
+    const error = new Error('Another window opened a different project. Open this project again before saving.');
+    error.status = 409;
+    error.body = { code: 'inactive-project' };
+    throw error;
+  });
+  await assert.rejects(context.window.opendleSaveBeforeClose(), /Another window opened a different project/);
+  assert.equal(requests.length, 1, 'a replacement save is only for a stale revision, never for another project');
+  assert.equal(context.dirty, true);
+});
+
 test('failed automatic and close saves report errors, retain the document and allow retry', async () => {
   const { context, timers, notices, elements } = fixture(async () => { throw new Error('Disk full'); });
   context.persistDraft();
   const callback = [...timers.values()][0]; timers.clear(); callback();
   await setImmediate();
-  assert.match(notices.at(-1).message, /Automatic save failed: Disk full/);
+  assert.match(notices.at(-1).message, /Automatic save failed: Disk full\. Your edits are still open/);
   assert.equal(context.dirty, true);
   await assert.rejects(context.window.opendleSaveBeforeClose(), /Disk full/);
   assert.equal(elements.get('editor-shell').inert, undefined, 'failed close releases the editing UI');

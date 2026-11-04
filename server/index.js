@@ -350,7 +350,10 @@ export function createApp({
   app.get('/api/project', (req, res) => res.json(store.snapshot()));
   app.put('/api/project', (req, res) => {
     if (!req.body || !Object.hasOwn(req.body, 'projectId')) return res.status(400).json({ error: 'Save request is missing project identity. Refresh the editor before saving.' });
-    res.json(store.update(req.body.project, req.body.revision, req.body.projectId));
+    // `replaceStale` is the editor's answer to a 409: its own edits win, and the server
+    // keeps the copy they replace beside the project rather than dropping it.
+    res.json(store.update(req.body.project, req.body.revision, req.body.projectId,
+      { replaceStale: req.body.replaceStale === true }));
   });
   // Stored projects: the studio reopens the active one on the next start, so switching
   // and adopting both have to be reachable from the client.
@@ -439,7 +442,10 @@ export function createApp({
     console.error(`${req.method} ${req.path}: ${error.message}`);
     if (res.headersSent) return next(error);
     const status = error.status || 400;
-    res.status(status).json({ error: status === 413 ? 'Request is too large' : error.message });
+    // A conflict says which one it is, so the editor can tell a stale save (which it may
+    // resolve itself) from a save aimed at a project another window opened (which it may not).
+    res.status(status).json({ error: status === 413 ? 'Request is too large' : error.message,
+      ...(error.code ? { code: error.code } : {}), ...(error.revision !== undefined ? { revision: error.revision } : {}) });
   });
   return { app, token, store };
 }

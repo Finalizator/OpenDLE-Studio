@@ -158,22 +158,87 @@ test('native close waits for the renderer to finish saving and coalesces repeate
   assert.equal(window.closed, true);
 });
 
-test('native close errors keep Studio open and show a useful save failure rather than discarding edits', async t => {
+test('native close keeps Studio open when the save fails, and offers to close without losing the draft', async t => {
   const f = fixture(t);
   await startStudioDesktop(f.electron, f.args);
-  const window = f.windows[0];
-  window.webContents.executeJavaScript = async () => { throw new Error('Disk full'); };
+  const window = f.windows[0], scripts = [], dialogs = [];
+  window.webContents.executeJavaScript = async script => {
+    scripts.push(script);
+    if (script.includes('opendleSaveBeforeClose')) throw new Error('Disk full');
+    return true;
+  };
+  f.electron.dialog.showMessageBoxSync = function (_window, options) { dialogs.push(options); return this.choice; };
+  window.close();
+  await setImmediate();
+  assert.equal(window.closed, false, 'Keep editing is the default');
+  assert.equal(dialogs.length, 1);
+  assert.match(dialogs[0].message, /could not be saved, so Studio was kept open/);
+  assert.match(dialogs[0].detail, /Disk full/);
+  assert.match(dialogs[0].detail, /browser draft/, 'the offer says what happens to the unsaved edits');
+  assert.deepEqual(dialogs[0].buttons, ['Keep editing', 'Close without saving']);
+  assert.equal(scripts.some(script => script.includes('opendleCloseWithoutSaving')), false);
+
+  // Choosing to close anyway closes, and the renderer is told not to ask the same question again.
+  f.electron.dialog.choice = 1;
+  window.close();
+  await setImmediate();
+  assert.equal(window.closed, true);
+  assert.ok(scripts.some(script => script.includes('window.opendleCloseWithoutSaving = true')));
+
+  // A save that works needs no dialog at all.
+  const clean = fixture(t);
+  await startStudioDesktop(clean.electron, clean.args);
+  clean.windows[0].webContents.executeJavaScript = async () => true;
+  let asked = 0;
+  clean.electron.dialog.showMessageBoxSync = () => { asked++; return 0; };
+  clean.windows[0].close();
+  await setImmediate();
+  assert.equal(clean.windows[0].closed, true);
+  assert.equal(asked, 0);
+});
+
+test('the close offer says whether the unsaved edits survive, so a large campaign is not promised a draft', async t => {
+  const f = fixture(t);
+  await startStudioDesktop(f.electron, f.args);
+  const window = f.windows[0], dialogs = [];
+  window.webContents.executeJavaScript = async script => {
+    if (script.includes('opendleSaveBeforeClose')) throw new Error('The local service is not answering');
+    if (script.includes('opendleUnsavedEditsAreBackedUp')) return false;
+    return true;
+  };
+  f.electron.dialog.showMessageBoxSync = function (_window, options) { dialogs.push(options); return this.choice; };
+  window.close();
+  await setImmediate();
+  assert.match(dialogs.at(-1).detail, /will be lost/);
+  assert.match(dialogs.at(-1).detail, /export a backup/);
+  assert.doesNotMatch(dialogs.at(-1).detail, /browser draft/);
+
+  // A draft that does hold them is offered as the reason closing is safe.
+  window.webContents.executeJavaScript = async script => {
+    if (script.includes('opendleSaveBeforeClose')) throw new Error('The local service is not answering');
+    if (script.includes('opendleUnsavedEditsAreBackedUp')) return true;
+    return true;
+  };
+  window.close();
+  await setImmediate();
+  assert.match(dialogs.at(-1).detail, /browser draft/);
+  assert.doesNotMatch(dialogs.at(-1).detail, /will be lost/);
+});
+
+test('native close reports a document that is still unsaved instead of closing silently', async t => {
+  const f = fixture(t);
+  await startStudioDesktop(f.electron, f.args);
+  const window = f.windows[0], dialogs = [];
+  window.webContents.executeJavaScript = async () => false;
+  f.electron.dialog.showMessageBoxSync = function (_window, options) { dialogs.push(options); return this.choice; };
   window.close();
   await setImmediate();
   assert.equal(window.closed, false);
-  assert.match(f.errors.at(-1)[1], /could not be saved.*kept open.*Disk full/);
-  window.webContents.executeJavaScript = async () => false;
-  window.close(); await setImmediate();
-  assert.equal(window.closed, false);
-  assert.match(f.errors.at(-1)[1], /unsaved changes/);
-  window.webContents.executeJavaScript = async () => true;
-  window.close(); await setImmediate();
-  assert.equal(window.closed, true, 'retrying after the save issue is fixed can close normally');
+  assert.match(dialogs.at(-1).detail, /still has unsaved changes/);
+  f.electron.dialog.choice = 1;
+  window.close();
+  await setImmediate();
+  assert.equal(window.closed, true);
 });
 
 test('desktop entry refuses remote targets and missing profiles before opening a window', async t => {

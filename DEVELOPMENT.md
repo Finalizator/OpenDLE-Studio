@@ -80,6 +80,7 @@ under `data/`, one folder each, with a small list beside them:
 | `data/projects.json` | stored projects and the `active` one the studio reopens |
 | `data/projects/<id>/project.json` | one stored project: the document, with a `file` where an asset's bytes were |
 | `data/projects/<id>/assets/*` | that project's models, images, sounds, music and fonts |
+| `data/projects/<id>/superseded-rev<rev>.json` | a copy a conflicting save replaced, kept so nothing is lost |
 | `data/projects/<id>.json` | the single file older installations wrote (still read, replaced on save) |
 | `data/project.json` | the single project file of an older installation |
 
@@ -147,6 +148,18 @@ project. Save requests carry both `projectId` and `revision`; the HTTP API rejec
 identity or a stale project/revision pair. The temporary slot keeps a revision watermark
 through promotion, so a stale tab cannot overwrite a later import at a reused revision.
 
+**When something else saved first.** One project can have two writers — a second window, the
+MCP client, an agent talking to the same service — and the save request carries the revision
+it started from, so the service can tell. A stale revision is not a dead end and not a
+dialog: the editor retries with `replaceStale`, its own edits win, and the copy they replace
+is written beside the project as `superseded-rev<revision>.json` before the new document
+lands. That file is a complete, openable project document, and a `.files` manifest beside it
+names the asset and section files it needs so a later save cannot collect them; the newest
+three are kept so two windows cannot fill the disk. The status line says when it happened and
+where the replaced copy is. A save aimed at a project that is no longer the open one is a
+different answer — `inactive-project`, refused even with `replaceStale` — because writing it
+would put one project's document in another one's folder.
+
 The editor permits only one save/open request at a time. Edits autosave to the local
 project folder after one idle second; live geometry drags are saved after they finish.
 New/Open/import/Restore also save the previous document before replacing it.
@@ -160,10 +173,17 @@ Small browser drafts store data and identity together in one localStorage write;
 two-key drafts remain readable. Large campaigns still skip browser draft backup, but no
 longer erase a previous draft when doing so. Browser backup is secondary: automatic
 and manual saves write the complete project and its assets to disk without the
-localStorage size limit. Save errors remain explicit and leave the document dirty;
-they never silently overwrite revision conflicts. Save can retry, and Export can
-keep a separate backup. Browser tabs retain an unload warning until saving finishes;
-unlike the native Studio window, a browser cannot await an asynchronous save during unload.
+localStorage size limit. Save errors remain explicit and leave the document dirty. Save can
+retry, and Export can keep a separate backup. Browser tabs retain an unload warning until
+saving finishes; unlike the native Studio window, a browser cannot await an asynchronous save
+during unload.
+
+**Closing never traps the editor.** The native window's close saves first; if that save cannot
+land — a full disk, a service that stopped answering, a document that is still dirty — the
+window offers **Keep editing** or **Close without saving** instead of refusing to close, and the
+unsaved edits stay in the browser draft, which the next start offers back. Choosing to close
+sets `window.opendleCloseWithoutSaving` so the page's own `beforeunload` does not ask the same
+question twice.
 
 Studio requires Node.js 22.12 or newer and npm (the desktop runtime's minimum).
 Portable exported games still require Node.js 22+ and do not bundle Electron.

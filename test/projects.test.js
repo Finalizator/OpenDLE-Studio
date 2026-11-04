@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ProjectStore, projectSlug } from '../server/store.js';
 import { createProject } from '../shared/project.js';
+import { PNG } from 'pngjs';
 
 function withDirectory(t) {
   const directory = mkdtempSync(join(tmpdir(), 'opendle-projects-'));
@@ -262,4 +263,103 @@ test('a project written before the facing changed meaning is opened with the sam
   store.update(opened, store.snapshot().revision);
   const reopened = new ProjectStore(file).snapshot().project.map.entities.find(entity => entity.id === 'pickup');
   assert.equal(reopened.angle, 0);
+});
+
+test('a save over a copy another client saved keeps that copy instead of dropping it', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json');
+  const store = new ProjectStore(file);
+  const mine = titled('Shared game');
+  const first = store.adopt(mine);
+  // The other window saves while this one still holds the older revision.
+  const theirs = structuredClone(first.project);
+  theirs.variables.external = 7;
+  const second = store.update(theirs, first.revision, first.projectId);
+  const edited = structuredClone(first.project);
+  edited.title = 'Shared game, my edit';
+  const saved = store.update(edited, first.revision, first.projectId, { replaceStale: true });
+  assert.ok(saved.revision > second.revision);
+  assert.equal(saved.project.title, 'Shared game, my edit', 'the edits on screen are the ones that land');
+  assert.ok(saved.superseded?.file, 'the replaced copy is reported');
+  // The kept copy is a project document the store can open: the other window's work is not lost.
+  const kept = JSON.parse(readFileSync(saved.superseded.file, 'utf8'));
+  assert.equal(kept.project.title, 'Shared game');
+  assert.equal(kept.project.variables.external, 7);
+  assert.equal(kept.revision, second.revision);
+});
+
+test('a superseded copy keeps the asset files it names, even after later saves', t => {
+  const directory = withDirectory(t);
+  const store = new ProjectStore(join(directory, 'project.json'));
+  const mine = titled('Assets');
+  const png = `data:image/png;base64,${PNG.sync.write(new PNG({ width: 1, height: 1 })).toString('base64')}`;
+  mine.assets = [{ id: 'kept_texture', name: 'Kept', kind: 'texture', width: 1, height: 1, src: png }];
+  const first = store.adopt(mine);
+  // Another window saves the copy that keeps the texture, then this one saves over it
+  // with a document that has dropped the texture entirely.
+  store.update(structuredClone(first.project), first.revision, first.projectId);
+  const withoutAsset = structuredClone(first.project);
+  withoutAsset.assets = [];
+  const saved = store.update(withoutAsset, first.revision, first.projectId, { replaceStale: true });
+  const document = JSON.parse(readFileSync(saved.superseded.file, 'utf8'));
+  const assetPath = document.project.assets?.[0]?.file;
+  assert.ok(assetPath, 'the kept document names its asset file');
+  const assetFile = join(directory, 'projects', first.projectId, assetPath);
+  assert.ok(existsSync(assetFile), 'the asset the replaced copy needs is on disk');
+  // A later ordinary save used to collect it, which would have left the backup unreadable.
+  store.update(structuredClone(saved.project), saved.revision, saved.projectId);
+  assert.ok(existsSync(assetFile), 'later saves leave the replaced copy complete');
+  // The backup opens as a project, so the other window's work is genuinely recoverable.
+  const reopened = new ProjectStore(join(directory, 'project.json'));
+  assert.equal(reopened.list().projects.length, 1);
+  assert.equal(JSON.parse(readFileSync(saved.superseded.file, 'utf8')).project.assets.length, 1);
+});
+
+test('superseded copies are pruned so two windows cannot fill the disk', t => {
+  const directory = withDirectory(t);
+  const store = new ProjectStore(join(directory, 'project.json'));
+  const first = store.adopt(titled('Contended'));
+  let snapshot = first;
+  for (let round = 0; round < 6; round++) {
+    const theirs = structuredClone(snapshot.project);
+    theirs.variables.round = round;
+    snapshot = store.update(theirs, snapshot.revision, snapshot.projectId);
+    const mine = structuredClone(snapshot.project);
+    mine.title = `Contended ${round}`;
+    snapshot = store.update(mine, snapshot.revision - 1, snapshot.projectId, { replaceStale: true });
+  }
+  const folder = join(directory, 'projects', first.projectId);
+  const kept = readdirSync(folder).filter(name => /^superseded-rev\d+\.json$/.test(name));
+  assert.equal(kept.length, 3, 'the newest copies are kept and the oldest retired');
+});
+
+test('a stale save that promotes an import keeps the copy it replaced beside the slot', t => {
+  const directory = withDirectory(t), file = join(directory, 'project.json');
+  const store = new ProjectStore(file);
+  store.adopt(titled('Saved'));
+  const stale = store.adopt(titled('Imported'), undefined, { temporary: true });
+  // Another import replaced the slot while this window still held the earlier copy.
+  const current = store.adopt(titled('Imported'), undefined, { temporary: true });
+  assert.equal(current.projectId, 'temporary');
+  const mine = structuredClone(stale.project);
+  mine.title = 'Imported edited';
+  const saved = store.update(mine, stale.revision, stale.projectId, { replaceStale: true });
+  assert.equal(saved.projectId, 'imported-edited', 'the save still promotes the import to its own project');
+  assert.ok(saved.superseded?.file, 'the copy that was in the slot is kept');
+  assert.match(saved.superseded.file, /temporary/, 'it stays beside the slot, where its assets already are');
+  assert.equal(JSON.parse(readFileSync(saved.superseded.file, 'utf8')).revision, current.revision);
+  assert.ok(existsSync(join(directory, 'projects', 'temporary')), 'the folder holding that copy is kept alive');
+  assert.equal(new ProjectStore(file).snapshot().project.title, 'Imported edited');
+});
+
+test('a stale save without replaceStale and a save for a project that is no longer open are told apart', t => {
+  const directory = withDirectory(t), store = new ProjectStore(join(directory, 'project.json'));
+  const first = store.adopt(titled('First'));
+  store.update(structuredClone(first.project), first.revision, first.projectId);
+  assert.throws(() => store.update(first.project, first.revision, first.projectId),
+    error => error.status === 409 && error.code === 'stale-revision' && error.revision === first.revision + 1);
+  const other = store.adopt(titled('Other'));
+  assert.equal(other.projectId, 'other');
+  // Replacing a stale revision is one thing; writing a project that is no longer open is another.
+  assert.throws(() => store.update(first.project, store.snapshot().revision, first.projectId, { replaceStale: true }),
+    error => error.status === 409 && error.code === 'inactive-project');
 });
