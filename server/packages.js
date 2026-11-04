@@ -418,7 +418,7 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
         maps.set(episode.levelId, { id: `base:${episode.levelId}`, marker: episode.levelId, supported: true });
     for (const route of routes.values()) for (const id of [route.next, route.secretNext])
       if (id && !maps.has(id) && base?.maps.includes(id)) maps.set(id, { id: `base:${id}`, marker: id, supported: true });
-    check(maps.size <= 128, 'Game exceeds 128 levels');
+    check(maps.size <= LIMITS.levels, `Game exceeds ${LIMITS.levels} levels`);
     const shared = { inspection, base, decode: imageDecoder(files, paletteFrom(base, files)), encodeImage: cachedImageEncoder(), episodeInfo, projectsDir };
     const gapReports = [];
     function* levels() {

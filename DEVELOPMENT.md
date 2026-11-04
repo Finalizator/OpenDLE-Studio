@@ -391,8 +391,9 @@ provider credits or network access are required for tests.
   string table. Adjacent quoted LANGUAGE strings concatenate, escape sequences are decoded
   once, and English entries take precedence over defaults regardless of section order.
   DEHACKED patches are applied too: `Thing N` (mobjinfo indexes and
-  editor numbers), `Misc`, `Ammo`, `Weapon`, `[CODEPTR]`/`Pointer` and the
-  classic fullbright frame usage. ACS map scripts run natively (below) and ZScript code beyond
+  editor numbers), `Misc`, `Ammo`, `Weapon`, `[CODEPTR]`/`Pointer`, `Text`
+  replacement blocks (old and new strings counted in characters, line breaks included)
+  and the classic fullbright frame usage. ACS map scripts run natively (below) and ZScript code beyond
   defaults/state blocks are still not executed.
 - **Playtest logs:** playing a map writes its failures to `logs/playtest/`, one
   newline-delimited JSON file per play session, because an error in a playtest is
@@ -414,7 +415,8 @@ provider credits or network access are required for tests.
   projectiles and effects that were live at the time; the stop record summarises
   frames, stalls and the worst frame. A stutter therefore leaves evidence in the
   same file as every other playtest failure. Bounds are enforced on both sides — 400 records
-  per request, 240 records per minute, 20,000 records and 4 MiB per session file,
+  per request, 240 records per minute, 20,000 records and 4 MiB (UTF-8 bytes on disk, header
+  included) per session file,
   the 60 most recent sessions — and a session that reaches its limit records that
   fact instead of silently dropping the rest. When the service is unreachable (or
   the game runs as an exported build with no service) records are kept in browser
@@ -736,6 +738,7 @@ committing malformed geometry.
 
 Rules name waypoints by index — 0 is the first — but nobody should have to know that: an action's
 from/to are pickers listing the chosen route's waypoints by name, plus "Last waypoint" for `-1`.
+On a closed route "Last waypoint" means all the way round, closing segment included.
 Deleting a waypoint also moves every later index down with it, so an action that pointed at
 "Depot" still points at Depot rather than at whatever slid into its slot.
 
@@ -1729,7 +1732,8 @@ Large games may exceed browser localStorage draft capacity: the editor reports
 backup failures explicitly; save to the local server or export instead.
 
 **Editing level** selects an editable map. The adjoining controls configure
-the new-game entry and normal/secret exit destinations. **Play level** tests the
+the new-game entry and normal/secret exit destinations. A secret exit with no secret
+destination continues to the normal one, as GZDoom does. **Play level** tests the
 edited map; **Play game** opens the campaign entry. The preview toolbar's **Level**
 selector starts any imported level with fresh inventory without changing the
 editor selection or original game artwork. New game resets to the configured
@@ -1784,7 +1788,7 @@ campaign imports its own maps plus explicitly referenced base destinations,
 not an unrelated base campaign. Classic MAPxx/ExMy replacement packages retain
 the base maps they do not replace; mapless resource mods use the base campaign.
 No maps are silently discarded for unsupported formats: a full-game import
-fails without replacing the current project. Limits remain 128 levels, 3000
+fails without replacing the current project. Limits remain 512 levels (`LIMITS.levels`), 3000
 shared assets, existing asset budgets and 128 MiB portable JSON. Full imports
 can take substantially longer than one-map imports; dialogs allow five minutes.
 
@@ -2246,7 +2250,8 @@ kept on the entity so an unmorph restores it, and a corpse is only restored when
 the call forces it, as GZDoom does. `duration` counts Doom tics, matching the
 action and ACS signatures; 0 morphs until something unmorphs. A player has no
 class state machine here, so a player morph changes what the engine models
-(health and the equipped weapon) and restores both on expiry. Timed morphs tick
+(health and the equipped weapon) and restores both on expiry. Like `P_MorphPlayer`, an
+already-morphed player refuses a second morph, so the restore keeps the original stats. Timed morphs tick
 in `stepRuntime` and the state rides along in save games.
 
 The limit is that a morph does not change an actor's DECORATE behaviour beyond
@@ -2611,9 +2616,27 @@ every door and lift eight times too fast; a real door in `Furdm05` (speed 82,
 delay 34) opened in two frames and shut again in the same moment, because the
 delay had been read from the argument before it. `Generic_Door` (202) and
 `Generic_Lift` (203) also take their `kind`/`delay`/`target`/`height` from the
-arguments GZDoom documents, and an unknown door kind does nothing. Maps without
-ZDoom arguments (classic Doom lines, or ACS `LSPEC`) use Doom's own constants
-instead: `VDOORSPEED` 2 units per tic, `VFLOORSPEED` 4, `VDOORWAIT` 150 tics.
+arguments GZDoom documents, and an unknown door kind does nothing. Classic Doom
+lines, which carry no ZDoom arguments, use Doom's own constants instead:
+`VDOORSPEED` 2 units per tic, `VFLOORSPEED` 4, `VDOORWAIT` 150 tics. ACS `LSPEC`
+calls always use the Hexen table and its units, and a used or crossed Hexen line
+passes itself to the special, so a tag-0 door opens the sector behind it.
+
+Every special reads its arguments in GZDoom's order (`lnspec.cpp`), with targets
+from `floor.cpp`/`ceil.cpp`: `Plat_DownByValue`/`UpByValue` take the delay in tics
+before height × 8; `Floor_LowerInstant`/`RaiseInstant` move by height × 8;
+`Floor_RaiseToLowestCeiling`, `Floor_LowerToLowestCeiling`, `Floor_RaiseToCeiling` and
+`Ceiling_LowerToFloor` target ceilings and floors (with their gap argument), not
+neighbouring floors; `Floor_RaiseAndCrush` stops 8 below its ceiling;
+`Ceiling_CrushRaiseAndStay` crushes down to 8 above the floor and returns;
+`Ceiling_MoveToValue` honours its negative flag; `FloorAndCeiling_LowerRaise` opens
+both planes outward at their own speeds; `Door_CloseWaitOpen` waits in octics;
+`Door_LockedRaise` reads its lock from the fourth argument; and the `ACS_*` entry points
+name the script in the first argument. `Teleport`/`Teleport_NoFog` send the activator to
+the destination with the given TID (inside the optional tagged sector), and `Thing_Move`
+moves a TID onto a map spot; teleported things land on the floor.
+`Line_SetTextureOffset` reads 16.16 fixed-point offsets, the side, the part flags,
+the add flag and `NO_CHANGE`.
 
 Collision has to follow those moving sectors, and a Rapier trimesh cannot be
 edited in place. `shared/physics.js` keeps a static collider for the level and a

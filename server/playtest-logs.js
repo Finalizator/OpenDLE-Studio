@@ -151,18 +151,20 @@ export function createPlaytestLogStore({ directory, maxSessions = LOG_LIMITS.ses
         return { session, written: 0, truncated: true, reason: 'session log limit reached' };
       }
 
+      const headerLine = isNew ? `${JSON.stringify(header || normalizeLogEntry({
+        severity: 'info', category: 'session', message: 'Playtest session started' }, { session }))}\n` : '';
       const records = [];
-      let bytes = 0, overflowed = false;
+      // The cap is in bytes on disk, so UTF-8 lengths are counted, header included.
+      let bytes = Buffer.byteLength(headerLine), overflowed = false;
       for (const entry of entries) {
         const record = normalizeLogEntry(entry, { session });
         const room = Math.max(0, maxFileBytes - size - bytes);
         const line = `${JSON.stringify(record)}\n`;
-        if (line.length > room) { overflowed = true; break; }
+        const length = Buffer.byteLength(line);
+        if (length > room) { overflowed = true; break; }
         records.push(line);
-        bytes += line.length;
+        bytes += length;
       }
-      const headerLine = isNew ? `${JSON.stringify(header || normalizeLogEntry({
-        severity: 'info', category: 'session', message: 'Playtest session started' }, { session }))}\n` : '';
       if (records.length || headerLine) {
         const text = headerLine + records.join('');
         appendFileSync(file, text);

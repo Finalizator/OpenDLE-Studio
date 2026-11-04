@@ -45,8 +45,8 @@ export function parseDehacked(text) {
     sprites: {}, sounds: {}, codePointers: {}, par: {}, strings: {}, warnings: [] };
   let mode = 'header';
   let target = null;
-  for (const raw of lines) {
-    const line = stripComment(raw).trim();
+  for (let index = 0; index < lines.length; index++) {
+    const line = stripComment(lines[index]).trim();
     if (!line) continue;
     const header = /^Patch File for DeHackEd v?([\d.]+)/i.exec(line);
     if (header) { patch.version.patch = header[1]; continue; }
@@ -103,7 +103,21 @@ export function parseDehacked(text) {
     const ammo = /^ammo\s+(\d+)(?:\s*\(([^)]*)\))?/i.exec(line);
     if (ammo) { target = patch.ammo[Number(ammo[1])] ||= { number: Number(ammo[1]), name: ammo[2] || null }; mode = 'ammo'; continue; }
     if (/^misc/i.test(line)) { target = patch.misc; mode = 'misc'; continue; }
-    if (/^text/i.test(line)) { target = patch.texts; mode = 'text'; continue; }
+    const text = /^text\s+(\d+)\s+(\d+)/i.exec(line);
+    if (text) {
+      // The payload is the old string immediately followed by the new one, read character by
+      // character from the following lines with each line break counting as one character.
+      const oldLength = Number(text[1]), total = oldLength + Number(text[2]);
+      let payload = '', first = true;
+      while (payload.length < total && index + 1 < lines.length) {
+        if (!first) payload += '\n';
+        if (payload.length >= total) break;
+        payload += lines[++index];
+        first = false;
+      }
+      patch.texts[payload.slice(0, oldLength)] = payload.slice(oldLength, total);
+      target = null; mode = 'text'; continue;
+    }
     const sprite = /^sprite\s+([A-Za-z0-9_]{2,8})\s*=\s*([A-Za-z0-9_]{2,8})/i.exec(line);
     if (sprite) { patch.sprites[sprite[1].toUpperCase()] = sprite[2].toUpperCase(); continue; }
     const sound = /^sound\s+([A-Za-z0-9_]{2,8})\s*=\s*([A-Za-z0-9_]{2,8})/i.exec(line);

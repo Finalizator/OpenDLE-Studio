@@ -387,7 +387,10 @@ export function advancePathTweens(project, state, dt) {
     if (!(total > 0)) { finished.push(tween.entityId); continue; }
     const fromIndex = Math.min(Math.max(0, Math.round(tween.fromPoint) || 0), distances.length - 1);
     const toIndex = tween.toPoint < 0 ? distances.length - 1 : Math.min(Math.round(tween.toPoint) || 0, distances.length - 1);
-    const startDistance = distances[fromIndex], endDistance = distances[toIndex];
+    // "Last waypoint" on a closed route means all the way round: the closing segment back to
+    // the first point is part of the route, and `pathLength` (which a drive is timed by) counts it.
+    const startDistance = distances[fromIndex],
+      endDistance = tween.toPoint < 0 && path.closed ? total : distances[toIndex];
     const progress = easingValue(tween.easing, tween.elapsed / tween.seconds);
     const distance = startDistance + (endDistance - startDistance) * progress;
     const where = pointAlong(path, distance / total);

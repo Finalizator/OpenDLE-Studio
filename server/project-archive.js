@@ -49,7 +49,7 @@ export async function readProjectArchive(buffer) {
         if (++entries > MAX_ENTRIES) throw new Error(`The project archive has more than ${MAX_ENTRIES} entries`);
         const name = archivePath(entry.fileName);
         if (name.endsWith('/')) { zip.readEntry(); return; }
-        if (name.includes('..') || name.startsWith('/')) throw new Error(`Project archive path is not safe: ${entry.fileName}`);
+        if (name.split('/').includes('..') || name.startsWith('/')) throw new Error(`Project archive path is not safe: ${entry.fileName}`);
         total += entry.uncompressedSize;
         if (total > MAX_UNPACKED) throw new Error(`The project archive expands past ${MAX_UNPACKED / MiB} MiB`);
         if (entry.generalPurposeBitFlag & 1) throw new Error(`Project archive entry is encrypted: ${name}`);

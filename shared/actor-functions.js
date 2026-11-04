@@ -23,7 +23,7 @@ const FIELDS = {
   scale: entity => entity.scale,
   // `z` is where the actor's bottom is; the entity keeps it as `z` once physics has run, and
   // as `elevation` above the floor before that.
-  z: entity => entity.elevation,
+  z: entity => Number.isFinite(entity.z) ? entity.z : entity.elevation,
 };
 
 const OPERATORS = { '=': 'set', '+=': 'add', '-=': 'subtract', '*=': 'multiply', '/=': 'divide' };
@@ -67,7 +67,12 @@ export function runActorFunction(entity, source) {
           : operator === 'multiply' ? current * value
             : value === 0 ? current : current / value;
     if (field === 'angle') entity.angle = ((next % 360) + 360) % 360;
-    else if (field === 'z') entity.elevation = next;
+    else if (field === 'z') {
+      if (Number.isFinite(entity.z)) {
+        entity.elevation = (Number(entity.elevation) || 0) + next - entity.z;
+        entity.z = next;
+      } else entity.elevation = next;
+    }
     else entity[field] = next;
   }
   return { ran: true, unsupported: null };

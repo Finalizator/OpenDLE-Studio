@@ -220,11 +220,35 @@ function teleportTo(state, sector) {
   // should arrive; without one, the middle of the tagged sector is used.
   const marker = state.entities.find(entity => entity.doomType === 14 &&
     sectorAt(state.sectors, entity.x, entity.y)?.id === sector.id);
-  if (marker) return { x: marker.x, y: marker.y, z: floorAt(state, marker) + 24, angle: marker.angle };
+  // Positions are where the feet go, and GZDoom puts a teleported thing on the floor.
+  if (marker) return { x: marker.x, y: marker.y, z: floorAt(state, marker), angle: marker.angle };
   const centre = sector.bounds
     ? { x: (sector.bounds.minX + sector.bounds.maxX) / 2, y: (sector.bounds.minY + sector.bounds.maxY) / 2 }
     : { x: state.player.x, y: state.player.y };
-  return { x: centre.x, y: centre.y, z: Math.min(sector.ceilingHeight - 48, sector.floorHeight + 24) };
+  return { x: centre.x, y: centre.y, z: sector.floorHeight };
+}
+
+const TELEPORT_DESTINATIONS = new Set([14, 9043, 9044]);
+
+/**
+ * Where `Teleport`/`Teleport_NoFog` send a thing: the destination with `tid` (restricted to
+ * sectors tagged `tag` when one is given), or with no tid, a marker in the tagged sectors.
+ */
+function teleportDestination(state, tid, tag) {
+  const inTag = entity => !tag || sectorAt(state.sectors, entity.x, entity.y)?.tag === tag;
+  if (tid) {
+    const named = state.entities.filter(entity => entity.tid === tid && inTag(entity));
+    const spot = named.find(entity => TELEPORT_DESTINATIONS.has(entity.doomType)) || named[0];
+    return spot ? { x: spot.x, y: spot.y, z: floorAt(state, spot), angle: spot.angle } : null;
+  }
+  const sector = tag ? taggedSectors(state, tag)[0] : null;
+  return sector ? teleportTo(state, sector) : null;
+}
+
+/** The thing a special acts on when it names none: the activating thing, or the player. */
+function activatorThing(state, activator) {
+  if (!activator || activator === 'player') return { type: 'player', id: 'player' };
+  return state.entities.find(entity => entity.id === activator) || null;
 }
 
 function placeThing(state, entity, position) {
@@ -256,7 +280,9 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
   const [arg1, arg2, arg3, arg4, arg5] = args;
   const scripts = options.scripts;
   let sectors = arg1 ? taggedSectors(state, arg1) : [];
-  const line = options.line ? project.map.walls.find(wall => wall.id === options.line) : null;
+  // Callers name the line by id or hand over the wall itself; both find the same line.
+  const lineId = options.line && typeof options.line === 'object' ? options.line.id : options.line;
+  const line = lineId ? project.map.walls.find(wall => wall.id === lineId) || null : null;
   // GZDoom converts every special's numbers before using them: SPEED(a) is a/8 units
   // per tic, TICS(a) is a tics and OCTICS(a) is a/8 seconds. Reading the raw argument
   // as units per tic made every door and lift eight times too fast, which is why a
@@ -271,6 +297,14 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
   const waitTics = value => Math.max(0, value || 0) / TIC;
   const waitOctics = value => Math.max(0, value || 0) / 8;
   const speed = doorSpeed;
+  const floorToCeilings = target => {
+    let moved = 0;
+    for (const sector of sectors) {
+      const height = target(sector, planeHeights(state, project, sector, 'ceilingHeight'));
+      if (Number.isFinite(height) && movePlane(state, sector, 'floorHeight', height, planeSpeed, { sound: 'DSPSTART' })) moved++;
+    }
+    return moved;
+  };
   const planes = (kind, surface, amount, extra = {}) => {
     let moved = 0;
     for (const sector of sectors) {
@@ -288,14 +322,14 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 11: // Door_Open
       for (const sector of sectors) movePlane(state, sector, 'ceilingHeight', doorTarget(state, project, sector), speed, { sound: 'DSDOROPN' });
       return 1;
-    case 12: case 13: case 105: case 249: // Door_Raise / LockedRaise / WaitRaise / CloseWaitOpen
-      if (special === 13 && options.activator === 'player' && !hasLockKey(project, state, arg3)) {
+    case 12: case 13: case 105: // Door_Raise / LockedRaise (tag, speed, delay, lock) / WaitRaise
+      if (special === 13 && options.activator === 'player' && !hasLockKey(project, state, arg4)) {
         options.message?.('You need a key to open this door.');
         return 0;
       }
-      // Door_Raise keeps the door open for a tic delay; CloseWaitOpen uses octics.
+      // Door_Raise keeps the door open for a tic delay.
       for (const sector of sectors) {
-        const wait = zdoom ? (special === 249 ? waitOctics(arg3) : waitTics(arg3)) : CLASSIC_DOOR_WAIT;
+        const wait = zdoom ? waitTics(arg3) : CLASSIC_DOOR_WAIT;
         movePlane(state, sector, 'ceilingHeight', doorTarget(state, project, sector), speed,
           { wait, returnMode: wait > 0 ? 'return' : 'stay', sound: 'DSDOROPN' });
       }
@@ -311,35 +345,49 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     }
     case 20: case 36: // Floor_LowerByValue(Times8)
       return planes('byValue', 'floorHeight', -(special === 36 ? arg3 * 8 : arg3), { sound: 'DSPSTART' });
-    case 21: case 241: case 258: // Floor_LowerToLowest(-Ceiling)
+    case 21: case 241: // Floor_LowerToLowest(TxTy)
       return planes('toLowest', 'floorHeight', 0, { sound: 'DSPSTART' });
+    case 258: // Floor_LowerToLowestCeiling — down to the lowest surrounding ceiling
+      return floorToCeilings((sector, ceilings) => ceilings.length ? Math.min(...ceilings) : null);
     case 22: // Floor_LowerToNearest
       return planes('toNearestDown', 'floorHeight', 0, { sound: 'DSPSTART' });
     case 23: case 35: // Floor_RaiseByValue(Times8)
       return planes('byValue', 'floorHeight', special === 35 ? arg3 * 8 : arg3, { sound: 'DSPSTART' });
-    case 24: case 238: // Floor_RaiseToHighest(/ToLowestCeiling)
+    case 24: // Floor_RaiseToHighest
       return planes('toHighest', 'floorHeight', 0, { sound: 'DSPSTART' });
-    case 25: case 257: case 259: // Floor_RaiseToNearest(/ToLowest/ToCeiling)
+    case 238: case 99: { // Floor_RaiseToLowestCeiling / Floor_RaiseAndCrushDoom
+      // The lowest surrounding ceiling, never through the sector's own; the crusher stops 8 short.
+      const gap = special === 99 ? 8 : 0;
+      return floorToCeilings((sector, ceilings) =>
+        Math.min(ceilings.length ? Math.min(...ceilings) : sector.ceilingHeight, sector.ceilingHeight) - gap);
+    }
+    case 25: case 257: // Floor_RaiseToNearest(/ToLowest)
       return planes('toNearestUp', 'floorHeight', 0, { sound: 'DSPSTART' });
-    case 28: case 99: // Floor_RaiseAndCrush(Doom)
-      return planes('byValue', 'floorHeight', arg3, { sound: 'DSPSTART' });
+    case 259: // Floor_RaiseToCeiling (tag, speed, change, crush, gap)
+      return floorToCeilings(sector => sector.ceilingHeight - Math.max(0, arg5));
+    case 28: // Floor_RaiseAndCrush — up to 8 below its own ceiling; the third argument is damage
+      return floorToCeilings(sector => sector.ceilingHeight - 8);
     case 37: case 68: // Floor_MoveToValue(Times8)
       return planes('absolute', 'floorHeight', arg4 ? -arg3 * (special === 68 ? 8 : 1) : arg3 * (special === 68 ? 8 : 1), { sound: 'DSPSTART' });
-    case 66: case 67: { // Floor_LowerInstant / RaiseInstant
+    case 66: case 67: { // Floor_LowerInstant / RaiseInstant (tag, unused, height × 8)
       for (const sector of sectors) {
         if (!sectorMotionAllowed(sector, 'floorHeight')) continue;
-        const others = planeHeights(state, project, sector, 'floorHeight');
-        const target = special === 66 ? targetFor('toLowest', sector, 'floorHeight', others, 0)
-          : targetFor('toHighest', sector, 'floorHeight', others, 0);
+        const target = sector.floorHeight + (special === 66 ? -8 : 8) * arg3;
         if (sector.elevator?.moveCeiling) sector.ceilingHeight += target - sector.floorHeight;
         sector.floorHeight = target;
         state.worldRevision++;
       }
       return 1;
     }
-    case 40: case 253: case 254: // Ceiling_LowerByValue / ToLowest / ToFloor
-      return planes(special === 40 ? 'byValue' : special === 253 ? 'toLowest' : 'toLowest', 'ceilingHeight',
+    case 40: case 253: // Ceiling_LowerByValue / ToLowest
+      return planes(special === 40 ? 'byValue' : 'toLowest', 'ceilingHeight',
         special === 40 ? -arg3 : 0, { sound: 'DSCNSTRT' });
+    case 254: { // Ceiling_LowerToFloor (tag, speed, change, crush, gap)
+      let moved = 0;
+      for (const sector of sectors)
+        if (movePlane(state, sector, 'ceilingHeight', sector.floorHeight + Math.max(0, arg5), planeSpeed, { sound: 'DSCNSTRT' })) moved++;
+      return moved;
+    }
     case 41: case 252: // Ceiling_RaiseByValue / ToNearest
       return planes(special === 41 ? 'byValue' : 'toNearestUp', 'ceilingHeight', special === 41 ? arg3 : 0, { sound: 'DSCNSTRT' });
     case 42: case 196: // Ceiling_CrushAndRaise
@@ -354,15 +402,25 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 44: // Ceiling_CrushStop
       for (const sector of sectors) state.sectorMotions.delete(`${sector.id}:ceilingHeight`);
       return 1;
-    case 45: case 195: case 255: // Ceiling_CrushRaiseAndStay
+    case 45: case 195: case 255: // Ceiling_CrushRaiseAndStay(A/SilA)
+      // Crushes down to 8 above the floor once, then rises back to where it started and stays.
       for (const sector of sectors) {
-        const others = planeHeights(state, project, sector, 'ceilingHeight');
-        movePlane(state, sector, 'ceilingHeight', Math.max(sector.ceilingHeight, ...others, sector.floorHeight + 64), speed, { sound: 'DSCNSTRT' });
+        movePlane(state, sector, 'ceilingHeight', sector.floorHeight + 8, speed, { returnMode: 'return', sound: 'DSCNSTRT' });
       }
       return 1;
-    case 47: case 69: // Ceiling_MoveToValue(Times8)
-      return planes('absolute', 'ceilingHeight', arg3 * (special === 69 ? 8 : 1), { sound: 'DSCNSTRT' });
-    case 95: case 251: // FloorAndCeiling_LowerByValue
+    case 47: case 69: // Ceiling_MoveToValue(Times8) (tag, speed, height, negative)
+      return planes('absolute', 'ceilingHeight', arg3 * (special === 69 ? 8 : 1) * (arg4 ? -1 : 1), { sound: 'DSCNSTRT' });
+    case 251: { // FloorAndCeiling_LowerRaise (tag, fspeed, cspeed)
+      const ceilingSpeed = zdoom ? Math.max(1, arg3) / 8 : CLASSIC_PLANE_SPEED;
+      for (const sector of sectors) {
+        const floors = planeHeights(state, project, sector, 'floorHeight');
+        const ceilings = planeHeights(state, project, sector, 'ceilingHeight');
+        movePlane(state, sector, 'ceilingHeight', targetFor('toHighest', sector, 'ceilingHeight', ceilings, 0), ceilingSpeed, {});
+        movePlane(state, sector, 'floorHeight', targetFor('toLowest', sector, 'floorHeight', floors, 0), planeSpeed, { sound: 'DSPSTART' });
+      }
+      return 1;
+    }
+    case 95: // FloorAndCeiling_LowerByValue
       for (const sector of sectors) {
         movePlane(state, sector, 'floorHeight', sector.floorHeight - arg3, speed, { sound: 'DSPSTART' });
         movePlane(state, sector, 'ceilingHeight', sector.ceilingHeight - arg3, speed, {});
@@ -392,8 +450,13 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       }
       return 1;
     }
-    case 63: case 65: case 228: case 230: // plat by value
-      return planes('byValue', 'floorHeight', special === 63 || special === 230 ? -arg3 : arg3, { returnMode: 'return', sound: 'DSPSTART' });
+    case 63: case 65: // Plat_DownByValue / Plat_UpByValue (tag, speed, delay, height × 8)
+      return planes('byValue', 'floorHeight', (special === 63 ? -8 : 8) * arg4,
+        { wait: zdoom ? waitTics(arg3) : CLASSIC_DOOR_WAIT, returnMode: 'return', sound: 'DSPSTART' });
+    case 228: // Plat_RaiseAndStayTx0 — up to the next higher floor
+      return planes('toNearestUp', 'floorHeight', 0, { sound: 'DSPSTART' });
+    case 230: // Plat_UpByValueStayTx (tag, speed, height × 8)
+      return planes('byValue', 'floorHeight', arg3 * 8, { sound: 'DSPSTART' });
     case 61: // Plat_Stop
       for (const sector of sectors) state.sectorMotions.delete(`${sector.id}:floorHeight`);
       return 1;
@@ -416,12 +479,10 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       }
       return 1;
     }
-    case 70: case 71: { // Teleport / Teleport_NoFog
-      const destination = sectors[0];
-      if (!destination) return 0;
-      const target = arg2 ? actorsByTid(state, arg2)[0] : null;
-      const position = teleportTo(state, destination);
-      const victim = target || (options.activator === 'player' || !arg2 ? { type: 'player', id: 'player' } : null);
+    case 70: case 71: { // Teleport (tid, tag, nosourcefog) / Teleport_NoFog (tid, useangle, tag, keepheight)
+      const position = teleportDestination(state, arg1, special === 70 ? arg2 : arg3);
+      if (!position) return 0;
+      const victim = activatorThing(state, options.activator);
       if (victim) {
         placeThing(state, victim, position);
         if (position.angle !== undefined) {
@@ -506,10 +567,11 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       state.viewCameraHeight = eye;
       return 1;
     }
-    case 125: { // Thing_Move
-      const entity = actorByTid(state, arg2 || arg1);
-      const destination = sectors[0];
-      if (entity && destination) placeThing(state, entity, teleportTo(state, destination));
+    case 125: { // Thing_Move (tid, mapspot, nofog) — tid 0 is the activator
+      const entity = arg1 ? actorsByTid(state, arg1)[0] : activatorThing(state, options.activator);
+      const spot = actorsByTid(state, arg2)[0];
+      if (!entity || !spot) return 0;
+      placeThing(state, entity, { x: spot.x, y: spot.y, z: floorAt(state, spot) });
       return 1;
     }
     case 135: case 137: case 139: { // Thing_Spawn / NoFog / SpawnFacing
@@ -547,10 +609,17 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       state.worldRevision++;
       return 1;
     }
-    case 53: { // Line_SetTextureOffset
-      const offset = arg2, y = arg3;
+    case 53: { // Line_SetTextureOffset (id, x, y, side, flags)
+      // x and y are 16.16 fixed point and 32767.0 leaves an axis alone. Flags 1/2/4 pick the
+      // upper/middle/lower part (a side here has one offset for all of them); 8 adds instead.
+      const NO_CHANGE = 32767 * 65536;
+      if (!arg1 || arg4 < 0 || arg4 > 1 || !(arg5 & 7)) return 0;
+      const add = (arg5 & 8) !== 0;
       for (const wall of state.walls) if (wall.tag === arg1) {
-        if (wall.right) { wall.right.offsetX = offset; wall.right.offsetY = y; }
+        const side = arg4 ? wall.left : wall.right;
+        if (!side) continue;
+        if (arg2 !== NO_CHANGE) side.offsetX = (add ? Number(side.offsetX) || 0 : 0) + arg2 / 65536;
+        if (arg3 !== NO_CHANGE) side.offsetY = (add ? Number(side.offsetY) || 0 : 0) + arg3 / 65536;
       }
       state.worldRevision++;
       return 1;
@@ -568,19 +637,19 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     }
     case 80: case 226: // ACS_Execute / ACS_ExecuteAlways
       return scripts?.execute(arg1, [arg3, arg4, arg5], { always: special === 226, activator: options.activator }) ? 1 : 0;
-    case 84: case 228: // ACS_ExecuteWithResult(Always)
-      return scripts?.execute(arg1, [arg3, arg4, arg5], { always: true, wantResult: true, activator: options.activator }) ?? 0;
-    case 83: case 85: // ACS_LockedExecute(Door)
-      if (!hasLockKey(project, state, arg2)) {
+    case 84: // ACS_ExecuteWithResult (script, a1, a2, a3, a4)
+      return scripts?.execute(arg1, [arg2, arg3, arg4, arg5], { always: true, wantResult: true, activator: options.activator }) ?? 0;
+    case 83: case 85: // ACS_LockedExecute(Door) (script, map, a1, a2, lock)
+      if (!hasLockKey(project, state, arg5)) {
         options.message?.('You need a key to open this door.');
         return 0;
       }
-      return scripts?.execute(arg3, [arg4, arg5, 0], { always: special === 85, activator: options.activator }) ? 1 : 0;
-    case 81: // ACS_Suspend
-      scripts?.suspend(arg3);
+      return scripts?.execute(arg1, [arg3, arg4, 0], { always: false, activator: options.activator }) ? 1 : 0;
+    case 81: // ACS_Suspend (script, map)
+      scripts?.suspend(arg1);
       return 1;
-    case 82: // ACS_Terminate
-      scripts?.terminate(arg3);
+    case 82: // ACS_Terminate (script, map)
+      scripts?.terminate(arg1);
       return 1;
     case 26: case 27: case 31: case 32: { // Stairs_BuildDown / BuildUp(+Sync)
       const rising = special === 27 || special === 32;
@@ -639,10 +708,10 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       state.worldRevision++;
       return 1;
     }
-    case 249: { // Door_CloseWaitOpen
+    case 249: { // Door_CloseWaitOpen (tag, speed, delay in octics)
       for (const sector of sectors) {
         moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: sector.floorHeight,
-          speed: Math.max(TIC, speed * TIC), wait: Math.max(0, (arg3 || 0) / TIC), returnMode: 'return',
+          speed: Math.max(TIC, speed * TIC), wait: zdoom ? waitOctics(arg3) : CLASSIC_DOOR_WAIT, returnMode: 'return',
           returnHeight: doorTarget(state, project, sector), sound: 'DSDORCLS' });
       }
       return 1;

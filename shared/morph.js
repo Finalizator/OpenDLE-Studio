@@ -36,9 +36,12 @@ export function morphEntity(project, state, entity, className, { duration = 0, s
   if (!actor) return false;
   const current = entity.actorId || entity.actorName;
   if (entity.morph) unmorphEntity(project, state, entity, true);
-  if (current && String(current).toLowerCase() === (entity.type === 'player' ? String(current).toLowerCase() : actor.id.toLowerCase())) return false;
+  if (entity.type !== 'player' && current && String(current).toLowerCase() === actor.id.toLowerCase()) return false;
 
   if (entity.type === 'player') {
+    // Like P_MorphPlayer, an already-morphed player refuses a second morph: replacing the
+    // record would lose the health and weapon the unmorph has to restore.
+    if (state.playerMorph) return false;
     // Players have no class state machine here, so a player morph changes what the
     // engine models: health and the weapon the class carries.
     state.playerMorph = { name: actor.name, actorId: actor.id,

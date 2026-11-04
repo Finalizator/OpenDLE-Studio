@@ -229,7 +229,10 @@ export function createMapScripts(project, state, callbacks = {}) {
   };
 
   const host = {
-    executeSpecial: (number, args, context = {}) => runSpecial(number, args, { line: context.line, backSide: context.backSide }) ?? 0,
+    // ACS always calls the Hexen special table, whatever format the map's own lines use.
+    executeSpecial: (number, args, context = {}) => runSpecial(number, args,
+      { line: context.line, backSide: context.backSide, format: 'zdoom',
+        activator: context.activator && typeof context.activator === 'object' ? context.activator.id : context.activator }) ?? 0,
     print: (body, { log } = {}) => {
       message(body);
       if (log) state.scriptLog = [...(state.scriptLog || []), body].slice(-50);
@@ -366,6 +369,7 @@ export function createMapScripts(project, state, callbacks = {}) {
       scripts: api,
       activator: options.activator ?? 'player',
       line: options.line || null,
+      format: options.format,
       message,
       finishLevel: callbacks.finishLevel,
       changeLevel: callbacks.changeLevel,

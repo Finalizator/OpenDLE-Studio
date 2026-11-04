@@ -93,7 +93,8 @@ export function selectGameLevel(project, id) {
 
 export function nextGameLevel(game, secret = false) {
   const level = game?.levels.find(level => level.id === game.active);
-  return level ? (secret ? level.secretNext : level.next) || null : null;
+  // Like G_GetSecretExitMap, a secret exit with no secret destination takes the normal one.
+  return level ? (secret ? level.secretNext || level.next : level.next) || null : null;
 }
 
 function classicNext(id, secret) {
@@ -176,7 +177,7 @@ export function assembleGameLevels(entries, entryId, title, routes = new Map()) 
   let version, sharedActors = null, sharedStrings = null, sharedAddons = null, sharedSounds = null;
   const repeatedWarnings = new Set();
   for (const entry of entries) {
-    if (levels.length >= 128) throw new Error('A game must contain 1–128 levels');
+    if (levels.length >= LIMITS.levels) throw new Error(`A game must contain 1–${LIMITS.levels} levels`);
     if (ids.has(entry.id)) throw new Error(`Duplicate game level ${entry.id}`);
     ids.add(entry.id);
     const project = entry.project, replacements = new Map(), assetIds = [], added = [];
