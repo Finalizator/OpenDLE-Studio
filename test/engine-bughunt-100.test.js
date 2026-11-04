@@ -339,6 +339,7 @@ function acsLump(ops) {
   const word = value => code.push(value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff, (value >> 24) & 0xff);
   for (const op of ops) {
     if (typeof op === 'number') { code.push(PCODE_NAMES.indexOf('PUSHNUMBER')); word(op); continue; }
+    if (op && typeof op === 'object') { word(op.word); continue; }
     const pcode = PCODE_NAMES.indexOf(op);
     if (pcode >= 240) code.push(0xf0, pcode - 240); else code.push(pcode);
   }
@@ -845,4 +846,145 @@ class KidThing : BaseThing
   assert.equal(jump.kind, 'goto', 'the same-line goto is parsed');
   const target = actor.states.frames[jump.targetIndex];
   assert.equal(`${target.sprite}${target.letter}`, 'BASEB', 'the goto lands on the parent See, not on its own See');
+});
+
+const teleportSpot = (extra = {}) => [{ id: 'dest', name: 'Teleport destination', type: 'decoration', doomType: 14, x: 400, y: 0, angle: 90, tid: 3, ...extra }];
+
+test('hunt 108: Teleport_NoFog with useangle 0 keeps the player facing and momentum', () => {
+  const project = specialRoom({ entities: teleportSpot() });
+  const state = createRuntime(project);
+  state.player.angle = 1.25;
+  state.momentum = { x: 3, y: 0, z: 0 };
+  executeSpecial(project, state, 71, [3, 0, 0], { format: 'zdoom', activator: 'player' });
+  assert.deepEqual([state.player.x, state.player.y], [400, 0]);
+  assert.equal(state.player.angle, 1.25, 'useangle 0 keeps orientation');
+  assert.equal(state.momentum.x, 3, 'a silent teleporter keeps the player moving');
+  const turned = zdoomSpecial(71, [3, 1, 0], { entities: teleportSpot() });
+  assert.ok(Math.abs(turned.state.player.angle - Math.PI / 2) < 1e-9, 'useangle 1 takes the destination angle');
+});
+
+test('hunt 109: Teleport_NoFog keepheight keeps the height above the floor', () => {
+  const project = specialRoom({ entities: teleportSpot() });
+  const state = createRuntime(project);
+  state.player.z = 24;
+  executeSpecial(project, state, 71, [3, 1, 0, 1], { format: 'zdoom', activator: 'player' });
+  assert.equal(state.player.z, -32 + 24, 'arrives 24 above the destination floor');
+});
+
+test('hunt 110: a TeleportDest2 keeps its placed height, a plain destination does not', () => {
+  const raised = zdoomSpecial(70, [3, 0], { entities: teleportSpot({ doomType: 9044, elevation: 40 }) });
+  assert.equal(raised.state.player.z, -32 + 40);
+  const plain = zdoomSpecial(70, [3, 0], { entities: teleportSpot({ elevation: 40 }) });
+  assert.equal(plain.state.player.z, -32, 'TeleportDest is placed on the floor');
+});
+
+test('hunt 111: Plat_DownWaitUpStay stops a lip above the lowest floor', () => {
+  // s1 (floor 16, tag 1) sits between s0 (floor 0) and s2 (floor -32).
+  const plain = zdoomSpecial(62, [1, 16, 35]);
+  assert.equal(motion(plain.state, 's1', 'floorHeight').height, -32 + 8, 'Plat_DownWaitUpStay keeps an 8 unit lip');
+  const lipped = zdoomSpecial(206, [1, 16, 35, 4]);
+  assert.equal(motion(lipped.state, 's1', 'floorHeight').height, -32 + 4, 'Plat_DownWaitUpStayLip uses its lip');
+});
+
+test('hunt 112: Plat_PerpetualRaise keeps cycling between its lowest and highest floors', () => {
+  const { state } = zdoomSpecial(60, [1, 64, 0]);
+  const plat = motion(state, 's1', 'floorHeight');
+  assert.equal(plat.returnMode, 'cycle', 'a perpetual platform never finishes on its own');
+  assert.equal(plat.height, -32 + 8);
+  assert.equal(plat.origin, 16, 'it rises back to the highest floor around it, including its own');
+  for (let tic = 0; tic < 35 * 4; tic++) advanceSectors(state, 1 / 35);
+  assert.ok(state.sectorMotions.has('s1:floorHeight'), 'still moving after several trips');
+});
+
+test('hunt 113: Floor_RaiseToLowest reads change, not speed, and targets the lowest floor', () => {
+  const { state } = zdoomSpecial(257, [1, 0, 0]);
+  const floor = motion(state, 's1', 'floorHeight');
+  assert.ok(floor, 'the floor moves even with a zero second argument');
+  assert.equal(floor.height, -32, 'to the lowest surrounding floor');
+  assert.equal(floor.speed, 2 * 35, 'at the fixed speed of 2 units per tic');
+});
+
+function projectileRoom(entities) {
+  const project = specialRoom({ entities });
+  const state = createRuntime(project);
+  state.projectiles = [];
+  const scripts = createMapScripts(project, state, {});
+  return { project, state, scripts };
+}
+const mapSpot = (id, x, tid, extra = {}) => ({ id, type: 'decoration', name: 'Map spot', doomType: 9001, x, y: 0, tid, ...extra });
+
+test('hunt 114: Thing_Projectile launches from the map spot, not from the player', () => {
+  const { state, scripts } = projectileRoom([mapSpot('spot', 400, 5)]);
+  scripts.host.executeSpecial(134, [5, 0, 0, 16, 0], { activator: 'player' });
+  assert.equal(state.projectiles.length, 1);
+  assert.deepEqual([state.projectiles[0].x, state.projectiles[0].y], [400, 0]);
+  assert.equal(state.projectiles[0].ownerId, 'spot', 'the spot is the shooter');
+});
+
+test('hunt 115: Thing_Projectile fires from every thing with the tid', () => {
+  const { state, scripts } = projectileRoom([mapSpot('a', 300, 5), mapSpot('b', 400, 5)]);
+  scripts.host.executeSpecial(134, [5, 0, 0, 16, 0], { activator: 'player' });
+  assert.deepEqual(state.projectiles.map(projectile => projectile.x).sort(), [300, 400]);
+});
+
+test('hunt 116: Thing_Projectile speeds are eighths of a unit per tic and it leaves from the spot height', () => {
+  const { state, scripts } = projectileRoom([mapSpot('spot', 400, 5)]);
+  // Angle 64 is a quarter turn; 16 and 8 are 2 and 1 units per tic.
+  scripts.host.executeSpecial(134, [5, 0, 64, 16, 8], { activator: 'player' });
+  const [shot] = state.projectiles;
+  assert.ok(Math.abs(shot.speed - Math.hypot(2, 1) * 35) < 1e-9, `speed ${shot.speed}`);
+  assert.ok(Math.abs(shot.dx) < 1e-9 && Math.abs(shot.dy - 2 / Math.hypot(2, 1)) < 1e-9, `heading ${shot.dx}, ${shot.dy}`);
+  assert.ok(Math.abs(shot.dz - 1 / Math.hypot(2, 1)) < 1e-9, `climb ${shot.dz}`);
+  assert.equal(shot.z, -32, 'from the spot on the s2 floor');
+});
+
+test('hunt 117: ACS spawn instructions read their stack arguments in source order', () => {
+  const calls = [];
+  const host = { spawn: options => (calls.push(['spawn', options]), 1), spawnSpot: options => (calls.push(['spot', options]), 1),
+    projectile: options => calls.push(['projectile', options]) };
+  runAcs([0, 64 * 65536, 32 * 65536, 0, 7, 64, 'SPAWN', 'DROP'], host);
+  runAcs([0, 9, 7, 128, 'SPAWNSPOT', 'DROP'], host);
+  runAcs([0, 9, 7, 'SPAWNSPOTFACING', 'DROP'], host);
+  runAcs([5, 0, 64, 16, 8, 0, 3, 'SPAWNPROJECTILE'], host);
+  runAcs([5, 0, 64, 16, 8, 0, 3, 'THING_PROJECTILE2'], host);
+  const [spawn, spot, facing, projectile, numbered] = calls.map(([, options]) => options);
+  assert.deepEqual([spawn.x, spawn.y, spawn.z, spawn.tid, spawn.angle], [64, 32, 0, 7, 90]);
+  assert.deepEqual([spot.spot, spot.tid, spot.angle], [9, 7, 180]);
+  assert.deepEqual([facing.spot, facing.tid, facing.facing], [9, 7, true]);
+  for (const shot of [projectile, numbered]) {
+    assert.deepEqual([shot.tid, shot.angle, shot.speed, shot.vspeed, shot.gravity, shot.newTid], [5, 64, 16, 8, 0, 3]);
+  }
+});
+
+test('hunt 118: ACS SpawnDirect takes fixed-point positions and a byte angle', () => {
+  const calls = [];
+  runAcs(['SPAWNDIRECT', ...[0, 64 * 65536, 32 * 65536, 8 * 65536, 7, 192].map(word => ({ word })), 'DROP'],
+    { spawn: options => (calls.push(options), 1) });
+  const project = specialRoom();
+  const state = createRuntime(project);
+  const scripts = createMapScripts(project, state, {});
+  const before = state.entities.length;
+  // The host receives map units, so the spawned thing lands where the script put it.
+  scripts.host.spawn({ ...calls[0], type: 2011 });
+  const thing = state.entities[before];
+  assert.deepEqual([thing.x, thing.y, thing.z, thing.angle], [64, 32, 8, 270]);
+});
+
+test('hunt 119: Light_MinNeighbor never brightens a sector darker than its neighbours', () => {
+  const project = specialRoom({ s1: { light: 40 } });
+  const state = createRuntime(project);
+  executeSpecial(project, state, 233, [1], { format: 'zdoom' });
+  assert.equal(state.sectors.find(sector => sector.id === 's1').light, 40);
+});
+
+test('hunt 120: Thing_Damage hurts only the things it names, or the activator for tid 0', () => {
+  const imp = { id: 'imp', type: 'enemy', name: 'Imp', x: -100, y: 0, health: 60 };
+  const project = specialRoom({ entities: [imp] });
+  const state = createRuntime(project);
+  const health = state.playerStats.health;
+  executeSpecial(project, state, 119, [9, 10], { format: 'zdoom', activator: 'player' });
+  assert.equal(state.playerStats.health, health, 'a tid with no things hurts nobody');
+  executeSpecial(project, state, 119, [0, 10], { format: 'zdoom', activator: 'imp' });
+  assert.equal(state.entities.find(entity => entity.id === 'imp').health, 50, 'tid 0 is the activating monster');
+  assert.equal(state.playerStats.health, health, 'not the player');
 });

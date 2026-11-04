@@ -579,20 +579,31 @@ export function createMapScripts(project, state, callbacks = {}) {
     return 'decoration';
   }
 
-  function launchFromThing({ tid, type, angle = 0, speed = 8, vspeed = 0, newTid = 0 }) {
-    const owner = tid ? state.entities.find(entity => entity.tid === tid) : null;
+  /**
+   * Thing_Projectile and SpawnProjectile fire from every thing with the tid (the activator
+   * when it is 0), from the spot's own height, with GZDoom's units: a byte angle and speeds
+   * in eighths of a unit per tic, the vertical one added on top of the horizontal.
+   */
+  function launchFromThing({ tid = 0, entity = null, activator = null, type, angle = 0, speed = 8, vspeed = 0, newTid = 0 }) {
     const actor = resolveActor(type);
+    const sources = entity ? [entity] : tid ? state.entities.filter(candidate => candidate.tid === tid)
+      : [activatorEntity(activator)].filter(Boolean);
     const yaw = (angle * Math.PI * 2) / 256;
-    const pitch = Math.min(1.5, Math.max(-1.5, vspeed / 8));
-    const origin = owner || state.player;
-    const originZ = floorAt(state, origin) + (owner ? 32 : 40);
-    state.projectiles.push({
-      id: ++state.projectileSequence, ownerId: owner?.id || '$monster',
-      x: origin.x, y: origin.y, z: originZ,
-      dx: Math.cos(yaw) * Math.cos(pitch), dy: Math.sin(yaw) * Math.cos(pitch), dz: Math.sin(pitch),
-      age: 0, speed: Math.max(1, (speed || 8) * 8), damage: actor?.damage || 8, radius: 12,
-      ...(actor ? { actor: actor.id } : {}), ...(newTid ? { tid: newTid } : {}),
-    });
+    const horizontal = (Number(speed) || 0) / 8, vertical = (Number(vspeed) || 0) / 8;
+    const total = Math.hypot(horizontal, vertical);
+    for (const source of sources) {
+      const player = source.type === 'player';
+      const origin = player ? state.player : source;
+      state.projectiles.push({
+        id: ++state.projectileSequence, ownerId: player ? '$player' : source.id,
+        x: origin.x, y: origin.y, z: floorAt(state, origin),
+        dx: total ? Math.cos(yaw) * horizontal / total : Math.cos(yaw), dy: total ? Math.sin(yaw) * horizontal / total : Math.sin(yaw),
+        dz: total ? vertical / total : 0,
+        age: 0, speed: total * TIC_RATE, damage: actor?.damage || 8, radius: 12,
+        ...(actor ? { actor: actor.id } : {}), ...(newTid ? { tid: newTid } : {}),
+      });
+    }
+    return sources.length;
   }
 
   function getActorValue(tid, kind, activator) {

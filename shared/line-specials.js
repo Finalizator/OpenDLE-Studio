@@ -263,7 +263,9 @@ function teleportDestination(state, tid, tag) {
   if (tid) {
     const named = state.entities.filter(entity => entity.tid === tid && inTag(entity));
     const spot = named.find(entity => TELEPORT_DESTINATIONS.has(entity.doomType)) || named[0];
-    return spot ? { x: spot.x, y: spot.y, z: floorAt(state, spot), angle: spot.angle } : null;
+    // Only a TeleportDest2 keeps the height it was placed at; every other spot lands on the floor.
+    return spot ? { x: spot.x, y: spot.y, z: spot.doomType === 9044 ? floorAt(state, spot) : sectorFloorAt(state, spot),
+      angle: spot.angle } : null;
   }
   const sector = tag ? taggedSectors(state, tag)[0] : null;
   return sector ? teleportTo(state, sector) : null;
@@ -275,11 +277,11 @@ function activatorThing(state, activator) {
   return state.entities.find(entity => entity.id === activator) || null;
 }
 
-function placeThing(state, entity, position) {
+function placeThing(state, entity, position, { keepMomentum = false } = {}) {
   entity.x = position.x; entity.y = position.y;
   if (entity.type === 'player') {
     state.player.x = position.x; state.player.y = position.y;
-    resetMomentum(state);
+    if (!keepMomentum) resetMomentum(state);
     const playerEntity = state.entities.find(other => other.type === 'player');
     if (state.physics && playerEntity) state.physics.teleport(playerEntity.id, position.x, position.y, position.z);
     else if (playerEntity) playerEntity.z = position.z;
@@ -387,8 +389,16 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       return floorToCeilings((sector, ceilings) =>
         Math.min(ceilings.length ? Math.min(...ceilings) : sector.ceilingHeight, sector.ceilingHeight) - gap);
     }
-    case 25: case 257: // Floor_RaiseToNearest(/ToLowest)
+    case 25: // Floor_RaiseToNearest
       return planes('toNearestUp', 'floorHeight', 0, { sound: 'DSPSTART' });
+    case 257: { // Floor_RaiseToLowest (tag, change, crush) — GZDoom's fixed speed of 2
+      let moved = 0;
+      for (const sector of sectors) {
+        const target = targetFor('toLowest', sector, 'floorHeight', planeHeights(state, project, sector, 'floorHeight'), 0);
+        if (movePlane(state, sector, 'floorHeight', target, 2, { sound: 'DSPSTART' })) moved++;
+      }
+      return moved;
+    }
     case 259: // Floor_RaiseToCeiling (tag, speed, change, crush, gap)
       return floorToCeilings(sector => sector.ceilingHeight - Math.max(0, arg5));
     case 28: // Floor_RaiseAndCrush — up to 8 below its own ceiling; the third argument is damage
@@ -465,14 +475,18 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         timer: arg5, ceiling: special === 38 }) ? 1 : 0;
     }
     case 60: case 62: case 64: case 206: { // platforms: down/up cycles
+      // GZDoom's lowered platforms stop a lip above the lowest floor around them (8 units,
+      // or Plat_DownWaitUpStayLip's own), and a perpetual platform runs until Plat_Stop.
       const down = special !== 64;
+      const lip = !zdoom ? 0 : special === 206 ? arg4 : 8;
       for (const sector of sectors) {
         const others = planeHeights(state, project, sector, 'floorHeight');
-        const target = down ? targetFor('toLowest', sector, 'floorHeight', others, 0)
-          : targetFor('toHighest', sector, 'floorHeight', others, 0);
-        moveSector(state, { sectorId: sector.id, surface: 'floorHeight', height: target,
-          speed: Math.max(TIC, speed * TIC), wait: Math.max(0, (arg3 || 0) / TIC), returnMode: 'return',
-          returnHeight: sector.floorHeight, sound: 'DSPSTART' });
+        const low = Math.min(sector.floorHeight, targetFor('toLowest', sector, 'floorHeight', others, 0) + lip);
+        const high = targetFor('toHighest', sector, 'floorHeight', others, 0);
+        moveSector(state, { sectorId: sector.id, surface: 'floorHeight', height: down ? low : high,
+          speed: Math.max(TIC, speed * TIC), wait: Math.max(0, (arg3 || 0) / TIC),
+          returnMode: special === 60 ? 'cycle' : 'return',
+          returnHeight: special === 60 ? high : sector.floorHeight, sound: 'DSPSTART' });
       }
       return 1;
     }
@@ -509,9 +523,17 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       const position = teleportDestination(state, arg1, special === 70 ? arg2 : arg3);
       if (!position) return 0;
       const victim = activatorThing(state, options.activator);
+      // Teleport_NoFog's useangle 0 keeps the thing's own facing and momentum (GZDoom's
+      // TELF_KEEPORIENTATION), and keepheight keeps its height above the floor.
+      const keepOrientation = special === 71 && !arg2;
+      if (victim && special === 71 && arg4) {
+        const from = victim.type === 'player' ? state.player : victim;
+        const above = (Number.isFinite(from.z) ? from.z : sectorFloorAt(state, from)) - sectorFloorAt(state, from);
+        position.z = sectorFloorAt(state, position) + above;
+      }
       if (victim) {
-        placeThing(state, victim, position);
-        if (position.angle !== undefined) {
+        placeThing(state, victim, position, { keepMomentum: keepOrientation });
+        if (position.angle !== undefined && !keepOrientation) {
           if (victim.type === 'player') state.player.angle = position.angle * Math.PI / 180;
           else victim.angle = position.angle;
         }
@@ -535,15 +557,13 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       else damageActor(project, state, victim, arg1 || TELEFRAG_DAMAGE, options);
       return 1;
     }
-    case 119: { // Thing_Damage
-      let damaged = 0;
-      for (const entity of actorsByTid(state, arg1)) if (damageActor(project, state, entity, arg2, options)) damaged++;
-      if (!damaged && (options.activator === 'player' || !arg1)) {
-        state.playerStats.health = Math.max(0, state.playerStats.health - arg2);
-        state.feedback.health = state.playerStats.health;
-        damaged = 1;
+    case 119: { // Thing_Damage (tid, amount, mod) — tid 0 is the activator; a negative amount heals
+      const victims = arg1 ? actorsByTid(state, arg1) : [activatorThing(state, options.activator)].filter(Boolean);
+      for (const entity of victims) {
+        if (arg2 > 0) damageActor(project, state, entity, arg2, options);
+        else if (arg2 < 0) healThing(project, state, entity, -arg2, 0);
       }
-      return damaged;
+      return 1;
     }
     case 248: { // HealThing (amount, max) — max 0 is the normal maximum, 1 the soulsphere limit
       const victim = activatorThing(state, options.activator);
@@ -583,12 +603,13 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       for (const entity of victims) damageActor(project, state, entity, arg2 ? TELEFRAG_DAMAGE : entity.health, options);
       return 1;
     }
-    case 134: case 136: { // Thing_Projectile(+Gravity)
-      const origin = actorByTid(state, arg1);
-      for (const entity of origin ? [origin] : []) {
+    case 134: case 136: { // Thing_Projectile(+Gravity) (tid, type, angle, speed, vspeed)
+      // Every thing with the tid fires; tid 0 fires from the activator.
+      const origins = arg1 ? actorsByTid(state, arg1) : [activatorThing(state, options.activator)].filter(Boolean);
+      for (const entity of origins) {
         options.projectile?.({ entity, type: arg2, angle: arg3, speed: arg4, vspeed: arg5 });
       }
-      return 1;
+      return origins.length ? 1 : 0;
     }
     case 237: { // ChangeCamera
       // `tid` is the camera actor; 0 hands the view back to the player. A title map films
@@ -650,7 +671,8 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         const neighbours = neighbourIds(project, sector.id).map(id => liveSector(state, id)).filter(Boolean);
         if (!neighbours.length) continue;
         const lights = neighbours.map(neighbour => neighbour.light);
-        if (special === 233) sector.light = Math.min(...lights);
+        // Light_MinNeighbor only ever darkens: the sector's own level is part of the minimum.
+        if (special === 233) sector.light = Math.min(sector.light, ...lights);
         if (special === 234) sector.light = Math.max(...lights);
       }
       state.worldRevision++;

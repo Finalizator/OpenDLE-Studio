@@ -2678,7 +2678,20 @@ both planes outward at their own speeds; `Door_CloseWaitOpen` waits in octics;
 `Door_LockedRaise` reads its lock from the fourth argument; and the `ACS_*` entry points
 name the script in the first argument. `Teleport`/`Teleport_NoFog` send the activator to
 the destination with the given TID (inside the optional tagged sector), and `Thing_Move`
-moves a TID onto a map spot; teleported things land on the floor.
+moves a TID onto a map spot; teleported things land on the floor, except at a
+`TeleportDest2`, which keeps the height it was placed at. `Teleport_NoFog`'s `useangle` 0
+keeps the thing's own facing and momentum (a silent teleporter), and `keepheight` keeps
+its height above the floor. Lowered ZDoom platforms (`Plat_DownWaitUpStay`,
+`Plat_PerpetualRaise`) stop 8 units above the lowest floor around them and
+`Plat_DownWaitUpStayLip` uses its own lip; `Plat_PerpetualRaise` cycles until
+`Plat_Stop`. `Floor_RaiseToLowest` moves at GZDoom's fixed speed 2 (its second argument is
+`change`). `Light_MinNeighbor` counts the sector's own level, so it never brightens.
+`Thing_Damage` hurts the things with its TID or, for TID 0, the activator, and a negative
+amount heals. `Thing_Projectile` and ACS `SpawnProjectile` fire from every thing with the
+TID (the activator for 0), from that thing's height, with a byte angle and both speeds in
+eighths of a unit per tic. ACS's stack forms of `Spawn`, `SpawnSpot`, `SpawnSpotFacing`,
+`SpawnProjectile` and `Thing_Projectile2` read their arguments in source order, and
+`Spawn`/`SpawnSpot` take fixed-point positions and byte angles like their direct forms.
 `Line_SetTextureOffset` reads 16.16 fixed-point offsets, the side, the part flags,
 the add flag and `NO_CHANGE`.
 

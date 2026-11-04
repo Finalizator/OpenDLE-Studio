@@ -1210,34 +1210,40 @@ function defineWorld() {
 }
 
 function defineActors() {
+  // The stack forms take their arguments in source order, so the last one is on top. The
+  // class is a string, positions are fixed point and angles are byte angles (0-255).
+  const popArgs = (vm, script, count) => {
+    const values = new Array(count);
+    for (let index = count - 1; index >= 0; index--) values[index] = pop(vm, script);
+    return values;
+  };
+  const spawnArgs = (vm, [type, x, y, z, tid, angle]) => ({ type: vmString(vm, type), x: x / 65536, y: y / 65536,
+    z: z / 65536, tid, angle: angle * 360 / 256 });
+  const spotArgs = (vm, [type, spot, tid, angle = 0]) => ({ type: vmString(vm, type), spot, tid, angle: angle * 360 / 256 });
   define(P.SPAWN, '', (vm, script) => {
-    const type = pop(vm, script), x = pop(vm, script), y = pop(vm, script), z = pop(vm, script);
-    const tid = pop(vm, script), angle = pop(vm, script);
-    push(vm, script, vm.host.spawn({ type, x, y, z, tid, angle }));
+    push(vm, script, vm.host.spawn(spawnArgs(vm, popArgs(vm, script, 6))));
   });
-  define(P.SPAWNDIRECT, 'wwwwww', (vm, script, [type, x, y, z, tid, angle]) => {
-    push(vm, script, vm.host.spawn({ type: vmString(vm, type), x, y, z, tid, angle }));
+  define(P.SPAWNDIRECT, 'wwwwww', (vm, script, args) => {
+    push(vm, script, vm.host.spawn(spawnArgs(vm, args)));
   });
   define(P.SPAWNSPOT, '', (vm, script) => {
-    const type = pop(vm, script), spot = pop(vm, script), tid = pop(vm, script), angle = pop(vm, script);
-    push(vm, script, vm.host.spawnSpot({ type, spot, tid, angle }));
+    push(vm, script, vm.host.spawnSpot(spotArgs(vm, popArgs(vm, script, 4))));
   });
-  define(P.SPAWNSPOTDIRECT, 'wwww', (vm, script, [type, spot, tid, angle]) => {
-    push(vm, script, vm.host.spawnSpot({ type: vmString(vm, type), spot, tid, angle }));
+  define(P.SPAWNSPOTDIRECT, 'wwww', (vm, script, args) => {
+    push(vm, script, vm.host.spawnSpot(spotArgs(vm, args)));
   });
   define(P.SPAWNSPOTFACING, '', (vm, script) => {
-    const type = pop(vm, script), spot = pop(vm, script), tid = pop(vm, script);
-    push(vm, script, vm.host.spawnSpot({ type, spot, tid, facing: true }));
+    push(vm, script, vm.host.spawnSpot({ ...spotArgs(vm, popArgs(vm, script, 3)), facing: true }));
   });
+  // SpawnProjectile (tid, class, angle, speed, vspeed, gravity, newtid); Thing_Projectile2 is
+  // the same with a spawn number. Angle and speeds stay in special units, as Thing_Projectile's.
   define(P.SPAWNPROJECTILE, '', (vm, script) => {
-    const tid = pop(vm, script), type = pop(vm, script), angle = pop(vm, script), speed = pop(vm, script), vspeed = pop(vm, script);
-    const newTid = pop(vm, script), gravity = pop(vm, script);
-    vm.host.projectile({ tid, type: vmString(vm, type), angle, speed, vspeed, newTid, gravity });
+    const [tid, type, angle, speed, vspeed, gravity, newTid] = popArgs(vm, script, 7);
+    vm.host.projectile({ tid, type: vmString(vm, type), angle, speed, vspeed, newTid, gravity, activator: script.activator });
   });
   define(P.THING_PROJECTILE2, '', (vm, script) => {
-    const tid = pop(vm, script), type = pop(vm, script), angle = pop(vm, script), speed = pop(vm, script), vspeed = pop(vm, script);
-    const newTid = pop(vm, script), gravity = pop(vm, script);
-    vm.host.projectile({ tid, type, angle, speed, vspeed, newTid, gravity });
+    const [tid, type, angle, speed, vspeed, gravity, newTid] = popArgs(vm, script, 7);
+    vm.host.projectile({ tid, type, angle, speed, vspeed, newTid, gravity, activator: script.activator });
   });
   for (const [name, kind] of [['GETACTORX', 'x'], ['GETACTORY', 'y'], ['GETACTORZ', 'z'],
     ['GETACTORFLOORZ', 'floorZ'], ['GETACTORCEILINGZ', 'ceilingZ'], ['GETACTORANGLE', 'angle'],
