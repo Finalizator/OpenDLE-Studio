@@ -2635,6 +2635,14 @@ picture as seen: posterisation bands in display space and gamma is display gamma
 therefore converts to display space on the way in (`pow(c, 1/2.2)`) and back on the way out,
 where the renderer applies its own output transform for the canvas.
 
+Cel shading is the one pass whose first version was unusable: quantising each pixel's own
+luminance turned a detailed sky into coloured blobs and flattened a dim corridor to black.
+It now bands the luminance of a *blurred* copy and applies that as a clamped gain, so the
+shading goes flat while the artwork inside each band keeps its detail. Cel ink, rim and
+foam measure a **relative** depth jump (`|d - d'| / d`) rather than an absolute one in world
+units: adjacent pixels on a grazing floor differ by metres — an absolute threshold inks the
+whole frame — while a silhouette differs by a large fraction of its distance.
+
 Depth-dependent passes have no position or normal buffer to read — a forward renderer does
 not have one — so they rebuild both from the depth buffer: `perspectiveDepthToViewZ` turns
 the stored depth into a view distance, and the projection scale (tan(fov/2)·aspect,

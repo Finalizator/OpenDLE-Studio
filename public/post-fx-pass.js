@@ -18,6 +18,7 @@ import {
 import { POST_FX_BY_KIND, activePostFxPasses, postFxParamDefault } from '../shared/post-fx.js';
 
 const GOLDEN_ANGLE = 2.39996323;
+const PI_OVER_4 = Math.PI / 4;
 const LUMA = vec3(0.21, 0.72, 0.07);
 
 /** A cheap, stable hash, the noise source every pass here shares. */
@@ -123,6 +124,24 @@ export function createPostFxStack({ colorTexture, depthTexture = null, historyTe
     return jump;
   };
 
+  /**
+   * How much the depth jumps *relative to its own distance*. An absolute jump in world
+   * units fires on every grazing floor — a corridor floor's depth changes by metres between
+   * neighbouring pixels — which inks the whole frame; a silhouette changes by a large
+   * fraction of its distance and nothing else does. Cel ink, rim light and foam measure
+   * this instead, so their thresholds mean the same thing at any distance.
+   */
+  const relativeDepthJump = (at, radius) => {
+    const centre = distanceAt(at), relative = float(0).toVar();
+    Loop(8, ({ i }) => {
+      const angle = float(i).mul(PI_OVER_4);
+      const offset = vec2(cos(angle), sin(angle)).mul(radius).mul(texel);
+      const neighbour = distanceAt(at.add(offset));
+      relative.assign(max(relative, abs(centre.sub(neighbour)).div(max(centre, float(0.001)))));
+    });
+    return relative;
+  };
+
   /** A five-by-five box of samples at `radius` pixels, the window the book's blur uses. */
   const boxSample = (at, radius, read = readColor) => {
     const total = vec3(0).toVar(), taps = float(0).toVar();
@@ -203,11 +222,18 @@ export function createPostFxStack({ colorTexture, depthTexture = null, historyTe
       const threshold = param('cel', 'edgeThreshold');
       return color => {
         // Quantising the luminance and keeping the hue is the book's gradient map, written
-        // as one multiplication instead of a strip texture.
-        const luma = dot(color, LUMA);
-        const banded = floor(luma.mul(steps)).div(steps);
-        const bandedColor = color.mul(banded.div(max(luma, float(0.001))));
-        const edge = smoothstep(threshold, threshold.mul(2.2), depthJump(st, float(1.4))).mul(ink);
+        // as one multiplication instead of a strip texture. The band is taken from a blurred
+        // copy of the frame and applied as a gain, so the *shading* goes flat while the
+        // artwork inside each band keeps its detail — quantising each pixel instead turned a
+        // detailed sky into coloured blobs. The gain is clamped because an unclamped one
+        // sends the darkest band to zero, and a dim corridor becomes a black rectangle.
+        const softLuma = dot(boxSample(st, float(8)), LUMA);
+        const banded = floor(softLuma.mul(steps)).div(steps).add(float(0.5).div(steps));
+        const gain = clamp(banded.div(max(softLuma, float(0.02))), float(0.45), float(1.35));
+        const bandedColor = color.mul(gain);
+        // Ink the outline, never the inside of a surface: a relative jump is what separates
+        // the two (see relativeDepthJump).
+        const edge = smoothstep(threshold, threshold.mul(2.5), relativeDepthJump(st, float(1.4))).mul(ink);
         return mix(bandedColor, bandedColor.mul(vec3(0.2, 0.18, 0.22)), edge);
       };
     },
@@ -338,7 +364,7 @@ export function createPostFxStack({ colorTexture, depthTexture = null, historyTe
       const power = param('rim', 'power'), intensity = param('rim', 'intensity');
       const rimColor = vec3(param('rim', 'red'), param('rim', 'green'), param('rim', 'blue'));
       return color => {
-        const edge = smoothstep(0.6, 6, depthJump(st, float(1.5)));
+        const edge = smoothstep(0.05, 0.35, relativeDepthJump(st, float(1.5)));
         const normal = normalAt(st);
         const facing = pow(float(1).sub(clamp(abs(normal.z), 0, 1)), power);
         return color.add(rimColor.mul(edge.mul(facing).mul(intensity)));
@@ -358,7 +384,7 @@ export function createPostFxStack({ colorTexture, depthTexture = null, historyTe
       const threshold = param('foam', 'threshold'), amount = param('foam', 'amount');
       const scale = param('foam', 'scale');
       return color => {
-        const jump = depthJump(st, float(1.6));
+        const jump = relativeDepthJump(st, float(1.6));
         const foam = smoothstep(threshold.mul(0.5), threshold, jump).mul(amount);
         const breakup = valueNoise(st.mul(scale).add(vec2(time.mul(0.6), 0))).mul(0.6).add(0.4);
         return mix(color, vec3(1), clamp(foam.mul(breakup), 0, 1));

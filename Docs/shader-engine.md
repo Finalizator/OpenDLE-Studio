@@ -35,7 +35,7 @@ field of view changes.
 | Bloom | bloom | Bright fragments are isolated, blurred and added back |
 | Outlining | outlining | Draws an edge where the depth jumps, thicker with distance |
 | Dilation | dilation | Grows the brightest colour in the window, feeding glow and outline |
-| Cel shading | cel shading | Flat bands of light plus an inked silhouette |
+| Cel shading | cel shading | Flat bands of shading plus an inked silhouette; the bands come from a blurred copy, so artwork inside a band keeps its detail |
 | Posterization | posterization | Rounds every channel to a number of levels |
 | Pixelization | pixelization | One sample per block, for chunky pixels |
 | Sharpen | sharpen | Unsharp mask against a blurred copy |
@@ -58,11 +58,16 @@ frames** describe how to build the pipeline rather than a pass of their own. Tha
 pipeline is what this engine already does: the level renders into a texture, and the
 screen-space passes reconstruct view-space positions from its depth.
 
+Cel shading, rim lighting and foam measure a *relative* depth jump — how much the depth
+changes compared with its own distance — so their thresholds mean the same thing in a
+cramped corridor and on a long sightline. An absolute jump in world units fires on every
+grazing floor, which inks the whole frame.
+
 ## Presets
 
 Presets are ordinary stacks and remain editable afterwards:
 
-- **Toon** — cel shading plus posterisation
+- **Toon** — cel shading with an inked silhouette and a little bloom
 - **Cinematic** — warm lookup table, distance fog, bloom, a little grain
 - **Retro shooter** — pixelisation, posterisation, dilation
 - **Underwater** — refraction, flow, blue-green fog, foam

@@ -66,9 +66,9 @@ export const POST_FX_CATALOG = [
   },
   {
     kind: 'cel', section: 'cel-shading', name: 'Cel shading',
-    summary: 'Quantises the frame into flat bands of light and dark and inks the silhouette, the toon look the book builds from a gradient map and an outline.',
-    params: [param('steps', 'Bands', 4, 2, 10, 1), param('edge', 'Ink strength', 0.7, 0, 1),
-      param('edgeThreshold', 'Ink threshold', 0.8, 0.05, 8, 0.05)],
+    summary: 'Quantises the frame into flat bands of light and dark and inks the silhouette, the toon look the book builds from a gradient map and an outline. The banding keeps a floor so dim rooms stay readable.',
+    params: [param('steps', 'Bands', 5, 2, 10, 1), param('edge', 'Ink strength', 0.6, 0, 1),
+      param('edgeThreshold', 'Ink threshold (relative depth jump)', 0.12, 0.01, 1, 0.005)],
   },
   {
     kind: 'posterize', section: 'posterization', name: 'Posterization',
@@ -152,8 +152,8 @@ export const POST_FX_CATALOG = [
   {
     kind: 'foam', section: 'foam', name: 'Foam',
     summary: 'Paints foam where the water meets geometry: a large depth jump in front of a surface, broken up by noise.',
-    params: [param('threshold', 'Shore threshold', 1.2, 0.05, 12, 0.05), param('amount', 'Amount', 0.9, 0, 1),
-      param('scale', 'Noise scale', 40, 1, 200, 1)],
+    params: [param('threshold', 'Shore threshold (relative depth jump)', 0.3, 0.02, 1, 0.01),
+      param('amount', 'Amount', 0.9, 0, 1), param('scale', 'Noise scale', 40, 1, 200, 1)],
   },
   {
     kind: 'filmGrain', section: 'film-grain', name: 'Film grain',
@@ -168,7 +168,8 @@ export const POST_FX_KINDS = POST_FX_CATALOG.map(entry => entry.kind);
 /** Ready-made stacks: the whole point of a chain is that a look is more than one pass. */
 export const POST_FX_PRESETS = [
   { id: 'off', name: 'Off (engine default)', passes: [] },
-  { id: 'toon', name: 'Toon', passes: [{ kind: 'cel', params: { steps: 4, edge: 0.8 } }, { kind: 'posterize', params: { levels: 8 } }] },
+  { id: 'toon', name: 'Toon', passes: [{ kind: 'cel', params: { steps: 4, edge: 0.65, edgeThreshold: 0.14 } },
+    { kind: 'bloom', params: { threshold: 0.7, intensity: 0.35 } }] },
   { id: 'cinematic', name: 'Cinematic', passes: [{ kind: 'lut', params: { preset: 1, amount: 0.8 } },
     { kind: 'fog', params: { near: 500, far: 2400, density: 0.5, red: 0.5, green: 0.55, blue: 0.66 } },
     { kind: 'bloom', params: { threshold: 0.6, intensity: 0.5 } }, { kind: 'filmGrain', params: { amount: 0.03 } }] },
@@ -177,7 +178,7 @@ export const POST_FX_PRESETS = [
   { id: 'underwater', name: 'Underwater', passes: [{ kind: 'ssrRefraction', params: { strength: 0.03, dispersion: 0.7, depthScale: 3 } },
     { kind: 'flow', params: { strength: 0.02, speed: 0.5, scale: 8 } },
     { kind: 'fog', params: { near: 120, far: 1400, density: 0.8, red: 0.1, green: 0.28, blue: 0.36 } },
-    { kind: 'foam', params: { threshold: 1.4, amount: 0.7 } }] },
+    { kind: 'foam', params: { threshold: 0.35, amount: 0.7 } }] },
   { id: 'dream', name: 'Dream', passes: [{ kind: 'bloom', params: { threshold: 0.45, intensity: 1.1, separation: 4 } },
     { kind: 'chromaticAberration', params: { amount: 0.004 } }, { kind: 'depthOfField', params: { focus: 600, range: 700, blur: 4 } }] },
   { id: 'noir', name: 'Noir', passes: [{ kind: 'lut', params: { preset: 3, amount: 0.9 } },
