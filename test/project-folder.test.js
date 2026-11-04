@@ -474,10 +474,22 @@ test('exporting current editor edits round-trips them without saving over the st
   assert.equal((await fetch(`${url}/api/export/project`, { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: edited }) })).status, 401);
   const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  for (const id of ['export', 'export-build']) {
-    const handler = source.slice(source.indexOf(`$('${id}').addEventListener`));
+  const snapshotRequest = (handler, name) => {
     const request = handler.slice(0, handler.indexOf('if (!response.ok)'));
-    assert.match(request, /method: 'POST'/, `${id} sends a snapshot`);
-    assert.match(request, /JSON\.stringify\(\{ project \}\)/, `${id} sends the current editor project`);
-  }
+    assert.match(request, /method: 'POST'/, `${name} sends a snapshot`);
+    assert.match(request, /JSON\.stringify\(\{ project \}\)/, `${name} sends the current editor project`);
+  };
+  snapshotRequest(source.slice(source.indexOf("$('export').addEventListener")), 'export');
+  // The playable-app button opens a menu of two runtimes; both of them export through the
+  // same function, which is the one that has to carry the current editor project.
+  const handler = source.slice(source.indexOf("$('export-build').addEventListener"));
+  const menu = handler.slice(0, handler.indexOf("$('open').addEventListener"));
+  assert.match(menu, /submenu: bundledTargetItems\(\)/, 'the bundled runtime is offered');
+  assert.match(menu, /exportBuild\('portable'\)/, 'the small build is offered too');
+  // The bundled entries are built per platform by bundledTargetItems(), which has to send the
+  // platform it chose; every one of those runs through the same exportBuild() above.
+  const targets = source.slice(source.indexOf('function bundledTargetItems('));
+  assert.match(targets.slice(0, targets.indexOf('async function exportBuild(')),
+    /exportBuild\('bundled', target\)/, 'the bundled runtime is built for the chosen platform');
+  snapshotRequest(source.slice(source.indexOf('async function exportBuild(')), 'export-build');
 });

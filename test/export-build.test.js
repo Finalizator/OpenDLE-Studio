@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
@@ -23,6 +24,39 @@ const exportedAt = new Date('2026-10-25T12:00:00.000Z');
 
 function build(options = {}) {
   return createPortableBuild({ project: createProject(), version: '0.0.7', platform: 'linux', now: exportedAt, ...options });
+}
+
+/**
+ * A stand-in Electron distribution.
+ *
+ * A real one is 270 MB, which no test should carry: everything a bundled build does with it
+ * is copy files, rename the executable and leave `default_app.asar` behind. These files are
+ * the same names the real distribution uses, so the layout under test is the layout that ships.
+ */
+function fakeElectronDist(t, { version = '45.2.1' } = {}) {
+  const directory = mkdtempSync(join(tmpdir(), 'opendle-electron-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const write = (name, contents, mode = 0o644) => {
+    const file = join(directory, name);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, contents);
+    chmodSync(file, mode);
+  };
+  write('version', `${version}\n`);
+  write('electron', '#!/bin/true\n', 0o755);
+  write('chrome-sandbox', 'sandbox\n', 0o755);
+  write('icudtl.dat', 'icu\n');
+  write('resources.pak', 'pak\n');
+  write('resources/default_app.asar', 'placeholder app\n');
+  write('locales/en-US.pak', 'locale\n');
+  write('LICENSES.chromium.html', 'chromium notices\n');
+  return { directory, version };
+}
+
+async function bundledBuild(t, options = {}) {
+  const runtime = fakeElectronDist(t);
+  const result = await build({ runtime: 'bundled', electronDist: runtime.directory, electronVersion: runtime.version, ...options });
+  return { ...result, runtime };
 }
 
 // Mirrors the reader configuration and CRC/size validation used by server/packages.js.
@@ -444,4 +478,123 @@ test('an extracted build serves the game with Node.js only', async t => {
   assert.match(style.headers.get('content-type'), /text\/css/);
   assert.equal((await fetch(`${url}api/addons/sparkle/missing.js`)).status, 404);
   assert.equal((await fetch(`${url}api/addons/sparkle/notes.bin`)).status, 415, 'only the kinds the studio serves');
+});
+
+test('a bundled build carries its own runtime, so a clean machine installs nothing', async t => {
+  const result = await bundledBuild(t);
+  const slug = 'my-first-opendle-world';
+  const entries = await readZip(result.bytes);
+  assert.equal(result.filename, 'my-first-opendle-world-0.0.7-linux-app.zip');
+  const manifest = JSON.parse(entries.get(`${slug}/build.json`).data.toString('utf8'));
+  assert.equal(manifest.format, 'opendle-bundled-build/1');
+  assert.equal(manifest.runtime.kind, 'bundled');
+  assert.equal(manifest.runtime.electron, '45.2.1');
+  assert.equal(manifest.runtime.application, `${slug}/resources/app/main.js`);
+  assert.equal(manifest.runtime.executable, `${slug}/My first OpenDLE world`);
+  assert.match(manifest.requirements.install, /nothing/);
+  assert.equal(manifest.requirements.node, undefined, 'nothing has to be installed, so nothing is required');
+
+  // Electron looks for the app in resources/app beside its own executable.
+  assert.equal(manifest.entry.page, `${slug}/resources/app/public/index.html`);
+  assert.equal(manifest.entry.server, `${slug}/resources/app/server/export-launcher.js`);
+  assert.equal(manifest.entry.data, `${slug}/resources/app/data/project.json`);
+
+  for (const required of ['main.js', 'package.json', 'server/export-launcher.js', 'shared/project.js',
+    'public/index.html', 'data/project.json', 'LICENSE', 'version.ini',
+    'public/vendor/three/three.webgpu.js', 'public/vendor/rapier/rapier.mjs']) {
+    assert.ok(entries.has(`${slug}/resources/app/${required}`), `app contains ${required}`);
+  }
+  // The runtime itself, at the top level, with the executable renamed to the game.
+  for (const runtimeFile of ['My first OpenDLE world', 'chrome-sandbox', 'icudtl.dat', 'resources.pak', 'locales/en-US.pak']) {
+    assert.ok(entries.has(`${slug}/${runtimeFile}`), `runtime contains ${runtimeFile}`);
+  }
+  assert.equal(entries.has(`${slug}/electron`), false, 'the runtime executable is renamed');
+  assert.equal(entries.has(`${slug}/.complete`), false, 'the cache marker is not shipped');
+  assert.equal(entries.has(`${slug}/resources/default_app.asar`), false, 'the placeholder app is not shipped');
+  assert.equal(entries.get(`${slug}/My first OpenDLE world`).mode, 0o755, 'the game is executable after unzipping');
+  assert.equal(entries.get(`${slug}/icudtl.dat`).mode, 0o644);
+  assert.equal(entries.get(`${slug}/launch.sh`).mode, 0o755);
+  assert.equal(entries.has(`${slug}/launch.cmd`), false, 'a Linux build carries only the launcher it can run');
+
+  const app = JSON.parse(entries.get(`${slug}/resources/app/package.json`).data.toString('utf8'));
+  assert.equal(app.type, 'module');
+  assert.equal(app.main, 'main.js');
+  assert.equal(app.name, slug);
+  assert.equal(app.productName, 'My first OpenDLE world');
+  const main = entries.get(`${slug}/resources/app/main.js`).data.toString('utf8');
+  assert.match(main, /from 'electron'/, 'the entry point is the electron shell');
+  assert.match(main, /startGame/, 'it starts the same game server a portable build starts');
+  assert.match(main, /OPENDLE_NO_BROWSER/, 'it must not hand the game to an outside browser');
+  assert.match(main, /opendleSaveBeforeClose/, 'closing saves through the page');
+  assert.match(main, /requestSingleInstanceLock/, 'a second double-click focuses the running game');
+
+  const readme = entries.get(`${slug}/README.md`).data.toString('utf8');
+  assert.match(readme, /Nothing has to be installed/);
+  assert.match(readme, /\/\.config\/my-first-opendle-world\/data\/project\.json/);
+  assert.doesNotMatch(readme, /Node\.js 22 or newer/);
+
+  const listed = manifest.files.map(file => file.path);
+  assert.deepEqual(listed, [...entries.keys()].filter(name => name !== `${slug}/build.json`));
+  assert.deepEqual(result.manifest.files.map(file => file.path), listed);
+});
+
+test('the bundled runtime executable is named for the game and the folder stays path-safe', async t => {
+  const project = createProject();
+  project.title = 'Doom: Escape/2 * "Final"';
+  const result = await build({ project, runtime: 'bundled', platform: 'windows',
+    electronDist: fakeElectronDist(t).directory, electronVersion: '45.2.1' });
+  const entries = await readZip(result.bytes);
+  const slug = slugifyTitle(project.title);
+  assert.equal(result.filename, `${slug}-0.0.7-windows-app.zip`);
+  const manifest = JSON.parse(entries.get(`${slug}/build.json`).data.toString('utf8'));
+  assert.equal(manifest.runtime.executable, `${slug}/Doom Escape 2 Final.exe`);
+  assert.ok(entries.has(`${slug}/Doom Escape 2 Final.exe`), 'the executable carries the title, minus what a file system refuses');
+  assert.ok(entries.has(`${slug}/launch.cmd`), 'a Windows build carries the launcher Windows can run');
+  assert.equal(entries.has(`${slug}/launch.sh`), false, 'and not a shell script it cannot');
+  const manifestForWindows = JSON.parse(entries.get(`${slug}/build.json`).data.toString('utf8'));
+  assert.deepEqual(manifestForWindows.launchers, { windows: `${slug}/launch.cmd` });
+  for (const name of entries.keys()) assertSafeBuildPath(name);
+});
+
+test('a bundled build refuses platforms it cannot carry and a missing runtime', async () => {
+  await assert.rejects(build({ runtime: 'bundled', platform: 'macos', electronDist: '/tmp' }),
+    /Windows or Linux.*signed \.app bundle/s);
+  await assert.rejects(build({ runtime: 'bundled', platform: 'linux' }), /needs an unpacked Electron runtime/);
+  await assert.rejects(build({ runtime: 'bundled', platform: 'linux', electronDist: '/nope' }), /needs an unpacked Electron runtime/);
+  await assert.rejects(build({ runtime: 'zip' }), /Unsupported export runtime/);
+});
+
+test('the generated entry point boots the game server and hands the window its address', async t => {
+  const result = await bundledBuild(t);
+  const scratch = mkdtempSync(join(process.cwd(), '.export-app-'));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  await extract(result.bytes, scratch);
+  const appDirectory = join(scratch, 'my-first-opendle-world', 'resources', 'app');
+  // The stub replaces the shell only: main.js under test is the generated file, unmodified.
+  const driver = resolve(root, 'test/fixtures/electron-main/driver.mjs');
+  const child = spawn(process.execPath, [driver, join(appDirectory, 'main.js')], {
+    cwd: appDirectory, env: { ...process.env, STUB_APP_DATA: join(scratch, 'appdata') },
+  });
+  t.after(() => child.kill('SIGKILL'));
+  const output = { text: '' };
+  const url = await new Promise((resolveUrl, reject) => {
+    const timer = setTimeout(() => reject(new Error(`The entry point did not open a window: ${output.text}`)), 20000);
+    const inspect = () => {
+      const match = /STUB loaded (http:\/\/127\.0\.0\.1:\d+\/)/.exec(output.text);
+      if (!match) return;
+      clearTimeout(timer);
+      resolveUrl(match[1]);
+    };
+    child.stdout.on('data', chunk => { output.text += chunk; inspect(); });
+    child.stderr.on('data', chunk => { output.text += chunk; });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`The entry point exited with ${code}: ${output.text}`)); });
+  });
+
+  const page = await fetch(url);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /<script type="importmap">/);
+  const health = await (await fetch(`${url}api/health`)).json();
+  assert.equal(health.service, 'OpenDLE');
+  // The game is served from the app folder inside the build, not from the export machine.
+  assert.match(await (await fetch(`${url}shared/project.js`)).text(), /export function createProject/);
 });

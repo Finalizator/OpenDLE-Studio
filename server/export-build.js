@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,15 @@ import { validateProject } from '../shared/project.js';
 const MiB = 1024 * 1024;
 export const BUILD_MAX_BYTES = 128 * MiB;
 export const BUILD_MAX_FILES = 10000;
-const DEFAULT_LIMITS = { maxBytes: BUILD_MAX_BYTES, maxFiles: BUILD_MAX_FILES };
+/** A bundled build also carries Electron - its own Node.js and Chromium - so it is far larger. */
+export const BUILD_BUNDLED_MAX_BYTES = 768 * MiB;
+export const BUILD_BUNDLED_MAX_FILES = 14000;
+/** The project itself is bounded the same way whichever runtime carries it. */
+const PROJECT_MAX_BYTES = BUILD_MAX_BYTES;
+const DEFAULT_LIMITS = {
+  portable: { maxBytes: BUILD_MAX_BYTES, maxFiles: BUILD_MAX_FILES },
+  bundled: { maxBytes: BUILD_BUNDLED_MAX_BYTES, maxFiles: BUILD_BUNDLED_MAX_FILES },
+};
 const engineRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Server modules that only use Node built-ins plus bundled engine code. Everything else
@@ -59,10 +67,33 @@ function checkVersion(version) {
   return text;
 }
 
+/** Electron ships Windows and Linux distributions this build can carry; see electron-runtime.js. */
+function checkBundledTarget(target) {
+  check(target === 'windows' || target === 'linux',
+    `A bundled build can be made for Windows or Linux. ${target === 'macos'
+      ? 'macOS needs a signed .app bundle, which this build cannot produce; export a portable build for macOS.'
+      : `Use windows or linux, not ${target}.`}`);
+  return target;
+}
+
 function checkPlatform(platform) {
   const target = PLATFORM_TARGETS.get(typeof platform === 'string' ? platform.trim().toLowerCase() : platform);
   check(target, `Unsupported export platform: ${platform}. Use windows, macos, linux or portable.`);
   return target;
+}
+
+/**
+ * What the exported game runs on.
+ *
+ * `portable` is a folder that needs Node.js and a browser already installed. `bundled`
+ * carries Electron with the game, so a machine with neither just runs the executable.
+ */
+const RUNTIMES = new Map([['portable', 'portable'], ['node', 'portable'], ['bundled', 'bundled'], ['app', 'bundled']]);
+
+function checkRuntime(runtime) {
+  const name = RUNTIMES.get(String(runtime ?? '').trim().toLowerCase());
+  check(name, `Unsupported export runtime: ${runtime}. Use portable or bundled.`);
+  return name;
 }
 
 function checkDate(now) {
@@ -71,8 +102,8 @@ function checkDate(now) {
   return now;
 }
 
-function checkLimits(limits) {
-  const bounds = { ...DEFAULT_LIMITS, ...limits };
+function checkLimits(limits, runtime = 'portable') {
+  const bounds = { ...DEFAULT_LIMITS[runtime], ...limits };
   for (const key of ['maxBytes', 'maxFiles']) {
     check(Number.isSafeInteger(bounds[key]) && bounds[key] > 0, `Portable build limit ${key} must be a positive integer`);
   }
@@ -89,6 +120,20 @@ export function importSpecifiers(source) {
     for (const match of source.matchAll(pattern)) specs.add(match[1]);
   }
   return [...specs];
+}
+
+/**
+ * The mode a copied file gets in the zip.
+ *
+ * Only two outcomes matter: something the operating system will run, and everything else.
+ * The source is often 0777 — unwrapped archives are like that — and shipping that verbatim
+ * would hand every player a world-writable game folder for no reason.
+ */
+function fileMode(file) {
+  let mode = 0o644;
+  try { mode = statSync(file).mode & 0o777; }
+  catch { return 0o644; }
+  return mode & 0o111 ? 0o755 : 0o644;
 }
 
 function readSource(file) {
@@ -181,28 +226,38 @@ function projectTitle(project, documentProject) {
   return title || 'OpenDLE game';
 }
 
-function urlPathFor(path, slug) {
-  const prefix = `${slug}/`;
+/**
+ * The URL the game serves a bundled file from, or null for a file it does not serve.
+ *
+ * `appRoot` is where the client and the engine modules sit in the build — the bundle root
+ * for a portable build, and `resources/app` for one that carries Electron.
+ */
+function urlPathFor(path, appRoot) {
+  const prefix = `${appRoot}/`;
   if (!path.startsWith(prefix)) return null;
   const rel = path.slice(prefix.length);
   if (rel.startsWith('public/')) return `/${rel.slice('public/'.length)}`;
   if (rel.startsWith('shared/') || rel.startsWith('server/')) return `/${rel}`;
+  if (rel === 'main.js') return '/main.js';
   return null;
 }
 
-function validateBundleImports(entries, slug) {
+function validateBundleImports(entries, appRoot) {
   const urls = new Map();
   for (const entry of entries) {
-    const url = urlPathFor(entry.path, slug);
+    const url = urlPathFor(entry.path, appRoot);
     if (url) urls.set(url, entry);
   }
+  const entryFile = `${appRoot}/main.js`;
   for (const entry of entries) {
-    const from = urlPathFor(entry.path, slug);
+    const from = urlPathFor(entry.path, appRoot);
     if (!from || !entry.path.endsWith('.js') || entry.path.includes('/public/vendor/')) continue;
     for (const spec of importSpecifiers(entry.data.toString('utf8'))) {
       if (spec.startsWith('node:')) continue;
       if (!spec.startsWith('.') && !spec.startsWith('/')) {
-        check(!entry.path.includes('/server/'),
+        // `electron` is the shell itself, and only the desktop entry point may ask for it.
+        if (entry.path === entryFile && spec === 'electron') continue;
+        check(!entry.path.includes('/server/') && entry.path !== entryFile,
           `Bundled server module ${entry.path} imports "${spec}", which needs npm packages. Exclude the module or vendor the dependency.`);
         continue;
       }
@@ -216,7 +271,8 @@ function sha256(data) {
   return createHash('sha256').update(data).digest('hex');
 }
 
-function readmeText({ title, slug, engineVersion, target, exportDate }) {
+function readmeText({ title, slug, engineVersion, target, exportDate, runtime = 'portable', executable = null }) {
+  if (runtime === 'bundled') return bundledReadme({ title, slug, engineVersion, target, exportDate, executable });
   return `# ${title}
 
 Portable OpenDLE game build. Exported ${exportDate} with OpenDLE: Studio ${engineVersion} for ${target}.
@@ -277,6 +333,227 @@ opening a window.
 `;
 }
 
+/** A file name a person can double-click: the title, minus what a file system refuses. */
+function gameExecutableName(title, target) {
+  const safe = String(title).replace(/[^A-Za-z0-9 ._-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 64).replace(/[. ]+$/, '');
+  return `${safe || 'OpenDLE game'}${target === 'windows' ? '.exe' : ''}`;
+}
+
+/**
+ * The Electron entry point of a bundled build.
+ *
+ * It starts the very same game server a portable build's launcher starts — the handler,
+ * the token, the CSP and the save format are shared code — and then shows it in a window
+ * instead of an outside browser. Everything the studio's own desktop shell learned about
+ * closing without losing edits applies here too: this window is the only place the game
+ * can be saved, so it must not refuse to close and must not close silently.
+ */
+function electronMainScript({ title, slug }) {
+  return `import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
+import { join } from 'node:path';
+import { startGame } from './server/export-launcher.js';
+
+const TITLE = ${JSON.stringify(title)};
+const SLUG = ${JSON.stringify(slug)};
+const permissions = new Set(['pointerLock', 'fullscreen', 'keyboardLock', 'clipboard-sanitized-write']);
+
+// The window title, the paths and the folder saves live in all come from one name, set
+// before Electron resolves any of them.
+app.setName(TITLE);
+app.setPath('userData', join(app.getPath('appData'), SLUG));
+
+let gameWindow = null, closing = false, savedForClose = false;
+
+if (!app.requestSingleInstanceLock()) {
+  // A second double-click focuses the game already running instead of starting a second one.
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!gameWindow || gameWindow.isDestroyed()) return;
+    if (gameWindow.isMinimized()) gameWindow.restore();
+    gameWindow.show();
+    gameWindow.focus();
+  });
+  app.on('window-all-closed', () => app.quit());
+  start().catch(error => {
+    console.error(\`\${TITLE} could not start: \${error.message}\`);
+    dialog.showErrorBox(\`\${TITLE} could not start\`, error.message);
+    app.exit(1);
+  });
+}
+
+async function start() {
+  await app.whenReady();
+  Menu.setApplicationMenu(null);
+  // OPENDLE_NO_BROWSER stops the shared launcher opening an outside browser: the window
+  // below is the game. Saves land in this app's own data folder, which is always writable,
+  // unlike the folder the game was unzipped into.
+  const game = await startGame({
+    env: { ...process.env, OPENDLE_NO_BROWSER: '1', OPENDLE_DATA_DIR: join(app.getPath('userData'), 'data') },
+    log: () => {},
+  });
+  gameWindow = new BrowserWindow({
+    title: TITLE, width: 1280, height: 800, minWidth: 960, minHeight: 600,
+    backgroundColor: '#101418', show: false, autoHideMenuBar: true,
+    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
+  });
+  gameWindow.once('ready-to-show', () => gameWindow.show());
+  gameWindow.on('closed', () => { gameWindow = null; });
+
+  gameWindow.on('close', event => {
+    if (savedForClose) return;
+    event.preventDefault();
+    if (closing) return;
+    closing = true;
+    saveBeforeClose()
+      .then(done => {
+        if (!done) return;
+        savedForClose = true;
+        if (gameWindow && !gameWindow.isDestroyed()) gameWindow.close();
+      })
+      .finally(() => { closing = false; });
+  });
+
+  const current = gameWindow.webContents.session;
+  current.setPermissionRequestHandler((contents, permission, callback) => callback(permissions.has(permission)));
+  current.setPermissionCheckHandler(() => false);
+  const external = target => {
+    if (target.startsWith('http://') || target.startsWith('https://')) shell.openExternal(target).catch(() => {});
+  };
+  gameWindow.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: 'deny' }; });
+  const navigate = (event, target) => {
+    if (!target.startsWith(game.url)) { event.preventDefault(); external(target); }
+  };
+  gameWindow.webContents.on('will-navigate', navigate);
+  gameWindow.webContents.on('will-redirect', navigate);
+  await gameWindow.loadURL(game.url);
+}
+
+/** Saves through the page, and answers whether closing may continue. */
+async function saveBeforeClose() {
+  if (!gameWindow || gameWindow.isDestroyed()) return true;
+  try {
+    const saved = await gameWindow.webContents.executeJavaScript(
+      'typeof window.opendleSaveBeforeClose === "function" ? window.opendleSaveBeforeClose() : true');
+    if (saved === true) return true;
+    return offerClose('The project still has unsaved changes.');
+  } catch (error) {
+    return offerClose(error.message);
+  }
+}
+
+/**
+ * Offers to close anyway, and says what that costs: a campaign too large for browser
+ * storage has no draft, so promising one would be a lie.
+ */
+async function offerClose(reason) {
+  if (!gameWindow || gameWindow.isDestroyed()) return false;
+  const backedUp = await gameWindow.webContents.executeJavaScript(
+    'typeof window.opendleUnsavedEditsAreBackedUp === "function" ? window.opendleUnsavedEditsAreBackedUp() : false',
+  ).catch(() => false);
+  const choice = dialog.showMessageBoxSync(gameWindow, {
+    type: 'warning', title: 'Unsaved changes',
+    message: 'The project could not be saved, so the game was kept open.',
+    detail: \`\${reason}\n\n\${backedUp
+      ? 'Close anyway? Your unsaved edits stay in the browser draft and are offered back the next time this game is opened.'
+      : 'Close anyway? These edits are not kept anywhere else and will be lost.'}\`,
+    buttons: ['Keep playing', 'Close without saving'], defaultId: 0, cancelId: 0,
+  });
+  if (choice !== 1) { console.error(\`\${TITLE}: \${reason}\`); return false; }
+  await gameWindow.webContents.executeJavaScript('window.opendleCloseWithoutSaving = true').catch(() => {});
+  return true;
+}
+`;
+}
+
+/** The Electron app manifest: enough for the runtime to find its entry point. */
+function electronAppManifest({ title, slug, engineVersion }) {
+  return `${JSON.stringify({
+    name: slug, productName: title, version: engineVersion, private: true, type: 'module', main: 'main.js',
+  }, null, 2)}\n`;
+}
+
+/** Starts the bundled executable; the mode is repaired when an unzip tool drops it. */
+function bundledLaunchUnix(executable) {
+  return `#!/bin/sh
+set -eu
+cd "$(dirname "$0")"
+[ -x "./${executable}" ] || chmod +x "./${executable}"
+exec "./${executable}" "$@"
+`;
+}
+
+function bundledLaunchWindows(executable) {
+  return `@echo off
+cd /d "%~dp0"
+if not exist "${executable}" (
+  echo ${executable} is missing from this folder. Unzip the whole download before playing.
+  pause
+  exit /b 1
+)
+start "" "${executable}"
+`;
+}
+
+/**
+ * The README of a build that carries its own runtime.
+ *
+ * It says nothing about installing anything, because there is nothing to install — that is
+ * the whole point of this build — and it says where saves go, because they do not land in
+ * the folder the game was unzipped into.
+ */
+function bundledReadme({ title, slug, engineVersion, target, exportDate, executable }) {
+  const windows = target === 'windows';
+  const savePath = windows ? `%APPDATA%\\${slug}\\data\\project.json` : `~/.config/${slug}/data/project.json`;
+  return `# ${title}
+
+Standalone OpenDLE game. Exported ${exportDate} with OpenDLE: Studio ${engineVersion} for ${target}.
+
+Nothing has to be installed: this folder carries its own runtime (Electron, which includes
+Node.js and the Chromium browser the game draws with). No Node.js, no npm, no browser
+download, and no internet connection is needed to play.
+
+## Play
+
+${windows
+    ? `- **Double-click \`${executable}\`** (or \`launch.cmd\`).`
+    : `- **Run \`./launch.sh\`**, or \`./${executable}\` directly. Unzip the whole folder first:
+  the game needs the files beside the executable.`}
+
+Nothing else in this folder has to be opened, moved or configured.
+
+## Where the game is kept
+
+- **The game itself:** \`resources/app\` — the client, the engine modules and
+  \`data/project.json\` with every texture, sprite, sound and level inside it.
+- **Saves:** \`${savePath}\` — outside the unzipped folder, so replacing the game with a
+  newer build does not lose your progress, and the game still saves when it is installed
+  somewhere read-only.
+
+## What is inside
+
+| Path | Contents |
+| --- | --- |
+| \`${executable}\` | The game: Electron with this project inside it |
+| \`${windows ? 'launch.cmd' : 'launch.sh'}\` | The start script for this build |
+| \`resources/app/server/export-launcher.js\` | The local game server |
+| \`resources/app/shared/\`, \`resources/app/public/\` | Engine modules and the game client |
+| \`resources/app/data/project.json\` | The exported project; this is the copy the game opens |
+| \`build.json\` | Build manifest: engine version, Electron version, export date, every file and its SHA-256 |
+| \`LICENSE\`, \`LICENSES.chromium.html\` | The OpenDLE: Studio license and the runtime's own notices |
+
+## Limits
+
+- Single-player only. The local server listens on \`127.0.0.1\` with a fresh token on every
+  launch and rejects cross-origin requests; there is no network or multiplayer support.
+- AI assistance and MCP tooling are studio features and are absent here.
+- The window is the same client the studio uses, so the project can also be edited in this
+  build. Redistribution follows \`LICENSE\`: shipping the OpenDLE runtime with your game is
+  permitted and this license must travel with it; redistributing the build as an engine or
+  editor product is not.
+`;
+}
+
 function launchScriptWindows() {
   return `@echo off
 setlocal
@@ -311,6 +588,12 @@ function noticeText() {
 
 The following libraries are bundled under public/vendor so the exported game can
 render without an npm install. They are not part of the OpenDLE engine.
+
+Electron - MIT License (bundled runtime builds only)
+  Source: https://github.com/electron/electron
+  Bundled files: the runtime beside resources/app, including LICENSES.chromium.html
+  and LICENSE at the top of this folder. Electron carries Chromium, which ships with
+  its own notices there.
 
 three.js (r180) - MIT License
   Source: https://github.com/mrdoob/three.js
@@ -391,14 +674,18 @@ export function createZipArchive(entries, when) {
 }
 
 export async function createPortableBuild({
-  project, projectJson, version, platform = 'portable', now = new Date(), root = engineRoot, limits = {},
+  project, projectJson, version, platform = 'portable', runtime = 'portable',
+  now = new Date(), root = engineRoot, limits = {}, electronDist = null, electronVersion = null,
 } = {}) {
-  const bounds = checkLimits(limits);
+  const kind = checkRuntime(runtime);
+  const bounds = checkLimits(limits, kind);
   const target = checkPlatform(platform);
+  if (kind === 'bundled') checkBundledTarget(target);
   const engineVersion = checkVersion(version);
   const exportedAt = checkDate(now);
   check(typeof zlib.crc32 === 'function', 'Portable builds need Node.js 22.2 or newer for CRC-32 support');
-  const document = projectDocument(projectJson, project, bounds.maxBytes);
+  // The project is bounded by its own cap, and by a caller's smaller one when it sets one.
+  const document = projectDocument(projectJson, project, Math.min(PROJECT_MAX_BYTES, bounds.maxBytes));
   const title = projectTitle(project, document.project);
   const slug = slugifyTitle(title);
   const nodeModules = join(root, 'node_modules');
@@ -406,47 +693,85 @@ export async function createPortableBuild({
   for (const directory of ['server', 'shared', 'public']) {
     check(existsSync(join(root, directory)), `Missing portable build source directory: ${directory}`);
   }
+  if (kind === 'bundled') {
+    check(typeof electronDist === 'string' && existsSync(join(electronDist, 'version')),
+      'A bundled build needs an unpacked Electron runtime. Call resolveDist() from server/electron-runtime.js and pass its directory as electronDist.');
+  }
 
-  for (const name of SERVER_MODULES) collector.add(`${slug}/server/${name}`, readSource(join(root, 'server', name)));
+  // A bundled build is an Electron app, so the game sits in `resources/app` beside the
+  // runtime the way Electron looks for it; a portable build is served from its own root.
+  const appRoot = kind === 'bundled' ? `${slug}/resources/app` : slug;
+  const add = (relative, contents, mode) => collector.add(`${appRoot}/${relative}`, contents, mode);
+
+  for (const name of SERVER_MODULES) add(`server/${name}`, readSource(join(root, 'server', name)));
   for (const name of readdirSync(join(root, 'shared')).filter(name => name.endsWith('.js')).sort()) {
-    collector.add(`${slug}/shared/${name}`, readSource(join(root, 'shared', name)));
+    add(`shared/${name}`, readSource(join(root, 'shared', name)));
   }
   for (const name of listFiles(join(root, 'public'))) {
-    collector.add(`${slug}/public/${name}`, readSource(join(root, 'public', name)));
+    add(`public/${name}`, readSource(join(root, 'public', name)));
   }
   for (const name of THREE_BUILD_FILES) {
-    collector.add(`${slug}/public/vendor/three/${name}`, readSource(join(nodeModules, 'three', 'build', name)));
+    add(`public/vendor/three/${name}`, readSource(join(nodeModules, 'three', 'build', name)));
   }
-  collector.add(`${slug}/public/vendor/rapier/rapier.mjs`, readSource(join(nodeModules, '@dimforge', 'rapier3d-compat', 'rapier.mjs')));
+  add('public/vendor/rapier/rapier.mjs', readSource(join(nodeModules, '@dimforge', 'rapier3d-compat', 'rapier.mjs')));
   for (const [name, source] of collectThreeAddons(nodeModules)) {
-    collector.add(`${slug}/public/vendor/three-addons/${name}`, source);
+    add(`public/vendor/three-addons/${name}`, source);
   }
-  collector.add(`${slug}/licenses/three-LICENSE.txt`, readSource(join(nodeModules, 'three', 'LICENSE')));
-  collector.add(`${slug}/licenses/THIRD-PARTY-NOTICES.txt`, noticeText());
-  collector.add(`${slug}/version.ini`, `[engine]\nversion=${engineVersion}\n`);
-  collector.add(`${slug}/data/project.json`, `${JSON.stringify(document)}\n`);
-  collector.add(`${slug}/LICENSE`, readSource(join(root, 'LICENSE')));
-  collector.add(`${slug}/launch.cmd`, launchScriptWindows());
-  collector.add(`${slug}/launch.sh`, launchScriptUnix(), 0o755);
-  collector.add(`${slug}/README.md`, readmeText({ title, slug, engineVersion, target, exportDate: exportedAt.toISOString() }));
+  add('licenses/three-LICENSE.txt', readSource(join(nodeModules, 'three', 'LICENSE')));
+  add('licenses/THIRD-PARTY-NOTICES.txt', noticeText());
+  add('version.ini', `[engine]\nversion=${engineVersion}\n`);
+  add('data/project.json', `${JSON.stringify(document)}\n`);
+  add('LICENSE', readSource(join(root, 'LICENSE')));
 
-  validateBundleImports(collector.entries(), slug);
+  const executable = kind === 'bundled' ? gameExecutableName(title, target) : null;
+  if (kind === 'bundled') {
+    // The runtime is copied as Electron ships it; only the executable is renamed so the
+    // unzipped folder reads as a game rather than as a browser. `default_app.asar` is left
+    // out: it is the placeholder app Electron shows when it was not given one.
+    for (const name of listFiles(electronDist)) {
+      if (name === 'resources/default_app.asar' || name.startsWith('.complete')) continue;
+      const renamed = name === 'electron' || name === 'electron.exe' ? executable : name;
+      // The runtime sits beside `resources/`, not inside it, so these bypass the app prefix.
+      collector.add(`${slug}/${renamed}`, readSource(join(electronDist, name)), fileMode(join(electronDist, name)));
+    }
+    add('main.js', electronMainScript({ title, slug }));
+    add('package.json', electronAppManifest({ title, slug, engineVersion }));
+    // One launcher, for the platform the runtime was built for: a shell script inside a Windows
+    // build would only be a file that cannot run.
+    if (target === 'windows') collector.add(`${slug}/launch.cmd`, bundledLaunchWindows(executable), 0o644);
+    else collector.add(`${slug}/launch.sh`, bundledLaunchUnix(executable), 0o755);
+  } else {
+    collector.add(`${slug}/launch.cmd`, launchScriptWindows());
+    collector.add(`${slug}/launch.sh`, launchScriptUnix(), 0o755);
+  }
+  collector.add(`${slug}/README.md`, readmeText({
+    title, slug, engineVersion, target, exportDate: exportedAt.toISOString(), runtime: kind, executable,
+  }));
+
+  validateBundleImports(collector.entries(), appRoot);
 
   const listed = collector.entries();
   const manifest = {
-    format: 'opendle-portable-build/1',
+    format: kind === 'bundled' ? 'opendle-bundled-build/1' : 'opendle-portable-build/1',
     engine: { name: 'OpenDLE: Studio', version: engineVersion },
     project: { title, slug },
     exportDate: exportedAt.toISOString(),
     target,
+    runtime: kind === 'bundled'
+      ? { kind, electron: electronVersion || null, application: `${appRoot}/main.js`, executable: `${slug}/${executable}` }
+      : { kind },
     manifest: `${slug}/build.json`,
     entry: {
-      page: `${slug}/public/index.html`,
-      server: `${slug}/server/export-launcher.js`,
-      data: `${slug}/data/project.json`,
+      page: `${appRoot}/public/index.html`,
+      server: `${appRoot}/server/export-launcher.js`,
+      data: `${appRoot}/data/project.json`,
     },
-    launchers: { windows: `${slug}/launch.cmd`, unix: `${slug}/launch.sh` },
-    requirements: { node: '>=22.2', browser: 'Chromium-based browser for app mode; other browsers open in a tab' },
+    launchers: kind === 'bundled'
+      ? { [target]: `${slug}/${target === 'windows' ? 'launch.cmd' : 'launch.sh'}` }
+      : { windows: `${slug}/launch.cmd`, unix: `${slug}/launch.sh` },
+    requirements: kind === 'bundled'
+      ? { install: 'nothing: the game carries its own runtime', os: target === 'windows' ? 'Windows 10 or newer' : 'Linux (x64)' }
+      : { node: '>=22.2', browser: 'Chromium-based browser for app mode; other browsers open in a tab' },
     fileCount: listed.length,
     totalBytes: listed.reduce((sum, entry) => sum + entry.data.length, 0),
     files: listed.map(entry => ({ path: entry.path, size: entry.data.length, sha256: sha256(entry.data) })),
@@ -456,7 +781,7 @@ export async function createPortableBuild({
   const entries = collector.entries();
   for (const entry of entries) assertSafeBuildPath(entry.path);
   return {
-    filename: `${slug}-${engineVersion}-${target}.zip`,
+    filename: `${slug}-${engineVersion}-${target}${kind === 'bundled' ? '-app' : ''}.zip`,
     bytes: createZipArchive(entries, exportedAt),
     files: entries.map(entry => ({ path: entry.path, size: entry.data.length })),
     manifest,

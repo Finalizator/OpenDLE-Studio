@@ -4598,21 +4598,70 @@ $('export').addEventListener('click', guard(async () => {
     status(`Project exported: ${name} — project.json and ${files} asset file(s), ${(blob.size / 1048576).toFixed(1)} MiB.`);
   } finally { $('export').disabled = false; }
 }));
-$('export-build').addEventListener('click', guard(async () => {
-  $('export-build').disabled = true;
-  status('Packaging a standalone desktop build (engine files, project data and launch scripts)...');
-  try {
-    const { response } = await requestWithSession(`/api/export/build?platform=${encodeURIComponent(navigator.platform.toLowerCase().includes('win') ? 'windows' : navigator.platform.toLowerCase().includes('mac') ? 'macos' : 'linux')}`, {
-      method: 'POST', body: JSON.stringify({ project }),
-    }, token);
-    if (!response.ok) await readServiceResponse(response, '/api/export/build');
-    const blob = await response.blob();
-    const name = /filename="([^"]+)"/.exec(response.headers.get('content-disposition') || '')?.[1] || 'opendle-game.zip';
-    const url = URL.createObjectURL(blob);
-    const link = make('a'); link.href = url; link.download = name; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
-    status(`Standalone build downloaded: ${name} (${(blob.size / 1048576).toFixed(1)} MiB). Unzip it and run the launch script; it needs Node.js 22+ and a Chromium-based browser for app-window mode.`);
-  } finally { $('export-build').disabled = false; }
+/**
+ * Which runtime an export carries.
+ *
+ * The portable build is small and needs Node.js and a browser on the machine that plays it.
+ * The bundled build carries Electron — its own Node.js and Chromium — so a clean computer
+ * runs it with nothing installed, at the cost of a much larger download.
+ */
+function exportPlatform(target = navigator.platform.toLowerCase()) {
+  if (target.includes('win')) return 'windows';
+  if (target.includes('mac')) return 'macos';
+  return 'linux';
+}
+
+/** The targets a build that carries its own runtime can be made for. */
+const BUNDLED_TARGETS = ['windows', 'linux'];
+const TARGET_NAMES = { windows: 'Windows', linux: 'Linux', macos: 'macOS' };
+
+/**
+ * The menu entries for a build that carries its own runtime: this machine first, then the
+ * other platform it can be made for. Building for another platform is normal — the runtime
+ * for it is downloaded once on this machine, so a Linux studio can ship a Windows game.
+ */
+function bundledTargetItems() {
+  const host = exportPlatform();
+  const targets = BUNDLED_TARGETS.includes(host) ? [host, ...BUNDLED_TARGETS.filter(target => target !== host)] : BUNDLED_TARGETS;
+  return targets.map(target => ({
+    label: target === host ? `This computer (${TARGET_NAMES[target]})` : TARGET_NAMES[target],
+    hint: target === host ? 'The runtime already installed here' : 'Downloads that runtime once',
+    run: guard(async () => { $('export-build').disabled = true; try { await exportBuild('bundled', target); } finally { $('export-build').disabled = false; } }),
+  }));
+}
+
+async function exportBuild(runtime, platform = exportPlatform()) {
+  if (runtime === 'bundled' && !BUNDLED_TARGETS.includes(platform)) {
+    throw new Error(`A bundled build can be made for Windows or Linux, not ${TARGET_NAMES[platform] || platform}. macOS needs a signed .app bundle; export the small build instead.`);
+  }
+  const query = `platform=${encodeURIComponent(platform)}&runtime=${encodeURIComponent(runtime)}`;
+  status(runtime === 'bundled'
+    ? 'Packaging a standalone build with its own runtime (engine, project and Electron). The first export for a platform downloads that runtime once.'
+    : 'Packaging a portable build (engine files, project data and launch scripts)...');
+  const { response } = await requestWithSession(`/api/export/build?${query}`, {
+    method: 'POST', body: JSON.stringify({ project }),
+  }, token);
+  if (!response.ok) await readServiceResponse(response, '/api/export/build');
+  const blob = await response.blob();
+  const name = /filename="([^"]+)"/.exec(response.headers.get('content-disposition') || '')?.[1] || 'opendle-game.zip';
+  const url = URL.createObjectURL(blob);
+  const link = make('a'); link.href = url; link.download = name; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  const size = `${(blob.size / 1048576).toFixed(1)} MiB`;
+  status(runtime === 'bundled'
+    ? `Standalone build downloaded: ${name} (${size}). Unzip it and run the game; nothing has to be installed.`
+    : `Build downloaded: ${name} (${size}). Unzip it and run the launch script; it needs Node.js 22+ and a Chromium-based browser for app-window mode.`);
+}
+
+$('export-build').addEventListener('click', guard(async event => {
+  const menu = contextMenu(event, [
+    // The primary choice: a folder that plays on a machine with nothing installed.
+    { label: 'Runs on any computer', hint: 'About 150 MB: carries its own browser engine, so nothing is installed.',
+      submenu: bundledTargetItems() },
+    { label: 'Small build', hint: 'About 25 MB. The computer needs Node.js 22.2+ and a Chromium-based browser.',
+      run: guard(async () => { $('export-build').disabled = true; try { await exportBuild('portable'); } finally { $('export-build').disabled = false; } }) },
+  ], { label: 'Export playable app' });
+  return menu;
 }));
 $('open').addEventListener('click', () => $('project-file').click());
 /**

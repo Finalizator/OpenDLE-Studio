@@ -502,3 +502,23 @@ test('AI HTTP returns approval-only changes and leaves server project untouched'
   assert.notEqual(store.snapshot().project.title, 'Proposed'); assert.equal(store.snapshot().revision, 0);
   assert.equal((await fetch(`${url}/api/ai`, { method: 'POST', headers, body: JSON.stringify({ prompt: 'Rename', revision: 99 }) })).status, 409);
 });
+
+test('a hand-written pre-release separator is read as SemVer instead of stopping the studio', async t => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const directory = mkdtempSync(join(tmpdir(), 'opendle-version-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const read = version => {
+    const file = join(directory, 'version.ini');
+    writeFileSync(file, `[engine]\nversion=${version}`);
+    return readEngineVersion(file);
+  };
+  // `0.4.0_alpha` is how a pre-release gets typed into a text file; SemVer spells it with a dash.
+  assert.equal(read('0.4.0_alpha'), '0.4.0-alpha');
+  assert.equal(read('0.4.0-beta.2'), '0.4.0-beta.2');
+  assert.equal(read('0.4.1'), '0.4.1');
+  for (const invalid of ['0.4', 'nope', '0.4.0.1']) {
+    assert.throws(() => read(invalid), /version must be SemVer/, invalid);
+  }
+});

@@ -18,6 +18,7 @@ import { readEngineVersion } from './version.js';
 import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, inspectPackage, importPackage } from './packages.js';
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
 import { createPortableBuild, createZipArchive } from './export-build.js';
+import { resolveDist } from './electron-runtime.js';
 import { projectZipEntries } from './project-folder.js';
 import { readProjectArchive } from './project-archive.js';
 import { loadGzdoomActors } from './actor-sources.js';
@@ -238,8 +239,15 @@ export function createApp({
   });
   const exportBuild = async (req, res) => {
     const project = req.method === 'POST' ? validateProject(req.body?.project) : store.snapshot().project;
+    // `bundled` puts a copy of Electron in the zip, so the game runs on a machine with no
+    // Node.js and no browser. Resolving that runtime is the only slow part of an export, and
+    // it is cached on disk after the first time a platform is built.
+    const runtime = req.query.runtime === 'bundled' ? 'bundled' : 'portable';
+    const target = req.query.platform || process.platform;
+    const electron = runtime === 'bundled' ? await resolveDist({ target, root }) : null;
     const built = await createPortableBuild({ project, projectJson: JSON.stringify(project),
-      version: readEngineVersion(versionFile), platform: req.query.platform || process.platform });
+      version: readEngineVersion(versionFile), platform: target, runtime,
+      ...(electron ? { electronDist: electron.directory, electronVersion: electron.version } : {}) });
     res.set({ 'Content-Type': 'application/zip',
       'Content-Disposition': `attachment; filename="${built.filename}"`,
       'Content-Length': String(built.bytes.length) }).send(built.bytes);

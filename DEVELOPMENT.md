@@ -5778,6 +5778,48 @@ This is a *portable* build, not a signed installer: there is no embedded browser
 runtime (an embedded WebView would add a licence and a 100+ MB runtime per
 platform) and GPU support is whatever the user's browser provides.
 
+#### The bundled runtime: nothing to install
+
+**Export playable app** offers two builds, because "standalone" means two different things:
+
+| | Small build (`runtime=portable`) | Runs on any computer (`runtime=bundled`) |
+| --- | --- | --- |
+| Size | about 25 MB | about 120 MB empty, 150-180 MB with an imported game's artwork |
+| Needs on the player's machine | Node.js 22.2+ and a Chromium browser | nothing |
+| Runs by | `launch.cmd` / `launch.sh` | double-clicking the game |
+| macOS | supported | not supported (see below) |
+
+The bundled build copies Electron into the zip: the game's own Node.js and Chromium, which is
+what makes a clean machine work. Nothing is rebuilt or patched — the runtime is the version the
+studio itself runs on, so the renderer behaves the same in the editor and in the shipped game.
+`server/electron-runtime.js` resolves it: the studio's own `node_modules/electron/dist` when the
+target is this machine, otherwise the release zip from `@electron/get`, unpacked once into
+`data/.electron-runtimes/v<version>-<platform>-<arch>/` (gitignored) and reused offline after
+that. A half-finished unpack never looks complete: it happens under a `.partial` name and is
+renamed when the archive is fully out.
+
+The layout is Electron's, unchanged: the runtime sits at the top of the folder and the game is
+`resources/app` beside it, where Electron looks for it. `main.js` (generated per build,
+[server/export-build.js](./server/export-build.js)) starts the **same** game server a portable
+build starts — `startGame` from `export-launcher.js`, so the token, CSP, addon serving and save
+format are shared code — and shows it in a `BrowserWindow` instead of an outside browser. It
+grants only the permissions a game needs (pointer lock, fullscreen), refuses remote navigation,
+and wires closing the way the studio's own window does: save through the page, and if that fails
+offer to close anyway while saying whether the edits survive. Saves go to
+`<appData>/<slug>/data/project.json`, not into the unzipped folder, so replacing the game with a
+newer build keeps progress and a read-only install still saves.
+
+The executable is renamed to the project title (minus what a file system refuses) so the folder
+reads as a game rather than as a browser; `resources/default_app.asar` is dropped because it is
+only Electron's placeholder app. Copied files keep just two modes — `0755` for anything that was
+executable, `0644` for the rest — because source distributions are often `0777` and shipping that
+would hand every player a world-writable game folder.
+
+**macOS is deliberately not a bundled target.** An `Electron.app` survives a zip only if its
+framework symlinks do, and it has to be signed before a machine that did not build it will open
+it; an unsigned copy is an app the Finder refuses to launch. A macOS export therefore uses the
+portable build, and the UI says so instead of producing a bundle that will not open.
+
 ## License and references
 
 OpenDLE: Studio uses the **OpenDLE: Studio Source-Available Commercial License v1.0**;
