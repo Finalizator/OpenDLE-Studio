@@ -17,7 +17,7 @@ import { pathPointOptions } from './paths.js';
 /** The commands whose `variable` field names an object's own variable rather than a global. */
 export const OBJECT_VARIABLE_COMMANDS = ['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'];
 
-export function commandFields(command, { entities, zones = [], playerId, variables, groups, clips, walls, sectors, doorSectors = sectors, elevatorSectors = sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [], commands = null }) {
+export function commandFields(command, { entities, zones = [], cameras = [], playerId, variables, groups, clips, walls, sectors, doorSectors = sectors, elevatorSectors = sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [], commands = null }) {
   // `commands` is the project's whole catalogue, engine commands first and addon commands after it,
   // so an addon's fields are drawn by the same code as the engine's.
   const definition = (commands ? commands.find(entry => entry.type === command.type) : null) || engineCommand(command.type);
@@ -54,6 +54,9 @@ export function commandFields(command, { entities, zones = [], playerId, variabl
           hint: entityVariableNames(command.entityId).length ? null : 'This object has no local variables yet — add one in its Properties.',
         } : {}),
         ...(['clipId', 'impactClipId'].includes(field.name) ? { options: [['', 'None / primitive visual'], ...spriteClips] } : {}),
+        // A camera target is picked from the cameras this level has, with the two references a
+        // cutscene needs first: the player's own eyes and whichever camera is filming.
+        ...(field.name === 'camera' ? { options: [['$player', "The player's view"], ['$active', 'The camera in use'], ...cameras] } : {}),
         // Image fields list the asset library, so a spray's artwork is chosen by name.
         ...(field.kind === 'image' ? { options: imageFieldOptions(images) } : {}) })),
     ];

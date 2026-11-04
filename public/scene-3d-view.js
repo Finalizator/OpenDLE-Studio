@@ -418,8 +418,9 @@ export async function createScene3dView(canvas) {
         color: '#6f5bd0', transparent: true, opacity: .92, side: THREE.DoubleSide }));
       mesh.userData.pickable = true;
       group.add(mesh);
-    } else if (entity.type === 'light' || entity.sound || entity.nodeKind === 'node3d' || entity.nodeKind === 'marker' || entity.area) {
-      const color = entity.type === 'light' ? '#ffd06b' : entity.sound ? '#88ccff' : '#b2a1e8';
+    } else if (entity.type === 'light' || entity.type === 'camera' || entity.sound || entity.nodeKind === 'node3d' || entity.nodeKind === 'marker' || entity.area) {
+      const color = entity.type === 'light' ? '#ffd06b' : entity.type === 'camera' ? '#d8c4ff'
+        : entity.sound ? '#88ccff' : '#b2a1e8';
       const dimension = sceneNodeDimensions(entity);
       const geometry = entity.area
         ? entity.area.shape === 'sphere' ? new THREE.SphereGeometry(dimension.width / 2, 16, 10)
@@ -427,7 +428,9 @@ export async function createScene3dView(canvas) {
             Math.max(0, dimension.height - dimension.width), 4, 12).rotateX(Math.PI / 2)
             : new THREE.BoxGeometry(dimension.width, dimension.depth, dimension.height)
         : entity.type === 'light' ? new THREE.SphereGeometry(10, 12, 8)
-          : entity.sound ? new THREE.ConeGeometry(14, 24, 16) : new THREE.OctahedronGeometry(10);
+          // A camera reads as a lens: a cone points where it is looking.
+          : entity.type === 'camera' ? new THREE.ConeGeometry(12, 26, 12).rotateX(Math.PI / 2)
+            : entity.sound ? new THREE.ConeGeometry(14, 24, 16) : new THREE.OctahedronGeometry(10);
       const wire = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, wireframe: true }));
       wire.position.z = entity.area ? dimension.height / 2 : 12;
       group.add(wire);

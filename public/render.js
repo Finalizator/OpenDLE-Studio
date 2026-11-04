@@ -35,7 +35,12 @@ import { viewBob, weaponBob } from '/shared/player-motion.js';
 import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 import { createWorldNodeObject, createWorldTerminalController, gameplayCrosshairVisible, setWorldNodePose } from './world-media.js';
 
-export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc', ramp: '#c98b4b', zone: '#5ce1c6' };
+/** A camera's own field of view, or null when it has none a projection can be built from. */
+function validFov(value) {
+  return Number.isFinite(value) && value > 1 && value < 179 ? value : null;
+}
+
+export const entityColors = { player: '#70ddba', enemy: '#ed8b83', pickup: '#efd17a', light: '#a9beff', decoration: '#a6a4bc', ramp: '#c98b4b', zone: '#5ce1c6', camera: '#d8c4ff' };
 // Imported models are shaded as physical surfaces instead of Doom's flat light
 // levels: the environment only adds reflections and a little fill, a hemisphere
 // light lifts the shadows predictably, the key light separates faces and the rim
@@ -1271,6 +1276,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
       if (entity.panel) { addPanel(entity); return; }
       // A zone is a volume, not a thing: no artwork in play, a translucent box while editing.
       if (entity.type === 'zone') { if (editor) addZone(entity); return; }
+      // A camera is a point of view, not a thing: it films the level and is never part of it.
+      // Without this it fell through to the sprite path and drew a missing-texture placeholder
+      // wherever a cutscene had put its camera.
+      if (entity.type === 'camera') return;
       // An object that only has a collider is a solid shape with no artwork: a surf ramp, a
       // blocking volume, a wall of a test map. Drawing nothing left it invisible in play — a
       // ramp you cannot see is a ramp you walk into and call an invisible wall — so its
@@ -1843,6 +1852,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
       }
       ceilingCut.value = ceilingsHidden ? camera.position.y + 2 : -1e30;
       renderer.info.reset();
+      // What the view is filmed through, if anything: the projection and the eye both need it,
+      // and they are built in two separate passes. It is not necessarily a camera object — a
+      // ChangeCamera special points this at whichever actor the map nominated — so the filter is
+      // on the id alone, and a viewer with no `cameraFov` films at the game's setting.
+      const cameraEntity = state.viewCamera
+        ? state.entities.find(entry => entry.id === state.viewCamera) : null;
       if (!editor) {
         const detail = state.settings.lowDetail ? 2 : 1;
         // The status bar belongs to gameplay: GZDoom draws the game view alone on a title
@@ -1875,8 +1890,11 @@ export async function createPreview(canvas, project, state, { editor = false, on
         writeDataset('ambientWorld', state.ambientWorld ? '1' : '0');
         writeDataset('gameViewport', viewportJson);
         const aspect = view.width / view.height;
-        // GZDoom's `fov` is horizontal; three.js takes a vertical angle.
-        const fieldOfView = verticalFov(state.settings.fov, aspect);
+        // GZDoom's `fov` is horizontal; three.js takes a vertical angle. A camera films with its
+        // own field of view when it has one — that is what makes a scripted zoom a zoom — and
+        // falls back to the game's setting when it does not.
+        const horizontalFov = validFov(cameraEntity?.cameraFov) ?? state.settings.fov;
+        const fieldOfView = verticalFov(horizontalFov, aspect);
         if (camera.aspect !== aspect || camera.fov !== fieldOfView) {
           camera.aspect = aspect; camera.fov = fieldOfView; camera.updateProjectionMatrix();
         }
@@ -1928,7 +1946,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
         // ChangeCamera). A title map is built that way: the player start sits in a black
         // box and a SecurityCamera films the scene, so rendering from the player showed
         // nothing at all.
-        const spectator = state.viewCamera ? state.entities.find(entry => entry.id === state.viewCamera) : null;
+        const spectator = cameraEntity;
         const up = upVector(state.player.up);
         // A camera actor films from its own height above the floor: the map places it with a
         // UDMF `height`, and reading only `z` put the eye on the floor, inside the geometry it
@@ -1951,7 +1969,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
         // A title map films the scene from a camera actor; without this, the only clue that
         // the view is not the player's is the picture itself being wrong.
         writeDataset('viewCamera', spectator ? `${spectator.id}@${eye[0].toFixed(0)},${eye[1].toFixed(0)},${eye[2].toFixed(0)}` : 'player');
-        writeDataset('viewFov', `${Number(state.settings.fov).toFixed(1)} set / ${camera.fov.toFixed(1)} vertical / `
+        // The horizontal angle the projection was built from, for a measurement to read back:
+        // the camera's own when it has one, the game's setting otherwise.
+        const shownFov = validFov(spectator?.cameraFov) ?? state.settings.fov;
+        writeDataset('viewFov', `${Number(shownFov).toFixed(1)} set / ${camera.fov.toFixed(1)} vertical / `
           + `${(2 * Math.atan(Math.tan(camera.fov * Math.PI / 360) * camera.aspect) * 180 / Math.PI).toFixed(1)} horizontal`);
         // Roll eases in: a gravity change should read as the world turning, not a cut.
         viewUp.lerp(targetUp.set(...(spectator ? [0, 1, 0] : [up[0], up[2], up[1]])), dt > 0 ? 1 - Math.exp(-12 * dt) : 1);

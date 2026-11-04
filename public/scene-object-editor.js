@@ -27,10 +27,10 @@ import { rotationDetent } from '/shared/gizmo-math.js';
 // tree always starts on the scene itself, exactly as a Godot scene does.
 
 /** Icons are text glyphs, one per object type, so the tree needs no image assets. */
-const TYPE_LABELS = { scene: 'Scene', enemy: 'Enemy', pickup: 'Pickup', light: 'Light', decoration: 'Decoration', ramp: 'Ramp', zone: 'Zone' };
+const TYPE_LABELS = { scene: 'Scene', enemy: 'Enemy', pickup: 'Pickup', light: 'Light', decoration: 'Decoration', ramp: 'Ramp', zone: 'Zone', camera: 'Camera' };
 const GRID = 32;
 /** Godot's inspector groups; a row is only shown when the object has that data. */
-const CATEGORIES = ['Transform', 'Node', 'Visual', 'Mesh', 'Sprite plane', 'Sound', 'Projector', 'Terminal', 'Panel', 'Model', 'Physics', 'Joints', 'Light', 'Interaction area', 'Script'];
+const CATEGORIES = ['Transform', 'Node', 'Visual', 'Mesh', 'Sprite plane', 'Sound', 'Projector', 'Terminal', 'Panel', 'Model', 'Physics', 'Joints', 'Light', 'Camera', 'Interaction area', 'Script'];
 
 export function createSceneObjectEditor({ callbacks }) {
   const state = {
@@ -1229,6 +1229,43 @@ export function createSceneObjectEditor({ callbacks }) {
         }
       }
       if (!links.length && !others.length) propertyHost.append(el('p', 'Add another node to connect this one to.', 'muted joint-note'));
+    });
+
+    if (!isRoot) rows('Camera', () => {
+      // A camera node is a point of view, so its inspector is its view: the numbers a rule can
+      // then change at play time.
+      if (visible('Field of view')) {
+        shown++;
+        propertyRow(dom.properties, {
+          label: 'Field of view', value: target.cameraFov ?? 90,
+          editor: numberEditor(target.cameraFov ?? 90, { min: 10, max: 170, step: 1,
+            onChange: value => set('cameraFov', value, 'Camera field of view updated') }),
+        });
+      }
+      if (visible('Pitch')) {
+        shown++;
+        propertyRow(dom.properties, {
+          label: 'Pitch', value: target.cameraPitch ?? 0,
+          editor: numberEditor(target.cameraPitch ?? 0, { min: -89, max: 89, step: 1,
+            onChange: value => set('cameraPitch', value, 'Camera pitch updated') }),
+        });
+      }
+      if (visible('Eye height')) {
+        shown++;
+        propertyRow(dom.properties, {
+          label: 'Eye height', value: target.cameraHeight ?? 48,
+          editor: numberEditor(target.cameraHeight ?? 48, { min: -32768, max: 32768, step: 1,
+            onChange: value => set('cameraHeight', value, 'Camera eye height updated') }),
+        });
+      }
+      if (visible('Active at start')) {
+        shown++;
+        propertyRow(dom.properties, {
+          label: 'Active at start', value: Boolean(target.cameraActive),
+          editor: checkEditor(Boolean(target.cameraActive),
+            value => set('cameraActive', value, value ? 'Level opens on this camera' : 'Level opens on the player')),
+        });
+      }
     });
 
     if (!isRoot) rows('Light', () => {

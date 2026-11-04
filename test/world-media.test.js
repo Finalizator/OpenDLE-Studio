@@ -49,7 +49,7 @@ function mediaProject() {
 test('ordinary entities validate media components and the full nodeKind vocabulary', () => {
   const project = mediaProject();
   assert.deepEqual(entityMediaAssetIds(project.map.entities[1]), ['sound_a', 'video_a']);
-  assert.deepEqual(NODE_KINDS, ['node3d', 'marker', 'mesh', 'sprite', 'sound', 'projector', 'terminal', 'panel', 'light', 'zone', 'enemy', 'pickup', 'ramp']);
+  assert.deepEqual(NODE_KINDS, ['node3d', 'marker', 'mesh', 'sprite', 'sound', 'projector', 'terminal', 'panel', 'light', 'zone', 'enemy', 'pickup', 'ramp', 'camera']);
   assert.doesNotThrow(() => validateProject(project));
   project.map.entities[1].projector.assetId = 'sound_a';
   assert.throws(() => validateProject(project), /image or video/);

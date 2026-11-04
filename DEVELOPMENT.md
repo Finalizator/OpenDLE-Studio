@@ -4074,6 +4074,55 @@ it. The trace harness now prints the eye it films from (`ODT VIEW <tic> viewz=�
 this is measured rather than guessed: on `TITLEMAP` the player's view sits at `viewz=49`
 (floor 8 + viewheight 41) until `ChangeCamera` moves it.
 
+#### Cameras a rule can drive
+
+A camera is an object (`type: 'camera'`) rather than a special mode, so it can be placed in the
+level, added to a scene as a **Camera3D** node, spawned at run time, listed in any object picker
+and saved with the level. It carries `cameraFov` (horizontal, like GZDoom's `fov`),
+`cameraPitch`, `cameraHeight` (the eye above its own height) and, when it should open the level
+looking through itself, `cameraActive`. `shared/camera-runtime.js` holds the runtime half:
+`shared/runtime.js` answers the commands and advances the glides, and `public/render.js` reads
+the same numbers the GZDoom `ChangeCamera` path already used.
+
+Seven actions and two conditions, all documented in [Docs/visual-scripting.md](./Docs/visual-scripting.md)
+and offered by the event sheet with a camera picker:
+
+| Action | What it does |
+| --- | --- |
+| `createCamera` | Makes a camera object at a point, with its own angle, pitch, field of view and name |
+| `switchCamera` | Hands the view over; `$player` gives it back to the player |
+| `setCameraPosition` / `setCameraAngle` / `setCameraFov` | Point the camera somewhere now |
+| `moveCamera` | Eases to a position, angle and field of view over a number of seconds |
+| `followCamera` | Rides an object, keeping the camera's eye height above it |
+
+`cameraActive` is an object script's condition ("this object is the view"), and
+`cameraFovCompare` reads the field of view the view is actually using, so a zoom rule can wait
+for its own end. `viewFov` is what the renderer asks, and it is the camera's own angle when it
+has one — a camera with no `cameraFov` films at the game's setting.
+
+Two references keep a cutscene free of editor ids: `$player` is the player's own eyes and
+`$active` is whichever camera is filming. Anything else is an id or the camera's name, matched in
+that order, so `createCamera` can make "Flyby" and the next rule can switch to `Flyby`.
+
+Behaviours worth knowing:
+
+- **A camera is invisible in play.** It fell through the entity drawing chain to the sprite path
+  and drew a missing-texture placeholder; the renderer now returns before any artwork.
+- **The projection is built before the eye is**, in two separate `if (!editor)` passes, so the
+  camera is looked up once above both. Reading it inside only the second pass threw
+  `spectator is not defined` on the first frame.
+- **A glide replaces any running glide** on the same camera rather than queuing, so two rules
+  fighting over one camera behave like every other action: the last one to run wins. A glide is
+  transient (`cameraMoves`) — a save keeps the camera where the glide had got to, which is what
+  `test/camera.test.js` pins by saving mid-glide and reopening.
+- **A created camera has to survive its own save.** The save loader refuses an entity no project
+  placed unless it has a template; `buildCamera` is that template, used by both the runtime and
+  `shared/save-game.js`, so the shape a save is checked against and the shape a rule builds are
+  the same by construction.
+- **A camera that is named but missing is an error, not a no-op.** `requireCamera` throws with the
+  event's name, because a cutscene that silently keeps the player's view looks like the feature
+  not working.
+
 **A Doom sky is a dome 60 degrees tall, not a sphere.** `SkyVertexDoom` lays the picture's
 rows over `maxSideAngle = 60` degrees, and `FSkyVertexBuffer::SetupMatrices` decides where the
 picture sits on that dome — with **a branch per picture height**, which is the part that was

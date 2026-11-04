@@ -1,4 +1,4 @@
-import { eventConditions, resolveEntityId } from './project.js';
+import { CAMERA_DEFAULTS, eventConditions, resolveEntityId } from './project.js';
 import { entitySector, sectorAt, sectorGeometry } from './sectors.js';
 import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
@@ -54,6 +54,11 @@ import { clipFrame, setSpriteState } from './sprite-animation.js';
 import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
 import { createLevelStatistics, updateLevelStatistics, recordRemovedEntity, beginIntermission, continueIntermission } from './intermission.js';
 import { emitSignal, signalBatch, hasSignalCondition, SIGNAL_LIMIT } from './signals.js';
+import {
+  PLAYER_VIEW, advanceCameras, buildCamera, requireCamera, startCameraMove, switchView, viewFov,
+} from './camera-runtime.js';
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0));
 
 export function distanceToSegment(x, y, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -178,8 +183,13 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     impacts: [],
     decalCounter: 0,
     worldTriggers: { use: null, useSpecial: null, cross: new Set(), shoot: new Set() },
-    // A ChangeCamera special points the view at a camera actor; null is the player's eyes.
-    viewCamera: null,
+    // A ChangeCamera special points the view at a camera actor; null is the player's eyes. A
+    // camera object marked "active at start" is where the level opens, which is how a cutscene
+    // filmed by a camera begins without a rule.
+    viewCamera: entities.find(entity => entity.type === 'camera' && entity.cameraActive)?.id ?? null,
+    // Glides a rule started for a camera: which camera, from where, to where, and how far along
+    // it is. Transient - a save keeps the camera where the glide had got to, not the glide.
+    cameraMoves: new Map(),
     // A level named TITLEMAP is GZDoom's title backdrop: its scripts and geometry keep
     // running behind the menu (that is what animates the camera and the fades), while the
     // player does not act.
@@ -702,6 +712,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // Moves a cue asked for: an object travelling between two waypoints of a route over a set
   // time. They run after the followers so a tween wins on an object that also follows a path.
   advancePathTweens(project, state, dt);
+  // Camera glides and following cameras run on the game's clock, before the frame is drawn.
+  advanceCameras(project, state, dt);
   // Things the map left in the air fall under the map's own gravity, which is how Lullaby's
   // title map rains its stars. It runs after the planes so a star lands on the floor it sees.
   stepThingGravity(project, state, dt);
@@ -1074,6 +1086,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           : state.entities.filter(entity => entity.type === wanted).length;
         return compareValues(count, condition.operator, condition.value);
       }
+      if (condition.type === 'cameraActive') {
+        const camera = findTarget(condition.entityId);
+        return Boolean(camera) && state.viewCamera === camera.id;
+      }
+      if (condition.type === 'cameraFovCompare') {
+        return compareValues(Math.round(viewFov(state) * 1000) / 1000, condition.operator, condition.value);
+      }
       if (condition.type === 'entityAngle') {
         const target = findTarget(condition.entityId);
         const angle = target?.type === 'player' ? player.angle * 180 / Math.PI : Number(target?.angle) || 0;
@@ -1341,6 +1360,71 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'setPlayerPitch':
           player.pitch = action.pitch * Math.PI / 180;
           break;
+        // ---- Cameras ---------------------------------------------------------------------
+        case 'createCamera': {
+          // A camera made during play is a real object, like a spawned one: it can be found by
+          // name in the next rule, follows, glides and is saved with the level.
+          const seq = (state.cameraSequence = (state.cameraSequence || 0) + 1);
+          let id = `camera_${seq}`;
+          while (state.entities.some(entity => entity.id === id)) id += '_';
+          const name = String(action.name || `Camera ${seq}`).slice(0, 100);
+          const camera = buildCamera({ id, name, x: action.x, y: action.y, z: action.z,
+            angle: action.angle, pitch: action.pitch, fov: action.fov });
+          state.entities.push(camera);
+          state.worldRevision++;
+          if (action.activate === 'yes') switchView(state, camera);
+          break;
+        }
+        case 'switchCamera': {
+          if (action.camera === PLAYER_VIEW || !action.camera) { switchView(state, null); break; }
+          switchView(state, requireCamera(state, action.camera, event));
+          break;
+        }
+        case 'setCameraPosition':
+        case 'setCameraAngle':
+        case 'setCameraFov': {
+          // `$player` is the player's own view: its field of view is the game's setting, which is
+          // what a zoom rule means when no camera is filming.
+          if (action.camera === PLAYER_VIEW) {
+            if (action.type === 'setCameraFov') state.settings.fov = clamp(action.fov, 10, 170);
+            else if (action.type === 'setCameraAngle') player.pitch = clamp(action.pitch, -89, 89) * Math.PI / 180;
+            break;
+          }
+          const camera = requireCamera(state, action.camera, event);
+          if (action.type === 'setCameraPosition') {
+            camera.x = action.x;
+            camera.y = action.y;
+            if (action.z !== undefined && action.z !== null) camera.z = action.z;
+          } else if (action.type === 'setCameraAngle') {
+            camera.angle = action.angle;
+            camera.cameraPitch = clamp(action.pitch, -89, 89);
+          } else {
+            camera.cameraFov = clamp(action.fov, 10, 170);
+          }
+          state.worldRevision++;
+          break;
+        }
+        case 'moveCamera': {
+          if (action.camera === PLAYER_VIEW) {
+            // The player cannot be scripted to fly; move the view means moving the player.
+            break;
+          }
+          const camera = requireCamera(state, action.camera, event);
+          const to = { x: action.x, y: action.y, z: action.z, angle: action.angle, pitch: action.pitch };
+          startCameraMove(state, camera, to, { seconds: action.seconds, easing: action.easing });
+          state.worldRevision++;
+          break;
+        }
+        case 'followCamera': {
+          const camera = requireCamera(state, action.camera, event);
+          const target = action.target === PLAYER_VIEW ? PLAYER_VIEW : String(action.target || PLAYER_VIEW);
+          if (target !== PLAYER_VIEW && !state.entities.some(entity => entity.id === target || entity.name === target)) {
+            throw new Error(`Event "${event.name || event.id}" makes a camera follow "${target}", which is not in this level`);
+          }
+          camera.cameraFollow = target;
+          camera.cameraFollowAngle = action.copyAngle !== 'no';
+          break;
+        }
         case 'sprayImage': {
           // A spray is a wall decal: it lives in the impact list so saves keep it and
           // the renderer draws it flat on the wall instead of as a billboard. An

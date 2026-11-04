@@ -247,6 +247,35 @@ the chain breaks. It is off by default and tuned by `bunnyhopGain`.
 
 ---
 
+### Cameras
+
+A camera is an object with `type: 'camera'` — place one in the level, add a
+**Camera3D** node to a scene, or create one during play with `createCamera`. It
+has a field of view, a pitch and an eye height, and it is invisible in play: it
+is a point of view, not a thing.
+
+Rules name a camera three ways, so a cutscene does not depend on editor ids:
+
+| Reference | Means |
+| --- | --- |
+| `$player` | the player's own eyes (back to normal play) |
+| `$active` | whichever camera the view is on |
+| an object id or a camera's name | that camera |
+
+```text
+On start:
+  Camera: create a camera (x = 512, y = 1024, z = 320, angle = 180, fov = 70, name = Flyby, activate = yes)
+  Camera: move over time (camera = Flyby, x = 512, y = 512, z = 320, seconds = 6, easing = easeInOut)
+
+Every 1 seconds:
+  if Camera: this object is the active view (Flyby) is false -> Camera: switch the view to a camera (camera = $player)
+```
+
+A camera placed in a level and marked **Look through this camera when the level
+starts** opens the level on that view. `followCamera` makes a camera ride an
+object (the player included), and `cameraFovCompare` reads the field of view the
+view is actually using, which is how a zoom rule can wait for its own end.
+
 ## 8. Limits
 
 - 2048 events, 100 sheets, 200 groups, 15 extra conditions per event.
@@ -394,6 +423,8 @@ activate in the shot's original frame.
 | has explicit health | `entityHasHealth` | yes | — |
 | timer ready | `timerReady` | — | timer |
 | timer exists | `timerExists` | — | timer |
+| this object is the active view | `cameraActive` | yes | — |
+| compare the view field of view | `cameraFovCompare` | — | operator, value |
 | compare variable | `variableCompare` | — | operator, value |
 | onStart | `onStart` | — | — |
 | always | `always` | — | — |
@@ -460,6 +491,13 @@ keep their existing global-variable output.
 | enable / disable the shader engine stack | `setPostFxStack` | — | enabled |
 | enable / disable one shader engine pass | `setPostFxPass` | — | kind, enabled |
 | set a shader engine parameter | `setPostFxParam` | — | kind, param, value |
+| create a camera | `createCamera` | — | x, y, z, angle, pitch, fov, name, activate |
+| switch the view to a camera | `switchCamera` | — | camera |
+| set camera position | `setCameraPosition` | — | camera, x, y, z |
+| set camera angle and pitch | `setCameraAngle` | — | camera, angle, pitch |
+| set camera field of view | `setCameraFov` | — | camera, fov |
+| move a camera over time | `moveCamera` | — | camera, x, y, z, angle, pitch, seconds, easing |
+| make a camera follow an object | `followCamera` | — | camera, target, copyAngle |
 | set local variable | `setObjectVariable` | yes | variable, value |
 | add to local variable | `addObjectVariable` | yes | variable, value |
 | play sprite state | `setSpriteState` | yes | state, restart |

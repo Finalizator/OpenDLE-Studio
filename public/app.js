@@ -1,4 +1,4 @@
-import { createProject, validateProject, cloneProjectData, cloneProjectForEdit, addRoom, newId, removeEntities, eventConditions, updateAsset, ENTITY_TYPES } from '/shared/project.js';
+import { createProject, validateProject, cloneProjectData, cloneProjectForEdit, addRoom, newId, removeEntities, eventConditions, updateAsset, ENTITY_TYPES, CAMERA_DEFAULTS } from '/shared/project.js';
 import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity, pathHandle, pathSteps, bakePathRamp, PATH_SINE_DEFAULTS } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment, setAddonHooks } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
@@ -1706,6 +1706,29 @@ function renderInspector() {
         field(parent, 'Light radius', input(light.radius, 'number', value => changeLight('radius', value)));
         if (!item.light) parent.append(button('Enable point light', () => update('light', light)));
       }
+      if (item.type === 'camera') {
+        // A camera's whole purpose is the view it gives, so these are its properties rather
+        // than a corner of the transform panel.
+        const changeCamera = (key, value) => update(key, value);
+        parent.append(make('h2', 'Camera view'));
+        field(parent, 'Field of view (10-170, horizontal)', input(item.cameraFov ?? CAMERA_DEFAULTS.fov, 'number',
+          value => changeCamera('cameraFov', Math.min(170, Math.max(10, Number(value) || CAMERA_DEFAULTS.fov)))));
+        field(parent, 'Pitch (-89 to 89)', input(item.cameraPitch ?? CAMERA_DEFAULTS.pitch, 'number',
+          value => changeCamera('cameraPitch', Math.min(89, Math.max(-89, Number(value) || 0)))));
+        field(parent, 'Eye height above the floor', input(item.cameraHeight ?? CAMERA_DEFAULTS.height, 'number',
+          value => changeCamera('cameraHeight', Number(value) || 0)));
+        parent.append(checkbox('Look through this camera when the level starts', Boolean(item.cameraActive),
+          value => changeCamera('cameraActive', value)));
+        const targets = project.map.entities.filter(entity => entity.id !== item.id);
+        field(parent, 'Follow', select([['', 'Nothing (fixed camera)'],
+          ['$player', 'The player'],
+          ...targets.map(entity => [entity.id, `${entity.name} (${entity.type})`])], item.cameraFollow || '',
+        value => edit(next => {
+          const entity = next.map.entities.find(candidate => candidate.id === item.id);
+          if (value) entity.cameraFollow = value; else delete entity.cameraFollow;
+        }, value ? 'Camera follows the target' : 'Camera is fixed')));
+        parent.append(make('p', 'Events drive the rest: Camera: switch the view to a camera, set position, angle and field of view, and move over time. A camera is invisible in play.', 'muted'));
+      }
       if (item.path?.id && (project.paths || []).some(path => path.id === item.path.id)) {
         parent.append(button('Drive this route on a timesheet (start to end)', () => guard(() => driveRouteOnTimesheet(item))()));
       }
@@ -1891,6 +1914,10 @@ function newEntityOfType(type, position, extra = {}) {
   // A zone is nothing but its volume, so it is given one at birth: an object that can be
   // entered with no volume would be a rule that can never fire.
   if (type === 'zone') entity.area = { ...ZONE_AREA };
+  // A camera is a point of view: it is born with the numbers the renderer needs, so a placed
+  // camera films something sensible before anyone opens its properties.
+  if (type === 'camera') Object.assign(entity, { name: 'Camera', cameraFov: CAMERA_DEFAULTS.fov,
+    cameraPitch: CAMERA_DEFAULTS.pitch, cameraHeight: CAMERA_DEFAULTS.height });
   return entity;
 }
 function imageAssetOptions() {
@@ -2422,6 +2449,9 @@ function commandLists(ownerId) {
   return {
     entities: entityOptions(false, ownerId),
     zones: project.map.entities.filter(entity => entity.type === 'zone').map(entity => [entity.id, entity.name]),
+    // A camera command names its camera by this list; a camera the level made while playing is
+    // not in it, which is what the free-text "name" on createCamera is for.
+    cameras: project.map.entities.filter(entity => entity.type === 'camera').map(entity => [entity.id, entity.name]),
     variables: Object.keys(project.variables),
     playerId: project.map.entities.find(entity => entity.type === 'player').id,
     groups: (project.eventGroups || []).map(group => [group.id, group.name]),

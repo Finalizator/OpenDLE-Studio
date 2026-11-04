@@ -27,6 +27,11 @@ export const SCENE_NODE_TYPES = [
   { id: 'pickup', name: 'Pickup', category: 'Gameplay', description: 'A pickup with sprite/model artwork and object events.', defaults: { type: 'pickup', nodeKind: 'pickup' } },
   { id: 'ramp', name: 'Ramp', category: 'Geometry', description: 'A procedural ramp; geometry is generated from slope, length and width.', defaults: { type: 'ramp', nodeKind: 'ramp', ramp: { slope: 30, length: 192, width: 96, facing: 'left' } } },
   { id: 'panel', name: 'Panel', category: 'Visual', description: 'A translucent physical panel or glass surface.', defaults: { type: 'decoration', nodeKind: 'panel', panel: { width: 128, height: 128, thickness: 2, opacity: .35, roughness: .12, metalness: 0, color: '#d7e8f2' } } },
+  // A point of view rather than a thing: placed where a cutscene should look from, then
+  // selected by the Camera: switch actions. No artwork in play.
+  { id: 'camera', name: 'Camera3D', category: 'Gameplay',
+    description: 'A point of view a script can switch to, with its own field of view, pitch and eye height.',
+    defaults: { type: 'camera', nodeKind: 'camera', cameraFov: 90, cameraPitch: 0, cameraHeight: 48 } },
 ];
 
 export function sceneNodeType(entity) {
@@ -46,7 +51,7 @@ export function sceneNodeLabel(entity) {
 
 export function sceneNodeSupportsTilt(entity) {
   return Boolean(entity.modelAsset || entity.mesh || entity.spritePlane && !entity.spritePlane.billboard
-    || entity.projector || entity.terminal || ['node3d', 'marker', 'sound', 'light'].includes(entity.nodeKind));
+    || entity.projector || entity.terminal || ['node3d', 'marker', 'sound', 'light', 'camera'].includes(entity.nodeKind));
 }
 
 export function createSceneNode(scene, kind, options = {}) {

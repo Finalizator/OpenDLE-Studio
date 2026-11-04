@@ -1,5 +1,6 @@
 import { createRuntime } from './runtime.js';
 import { initialiseActorEntities } from './actor-runtime.js';
+import { buildCamera, isCamera } from './camera-runtime.js';
 import { HL2_MOVEMENT } from './source-motion.js';
 import { selectGameLevel, levelData } from './game-levels.js';
 import { validatePhysicsState, physicsEntityIds } from './physics.js';
@@ -26,6 +27,9 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // game that cannot be loaded is the worst failure this format has, so the list is explicit here
   // and a test plays a state with all of them set.
   'pathCompleted', 'pathSampler', 'viewCameraHeight', 'teleportFog', 'lightning',
+  // A camera glide is a frame-by-frame animation, and the sequence number only names the next
+  // camera a rule creates; saving either would record a moment rather than the game.
+  'cameraMoves', 'cameraSequence',
   // The speed the player is travelling at is read off the momentum every tic, so it is derived
   // rather than part of the game state.
   'speed']);
@@ -187,10 +191,14 @@ function validateRuntime(project, state, baseline) {
     const raw = (project.map.entities || []).find(item => item.id === id);
     return raw ? initialiseActorEntities(project, [structuredClone(raw)])[0] : null;
   };
+  // The engine makes cameras itself (Camera: create a camera), so its own loader knows the shape
+  // of one that no project placed: a save written while a cutscene camera is alive has to load.
+  const cameraTemplate = entity => (isCamera(entity) ? buildCamera({ id: entity.id }) : null);
   for (const entity of state.entities) {
     if (!plain(entity) || seen.has(entity.id)) fail('unknown or duplicate entity');
     const template = entities.get(entity.id) ||
-      (typeof entity.spawnedFrom === 'string' && (entities.get(entity.spawnedFrom) || templateFor(entity.spawnedFrom)));
+      (typeof entity.spawnedFrom === 'string' && (entities.get(entity.spawnedFrom) || templateFor(entity.spawnedFrom))) ||
+      cameraTemplate(entity);
     if (!template) fail(`unknown entity ${entity.id}`);
     seen.add(entity.id); matchShape(entity, template, `entity ${entity.id}`);
     for (const key of ['x', 'y']) if (!Number.isFinite(entity[key])) fail('invalid entity position');

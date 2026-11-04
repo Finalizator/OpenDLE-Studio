@@ -1,5 +1,5 @@
 export const NODE_KINDS = Object.freeze([
-  'node3d', 'marker', 'mesh', 'sprite', 'sound', 'projector', 'terminal', 'panel', 'light', 'zone', 'enemy', 'pickup', 'ramp',
+  'node3d', 'marker', 'mesh', 'sprite', 'sound', 'projector', 'terminal', 'panel', 'light', 'zone', 'enemy', 'pickup', 'ramp', 'camera',
 ]);
 
 export const MEDIA_NODE_DEFAULTS = Object.freeze({

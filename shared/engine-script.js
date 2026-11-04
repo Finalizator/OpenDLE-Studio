@@ -12,6 +12,7 @@ import { doomThings } from './doom-assets.js';
 import { POST_FX_KINDS } from './post-fx.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 import { addonCommands, addonCommand, declaredAddonTypes } from './addons.js';
+import { PATH_EASINGS } from './timesheet.js';
 
 // Every key a creator can bind to an event, including the letters Doom leaves free, so
 // scriptlets such as the spray can be rebound from the event sheet.
@@ -26,6 +27,14 @@ const waypoint = (name, value, extra = {}) => ({ name, value, kind: 'waypoint', 
 const stat = () => choice('stat', 'health', PLAYER_STATS);
 const comparison = () => choice('operator', '>', ['<', '<=', '=', '!=', '>=', '>']);
 const timer = () => ({ name: 'timer', value: 'weapon', kind: 'text' });
+/** Easing names a camera move shares with a path tween, so a glide reads the same in both. */
+const EASINGS = PATH_EASINGS;
+/**
+ * Names a camera. `$active` is whichever camera the view is on, `$player` is the player's own
+ * eyes, and `$new` is the camera a create action is making. Anything else is an object id or
+ * the camera's name, so a ritual cutscene can be written without the editor's object ids.
+ */
+const cameraRef = (name, value) => ({ name, value, kind: 'string' });
 const projectileClips = () => ['clipId', 'impactClipId'].map(name => ({ name, kind: 'text', optional: true }));
 
 /**
@@ -115,6 +124,8 @@ export const ENGINE_CONDITIONS = [
   { type: 'entityHasHealth', label: 'Object: has explicit health', fields: [], target: true },
   { type: 'timerReady', label: 'System: timer ready', fields: [timer()] },
   { type: 'timerExists', label: 'System: timer exists', fields: [timer()] },
+  { type: 'cameraActive', label: 'Camera: this object is the active view', target: true, fields: [] },
+  { type: 'cameraFovCompare', label: 'Camera: compare the view field of view', fields: [comparison(), numeric('value', 90, 0, 360)] },
   { type: 'variableCompare', label: 'System: compare variable', fields: [comparison(), { name: 'value', kind: 'value', value: 0 }], variable: true },
 ];
 export const ENGINE_ACTIONS = [
@@ -195,6 +206,33 @@ export const ENGINE_ACTIONS = [
   { type: 'setEntityTilt', label: 'Object: set model tilt (pitch / roll)', target: true, fields: [
     numeric('pitch', 0, -3600, 3600), numeric('roll', 0, -3600, 3600)] },
   { type: 'setPlayerPitch', label: 'Player: set view pitch (degrees)', fields: [numeric('pitch', 0, -85, 85)] },
+  // ---- Cameras -------------------------------------------------------------------------
+  // A camera is an object (`type: 'camera'`) a rule can create, point, move and switch to. The
+  // fields name a camera by object id or by its name, and `$player` is the player's own eyes,
+  // so a cutscene can hand the view to a camera and give it back without knowing any ids.
+  { type: 'createCamera', label: 'Camera: create a camera', fields: [
+    { name: 'x', kind: 'value', value: 0 }, { name: 'y', kind: 'value', value: 0 },
+    { ...numeric('z', undefined, -32768, 32768), optional: true },
+    { name: 'angle', kind: 'value', value: 0 }, { name: 'pitch', kind: 'value', value: 0 },
+    { name: 'fov', kind: 'value', value: 90 },
+    // The name is how the next rule finds this camera; ids are generated and never seen.
+    { name: 'name', value: 'Flyby camera', kind: 'string' }, choice('activate', 'no', ['yes', 'no'])] },
+  { type: 'switchCamera', label: 'Camera: switch the view to a camera', fields: [cameraRef('camera', '$player')] },
+  { type: 'setCameraPosition', label: 'Camera: set position', fields: [
+    cameraRef('camera', '$active'), { name: 'x', kind: 'value', value: 0 }, { name: 'y', kind: 'value', value: 0 },
+    { ...numeric('z', undefined, -32768, 32768), optional: true }] },
+  { type: 'setCameraAngle', label: 'Camera: set angle and pitch', fields: [
+    cameraRef('camera', '$active'), { name: 'angle', kind: 'value', value: 0 }, { name: 'pitch', kind: 'value', value: 0 }] },
+  { type: 'setCameraFov', label: 'Camera: set field of view', fields: [
+    cameraRef('camera', '$active'), { name: 'fov', kind: 'value', value: 90 }] },
+  { type: 'moveCamera', label: 'Camera: move over time', fields: [
+    cameraRef('camera', '$active'), { name: 'x', kind: 'value', value: 0 }, { name: 'y', kind: 'value', value: 0 },
+    { ...numeric('z', undefined, -32768, 32768), optional: true },
+    { ...numeric('angle', undefined, -3600, 3600), optional: true }, { ...numeric('pitch', undefined, -89, 89), optional: true },
+    numeric('seconds', 2, 0, 3600), choice('easing', 'easeInOut', EASINGS)] },
+  { type: 'followCamera', label: 'Camera: follow an object', fields: [
+    cameraRef('camera', '$active'), { name: 'target', kind: 'string', value: '$player' },
+    choice('copyAngle', 'no', ['yes', 'no'])] },
   // Sprays paint an imported image onto the wall the player is looking at, so the
   // artwork is chosen from the asset library and the trigger key from the event.
   { type: 'sprayImage', label: 'Player: spray an image on the wall', fields: [

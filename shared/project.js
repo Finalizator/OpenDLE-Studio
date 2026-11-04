@@ -43,7 +43,13 @@ export const ACTIONS = [...CORE_ACTIONS, ...ENGINE_ACTIONS.map(command => comman
 const BUILT_IN_TYPES = new Set([...CONDITIONS, ...ACTIONS]);
 // `zone` is a volume with no artwork: it exists to be entered, so an event can ask "is the
 // player in the guard room" without standing a visible object in the doorway.
-export const ENTITY_TYPES = ['player', 'enemy', 'pickup', 'light', 'decoration', 'ramp', 'zone'];
+export const ENTITY_TYPES = ['player', 'enemy', 'pickup', 'light', 'decoration', 'ramp', 'zone', 'camera'];
+/**
+ * A camera's own defaults: a horizontal field of view like GZDoom's `fov`, a level pitch and
+ * the eye height above the object's own height. They are the values a script overrides and the
+ * values a placed camera starts with, so a camera object with no numbers still works.
+ */
+export const CAMERA_DEFAULTS = Object.freeze({ fov: 90, pitch: 0, height: 48 });
 const colorPattern = /^#[0-9a-f]{6}$/i;
 // Surface texture scaling: one texture tile covers `scale` times its pixel size in map
 // units, so 2 draws the artwork twice as large and 0.5 twice as fine.
@@ -295,6 +301,18 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
   number(entity.x, 'Entity X');
   number(entity.y, 'Entity Y');
   number(entity.angle, 'Entity angle', -3600, 3600);
+  if (entity.type === 'camera' || entity.cameraFov !== undefined || entity.cameraPitch !== undefined ||
+    entity.cameraHeight !== undefined || entity.cameraFollow !== undefined) {
+    // A camera is a point of view: its field of view, its pitch and its eye height are the only
+    // numbers that mean anything, and they are checked wherever they appear so a decoration
+    // switched to a camera or back cannot carry nonsense into the renderer.
+    if (entity.cameraFov !== undefined) number(entity.cameraFov, 'Camera field of view', 10, 170);
+    if (entity.cameraPitch !== undefined) number(entity.cameraPitch, 'Camera pitch', -89, 89);
+    if (entity.cameraHeight !== undefined) number(entity.cameraHeight, 'Camera height', -32768, 32768);
+    if (entity.cameraFollow !== undefined) text(entity.cameraFollow, 'Camera follow target', 100);
+    if (entity.cameraActive !== undefined) assert(typeof entity.cameraActive === 'boolean', 'Camera active flag must be true or false');
+    if (entity.cameraFollowAngle !== undefined) assert(typeof entity.cameraFollowAngle === 'boolean', 'Camera follow angle flag must be true or false');
+  }
   // Model tilt is a visual roll/pitch on top of the yaw: enough to lay a model on its
   // side or stand it on its head without changing where the object faces.
   if (entity.modelTilt !== undefined) {

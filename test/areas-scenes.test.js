@@ -239,7 +239,7 @@ test('the zone conditions are offered as a zone picker, not a list of every obje
   assert.match(app, /zones: project\.map\.entities\.filter\(entity => entity\.type === 'zone'\)/);
   // The object type exists and is offered where objects are created.
   assert.match(readFileSync(new URL('../shared/project.js', import.meta.url), 'utf8'),
-    /ENTITY_TYPES = \[[^\]]*'zone'\]/);
+    /ENTITY_TYPES = \[[^\]]*'zone'[^\]]*\]/);
   assert.match(readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'), /<option>zone<\/option>/);
 });
 
