@@ -65,6 +65,15 @@ instead of your personal browser session. No Chrome/Brave installation is needed
 On Linux/macOS, `./launch.sh` also
 handles dependency setup and opens the same Studio window.
 
+On Windows, double-click [launch.bat](./launch.bat) in the downloaded/cloned
+engine folder. It installs Node.js LTS through Windows Package Manager (`winget`)
+if Node.js 22.12+ or npm is missing, runs `npm ci` if project dependencies are
+missing, and opens Studio. Node installation may request administrator approval.
+If `winget` is unavailable, install Node.js LTS with npm from
+[nodejs.org](https://nodejs.org/) first. Keep the launcher terminal open;
+Ctrl+C stops its server. Stop an existing server before launching again on Windows.
+Command-line options also work: `launch.bat --browser` or `launch.bat --no-browser`.
+
 Use `npm start -- --browser` for a normal browser tab, or
 `npm start -- --no-browser` for the local service only. `npm run serve` starts
 only the server without automatically restarting an existing instance.

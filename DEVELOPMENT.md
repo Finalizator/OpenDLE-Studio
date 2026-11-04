@@ -191,6 +191,22 @@ npm start -- --no-browser
 PORT=3001 ./launch.sh
 ```
 
+On Windows, double-click [launch.bat](./launch.bat) from the full engine checkout,
+or run it from Command Prompt/PowerShell (`.\launch.bat`). It changes to its own
+directory, including paths containing spaces, and checks for Node.js 22.12+ and npm.
+If either is unavailable, it installs Node.js LTS using `winget`'s
+`OpenJS.NodeJS.LTS` package, accepting the package/source agreements; Windows may
+request administrator approval. If `winget` is absent or installation fails, the
+launcher reports the problem and directs the user to install Node.js LTS with npm
+from [nodejs.org](https://nodejs.org/). It never continues after failed setup.
+Missing project dependencies trigger `npm ci` using the lockfile. Electron fetches
+its desktop binary on first use, just as on Linux/macOS. Subsequent launches reuse
+installed dependencies. The batch launcher passes `.env` and all arguments through
+to the shared Node launcher; `.\launch.bat --browser` and
+`.\launch.bat --no-browser` select browser and service-only modes. Errors remain
+visible before the terminal closes. Keep the terminal open while using Studio;
+Ctrl+C stops the service. Close any existing server before relaunching on Windows.
+
 On Linux, launching again **restarts** the existing OpenDLE server: the launcher
 identifies the listening PID and verifies it is Node running this workspace's
 server entry point before sending SIGTERM. It waits for shutdown, starts the
