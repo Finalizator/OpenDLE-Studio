@@ -123,6 +123,17 @@ test('every Engine command has shared editor defaults and validates after adding
       value.pathId = 'test_path';
       value.fromPoint = 0; value.toPoint = -1;
     }
+    // A picked-variable command names a type, so the fixture gives that type the variable the
+    // action is about — the same thing a creator does on the object before writing the rule.
+    if (['setPickedVariable', 'addPickedVariable', 'pickByVariable'].includes(command.type)) {
+      const type = value.objectType;
+      let carriers = project.map.entities.filter(entity => entity.type === type);
+      if (!carriers.length) {
+        project.map.entities.push({ id: `test_${type}`, name: type, type, x: 0, y: 0, angle: 0, variables: {} });
+        carriers = project.map.entities.filter(entity => entity.type === type);
+      }
+      for (const entity of carriers) entity.variables = { ...(entity.variables || {}), [value.variable]: 0 };
+    }
     if (command.sound) {
       project.assets.push({ id: 'sound_test', name: 'TESTSND', kind: 'sound', src: 'data:audio/wav;base64,AAAA' });
       value.assetId = 'sound_test';

@@ -5,6 +5,7 @@ import { decodeDataURI, readModel, validateModelDocument } from './gltf.js';
 import { CORE_ACTIONS, CORE_CONDITIONS, ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand } from './engine-script.js';
 import { validateEventStructure, TRIGGER_CONDITIONS } from './events.js';
 import { MODEL_FACING_SEMANTICS } from './entity-visuals.js';
+import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTY_NAMES, INSTANCE_TYPES, compareInstanceProperty } from './instance-properties.js';
 import { ADDON_LIMITS, ADDON_VERSION, declaredAddonTypes, setProjectValidator, validateAddonManifest } from './addons.js';
 import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
 import { WEAPONS } from './player-state.js';
@@ -43,7 +44,10 @@ export const ACTIONS = [...CORE_ACTIONS, ...ENGINE_ACTIONS.map(command => comman
 const BUILT_IN_TYPES = new Set([...CONDITIONS, ...ACTIONS]);
 // `zone` is a volume with no artwork: it exists to be entered, so an event can ask "is the
 // player in the guard room" without standing a visible object in the doorway.
-export const ENTITY_TYPES = ['player', 'enemy', 'pickup', 'light', 'decoration', 'ramp', 'zone', 'camera'];
+// The list lives in instance-properties.js so the event catalogue can name a type without
+// importing the project (which would be a cycle); it is re-exported here, where it has always
+// been, so every existing importer keeps working.
+export const ENTITY_TYPES = INSTANCE_TYPES;
 /**
  * A camera's own defaults: a horizontal field of view like GZDoom's `fov`, a level pitch and
  * the eye height above the object's own height. They are the values a script overrides and the
@@ -1161,7 +1165,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     if (event.sheetId !== undefined) assert(sheetIds.has(event.sheetId), 'Event references an unknown sheet');
     assert(typeof event.enabled === 'boolean' && typeof event.once === 'boolean', 'Event enabled/once must be boolean');
     if (event.forEachType !== undefined) {
-      assert(['enemy', 'pickup', 'decoration'].includes(event.forEachType), 'Unsupported for-each object type');
+      assert(INSTANCE_PICKABLE_TYPES.includes(event.forEachType), 'Unsupported for-each object type');
       assert(event.ownerId === undefined, 'For-each rules cannot also have an owner');
     }
     if (event.ownerId !== undefined) assert(entityIds.has(event.ownerId), 'Event owner references an unknown entity');
@@ -1197,6 +1201,12 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         else if (field.kind === 'waypoint') {
           // Which waypoints exist is the route's business; it is checked where `followPath` is.
           assert(Number.isInteger(command[field.name]), `${field.name} must be a waypoint`);
+        } else if (field.kind === 'objectType') {
+          // The type has to be one a level can hold; a pick of a type that cannot exist would be a
+          // rule that can never run, which is worse than a refusal now.
+          assert(INSTANCE_PICKABLE_TYPES.includes(command[field.name]), `${field.name} must be an object type`);
+        } else if (field.kind === 'instanceProperty') {
+          assert(INSTANCE_PROPERTY_NAMES.includes(command[field.name]), `Unknown object property: ${command[field.name]}`);
         } else if (field.kind === 'image') {
           // An empty image means "not chosen yet": the event is still valid, and the
           // runtime reports which spray needed artwork when it is triggered.
@@ -1216,6 +1226,19 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           'Command references a signal not declared by its source object');
       }
       if (definition.variable) assert(Object.hasOwn(project.variables, command.variable), 'Condition references an unknown variable');
+      // A picked-variable command names a type, not one object, so the check is what at least one
+      // instance of that type carries: a type whose instances disagree is a project that could not
+      // run the action on all of them anyway, and the runtime says so as it runs.
+      if (['setPickedVariable', 'addPickedVariable', 'pickByVariable'].includes(command.type)) {
+        const carriers = entities.filter(entity => entity.type === command.objectType);
+        assert(carriers.some(entity => Object.hasOwn(entity.variables || {}, command.variable)),
+          `${command.objectType} has no local variable named ${command.variable}`);
+        if (command.type === 'addPickedVariable' && !isExpression(command.value)) {
+          assert(carriers.filter(entity => Object.hasOwn(entity.variables || {}, command.variable))
+            .every(entity => typeof entity.variables[command.variable] === 'number'),
+          'Only numeric local variables can be added to');
+        }
+      }
       if (['gameScreen', 'setGameScreen'].includes(command.type)) {
         assert(['playing', 'return', 'pause'].includes(command.screen) || project.gameMenus?.screens.includes(command.screen), 'Unknown game menu screen');
       }

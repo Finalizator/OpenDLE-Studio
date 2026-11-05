@@ -30,6 +30,9 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // A camera glide is a frame-by-frame animation, and the sequence number only names the next
   // camera a rule creates; saving either would record a moment rather than the game.
   'cameraMoves', 'cameraSequence', 'rumbles',
+  // The instances a rule picked are a scope that exists only while that rule runs, so a save taken
+  // from inside a rule (a checkpoint action) must not record the rule's own bookkeeping.
+  'picks',
   // The speed the player is travelling at is read off the momentum every tic, so it is derived
   // rather than part of the game state.
   'speed']);

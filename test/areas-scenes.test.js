@@ -238,8 +238,12 @@ test('the zone conditions are offered as a zone picker, not a list of every obje
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(app, /zones: project\.map\.entities\.filter\(entity => entity\.type === 'zone'\)/);
   // The object type exists and is offered where objects are created.
+  // The type list lives in a leaf module so the event catalogue can name a type without importing
+  // the project; `ENTITY_TYPES` is re-exported from where it has always been.
+  assert.match(readFileSync(new URL('../shared/instance-properties.js', import.meta.url), 'utf8'),
+    /INSTANCE_TYPES = Object\.freeze\(\[[^\]]*'zone'[^\]]*\]\)/);
   assert.match(readFileSync(new URL('../shared/project.js', import.meta.url), 'utf8'),
-    /ENTITY_TYPES = \[[^\]]*'zone'[^\]]*\]/);
+    /export const ENTITY_TYPES = INSTANCE_TYPES/);
   assert.match(readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'), /<option>zone<\/option>/);
 });
 

@@ -2457,6 +2457,12 @@ function commandLists(ownerId) {
   return {
     entities: entityOptions(false, ownerId),
     zones: project.map.entities.filter(entity => entity.type === 'zone').map(entity => [entity.id, entity.name]),
+    // The object types this level holds, with the local variables each type carries: a picked
+    // action names a type, and its variable suggestions follow the type the rule already chose.
+    objectTypes: [...new Set(project.map.entities.map(entity => entity.type))].map(type => [type,
+      `${type[0].toUpperCase()}${type.slice(1)}`,
+      [...new Set(project.map.entities.filter(entity => entity.type === type)
+        .flatMap(entity => Object.keys(entity.variables || {})))]]),
     // A camera command names its camera by this list; a camera the level made while playing is
     // not in it, which is what the free-text "name" on createCamera is for.
     cameras: project.map.entities.filter(entity => entity.type === 'camera').map(entity => [entity.id, entity.name]),

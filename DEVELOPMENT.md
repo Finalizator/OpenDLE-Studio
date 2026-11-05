@@ -1720,9 +1720,16 @@ Engine/Enemies rather than an opaque default AI command.
 
 - References: `global("name")`, `local("name")` (event owner),
   `object("id","variable")`, `property("id","x")` (also `$self`),
-  `player("health")` and other player stats, `time`, `dt`, `pi`, `e`,
-  `true`, `false`. Object properties include x/y/z, angle (degrees), health,
-  elevation, name, type and doomType.
+  `count("type")`, `player("health")` and other player stats, `time`, `dt`,
+  `pi`, `e`, `true`, `false`. Object properties include x/y/z, angle (degrees),
+  health, elevation, name, type and doomType; the full list lives in
+  [`shared/instance-properties.js`](./shared/instance-properties.js).
+- A reference may name an instance ID or an object **type**. A type means "the
+  instances this rule picked", so `property("enemy","health")` and
+  `count("enemy")` follow a pick and agree with the picked-instance actions;
+  outside a rule they mean every instance of the type. A type with nothing left
+  answers zero instead of failing, so counting the last enemy's death is not an
+  error.
 - Math: `abs`, `min`, `max`, `clamp`, `lerp`, `floor`, `ceil`, `round`,
   `sqrt`, `pow`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
   `sign`, `log`, `exp`, `radians`, `degrees`, `distance(x1,y1,x2,y2)`,
@@ -1746,6 +1753,49 @@ Engine/Enemies rather than an opaque default AI command.
 MCP `variables_set` replaces a complete initial variable record (omit entityId
 for globals). Existing event tools accept expression objects in the same
 parameters as the editor. Save/export retains variables and expression source.
+
+### Picking object instances
+
+A rule is about a **set of instances**, not about a type. Both GDevelop and
+Construct work this way, and it is why "the enemies below 5 health" needs no
+loop: a **pick** condition narrows the set, and every action in the rule then
+applies to what is left.
+
+The runtime carries the set in a `Map<type, Set<id>>` threaded through
+`visit()` and `runEvent()` in [`shared/runtime.js`](./shared/runtime.js).
+Absent means *no narrowing yet, so every instance of the type*; **present but
+empty means nothing was picked**, and nothing must not fall back to everything —
+otherwise "hurt the picked enemy" would hurt the whole level the moment the last
+enemy died. That distinction is the whole reason the map is separate from the
+absence of a key, and it is what
+[`test/instances.test.js`](./test/instances.test.js) pins down.
+
+- **Sub-events inherit the pick.** `visit()` passes the parent's map to every
+  child, so a child rule never silently widens back to the type.
+- **A for-each rule iterates the pick** and narrows further, per instance
+  (`ownPick`), so `$self` and the picked-instance actions agree inside the loop.
+- **A spawned instance joins the pick.** After **Object: spawn a new object from
+  a template**, `spawnEntity` replaces the pick for that type with just the new
+  instance — GDevelop's behaviour, and the reason a spawn followed by
+  "set the picked instance's variable" works without naming an ID.
+- **Expressions follow the pick** through `state.picks`, which `runEvent` sets
+  for the duration of a rule and restores afterwards, so a value read outside any
+  rule still means every instance.
+- **A missing local variable picks nothing.** It is not an error at play time;
+  authoring still refuses a pick by a variable that no instance of the type
+  carries, so a typo is caught while it is still cheap.
+
+The category lives in [`shared/engine-script.js`](./shared/engine-script.js)
+(`pickAll`, `pickByProperty`, `pickByVariable`, `pickNearest`, `pickRandom`,
+`pickedCount`, and the `setPicked*`/`movePicked`/`scalePicked`/`removePicked`
+actions), reads properties through
+[`shared/instance-properties.js`](./shared/instance-properties.js), and offers
+type and property lists through
+[`shared/command-fields.js`](./shared/command-fields.js). A for-each rule may
+now nest under a plain rule (the reverse stays refused), because that is how a
+creator writes "for each of the picked ones": the structure validator
+distinguishes the two directions in `canNest()` in
+[`shared/events.js`](./shared/events.js).
 
 ### Reloading and server restarts
 

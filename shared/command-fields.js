@@ -13,11 +13,33 @@
 
 import { engineCommand, imageFieldOptions, INPUT_KEYS } from './engine-script.js';
 import { pathPointOptions } from './paths.js';
+import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTIES } from './instance-properties.js';
 
 /** The commands whose `variable` field names an object's own variable rather than a global. */
 export const OBJECT_VARIABLE_COMMANDS = ['setObjectVariable', 'addObjectVariable', 'objectVariableCompare'];
 
-export function commandFields(command, { entities, zones = [], cameras = [], playerId, variables, groups, clips, walls, sectors, doorSectors = sectors, elevatorSectors = sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [], commands = null }) {
+/**
+ * The object types a rule can name: the ones this level holds first, because those are the ones a
+ * creator is looking at, then the rest so a rule can be written before the object is placed.
+ */
+function objectTypeOptions(types) {
+  const present = new Map();
+  // A type entry is `[id, label, variables]`; the label is what the picker shows. The player is a
+  // type a level holds but not one a pick can name, so offering it would make the picker build a
+  // rule that validation then refuses.
+  for (const entry of types || []) if (INSTANCE_PICKABLE_TYPES.includes(entry[0])) present.set(entry[0], entry[1] ?? entry[0]);
+  const ordered = [...present.entries()];
+  for (const type of INSTANCE_PICKABLE_TYPES) if (!present.has(type)) ordered.push([type, `${type[0].toUpperCase()}${type.slice(1)}`]);
+  return ordered;
+}
+
+/** The local variables every instance of a type carries, for a picked-variable field's suggestions. */
+function instanceVariableNames(types, type) {
+  const entry = (types || []).find(([id]) => id === type);
+  return entry?.variables || [];
+}
+
+export function commandFields(command, { entities, zones = [], cameras = [], objectTypes = [], playerId, variables, groups, clips, walls, sectors, doorSectors = sectors, elevatorSectors = sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [], commands = null }) {
   // `commands` is the project's whole catalogue, engine commands first and addon commands after it,
   // so an addon's fields are drawn by the same code as the engine's.
   const definition = (commands ? commands.find(entry => entry.type === command.type) : null) || engineCommand(command.type);
@@ -58,7 +80,17 @@ export function commandFields(command, { entities, zones = [], cameras = [], pla
         // cutscene needs first: the player's own eyes and whichever camera is filming.
         ...(field.name === 'camera' ? { options: [['$player', "The player's view"], ['$active', 'The camera in use'], ...cameras] } : {}),
         // Image fields list the asset library, so a spray's artwork is chosen by name.
-        ...(field.kind === 'image' ? { options: imageFieldOptions(images) } : {}) })),
+        ...(field.kind === 'image' ? { options: imageFieldOptions(images) } : {}),
+        // An object type is picked from the types this level actually holds, with the ones it does
+        // not hold still offered: a creator writes the rule for a type before placing it.
+        ...(field.kind === 'objectType' ? { options: objectTypeOptions(objectTypes) } : {}),
+        // A property is picked by name and sorted the way a person thinks of them, not by the
+        // order the reader happens to declare them in.
+        ...(field.kind === 'instanceProperty' ? { options: INSTANCE_PROPERTIES.map(property => [property.name, property.label]) } : {}),
+        // A picked-variable field names a variable the chosen type carries, so the suggestions
+        // follow the type the rule already picked.
+        ...(['setPickedVariable', 'addPickedVariable', 'pickByVariable'].includes(command.type) && field.name === 'variable'
+          ? { suggestions: instanceVariableNames(objectTypes, command.objectType), label: 'Local variable' } : {}) })),
     ];
   }
   const fields = [];

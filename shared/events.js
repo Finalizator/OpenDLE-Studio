@@ -86,6 +86,17 @@ function sameContext(a, b) {
 }
 
 /**
+ * Whether `child` may become a sub-event of `parent`. The contexts must agree, except that a
+ * for-each rule may nest inside a plain rule: it then iterates whatever that rule picked, which
+ * is how GDevelop nests a loop under a condition. The reverse is still refused, because a plain
+ * sub-event of a loop would silently escape the instance the loop is about.
+ */
+function canNest(child, parent) {
+  return child.sheetId === parent.sheetId && child.groupId === parent.groupId && child.ownerId === parent.ownerId
+    && (child.forEachType === parent.forEachType || parent.forEachType === undefined);
+}
+
+/**
  * Move a rule (with its sub-events) so it becomes a sibling of `targetId`, directly
  * before or after it. Used by dragging a row in the visual editor; the order of
  * `project.events` is the execution order, so this is also the order rules run in.
@@ -121,7 +132,7 @@ export function setEventParent(project, id, parentId = null) {
     if (parentId === id || moved.has(parentId)) throw new Error('A rule cannot be dropped inside itself');
     const parent = project.events.find(item => item.id === parentId);
     if (!parent) throw new Error('That parent rule no longer exists');
-    if (!sameContext(event, parent)) throw new Error('Sub-events must share the parent rule sheet, group and object context');
+    if (!canNest(event, parent)) throw new Error('Sub-events must share the parent rule sheet, group and object context');
     event.parentId = parentId;
     const branch = project.events.filter(item => moved.has(item.id));
     const remaining = project.events.filter(item => !moved.has(item.id));
@@ -189,7 +200,8 @@ export function validateEventStructure(project, assert) {
       assert(parent, 'Sub-event parent must precede it');
       assert(stack.includes(parent.id), 'Sub-events must remain contiguous with their parent');
       assert(parent.sheetId === event.sheetId && parent.groupId === event.groupId, 'Sub-events must share their parent sheet and group');
-      assert(parent.ownerId === event.ownerId && parent.forEachType === event.forEachType, 'Sub-events must share their parent object context');
+      assert(parent.ownerId === event.ownerId && (parent.forEachType === event.forEachType || parent.forEachType === undefined),
+        'Sub-events must share their parent object context');
       while (stack.at(-1) !== parent.id) stack.pop();
     } else stack.length = 0;
     assert(stack.length < 16, 'Sub-events may nest at most 16 levels');

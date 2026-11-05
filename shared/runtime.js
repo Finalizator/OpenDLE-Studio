@@ -1,4 +1,5 @@
 import { CAMERA_DEFAULTS, eventConditions, resolveEntityId } from './project.js';
+import { compareInstanceProperty } from './instance-properties.js';
 import { entitySector, sectorAt, sectorGeometry } from './sectors.js';
 import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
@@ -59,6 +60,34 @@ import {
 } from './camera-runtime.js';
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0));
+
+/**
+ * The instances an event is currently about.
+ *
+ * An untouched type means every instance of it, which is why a rule that never picks behaves as
+ * it always did. A narrowed type answers only what was picked — and a pick that selected nothing
+ * answers nothing, rather than falling back to everything, or a rule that picked zero enemies
+ * would act on all of them.
+ */
+export function pickedInstances(state, picks, type) {
+  const chosen = picks?.get(type);
+  if (chosen) return (state.entities || []).filter(entity => chosen.has(entity.id));
+  return entityLookup(state).byType.get(type) || [];
+}
+
+/** The pick a per-instance rule sees: the parent's, narrowed to the one instance it is about. */
+function ownPick(picks, type, id) {
+  const own = new Map(picks);
+  const current = picks.get(type);
+  own.set(type, current ? new Set([...current].filter(candidate => candidate === id)) : new Set([id]));
+  return own;
+}
+
+/** Applies a picked set back into the pick map, keeping the map immutable between events. */
+function withPick(picks, type, ids) {
+  picks.set(type, ids);
+  return picks;
+}
 
 export function distanceToSegment(x, y, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -953,36 +982,49 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       return cached.event;
     }
-    function visit(source, ownerId) {
+    /**
+     * One rule and its sub-events.
+     *
+     * `picks` is the set of instances the rule is about, which both GDevelop and Construct call
+     * the picked objects: a `pick` condition narrows it, and sub-events inherit the narrowed set.
+     * An empty map means "nothing narrowed yet", and every consumer then means every instance of
+     * the type — so a rule that never picks still behaves exactly as it always did.
+     */
+    function visit(source, ownerId, picks = new Map()) {
       if (source.groupId && !state.groups.get(source.groupId)) return;
       if (ownerId) {
-        if (!runEvent(instanceFor(source, ownerId), Boolean(source.forEachType), phase)) return;
+        if (!runEvent(instanceFor(source, ownerId), Boolean(source.forEachType), phase, picks)) return;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         for (const child of tree.children.get(source.id) || []) {
-          visit(child, ownerId);
+          visit(child, ownerId, picks);
           if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         }
         return;
       }
       if (!source.forEachType) {
-        if (!runEvent(source, false, phase)) return;
+        if (!runEvent(source, false, phase, picks)) return;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         // Sub-events inherit the owner of the rule that ran them, so "this object" in a
         // child of an object script still means that object.
         for (const child of tree.children.get(source.id) || []) {
-          visit(child, source.ownerId);
+          visit(child, source.ownerId, picks);
           if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         }
         return;
       }
-      const matching = entityLookup(state).byType.get(source.forEachType);
+      // A for-each rule iterates what the event picked, not every instance of the type: that is
+      // what makes "pick the enemies below 5 health, then for each one" mean what it reads as.
+      const matching = pickedInstances(state, picks, source.forEachType);
       if (!matching?.length) return;
       for (const entity of matching) {
         const event = instanceFor(source, entity.id);
-        if (!runEvent(event, true, phase)) continue;
+        // Each instance gets its own view of the pick, narrowed to itself: a sub-event of a
+        // per-instance rule is about that instance, which is what "$self" already meant.
+        const own = ownPick(picks, source.forEachType, entity.id);
+        if (!runEvent(event, true, phase, own)) continue;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         for (const child of tree.children.get(source.id) || []) {
-          visit(child, event.ownerId);
+          visit(child, event.ownerId, own);
           if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         }
       }
@@ -1004,7 +1046,20 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
     }
   }
-  function runEvent(event, perInstance, phase) {
+  /**
+   * One rule, with the rule's pick exposed on the state while it runs.
+   *
+   * Expressions name an object type and mean "the instances this rule is about", so the pick has
+   * to be reachable from `expressionContext`. It is restored afterwards because a value read
+   * outside any rule (`stepRuntime` bookkeeping, HUD, saves) means every instance, not the last
+   * rule's narrowed set.
+   */
+  function runEvent(event, perInstance, phase, picks = new Map()) {
+    const outer = state.picks;
+    state.picks = picks;
+    try { return runEventBody(event, perInstance, phase, picks); } finally { state.picks = outer; }
+  }
+  function runEventBody(event, perInstance, phase, picks) {
     // The key is a string per rule and per owner, so building it for every rule of
     // every frame is one of the largest garbage sources in the simulation. Only the
     // conditions that sample state and the one-shot bookkeeping need it.
@@ -1088,6 +1143,59 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const count = wanted === 'any' ? state.entities.length
           : state.entities.filter(entity => entity.type === wanted).length;
         return compareValues(count, condition.operator, condition.value);
+      }
+      // ---- Instances: picking ------------------------------------------------------------
+      // A pick narrows the event's own instance set. It answers true when it selected something:
+      // false would stop the rule, which is what "there are no enemies left to act on" means.
+      if (condition.type === 'pickAll') {
+        withPick(picks, condition.objectType, new Set(pickedInstances(state, null, condition.objectType).map(entity => entity.id)));
+        return true;
+      }
+      if (condition.type === 'pickByProperty') {
+        const chosen = pickedInstances(state, picks, condition.objectType)
+          .filter(entity => compareInstanceProperty(project, state, entity, condition.property,
+            condition.operator, condition.value));
+        withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
+        return chosen.length > 0;
+      }
+      if (condition.type === 'pickByVariable') {
+        // An instance without the variable simply does not match, the way an undeclared object
+        // variable reads as absent in GDevelop. Authoring still refuses a pick where no instance
+        // of the type carries the variable at all, so a typo is caught while it is still cheap.
+        const chosen = pickedInstances(state, picks, condition.objectType)
+          .filter(entity => Object.hasOwn(entity.variables || {}, condition.variable)
+            && compareValues(entity.variables[condition.variable], condition.operator, condition.value));
+        withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
+        return chosen.length > 0;
+      }
+      if (condition.type === 'pickNearest') {
+        // Measured from the player unless another object is named, which is the reference a
+        // creator means nine times in ten ("the nearest health pickup to me").
+        const from = !condition.to || condition.to === '$player'
+          ? player
+          : findTarget(condition.to)?.type === 'player' ? player : findTarget(condition.to);
+        if (!from) throw new Error(`Event "${event.name || event.id}" picks the nearest ${condition.objectType} to "${condition.to}", which is not in this level`);
+        const chosen = pickedInstances(state, picks, condition.objectType)
+          .map(entity => ({ entity, distance: Math.hypot((entity.x ?? 0) - from.x, (entity.y ?? 0) - from.y) }))
+          .sort((a, b) => (condition.order === 'furthest' ? b.distance - a.distance : a.distance - b.distance))
+          .slice(0, Math.max(1, Math.round(condition.count) || 1))
+          .map(entry => entry.entity);
+        withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
+        return chosen.length > 0;
+      }
+      if (condition.type === 'pickRandom') {
+        const candidates = [...pickedInstances(state, picks, condition.objectType)];
+        const wanted = Math.min(candidates.length, Math.max(1, Math.round(condition.count) || 1));
+        const chosen = [];
+        // Without replacement: picking the same instance twice would silently shrink the set.
+        while (chosen.length < wanted && candidates.length) {
+          chosen.push(candidates.splice(Math.floor(nextRandom(state) * candidates.length), 1)[0]);
+        }
+        withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
+        return chosen.length > 0;
+      }
+      if (condition.type === 'pickedCount') {
+        return compareValues(pickedInstances(state, picks, condition.objectType).length, condition.operator, condition.value);
       }
       if (condition.type === 'cameraActive') {
         const camera = findTarget(condition.entityId);
@@ -1310,6 +1418,86 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'setPostFxStack': state.postFx.stackEnabled = action.enabled === 'yes'; break;
         case 'setPostFxPass': state.postFx.disabled.set(action.kind, action.enabled !== 'yes'); break;
         case 'setPostFxParam': state.postFx.values.set(`${action.kind}.${action.param}`, action.value); break;
+        // ---- Instances: acting on the picked set ------------------------------------------
+        // One action, every instance the event picked. This is GDevelop's and Construct's central
+        // idea — "Add 1 to Enemy.score" with no loop written — and it is why the picking
+        // conditions above exist: they are how you say *which* enemies.
+        case 'setPickedVariable':
+        case 'addPickedVariable': {
+          const targets = pickedInstances(state, picks, action.objectType);
+          for (const entity of targets) {
+            if (!Object.hasOwn(entity.variables || {}, action.variable)) {
+              throw new Error(`Event "${event.name || event.id}" sets the local variable "${action.variable}" on ${action.objectType}, which it does not have`);
+            }
+            entity.variables[action.variable] = scalar(action.type === 'addPickedVariable'
+              ? entity.variables[action.variable] + action.value : action.value);
+          }
+          state.worldRevision++;
+          break;
+        }
+        case 'setPickedPosition': {
+          for (const entity of pickedInstances(state, picks, action.objectType)) {
+            entity.x = action.x;
+            entity.y = action.y;
+            if (action.z !== undefined && action.z !== null) entity.z = action.z;
+            if (entity.type === 'player') Object.assign(player, { x: action.x, y: action.y });
+            state.physics?.move?.(entity.id, entity.x, entity.y, entity.z);
+          }
+          state.worldRevision++;
+          break;
+        }
+        case 'movePicked': {
+          for (const entity of pickedInstances(state, picks, action.objectType)) {
+            entity.x += action.dx;
+            entity.y += action.dy;
+            if (action.dz) entity.z = (entity.z ?? 0) + action.dz;
+            if (entity.type === 'player') {
+              player.x += action.dx; player.y += action.dy;
+              if (action.dz) player.z = (player.z ?? 0) + action.dz;
+            }
+            state.physics?.move?.(entity.id, entity.x, entity.y, entity.z);
+          }
+          state.worldRevision++;
+          break;
+        }
+        case 'setPickedAngle': {
+          for (const entity of pickedInstances(state, picks, action.objectType)) {
+            entity.angle = action.angle;
+            if (entity.type === 'player') player.angle = action.angle * Math.PI / 180;
+            state.physics?.rotate?.(entity.id, entity.angle);
+          }
+          state.worldRevision++;
+          break;
+        }
+        case 'scalePicked': {
+          for (const entity of pickedInstances(state, picks, action.objectType)) entity.scale = action.scale;
+          state.worldRevision++;
+          break;
+        }
+        case 'setPickedSpriteState': {
+          for (const entity of pickedInstances(state, picks, action.objectType)) {
+            setSpriteState(project, state, entity, action.state, action.restart === 'yes');
+          }
+          break;
+        }
+        case 'removePicked': {
+          // The picked set is already the answer to "which ones", so it is walked directly; each
+          // removal does everything removing one object does, or the renderer and the statistics
+          // would keep drawing something that is no longer in the level.
+          const doomed = pickedInstances(state, picks, action.objectType);
+          if (!doomed.length) break;
+          const doomedIds = new Set(doomed.map(entity => entity.id));
+          for (const entity of doomed) {
+            recordRemovedEntity(state, entity);
+            state.physics?.remove(entity.id);
+            state.animations.delete(entity.id);
+            state.spriteAnimations.delete(entity.id);
+            forgetEntity(state, entity.id);
+          }
+          state.entities = state.entities.filter(entity => !doomedIds.has(entity.id));
+          state.worldRevision++;
+          break;
+        }
         case 'setObjectVariable': case 'addObjectVariable': {
           const entity = findTarget(action.entityId);
           if (entity) assignVariable(entity.variables, action.variable, action.value, action.type === 'addObjectVariable');
@@ -1340,6 +1528,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           // The body the authored copy would have had: a spawned crate is solid, a spawned monster
           // blocks the player. Without this one the player walks through everything it makes.
           state.physics?.add?.(spawned.id);
+          // What was just made joins the pick, so a sub-event can act on it the way GDevelop's
+          // "Create object" leaves the new instance picked.
+          const type = pickedInstances(state, picks, spawned.type);
+          withPick(picks, spawned.type, new Set([...type.map(entity => entity.id), spawned.id]));
           state.worldRevision++;
           break;
         }

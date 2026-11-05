@@ -1,7 +1,8 @@
 import { GAME_SETTINGS } from './game-settings.js';
+import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTY_NAMES, readInstanceProperty } from './instance-properties.js';
 
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
-export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), player("health"), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
+export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), property("enemy","health"), count("enemy"), player("health"), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
 export const isExpression = value => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && typeof value.expr === 'string';
 
 export function scalar(value) {
@@ -96,18 +97,35 @@ const textFunctions = {
   contains: [2, 2, (s, needle) => text(s).includes(text(needle))],
   find: [2, 2, (s, needle) => text(s).indexOf(text(needle))],
 };
-const references = { global: 1, local: 1, object: 2, property: 2, player: 1, setting: 1 };
-const properties = new Set(['x', 'y', 'z', 'angle', 'health', 'elevation', 'name', 'type', 'doomType']);
+const references = { global: 1, local: 1, object: 2, property: 2, player: 1, setting: 1, count: 1 };
+/**
+ * The properties an expression can read.
+ *
+ * `shared/instance-properties.js` owns the list, so a property added for the picking conditions is
+ * readable here in the same commit — a comparison, a variable assignment and a pick all answer
+ * the same question the same way.
+ */
+const properties = new Set(INSTANCE_PROPERTY_NAMES);
 const playerStats = new Set(['health', 'armor', 'armorDivisor', 'bullets', 'shells', 'rockets', 'cells',
   'maxBullets', 'maxShells', 'maxRockets', 'maxCells', 'invulnerable', 'berserk', 'invisible', 'radiationSuit', 'lightAmp']);
 export function expressionContext(project, event, state, dt = 0) {
   const entities = state?.entities || project.map.entities;
   function targets(id) {
-    const matches = id === '$self'
-      ? event.ownerId ? entities.filter(e => e.id === event.ownerId) : entities.filter(e => e.type === event.forEachType)
-      : entities.filter(e => e.id === id);
-    if (!matches.length && (state || id !== '$self' || !event.forEachType)) throw new Error(`Expression references unknown object/context: ${id}`);
-    return matches;
+    if (id === '$self') {
+      const matches = event.ownerId ? entities.filter(e => e.id === event.ownerId) : entities.filter(e => e.type === event.forEachType);
+      if (!matches.length && (state || !event.forEachType)) throw new Error(`Expression references unknown object/context: ${id}`);
+      return matches;
+    }
+    const byId = entities.filter(e => e.id === id);
+    if (byId.length) return byId;
+    // An expression may also name the object *type*, and then it reads whatever the rule picked,
+    // which is how `Enemy.X()` behaves in GDevelop. A type with nothing left answers zero rather
+    // than failing, so only a name that is neither an instance nor a known type is refused.
+    if (INSTANCE_PICKABLE_TYPES.includes(id)) {
+      const picked = state?.picks?.get(id);
+      return entities.filter(e => e.type === id && (!picked || picked.has(e.id)));
+    }
+    throw new Error(`Expression references unknown object/context: ${id}`);
   }
   function variable(record, name) {
     if (forbidden.has(name) || !Object.hasOwn(record, name)) throw new Error(`Expression references unknown variable: ${name}`);
@@ -130,12 +148,13 @@ export function expressionContext(project, event, state, dt = 0) {
         if (!playerStats.has(args[0])) throw new Error(`Unknown player expression stat: ${args[0]}`);
         return state ? state.playerStats[args[0]] : 0;
       }
+      if (kind === 'count') return targets(args[0]).length;
       const list = targets(kind === 'local' ? '$self' : args[0]), name = kind === 'local' ? args[0] : args[1];
       if (kind === 'property') {
         if (!properties.has(name)) throw new Error(`Unknown object expression property: ${name}`);
-        if (!list.length) return name === 'name' || name === 'type' ? '' : 0;
-        if (state && list[0].type === 'player' && ['x', 'y', 'z', 'angle'].includes(name)) return name === 'angle' ? state.player.angle * 180 / Math.PI : state.player[name] ?? 0;
-        return list[0][name] ?? (name === 'name' || name === 'type' ? '' : 0);
+        // The first matching instance answers: this is how GDevelop's `Enemy.X()` behaves when
+        // several are picked, and a rule that needs a specific one picks it first.
+        return readInstanceProperty(project, state, list[0] ?? null, name);
       }
       const values = list.map(entity => variable(entity.variables || {}, name));
       if (!values.length) return 0;

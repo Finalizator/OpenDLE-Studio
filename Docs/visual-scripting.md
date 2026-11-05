@@ -109,6 +109,50 @@ imported projects remain valid. Create one from
 `$self` inside an object rule means "the object this rule belongs to". In a
 for-each rule, `$self` is each instance in turn.
 
+### Picking instances (GDevelop and Construct semantics)
+
+A rule is about a **set of instances**, and its conditions narrow that set. This
+is the model both GDevelop and Construct use, and it is why a single rule can act
+on "the enemies below 5 health" without a loop:
+
+| Rule piece | Command | Effect |
+| --- | --- | --- |
+| pick every instance | **Pick all instances** | resets the type to all of them |
+| pick by a property | **Pick instances by property** | keeps the instances where `health > 0`, `x < 400`, … |
+| pick by a local variable | **Pick instances by local variable** | keeps the instances whose variable matches |
+| pick the nearest / furthest | **Pick nearest instance** | keeps the closest N to the player or to another object |
+| pick a few at random | **Pick random instances** | keeps N distinct instances |
+| how many are picked | **Picked instance count** | a condition to branch on |
+| act on the pick | **Set picked instances' …** | position, angle, scale, sprite state, local variable, removal |
+
+Semantics that matter when you write a rule:
+
+- **Sub-events inherit the pick.** A child rule acts on the parent's narrowed set,
+  never on every instance of the type.
+- **An empty pick is not "all instances".** If a pick selected nothing, the rule
+  does not run. This is what "no enemies left to hurt" has to mean.
+- **A for-each rule iterates the pick.** `for each (enemy)` under a pick visits
+  only the picked enemies, and inside the loop the pick is narrowed to that one
+  instance, so `$self` and the picked-instance actions agree.
+- **A spawned instance becomes the pick.** After **Object: spawn a new object from a template**, the following
+  actions apply to the new instance only, exactly as in GDevelop.
+- **Expressions follow the pick.** `property("enemy", "health")` and
+  `count("enemy")` read the instances the current rule is about; outside a rule
+  they mean every instance of the type.
+- Reading a variable from an instance that lacks it picks nothing rather than
+  failing, the way an undeclared object variable behaves in GDevelop. Authoring
+  still refuses a pick where no instance of the type carries the variable at all.
+
+Read-only properties (`property("id", "name")`) cover position (`x`, `y`, `z`,
+`elevation`, `floorHeight`), orientation (`angle`, `pitch`, `roll`, `facing`),
+size (`scale`, `width`, `height`, `depth`, `radius`), state (`health`, `alive`,
+`speed`, `vx`, `vy`, `vz`, `grounded`, `opacity`), animation (`animation`,
+`animationClip`, `animationTime`, `animationFrame`), identity (`type`, `name`,
+`id`, `doomType`, `count`) and per-type extras (`lightIntensity`, `lightRadius`,
+`cameraFov`, `cameraPitch`, `cameraHeight`). `shared/instance-properties.js` owns
+the list, so the picker, the comparison, the assignment and the pick all answer
+the same question the same way.
+
 ---
 
 ## 3. Sheets and execution phases
@@ -194,6 +238,18 @@ condition: playerReachesEntity(distance 36, height 56, below 8)
 actions:   addVariable score 1
            playSound DSITEMUP
            destroyEntity $self
+```
+
+**Picked wave** (game scope, acts on a set of instances without a loop)
+
+```
+condition: everySeconds(2)
+condition: pickByProperty(enemy, health > 0)         // narrow to the living ones
+actions:   setPickedVariable enemy score 1            // every picked enemy, once
+condition: pickNearest(enemy, to $player, nearest, count 1)  // the closest of those
+actions:   movePicked enemy dx 0 dy 0 dz 8                   // only that one lifts
+           setVariable nearestHealth = property("enemy", "health")
+           setVariable living = count("enemy")       // still the picked set
 ```
 
 **Timed trap** (game scope)
@@ -455,6 +511,12 @@ activate in the shot's original frame.
 | has explicit health | `entityHasHealth` | yes | — |
 | timer ready | `timerReady` | — | timer |
 | timer exists | `timerExists` | — | timer |
+| pick every instance of a type | `pickAll` | — | objectType |
+| pick instances where a property matches | `pickByProperty` | — | objectType, property, operator, value |
+| pick instances where a local variable matches | `pickByVariable` | — | objectType, variable, operator, value |
+| pick the nearest / furthest instances | `pickNearest` | — | objectType, to, order, count |
+| pick a random instance | `pickRandom` | — | objectType, count |
+| compare how many instances are picked | `pickedCount` | — | objectType, operator, value |
 | this object is the active view | `cameraActive` | yes | — |
 | compare the view field of view | `cameraFovCompare` | — | operator, value |
 | compare variable | `variableCompare` | — | operator, value |
@@ -523,6 +585,14 @@ keep their existing global-variable output.
 | enable / disable the shader engine stack | `setPostFxStack` | — | enabled |
 | enable / disable one shader engine pass | `setPostFxPass` | — | kind, enabled |
 | set a shader engine parameter | `setPostFxParam` | — | kind, param, value |
+| set a local variable on picked instances | `setPickedVariable` | — | objectType, variable, value |
+| add to a local variable on picked instances | `addPickedVariable` | — | objectType, variable, value |
+| set position of picked instances | `setPickedPosition` | — | objectType, x, y, z |
+| move picked instances by an offset | `movePicked` | — | objectType, dx, dy, dz |
+| set facing angle of picked instances | `setPickedAngle` | — | objectType, angle |
+| set visual scale of picked instances | `scalePicked` | — | objectType, scale |
+| play a sprite state on picked instances | `setPickedSpriteState` | — | objectType, state, restart |
+| remove picked instances | `removePicked` | — | objectType |
 | rumble the controller | `rumbleController` | — | strength, seconds |
 | create a camera | `createCamera` | — | x, y, z, angle, pitch, fov, name, activate |
 | switch the view to a camera | `switchCamera` | — | camera |

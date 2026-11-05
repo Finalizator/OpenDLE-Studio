@@ -13,6 +13,7 @@ import { POST_FX_KINDS } from './post-fx.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 import { addonCommands, addonCommand, declaredAddonTypes } from './addons.js';
 import { PATH_EASINGS } from './timesheet.js';
+import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTIES } from './instance-properties.js';
 
 // Every key a creator can bind to an event, including the letters Doom leaves free, so
 // scriptlets such as the spray can be rebound from the event sheet.
@@ -35,6 +36,14 @@ const EASINGS = PATH_EASINGS;
  * the camera's name, so a ritual cutscene can be written without the editor's object ids.
  */
 const cameraRef = (name, value) => ({ name, value, kind: 'string' });
+/**
+ * An object *type* rather than one object: what GDevelop and Construct call the object, and what
+ * picking narrows. The editor offers the types this level actually contains.
+ */
+const objectType = (value = 'enemy') => ({ name: 'objectType', value, kind: 'objectType' });
+/** A property of an instance: position, angle, animation state, health — see instance-properties.js. */
+const instanceProperty = (value = 'health') => ({ name: 'property', value, kind: 'instanceProperty',
+  properties: INSTANCE_PROPERTIES.map(property => property.name) });
 const projectileClips = () => ['clipId', 'impactClipId'].map(name => ({ name, kind: 'text', optional: true }));
 
 /**
@@ -106,7 +115,7 @@ export const ENGINE_CONDITIONS = [
   { type: 'everySeconds', label: 'System: every N seconds', fields: [numeric('seconds', 1, .01, 3600)] },
   { type: 'randomChance', label: 'System: random chance (0-1)', fields: [numeric('probability', .5, 0, 1)] },
   { type: 'objectCount', label: 'Objects: count of live objects', fields: [
-    choice('entityType', 'enemy', ['any', 'player', 'enemy', 'pickup', 'light', 'decoration']), comparison(), numeric('value', 0, 0, 100000)] },
+    choice('entityType', 'enemy', ['any', ...INSTANCE_PICKABLE_TYPES]), comparison(), numeric('value', 0, 0, 100000)] },
   { type: 'entityAngle', label: 'Object: compare facing angle', target: true, fields: [comparison(), numeric('value', 0, -3600, 3600)] },
   { type: 'playerFeedback', label: 'Player: compare feedback signal', fields: [choice('signal', 'damage', ['damage', 'damageDirection', 'attackTime', 'weaponPickup']), comparison(), numeric('value', 0, -1e6, 1e6)] },
   { type: 'playerFace', label: 'Player: face expression', fields: [choice('expression', 'idle', FACE_EXPRESSIONS)] },
@@ -124,6 +133,22 @@ export const ENGINE_CONDITIONS = [
   { type: 'entityHasHealth', label: 'Object: has explicit health', fields: [], target: true },
   { type: 'timerReady', label: 'System: timer ready', fields: [timer()] },
   { type: 'timerExists', label: 'System: timer exists', fields: [timer()] },
+  // ---- Instances: picking ---------------------------------------------------------------
+  // Both GDevelop and Construct work by *picking*: a condition narrows the set of instances an
+  // event is about, and everything in that event then applies to the narrowed set. These four
+  // conditions are that narrowing. A pick with no condition above it is every instance of the
+  // type, which is what "Pick all" means and why it is the one you write first to be explicit.
+  { type: 'pickAll', label: 'Object: pick every instance of a type', fields: [objectType()] },
+  { type: 'pickByProperty', label: 'Object: pick instances where a property matches', fields: [
+    objectType(), instanceProperty(), comparison(), { name: 'value', kind: 'value', value: 0 }] },
+  { type: 'pickByVariable', label: 'Object: pick instances where a local variable matches', fields: [
+    objectType(), { name: 'variable', kind: 'text', value: 'value' }, comparison(), { name: 'value', kind: 'value', value: 0 }] },
+  { type: 'pickNearest', label: 'Object: pick the nearest / furthest instances', fields: [
+    objectType(), { ...cameraRef('to', '$player'), optional: true },
+    choice('order', 'nearest', ['nearest', 'furthest']), numeric('count', 1, 1, 1024)] },
+  { type: 'pickRandom', label: 'Object: pick a random instance', fields: [objectType(), numeric('count', 1, 1, 1024)] },
+  { type: 'pickedCount', label: 'Object: compare how many instances are picked', fields: [
+    objectType(), comparison(), numeric('value', 1, 0, 100000)] },
   { type: 'cameraActive', label: 'Camera: this object is the active view', target: true, fields: [] },
   { type: 'cameraFovCompare', label: 'Camera: compare the view field of view', fields: [comparison(), numeric('value', 90, 0, 360)] },
   { type: 'variableCompare', label: 'System: compare variable', fields: [comparison(), { name: 'value', kind: 'value', value: 0 }], variable: true },
@@ -230,6 +255,28 @@ export const ENGINE_ACTIONS = [
     { ...numeric('z', undefined, -32768, 32768), optional: true },
     { ...numeric('angle', undefined, -3600, 3600), optional: true }, { ...numeric('pitch', undefined, -89, 89), optional: true },
     numeric('seconds', 2, 0, 3600), choice('easing', 'easeInOut', EASINGS)] },
+  // ---- Instances: acting on the picked set ----------------------------------------------
+  // The actions that need a set rather than one object. Every existing single-object action keeps
+  // its own `Object` field and still names one instance; these name a *type* and reach every
+  // instance an event picked, which is how "Add 1 to Enemy.score" works without a for-each.
+  { type: 'setPickedVariable', label: 'Object: set a local variable on picked instances', fields: [
+    objectType(), { name: 'variable', kind: 'text', value: 'value' }, { name: 'value', kind: 'value', value: 0 }] },
+  { type: 'addPickedVariable', label: 'Object: add to a local variable on picked instances', fields: [
+    objectType(), { name: 'variable', kind: 'text', value: 'value' }, { name: 'value', kind: 'value', value: 1 }] },
+  { type: 'setPickedPosition', label: 'Object: set position of picked instances', fields: [
+    objectType(), { name: 'x', kind: 'value', value: 0 }, { name: 'y', kind: 'value', value: 0 },
+    { ...numeric('z', undefined, -32768, 32768), optional: true }] },
+  { type: 'movePicked', label: 'Object: move picked instances by an offset', fields: [
+    objectType(), { name: 'dx', kind: 'value', value: 0 }, { name: 'dy', kind: 'value', value: 0 },
+    { ...numeric('dz', undefined, -32768, 32768), optional: true }] },
+  { type: 'setPickedAngle', label: 'Object: set facing angle of picked instances', fields: [
+    objectType(), { name: 'angle', kind: 'value', value: 0 }] },
+  { type: 'scalePicked', label: 'Object: set visual scale of picked instances', fields: [
+    objectType(), { name: 'scale', kind: 'value', value: 1 }] },
+  { type: 'setPickedSpriteState', label: 'Object: play a sprite state on picked instances', fields: [
+    objectType(), choice('state', 'walk', ['stand', 'walk', 'attack', 'pain', 'death']),
+    choice('restart', 'no', ['yes', 'no'])] },
+  { type: 'removePicked', label: 'Object: remove picked instances', fields: [objectType()] },
   // Controllers. A rumble is a game event like a sound, so a rule says when it happens rather
   // than the engine guessing that being shot should buzz.
   { type: 'rumbleController', label: 'Controller: rumble', fields: [
