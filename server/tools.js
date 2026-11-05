@@ -14,6 +14,7 @@ import { unsupportedActorActions, usedActors } from '../shared/actor-runtime.js'
 import { addRamp, bindRampPath, normalizeRamp, syncRampModels } from '../shared/ramp.js';
 import { PROFILE_FIELDS, CORNER_STYLES, MAX_PROFILE_VERTICES } from '../shared/ramp-profile.js';
 import { cutLevelGeometry, MAX_CUT_POINTS } from '../shared/geometry-cut.js';
+import { INSTANCE_PICKABLE_TYPES } from '../shared/instance-properties.js';
 
 const coordinate = z.number().min(-65536).max(65536);
 const cutPointShape = z.object({ x: coordinate, y: coordinate, z: z.number().min(-32768).max(32767).optional() });
@@ -158,7 +159,7 @@ export const toolDefinitions = [
       weaponAssets: z.record(z.string().nullable()).optional() } },
   { name: 'events_add_rule', description: 'Add an ordered visual rule with optional ownerId and AND conditions. Conditions: onStart, always, keyPressed(key), nearEntity(entityId,distance), playerGrounded, collisionStarted/collisionEnded/isTouching(entityId,otherId; otherId may be "$world"; both targets need physics), animationFinished(entityId). Actions: showMessage(message), setVariable/addVariable(variable,value), teleport(x,y,z? player), removeEntity(entityId), setEntityPosition(entityId,x,y,z? absolute height), rotateEntity(entityId,angle degrees), applyImpulse/applyForce/setVelocity(entityId,x,y,z; dynamic bodies only, SI units kg*m/s,N,m/s; x/y horizontal,z up; force lasts one simulation tick), playAnimation(entityId,clip,speed,loop), stopAnimation(entityId). "$self" resolves owner. Rules stop when owner is destroyed. References must exist.',
     shape: { name: z.string().min(1).max(100).optional(), sheetId: z.string().optional(), groupId: z.string().optional(), parentId: z.string().optional(),
-      comment: z.string().max(2000).optional(), conditionMode: z.enum(['and', 'or']).optional(), forEachType: z.enum(['enemy', 'pickup', 'decoration']).optional(),
+      comment: z.string().max(2000).optional(), conditionMode: z.enum(['and', 'or']).optional(), forEachType: z.enum(INSTANCE_PICKABLE_TYPES).optional(),
       ownerId: z.string().optional(), condition: z.record(z.unknown()), conditions: z.array(z.record(z.unknown())).max(15).optional(),
       actions: z.array(z.record(z.unknown())).max(32), once: z.boolean().default(true) } },
   { name: 'events_update_rule', description: 'Edit existing visual rules, including Engine defaults. All references/commands are validated. Use project_replace to remove optional metadata such as an owner or sheet association.',

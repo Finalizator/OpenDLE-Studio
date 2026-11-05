@@ -73,7 +73,7 @@ test('a property reads the live instance, including its animation state', () => 
   const target = enemy(state, 0);
   assert.equal(readInstanceProperty(project, state, target, 'animation'), 'walk');
   assert.equal(readInstanceProperty(project, state, target, 'animationClip'), 'clip_walk');
-  assert.equal(readInstanceProperty(project, state, target, 'animationFrame'), 2);
+  assert.equal(readInstanceProperty(project, state, target, 'animationFrame'), 0, 'a one-frame clip always displays frame zero');
   assert.equal(readInstanceProperty(project, state, target, 'animationTime'), .25);
   assert.equal(readInstanceProperty(project, state, target, 'x'), 0);
   assert.equal(readInstanceProperty(project, state, enemy(state, 2), 'x'), 200);
@@ -218,7 +218,7 @@ test('an instance action reaches position, angle, scale, sprite state and remova
   const shaped = enemy(state, 0);
   assert.deepEqual([shaped.x, shaped.y, shaped.z], [640, 480, 64], 'the picked one was placed in three axes');
   assert.equal(shaped.angle, 90);
-  assert.equal(shaped.scale, 2);
+  assert.equal(shaped.spriteScale, 2);
   assert.equal(readInstanceProperty(project, state, shaped, 'animation'), 'walk', 'and its sprite state was set');
   assert.equal(enemy(state, 1).x, 108, 'the other picked one moved');
   assert.equal(enemy(state, 1).y, -8);

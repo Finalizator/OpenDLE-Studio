@@ -36,7 +36,7 @@ function objectTypeOptions(types) {
 /** The local variables every instance of a type carries, for a picked-variable field's suggestions. */
 function instanceVariableNames(types, type) {
   const entry = (types || []).find(([id]) => id === type);
-  return entry?.variables || [];
+  return entry?.[2] || [];
 }
 
 export function commandFields(command, { entities, zones = [], cameras = [], objectTypes = [], playerId, variables, groups, clips, walls, sectors, doorSectors = sectors, elevatorSectors = sectors, spriteClips, images = [], hudElements, hudAnimations, timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [], commands = null }) {
@@ -84,6 +84,7 @@ export function commandFields(command, { entities, zones = [], cameras = [], obj
         // An object type is picked from the types this level actually holds, with the ones it does
         // not hold still offered: a creator writes the rule for a type before placing it.
         ...(field.kind === 'objectType' ? { options: objectTypeOptions(objectTypes) } : {}),
+        ...(field.kind === 'objectReference' ? { options: [['$player', 'Player'], ...entities] } : {}),
         // A property is picked by name and sorted the way a person thinks of them, not by the
         // order the reader happens to declare them in.
         ...(field.kind === 'instanceProperty' ? { options: INSTANCE_PROPERTIES.map(property => [property.name, property.label]) } : {}),

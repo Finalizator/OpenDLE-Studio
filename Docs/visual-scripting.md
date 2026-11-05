@@ -128,7 +128,14 @@ on "the enemies below 5 health" without a loop:
 Semantics that matter when you write a rule:
 
 - **Sub-events inherit the pick.** A child rule acts on the parent's narrowed set,
-  never on every instance of the type.
+  never on every instance of the type. Each sibling starts with the parent's set,
+  not the previous sibling's narrowing.
+- **Owned rules start with their owner picked.** Descendants retain the parent's
+  selection, including an explicit **Pick all** or a newly spawned instance.
+- **NOT filters individual instances.** An inverted property or variable pick keeps
+  the instances that fail its predicate, within the incoming selection.
+- **OR unions successful selections.** Branches evaluate independently; a successful
+  non-picking condition retains the incoming selection.
 - **An empty pick is not "all instances".** If a pick selected nothing, the rule
   does not run. This is what "no enemies left to hurt" has to mean.
 - **A for-each rule iterates the pick.** `for each (enemy)` under a pick visits
@@ -138,7 +145,11 @@ Semantics that matter when you write a rule:
   actions apply to the new instance only, exactly as in GDevelop.
 - **Expressions follow the pick.** `property("enemy", "health")` and
   `count("enemy")` read the instances the current rule is about; outside a rule
-  they mean every instance of the type.
+  they mean every instance of the type. Picked actions evaluate expressions once
+  per target: setting `score` to `property("enemy", "health")` copies each enemy's
+  own health, rather than copying the first enemy's health to everyone.
+- **Variables keep their declared scalar type.** Numeric addition never concatenates
+  text; booleans support equality and inequality, not ordering comparisons.
 - Reading a variable from an instance that lacks it picks nothing rather than
   failing, the way an undeclared object variable behaves in GDevelop. Authoring
   still refuses a pick where no instance of the type carries the variable at all.
@@ -152,6 +163,12 @@ size (`scale`, `width`, `height`, `depth`, `radius`), state (`health`, `alive`,
 `cameraFov`, `cameraPitch`, `cameraHeight`). `shared/instance-properties.js` owns
 the list, so the picker, the comparison, the assignment and the pick all answer
 the same question the same way.
+
+Position, floor height, elevation and player health follow the live world.
+Velocities and speed use map units per second; angles use degrees.
+Animation frames are zero-based, wrap for looping clips and clamp to the final
+frame for non-looping clips, including the implicit stand animation.
+Scale and opacity read the actual sprite/model/node visual settings.
 
 ---
 
@@ -245,12 +262,16 @@ actions:   addVariable score 1
 ```
 condition: everySeconds(2)
 condition: pickByProperty(enemy, health > 0)         // narrow to the living ones
-actions:   setPickedVariable enemy score 1            // every picked enemy, once
-condition: pickNearest(enemy, to $player, nearest, count 1)  // the closest of those
-actions:   movePicked enemy dx 0 dy 0 dz 8                   // only that one lifts
+actions:   setPickedVariable enemy score 1           // every living enemy
+           setVariable living = count("enemy")     // before narrowing further
+  sub-event:
+  condition: pickNearest(enemy, to $player, nearest, count 1)
+  actions: movePicked enemy dx 0 dy 0 dz 8          // only the nearest lifts
            setVariable nearestHealth = property("enemy", "health")
-           setVariable living = count("enemy")       // still the picked set
 ```
+
+All conditions in a rule run before its actions; use a sub-event when an action
+must run before a further pick.
 
 **Timed trap** (game scope)
 

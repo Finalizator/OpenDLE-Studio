@@ -144,7 +144,7 @@ export const ENGINE_CONDITIONS = [
   { type: 'pickByVariable', label: 'Object: pick instances where a local variable matches', fields: [
     objectType(), { name: 'variable', kind: 'text', value: 'value' }, comparison(), { name: 'value', kind: 'value', value: 0 }] },
   { type: 'pickNearest', label: 'Object: pick the nearest / furthest instances', fields: [
-    objectType(), { ...cameraRef('to', '$player'), optional: true },
+    objectType(), { name: 'to', kind: 'objectReference', value: '$player', optional: true },
     choice('order', 'nearest', ['nearest', 'furthest']), numeric('count', 1, 1, 1024)] },
   { type: 'pickRandom', label: 'Object: pick a random instance', fields: [objectType(), numeric('count', 1, 1, 1024)] },
   { type: 'pickedCount', label: 'Object: compare how many instances are picked', fields: [
@@ -264,15 +264,15 @@ export const ENGINE_ACTIONS = [
   { type: 'addPickedVariable', label: 'Object: add to a local variable on picked instances', fields: [
     objectType(), { name: 'variable', kind: 'text', value: 'value' }, { name: 'value', kind: 'value', value: 1 }] },
   { type: 'setPickedPosition', label: 'Object: set position of picked instances', fields: [
-    objectType(), { name: 'x', kind: 'value', value: 0 }, { name: 'y', kind: 'value', value: 0 },
-    { ...numeric('z', undefined, -32768, 32768), optional: true }] },
+    objectType(), numeric('x', 0, -65536, 65536), numeric('y', 0, -65536, 65536),
+    { ...numeric('z', undefined, -32768, 32767), optional: true }] },
   { type: 'movePicked', label: 'Object: move picked instances by an offset', fields: [
-    objectType(), { name: 'dx', kind: 'value', value: 0 }, { name: 'dy', kind: 'value', value: 0 },
+    objectType(), numeric('dx', 0, -65536, 65536), numeric('dy', 0, -65536, 65536),
     { ...numeric('dz', undefined, -32768, 32768), optional: true }] },
   { type: 'setPickedAngle', label: 'Object: set facing angle of picked instances', fields: [
-    objectType(), { name: 'angle', kind: 'value', value: 0 }] },
+    objectType(), numeric('angle', 0, -3600, 3600)] },
   { type: 'scalePicked', label: 'Object: set visual scale of picked instances', fields: [
-    objectType(), { name: 'scale', kind: 'value', value: 1 }] },
+    objectType(), numeric('scale', 1, .01, 20)] },
   { type: 'setPickedSpriteState', label: 'Object: play a sprite state on picked instances', fields: [
     objectType(), choice('state', 'walk', ['stand', 'walk', 'attack', 'pain', 'death']),
     choice('restart', 'no', ['yes', 'no'])] },

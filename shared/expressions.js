@@ -109,21 +109,21 @@ const properties = new Set(INSTANCE_PROPERTY_NAMES);
 const playerStats = new Set(['health', 'armor', 'armorDivisor', 'bullets', 'shells', 'rockets', 'cells',
   'maxBullets', 'maxShells', 'maxRockets', 'maxCells', 'invulnerable', 'berserk', 'invisible', 'radiationSuit', 'lightAmp']);
 export function expressionContext(project, event, state, dt = 0) {
-  const entities = state?.entities || project.map.entities;
+  const entities = () => state?.entities || project.map.entities;
   function targets(id) {
     if (id === '$self') {
-      const matches = event.ownerId ? entities.filter(e => e.id === event.ownerId) : entities.filter(e => e.type === event.forEachType);
+      const matches = event.ownerId ? entities().filter(e => e.id === event.ownerId) : entities().filter(e => e.type === event.forEachType);
       if (!matches.length && (state || !event.forEachType)) throw new Error(`Expression references unknown object/context: ${id}`);
       return matches;
     }
-    const byId = entities.filter(e => e.id === id);
+    const byId = entities().filter(e => e.id === id);
     if (byId.length) return byId;
     // An expression may also name the object *type*, and then it reads whatever the rule picked,
     // which is how `Enemy.X()` behaves in GDevelop. A type with nothing left answers zero rather
     // than failing, so only a name that is neither an instance nor a known type is refused.
     if (INSTANCE_PICKABLE_TYPES.includes(id)) {
       const picked = state?.picks?.get(id);
-      return entities.filter(e => e.type === id && (!picked || picked.has(e.id)));
+      return entities().filter(e => e.type === id && (!picked || picked.has(e.id)));
     }
     throw new Error(`Expression references unknown object/context: ${id}`);
   }
@@ -157,11 +157,21 @@ export function expressionContext(project, event, state, dt = 0) {
         return readInstanceProperty(project, state, list[0] ?? null, name);
       }
       const values = list.map(entity => variable(entity.variables || {}, name));
-      if (!values.length) return 0;
+      if (!values.length) {
+        const authored = targetsForValidation(kind === 'local' ? '$self' : args[0]);
+        const initial = authored.map(entity => variable(entity.variables || {}, name));
+        if (!initial.length) throw new Error(`Expression references unknown variable: ${name}`);
+        return typeof initial[0] === 'string' ? '' : typeof initial[0] === 'boolean' ? false : 0;
+      }
       if (values.some(v => typeof v !== typeof values[0])) throw new Error(`Object variable types differ between instances: ${name}`);
       return values[0];
     },
   };
+  function targetsForValidation(id) {
+    if (id === '$self') return project.map.entities.filter(entity => event.ownerId ? entity.id === event.ownerId : entity.type === event.forEachType);
+    const byId = project.map.entities.filter(entity => entity.id === id);
+    return byId.length ? byId : project.map.entities.filter(entity => entity.type === id);
+  }
 }
 function checkCall(node) {
   if (forbidden.has(node.name) || !Object.hasOwn(functions, node.name) && !Object.hasOwn(textFunctions, node.name) &&
@@ -178,7 +188,7 @@ export function expressionObjectReferences(value) {
   const found = [];
   function visit(node) {
     if (node.op === 'call') {
-      if (['object', 'property'].includes(node.name)) {
+      if (['object', 'property', 'count'].includes(node.name)) {
         checkCall(node);
         const { value: id, start, end } = node.args[0];
         found.push({ id, start, end });

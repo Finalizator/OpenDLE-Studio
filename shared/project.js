@@ -6,6 +6,7 @@ import { CORE_ACTIONS, CORE_CONDITIONS, ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT
 import { validateEventStructure, TRIGGER_CONDITIONS } from './events.js';
 import { MODEL_FACING_SEMANTICS } from './entity-visuals.js';
 import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTY_NAMES, INSTANCE_TYPES, compareInstanceProperty } from './instance-properties.js';
+export { CAMERA_DEFAULTS } from './instance-properties.js';
 import { ADDON_LIMITS, ADDON_VERSION, declaredAddonTypes, setProjectValidator, validateAddonManifest } from './addons.js';
 import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
 import { WEAPONS } from './player-state.js';
@@ -48,12 +49,6 @@ const BUILT_IN_TYPES = new Set([...CONDITIONS, ...ACTIONS]);
 // importing the project (which would be a cycle); it is re-exported here, where it has always
 // been, so every existing importer keeps working.
 export const ENTITY_TYPES = INSTANCE_TYPES;
-/**
- * A camera's own defaults: a horizontal field of view like GZDoom's `fov`, a level pitch and
- * the eye height above the object's own height. They are the values a script overrides and the
- * values a placed camera starts with, so a camera object with no numbers still works.
- */
-export const CAMERA_DEFAULTS = Object.freeze({ fov: 90, pitch: 0, height: 48 });
 const colorPattern = /^#[0-9a-f]{6}$/i;
 // Surface texture scaling: one texture tile covers `scale` times its pixel size in map
 // units, so 2 draws the artwork twice as large and 0.5 twice as fine.
@@ -1207,6 +1202,8 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           assert(INSTANCE_PICKABLE_TYPES.includes(command[field.name]), `${field.name} must be an object type`);
         } else if (field.kind === 'instanceProperty') {
           assert(INSTANCE_PROPERTY_NAMES.includes(command[field.name]), `Unknown object property: ${command[field.name]}`);
+        } else if (field.kind === 'objectReference') {
+          if (command[field.name] !== '$player') targetId(command[field.name]);
         } else if (field.kind === 'image') {
           // An empty image means "not chosen yet": the event is still valid, and the
           // runtime reports which spray needed artwork when it is triggered.
@@ -1226,17 +1223,22 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           'Command references a signal not declared by its source object');
       }
       if (definition.variable) assert(Object.hasOwn(project.variables, command.variable), 'Condition references an unknown variable');
-      // A picked-variable command names a type, not one object, so the check is what at least one
-      // instance of that type carries: a type whose instances disagree is a project that could not
-      // run the action on all of them anyway, and the runtime says so as it runs.
+      if (command.type === 'pickByProperty' && !isExpression(command.value))
+        compareInstanceProperty(project, null, null, command.property, command.operator, command.value);
       if (['setPickedVariable', 'addPickedVariable', 'pickByVariable'].includes(command.type)) {
-        const carriers = entities.filter(entity => entity.type === command.objectType);
-        assert(carriers.some(entity => Object.hasOwn(entity.variables || {}, command.variable)),
+        const carriers = entities.filter(entity => entity.type === command.objectType &&
+          Object.hasOwn(entity.variables || {}, command.variable));
+        assert(carriers.length,
           `${command.objectType} has no local variable named ${command.variable}`);
-        if (command.type === 'addPickedVariable' && !isExpression(command.value)) {
-          assert(carriers.filter(entity => Object.hasOwn(entity.variables || {}, command.variable))
-            .every(entity => typeof entity.variables[command.variable] === 'number'),
-          'Only numeric local variables can be added to');
+        if (command.type === 'addPickedVariable')
+          assert(carriers.every(entity => typeof entity.variables[command.variable] === 'number'),
+            'Only numeric local variables can be added to');
+        if (!isExpression(command.value)) {
+          assert(carriers.every(entity => typeof entity.variables[command.variable] === typeof command.value),
+            'Local variable comparison/assignment must preserve its type');
+        }
+        if (command.type === 'pickByVariable' && carriers.some(entity => typeof entity.variables[command.variable] === 'boolean')) {
+          assert(['=', '!='].includes(command.operator), 'Boolean comparisons require = or !=');
         }
       }
       if (['gameScreen', 'setGameScreen'].includes(command.type)) {

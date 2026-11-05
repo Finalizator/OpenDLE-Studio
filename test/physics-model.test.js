@@ -18,6 +18,7 @@ import { installEngineScripts } from '../shared/engine-script.js';
 import { modelOrientation } from '../shared/entity-visuals.js';
 import { createPath } from '../shared/paths.js';
 import { startPathTween } from '../shared/timesheet.js';
+import { readInstanceProperty } from '../shared/instance-properties.js';
 
 await R.init();
 const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),
@@ -32,6 +33,28 @@ function scene(t, configure = () => {}) {
   };
   return { project, state, tick };
 }
+
+test('picked transforms synchronize real Rapier bodies and property velocities use map axes and units', t => {
+  const { project, state, tick } = scene(t, project => {
+    project.map.entities[1].physics = config;
+    project.events = [{ id: 'picked_body', enabled: true, once: false, condition: { type: 'onStart' }, actions: [
+      { type: 'setPickedPosition', objectType: 'pickup', x: 200, y: 0, z: 32 },
+      { type: 'movePicked', objectType: 'pickup', dx: 8, dy: 16, dz: 4 },
+      { type: 'setPickedAngle', objectType: 'pickup', angle: 90 },
+    ] }];
+  });
+  tick();
+  const entity = state.entities[1], body = state.physics.bodies.get(entity.id);
+  assert.ok(Math.abs(entity.x - 208) < 1e-4);
+  assert.ok(Math.abs(entity.y - 16) < 1e-4);
+  assert.ok(Math.abs(entity.z - 36) < 1e-4);
+  assert.ok(Math.abs(body.translation().x * 64 - entity.x) < 1e-4);
+  assert.ok(Math.abs(body.translation().z * 64 - entity.y) < 1e-4);
+  assert.ok(Math.abs(entity.angle - 90) < 1e-3);
+  state.physics.velocity(entity.id, { x: 1, y: 2, z: 3 });
+  assert.deepEqual(['vx', 'vy', 'vz'].map(name => readInstanceProperty(project, state, entity, name)), [64, 128, 192]);
+  assert.equal(state.physics.getVelocity('missing'), null);
+});
 
 test('Rapier gravity rests bodies on sector floors; capsule grounds, jumps and stops at walls/ceiling', t => {
   const { state, tick } = scene(t, project => {

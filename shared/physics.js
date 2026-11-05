@@ -911,6 +911,12 @@ export function createPhysics(project, state, R, triangulate) {
       const body = bodies.get(id);
       if (body?.isDynamic()) body.setLinvel({ x: vector.x, y: vector.z, z: vector.y }, true);
     },
+    getVelocity(id) {
+      const body = bodies.get(id);
+      if (!body) return null;
+      const velocity = body.linvel();
+      return { x: velocity.x * PHYSICS_SCALE, y: velocity.z * PHYSICS_SCALE, z: velocity.y * PHYSICS_SCALE };
+    },
     gravityScale(id, scale) {
       const body = bodies.get(id);
       if (body) body.setGravityScale(scale, true);

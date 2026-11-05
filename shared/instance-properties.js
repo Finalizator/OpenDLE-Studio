@@ -11,6 +11,10 @@
  * is not, because the editor validates expressions before anything is playing.
  */
 import { sectorAt, sectorGeometry } from './sectors.js';
+import { momentumSpeed } from './player-motion.js';
+
+/** Horizontal FOV, pitch and eye height above the camera object's position. */
+export const CAMERA_DEFAULTS = Object.freeze({ fov: 90, pitch: 0, height: 48 });
 
 /**
  * The kinds of object a level can hold.
@@ -89,61 +93,80 @@ export function instanceProperty(name) {
   return BY_NAME.get(String(name ?? '').trim()) ?? null;
 }
 
-/** The number a property answers, for a comparison or a variable being set from it. */
-function numbersFor(project, state, entity, cache) {
-  const isPlayer = entity.type === 'player';
-  const z = isPlayer
-    ? state?.player?.z ?? entity.z ?? (cache.sector(entity)?.floorHeight ?? 0)
-    : entity.z ?? (cache.sector(entity)?.floorHeight ?? 0) + (entity.elevation || 0);
-  const tilt = entity.modelTilt;
+function floorFor(project, state, entity) {
+  const sectors = state?.sectors ?? sectorGeometry(project);
+  const position = entity.type === 'player' && state?.player ? state.player : entity;
+  const sector = sectorAt(sectors, position.x, position.y);
+  return state ? sector?.floorHeight ?? 0
+    : project.map.sectors.find(candidate => candidate.id === sector?.id)?.floorHeight ?? 0;
+}
+
+function animationFor(project, state, entity) {
   const animation = state?.spriteAnimations?.get(entity.id);
-  const velocity = isPlayer ? state?.momentum : entity.momentum;
-  const area = entity.area, physics = entity.physics;
-  const size = area || physics || {};
-  const clip = animation?.clipId ? project.spriteClips?.find(candidate => candidate.id === animation.clipId) : null;
-  const elapsed = animation && state ? Math.max(0, state.time - animation.start) : 0;
-  const frame = clip?.seconds ? Math.floor(elapsed / clip.seconds) : 0;
+  const clipId = animation?.clipId ?? entity.spriteStates?.stand;
+  const clip = project.spriteClips?.find(candidate => candidate.id === clipId);
+  const elapsed = state ? Math.max(0, state.time - (animation?.start ?? 0)) : 0;
+  const duration = clip ? clip.frames.length * clip.seconds : 0;
+  const frame = duration > 0
+    ? Math.min(clip.frames.length - 1, Math.floor((clip.loop ? elapsed % duration : Math.min(elapsed, duration)) / clip.seconds)) : 0;
+  return { name: animation?.name ?? (clipId ? 'stand' : ''), clipId: clipId ?? '', elapsed, frame };
+}
+
+function velocityFor(state, entity) {
+  if (entity.type === 'player') return state?.physics?.playerVelocity ?? momentumSpeed(state?.momentum || {});
+  return state?.physics?.getVelocity?.(entity.id) ?? { x: entity.vx ?? 0, y: entity.vy ?? 0, z: entity.vz ?? 0 };
+}
+
+function dimensions(entity) {
+  const size = entity.area || entity.physics || {};
+  const round = ['sphere', 'ball', 'capsule'].includes(size.shape);
   return {
-    x: isPlayer ? state?.player?.x ?? entity.x ?? 0 : entity.x ?? 0,
-    y: isPlayer ? state?.player?.y ?? entity.y ?? 0 : entity.y ?? 0,
-    z,
-    elevation: entity.elevation || 0,
-    floorHeight: cache.sector(entity)?.floorHeight ?? 0,
-    angle: isPlayer ? (state?.player?.angle ?? 0) * 180 / Math.PI : entity.angle || 0,
-    pitch: isPlayer ? (state?.player?.pitch ?? 0) * 180 / Math.PI : tilt?.pitch ?? entity.cameraPitch ?? 0,
-    roll: isPlayer ? 0 : tilt?.roll ?? 0,
-    facing: entity.facing === 'right' || entity.facing === 1 ? 1 : entity.facing === 'left' || entity.facing === -1 ? -1 : 1,
-    scale: Number.isFinite(entity.scale) ? entity.scale : 1,
-    width: size.width ?? (size.radius ? size.radius * 2 : 0),
-    height: size.height ?? 0,
-    depth: size.depth ?? 0,
+    width: round ? (size.radius ?? 0) * 2 : size.width ?? 0,
+    height: ['sphere', 'ball'].includes(size.shape) ? (size.radius ?? 0) * 2 : size.height ?? 0,
+    depth: round ? (size.radius ?? 0) * 2 : size.depth ?? 0,
     radius: size.radius ?? 0,
-    opacity: Number.isFinite(entity.opacity) ? entity.opacity : 1,
-    health: Number.isFinite(entity.health) ? entity.health : (isPlayer ? state?.playerStats?.health ?? 0 : 20),
-    alive: (Number.isFinite(entity.health) ? entity.health : isPlayer ? state?.playerStats?.health ?? 1 : 20) > 0 ? 1 : 0,
-    animationTime: elapsed,
-    animationFrame: Math.max(0, frame),
-    speed: velocity ? Math.hypot(velocity.x || 0, velocity.y || 0, velocity.z || 0) : 0,
-    vx: velocity?.x || 0, vy: velocity?.y || 0, vz: velocity?.z || 0,
-    grounded: isPlayer ? (state?.physics?.grounded ? 1 : 0) : entity.grounded ? 1 : 0,
-    doomType: Number.isFinite(entity.doomType) ? entity.doomType : 0,
-    count: Object.keys(entity.variables || {}).length,
-    lightIntensity: entity.light?.intensity ?? 0,
-    lightRadius: entity.light?.radius ?? 0,
-    cameraFov: entity.cameraFov ?? 0,
-    cameraPitch: entity.cameraPitch ?? 0,
-    cameraHeight: entity.cameraHeight ?? 0,
   };
 }
 
-function textsFor(entity, animation) {
-  return {
-    type: entity.type ?? '',
-    name: entity.name ?? '',
-    id: entity.id ?? '',
-    animation: animation?.name ?? (entity.spriteStates?.stand ? 'stand' : ''),
-    animationClip: animation?.clipId ?? entity.spriteStates?.stand ?? '',
-  };
+function numberFor(project, state, entity, name) {
+  const isPlayer = entity.type === 'player';
+  switch (name) {
+    case 'x': case 'y': return isPlayer ? state?.player?.[name] ?? entity[name] ?? 0 : entity[name] ?? 0;
+    case 'z': return (isPlayer ? state?.player?.z : undefined) ?? entity.z
+      ?? floorFor(project, state, entity) + (entity.elevation || 0);
+    case 'elevation': return numberFor(project, state, entity, 'z') - floorFor(project, state, entity);
+    case 'floorHeight': return floorFor(project, state, entity);
+    case 'angle': return isPlayer && state?.player ? state.player.angle * 180 / Math.PI : entity.angle || 0;
+    case 'pitch': return isPlayer ? (state?.player?.pitch ?? 0) * 180 / Math.PI : entity.modelTilt?.pitch ?? entity.cameraPitch ?? 0;
+    case 'roll': return isPlayer ? 0 : entity.modelTilt?.roll ?? 0;
+    case 'facing': return entity.facing === 'left' || entity.facing === -1 ? -1 : 1;
+    case 'scale': return entity.modelAsset ? entity.modelScale ?? 32 : entity.spriteScale ?? 1;
+    case 'width': case 'height': case 'depth': case 'radius': return dimensions(entity)[name];
+    case 'opacity': return entity.mesh?.opacity ?? entity.spritePlane?.opacity ?? entity.projector?.opacity ?? entity.panel?.opacity ?? 1;
+    case 'health': return isPlayer ? state?.playerStats?.health ?? entity.health ?? 100 : entity.health ?? 20;
+    case 'alive': return numberFor(project, state, entity, 'health') > 0 ? 1 : 0;
+    case 'animationTime': return animationFor(project, state, entity).elapsed;
+    case 'animationFrame': return animationFor(project, state, entity).frame;
+    case 'speed': {
+      const velocity = velocityFor(state, entity);
+      return Math.hypot(velocity.x || 0, velocity.y || 0, velocity.z || 0);
+    }
+    case 'vx': case 'vy': case 'vz': return velocityFor(state, entity)[name[1]] ?? 0;
+    case 'grounded': return isPlayer ? (state?.physics ? Number(state.physics.grounded) : 1) : Number(Boolean(entity.grounded));
+    case 'doomType': return entity.doomType ?? 0;
+    case 'count': return Object.keys(entity.variables || {}).length;
+    case 'lightIntensity': return entity.light?.intensity ?? 0;
+    case 'lightRadius': return entity.light?.radius ?? 0;
+    case 'cameraFov': return entity.cameraFov ?? (entity.type === 'camera' ? CAMERA_DEFAULTS.fov : 0);
+    case 'cameraPitch': return entity.cameraPitch ?? 0;
+    case 'cameraHeight': return entity.cameraHeight ?? (entity.type === 'camera' ? CAMERA_DEFAULTS.height : 0);
+  }
+}
+
+function textFor(project, state, entity, name) {
+  if (['type', 'name', 'id'].includes(name)) return entity[name] ?? '';
+  const animation = animationFor(project, state, entity);
+  return name === 'animation' ? animation.name : animation.clipId;
 }
 
 /**
@@ -156,25 +179,9 @@ export function readInstanceProperty(project, state, entity, name) {
   const property = instanceProperty(name);
   if (!property) throw new Error(`Unknown object property: ${name}`);
   if (!entity) return property.kind === 'text' ? '' : 0;
-  const cache = { sector: makeSectorLookup(project) };
-  const animation = state?.spriteAnimations?.get(entity.id);
-  if (property.kind === 'text') return textsFor(entity, animation)[property.name] ?? '';
-  const values = numbersFor(project, state, entity, cache);
-  return Number.isFinite(values[property.name]) ? values[property.name] : 0;
-}
-
-/** One sector lookup per read, memoised so a pick of 200 instances is not 200 searches. */
-function makeSectorLookup(project) {
-  let geometry = null;
-  const memo = new Map();
-  return entity => {
-    const key = `${entity.x},${entity.y}`;
-    if (memo.has(key)) return memo.get(key);
-    geometry ||= sectorGeometry(project);
-    const sector = sectorAt(geometry, entity.x, entity.y);
-    memo.set(key, sector);
-    return sector;
-  };
+  if (property.kind === 'text') return textFor(project, state, entity, property.name);
+  const value = numberFor(project, state, entity, property.name);
+  return Number.isFinite(value) ? value : 0;
 }
 
 /**
@@ -186,9 +193,9 @@ function makeSectorLookup(project) {
 export function compareInstanceProperty(project, state, entity, name, operator, value) {
   const property = instanceProperty(name);
   const left = readInstanceProperty(project, state, entity, name);
-  const numeric = property?.kind !== 'text';
-  const right = numeric ? Number(value) : String(value);
-  if (numeric && !Number.isFinite(right)) throw new Error(`${name} is a number; the comparison value must be a number`);
+  const expected = property.kind === 'text' ? 'string' : 'number';
+  if (typeof value !== expected) throw new Error(`${name} comparison value must be ${expected === 'number' ? 'a number' : 'text'}`);
+  const right = value;
   switch (operator) {
     case '<': return left < right;
     case '<=': return left <= right;

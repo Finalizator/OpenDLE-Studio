@@ -1771,19 +1771,41 @@ absence of a key, and it is what
 [`test/instances.test.js`](./test/instances.test.js) pins down.
 
 - **Sub-events inherit the pick.** `visit()` passes the parent's map to every
-  child, so a child rule never silently widens back to the type.
+  child with branch-local copies, so siblings cannot leak selections into each
+  other. Owned roots initially pick their owner, without re-narrowing descendants
+  after a parent explicitly widened or replaced its selection.
+- **NOT complements within the incoming selection; OR unions successful branches.**
+  Every OR branch starts from the same incoming map. Successful global predicates
+  preserve incoming selections for types they did not filter.
 - **A for-each rule iterates the pick** and narrows further, per instance
   (`ownPick`), so `$self` and the picked-instance actions agree inside the loop.
-- **A spawned instance joins the pick.** After **Object: spawn a new object from
+- **A spawned instance replaces the pick.** After **Object: spawn a new object from
   a template**, `spawnEntity` replaces the pick for that type with just the new
   instance — GDevelop's behaviour, and the reason a spawn followed by
   "set the picked instance's variable" works without naming an ID.
 - **Expressions follow the pick** through `state.picks`, which `runEvent` sets
   for the duration of a rule and restores afterwards, so a value read outside any
-  rule still means every instance.
+  rule still means every instance. Picked actions resolve expressions separately
+  for each target; expression contexts read the current entity array after removals.
 - **A missing local variable picks nothing.** It is not an error at play time;
   authoring still refuses a pick by a variable that no instance of the type
   carries, so a typo is caught while it is still cheap.
+
+Properties are evaluated lazily: health, for example, must not rebuild map geometry.
+Floor/elevation read live sector heights, player values use live player state,
+animation frame indexes wrap/clamp to actual clips, and velocity readers return map
+units per second (including Rapier body velocities). Visual scale writes the actual
+sprite axes/model scale rather than inventing an unused `scale` field.
+Property comparisons and variable assignments preserve scalar types; transform
+expressions use the same numeric bounds as literal transform fields.
+Nearest-pick targets and `count("instanceId")` participate in shared reference
+discovery, deletion and remapping. The editor and MCP use the canonical pickable
+type list for for-each rules.
+
+[`test/instance-bughunt.test.js`](./test/instance-bughunt.test.js) covers 35
+reproduced regressions plus selection, expression, reference and save/load
+integration cases. Real Rapier integration is exercised in
+[`test/physics-model.test.js`](./test/physics-model.test.js).
 
 The category lives in [`shared/engine-script.js`](./shared/engine-script.js)
 (`pickAll`, `pickByProperty`, `pickByVariable`, `pickNearest`, `pickRandom`,

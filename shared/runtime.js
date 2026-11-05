@@ -60,6 +60,16 @@ import {
 } from './camera-runtime.js';
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0));
+const PICK_CONDITIONS = new Set(['pickAll', 'pickByProperty', 'pickByVariable', 'pickNearest', 'pickRandom']);
+const PICK_ACTIONS = new Set(['setPickedVariable', 'addPickedVariable', 'setPickedPosition', 'movePicked',
+  'setPickedAngle', 'scalePicked', 'setPickedSpriteState', 'removePicked']);
+
+function setVisualScale(entity, scale) {
+  entity.spriteScale = scale;
+  if (entity.spriteScaleX !== undefined) entity.spriteScaleX = scale;
+  if (entity.spriteScaleY !== undefined) entity.spriteScaleY = scale;
+  if (entity.modelAsset) entity.modelScale = scale;
+}
 
 /**
  * The instances an event is currently about.
@@ -71,7 +81,7 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 
  */
 export function pickedInstances(state, picks, type) {
   const chosen = picks?.get(type);
-  if (chosen) return (state.entities || []).filter(entity => chosen.has(entity.id));
+  if (chosen) return (state.entities || []).filter(entity => entity.type === type && chosen.has(entity.id));
   return entityLookup(state).byType.get(type) || [];
 }
 
@@ -992,6 +1002,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
      */
     function visit(source, ownerId, picks = new Map()) {
       if (source.groupId && !state.groups.get(source.groupId)) return;
+      // Each branch owns its narrowing; siblings start again from the parent's selection.
+      picks = new Map(picks);
+      const owner = entityLookup(state).byId.get(ownerId || source.ownerId);
+      if (owner && !ownerId) picks = ownPick(picks, owner.type, owner.id);
       if (ownerId) {
         if (!runEvent(instanceFor(source, ownerId), Boolean(source.forEachType), phase, picks)) return;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
@@ -1068,7 +1082,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (!event.enabled || (event.once && state.fired.has(keyOf()))) return;
     const lookup = entityLookup(state);
     if (event.ownerId && !lookup.byId.has(event.ownerId)) return;
-    const findTarget = id => lookup.byId.get(resolveEntityId(event, id));
+    const findTarget = id => entityLookup(state).byId.get(resolveEntityId(event, id));
     // The expression context (which builds closures and lookups) is only needed when a
     // command actually contains an expression, so it is built on first use.
     let context = null;
@@ -1088,6 +1102,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (!found) expressionFree.add(command);
       return resolved;
     };
+    function forPicked(command, apply) {
+      for (const entity of pickedInstances(state, picks, command.objectType)) {
+        const outer = state.picks;
+        state.picks = ownPick(picks, command.objectType, entity.id);
+        try { apply(entity, resolveCommand(command)); } finally { state.picks = outer; }
+      }
+    }
     function assignVariable(record, name, value, add) {
       if (!Object.hasOwn(record, name)) throw new Error(`Event "${event.name || event.id}" references missing variable "${name}"`);
       if (typeof value !== typeof record[name] || add && typeof value !== 'number') throw new Error(`Event "${event.name || event.id}": variable "${name}" type mismatch`);
@@ -1106,7 +1127,18 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       return false;
     }
     let statChanges = null;
-    const matchOne = (condition, index) => condition.inverted ? !matchCondition(condition, index) : Boolean(matchCondition(condition, index));
+    const matchOne = (condition, index) => {
+      const candidates = condition.inverted && PICK_CONDITIONS.has(condition.type)
+        ? pickedInstances(state, picks, condition.objectType) : null;
+      const matched = Boolean(matchCondition(condition, index));
+      if (candidates) {
+        const chosen = picks.get(condition.objectType);
+        const remaining = candidates.filter(entity => !chosen?.has(entity.id));
+        withPick(picks, condition.objectType, new Set(remaining.map(entity => entity.id)));
+        return remaining.length > 0;
+      }
+      return condition.inverted ? !matched : matched;
+    };
     function matchCondition(condition, index) {
       condition = resolveCommand(condition);
       if (condition.type === 'onSignal') return currentSignal &&
@@ -1164,7 +1196,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // of the type carries the variable at all, so a typo is caught while it is still cheap.
         const chosen = pickedInstances(state, picks, condition.objectType)
           .filter(entity => Object.hasOwn(entity.variables || {}, condition.variable)
-            && compareValues(entity.variables[condition.variable], condition.operator, condition.value));
+            && compare(entity.variables[condition.variable], condition.operator, condition.value));
         withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
         return chosen.length > 0;
       }
@@ -1366,17 +1398,29 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     // fresh array for every rule on every frame.
     const or = event.conditionMode === 'or';
     let matches = !or;
+    const incoming = or ? new Map(picks) : null, branches = [];
     for (let index = 0; index <= (event.conditions?.length || 0); index++) {
       const condition = index === 0 ? event.condition : event.conditions[index - 1];
       // Edge samplers must observe the frame even when another predicate decides the result.
-      if (matches === or && !['everySeconds', 'playerEnteredArea', 'playerEnteredZone', 'entityDamaged', 'hudStatChanged'].includes(condition.type)) continue;
+      if (!or && !matches && !['everySeconds', 'playerEnteredArea', 'playerEnteredZone', 'entityDamaged', 'hudStatChanged'].includes(condition.type)) continue;
+      if (or) { picks.clear(); for (const [type, ids] of incoming) picks.set(type, ids); }
       const matched = matchOne(condition, index);
+      if (or && matched) branches.push(new Map(picks));
       matches = or ? matches || matched : matches && matched;
+    }
+    if (or && matches) {
+      const types = new Set(branches.flatMap(branch => [...branch.keys()]));
+      picks.clear();
+      for (const type of types) {
+        const ids = new Set();
+        for (const branch of branches) for (const entity of pickedInstances(state, branch, type)) ids.add(entity.id);
+        picks.set(type, ids);
+      }
     }
     if (!matches) return;
     if (event.once) state.fired.add(keyOf());
     for (const sourceAction of event.actions) {
-      const action = resolveCommand(sourceAction);
+      const action = PICK_ACTIONS.has(sourceAction.type) ? sourceAction : resolveCommand(sourceAction);
       switch (action.type) {
         case 'emitSignal': emitSignal(state, resolveEntityId(event, action.entityId), action.signal, action.value); break;
         case 'saveGame':
@@ -1424,60 +1468,51 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // conditions above exist: they are how you say *which* enemies.
         case 'setPickedVariable':
         case 'addPickedVariable': {
-          const targets = pickedInstances(state, picks, action.objectType);
-          for (const entity of targets) {
-            if (!Object.hasOwn(entity.variables || {}, action.variable)) {
-              throw new Error(`Event "${event.name || event.id}" sets the local variable "${action.variable}" on ${action.objectType}, which it does not have`);
-            }
-            entity.variables[action.variable] = scalar(action.type === 'addPickedVariable'
-              ? entity.variables[action.variable] + action.value : action.value);
-          }
-          state.worldRevision++;
+          forPicked(action, (entity, resolved) => assignVariable(entity.variables || {}, resolved.variable,
+            resolved.value, resolved.type === 'addPickedVariable'));
           break;
         }
         case 'setPickedPosition': {
-          for (const entity of pickedInstances(state, picks, action.objectType)) {
-            entity.x = action.x;
-            entity.y = action.y;
-            if (action.z !== undefined && action.z !== null) entity.z = action.z;
-            if (entity.type === 'player') Object.assign(player, { x: action.x, y: action.y });
-            state.physics?.move?.(entity.id, entity.x, entity.y, entity.z);
-          }
+          forPicked(action, (entity, resolved) => {
+            entity.x = resolved.x;
+            entity.y = resolved.y;
+            const floor = sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0;
+            entity.z = resolved.z ?? floor + (entity.elevation || 0);
+            entity.elevation = entity.z - floor;
+            state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
+          });
           state.worldRevision++;
           break;
         }
         case 'movePicked': {
-          for (const entity of pickedInstances(state, picks, action.objectType)) {
-            entity.x += action.dx;
-            entity.y += action.dy;
-            if (action.dz) entity.z = (entity.z ?? 0) + action.dz;
-            if (entity.type === 'player') {
-              player.x += action.dx; player.y += action.dy;
-              if (action.dz) player.z = (player.z ?? 0) + action.dz;
-            }
-            state.physics?.move?.(entity.id, entity.x, entity.y, entity.z);
-          }
+          forPicked(action, (entity, resolved) => {
+            const floor = sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0;
+            const z = entity.z ?? floor + (entity.elevation || 0);
+            entity.x += resolved.dx;
+            entity.y += resolved.dy;
+            entity.z = z + (resolved.dz ?? 0);
+            entity.elevation = entity.z - (sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0);
+            state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
+          });
           state.worldRevision++;
           break;
         }
         case 'setPickedAngle': {
-          for (const entity of pickedInstances(state, picks, action.objectType)) {
-            entity.angle = action.angle;
-            if (entity.type === 'player') player.angle = action.angle * Math.PI / 180;
-            state.physics?.rotate?.(entity.id, entity.angle);
-          }
+          forPicked(action, (entity, resolved) => {
+            entity.angle = resolved.angle;
+            state.physics?.rotate(entity.id, entity.angle);
+          });
           state.worldRevision++;
           break;
         }
         case 'scalePicked': {
-          for (const entity of pickedInstances(state, picks, action.objectType)) entity.scale = action.scale;
+          forPicked(action, (entity, resolved) => setVisualScale(entity, resolved.scale));
           state.worldRevision++;
           break;
         }
         case 'setPickedSpriteState': {
-          for (const entity of pickedInstances(state, picks, action.objectType)) {
-            setSpriteState(project, state, entity, action.state, action.restart === 'yes');
-          }
+          forPicked(action, (entity, resolved) =>
+            setSpriteState(project, state, entity, resolved.state, resolved.restart === 'yes'));
           break;
         }
         case 'removePicked': {
@@ -1528,10 +1563,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           // The body the authored copy would have had: a spawned crate is solid, a spawned monster
           // blocks the player. Without this one the player walks through everything it makes.
           state.physics?.add?.(spawned.id);
-          // What was just made joins the pick, so a sub-event can act on it the way GDevelop's
+          // What was just made replaces the pick, so a sub-event can act on it the way GDevelop's
           // "Create object" leaves the new instance picked.
-          const type = pickedInstances(state, picks, spawned.type);
-          withPick(picks, spawned.type, new Set([...type.map(entity => entity.id), spawned.id]));
+          withPick(picks, spawned.type, new Set([spawned.id]));
           state.worldRevision++;
           break;
         }
@@ -1660,7 +1694,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         }
         case 'setEntityScale': {
           const entity = findTarget(action.entityId);
-          if (entity) { entity.spriteScale = action.scale; if (entity.modelAsset) entity.modelScale = action.scale; }
+          if (entity) setVisualScale(entity, action.scale);
           break;
         }
         case 'setGravityScale':

@@ -47,6 +47,7 @@ import { createActorsPanel } from './actors-panel.js';
 import { createScriptsPanel } from './scripts-panel.js';
 import { createFrameBudget } from '/shared/perf.js';
 import { LIMITS } from '/shared/limits.js';
+import { INSTANCE_PICKABLE_TYPES } from '/shared/instance-properties.js';
 
 const ARCHIVE_LIMIT = LIMITS.archiveBytes;
 import { createPlaytestLogger } from './playtest-log.js';
@@ -2659,7 +2660,7 @@ function renderEvents() {
     field(meta, 'Comment', input(event.comment || '', 'text', value => modify(item => { item.comment = value; })));
     field(meta, 'Condition logic', select([['and', 'All conditions (AND)'], ['or', 'Any condition (OR)']], event.conditionMode || 'and',
       value => modify(item => { item.conditionMode = value; })));
-    field(meta, 'For each', select([['', 'None'], 'enemy', 'pickup', 'decoration'], event.forEachType || '', value => edit(next =>
+    field(meta, 'For each', select([['', 'None'], ...INSTANCE_PICKABLE_TYPES], event.forEachType || '', value => edit(next =>
       setEventObjectContext(next, event.id, value ? { forEachType: value } : { ownerId: event.ownerId }))));
     field(meta, 'Owner', ownerPicker(meta, event.ownerId, value => edit(next =>
       setEventObjectContext(next, event.id, value === '$scene' ? { forEachType: event.forEachType } : { ownerId: value }))));
