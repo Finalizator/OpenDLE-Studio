@@ -48,7 +48,7 @@ export function parseExpression(source) {
   function expression(min = 0) {
     if (++depth > 32 || ++nodes > 256) throw new Error('Expression exceeds nesting/operation limit');
     let left;
-    if (token.type === 'op' && ['-', '+', '!'].includes(token.value)) { const op = token.value; next(); left = { op: 'unary', operator: op, value: expression(9) }; }
+    if (token.type === 'op' && ['-', '+', '!'].includes(token.value)) { const op = token.value; next(); left = { op: 'unary', operator: op, value: expression(op === '!' ? 9 : 8) }; }
     else if (token.type === 'op' && token.value === '(') { next(); left = expression(); take(')'); }
     else if (token.type === 'literal') { left = { op: 'literal', value: token.value, start: token.start, end: token.end }; next(); }
     else if (token.type === 'name') {
@@ -91,9 +91,18 @@ const textFunctions = {
   str: [1, 1, value => String(value)], number: [1, 1, value => { if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) throw new Error('number needs numeric text or a number'); return Number(value); }],
   concat: [1, 32, (...values) => values.map(String).join('')], len: [1, 1, s => text(s).length],
   left: [2, 2, (s, n) => text(s).slice(0, Math.max(0, numeric(n)))],
-  right: [2, 2, (s, n) => numeric(n) <= 0 ? '' : text(s).slice(-n)],
-  mid: [2, 3, (s, start, count) => text(s).slice(Math.max(0, numeric(start)), count === undefined ? undefined : Math.max(0, start) + Math.max(0, numeric(count)))],
-  replace: [3, 3, (s, from, to) => text(s).replaceAll(text(from), text(to))],
+  right: [2, 2, (s, n) => {
+    const source = text(s), count = Math.max(0, Math.trunc(numeric(n)));
+    return count ? source.slice(-count) : '';
+  }],
+  mid: [2, 3, (s, start, count) => {
+    const source = text(s), offset = Math.max(0, Math.trunc(numeric(start)));
+    return source.slice(offset, count === undefined ? undefined : offset + Math.max(0, Math.trunc(numeric(count))));
+  }],
+  replace: [3, 3, (s, from, to) => {
+    const replacement = text(to);
+    return text(s).replaceAll(text(from), () => replacement);
+  }],
   contains: [2, 2, (s, needle) => text(s).includes(text(needle))],
   find: [2, 2, (s, needle) => text(s).indexOf(text(needle))],
 };
@@ -108,9 +117,9 @@ const references = { global: 1, local: 1, object: 2, property: 2, player: 1, set
 const properties = new Set(INSTANCE_PROPERTY_NAMES);
 const playerStats = new Set(['health', 'armor', 'armorDivisor', 'bullets', 'shells', 'rockets', 'cells',
   'maxBullets', 'maxShells', 'maxRockets', 'maxCells', 'invulnerable', 'berserk', 'invisible', 'radiationSuit', 'lightAmp']);
-export function expressionContext(project, event, state, dt = 0) {
+export function expressionContext(project, event, state, dt = 0, { selection } = {}) {
   const entities = () => state?.entities || project.map.entities;
-  function targets(id) {
+  function targets(id, picks = state?.picks) {
     if (id === '$self') {
       const matches = event.ownerId ? entities().filter(e => e.id === event.ownerId) : entities().filter(e => e.type === event.forEachType);
       if (!matches.length && (state || !event.forEachType)) throw new Error(`Expression references unknown object/context: ${id}`);
@@ -118,11 +127,12 @@ export function expressionContext(project, event, state, dt = 0) {
     }
     const byId = entities().filter(e => e.id === id);
     if (byId.length) return byId;
+    if (state && project.map.entities.some(entity => entity.id === id)) return [];
     // An expression may also name the object *type*, and then it reads whatever the rule picked,
     // which is how `Enemy.X()` behaves in GDevelop. A type with nothing left answers zero rather
     // than failing, so only a name that is neither an instance nor a known type is refused.
     if (INSTANCE_PICKABLE_TYPES.includes(id)) {
-      const picked = state?.picks?.get(id);
+      const picked = picks?.get(id);
       return entities().filter(e => e.type === id && (!picked || picked.has(e.id)));
     }
     throw new Error(`Expression references unknown object/context: ${id}`);
@@ -148,7 +158,7 @@ export function expressionContext(project, event, state, dt = 0) {
         if (!playerStats.has(args[0])) throw new Error(`Unknown player expression stat: ${args[0]}`);
         return state ? state.playerStats[args[0]] : 0;
       }
-      if (kind === 'count') return targets(args[0]).length;
+      if (kind === 'count') return targets(args[0], selection ?? state?.picks).length;
       const list = targets(kind === 'local' ? '$self' : args[0]), name = kind === 'local' ? args[0] : args[1];
       if (kind === 'property') {
         if (!properties.has(name)) throw new Error(`Unknown object expression property: ${name}`);

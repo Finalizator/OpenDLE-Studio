@@ -17,6 +17,8 @@
  */
 import { CAMERA_DEFAULTS } from './project.js';
 import { easingValue } from './timesheet.js';
+import { sectorAt } from './sectors.js';
+import { floorHeightAt } from './three-d-floors.js';
 
 export const PLAYER_VIEW = '$player';
 export const ACTIVE_VIEW = '$active';
@@ -75,7 +77,7 @@ export function findCamera(state, ref) {
 export function viewFov(state) {
   const viewer = state.viewCamera
     ? (state.entities || []).find(entity => entity.id === state.viewCamera) : null;
-  return Number.isFinite(viewer?.cameraFov) ? viewer.cameraFov : state.settings.fov;
+  return Number.isFinite(viewer?.cameraFov) ? viewer.cameraFov : isCamera(viewer) ? CAMERA_DEFAULTS.fov : state.settings.fov;
 }
 
 /** A camera's eye position: its own height, plus the eye offset above it. */
@@ -100,7 +102,8 @@ export function switchView(state, camera) {
 export function startCameraMove(state, camera, to, { seconds = 2, easing = 'easeInOut' } = {}) {
   const duration = Math.max(0, Number(seconds) || 0);
   const from = {
-    x: camera.x, y: camera.y, z: Number.isFinite(camera.z) ? camera.z : to.z,
+    x: camera.x, y: camera.y, z: Number.isFinite(camera.z) ? camera.z
+      : floorHeightAt(sectorAt(state.sectors || [], camera.x, camera.y), camera.z) + (camera.elevation || 0),
     angle: Number(camera.angle) || 0, pitch: camera.cameraPitch ?? CAMERA_DEFAULTS.pitch,
     fov: camera.cameraFov ?? CAMERA_DEFAULTS.fov,
   };
@@ -128,6 +131,7 @@ function applyPose(camera, pose) {
 export function advanceCameras(project, state, dt) {
   const step = Math.max(0, Number(dt) || 0);
   const moves = state.cameraMoves;
+  const gliding = new Set(moves?.keys());
   if (moves?.size) {
     for (const [cameraId, move] of moves) {
       const camera = (state.entities || []).find(entity => entity.id === cameraId);
@@ -138,27 +142,31 @@ export function advanceCameras(project, state, dt) {
       camera.x = mix(move.from.x, move.to.x);
       camera.y = mix(move.from.y, move.to.y);
       if (Number.isFinite(move.to.z)) camera.z = mix(move.from.z, move.to.z);
-      camera.angle = mix(move.from.angle, move.to.angle);
+      if (Number.isFinite(move.to.angle)) {
+        const delta = ((move.to.angle - move.from.angle + 180) % 360 + 360) % 360 - 180;
+        camera.angle = move.elapsed >= move.seconds ? move.to.angle : move.from.angle + delta * progress;
+      }
       camera.cameraPitch = mix(move.from.pitch, move.to.pitch);
       if (Number.isFinite(move.to.fov)) camera.cameraFov = mix(move.from.fov, move.to.fov);
       if (move.elapsed >= move.seconds) moves.delete(cameraId);
     }
   }
   for (const camera of state.entities || []) {
-    if (!isCamera(camera) || !camera.cameraFollow) continue;
+    if (!isCamera(camera) || !camera.cameraFollow || gliding.has(camera.id)) continue;
     const target = camera.cameraFollow === PLAYER_VIEW
       ? (state.entities || []).find(entity => entity.type === 'player')
       : (state.entities || []).find(entity => entity.id === camera.cameraFollow || entity.name === camera.cameraFollow);
     if (!target) continue;
     // The camera rides with the object and keeps its own eye height above it, so one that
     // follows a lift goes up with it instead of watching it leave the frame.
-    camera.x = target.x;
-    camera.y = target.y;
-    if (Number.isFinite(target.z)) camera.z = target.z;
+    const pose = target.type === 'player' ? state.player : target;
+    camera.x = pose.x;
+    camera.y = pose.y;
+    if (Number.isFinite(pose.z)) camera.z = pose.z;
     // A player's angle is radians in the view's own convention; an object's is the Doom degree
     // angle the renderer negates. Following one means matching whichever space it is in.
-    if (target.type === 'player') camera.angle = -(target.angle || 0) * 180 / Math.PI;
-    else if (camera.cameraFollowAngle !== false) camera.angle = target.angle;
+    if (camera.cameraFollowAngle !== false) camera.angle = target.type === 'player'
+      ? -(pose.angle || 0) * 180 / Math.PI : target.angle;
   }
 }
 

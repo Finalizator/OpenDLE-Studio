@@ -12,6 +12,9 @@
  */
 import { sectorAt, sectorGeometry } from './sectors.js';
 import { momentumSpeed } from './player-motion.js';
+import { floorHeightAt } from './three-d-floors.js';
+import { PLAYER_CYLINDER } from './gravity.js';
+import { modelOrientation, modelPoseFromOrientation } from './entity-visuals.js';
 
 /** Horizontal FOV, pitch and eye height above the camera object's position. */
 export const CAMERA_DEFAULTS = Object.freeze({ fov: 90, pitch: 0, height: 48 });
@@ -97,15 +100,15 @@ function floorFor(project, state, entity) {
   const sectors = state?.sectors ?? sectorGeometry(project);
   const position = entity.type === 'player' && state?.player ? state.player : entity;
   const sector = sectorAt(sectors, position.x, position.y);
-  return state ? sector?.floorHeight ?? 0
-    : project.map.sectors.find(candidate => candidate.id === sector?.id)?.floorHeight ?? 0;
+  const live = state ? sector : project.map.sectors.find(candidate => candidate.id === sector?.id);
+  return floorHeightAt(live, position.z);
 }
 
 function animationFor(project, state, entity) {
   const animation = state?.spriteAnimations?.get(entity.id);
   const clipId = animation?.clipId ?? entity.spriteStates?.stand;
   const clip = project.spriteClips?.find(candidate => candidate.id === clipId);
-  const elapsed = state ? Math.max(0, state.time - (animation?.start ?? 0)) : 0;
+  const elapsed = state && clip ? Math.max(0, state.time - (animation?.start ?? 0)) : 0;
   const duration = clip ? clip.frames.length * clip.seconds : 0;
   const frame = duration > 0
     ? Math.min(clip.frames.length - 1, Math.floor((clip.loop ? elapsed % duration : Math.min(elapsed, duration)) / clip.seconds)) : 0;
@@ -118,12 +121,14 @@ function velocityFor(state, entity) {
 }
 
 function dimensions(entity) {
-  const size = entity.area || entity.physics || {};
-  const round = ['sphere', 'ball', 'capsule'].includes(size.shape);
+  if (entity.type === 'player') return { width: PLAYER_CYLINDER.radius * 2,
+    height: PLAYER_CYLINDER.halfHeight * 2, depth: PLAYER_CYLINDER.radius * 2, radius: PLAYER_CYLINDER.radius };
+  const size = entity.area || entity.mesh || entity.spritePlane || entity.projector || entity.terminal || entity.panel || entity.physics || {};
+  const round = !entity.mesh && ['sphere', 'ball', 'capsule', 'cylinder', 'cone'].includes(size.shape);
   return {
     width: round ? (size.radius ?? 0) * 2 : size.width ?? 0,
     height: ['sphere', 'ball'].includes(size.shape) ? (size.radius ?? 0) * 2 : size.height ?? 0,
-    depth: round ? (size.radius ?? 0) * 2 : size.depth ?? 0,
+    depth: round ? (size.radius ?? 0) * 2 : size.depth ?? size.thickness ?? 0,
     radius: size.radius ?? 0,
   };
 }
@@ -136,10 +141,13 @@ function numberFor(project, state, entity, name) {
       ?? floorFor(project, state, entity) + (entity.elevation || 0);
     case 'elevation': return numberFor(project, state, entity, 'z') - floorFor(project, state, entity);
     case 'floorHeight': return floorFor(project, state, entity);
-    case 'angle': return isPlayer && state?.player ? state.player.angle * 180 / Math.PI : entity.angle || 0;
-    case 'pitch': return isPlayer ? (state?.player?.pitch ?? 0) * 180 / Math.PI : entity.modelTilt?.pitch ?? entity.cameraPitch ?? 0;
-    case 'roll': return isPlayer ? 0 : entity.modelTilt?.roll ?? 0;
-    case 'facing': return entity.facing === 'left' || entity.facing === -1 ? -1 : 1;
+    case 'angle': return isPlayer && state?.player ? state.player.angle * 180 / Math.PI
+      : entity.rotation ? modelPoseFromOrientation(modelOrientation(entity)).angle : entity.angle || 0;
+    case 'pitch': return isPlayer ? (state?.player?.pitch ?? 0) * 180 / Math.PI
+      : entity.rotation ? modelPoseFromOrientation(modelOrientation(entity)).modelTilt.pitch : entity.modelTilt?.pitch ?? entity.cameraPitch ?? 0;
+    case 'roll': return isPlayer ? 0
+      : entity.rotation ? modelPoseFromOrientation(modelOrientation(entity)).modelTilt.roll : entity.modelTilt?.roll ?? 0;
+    case 'facing': return (entity.ramp?.facing ?? entity.facing) === 'left' || entity.facing === -1 ? -1 : 1;
     case 'scale': return entity.modelAsset ? entity.modelScale ?? 32 : entity.spriteScale ?? 1;
     case 'width': case 'height': case 'depth': case 'radius': return dimensions(entity)[name];
     case 'opacity': return entity.mesh?.opacity ?? entity.spritePlane?.opacity ?? entity.projector?.opacity ?? entity.panel?.opacity ?? 1;
@@ -152,7 +160,13 @@ function numberFor(project, state, entity, name) {
       return Math.hypot(velocity.x || 0, velocity.y || 0, velocity.z || 0);
     }
     case 'vx': case 'vy': case 'vz': return velocityFor(state, entity)[name[1]] ?? 0;
-    case 'grounded': return isPlayer ? (state?.physics ? Number(state.physics.grounded) : 1) : Number(Boolean(entity.grounded));
+    case 'grounded': {
+      if (isPlayer) return state?.physics ? Number(state.physics.grounded) : 1;
+      if (entity.grounded !== undefined) return Number(Boolean(entity.grounded));
+      const floor = floorFor(project, state, entity);
+      return Number(Math.abs(numberFor(project, state, entity, 'z') - floor) <= 1 &&
+        (velocityFor(state, entity).z ?? 0) <= 0);
+    }
     case 'doomType': return entity.doomType ?? 0;
     case 'count': return Object.keys(entity.variables || {}).length;
     case 'lightIntensity': return entity.light?.intensity ?? 0;

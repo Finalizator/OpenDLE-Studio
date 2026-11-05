@@ -15,7 +15,7 @@
  *   (`rewriteEntityReferences`).
  *
  * A reference is any command — a condition or an action — that names an object in `entityId`,
- * `otherId`, `templateId`, `zoneId` or nearest-pick `to`, plus the owner fields: an event's `ownerId` and a timeline cue's
+ * `otherId`, `templateId`, `zoneId`, nearest-pick `to`, or camera targets, plus the owner fields: an event's `ownerId` and a timeline cue's
  * `ownerId`. `$self`, `$player`, `$world` and `$all` are not objects and are left alone.
  * Literal object/property/count references inside command expressions count too.
  */
@@ -23,7 +23,7 @@
 import { isExpression, expressionObjectReferences, rewriteExpressionObjects } from './expressions.js';
 
 /** The fields a command can name an object in. */
-export const REFERENCE_FIELDS = Object.freeze(['entityId', 'otherId', 'templateId', 'zoneId', 'to']);
+export const REFERENCE_FIELDS = Object.freeze(['entityId', 'otherId', 'templateId', 'zoneId', 'to', 'camera', 'target', 'cameraFollow']);
 
 const isObjectId = value => typeof value === 'string' && value.length > 0 && !value.startsWith('$');
 

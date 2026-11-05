@@ -95,8 +95,9 @@ export function upgradeSceneInstances(project) {
       const source = (layout.scenes || []).find(scene => scene.entities.length === members.length
         && scene.entities.every(entity => entities.has(`${prefix}_${entity.id}`)));
       if (!source) continue;
+      const sourceRoot = source.entities.find(entity => !entity.parentId) || source.entities[0];
       createSceneInstanceGroup(target, members.map(entity => entity.id), {
-        name: source.name, rootId: `${prefix}_${source.entities[0].id}`, sceneId: source.id,
+        name: source.name, rootId: `${prefix}_${sourceRoot.id}`, sceneId: source.id,
       });
       count++;
     }
@@ -220,6 +221,7 @@ export function cloneEntitiesForPaste(project, entities, point, {
   });
   const mapping = new Map(source.map((entity, index) => [entity.id, copies[index].id]));
   for (const copy of copies) {
+    Object.assign(copy, remapReferences(copy, mapping));
     if (copy.parentId && mapping.has(copy.parentId)) copy.parentId = mapping.get(copy.parentId);
     else delete copy.parentId;
   }

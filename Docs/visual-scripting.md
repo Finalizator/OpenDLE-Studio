@@ -143,11 +143,19 @@ Semantics that matter when you write a rule:
   instance, so `$self` and the picked-instance actions agree.
 - **A spawned instance becomes the pick.** After **Object: spawn a new object from a template**, the following
   actions apply to the new instance only, exactly as in GDevelop.
+  Non-player templates also supply their object-owned rules and autoplay animation.
+  Each copy has independent once flags, including across saved games.
 - **Expressions follow the pick.** `property("enemy", "health")` and
   `count("enemy")` read the instances the current rule is about; outside a rule
   they mean every instance of the type. Picked actions evaluate expressions once
   per target: setting `score` to `property("enemy", "health")` copies each enemy's
   own health, rather than copying the first enemy's health to everyone.
+  `count("enemy")` still counts the entire picked group during those assignments.
+  Counting a destroyed authored instance by ID returns zero.
+- For-each `$self` pickers offer local variables, signals and model clips shared
+  by the matching instances. Editing a plain ancestor preserves an independently
+  nested for-each scope; incompatible context changes are rejected without
+  partially changing the branch.
 - **Variables keep their declared scalar type.** Numeric addition never concatenates
   text; booleans support equality and inequality, not ordering comparisons.
 - Reading a variable from an instance that lacks it picks nothing rather than
@@ -166,6 +174,8 @@ the same question the same way.
 
 Position, floor height, elevation and player health follow the live world.
 Velocities and speed use map units per second; angles use degrees.
+Floor/elevation include solid 3D-floor platforms. Orientation follows live model
+rotation, and sizes include visual nodes and the built-in player capsule.
 Animation frames are zero-based, wrap for looping clips and clamp to the final
 frame for non-looping clips, including the implicit stand animation.
 Scale and opacity read the actual sprite/model/node visual settings.
@@ -243,6 +253,8 @@ Expressions can read project variables (`score`), object variables
 (`$self.health` style accessors where available), player stats (`health`,
 `armor`, `bullets`), settings and time. See `shared/expressions.js` for the exact
 supported grammar.
+Exponentiation precedes a leading sign (`-2 ^ 2` is `-4`). Text slice counts
+and offsets truncate fractional values; replacement text is literal, including `$`.
 
 ---
 

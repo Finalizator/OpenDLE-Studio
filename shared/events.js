@@ -60,11 +60,27 @@ export function setEventObjectContext(project, id, { ownerId, forEachType }) {
   if (!event) throw new Error('Unknown event');
   if (event.parentId) throw new Error('Change the parent event to change its object context');
   const ids = eventBranch(project.events, id);
+  const context = new Map([[id, { ownerId: ownerId || undefined, forEachType: forEachType || undefined }]]);
+  const byId = new Map(project.events.map(item => [item.id, item]));
+  for (const item of project.events) if (ids.has(item.id) && item.id !== id) {
+    const parent = byId.get(item.parentId);
+    const parentContext = context.get(item.parentId);
+    // A for-each below a plain rule owns a local selection scope.
+    const nestedLoop = parent.forEachType === undefined && item.forEachType !== undefined;
+    if (nestedLoop && ownerId) throw new Error('Changing this rule would conflict with a nested for-each type');
+    const next = nestedLoop
+      ? { ownerId: undefined, forEachType: item.forEachType }
+      : parentContext;
+    if (parentContext.forEachType !== undefined && next.forEachType !== parentContext.forEachType)
+      throw new Error('Changing this rule would conflict with a nested for-each type');
+    context.set(item.id, next);
+  }
   for (const item of project.events) if (ids.has(item.id)) {
+    const next = context.get(item.id);
     delete item.ownerId;
     delete item.forEachType;
-    if (ownerId) item.ownerId = ownerId;
-    else if (forEachType) item.forEachType = forEachType;
+    if (next.ownerId !== undefined) item.ownerId = next.ownerId;
+    if (next.forEachType !== undefined) item.forEachType = next.forEachType;
   }
 }
 

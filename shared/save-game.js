@@ -236,7 +236,9 @@ function validateRuntime(project, state, baseline) {
     // A per-object rule that fired for an object the level made: the same rule, another owner.
     const cut = id.lastIndexOf(':');
     if (cut > 0 && entityIds.has(id.slice(cut + 1)) &&
-      (project.events || []).some(event => event.id === id.slice(0, cut) && event.forEachType)) continue;
+      (project.events || []).some(event => event.id === id.slice(0, cut) &&
+        (event.forEachType || state.entities.some(entity => entity.id === id.slice(cut + 1) &&
+          entity.spawnedFrom === event.ownerId)))) continue;
     fail('invalid fired event');
   }
   for (const [key, allowed] of [['keys', KEYS], ['weapons', WEAPONS]])

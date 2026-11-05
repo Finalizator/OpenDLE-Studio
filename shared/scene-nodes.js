@@ -103,7 +103,8 @@ function resizeNode(entity, origin, factors) {
   for (const key of ['sound', 'light']) if (origin[key]?.radius !== undefined) {
     entity[key] = { ...origin[key], radius: Math.min(8192, Math.max(1, origin[key].radius * factors.x)) };
   }
-  if (!component && !origin.modelAsset && !origin.sound && !origin.light && !['node3d', 'marker'].includes(origin.nodeKind)) {
+  if (!component && !origin.modelAsset && !origin.sound && !origin.light
+    && origin.type !== 'camera' && !['node3d', 'marker', 'camera'].includes(origin.nodeKind)) {
     entity.spriteScale = Math.min(16, Math.max(.05, (origin.spriteScale ?? 1) * factors.x));
   }
 }

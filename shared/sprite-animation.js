@@ -88,7 +88,7 @@ export function setSpriteState(project, state, entity, name, restart = false) {
   const index = spriteIndex(project);
   const current = state.spriteAnimations.get(entity.id);
   if (current?.name === name && !restart) return;
-  if (current && !['death', 'pain'].includes(name) && !index.frame(current.clipId, state.time - current.start).finished &&
+  if (current && !restart && !['death', 'pain'].includes(name) && !index.frame(current.clipId, state.time - current.start).finished &&
     !index.clip(current.clipId)?.loop) return;
   state.spriteAnimations.set(entity.id, { clipId, name, start: state.time });
 }

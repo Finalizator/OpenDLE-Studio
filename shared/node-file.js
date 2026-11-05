@@ -7,13 +7,15 @@
 // machine) and the events that only talk to objects inside the subtree. Coordinates are
 // stored relative to the group, so importing places the group wherever the pointer is.
 import { validateEntity, cloneProjectData } from './project.js';
-import { sceneEntityId, sceneSubtree, sceneEventsForEntities, remapReferences, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
+import {
+  sceneEntityId, sceneSubtree, sceneEventsForEntities, sceneEventTargets, remapReferences,
+  MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS,
+} from './scenes.js';
 import { MAX_JOINTS, validateJoint, newJointId, jointWithin, transformJoint } from './joints.js';
 import { MODEL_FACING_SEMANTICS, hasModelFacing } from './entity-visuals.js';
 import { bakePathRamp } from './paths.js';
 import { validateSignalEvent } from './signals.js';
 import { createSceneInstanceGroup, sceneInstanceOf, membersOf } from './entity-groups.js';
-import { commandTargets } from './references.js';
 
 export const NODE_FILE_FORMAT = 'opendle-node';
 export const NODE_FILE_VERSION = 1;
@@ -28,7 +30,7 @@ const round = value => {
 
 /** The entity ids a command points at, ignoring the special `$self`/`$world` targets. */
 function commandReferences(command) {
-  return commandTargets(command).map(target => target.id);
+  return sceneEventTargets(command).map(target => target.id);
 }
 
 /** Every command of a rule, including the ones inside its sub-events. */
@@ -49,6 +51,15 @@ const UNCARRYABLE_FIELDS = ['pathId', 'timesheetId', 'wallId', 'sectorId', 'zone
 /** The fields naming a picture (carried as an asset) and the fields naming a sprite clip. */
 const ASSET_FIELDS = ['assetId'];
 const CLIP_FIELDS = ['clipId', 'impactClipId'];
+const stableJson = value => {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableJson(value[key])]));
+};
+const sameResource = (left, right) => {
+  const withoutId = value => Object.fromEntries(Object.entries(value || {}).filter(([key]) => key !== 'id'));
+  return JSON.stringify(stableJson(withoutId(left))) === JSON.stringify(stableJson(withoutId(right)));
+};
 
 /**
  * Builds the document for one node and its group.
@@ -126,6 +137,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   const owners = wholeScene ? scene.events || [] : sceneEventsForEntities(scene.events || [], ids);
   const selectedEvents = new Set(owners);
   const carriedIds = new Set(carried.map(node => node.id));
+  const availableGroups = new Set(((eventGroups ?? scene.eventGroups) || []).map(group => group.id));
   const minX = Math.min(...carried.map(node => node.x));
   const minY = Math.min(...carried.map(node => node.y));
   let droppedRoutes = 0, droppedGroups = 0, droppedParents = 0;
@@ -210,9 +222,12 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
     const offAssets = commands.flatMap(command => ASSET_FIELDS.map(key => command[key]).filter(Boolean)).filter(id => !assetById.has(id));
     const unportable = commands.flatMap(command => UNCARRYABLE_FIELDS.filter(key => command[key] !== undefined)
       .map(key => `${key} ${command[key]}`));
+    const missingGroups = commands.flatMap(command => command.groupId === undefined ? [] : [command.groupId])
+      .filter(id => !availableGroups.has(id));
     if (outside.length) { droppedEvents.push(event.name || event.id); droppedReasons.add('it uses an object outside this node'); }
     else if (offClips.length) { droppedEvents.push(event.name || event.id); droppedReasons.add('it plays a sprite clip the file cannot carry'); }
     else if (offAssets.length) { droppedEvents.push(event.name || event.id); droppedReasons.add('it uses a picture the file cannot carry'); }
+    else if (missingGroups.length) { droppedEvents.push(event.name || event.id); droppedReasons.add('it uses an event group the file cannot carry'); }
     else if (unportable.length) { droppedEvents.push(event.name || event.id); droppedReasons.add('it names something only this project has'); }
     else { keptEvents.push(cloneProjectData(event)); keptEventIds.add(event.id); }
   }
@@ -222,8 +237,13 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   // sheet rather than naming a sheet the destination has never heard of.
   const sheetIds = new Set(keptEvents.map(event => event.sheetId).filter(Boolean));
   const groupIds = new Set(keptEvents.map(event => event.groupId).filter(Boolean));
+  for (const event of keptEvents) for (const command of eventCommands(event)) {
+    if (command.groupId !== undefined && availableGroups.has(command.groupId)) groupIds.add(command.groupId);
+  }
+  const sourceGroups = (eventGroups ?? scene.eventGroups) || [];
+  const embeddedGroups = cloneProjectData(sourceGroups.filter(group => groupIds.has(group.id)));
+  for (const group of embeddedGroups) if (group.sheetId) sheetIds.add(group.sheetId);
   const embeddedSheets = cloneProjectData(((eventSheets ?? scene.eventSheets) || []).filter(sheet => sheetIds.has(sheet.id)));
-  const embeddedGroups = cloneProjectData(((eventGroups ?? scene.eventGroups) || []).filter(group => groupIds.has(group.id)));
   const embeddedGroupIds = new Set(embeddedGroups.map(group => group.id));
   const embeddedSheetIds = new Set(embeddedSheets.map(sheet => sheet.id));
   for (const event of keptEvents) {
@@ -293,9 +313,22 @@ export function validateNodeFile(document) {
   if (!Array.isArray(document.nodes) || !document.nodes.length) fail('it has no nodes');
   if (document.nodes.length > MAX_SCENE_ENTITIES) fail(`a node file holds at most ${MAX_SCENE_ENTITIES} nodes`);
 
-  const assets = Array.isArray(document.assets) ? document.assets : [];
-  const shaders = Array.isArray(document.shaders) ? document.shaders : [];
-  const clips = Array.isArray(document.clips) ? document.clips : [];
+  for (const key of ['assets', 'shaders', 'clips', 'sheets', 'groups']) {
+    if (document[key] !== undefined && !Array.isArray(document[key])) fail(`it declares ${key} that are not a list`);
+  }
+  const assets = document.assets || [];
+  const shaders = document.shaders || [];
+  const clips = document.clips || [];
+  const resourceIds = new Set();
+  for (const [key, label] of [['assets', 'asset'], ['shaders', 'shader'], ['clips', 'sprite clip'],
+    ['sheets', 'event sheet'], ['groups', 'event group']]) {
+    for (const item of document[key] || []) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) fail(`every ${label} must be an object`);
+      if (typeof item.id !== 'string' || !item.id) fail(`every ${label} needs an id`);
+      if (resourceIds.has(item.id)) fail(`duplicate ${label} id ${item.id}`);
+      resourceIds.add(item.id);
+    }
+  }
   const assetIds = new Set(assets.map(asset => asset?.id));
   const shaderIds = new Set(shaders.map(shader => shader?.id));
   const clipIds = new Set(clips.map(clip => clip?.id));
@@ -315,15 +348,6 @@ export function validateNodeFile(document) {
     if (!Array.isArray(clip.frames) || !clip.frames.length) fail(`sprite clip ${clip.id} has no frames`);
     for (const frame of clip.frames) assetRef(frame, 'Sprite frame');
   }
-  for (const key of ['sheets', 'groups']) {
-    if (document[key] === undefined) continue;
-    if (!Array.isArray(document[key])) fail(`it declares ${key} that are not a list`);
-    for (const item of document[key]) {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) fail(`every entry of ${key} must be an object`);
-      if (typeof item.id !== 'string' || !item.id) fail(`every entry of ${key} needs an id`);
-    }
-  }
-
   const ids = new Set();
   for (const node of document.nodes) {
     if (!node || typeof node !== 'object' || Array.isArray(node)) fail('every node must be an object');
@@ -363,14 +387,26 @@ export function validateNodeFile(document) {
     if (!Array.isArray(document.events) || document.events.length > MAX_SCENE_EVENTS) fail(`it holds at most ${MAX_SCENE_EVENTS} events`);
     const sheetIds = new Set((document.sheets || []).map(sheet => sheet.id));
     const groupIds = new Set((document.groups || []).map(group => group.id));
+    for (const group of document.groups || []) {
+      if (group.sheetId !== undefined && !sheetIds.has(group.sheetId)) {
+        fail(`event group ${group.id} belongs to a sheet the file does not describe`);
+      }
+    }
+    const eventIds = new Set();
     for (const event of document.events) {
       if (!event || typeof event !== 'object') fail('every event must be an object');
+      if (typeof event.id !== 'string' || !event.id) fail('every event needs an id');
+      if (eventIds.has(event.id)) fail(`duplicate event id ${event.id}`);
+      eventIds.add(event.id);
       validateSignalEvent(event, document.nodes);
       if (event.ownerId !== undefined && !ids.has(event.ownerId)) fail(`event ${event.id} is owned by an object the file does not contain`);
       if (event.sheetId !== undefined && !sheetIds.has(event.sheetId)) fail(`event ${event.id} belongs to a sheet the file does not describe`);
       if (event.groupId !== undefined && !groupIds.has(event.groupId)) fail(`event ${event.id} belongs to a group the file does not describe`);
       for (const command of [event.condition, ...(event.conditions || []), ...(event.actions || [])]) {
         for (const key of CLIP_FIELDS) clipRef(command?.[key]);
+        if (command?.groupId !== undefined && !groupIds.has(command.groupId)) {
+          fail(`event ${event.id} uses a group the file does not describe`);
+        }
       }
     }
   }
@@ -415,7 +451,7 @@ export function applyNodeFile(scene, document, {
   // so its angle has to move over — otherwise the object lands visibly turned by its own facing.
   const staleFacing = document.modelFacingSemantics !== MODEL_FACING_SEMANTICS;
   const copies = document.nodes.map(node => {
-    const copy = cloneProjectData(node);
+    const copy = remapReferences(cloneProjectData(node), mapping);
     copy.id = mapping.get(node.id);
     // Relative coordinates are turned by `degrees`, so a rotated import still lines up.
     const local = { x: node.x, y: node.y };
@@ -464,11 +500,20 @@ export function applyNodeFile(scene, document, {
     // The script keeps its sheet and its group; an id the destination could not offer is dropped
     // rather than left dangling.
     if (copy.sheetId !== undefined) copy.sheetId = sheetRemap.get(copy.sheetId) ?? copy.sheetId;
-    if (copy.groupId !== undefined) copy.groupId = groupRemap.get(copy.groupId) ?? copy.groupId;
+    if (copy.groupId !== undefined && groupRemap.has(copy.groupId)) {
+      const mapped = groupRemap.get(copy.groupId);
+      if (mapped === null) delete copy.groupId;
+      else copy.groupId = mapped;
+    }
     for (const command of [copy.condition, ...(copy.conditions || []), ...(copy.actions || [])]) {
       if (!command) continue;
       for (const key of CLIP_FIELDS) if (command[key] && clipRemap.has(command[key])) command[key] = clipRemap.get(command[key]);
       for (const key of ASSET_FIELDS) if (command[key] && assetRemap.has(command[key])) command[key] = assetRemap.get(command[key]);
+      if (command.groupId !== undefined && groupRemap.has(command.groupId)) {
+        const mapped = groupRemap.get(command.groupId);
+        if (mapped === null) delete command.groupId;
+        else command.groupId = mapped;
+      }
     }
     if (known) {
       const keep = command => {
@@ -523,7 +568,7 @@ export function planNodeFileInstall(document, { assets = [], shaders = [], sprit
   for (const incoming of document.assets || []) {
     const existing = byAssetId.get(incoming.id);
     if (!existing) { addAssets.push(incoming); continue; }
-    const same = existing.kind === incoming.kind && existing.src === incoming.src && existing.name === incoming.name;
+    const same = sameResource(existing, incoming);
     if (same) continue;
     const id = freshId(incoming.id);
     assetRemap.set(incoming.id, id);
@@ -533,7 +578,7 @@ export function planNodeFileInstall(document, { assets = [], shaders = [], sprit
   for (const incoming of document.shaders || []) {
     const existing = byShaderId.get(incoming.id);
     if (!existing) { addShaders.push(incoming); continue; }
-    if (existing.source === incoming.source) continue;
+    if (sameResource(existing, incoming)) continue;
     const id = freshId(incoming.id);
     shaderRemap.set(incoming.id, id);
     addShaders.push({ ...incoming, id });
@@ -545,8 +590,7 @@ export function planNodeFileInstall(document, { assets = [], shaders = [], sprit
     const clip = { ...incoming, frames: incoming.frames.map(frame => assetRemap.get(frame) ?? frame) };
     const existing = byClipId.get(clip.id);
     if (!existing) { addClips.push(clip); continue; }
-    const same = existing.name === clip.name && existing.seconds === clip.seconds && existing.loop === clip.loop
-      && existing.frames.length === clip.frames.length && existing.frames.every((frame, index) => frame === clip.frames[index]);
+    const same = sameResource(existing, clip);
     if (same) continue;
     const id = freshId(clip.id);
     clipRemap.set(clip.id, id);
@@ -562,9 +606,10 @@ export function planNodeFileInstall(document, { assets = [], shaders = [], sprit
   const sheetIdByName = new Map(eventSheets.map(sheet => [sheet.name, sheet.id]));
   for (const incoming of document.sheets || []) {
     const same = bySheetId.get(incoming.id);
-    if (same && same.name === incoming.name && same.section === incoming.section && same.phase === incoming.phase) continue;
+    if (same && sameResource(same, incoming)) continue;
     const byName = sheetIdByName.get(incoming.name);
-    if (byName) { sheetRemap.set(incoming.id, byName); continue; }
+    const namedSheet = eventSheets.find(sheet => sheet.id === byName);
+    if (namedSheet && sameResource(namedSheet, incoming)) { sheetRemap.set(incoming.id, byName); continue; }
     const id = same ? freshId(incoming.id) : incoming.id;
     if (id !== incoming.id) sheetRemap.set(incoming.id, id);
     addSheets.push({ ...cloneProjectData(incoming), id });
@@ -577,10 +622,12 @@ export function planNodeFileInstall(document, { assets = [], shaders = [], sprit
     let sheetId = incoming.sheetId;
     if (sheetId !== undefined) sheetId = sheetRemap.get(sheetId) ?? sheetId;
     const known = sheetId === undefined || bySheetId.has(sheetId) || addSheets.some(sheet => sheet.id === sheetId);
-    if (!known) continue;
+    if (!known) { groupRemap.set(incoming.id, null); continue; }
     const same = byGroupId.get(incoming.id);
-    if (same && same.name === incoming.name && same.sheetId === sheetId) continue;
-    const byName = eventGroups.find(group => group.name === incoming.name && group.sheetId === sheetId);
+    const normalized = { ...cloneProjectData(incoming), sheetId };
+    if (same && sameResource(same, normalized)) continue;
+    const byName = eventGroups.find(group => group.name === incoming.name && group.sheetId === sheetId
+      && sameResource(group, normalized));
     if (byName) { groupRemap.set(incoming.id, byName.id); continue; }
     const id = same ? freshId(incoming.id) : incoming.id;
     if (id !== incoming.id) groupRemap.set(incoming.id, id);

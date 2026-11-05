@@ -1,5 +1,6 @@
 import { CAMERA_DEFAULTS, eventConditions, resolveEntityId } from './project.js';
-import { compareInstanceProperty } from './instance-properties.js';
+import { compareInstanceProperty, readInstanceProperty } from './instance-properties.js';
+import { floorHeightAt } from './three-d-floors.js';
 import { entitySector, sectorAt, sectorGeometry } from './sectors.js';
 import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
@@ -135,7 +136,7 @@ export function skillBitFor(settings = {}) {
 /** Live object state for a project: skill-filtered copies with per-instance variables. */
 export function runtimeEntities(project, settings = {}) {
   const skillBit = skillBitFor(settings);
-  return structuredClone(project.map.entities).filter(entity => !entity.skillMask || (entity.skillMask & skillBit))
+  return structuredClone(project.map.entities).filter(entity => entity.type === 'player' || !entity.skillMask || (entity.skillMask & skillBit))
     .map(entity => ({ ...entity, variables: { ...(entity.variables || {}) } }));
 }
 
@@ -246,7 +247,7 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     messageTime: 0,
     walls: wallSegments(project),
     sectors,
-    animations: new Map(project.map.entities.filter(entity => entity.animation?.autoPlay).map(entity => [entity.id, { ...entity.animation, playing: true, revision: 0 }])),
+    animations: new Map(entities.filter(entity => entity.animation?.autoPlay).map(entity => [entity.id, { ...entity.animation, playing: true, revision: 0 }])),
     animationFinished: new Set(),
     physics: null,
     scripts: null,
@@ -409,6 +410,12 @@ function forgetEntity(state, id) {
   if (instances) for (const byOwner of instances.values()) byOwner.delete(id);
   for (const key of [...state.entitySamples.keys()]) if (key.endsWith(`:${id}`)) state.entitySamples.delete(key);
   for (const key of [...state.fired]) if (key.endsWith(`:${id}`)) state.fired.delete(key);
+  for (const key of state.timers.keys()) if (key.startsWith(`${id}:`)) state.timers.delete(key);
+  state.pathMotions.delete(id);
+  state.enemyMoves.delete(id);
+  state.cameraMoves?.delete(id);
+  state.pathTweens = state.pathTweens.filter(tween => tween.entityId !== id);
+  if (state.viewCamera === id) state.viewCamera = null;
   for (const samples of [state.areaEntries, state.intervals]) {
     if (!samples) continue;
     for (const key of samples.keys()) {
@@ -1007,7 +1014,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       const owner = entityLookup(state).byId.get(ownerId || source.ownerId);
       if (owner && !ownerId) picks = ownPick(picks, owner.type, owner.id);
       if (ownerId) {
-        if (!runEvent(instanceFor(source, ownerId), Boolean(source.forEachType), phase, picks)) return;
+        if (!runEvent(instanceFor(source, ownerId), Boolean(source.forEachType || ownerId !== source.ownerId), phase, picks)) return;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         for (const child of tree.children.get(source.id) || []) {
           visit(child, ownerId, picks);
@@ -1047,6 +1054,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (source.timesheetId) continue;
       if (hasSignalCondition(source) !== signalDispatch) continue;
       visit(source, undefined);
+      if (phase !== 'interface' && state.gameScreen !== 'playing') break;
+      if (source.ownerId) {
+        const spawned = state.entities.filter(entity => entity.spawnedFrom === source.ownerId);
+        for (const entity of spawned) {
+          visit(source, entity.id, ownPick(new Map(), entity.type, entity.id));
+          if (phase !== 'interface' && state.gameScreen !== 'playing') break;
+        }
+      }
       if (phase !== 'interface' && state.gameScreen !== 'playing') break;
     }
     if (!signalDispatch && phase === 'afterPhysics' && state.gameScreen === 'playing') {
@@ -1094,7 +1109,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         if (!isExpression(value)) continue;
         found = true;
         if (resolved === command) resolved = { ...command };
-        context ||= expressionContext(project, event, state, dt);
+        context ||= expressionContext(project, event, state, dt, { selection: picks });
         resolved[key] = resolveExpression(command, key, value, context, project, event);
       }
       // Commands are immutable between edits (an edit replaces the project), so a
@@ -1104,10 +1119,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     };
     function forPicked(command, apply) {
       for (const entity of pickedInstances(state, picks, command.objectType)) {
-        const outer = state.picks;
-        state.picks = ownPick(picks, command.objectType, entity.id);
-        try { apply(entity, resolveCommand(command)); } finally { state.picks = outer; }
+        resolveForInstance(command, entity, apply);
       }
+    }
+    function resolveForInstance(command, entity, apply) {
+      const outer = state.picks;
+      state.picks = ownPick(picks, command.objectType, entity.id);
+      try { return apply(entity, resolveCommand(command)); } finally { state.picks = outer; }
     }
     function assignVariable(record, name, value, add) {
       if (!Object.hasOwn(record, name)) throw new Error(`Event "${event.name || event.id}" references missing variable "${name}"`);
@@ -1140,7 +1158,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       return condition.inverted ? !matched : matched;
     };
     function matchCondition(condition, index) {
-      condition = resolveCommand(condition);
+      if (!['pickByProperty', 'pickByVariable'].includes(condition.type)) condition = resolveCommand(condition);
       if (condition.type === 'onSignal') return currentSignal &&
         currentSignal.entityId === resolveEntityId(event, condition.entityId) && currentSignal.signal === condition.signal;
       if (condition.type === 'signalValueCompare') return currentSignal &&
@@ -1185,8 +1203,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       if (condition.type === 'pickByProperty') {
         const chosen = pickedInstances(state, picks, condition.objectType)
-          .filter(entity => compareInstanceProperty(project, state, entity, condition.property,
-            condition.operator, condition.value));
+          .filter(entity => resolveForInstance(condition, entity, (target, resolved) =>
+            compareInstanceProperty(project, state, target, resolved.property, resolved.operator, resolved.value)));
         withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
         return chosen.length > 0;
       }
@@ -1196,7 +1214,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // of the type carries the variable at all, so a typo is caught while it is still cheap.
         const chosen = pickedInstances(state, picks, condition.objectType)
           .filter(entity => Object.hasOwn(entity.variables || {}, condition.variable)
-            && compare(entity.variables[condition.variable], condition.operator, condition.value));
+            && resolveForInstance(condition, entity, (target, resolved) =>
+              compare(target.variables[resolved.variable], resolved.operator, resolved.value)));
         withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
         return chosen.length > 0;
       }
@@ -1238,7 +1257,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       if (condition.type === 'entityAngle') {
         const target = findTarget(condition.entityId);
-        const angle = target?.type === 'player' ? player.angle * 180 / Math.PI : Number(target?.angle) || 0;
+        if (!target) return false;
+        const angle = readInstanceProperty(project, state, target, 'angle');
         const normalised = ((angle % 360) + 360) % 360;
         return compareValues(Math.round(normalised * 1000) / 1000, condition.operator, condition.value);
       }
@@ -1284,7 +1304,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const entity = findTarget(condition.entityId);
         return entity && canHearPlayer(state, entity);
       }
-      if (condition.type === 'spriteState') return state.spriteAnimations.get(resolveEntityId(event, condition.entityId))?.name === condition.state;
+      if (condition.type === 'spriteState') {
+        const target = findTarget(condition.entityId);
+        return Boolean(target) && readInstanceProperty(project, state, target, 'animation') === condition.state;
+      }
       // A timesheet cue: true only on the frame the timeline's clock crossed it. The cue's
       // own rule carries no other condition, so this is the whole test.
       if (condition.type === TIMESHEET_CUE_CONDITION) return cueDue(state, condition.timesheetId, condition.cueId);
@@ -1554,12 +1577,16 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           Object.assign(spawned, { id, x: action.x, y: action.y, spawnedFrom: action.templateId,
             variables: { ...(template.variables || {}) } });
           if (action.z !== undefined) spawned.z = action.z;
+          spawned.z ??= floorHeightAt(sectorAt(state.sectors, spawned.x, spawned.y), spawned.z) + (spawned.elevation || 0);
+          spawned.elevation = spawned.z - floorHeightAt(sectorAt(state.sectors, spawned.x, spawned.y), spawned.z);
           if (action.angle !== undefined) spawned.angle = action.angle;
           if (action.name) spawned.name = action.name.slice(0, 100);
           // A spawned enemy gets the same actor fields its authored copy has, or the save written
           // while it is alive would not load: the runtime shape is checked against the template.
           initialiseActorEntities(project, [spawned]);
           state.entities.push(spawned);
+          if (spawned.animation?.autoPlay) state.animations.set(spawned.id,
+            { ...spawned.animation, playing: true, revision: 0 });
           // The body the authored copy would have had: a spawned crate is solid, a spawned monster
           // blocks the player. Without this one the player walks through everything it makes.
           state.physics?.add?.(spawned.id);
@@ -1607,6 +1634,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           const camera = buildCamera({ id, name, x: action.x, y: action.y, z: action.z,
             angle: action.angle, pitch: action.pitch, fov: action.fov });
           state.entities.push(camera);
+          withPick(picks, 'camera', new Set([camera.id]));
           state.worldRevision++;
           if (action.activate === 'yes') switchView(state, camera);
           break;
@@ -1623,7 +1651,18 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           // what a zoom rule means when no camera is filming.
           if (action.camera === PLAYER_VIEW) {
             if (action.type === 'setCameraFov') state.settings.fov = clamp(action.fov, 10, 170);
-            else if (action.type === 'setCameraAngle') player.pitch = clamp(action.pitch, -89, 89) * Math.PI / 180;
+            else if (action.type === 'setCameraAngle') {
+              player.angle = action.angle * Math.PI / 180;
+              player.pitch = clamp(action.pitch, -89, 89) * Math.PI / 180;
+            } else {
+              const target = state.entities.find(entity => entity.type === 'player');
+              const floor = floorHeightAt(sectorAt(state.sectors, action.x, action.y), action.z);
+              const z = action.z ?? floor + (target.elevation || 0);
+              Object.assign(target, { x: action.x, y: action.y, z, elevation: z - floor });
+              Object.assign(player, { x: action.x, y: action.y, z });
+              resetMomentum(state);
+              state.physics?.teleport(target.id, action.x, action.y, z);
+            }
             break;
           }
           const camera = requireCamera(state, action.camera, event);
@@ -1882,6 +1921,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
               }
             }
             if (action.z !== undefined) target.z = action.z;
+            const floor = floorHeightAt(sectorAt(state.sectors, target.x, target.y), target.z);
+            if (!state.physics) {
+              target.z = action.z ?? floor + (target.elevation || 0);
+              if (target.type === 'player') player.z = target.z;
+            }
+            target.elevation = (target.z ?? floor) - floor;
             state.physics?.teleport(target.id, action.x, action.y, action.z);
           }
           break;

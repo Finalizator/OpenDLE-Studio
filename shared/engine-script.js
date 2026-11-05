@@ -236,22 +236,22 @@ export const ENGINE_ACTIONS = [
   // fields name a camera by object id or by its name, and `$player` is the player's own eyes,
   // so a cutscene can hand the view to a camera and give it back without knowing any ids.
   { type: 'createCamera', label: 'Camera: create a camera', fields: [
-    { name: 'x', kind: 'value', value: 0 }, { name: 'y', kind: 'value', value: 0 },
+    numeric('x', 0, -65536, 65536), numeric('y', 0, -65536, 65536),
     { ...numeric('z', undefined, -32768, 32768), optional: true },
-    { name: 'angle', kind: 'value', value: 0 }, { name: 'pitch', kind: 'value', value: 0 },
-    { name: 'fov', kind: 'value', value: 90 },
+    numeric('angle', 0, -3600, 3600), numeric('pitch', 0, -89, 89),
+    numeric('fov', 90, 10, 170),
     // The name is how the next rule finds this camera; ids are generated and never seen.
     { name: 'name', value: 'Flyby camera', kind: 'string' }, choice('activate', 'no', ['yes', 'no'])] },
   { type: 'switchCamera', label: 'Camera: switch the view to a camera', fields: [cameraRef('camera', '$player')] },
   { type: 'setCameraPosition', label: 'Camera: set position', fields: [
-    cameraRef('camera', '$active'), { name: 'x', kind: 'value', value: 0 }, { name: 'y', kind: 'value', value: 0 },
+    cameraRef('camera', '$active'), numeric('x', 0, -65536, 65536), numeric('y', 0, -65536, 65536),
     { ...numeric('z', undefined, -32768, 32768), optional: true }] },
   { type: 'setCameraAngle', label: 'Camera: set angle and pitch', fields: [
-    cameraRef('camera', '$active'), { name: 'angle', kind: 'value', value: 0 }, { name: 'pitch', kind: 'value', value: 0 }] },
+    cameraRef('camera', '$active'), numeric('angle', 0, -3600, 3600), numeric('pitch', 0, -89, 89)] },
   { type: 'setCameraFov', label: 'Camera: set field of view', fields: [
-    cameraRef('camera', '$active'), { name: 'fov', kind: 'value', value: 90 }] },
+    cameraRef('camera', '$active'), numeric('fov', 90, 10, 170)] },
   { type: 'moveCamera', label: 'Camera: move over time', fields: [
-    cameraRef('camera', '$active'), { name: 'x', kind: 'value', value: 0 }, { name: 'y', kind: 'value', value: 0 },
+    cameraRef('camera', '$active'), numeric('x', 0, -65536, 65536), numeric('y', 0, -65536, 65536),
     { ...numeric('z', undefined, -32768, 32768), optional: true },
     { ...numeric('angle', undefined, -3600, 3600), optional: true }, { ...numeric('pitch', undefined, -89, 89), optional: true },
     numeric('seconds', 2, 0, 3600), choice('easing', 'easeInOut', EASINGS)] },

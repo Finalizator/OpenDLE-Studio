@@ -43,6 +43,8 @@ export function commandFields(command, { entities, zones = [], cameras = [], obj
   // `commands` is the project's whole catalogue, engine commands first and addon commands after it,
   // so an addon's fields are drawn by the same code as the engine's.
   const definition = (commands ? commands.find(entry => entry.type === command.type) : null) || engineCommand(command.type);
+  const spawnTemplates = (entities || []).filter(([id]) =>
+    id !== playerId && !['$self', '$player', '$world'].includes(id));
   if (definition) {
     return [
       // The object and the route come first: everything below them is described in terms of them —
@@ -62,6 +64,11 @@ export function commandFields(command, { entities, zones = [], cameras = [], obj
       ...(definition.path ? [{ name: 'pathId', label: 'Route', options: paths }] : []),
       ...(definition.sound ? [{ name: 'assetId', label: 'Sound', options: sounds }] : []),
       ...definition.fields.map(field => ({ ...field, value: field.kind === 'value',
+        ...(command.type === 'spawnEntity' && field.name === 'templateId' ? {
+          label: 'Object template',
+          options: spawnTemplates,
+          hint: spawnTemplates.length ? null : 'Add a non-player object first so it can be used as a spawn template.',
+        } : {}),
         ...(field.name === 'signal' ? { options: entitySignalNames(command.entityId) } : {}),
         numeric: field.kind === 'number' || field.kind === 'waypoint',
         // A waypoint field lists the waypoints of the route this action already points at, by name.

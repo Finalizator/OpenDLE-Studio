@@ -2455,6 +2455,15 @@ const conditionLabels = builtInConditionLabels, actionLabels = builtInActionLabe
  * open the same action picker, so they must describe the project the same way.
  */
 function commandLists(ownerId) {
+  const targets = id => {
+    const ref = id === '$self' ? ownerId : id;
+    return project.map.entities.filter(entity => ref?.startsWith('$type:')
+      ? entity.type === ref.slice(6) : entity.id === ref);
+  };
+  const common = (id, names) => {
+    const lists = targets(id).map(names);
+    return (lists[0] || []).filter(name => lists.every(list => list.includes(name)));
+  };
   return {
     entities: entityOptions(false, ownerId),
     zones: project.map.entities.filter(entity => entity.type === 'zone').map(entity => [entity.id, entity.name]),
@@ -2490,14 +2499,14 @@ function commandLists(ownerId) {
     waypointName: (pathId, index) => pathPointName(project, pathId, index),
     // "Set / compare local variable" lists the variables of the object the rule acts on, and `$self`
     // means the rule's own object, so the owner is what to look at there.
-    entityVariableNames: id => Object.keys((project.map.entities.find(entity => entity.id === (id === '$self' ? ownerId : id)) || {}).variables || {}),
-    entitySignalNames: id => nodeSignals(project.map.entities.find(entity => entity.id === (id === '$self' ? ownerId : id)) || {}),
-    sounds: (project.assets || []).filter(asset => asset.kind === 'sound').map(asset => [asset.id, asset.name]),
-    clips: id => {
-      const entity = project.map.entities.find(entity => id === '$self'
-        ? entity.id === ownerId : entity.id === id);
-      return project.assets?.find(asset => asset.id === entity?.modelAsset)?.animations || [];
+    entityVariableNames: id => {
+      const entities = targets(id);
+      return Object.keys(entities[0]?.variables || {}).filter(name => entities.every(entity =>
+        Object.hasOwn(entity.variables || {}, name) && typeof entity.variables[name] === typeof entities[0].variables[name]));
     },
+    entitySignalNames: id => common(id, nodeSignals),
+    sounds: (project.assets || []).filter(asset => asset.kind === 'sound').map(asset => [asset.id, asset.name]),
+    clips: id => common(id, entity => project.assets?.find(asset => asset.id === entity.modelAsset)?.animations || []),
   };
 }
 const timesheetPanel = createTimesheetPanel({ root: $('timesheet-root') }, {

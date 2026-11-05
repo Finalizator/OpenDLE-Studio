@@ -1740,9 +1740,12 @@ Engine/Enemies rather than an opaque default AI command.
   `replace(text,from,to)`, `contains`, `find`. Indexes start at zero;
   `find` returns -1 when absent. `&` concatenates scalar values as text;
   `+` is numeric addition.
+  Slice counts/offsets truncate fractions before slicing; replacement strings
+  are literal rather than JavaScript dollar-substitution patterns.
 - Operators: `+ - * / % ^`, `== != < <= > >=`, `&& || !`, parentheses
   and `condition ? yes : no`. Boolean operators and conditional branches
   short-circuit. Comparisons require matching types.
+  Exponentiation binds more tightly than a leading plus/minus.
 - Expressions are bounded to 2048 source characters, 32 nesting levels and
   256 parsed operations; results are finite numbers within +/-1e12, text
   up to 4096 characters or booleans. Event fields impose their own tighter
@@ -1783,16 +1786,21 @@ absence of a key, and it is what
   a template**, `spawnEntity` replaces the pick for that type with just the new
   instance — GDevelop's behaviour, and the reason a spawn followed by
   "set the picked instance's variable" works without naming an ID.
+  Spawned copies inherit object-owned root/child rules and autoplay animations;
+  their once keys include the spawned ID and survive save/load even after the
+  original template instance is destroyed. Player starts cannot be spawn templates.
 - **Expressions follow the pick** through `state.picks`, which `runEvent` sets
   for the duration of a rule and restores afterwards, so a value read outside any
   rule still means every instance. Picked actions resolve expressions separately
   for each target; expression contexts read the current entity array after removals.
+  Per-target property/variable reads narrow to the target, but `count` retains
+  the incoming rule selection. Counting a destroyed authored ID returns zero.
 - **A missing local variable picks nothing.** It is not an error at play time;
   authoring still refuses a pick by a variable that no instance of the type
   carries, so a typo is caught while it is still cheap.
 
 Properties are evaluated lazily: health, for example, must not rebuild map geometry.
-Floor/elevation read live sector heights, player values use live player state,
+Floor/elevation read live sector and solid 3D-floor heights, player values use live player state,
 animation frame indexes wrap/clamp to actual clips, and velocity readers return map
 units per second (including Rapier body velocities). Visual scale writes the actual
 sprite axes/model scale rather than inventing an unused `scale` field.
@@ -1801,11 +1809,26 @@ expressions use the same numeric bounds as literal transform fields.
 Nearest-pick targets and `count("instanceId")` participate in shared reference
 discovery, deletion and remapping. The editor and MCP use the canonical pickable
 type list for for-each rules.
+Camera command references use the same discovery/remapping fields. Camera glides
+temporarily override following, interpolate yaw on the shortest arc and start at
+the current floor-relative height. Player-following cameras use live player poses;
+numeric camera fields share literal/expression validation bounds.
 
 [`test/instance-bughunt.test.js`](./test/instance-bughunt.test.js) covers 35
 reproduced regressions plus selection, expression, reference and save/load
 integration cases. Real Rapier integration is exercised in
 [`test/physics-model.test.js`](./test/physics-model.test.js).
+The subsequent 50-root audit adds 58 regression/integration cases across
+[`test/instance-hunt-next.test.js`](./test/instance-hunt-next.test.js),
+[`test/instance-authoring-bughunt.test.js`](./test/instance-authoring-bughunt.test.js)
+and [`test/instance-reuse-bughunt.test.js`](./test/instance-reuse-bughunt.test.js).
+It also completes the earlier camera-default correction on the rendered side;
+that follow-up is excluded from the 50 new roots.
+Command dialogs resolve for-each `$self` contexts against the matching type and
+offer common local variables, signals and model clips. Context edits preserve
+independently nested loops or reject incompatible edits atomically. Portable
+scenes/node files retain type-based scripts, remap internal targets and event
+groups, omit external scene targets, and reject duplicate embedded resource IDs.
 
 The category lives in [`shared/engine-script.js`](./shared/engine-script.js)
 (`pickAll`, `pickByProperty`, `pickByVariable`, `pickNearest`, `pickRandom`,

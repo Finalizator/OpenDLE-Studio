@@ -6,7 +6,7 @@ import { MAX_JOINTS, newJointId, pruneJoints, remapJoint, jointWithin, transform
 import { stripEntityReferences, commandTargets, REFERENCE_FIELDS } from './references.js';
 import { bakePathRamp } from './paths.js';
 import { createSceneInstanceGroup } from './entity-groups.js';
-import { isExpression, rewriteExpressionObjects } from './expressions.js';
+import { isExpression, parseExpression, rewriteExpressionObjects } from './expressions.js';
 
 export const MAX_SCENES = 64;
 export const MAX_SCENE_ENTITIES = 128;
@@ -39,7 +39,7 @@ export function sceneOrigin(scene) {
   return { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
 }
 
-const ENTITY_REFERENCE_FIELDS = new Set(['ownerId', ...REFERENCE_FIELDS]);
+const ENTITY_REFERENCE_FIELDS = new Set(['ownerId', 'targetId', ...REFERENCE_FIELDS]);
 
 /** Rewrites entity reference fields and expression targets, never literal script data. */
 export function remapReferences(value, mapping, depth = 0) {
@@ -59,13 +59,30 @@ export function sceneEventsForEntities(events, ids) {
   const selected = new Set();
   return events.filter(event => {
     const targets = [event.condition, ...(event.conditions || []), ...(event.actions || [])]
-      .flatMap(commandTargets).map(target => target.id);
+      .flatMap(sceneEventTargets).map(target => target.id);
     const included = event.ownerId ? ids.has(event.ownerId)
       : !event.forEachType && targets.every(id => ids.has(id)) && (targets.length > 0 || selected.has(event.parentId));
     if (!included || event.parentId && !selected.has(event.parentId)) return false;
     selected.add(event.id);
     return true;
   });
+}
+
+export function sceneEventTargets(command) {
+  const targets = commandTargets(command).filter(target => !isExpression(command?.[target.field]));
+  const visit = node => {
+    if (node.op === 'call') {
+      if (['object', 'property'].includes(node.name) && node.args[0]?.op === 'literal'
+        && typeof node.args[0].value === 'string' && !node.args[0].value.startsWith('$')) {
+        targets.push({ field: 'expression', id: node.args[0].value });
+      }
+      node.args.forEach(visit);
+    } else if (node.op === 'unary') visit(node.value);
+    else if (node.op === 'binary') { visit(node.left); visit(node.right); }
+    else if (node.op === 'if') { visit(node.condition); visit(node.yes); visit(node.no); }
+  };
+  for (const value of Object.values(command || {})) if (isExpression(value)) visit(parseExpression(value.expr));
+  return targets;
 }
 
 function uniqueCopyId(base, used) {
@@ -120,6 +137,13 @@ export function captureScene(project, entityIds, { id = newSceneId(), name } = {
       const copy = structuredClone({ ...entity, x: entity.x - origin.x, y: entity.y - origin.y });
       delete copy.groupId;
       if (copy.parentId && !owned.has(copy.parentId)) delete copy.parentId;
+      for (const field of ['targetId', 'cameraFollow']) {
+        const value = copy[field];
+        if (typeof value !== 'string' || value.startsWith('$')) continue;
+        const target = entities.find(item => item.id === value || field === 'cameraFollow' && item.name === value);
+        if (!target || !owned.has(target.id)) delete copy[field];
+        else copy[field] = target.id;
+      }
       bakePathRamp(copy);
       return copy;
     }),
@@ -141,7 +165,7 @@ export function instantiateScene(scene, { x = 0, y = 0, angle = 0, prefix = newS
   }
   const entities = scene.entities.map(entity => {
     const offset = rotate(entity.x, entity.y, angle);
-    const copy = structuredClone(entity);
+    const copy = remapReferences(structuredClone(entity), mapping);
     copy.id = mapping.get(entity.id);
     if (entity.parentId) copy.parentId = mapping.get(entity.parentId);
     delete copy.groupId;
@@ -292,7 +316,7 @@ export function duplicateSceneObject(scene, id, { offset = 32 } = {}) {
   const reserved = new Set();
   for (const entity of subtree) mapping.set(entity.id, sceneEntityId(scene, `${entity.id}_copy`, reserved));
   const copies = subtree.map(entity => {
-    const copy = structuredClone(entity);
+    const copy = remapReferences(structuredClone(entity), mapping);
     copy.id = mapping.get(entity.id);
     if (entity.parentId && mapping.has(entity.parentId)) copy.parentId = mapping.get(entity.parentId);
     copy.x = round(entity.x + offset);
@@ -335,16 +359,20 @@ export function reparentSceneObject(scene, id, parentId) {
  * means moving its record to sit beside the reference's.
  */
 export function placeSceneObject(scene, id, parentId, { before = null, after = null } = {}) {
-  const entity = reparentSceneObject(scene, id, parentId);
   const reference = before || after;
-  if (!reference) return entity;
-  if (reference === id) return entity;
-  const at = scene.entities.findIndex(item => item.id === reference);
-  if (at < 0) throw new Error('That reference node no longer exists');
+  if (reference && reference !== id) {
+    const target = scene.entities.find(item => item.id === reference);
+    if (!target) throw new Error('That reference node no longer exists');
+    if ((target.parentId || null) !== (parentId || null)) {
+      throw new Error('A node can only be placed beside one of its new siblings');
+    }
+  }
+  const entity = reparentSceneObject(scene, id, parentId);
+  if (!reference || reference === id) return entity;
   scene.entities = scene.entities.filter(item => item.id !== id);
   const index = scene.entities.findIndex(item => item.id === reference);
   if (index < 0) { scene.entities.push(entity); return entity; }
-  scene.entities.splice(after ? index + 1 : index, 0, entity);
+  scene.entities.splice(!before && after ? index + 1 : index, 0, entity);
   return entity;
 }
 
@@ -486,7 +514,7 @@ export function nestScene(scene, source, { x = 0, y = 0, parentId = null } = {})
   const reserved = new Set();
   const mapping = new Map(source.entities.map(entity => [entity.id, sceneEntityId(nested, `${group.id}_${entity.id}`, reserved)]));
   const copies = source.entities.map(entity => {
-    const copy = structuredClone(entity);
+    const copy = remapReferences(structuredClone(entity), mapping);
     copy.id = mapping.get(entity.id);
     copy.parentId = entity.parentId && mapping.has(entity.parentId) ? mapping.get(entity.parentId) : group.id;
     copy.x = round(entity.x + group.x);

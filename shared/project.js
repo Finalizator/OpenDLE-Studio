@@ -1270,10 +1270,15 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       if (command.type === 'loadGameLevel')
         assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId), 'Command references an unknown game level');
       if (['saveGame', 'loadGame'].includes(command.type)) assert(Number.isInteger(command.slot), 'Game save slot must be an integer');
-      if (command.type === 'spawnEntity') assert(project.map.entities.some(entity => entity.id === command.templateId), 'Spawn command references an unknown template object');
+      if (command.type === 'spawnEntity') {
+        const template = project.map.entities.find(entity => entity.id === command.templateId);
+        assert(template, 'Spawn command references an unknown template object');
+        assert(template.type !== 'player', 'Cannot spawn a second player');
+      }
       if (command.type === 'distanceBetween') {
         assert(typeof command.otherId === 'string' && ['$player', '$self'].includes(command.otherId) || entityIds.has(command.otherId),
           'Distance condition references an unknown comparison object');
+        if (command.otherId === '$self') targetId(command.otherId);
       }
       if (command.type === 'selectGameEpisode')
         assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId) ||

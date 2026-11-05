@@ -51,7 +51,7 @@ export function commandRow(command, labels, objectName, open, { inverted = false
   return row;
 }
 
-export function openCommandDialog({ kind, labels, command, defaults, entities, zones = [], playerId, variables, groups, clips, walls = [], sectors = [], doorSectors = sectors, elevatorSectors = sectors, spriteClips = [], images = [], hudElements = [], hudAnimations = [],
+export function openCommandDialog({ kind, labels, command, defaults, entities, zones = [], objectTypes = [], playerId, variables, groups, clips, walls = [], sectors = [], doorSectors = sectors, elevatorSectors = sectors, spriteClips = [], images = [], hudElements = [], hudAnimations = [],
   // Project data the newer commands point at: timelines, routes and imported sounds.
   timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [],
   // Engine commands plus the ones addons add; the parameter stage is built from this list.
@@ -94,7 +94,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
     } else {
       const label = document.createElement('h3'); label.textContent = labels.find(([type]) => type === draft.type)?.[1] || draft.type;
       content.append(label);
-      for (const field of commandFields(draft, { entities, zones, playerId, variables, groups, clips, walls, sectors, doorSectors, elevatorSectors, spriteClips, images, hudElements, hudAnimations, timesheets, paths, sounds, pathPoints, entityVariableNames, entitySignalNames, commands })) {
+      for (const field of commandFields(draft, { entities, zones, objectTypes, playerId, variables, groups, clips, walls, sectors, doorSectors, elevatorSectors, spriteClips, images, hudElements, hudAnimations, timesheets, paths, sounds, pathPoints, entityVariableNames, entitySignalNames, commands })) {
         const label = document.createElement('label'); label.textContent = field.label || field.name;
         const valueType = field.value ? isExpression(draft[field.name]) ? 'expression' : typeof draft[field.name] : null;
         if (field.value) {
@@ -158,6 +158,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
         input.addEventListener('change', () => {
           update();
           if (field.name === 'entityId' && draft.type === 'playAnimation') { draft.clip = clips(draft.entityId)[0]; render(); }
+          if (field.kind === 'objectType') render();
           // The waypoint pickers below the route are built from that route, so choosing another
           // route has to rebuild them — and the old waypoint numbers mean nothing on the new one.
           if (field.name === 'pathId') { draft.fromPoint = 0; draft.toPoint = -1; render(); }
@@ -175,7 +176,16 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
         input.addEventListener('change', () => { draft.inverted = input.checked; });
         label.append(input, ' Invert condition (NOT)'); content.append(label);
       }
-      footer.append(button('Done', () => { submit(draft); close(); }));
+      footer.append(button('Done', () => {
+        if (draft.type === 'spawnEntity' && !draft.templateId) {
+          const hasTemplate = commandFields(draft, { entities, playerId })
+            .some(field => field.name === 'templateId' && field.options?.length);
+          throw new Error(hasTemplate
+            ? 'Choose an object template before adding this action'
+            : 'Add a non-player object first so it can be used as a spawn template');
+        }
+        submit(draft); close();
+      }));
       if (remove) footer.append(button('Delete', () => { remove(); close(); }));
       if (move) for (const [label, direction] of [['Move up', -1], ['Move down', 1]]) {
         footer.append(button(label, () => { move(direction); close(); }));
