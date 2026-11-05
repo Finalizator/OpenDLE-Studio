@@ -150,7 +150,9 @@ test('statistics count skill-filtered deaths, collected Doom count-items and vis
   s.time = 125.9;
   beginIntermission(p, s);
   assert.equal(s.intermission.values.kills, '1 / 1');
-  assert.equal(s.intermission.values.items, '1 / 2');
+  // Doom counts stimpacks (2011) with MF_COUNTITEM, so both near items count and all three are
+  // in the denominator. The old '1 / 2' expectation had encoded the missing stimpack.
+  assert.equal(s.intermission.values.items, '2 / 3');
   assert.equal(s.intermission.values.secrets, '1 / 1');
   assert.equal(s.intermission.values.time, '2:05');
 });

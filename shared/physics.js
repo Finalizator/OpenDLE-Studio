@@ -38,8 +38,15 @@ const LEDGE_GRAVITY = 2;
  */
 const DOOM_JUMP_SPEED = 8 * 35 / PHYSICS_SCALE;
 export const pairKey = (a, b) => JSON.stringify([a, b].sort());
-// Heights identify a sector's collision geometry, so a change is easy to spot.
-const sectorHeights = sector => `${sector.floorHeight}/${sector.ceilingHeight}`;
+// Heights identify a sector's collision geometry, so a change is easy to spot. A solid
+// 3D floor is part of that geometry: the sector's own planes can be still while a waggle
+// moves the floor above them, and the movable set must pick the sector up anyway or the
+// static trimesh keeps the old floor and everything standing on it falls through.
+const sectorHeights = sector => {
+  const floors = (sector.threeDFloors || []).filter(floor => floor.solid)
+    .map(floor => `${floor.bottom}/${floor.top}`).join(',');
+  return `${sector.floorHeight}/${sector.ceilingHeight}[${floors}]`;
+};
 
 // This portable snapshot deliberately contains no Rapier handles or WASM memory.
 export function validatePhysicsState(snapshot, expectedIds) {
@@ -255,7 +262,13 @@ function solidActor(project, entity) {
   if (entity.type !== 'enemy' && entity.type !== 'decoration') return null;
   if (entity.type === 'enemy' && !(entity.health > 0)) return null;
   const actor = actorOf(project, entity);
-  if (!actor || actor.flags?.SOLID === false || !(actor.radius > 0) || !(actor.height > 0)) return null;
+  if (!actor || !(actor.radius > 0) || !(actor.height > 0)) return null;
+  // `-SOLID` never blocks. A decoration without `+SOLID` does not block either: a missing
+  // flag is a passable prop, not a wall, and treating it as solid made every mod decoration
+  // one. Enemies are solid by default (`MONSTER` implies `SOLID`), so only an explicit
+  // `-SOLID` unblocks them.
+  if (actor.flags?.SOLID === false) return null;
+  if (entity.type === 'decoration' && actor.flags?.SOLID !== true) return null;
   return actor;
 }
 
@@ -341,6 +354,9 @@ export function createPhysics(project, state, R, triangulate) {
     return added;
   }
   const active = new Set(), forces = new Map();
+  // Colliders taken out of the world while their body lives on (a monster that died). A
+  // disabled collider still stops the character controller, so "not blocking" means detached.
+  const detachedColliders = new Set();
   let contacts = new Set(), started = new Set(), ended = new Set(), accumulator = 0, verticalSpeed = 0, grounded = false;
   let ledgeFallen = false;
   // Consecutive substeps the player was stopped on, per world axis. Steps are climbed over
@@ -525,7 +541,11 @@ export function createPhysics(project, state, R, triangulate) {
           : null;
         const first = bodyA || pinned, second = bodyB || pinned;
         const firstAnchor = localAnchor(first, anchor), secondAnchor = localAnchor(second, anchor);
-        const axis = toRapier([joint.axis?.x ?? 0, joint.axis?.y ?? 0, joint.axis?.z ?? 1]);
+        // A missing component is zero, and the axis is a direction: normalise it the way
+        // `newJoint` does so a hand-written descriptor and an editor joint behave the same.
+        const raw = [joint.axis?.x ?? 0, joint.axis?.y ?? 0, joint.axis?.z ?? 0];
+        const magnitude = Math.hypot(...raw) || 1;
+        const axis = toRapier(raw.map(value => value / magnitude));
         let data = null;
         if (joint.type === 'fixed') data = R.JointData.fixed(firstAnchor, { x: 0, y: 0, z: 0, w: 1 }, secondAnchor, { x: 0, y: 0, z: 0, w: 1 });
         else if (joint.type === 'revolute') data = R.JointData.revolute(firstAnchor, secondAnchor, axis);
@@ -574,8 +594,17 @@ export function createPhysics(project, state, R, triangulate) {
       // actor. A dead one stops blocking, the way Doom's `A_NoBlocking` clears `MF_SOLID`.
       body.setNextKinematicTranslation({ x: entity.x / PHYSICS_SCALE,
         y: (entity.z + actorHeight / 2) / PHYSICS_SCALE, z: entity.y / PHYSICS_SCALE });
-      const blocking = entity.health > 0, collider = colliders.get(entity.id);
-      if (collider && collider.isEnabled() !== blocking) collider.setEnabled(blocking);
+      // A solid decoration has no health to lose, so it always blocks. Disabling the collider
+      // is not enough: the character controller still shape-casts against a disabled collider,
+      // which left every corpse a wall. The collider is taken out of the world instead, and
+      // its broad-phase mapping is dropped so a recycled handle cannot be mistaken for it.
+      const blocking = entity.type === 'enemy' ? entity.health > 0 : true;
+      const collider = colliders.get(entity.id);
+      if (collider && !blocking && !detachedColliders.has(entity.id)) {
+        colliderIds.delete(collider.handle);
+        world.removeCollider(collider, true);
+        detachedColliders.add(entity.id);
+      }
       return;
     }
     const position = body.translation(), q = body.rotation();
@@ -943,6 +972,7 @@ export function createPhysics(project, state, R, triangulate) {
       const body = bodies.get(id), collider = colliders.get(id);
       if (!body) return;
       colliderIds.delete(collider.handle); world.removeRigidBody(body); bodies.delete(id); colliders.delete(id);
+      detachedColliders.delete(id);
       forces.delete(id);
       for (const key of active) if (JSON.parse(key).includes(id)) active.delete(key);
       for (const set of [contacts, started, ended]) for (const key of set) if (JSON.parse(key).includes(id)) set.delete(key);

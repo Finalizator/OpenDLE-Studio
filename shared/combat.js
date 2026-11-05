@@ -333,11 +333,11 @@ function lockOn(state) {
  * passes its Death-state handler so a missile explodes from its own definition.
  */
 export function advanceProjectiles(state, dt, onDeath, onDamage) {
-  // `onDamage(entity, amount, source)` lets the actor runtime apply pain and
-  // infighting; without it the engine still lowers health.
-  const hurt = (entity, amount, source) => {
+  // `onDamage(entity, amount, source, damageType)` lets the actor runtime apply
+  // pain, infighting and damage-type factors; without it the engine still lowers health.
+  const hurt = (entity, amount, source, damageType) => {
     if (entity === state.player) { damagePlayer(state, amount); return; }
-    if (onDamage) onDamage(entity, amount, source);
+    if (onDamage) onDamage(entity, amount, source, damageType);
     else entity.health = Math.max(0, (entity.health ?? 20) - amount);
   };
   const survivors = [];
@@ -359,7 +359,7 @@ export function advanceProjectiles(state, dt, onDeath, onDamage) {
     projectile.x += projectile.dx * nearest; projectile.y += projectile.dy * nearest; projectile.z += projectile.dz * nearest; projectile.age += dt;
     if (target || nearest < travel) {
       const source = projectileSource(state, projectile);
-      const hit = entity => hurt(entity, randomDamage(state, projectile.damage, projectile.diceSides), source);
+      const hit = entity => hurt(entity, randomDamage(state, projectile.damage, projectile.diceSides), source, projectile.damageType);
       if (target) hit(target);
       if (projectile.radius > 0) {
         const victims = [...state.entities.filter(e => e.type === 'enemy' && e.health > 0), ...(state.playerStats.health > 0 ? [state.player] : [])];
@@ -370,7 +370,7 @@ export function advanceProjectiles(state, dt, onDeath, onDamage) {
           const start = { x: projectile.x - projectile.dx * .1, y: projectile.y - projectile.dy * .1, z: projectile.z - projectile.dz * .1 };
           if (geometryDistance(state, start, direction, distance + .1) < distance) continue;
           const amount = Math.max(0, Math.round(projectile.radius - distance));
-          hurt(entity, amount, source);
+          hurt(entity, amount, source, projectile.damageType);
         }
       }
       if (projectile.sound) soundEvent(state, projectile.sound, .7, projectile);

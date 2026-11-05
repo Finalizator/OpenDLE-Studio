@@ -225,6 +225,7 @@ export function createPixiEditorBridge({ directory, platform = process.platform,
     if (!path) throw new Error(hint);
     let data;
     try { data = read(path); } catch { throw new Error(hint); }
+    if (data.length > LIMITS.imageBytes) throw new Error('That image is too large to hand back into the project');
     const { width, height } = pngSize(data);
     const modified = stat(path).mtimeMs;
     return { path, width, height, modified, src: `data:image/png;base64,${data.toString('base64')}` };

@@ -238,6 +238,27 @@ function readWordRun(line, start) {
   return words;
 }
 
+/**
+ * Reads a `goto` target including its optional frame offset. DECORATE writes
+ * `goto Spawn+2` / `goto Super::See-1`; the tokenizer splits `+2` into a
+ * punct and a number but folds `-1` into a single negative number token, so
+ * both shapes are reassembled. `readWordRun` only returned the first word and
+ * dropped the offset, so every `goto Label+2` landed on `Label` itself.
+ */
+function readGotoTarget(line, start) {
+  const first = line[start];
+  if (!first || first.kind !== 'word') return null;
+  let target = first.value;
+  const next = line[start + 1];
+  if (next?.kind === 'number' && /^[+-]/.test(next.value)) {
+    target += next.value;
+  } else if (next?.kind === 'punct' && (next.value === '+' || next.value === '-')) {
+    const number = line[start + 2];
+    if (number?.kind === 'number') target += next.value + number.value;
+  }
+  return target;
+}
+
 const STATE_END = { type: 'end' };
 
 /**
@@ -278,7 +299,8 @@ function parseStates(lines, start, { zscript = false } = {}) {
     if (!current) { index++; continue; }
     const keyword = first.value.toLowerCase();
     if (keyword === 'goto' || keyword === 'loop' || keyword === 'stop' || keyword === 'wait' || keyword === 'fail') {
-      current.frames.push({ type: 'keyword', keyword, target: readWordRun(line, 1)[0] || null, line: first.line });
+      const target = keyword === 'goto' ? readGotoTarget(line, 1) : readWordRun(line, 1)[0] || null;
+      current.frames.push({ type: 'keyword', keyword, target, line: first.line });
       index++; continue;
     }
     // Sprite frames: SPRT AABB 4 [flags/action] or # / - continuation forms.

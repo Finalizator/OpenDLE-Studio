@@ -140,7 +140,9 @@ export function spritePlacement(entity, asset, floorHeight = 0, { flip = false }
   const scaleY = entity.spriteScaleY ?? entity.spriteScale ?? 1;
   const width = (asset?.width || 24) * scaleX;
   const height = (asset?.height || 40) * scaleY;
-  const artworkOffsetY = (asset ? asset.offsetY || asset.height || 40 : 40) * scaleY;
+  // A Doom patch's top offset can legitimately be 0 (origin on the top row); `||` would
+  // read that as "missing" and anchor the sprite by its feet instead of its top.
+  const artworkOffsetY = (asset ? asset.offsetY ?? (asset.height || 40) : 40) * scaleY;
   const shift = spriteAnchor({ width: Math.abs(width), height, offsetX: (asset?.offsetX || 0) * scaleX, offsetY: artworkOffsetY });
   const anchor = entity.z ?? floorHeight + (entity.elevation || 0);
   return {
@@ -243,7 +245,13 @@ function portableObjects(project) {
  * without any declared facing is only marked.
  */
 export function migrateModelFacing(project) {
-  if (!project || typeof project !== 'object' || project.modelFacingSemantics === MODEL_FACING_SEMANTICS) return project;
+  if (!project || typeof project !== 'object') return project;
+  const semantics = project.modelFacingSemantics;
+  if (semantics === MODEL_FACING_SEMANTICS) return project;
+  // A marker this build does not know — written by a build newer than this one, or hand-edited —
+  // means an angle could mean something else again. Leave the document untouched so
+  // `validateProject` refuses it, instead of guessing at a migration and hiding the marker.
+  if (semantics !== undefined) return project;
   for (const entity of portableObjects(project)) {
     if (!hasModelFacing(entity)) continue;
     const turned = (Number(entity.angle) || 0) - Number(entity.modelFacing);

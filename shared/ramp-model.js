@@ -45,8 +45,16 @@ export const WEDGE_INDICES = [0, 2, 5, 0, 5, 3, 0, 4, 1, 1, 4, 5, 1, 5, 2, 0, 3,
  */
 export function rampFaces(shape) {
   const points = wedgePoints(shape);
+  const width = Math.max(1, Number(shape.width) || 0);
+  const alongSlope = Math.hypot(width, Math.max(0, Number(shape.height) || 0));
+  const direction = shape.facing === 'left' ? -1 : 1;
+  // Distance along the surf face from its low edge, in map units. Measured from the edge a
+  // player steps onto rather than from the wedge origin, so the texture starts at the low
+  // corner and spans the whole slope instead of starting halfway up and folding in the middle.
+  const surfUv = ([x, y, z]) => [z / TILE, (width / 2 - direction * x) * alongSlope / width / TILE];
   return [
-    { name: 'surf', corners: [points.lowBack, points.ridgeBack, points.ridgeFront, points.lowFront] },
+    { name: 'surf', corners: [points.lowBack, points.ridgeBack, points.ridgeFront, points.lowFront],
+      uvs: [surfUv(points.lowBack), surfUv(points.ridgeBack), surfUv(points.ridgeFront), surfUv(points.lowFront)] },
     { name: 'back', corners: [points.highBack, points.highFront, points.ridgeFront, points.ridgeBack] },
     { name: 'base', corners: [points.lowBack, points.lowFront, points.highFront, points.highBack] },
     { name: 'side-back', corners: [points.lowBack, points.highBack, points.ridgeBack] },
@@ -66,9 +74,9 @@ export function faceNormal(corners) {
   return [normal[0] / length, normal[1] / length, normal[2] / length];
 }
 
-/** Texture coordinates for a corner, measured in map units along the face's own axes. */
+/** Texture coordinates for a corner, measured in map units along the face's own axes.
+ * The surf face carries its own slope-length UVs from `rampFaces`. */
 function faceUv(name, [x, y, z]) {
-  if (name === 'surf') return [z / TILE, Math.hypot(y, x) / TILE];
   if (name === 'back') return [z / TILE, y / TILE];
   if (name === 'base') return [x / TILE, z / TILE];
   return [x / TILE, y / TILE];

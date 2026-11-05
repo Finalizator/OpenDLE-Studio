@@ -3828,13 +3828,20 @@ async function saveProject() {
 }
 async function reloadProject(initial = false) {
   return withProjectOperation(async () => {
-    if (!initial && dirty && !confirm('Discard unsaved edits and load the server project? Your last draft stays in browser storage.')) return;
+    const discarding = !initial && dirty;
+    if (discarding && !confirm('Discard unsaved edits and load the server project? Discarded edits are removed from the browser backup.')) return;
     const version = editVersion;
     const result = await api('/api/project');
     if (version !== editVersion) throw new Error('Project changed while loading. Your current edits were kept; retry loading when ready.');
     cutTool?.cancel();
     project = validateProject(result.project);
     documentGeneration++; documentSession = {}; bindProject(result); dirty = false;
+    // Discarding edits is a decision, not a crash: a draft left here would be auto-restored
+    // (baseRevision still matches) the next time the studio opens, silently undoing the discard.
+    if (discarding) {
+      localStorage.removeItem('opendle-draft');
+      localStorage.removeItem('opendle-draft-metadata');
+    }
     let recovery;
     if (initial) {
       recovery = recoverProject(result, localStorage.getItem('opendle-draft'), localStorage.getItem('opendle-draft-metadata'));

@@ -5,7 +5,7 @@ import { entitySector, sectorAt, sectorGeometry } from './sectors.js';
 import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
-import { createHUDState, advanceHUD, playHUDAnimation, validateHUDProperty } from './hud.js';
+import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validateHUDProperty } from './hud.js';
 import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
@@ -57,7 +57,7 @@ import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
 import { createLevelStatistics, updateLevelStatistics, recordRemovedEntity, beginIntermission, continueIntermission } from './intermission.js';
 import { emitSignal, signalBatch, hasSignalCondition, SIGNAL_LIMIT } from './signals.js';
 import {
-  PLAYER_VIEW, advanceCameras, buildCamera, requireCamera, startCameraMove, switchView, viewFov,
+  PLAYER_VIEW, ACTIVE_VIEW, activeCamera, advanceCameras, buildCamera, requireCamera, startCameraMove, switchView, viewFov,
 } from './camera-runtime.js';
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0));
@@ -196,7 +196,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     timers: new Map(),
     groups: new Map((project.eventGroups || []).map(group => [group.id, group.enabled])),
     hud: Boolean(project.hud),
-    hudState: createHUDState(project),
+    // The baseline a stat-change rule compares against is where this level started, including a
+    // campaign carry-over: entering with 50 health is not 50 damage.
+    hudState: createHUDState(project, playerStats),
     randomSeed: 1,
     sounds: [],
     // Rumbles a rule asked for this frame, drained by whatever is holding the controllers.
@@ -717,6 +719,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   advanceHUD(project, state.hudState, dt, 'interface');
   runRules('interface');
   dispatchSignals('interface');
+  // The interface phase is the last unconditional observer of a game-phase completion, so its
+  // one-frame marker is consumed here; the game advance that would also clear it is skipped while
+  // paused, which otherwise replayed the completion on every paused frame.
+  clearFinishedHUD(project, state.hudState, 'game');
   // A script's `FadeTo` keeps running whatever the screen is doing: a title map fades to
   // black, hands the view to a camera, ends its script, and fades back in five seconds later.
   advanceScreenFade(state, dt);
@@ -958,7 +964,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   stepProjectiles(project, state, dt);
   settleGroundActors(state);
   advanceProjectiles(state, dt, projectile => runProjectileDeath(project, state, projectile),
-    (entity, amount, source) => hurtActor(project, state, entity, amount, source));
+    (entity, amount, source, damageType) => hurtActor(project, state, entity, amount, source, damageType));
   stage('projectiles');
   applySectorDamage(state, dt);
   activateWallTriggers(state);
@@ -1130,7 +1136,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     function assignVariable(record, name, value, add) {
       if (!Object.hasOwn(record, name)) throw new Error(`Event "${event.name || event.id}" references missing variable "${name}"`);
       if (typeof value !== typeof record[name] || add && typeof value !== 'number') throw new Error(`Event "${event.name || event.id}": variable "${name}" type mismatch`);
-      record[name] = scalar(add ? record[name] + value : value);
+      // Repeated "add to variable" has to stay a legal value forever: a counter that reaches the
+      // scalar limit saturates there rather than throwing and stopping the game on the next tick.
+      const limit = 1e12;
+      record[name] = scalar(add ? Math.max(-limit, Math.min(limit, record[name] + value)) : value);
     }
     function compare(a, operator, b) {
       if (typeof a !== typeof b || !['number', 'string', 'boolean'].includes(typeof a) || typeof a === 'boolean' && !['=', '!='].includes(operator)) throw new Error(`Event "${event.name || event.id}": incompatible comparison types`);
@@ -1491,8 +1500,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // conditions above exist: they are how you say *which* enemies.
         case 'setPickedVariable':
         case 'addPickedVariable': {
-          forPicked(action, (entity, resolved) => assignVariable(entity.variables || {}, resolved.variable,
-            resolved.value, resolved.type === 'addPickedVariable'));
+          // Like `pickByVariable`, an instance that does not carry the variable is skipped rather
+          // than stopping the game: the editor allows a type-level variable action as long as one
+          // instance carries it, so the rest of the picked set must be left alone.
+          forPicked(action, (entity, resolved) => {
+            if (!Object.hasOwn(entity.variables || {}, resolved.variable)) return;
+            assignVariable(entity.variables, resolved.variable, resolved.value, resolved.type === 'addPickedVariable');
+          });
           break;
         }
         case 'setPickedPosition': {
@@ -1640,17 +1654,25 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         }
         case 'switchCamera': {
-          if (action.camera === PLAYER_VIEW || !action.camera) { switchView(state, null); break; }
+          if (action.camera === PLAYER_VIEW || !action.camera ||
+            action.camera === ACTIVE_VIEW && !activeCamera(state)) { switchView(state, null); break; }
           switchView(state, requireCamera(state, action.camera, event));
           break;
         }
         case 'setCameraPosition':
         case 'setCameraAngle':
         case 'setCameraFov': {
+          // `$active` names the view actually in use. When that is the player's own eyes there
+          // is no camera object to move, so the command addresses the player view instead of
+          // naming a camera that is not in the level and stopping the game.
+          const view = (action.camera === ACTIVE_VIEW || !action.camera) && !activeCamera(state)
+            ? PLAYER_VIEW : action.camera;
           // `$player` is the player's own view: its field of view is the game's setting, which is
           // what a zoom rule means when no camera is filming.
-          if (action.camera === PLAYER_VIEW) {
-            if (action.type === 'setCameraFov') state.settings.fov = clamp(action.fov, 10, 170);
+          if (view === PLAYER_VIEW) {
+            // The player's view is the game setting, whose own bounds are 50..130; clamping to
+            // the camera range here wrote 170 into a setting the loader then refused.
+            if (action.type === 'setCameraFov') state.settings.fov = clamp(action.fov, 50, 130);
             else if (action.type === 'setCameraAngle') {
               player.angle = action.angle * Math.PI / 180;
               player.pitch = clamp(action.pitch, -89, 89) * Math.PI / 180;
@@ -1665,7 +1687,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             }
             break;
           }
-          const camera = requireCamera(state, action.camera, event);
+          const camera = requireCamera(state, view, event);
           if (action.type === 'setCameraPosition') {
             camera.x = action.x;
             camera.y = action.y;
@@ -1680,7 +1702,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         }
         case 'moveCamera': {
-          if (action.camera === PLAYER_VIEW) {
+          if (action.camera === PLAYER_VIEW ||
+            (action.camera === ACTIVE_VIEW || !action.camera) && !activeCamera(state)) {
             // The player cannot be scripted to fly; move the view means moving the player.
             break;
           }
@@ -1691,6 +1714,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         }
         case 'followCamera': {
+          // There is no camera object to make follow anything while the player view is active.
+          if ((action.camera === ACTIVE_VIEW || !action.camera) && !activeCamera(state)) break;
           const camera = requireCamera(state, action.camera, event);
           const target = action.target === PLAYER_VIEW ? PLAYER_VIEW : String(action.target || PLAYER_VIEW);
           if (target !== PLAYER_VIEW && !state.entities.some(entity => entity.id === target || entity.name === target)) {
@@ -2066,6 +2091,7 @@ function applyWeaponAttack(project, state) {
     radius: attack.radius, color: '#66bbff', sound: null,
     clipId: missile?.clipId || null, impactClipId: missile?.impactClipId || null,
     actorId: missile?.actorId || attack.actorId || null, actorName: missile?.name || attack.missile || null,
+    damageType: missile?.damageType || null,
     angleOffset: attack.angle || 0, spawnOffset: attack.spawnofs || 0, spawnHeight: attack.spawnheight || 0,
     pitchOffset: attack.pitch || 0, seeker: attack.seeker === true });
 }

@@ -108,9 +108,12 @@ function classicNext(id, secret) {
   }
   const episode = /^E([1-4])M([1-9])$/.exec(id);
   if (episode) {
-    const e = Number(episode[1]), m = Number(episode[2]), secretFrom = [0, 3, 5, 6, 2][e];
+    const e = Number(episode[1]), m = Number(episode[2]), afterSecret = [0, 4, 6, 7, 3][e];
+    // A secret map's own exit rejoins the episode (doom1.txt: E1M9 → E1M4 … E4M9 → E4M3);
+    // only a secret exit on a regular map leads to E*M9, and E*M8 ends the episode.
+    if (m === 9) return `E${e}M${afterSecret}`;
     if (secret) return `E${e}M9`;
-    return m === 8 ? null : `E${e}M${m === 9 ? secretFrom + 1 : m + 1}`;
+    return m === 8 ? null : `E${e}M${m + 1}`;
   }
   return undefined;
 }
@@ -149,7 +152,8 @@ function remapLevelAssets(data, replacements, project) {
     for (const side of [wall.right, wall.left]) fields(side, ['upper', 'middle', 'lower']);
   }
   for (const sector of data.map?.sectors || []) fields(sector, ['floorAsset', 'ceilingAsset']);
-  for (const item of [...(data.hud?.elements || []), ...(data.hud?.fonts || [])]) fields(item, ['assetId']);
+  for (const item of [...(data.hud?.elements || []), ...(data.hud?.fonts || [])])
+    fields(item, ['assetId', 'fillAssetId']);
   fields(data.environment, ['skyAsset', 'weaponAsset', 'musicAsset']);
   if (data.environment?.weaponAssets)
     for (const weapon of Object.keys(data.environment.weaponAssets)) data.environment.weaponAssets[weapon] = ref(data.environment.weaponAssets[weapon]);

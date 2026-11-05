@@ -59,8 +59,14 @@ export function parseLanguage(text) {
       }
       value = joined;
     } else value = value.replace(/;\s*$/, '');
-    value = value.replace(/\\([\\"nrt])/g, (_escape, char) =>
-      ({ '\\': '\\', '"': '"', n: '\n', r: '\r', t: '\t' })[char]);
+    value = value.replace(/\\(x[0-9a-fA-F]{1,2}|[\\"nrt])/g, (_escape, char) => {
+      if (char[0] === 'x') {
+        const code = Number.parseInt(char.slice(1), 16);
+        // `\x00` is a dropped NUL, as in GZDoom's ProcessEscapes.
+        return code === 0 ? '' : String.fromCharCode(code);
+      }
+      return ({ '\\': '\\', '"': '"', n: '\n', r: '\r', t: '\t' })[char];
+    });
     const languages = section.split(/\s+/);
     const priority = languages.includes('enu') ? 2 : languages.includes('default') ? 1 : 0;
     if (priority >= (priorities.get(assignment[1]) ?? -1)) {

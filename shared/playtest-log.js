@@ -121,9 +121,12 @@ export function normalizeLogEntry(entry, context = {}, now = Date.now()) {
     || clampText(source.reason, LOG_LIMITS.message)
     || 'Unknown playtest failure';
   const details = source.details === undefined ? undefined : sanitizeDetails(source.details);
+  // A browser page can post anything: a finite number outside the Date range would
+  // otherwise make `toISOString` throw and drop the whole batch, not just this record.
+  const timestamp = Number.isFinite(source.time) ? new Date(source.time) : new Date(now);
   const record = {
     v: PLAYTEST_LOG_VERSION,
-    time: new Date(Number.isFinite(source.time) ? source.time : now).toISOString(),
+    time: (Number.isNaN(timestamp.getTime()) ? new Date(now) : timestamp).toISOString(),
     severity,
     category: clampText(source.category, 60) || 'runtime',
     message,

@@ -40,7 +40,11 @@ async function transaction(mode, operation) {
     try {
       tx = database.transaction(STORE, mode);
       tx.oncomplete = () => { database.close(); resolve(result); };
-      tx.onerror = () => { failure = tx.error; };
+      // A transaction aborted for a specific reason (an empty or corrupt slot) has already
+      // captured that reason in `failure` before `abort()` fires the transaction's error
+      // handler. That handler carries the generic AbortError, so it must not overwrite the
+      // message the caller asked for.
+      tx.onerror = () => { if (failure === undefined) failure = tx.error; };
       tx.onabort = () => failed(failure || tx.error);
       operation(tx.objectStore(STORE), value => { result = value; }, error => { failure = error; tx.abort(); });
     } catch (error) {

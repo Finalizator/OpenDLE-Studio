@@ -50,6 +50,7 @@ export async function readProjectArchive(buffer) {
         const name = archivePath(entry.fileName);
         if (name.endsWith('/')) { zip.readEntry(); return; }
         if (name.split('/').includes('..') || name.startsWith('/')) throw new Error(`Project archive path is not safe: ${entry.fileName}`);
+        if (files.has(name)) throw new Error(`Project archive has a duplicate entry: ${name}`);
         total += entry.uncompressedSize;
         if (total > MAX_UNPACKED) throw new Error(`The project archive expands past ${MAX_UNPACKED / MiB} MiB`);
         if (entry.generalPurposeBitFlag & 1) throw new Error(`Project archive entry is encrypted: ${name}`);

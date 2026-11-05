@@ -2,6 +2,7 @@ import { LIMITS } from './limits.js';
 import { hudElement, installDefaultHUD, MAX_HUD_ELEMENTS } from './hud.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 import { installIntermission } from './intermission.js';
+import { resolveString } from './language.js';
 
 const aliases = {
   mainmenu: 'title', optionsmenu: 'settings', skillmenu: 'difficulty', playerclassmenu: 'difficulty',
@@ -474,6 +475,9 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
   function translateDefinitions() {
     const defaults = new Map();
     const importedFonts = new Map();
+    // GZDoom writes user-visible menu text as `$KEYWORD` language references and keeps the
+    // actual strings in LANGUAGE lumps; resolve them the way level names are resolved.
+    const label = value => resolveString(project.strings, value, value);
     function resolveFont(name, context) {
       const key = name.toUpperCase();
       if (importedFonts.has(key)) return importedFonts.get(key);
@@ -543,7 +547,7 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
             // name is the normal colour and the second the selected one, which this engine
             // draws with one tint because the selector already marks the row.
             currentTint = fontColor(args[1]);
-            if (args[1] && !currentTint) {
+            if (args[1] && !currentTint && !Object.hasOwn(FONT_COLORS, String(args[1]).toLowerCase())) {
               warnings.push(`${definition.name}/${menu.name}: font colour ${args[1]} is not a known translation; using the artwork's own colours.`);
             }
           }
@@ -560,16 +564,17 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
           }
           else if (type === 'title') {
             const heading = hud.elements.find(item => item.name === `${menu.name} heading`);
-            if (heading) heading.text = args[0];
+            if (heading) heading.text = label(args[0]);
           } else if (type === 'statictext' && menu.kind === 'optionmenu') {
             row();
-            applyFont(element(activePage, 'text', args[0] || `${menu.name} spacer`, 20, y, 280, 12, { text: args[0] || '' }));
+            applyFont(element(activePage, 'text', label(args[0]) || `${menu.name} spacer`, 20, y, 280, 12, { text: label(args[0]) || '' }));
             y += spacing;
           } else if (['staticpatch', 'staticpatchcentered', 'statictext', 'statictextcentered'].includes(type)) {
             const image = type.startsWith('staticpatch') && art(args[2]);
             if (type.startsWith('staticpatch') && !image) { warnings.push(`${definition.name}/${menu.name}: missing patch ${args[2]}`); continue; }
-            applyFont(element(pageName, image ? 'image' : 'text', args[2], Number(args[0]) - (type === 'staticpatchcentered' ? image.width / 2 : type === 'statictextcentered' ? 100 : 0), Number(args[1]),
-              image?.width || 200, image?.height || 12, { text: image ? '' : args[2],
+            const text = type.startsWith('staticpatch') ? args[2] : label(args[2]);
+            applyFont(element(pageName, image ? 'image' : 'text', text, Number(args[0]) - (type === 'staticpatchcentered' ? image.width / 2 : type === 'statictextcentered' ? 100 : 0), Number(args[1]),
+              image?.width || 200, image?.height || 12, { text: image ? '' : text,
                 align: type === 'statictextcentered' ? 'center' : 'left', ...(image ? { assetId: image.id } : {}) }));
           } else if (['patchitem', 'textitem', 'submenu', 'command'].includes(type)) {
             const target = args[type === 'patchitem' || type === 'textitem' ? 2 : 1];
@@ -593,22 +598,22 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
             const supported = /menu$/i.test(target || '') || ['submenu', 'patchitem', 'textitem'].includes(type) || /^(newgame|quit|exit|(?:menu_)?savegame|(?:menu_)?loadgame)$/i.test(target || '');
             if (!supported) { warnings.push(`${definition.name}/${menu.name}: command ${target} is not executable; omitted`); continue; }
             row();
-            applyFont(button(activePage, args[0], y, /^newgame$/i.test(target) ? newGameActions() : [action],
+            applyFont(button(activePage, label(args[0]), y, /^newgame$/i.test(target) ? newGameActions() : [action],
               type === 'patchitem' ? args[0] : null, x)); y += spacing;
           } else if (['slider', 'option'].includes(type)) {
             const key = cvars[String(args[1]).toLowerCase()];
             if (!key) { warnings.push(`${definition.name}/${menu.name}: setting ${args[1]} has no engine implementation; omitted`); continue; }
             const increment = type === 'slider' && Number.isFinite(Number(args[4])) && Number(args[4]) > 0 ? Number(args[4]) : undefined;
             row();
-            applyFont(setting(activePage, key, args[0], y, increment));
+            applyFont(setting(activePage, key, label(args[0]), y, increment));
             y += spacing;
           } else if (type === 'control') {
             const key = { '+forward': 'KeyW', '+back': 'KeyS', '+moveleft': 'KeyA', '+moveright': 'KeyD',
               '+left': 'ArrowLeft', '+right': 'ArrowRight', '+use': 'KeyE', '+jump': 'Space', '+speed': 'ShiftLeft', '+attack': 'Mouse0' }[args[1]];
             if (!key) { warnings.push(`${definition.name}/${menu.name}: unsupported control ${args[1]}`); continue; }
             row();
-            const item = button(activePage, args[0], y, [{ type: 'captureGameBinding', key }], null, x);
-            item.text = `${args[0]}: {key:${key}}`; applyFont(item); y += spacing;
+            const item = button(activePage, label(args[0]), y, [{ type: 'captureGameBinding', key }], null, x);
+            item.text = `${label(args[0])}: {key:${key}}`; applyFont(item); y += spacing;
           } else if (['netgamemessage', 'playermessage'].includes(type)) {
             // These gate multiplayer-only flows; the imported runtime is single-player.
           } else

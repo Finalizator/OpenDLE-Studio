@@ -9,8 +9,8 @@
  */
 export const LIGHT_MODES = { standard: 0, bright: 1, doom: 2, dark: 3, legacy: 4, software: 8 };
 
-/** Modes that use Doom's crushed brightness curve. */
-const DARK_MODES = new Set([2, 3, 4, 8]);
+/** Modes that use Doom's crushed brightness curve: `isDarkLightMode` in hw_drawinfo.h. */
+const DARK_MODES = new Set([2, 3]);
 
 /**
  * `CalcLightLevel` from GZDoom's hw_lighting.cpp: the light a surface is drawn with.

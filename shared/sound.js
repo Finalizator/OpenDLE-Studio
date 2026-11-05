@@ -62,7 +62,9 @@ export function doomSound(bytes) {
   if (view.getUint16(0, true) !== 3) throw new Error('Only Doom DMX PCM sounds are supported');
   const rate = view.getUint16(2, true), count = view.getUint32(4, true);
   if (count <= 32 || count > bytes.length - 8) throw new Error('Invalid Doom sound sample count');
-  return wavSound(bytes.subarray(24, 8 + count - 16), rate);
+  // The lump is the 8-byte header followed by `count` samples: real IWAD lumps
+  // satisfy `count === lump.size - 8`, with no 16-byte name pad before the data.
+  return wavSound(bytes.subarray(8, 8 + count), rate);
 }
 
 export const ENGINE_SOUNDS = ['DSPUNCH', 'DSPISTOL', 'DSSHOTGN', 'DSSGT2F', 'DSRLAUNC', 'DSPLASMA', 'DSBFG', 'DSSAWFUL',

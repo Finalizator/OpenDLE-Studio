@@ -1,5 +1,6 @@
 import { GAME_SETTINGS } from './game-settings.js';
 import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTY_NAMES, readInstanceProperty } from './instance-properties.js';
+import { PLAYER_STATS } from './player-state.js';
 
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), property("enemy","health"), count("enemy"), player("health"), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
@@ -88,7 +89,14 @@ const functions = {
 };
 const textFunctions = {
   upper: [1, 1, s => text(s).toUpperCase()], lower: [1, 1, s => text(s).toLowerCase()], trim: [1, 1, s => text(s).trim()],
-  str: [1, 1, value => String(value)], number: [1, 1, value => { if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) throw new Error('number needs numeric text or a number'); return Number(value); }],
+  str: [1, 1, value => String(value)],
+  number: [1, 1, value => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value !== 'string' || !value.trim()) throw new Error('number needs numeric text or a number');
+    const result = Number(value);
+    if (!Number.isFinite(result)) throw new Error('number needs numeric text or a number');
+    return result;
+  }],
   concat: [1, 32, (...values) => values.map(String).join('')], len: [1, 1, s => text(s).length],
   left: [2, 2, (s, n) => text(s).slice(0, Math.max(0, numeric(n)))],
   right: [2, 2, (s, n) => {
@@ -115,8 +123,9 @@ const references = { global: 1, local: 1, object: 2, property: 2, player: 1, set
  * the same question the same way.
  */
 const properties = new Set(INSTANCE_PROPERTY_NAMES);
-const playerStats = new Set(['health', 'armor', 'armorDivisor', 'bullets', 'shells', 'rockets', 'cells',
-  'maxBullets', 'maxShells', 'maxRockets', 'maxCells', 'invulnerable', 'berserk', 'invisible', 'radiationSuit', 'lightAmp']);
+// The stats a `player("stat")` expression may name are exactly the ones the runtime state carries;
+// deriving from `player-state.js` keeps a stat from validating here and then being undefined in play.
+const playerStats = new Set(PLAYER_STATS);
 export function expressionContext(project, event, state, dt = 0, { selection } = {}) {
   const entities = () => state?.entities || project.map.entities;
   function targets(id, picks = state?.picks) {

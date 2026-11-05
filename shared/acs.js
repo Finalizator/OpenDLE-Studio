@@ -660,6 +660,7 @@ for (const [suffix, scope] of Object.entries(VARIABLE_SCOPES)) {
         }
         const value = pop(vm, script);
         const index = pop(vm, script);
+        if ((kind === 'DIV' || kind === 'MOD') && value === 0) { fail(vm, 'division by zero'); return; }
         target.set(id, index, kind === 'ASSIGN' ? value : apply(kind, target.get(id, index), value));
       });
     }
@@ -831,7 +832,7 @@ function defineFlow() {
   define(P.CALLDISCARD, 'b', (vm, script, [index]) => callFunction(vm, script, index, true));
   define(P.RETURNVOID, '', (vm, script) => returnFromFunction(vm, script, 0));
   define(P.RETURNVAL, '', (vm, script) => returnFromFunction(vm, script, pop(vm, script)));
-  define(P.SETRESULTVALUE, '', (vm, script) => { script.result = peek(vm, script, 1); });
+  define(P.SETRESULTVALUE, '', (vm, script) => { script.result = pop(vm, script); });
   define(P.RESTART, '', (vm, script) => { vm.pc = script.entry.address; });
   define(P.DELAY, '', (vm, script) => {
     script.delay = pop(vm, script);
@@ -1162,7 +1163,9 @@ function defineWorld() {
   for (const [name, ceiling] of [['GETSECTORFLOORZ', false], ['GETSECTORCEILINGZ', true]]) {
     define(P[name], '', (vm, script) => {
       const y = pop(vm, script), x = pop(vm, script);
-      setTop(vm, script, 1, vm.host.getSectorZ(peek(vm, script, 1), x / 65536, y / 65536, ceiling));
+      // GetSectorFloorZ/CeilingZ take (tag, x, y) where x and y are integer map
+      // units, not 16.16 fixed point; only the returned height is fixed point.
+      setTop(vm, script, 1, vm.host.getSectorZ(peek(vm, script, 1), x, y, ceiling));
     });
   }
   define(P.GETSECTORLIGHTLEVEL, '', (vm, script) => {

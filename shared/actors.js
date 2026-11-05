@@ -43,7 +43,10 @@ function damageRules(properties) {
       factors[String(value[0])] = Number(value[1]);
       factors[String(value[0]).toLowerCase()] = Number(value[1]);
     }
-    if (lower === 'painchance') painChances[String(value[0])] = Number(value[1]);
+    if (lower === 'painchance') {
+      painChances[String(value[0])] = Number(value[1]);
+      painChances[String(value[0]).toLowerCase()] = Number(value[1]);
+    }
   }
   return { factors, painChances };
 }

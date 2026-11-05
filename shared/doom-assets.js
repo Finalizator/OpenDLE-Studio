@@ -120,13 +120,25 @@ export function textureDefinitionsFromText(text, { warnings = [], source = 'TEXT
   const guards = [/check ?range ?\{[^}]*\}/i, /(?:pink|blue|gold|red|green)blood ?\{[^}]*\}/i];
   let body = clean;
   for (const guard of guards) body = body.replace(guard, ' ');
-  const block = /\b(?:Texture|WallTexture|FlatTexture|SpriteTexture|Graphic)\s+"?([^",\s{}]+)"?\s*,\s*(\d+)\s*,\s*(\d+)[^{]*\{([^}]*)\}/gi;
-  for (const match of body.matchAll(block)) {
-    const name = match[1], width = Number(match[2]), height = Number(match[3]), patchText = match[4];
+  const header = /\b(?:Texture|WallTexture|FlatTexture|SpriteTexture|Graphic)\s+"?([^",\s{}]+)"?\s*,\s*(\d+)\s*,\s*(\d+)/gi;
+  for (const match of body.matchAll(header)) {
+    const name = match[1], width = Number(match[2]), height = Number(match[3]);
     if (!(width > 0 && height > 0 && width <= LIMITS.imageSize && height <= LIMITS.imageSize)) {
       warnings.push(`${source}: texture ${name} has unsupported dimensions ${width}x${height}.`);
       continue;
     }
+    // The body runs from the first `{` after the header to its matching `}`. A patch
+    // option block (`Patch "X", 0, 0 { FlipX }`) adds its own braces, so the body is
+    // found by balancing braces rather than stopping at the first `}`.
+    const open = body.indexOf('{', match.index + match[0].length);
+    if (open < 0) { warnings.push(`${source}: texture ${name} has no body.`); continue; }
+    let depth = 0, close = -1;
+    for (let index = open; index < body.length; index++) {
+      if (body[index] === '{') depth += 1;
+      else if (body[index] === '}') { depth -= 1; if (depth === 0) { close = index; break; } }
+    }
+    if (close < 0) { warnings.push(`${source}: texture ${name} has an unclosed body.`); continue; }
+    const patchText = body.slice(open + 1, close);
     const patches = [];
     for (const patch of patchText.matchAll(/\bPatch\s+"?([^",\s{}]+)"?\s*,\s*(-?\d+)\s*,\s*(-?\d+)/gi)) {
       patches.push({ name: patch[1], x: Number(patch[2]), y: Number(patch[3]) });

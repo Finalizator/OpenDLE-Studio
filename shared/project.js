@@ -1217,6 +1217,12 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         const targets = targetEntities(command.entityId);
         assert(['setObjectVariable', 'addObjectVariable', 'objectVariableCompare', 'emitSignal', 'onSignal', 'distanceBetween'].includes(command.type) || targets.every(entity => entity.type !== 'player'), 'Use player stat commands for the player, not object health');
       }
+      // The runtime reads an interaction volume from `area`; an object without one could never
+      // pass the test, and used to stop the game the first time the rule ran.
+      if (['playerInArea', 'playerEnteredArea'].includes(command.type)) {
+        assert(targetEntities(command.entityId).some(entity => entity.area !== undefined),
+          'Area condition requires an object with an interaction area');
+      }
       if (['onSignal', 'emitSignal'].includes(command.type)) {
         assert(SIGNAL_NAME.test(command.signal), 'Signal names must start with a letter/underscore and contain at most 80 letters, digits or underscores');
         assert(targetEntities(command.entityId).every(entity => nodeSignals(entity).includes(command.signal)),
@@ -1242,9 +1248,26 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         }
       }
       if (['gameScreen', 'setGameScreen'].includes(command.type)) {
-        assert(['playing', 'return', 'pause'].includes(command.screen) || project.gameMenus?.screens.includes(command.screen), 'Unknown game menu screen');
+        // `title` and `intermission` are engine screens: the campaign-complete path sets `title`,
+        // `installIntermission` can add `intermission` to a project with no menus of its own, and
+        // the catalogue's own default for "open menu / resume" is `title`.
+        assert(['playing', 'return', 'pause', 'title', 'intermission'].includes(command.screen) ||
+          project.gameMenus?.screens.includes(command.screen), 'Unknown game menu screen');
       }
       if (command.type === 'setGameSetting' && !isExpression(command.value)) validateSetting(command.setting, command.value);
+      if (command.type === 'expressionCompare' && ['<', '<=', '>', '>='].includes(command.operator) &&
+        !isExpression(command.left) && !isExpression(command.right)) {
+        assert(typeof command.left === typeof command.right && ['number', 'string'].includes(typeof command.left),
+          'Ordering comparisons need two numbers or two text values');
+      }
+      if (command.type === 'objectVariableCompare' && !isExpression(command.value)) {
+        const owners = targetEntities(command.entityId);
+        assert(owners.every(entity => typeof entity.variables?.[command.variable] === typeof command.value),
+          'Object variable comparison must compare matching types');
+      }
+      if (command.type === 'postFxParamCompare' && !isExpression(command.value))
+        assert(typeof command.value === 'number' && Number.isFinite(command.value),
+          'Shader parameter comparisons need a number');
       if (command.type === 'toggleGameSetting') assert(typeof GAME_SETTINGS[command.setting].value === 'boolean', 'Only boolean settings can be toggled');
       if (command.type === 'adjustGameSetting') assert(typeof GAME_SETTINGS[command.setting].value === 'number', 'Only numeric settings can be adjusted');
       if (['setShaderUniform', 'setShaderEnabled', 'shaderEnabled'].includes(command.type)) {

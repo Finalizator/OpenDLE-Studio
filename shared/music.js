@@ -200,6 +200,9 @@ export function parseMus(data, name = 'music') {
     const value = data[offset++];
     if (type === 0x10) {
       const note = value & 0x7f;
+      // A note byte with bit 7 set is followed by a velocity byte; reading it
+      // without one would treat the next event (or past-the-end) as velocity.
+      if (value & 0x80 && offset >= end) throw new Error(`${name}: truncated MUS event`);
       const velocity = value & 0x80 ? data[offset++] : velocities.get(channel) ?? 127;
       velocities.set(channel, velocity);
       if (velocity > 0) active.set(`${channel}:${note}`, { start: ticks, velocity, program: programs.get(channel) || 0 });
@@ -211,6 +214,7 @@ export function parseMus(data, name = 'music') {
     } else if (type === 0x40) {
       // The event's own byte is the controller number; 0 means "program change" and
       // every other value carries a controller value the synthesizer does not use.
+      if (offset >= end) throw new Error(`${name}: truncated MUS event`);
       if (value === 0) programs.set(channel, data[offset++] & 0x7f);
       else data[offset++];
     }

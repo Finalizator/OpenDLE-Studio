@@ -242,6 +242,7 @@ export function readTarGz(buffer) {
     let name = read(0, 100);
     const prefix = read(345, 155);
     let sizeField = read(124, 12).trim() || '0';
+    let sizeBase = 8;
     const type = String.fromCharCode(header[156] || 48);
     const bodyStart = offset + 512;
     if (++entries > MAX_ENTRIES) fail(`The archive has more than ${MAX_ENTRIES} entries`);
@@ -254,10 +255,11 @@ export function readTarGz(buffer) {
     }
     if (extended) {
       if (typeof extended.path === 'string' && extended.path) name = extended.path;
-      if (typeof extended.size === 'string' && /^\d+$/.test(extended.size)) sizeField = extended.size;
+      // PAX records are decimal; the ustar size field is octal.
+      if (typeof extended.size === 'string' && /^\d+$/.test(extended.size)) { sizeField = extended.size; sizeBase = 10; }
       extended = null;
     }
-    const size = parseInt(sizeField, 8);
+    const size = parseInt(sizeField, sizeBase);
     if (!Number.isFinite(size) || size < 0) fail('A tar entry has an unreadable size');
     // '0' and '\0' are ordinary files; everything else (directories, links, other headers) is skipped.
     if ((type === '0' || type === '\0') && name && !name.endsWith('/')) {

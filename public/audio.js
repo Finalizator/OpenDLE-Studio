@@ -166,6 +166,7 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
   // in: a project imported before SNDINFO support still resolves `grunt/sight`.
   const aliases = soundTable(VANILLA_SOUNDS, project.soundAliases);
   const missing = new Set(), buffers = new Map(), voices = new Set();
+  const decodeFailed = new Set();
   const master = context.createGain(); master.connect(context.destination);
   const musicGain = context.createGain(); musicGain.connect(context.destination);
   let disposed = false;
@@ -207,7 +208,16 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
     if (!buffers.has(asset.id)) {
       const binary = atob(asset.src.split(',')[1]);
       const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
-      buffers.set(asset.id, context.decodeAudioData(bytes.buffer));
+      buffers.set(asset.id, context.decodeAudioData(bytes.buffer).then(undefined, error => {
+        // A corrupt or unsupported sound must not flood the log on every play:
+        // report once per asset, then stay silent like a missing name does.
+        buffers.delete(asset.id);
+        if (!decodeFailed.has(asset.id)) {
+          decodeFailed.add(asset.id);
+          report(new Error(`${asset.name}: ${error.message}`));
+        }
+        return null;
+      }));
     }
     return buffers.get(asset.id);
   }
@@ -239,9 +249,14 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
       musicRequested ??= requested || null;
       const track = project.assets.find(asset => asset.kind === 'music' &&
         (asset.id === requested || asset.name === requested)) ||
+        project.assets.find(asset => asset.kind === 'sound' && asset.music &&
+          (asset.id === requested || asset.name === requested)) ||
         project.assets.find(asset => asset.kind === 'sound' && asset.music);
       if (track && track.kind === 'music' && !musicStarted) {
         musicStarted = true;
+        // An embedded WAV/OGG/MP3 track replaced by a MIDI/MUS track must not keep
+        // playing underneath the synthesized score.
+        music?.stop(); music?.disconnect(); music = null; musicName = null;
         try {
           musicScore = parseMusic(musicBytes(track), track.name);
           musicTrack = track.name;
@@ -250,9 +265,18 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
         return;
       }
       if (track && track.kind === 'sound' && musicName !== track.name) {
-        musicName = track.name;
-        load(track.name).then(buffer => {
-          if (disposed) return;
+        const name = track.name;
+        musicName = name;
+        // Replacing a synthesized MIDI/MUS score with a streamed track must stop the
+        // synthesizer, not layer the two soundtracks (and clears the stale identity).
+        musicScheduler.stop();
+        musicScore = null; musicTrack = null;
+        load(name).then(buffer => {
+          // A slower earlier request must not start over the track chosen since: decoding is
+          // asynchronous, so both loads can be in flight at once.
+          if (disposed || musicName !== name) return;
+          // Replacing the previous embedded track stops it rather than layering it.
+          music?.stop(); music?.disconnect();
           music = context.createBufferSource(); music.buffer = buffer; music.loop = true;
           music.connect(musicGain); music.start();
         }).catch(report);

@@ -138,6 +138,13 @@ test('every Engine command has shared editor defaults and validates after adding
       project.assets.push({ id: 'sound_test', name: 'TESTSND', kind: 'sound', src: 'data:audio/wav;base64,AAAA' });
       value.assetId = 'sound_test';
     }
+    // An area condition is about an interaction volume, so the fixture gives its target one —
+    // the same thing a creator does before writing the rule.
+    if (['playerInArea', 'playerEnteredArea'].includes(command.type)) {
+      const entity = project.map.entities.find(item => item.id === value.entityId) || project.map.entities[0];
+      entity.area = { shape: 'box', width: 64, height: 64, depth: 64, radius: 32 };
+      if (!value.entityId) value.entityId = entity.id;
+    }
     const isCondition = ENGINE_CONDITIONS.includes(command);
     rule(project, isCondition ? value : { type: 'always' }, isCondition ? [{ type: 'showMessage', message: 'yes' }] : [value],
       { sheetId: project.eventSheets[0].id });

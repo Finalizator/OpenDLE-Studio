@@ -140,7 +140,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   const availableGroups = new Set(((eventGroups ?? scene.eventGroups) || []).map(group => group.id));
   const minX = Math.min(...carried.map(node => node.x));
   const minY = Math.min(...carried.map(node => node.y));
-  let droppedRoutes = 0, droppedGroups = 0, droppedParents = 0;
+  let droppedRoutes = 0, droppedGroups = 0, droppedParents = 0, droppedTargets = 0;
   const nodes = carried.map(node => {
     const copy = cloneProjectData(node);
     copy.x = round(node.x - minX);
@@ -154,6 +154,16 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
     if (copy.path) { delete copy.path; droppedRoutes += 1; }
     if (bakePathRamp(copy)) droppedRoutes += 1;
     if (copy.groupId) { delete copy.groupId; droppedGroups += 1; }
+    // A follow or attack target outside the file would be an id nothing in the file defines, so
+    // it is dropped the same way a captured scene drops one; a target the file does carry is
+    // rewritten to the id it will have rather than left as a name that could collide.
+    for (const field of ['targetId', 'cameraFollow']) {
+      const value = copy[field];
+      if (typeof value !== 'string' || value.startsWith('$')) continue;
+      const target = carried.find(item => item.id === value || field === 'cameraFollow' && item.name === value);
+      if (!target || !carriedIds.has(target.id)) { delete copy[field]; droppedTargets += 1; }
+      else copy[field] = target.id;
+    }
     return copy;
   });
 
@@ -185,6 +195,16 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
     carriedClips.push(cloneProjectData(clip));
   }
   const carriedClipIds = new Set(carriedClips.map(clip => clip.id));
+  // A state that names a clip the file could not carry would make the file reject itself on
+  // import, so the state is dropped — the missing-clip warning below already says which clip
+  // did not travel.
+  for (const node of nodes) {
+    if (!node.spriteStates) continue;
+    for (const [state, id] of Object.entries(node.spriteStates)) {
+      if (typeof id === 'string' && id && !carriedClipIds.has(id)) delete node.spriteStates[state];
+    }
+    if (!Object.keys(node.spriteStates).length) delete node.spriteStates;
+  }
 
   const assetIds = new Set(), shaderIds = new Set();
   for (const node of subtree) {
@@ -260,6 +280,7 @@ export function exportNodeFile(scene, nodeId, { name, assets = [], shaders = [],
   if (droppedParents) warnings.push(`Its parent group was not included — the node travels on its own`);
   if (droppedRoutes) warnings.push(`Its route was not included — a route belongs to the layout, not to the object`);
   if (droppedGroups) warnings.push(`Its layout group was not included`);
+  if (droppedTargets) warnings.push(`Its target was not included — it names an object outside this node`);
 
   return {
     format: NODE_FILE_FORMAT,
@@ -309,6 +330,11 @@ export function validateNodeFile(document) {
   if (!document || typeof document !== 'object' || Array.isArray(document)) fail('the document must be an object');
   if (document.format !== NODE_FILE_FORMAT) fail(`format must be "${NODE_FILE_FORMAT}"`);
   if (document.version !== NODE_FILE_VERSION) fail(`version ${document.version} is not supported (this build reads version ${NODE_FILE_VERSION})`);
+  // A file without a marker predates the facing change and is moved over on import; a marker this
+  // build does not know means an angle could mean something else again, so it is refused the same
+  // way a stored project is.
+  if (document.modelFacingSemantics !== undefined && document.modelFacingSemantics !== MODEL_FACING_SEMANTICS)
+    fail(`modelFacingSemantics ${document.modelFacingSemantics} is not supported (this build reads ${MODEL_FACING_SEMANTICS})`);
   if (typeof document.name !== 'string' || !document.name.trim() || document.name.length > 100) fail('it needs a name');
   if (!Array.isArray(document.nodes) || !document.nodes.length) fail('it has no nodes');
   if (document.nodes.length > MAX_SCENE_ENTITIES) fail(`a node file holds at most ${MAX_SCENE_ENTITIES} nodes`);
@@ -404,6 +430,7 @@ export function validateNodeFile(document) {
       if (event.groupId !== undefined && !groupIds.has(event.groupId)) fail(`event ${event.id} belongs to a group the file does not describe`);
       for (const command of [event.condition, ...(event.conditions || []), ...(event.actions || [])]) {
         for (const key of CLIP_FIELDS) clipRef(command?.[key]);
+        for (const key of ASSET_FIELDS) assetRef(command?.[key], 'Picture');
         if (command?.groupId !== undefined && !groupIds.has(command.groupId)) {
           fail(`event ${event.id} uses a group the file does not describe`);
         }
@@ -449,7 +476,7 @@ export function applyNodeFile(scene, document, {
   const roots = document.nodes.filter(node => !node.parentId);
   // A file written before a facing stopped turning the mesh stored the pose the old renderer drew,
   // so its angle has to move over — otherwise the object lands visibly turned by its own facing.
-  const staleFacing = document.modelFacingSemantics !== MODEL_FACING_SEMANTICS;
+  const staleFacing = document.modelFacingSemantics === undefined;
   const copies = document.nodes.map(node => {
     const copy = remapReferences(cloneProjectData(node), mapping);
     copy.id = mapping.get(node.id);

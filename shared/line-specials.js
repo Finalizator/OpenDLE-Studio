@@ -10,7 +10,7 @@
  */
 
 import { startWaggle } from './plane-motion.js';
-import { moveSector, classicSpecialSupported, sectorMotionAllowed } from './world-motion.js';
+import { moveSector, classicSpecialSupported, sectorMotionAllowed, stairDistance } from './world-motion.js';
 import { resetMomentum } from './player-motion.js';
 import { doomSpecialName } from './doom-specials.js';
 import { floorAt, sectorFloorAt, soundEvent } from './combat.js';
@@ -105,13 +105,13 @@ const NOP_SPECIALS = new Set([0, 1, 5, 9, 16, 48, 50, 57, 58, 108, 118, 121, 122
 
 /** Specials this runtime performs; used for import warnings and the editor. */
 export const SUPPORTED_SPECIALS = new Set([
-  10, 11, 12, 13, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31, 32, 35, 36, 37, 40, 41, 42, 43, 44, 45, 47, 53, 55, 60, 61,
+  10, 11, 12, 13, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31, 32, 35, 36, 37, 38, 40, 41, 42, 43, 44, 45, 47, 53, 55, 60, 61,
   // Boom's wall scrollers: the plane is drawn with a moving texture coordinate.
   100, 101, 102, 103,
   62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 73, 74, 75, 80, 81, 82, 83, 84, 85, 95, 96, 99, 105, 106, 109, 110, 111,
-  112, 113, 114, 115, 116, 117, 119, 125, 130, 131, 132, 133, 134, 135, 136, 137, 139, 192, 196, 202, 206, 214, 226,
+  112, 113, 114, 115, 116, 117, 119, 125, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 192, 196, 202, 206, 214, 226,
   228, 230,
-  195, 203, 231, 232, 233, 234, 238, 241, 243, 244, 245, 246, 247, 248, 249, 251, 252, 253, 254, 255, 257, 258, 259,
+  195, 203, 231, 232, 233, 234, 237, 238, 241, 243, 244, 245, 246, 247, 248, 249, 251, 252, 253, 254, 255, 257, 258, 259,
   ...NOP_SPECIALS,
 ]);
 
@@ -424,6 +424,21 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         if (movePlane(state, sector, 'ceilingHeight', sector.floorHeight + Math.max(0, arg5), planeSpeed, { sound: 'DSCNSTRT' })) moved++;
       return moved;
     }
+    case 192: { // Ceiling_LowerToHighestFloor (tag, speed)
+      // The ceiling comes down to the highest floor around the sector; if that floor
+      // is already above the ceiling the move happens instantly instead of lowering.
+      let moved = 0;
+      for (const sector of sectors) {
+        const floors = planeHeights(state, project, sector, 'floorHeight');
+        const target = floors.length ? Math.max(...floors) : sector.floorHeight;
+        if (target >= sector.ceilingHeight) {
+          if (target > sector.ceilingHeight) { sector.ceilingHeight = target; state.worldRevision++; moved++; }
+          continue;
+        }
+        if (movePlane(state, sector, 'ceilingHeight', target, planeSpeed, { sound: 'DSCNSTRT' })) moved++;
+      }
+      return moved;
+    }
     case 41: case 252: // Ceiling_RaiseByValue / ToNearest
       return planes(special === 41 ? 'byValue' : 'toNearestUp', 'ceilingHeight', special === 41 ? arg3 : 0, { sound: 'DSCNSTRT' });
     case 42: case 196: // Ceiling_CrushAndRaise
@@ -663,9 +678,29 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       }
       return 1;
     }
-    case 109: // Light_ForceLightning
+    case 109: { // Light_ForceLightning (mode) — a flash that brightens every sky sector and
+      // then fades it back, as Hexen's DLightningThinker does. Mode 2 only stops the storm,
+      // which this engine does not run, so it must not flash.
+      if (arg1 === 2) return 1;
+      // GZDoom rolls 200..231 for the flash; the top of that range is used so the flash also
+      // brightens a default-lit (208) sector instead of being swallowed by it.
+      const flashLight = 231;
+      let changed = false;
+      for (const sector of state.sectors) {
+        if (!sector.sky || sector.light >= flashLight) continue;
+        const original = sector.light;
+        sector.light = flashLight;
+        // A fresh flash replaces the previous one, the way the other light specials replace a fade.
+        state.sectorMotions.delete(`${sector.id}:light`);
+        state.sectorMotions.set(`${sector.id}:light`, { sectorId: sector.id, surface: 'light',
+          height: original, origin: flashLight, speed: 4 * TIC, wait: 0, returnMode: 'stay',
+          direction: 'out', waiting: 0 });
+        changed = true;
+      }
+      if (changed) state.worldRevision++;
       state.lightning = Math.max(state.lightning || 0, 1);
       return 1;
+    }
     case 232: case 233: case 234: { // Light_StrobeDoom / Min/MaxNeighbor
       for (const sector of sectors) {
         const neighbours = neighbourIds(project, sector.id).map(id => liveSector(state, id)).filter(Boolean);
@@ -728,7 +763,7 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 26: case 27: case 31: case 32: { // Stairs_BuildDown / BuildUp(+Sync)
       const rising = special === 27 || special === 32;
       const step = Math.max(0, arg3 || 8);
-      const ordered = [...sectors].sort((a, b) => stairOrder(a, b));
+      const ordered = [...sectors].sort((a, b) => stairDistance(project, line, a) - stairDistance(project, line, b));
       ordered.forEach((sector, index) => {
         const target = sector.floorHeight + (rising ? 1 : -1) * step * (index + 1);
         movePlane(state, sector, 'floorHeight', target, speed, { sound: 'DSPSTART' });
@@ -793,11 +828,6 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     default:
       return NOP_SPECIALS.has(special) ? 0 : undefined;
   }
-}
-
-/** Stairs are built outward from the activating line, so distance orders them. */
-function stairOrder(a, b) {
-  return (a.bounds?.minX ?? 0) - (b.bounds?.minX ?? 0) || (a.bounds?.minY ?? 0) - (b.bounds?.minY ?? 0);
 }
 
 const LOCK_KEYS = { 1: 'blueCard', 2: 'yellowCard', 3: 'redCard', 4: 'blueSkull', 5: 'yellowSkull', 6: 'redSkull',

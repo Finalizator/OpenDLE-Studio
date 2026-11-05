@@ -48,6 +48,23 @@ export function validateModelDocument(json, binaryLength = 0) {
   for (const extension of json.extensionsUsed || []) check(!unsupported.has(extension), `${extension} requires an unsupported decoder`);
   const limits = { nodes: 10000, meshes: 2000, accessors: 20000, materials: 2000, animations: 256, skins: 512, images: 256, buffers: 256, bufferViews: 20000, textures: 512, scenes: 256 };
   for (const [key, max] of Object.entries(limits)) if (json[key] !== undefined) check(Array.isArray(json[key]) && json[key].length <= max, `Model ${key} exceeds limit ${max}`);
+  // Every index inside the document must point at something, or the renderer, the
+  // collider and the thumbnail code all crash on a file that validation said was fine.
+  if (json.scene !== undefined) check(Number.isInteger(json.scene) && json.scenes?.[json.scene], 'Model scene index is out of range');
+  for (const node of json.nodes || []) {
+    if (node.mesh !== undefined) check(Number.isInteger(node.mesh) && json.meshes?.[node.mesh], 'Model node references an invalid mesh');
+    if (node.skin !== undefined) check(Number.isInteger(node.skin) && json.skins?.[node.skin], 'Model node references an invalid skin');
+  }
+  for (const mesh of json.meshes || []) for (const primitive of mesh.primitives || []) {
+    for (const accessorIndex of Object.values(primitive.attributes || {}))
+      check(Number.isInteger(accessorIndex) && json.accessors?.[accessorIndex], 'Model primitive references an invalid accessor');
+    if (primitive.indices !== undefined) check(Number.isInteger(primitive.indices) && json.accessors?.[primitive.indices], 'Model primitive indices are out of range');
+    if (primitive.material !== undefined) check(Number.isInteger(primitive.material) && json.materials?.[primitive.material], 'Model primitive material is out of range');
+    for (const target of primitive.targets || []) for (const accessorIndex of Object.values(target || {}))
+      check(Number.isInteger(accessorIndex) && json.accessors?.[accessorIndex], 'Model morph target references an invalid accessor');
+  }
+  for (const texture of json.textures || []) if (texture.source !== undefined)
+    check(Number.isInteger(texture.source) && json.images?.[texture.source], 'Model texture references an invalid image');
   let budget = 0;
   for (const [index, buffer] of (json.buffers || []).entries()) {
     check(Number.isSafeInteger(buffer.byteLength) && buffer.byteLength >= 0, 'Invalid model buffer size');

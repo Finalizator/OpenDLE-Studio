@@ -134,6 +134,9 @@ export function packProject(project, { revision = 0, immutableSections = false }
  * has to stay inside the project folder, and a missing file is `null` (reported by the caller).
  */
 export function readFolderFile(directory, path) {
+  // The document can be hand-edited, so the path is untrusted input of any type: a
+  // non-string is a missing file, never an argument error from the path resolver.
+  if (typeof path !== 'string') return null;
   const root = resolve(directory), target = resolve(root, path);
   const inside = relative(root, target);
   if (!inside || inside.startsWith('..') || isAbsolute(inside)) return null;
@@ -159,6 +162,7 @@ export function unpackProject(document, read = null) {
     catch (error) { throw new Error(`Project section ${name} is not valid JSON (${error.message})`); }
   }
   for (const asset of project.assets || []) {
+    if (typeof asset.file !== 'string') { if (asset.file) missing.push(String(asset.file)); continue; }
     if (!asset.file) continue;
     const mime = asset.srcMime || EXTENSION_MIME[extname(asset.file).slice(1).toLowerCase()] || 'application/octet-stream';
     const bytes = read ? read(asset.file) : null;

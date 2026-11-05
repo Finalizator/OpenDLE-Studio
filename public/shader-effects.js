@@ -210,6 +210,12 @@ export function compileGLSLEffect(shader, { screen = null, resolution = null } =
       resolution3: TSL.vec3(resolutionInput.x, resolutionInput.y, 1),
       mouse: TSL.vec4(0, 0, 0, 0),
       frame: time.mul(60).floor(),
+      // Shadertoy names for the same inputs: the parser accepts them, so the compiler
+      // must hand them the engine value rather than the zero it falls back to.
+      iTime: time,
+      iResolution: TSL.vec3(resolutionInput.x, resolutionInput.y, 1),
+      iMouse: TSL.vec4(0, 0, 0, 0),
+      iFrame: time.mul(60).floor(),
       true: TSL.bool(true), false: TSL.bool(false),
     };
     // Helper functions are compiled inside the effect so they close over the same inputs.

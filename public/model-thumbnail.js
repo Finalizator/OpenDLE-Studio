@@ -11,10 +11,22 @@ function accessor(json, binary, index) {
   const view = json.bufferViews?.[record.bufferView];
   if (!view) return null;
   const size = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }[record.type];
+  if (!size) return null;
   const Type = record.componentType === 5126 ? Float32Array : record.componentType === 5123 ? Uint16Array
-    : record.componentType === 5125 ? Uint32Array : record.componentType === 5121 ? Uint8Array : Int16Array;
+    : record.componentType === 5125 ? Uint32Array : record.componentType === 5121 ? Uint8Array
+    : record.componentType === 5122 ? Int16Array : record.componentType === 5120 ? Int8Array : null;
+  if (!Type) return null;
   const start = (view.byteOffset || 0) + (record.byteOffset || 0);
-  return { values: new Type(binary.buffer, binary.byteOffset + start, record.count * size), size, count: record.count };
+  const stride = view.byteStride || size * Type.BYTES_PER_ELEMENT;
+  if (stride === size * Type.BYTES_PER_ELEMENT) {
+    return { values: new Type(binary.buffer, binary.byteOffset + start, record.count * size), size, count: record.count };
+  }
+  // Interleaved attributes share one buffer view; read each element at its stride.
+  const values = new Type(record.count * size);
+  for (let element = 0; element < record.count; element++) {
+    values.set(new Type(binary.buffer, binary.byteOffset + start + element * stride, size), element * size);
+  }
+  return { values, size, count: record.count };
 }
 
 const multiply = (a, b) => {
@@ -47,13 +59,30 @@ function nodeMatrix(node) {
 
 async function decodeImage(uri) {
   if (typeof uri !== 'string' || !uri.startsWith('data:image/')) return null;
-  const bitmap = await createImageBitmap(await (await fetch(uri)).blob());
+  return decodeImageBytes(await (await fetch(uri)).blob());
+}
+
+/** Shared rasterise step: a bitmap blob in, readable pixels out. */
+async function decodeImageBytes(blob) {
+  const bitmap = await createImageBitmap(blob);
   const canvas = document.createElement('canvas');
   canvas.width = Math.min(MAX_EDGE, bitmap.width); canvas.height = Math.min(MAX_EDGE, bitmap.height);
   const context = canvas.getContext('2d', { willReadFrequently: true });
   context.drawImage(bitmap, 0, 0);
   bitmap.close?.();
   return context.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+/** The pixels for one glTF image, whether it lives in a data URI or the GLB binary. */
+function imagePixels(image, json, binary) {
+  if (image.uri) return decodeImage(image.uri).catch(() => null);
+  const view = json.bufferViews?.[image.bufferView];
+  if (view) {
+    const start = view.byteOffset || 0;
+    const bytes = binary?.subarray?.(start, start + view.byteLength);
+    if (bytes?.length) return decodeImageBytes(new Blob([bytes], { type: image.mimeType || 'image/png' })).catch(() => null);
+  }
+  return null;
 }
 
 /**
@@ -74,7 +103,7 @@ export async function captureModelPreview(asset, { size = 128 } = {}) {
       for (const child of node.children || []) walk(child, world);
     };
     for (const root of json.scenes?.[json.scene || 0]?.nodes || []) walk(root, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-    const images = await Promise.all((json.images || []).map(image => decodeImage(image.uri).catch(() => null)));
+    const images = await Promise.all((json.images || []).map(image => imagePixels(image, json, binary)));
     const triangles = [];
     (json.nodes || []).forEach((node, nodeIndex) => {
       if (node.mesh === undefined || !matrices[nodeIndex]) return;

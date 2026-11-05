@@ -35,14 +35,19 @@ function thingScale(record) {
 }
 
 export function importWadGame(wad, entry, options = {}) {
-  if (wad.maps.length > 128) throw new Error('A game exceeds the 128-level limit');
-  entry ||= wad.maps.includes('MAP01') ? 'MAP01' : wad.maps.includes('E1M1') ? 'E1M1' : wad.maps[0];
-  if (!wad.maps.includes(entry)) throw new Error(`Game entry map not found: ${entry}`);
+  if (wad.maps.length > LIMITS.levels) throw new Error(`A game exceeds the ${LIMITS.levels}-level limit`);
   const sources = wad.lumps.filter(lump => ['MAPINFO', 'ZMAPINFO'].includes(lump.name)).map(lump => {
     if (lump.size > LIMITS.textBytes) throw new Error(`MAPINFO exceeds ${LIMITS.textBytes / 1024 / 1024} MiB`);
     return new TextDecoder().decode(new Uint8Array(wad.buffer, lump.start, lump.size));
   });
   const episodeInfo = parseGameEpisodes(sources, wad.maps);
+  // GZDoom starts a new game at the first declared episode's map, so a MAPINFO that
+  // moves the campaign off MAP01/E1M1 (a title map, a demo map) keeps the right level
+  // as the entry; classic conventions remain the fallback when no episode is declared.
+  entry ||= episodeInfo.episodes[0] && wad.maps.includes(episodeInfo.episodes[0].levelId)
+    ? episodeInfo.episodes[0].levelId
+    : wad.maps.includes('MAP01') ? 'MAP01' : wad.maps.includes('E1M1') ? 'E1M1' : wad.maps[0];
+  if (!wad.maps.includes(entry)) throw new Error(`Game entry map not found: ${entry}`);
   const gapReports = [];
   function* levels() {
     for (const id of wad.maps) {
@@ -372,9 +377,14 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       x: view.getInt16(0, true), y: view.getInt16(2, true), angle: view.getInt16(4, true), elevation: 0 })),
   };
   const { vertices, lines, sides, sectors, things } = data;
-  // UDMF and Hexen-format lines both carry a Hexen special number with five args and
-  // their own activation types, which the runtime executes from the special table.
-  const zdoomFormat = Boolean(source) || hexen;
+  // UDMF and Hexen-format sources carry per-line args, thing tids and elevations that a
+  // classic binary Doom map does not.
+  const enhanced = Boolean(source) || hexen;
+  // Which number space a line's special belongs to is a separate question: Hexen binary
+  // and zdoom/zdoomtranslated/hexen namespaces use Hexen numbering, which the runtime
+  // executes from the special table, but the UDMF spec reserves the "doom" namespace for
+  // vanilla Doom numbering, so those lines go through the classic rule translator.
+  const zdoomFormat = hexen || Boolean(source && source.namespace !== 'doom');
   // A mod-only WAD has no palette of its own; its geometry, actors and sounds still
   // import and the artwork it cannot decode is reported instead of failing the import.
   const assets = encodeImage ? createDoomAssets(wad, encodeImage, images, fontResources,
@@ -467,16 +477,20 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   // what each thing is and which sprite draws it, which is the difference between a mod's
   // decorations and a screen of grey placeholder boxes.
   const dehackedSources = [...dehacked];
+  // `actorSources` belongs to the caller: a full-game import reuses gzdoom.pk3's
+  // cached definitions for every level and every later import, so the WAD's own
+  // lumps are appended to a private copy instead of mutating that shared list.
+  const actorSourcesLocal = [...actorSources];
   for (const lump of wad.lumps) {
     if (lump.name !== 'DEHACKED' || lump.size > 4 * 1024 * 1024) continue;
     dehackedSources.push({ name: 'DEHACKED', text: new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)) });
   }
   for (const lump of wad.lumps) {
     if (!['DECORATE', 'ZSCRIPT', 'MAPINFO', 'ZMAPINFO'].includes(lump.name) || lump.size > 4 * 1024 * 1024) continue;
-    actorSources.push({ name: lump.name, text: new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)) });
+    actorSourcesLocal.push({ name: lump.name, text: new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)) });
   }
   const actorWarnings = [];
-  if (actors) project.actors = importActors({ sources: actorSources, dehacked: dehackedSources, warnings: actorWarnings }).actors;
+  if (actors) project.actors = importActors({ sources: actorSourcesLocal, dehacked: dehackedSources, warnings: actorWarnings }).actors;
   const actorNumbers = actorIndex(project.actors || []);
 
   let playerFound = false, unknownThings = 0, invisibleThings = 0, lightCount = 0;
@@ -513,11 +527,11 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       id: `thing${index}`, name: isPlayer ? 'Player start' : actor?.name || `${mapping?.[0] || 'Doom thing'} ${type}`,
       type: isPlayer ? 'player' : kind, doomType: type,
       x: record.x, y: -record.y, angle: -record.angle, spriteAsset,
-      ...(zdoomFormat ? { elevation: record.elevation, ...(record.tid ? { tid: record.tid } : {}) } : {}),
+      ...(enhanced ? { elevation: record.elevation, ...(record.tid ? { tid: record.tid } : {}) } : {}),
       // A teleport destination is kept for its tag and its position, and is never drawn.
       ...(role === 'teleportdest' ? { teleportDest: true } : {}),
       // A thing's own gravity multiplier (UDMF `gravity`), which the fall simulation reads.
-      ...(zdoomFormat && record.gravity !== undefined && record.gravity !== 1 ? { gravity: record.gravity } : {}),
+      ...(enhanced && record.gravity !== undefined && record.gravity !== 1 ? { gravity: record.gravity } : {}),
       // A resized thing is resized: a prop scaled to 0.6 in the map is drawn at 0.6, not full
       // size. Uniform scaling uses the single field the editor exposes; unequal X and Y keep
       // both, because a squashed lamp is not the lamp.

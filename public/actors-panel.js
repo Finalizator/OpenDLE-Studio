@@ -6,7 +6,19 @@
  * rewrite its state frames in DECORATE syntax.
  */
 
-const STATE_LINE = /^([A-Za-z0-9_]{1,5})\s+([A-Za-z#-]+)\s+(-?\d+)(?:\s+([A-Za-z_]\w*))?$/;
+/** Serializes one action's argument list the way DECORATE writes it. */
+function formatArgValue(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'null';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'boolean') return String(value);
+  if (value === null || value === undefined) return 'null';
+  return JSON.stringify(value);
+}
+function formatAction(action) {
+  const parts = (action.args || []).map(formatArgValue);
+  for (const [key, value] of Object.entries(action.named || {})) parts.push(`${key}: ${formatArgValue(value)}`);
+  return parts.length ? `${action.name}(${parts.join(', ')})` : action.name;
+}
 
 /** Renders the compiled frame list back into editable DECORATE-style lines. */
 export function framesToText(actor) {
@@ -14,9 +26,11 @@ export function framesToText(actor) {
   const lines = [];
   let label = null;
   for (const frame of frames) {
+    // A state can begin with a control-flow frame (`Spawn: Goto See`), so the
+    // label belongs to every frame kind, not only the ones that draw a sprite.
+    if (frame.label && frame.label !== label) { label = frame.label; lines.push(`${label}:`); }
     if (frame.kind === 'frame') {
-      if (frame.label && frame.label !== label) { label = frame.label; lines.push(`${label}:`); }
-      const action = frame.actions?.length ? ` ${frame.actions[0].name}` : '';
+      const action = frame.actions?.length ? ` ${formatAction(frame.actions[0])}` : '';
       lines.push(`  ${frame.sprite} ${frame.letter} ${frame.duration}${action}${frame.bright ? ' Bright' : ''}`);
       continue;
     }
@@ -26,6 +40,46 @@ export function framesToText(actor) {
     else if (frame.kind === 'wait') lines.push('  Wait');
   }
   return lines.join('\n');
+}
+
+function splitArguments(text) {
+  const parts = [];
+  let part = '', depth = 0, quote = null;
+  for (const char of text) {
+    if (quote) { part += char; if (char === quote) quote = null; continue; }
+    if (char === '"' || char === "'") { quote = char; part += char; continue; }
+    if (char === '(' || char === '[') depth++;
+    if (char === ')' || char === ']') depth--;
+    if (char === ',' && depth === 0) { parts.push(part.trim()); part = ''; continue; }
+    part += char;
+  }
+  if (part.trim()) parts.push(part.trim());
+  return parts;
+}
+function parseArgValue(raw) {
+  const text = raw.trim();
+  if (/^(true|false)$/i.test(text)) return text.toLowerCase() === 'true';
+  if (text === 'null') return null;
+  if (/^-?[0-9.]+$/.test(text) && text !== '') return Number(text);
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    try { return JSON.parse(text); } catch { return text.slice(1, -1); }
+  }
+  return text;
+}
+function parseActionTail(tail) {
+  const name = /^([A-Za-z_]\w*)/.exec(tail);
+  if (!name) return null;
+  const rest = tail.slice(name[1].length).trim();
+  if (!rest) return { name: name[1], args: [], named: {} };
+  if (!rest.startsWith('(') || !rest.endsWith(')')) return null;
+  const args = [], named = {};
+  for (const item of splitArguments(rest.slice(1, -1))) {
+    const labelled = /^([a-z_]\w*)\s*:\s*([\s\S]+)$/i.exec(item);
+    if (labelled) { named[labelled[1]] = parseArgValue(labelled[2]); continue; }
+    const value = parseArgValue(item);
+    if (value !== undefined) args.push(value);
+  }
+  return { name: name[1], args, named };
 }
 
 /** Parses the edited text back into a compiled frame list. */
@@ -41,11 +95,22 @@ export function textToFrames(text) {
     if (/^loop$/i.test(line)) { frames.push({ kind: 'loop', target: label, label }); continue; }
     if (/^stop$/i.test(line)) { frames.push({ kind: 'stop', target: null, label }); continue; }
     if (/^wait$/i.test(line)) { frames.push({ kind: 'wait', target: null, label }); continue; }
-    const match = STATE_LINE.exec(line);
-    if (!match) throw new Error(`Unreadable state line: ${line}`);
-    frames.push({ kind: 'frame', sprite: match[1].toUpperCase(), letter: match[2][0], duration: Number(match[3]),
-      bright: /\bbright\b/i.test(line), label,
-      actions: match[4] ? [{ name: match[4], args: [], named: {} }] : [] });
+    // `Bright` is a frame flag, not an action: strip it before reading the action
+    // so a bright frame neither gains a bogus action nor becomes unreadable.
+    let rest = line, bright = false;
+    const brightFlag = /\s+[Bb]right$/.exec(rest);
+    if (brightFlag) { bright = true; rest = rest.slice(0, brightFlag.index); }
+    const head = /^([A-Za-z0-9_]{1,5})\s+([A-Za-z#-]+)\s+(-?\d+)/.exec(rest);
+    if (!head) throw new Error(`Unreadable state line: ${line}`);
+    const tail = rest.slice(head[0].length).trim();
+    let actions = [];
+    if (tail) {
+      const action = parseActionTail(tail);
+      if (!action) throw new Error(`Unreadable state line: ${line}`);
+      actions = [action];
+    }
+    frames.push({ kind: 'frame', sprite: head[1].toUpperCase(), letter: head[2][0], duration: Number(head[3]),
+      bright, label, actions });
   }
   return { frames, labels };
 }

@@ -95,7 +95,10 @@ export function changeSetting(state, name, value, relative = false) {
   if (!spec) throw new Error(`Unknown game setting: ${name}`);
   if (relative) {
     if (typeof spec.value !== 'number' || typeof value !== 'number') throw new Error(`Cannot increment ${name}`);
-    value = Math.round(Math.max(spec.min, Math.min(spec.max, state.settings[name] + value)) * 10000) / 10000;
+    const next = Math.max(spec.min, Math.min(spec.max, state.settings[name] + value));
+    // A setting that holds whole numbers steps in whole numbers, so an expression that works out
+    // fractional rounds to the nearest valid value instead of failing to apply mid-game.
+    value = Number.isInteger(spec.value) ? Math.round(next) : Math.round(next * 10000) / 10000;
   }
   state.settings[name] = validateSetting(name, value);
   state.settingsRevision++;

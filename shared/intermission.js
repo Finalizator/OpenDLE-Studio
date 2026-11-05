@@ -4,7 +4,10 @@ import { nextGameLevel } from './game-levels.js';
 import { setGameScreen } from './game-settings.js';
 import { playerReachesEntity } from './combat.js';
 
-const itemTypes = new Set([2013, 2014, 2015, 2022, 2023, 2024, 2025, 2026, 2045, 83]);
+// Doom's MF_COUNTITEM set. Stimpacks, medikits, both armours and the backpack are items too:
+// leaving them out made the intermission report 100% with health and armour still on the map.
+const itemTypes = new Set([8, 83, 2011, 2012, 2013, 2014, 2015, 2018, 2019, 2022, 2023, 2024, 2025,
+  2026, 2045]);
 const countsKill = entity => entity.type === 'enemy' && entity.doomType !== 3006;
 const countsItem = entity => entity.type === 'pickup' && (entity.doomType === undefined || itemTypes.has(entity.doomType));
 const secretSector = sector => sector.special === 9 || sector.special >= 32 && Boolean(sector.special & 128);
@@ -33,7 +36,11 @@ export function recordRemovedEntity(state, entity) {
   if (!entity) return;
   const stats = state.levelStatistics;
   if (stats.enemies.has(entity.id) && entity.health <= 0) stats.kills.add(entity.id);
-  if (stats.pickups.has(entity.id) && state.playerStats.health > 0 && playerReachesEntity(state, entity, 40, 56, 8)) stats.items.add(entity.id);
+  // The same reach the generated pickup rules use (36 wide, 112 up, 32 down, over steps): an
+  // item those rules can take must count, or a soulsphere on a ledge was collected but never
+  // appeared in the intermission's item percentage.
+  if (stats.pickups.has(entity.id) && state.playerStats.health > 0 &&
+    playerReachesEntity(state, entity, 36, 112, 32, { overSteps: true })) stats.items.add(entity.id);
 }
 
 export function beginIntermission(project, state, secret = false) {
@@ -77,6 +84,11 @@ export function installIntermission(project, assets, { compact = project.hud?.el
   if (!project.hud) installDefaultHUD(project);
   for (const field of fields) project.variables[variable(field)] = '';
   const hud = project.hud, sx = hud.width / 320, sy = hud.height / 200;
+  // A drawn screen is a menu screen, and it has to fit the HUD element budget. A project with no
+  // menus gets the text summary the message line already prints; a HUD with no room left is not
+  // pushed past its limit, because an invalid project is worse than a plain intermission.
+  const budget = MAX_HUD_ELEMENTS - hud.elements.length;
+  const draw = Boolean(project.gameMenus) && budget >= (compact ? 6 : 14);
   const used = new Set([...project.events, ...project.eventGroups, ...project.eventSheets, ...hud.elements,
     ...hud.fonts, ...hud.animations, ...project.assets, ...Object.values(project.map).filter(Array.isArray).flat()].map(item => item.id));
   let sequence = 0;
@@ -90,6 +102,7 @@ export function installIntermission(project, assets, { compact = project.hud?.el
   function element(type, name, x, y, width, height, extra = {}) {
     const item = { ...hudElement(id(), type, name), x: x * sx, y: y * sy, width: width * sx, height: height * sy,
       fontSize: 10 * sy, z: 9500, visible: false, background: '#00000000', ...extra };
+    if (!draw) return item;
     hud.elements.push(item);
     if (project.gameMenus && !project.gameMenus.elementIds.includes(item.id)) project.gameMenus.elementIds.push(item.id);
     rule(`Hide ${name}`, { type: 'always' }, [{ type: 'setHUDVisible', elementId: item.id, visible: 'no' }]);
@@ -144,7 +157,7 @@ export function installIntermission(project, assets, { compact = project.hud?.el
     text: 'Continue — Enter / Space', fontSize: 8 * sy, ...(font ? { fontId: font.id } : {}) });
   for (const key of ['Enter', 'Space']) rule(`Continue intermission with ${key}`, { type: 'keyPressed', key },
     [{ type: 'continueIntermission' }], [screen]);
-  rule('Continue intermission with click', { type: 'hudClicked', elementId: button.id },
+  if (draw) rule('Continue intermission with click', { type: 'hudClicked', elementId: button.id },
     [{ type: 'continueIntermission' }], [screen]);
   return project;
 }

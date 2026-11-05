@@ -127,8 +127,21 @@ export function captureScene(project, entityIds, { id = newSceneId(), name } = {
   const origin = { x: round((bounds.minX + bounds.maxX) / 2), y: round((bounds.minY + bounds.maxY) / 2) };
   const owned = new Set(ids);
   const events = sceneEventsForEntities(project.events, owned);
+  // A rule that names an object the scene does not carry would dangle the moment that
+  // object is deleted, or the scene is dropped into a map that has no such object. The
+  // node exporter already leaves those rules out, and a captured scene must be
+  // self-contained the same way, so owned rules are kept only when everything they name
+  // travels with the scene. Sub-events of a dropped rule go with it.
+  const kept = new Set();
+  const selfContained = events.filter(event => {
+    const outside = [event.condition, ...(event.conditions || []), ...(event.actions || [])]
+      .flatMap(sceneEventTargets).some(target => !owned.has(target.id));
+    if (outside || event.parentId && !kept.has(event.parentId)) return false;
+    kept.add(event.id);
+    return true;
+  });
   const joints = (project.map.joints || []).filter(joint => jointWithin(joint, owned));
-  if (events.length > MAX_SCENE_EVENTS) throw new Error(`A scene holds at most ${MAX_SCENE_EVENTS} events`);
+  if (selfContained.length > MAX_SCENE_EVENTS) throw new Error(`A scene holds at most ${MAX_SCENE_EVENTS} events`);
   return {
     id,
     name: (name || `Scene ${project.scenes ? project.scenes.length + 1 : 1}`).slice(0, 100),
@@ -147,7 +160,7 @@ export function captureScene(project, entityIds, { id = newSceneId(), name } = {
       bakePathRamp(copy);
       return copy;
     }),
-    events: structuredClone(events),
+    events: structuredClone(selfContained),
     joints: joints.map(joint => transformJoint(structuredClone(joint), { x: -origin.x, y: -origin.y })),
   };
 }
@@ -315,13 +328,26 @@ export function duplicateSceneObject(scene, id, { offset = 32 } = {}) {
   const mapping = new Map();
   const reserved = new Set();
   for (const entity of subtree) mapping.set(entity.id, sceneEntityId(scene, `${entity.id}_copy`, reserved));
+  // Copies must read differently in the scene tree the way every other copy path does, so a
+  // second duplicate lands on "Lamp copy 2" instead of a second node that is also called
+  // "Lamp copy". Names are de-duplicated across the batch and against the scene.
+  const usedNames = new Set((scene.entities || []).map(item => item.name));
+  const freshName = base => {
+    const trimmed = String(base).slice(0, 100);
+    if (!usedNames.has(trimmed)) { usedNames.add(trimmed); return trimmed; }
+    for (let index = 2; ; index++) {
+      const suffix = ` ${index}`;
+      const candidate = `${trimmed.slice(0, 100 - suffix.length)}${suffix}`;
+      if (!usedNames.has(candidate)) { usedNames.add(candidate); return candidate; }
+    }
+  };
   const copies = subtree.map(entity => {
     const copy = remapReferences(structuredClone(entity), mapping);
     copy.id = mapping.get(entity.id);
     if (entity.parentId && mapping.has(entity.parentId)) copy.parentId = mapping.get(entity.parentId);
     copy.x = round(entity.x + offset);
     copy.y = round(entity.y + offset);
-    copy.name = `${entity.name} copy`.slice(0, 100);
+    copy.name = freshName(`${entity.name} copy`);
     return copy;
   });
   const idMap = mapping;
@@ -485,6 +511,10 @@ export function addSceneObjectFromEntity(scene, entity, { x = 0, y = 0, parentId
   copy.y = round(y);
   copy.name = uniqueSceneName(scene, entity.name).slice(0, 100);
   delete copy.parentId;
+  // A layout group is a label the project owns, not a property of the object: dropping a
+  // grouped tile into a scene must not carry its group id, or the node would later be
+  // reported as "its layout group was not included" and keep a reference to nothing.
+  delete copy.groupId;
   if (parentId) copy.parentId = parentId;
   if ((scene.entities || []).length >= MAX_SCENE_ENTITIES) throw new Error(`A scene holds at most ${MAX_SCENE_ENTITIES} objects`);
   scene.entities.push(copy);

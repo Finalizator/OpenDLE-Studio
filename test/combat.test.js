@@ -317,11 +317,12 @@ test('unalerted guards do not attack a player behind them; being hurt wakes them
 test('DMX PCM decoding strips the sixteen-byte pads and emits a valid unsigned PCM WAV; malformed sounds fail explicitly', () => {
   const bytes = new Uint8Array(56), view = new DataView(bytes.buffer);
   view.setUint16(0, 3, true); view.setUint16(2, 11025, true); view.setUint32(4, 48, true);
-  bytes.fill(123, 24, 40);
+  // DMX lumps hold `count` samples immediately after the 8-byte header.
+  bytes.fill(123, 8, 56);
   const wav = Buffer.from(doomSound(bytes).split(',')[1], 'base64');
   assert.equal(wav.toString('ascii', 0, 4), 'RIFF'); assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
-  assert.equal(wav.readUInt32LE(24), 11025); assert.equal(wav.readUInt32LE(40), 16);
-  assert.deepEqual([...wav.subarray(44)], Array(16).fill(123));
+  assert.equal(wav.readUInt32LE(24), 11025); assert.equal(wav.readUInt32LE(40), 48);
+  assert.deepEqual([...wav.subarray(44)], Array(48).fill(123));
   assert.throws(() => doomSound(bytes.subarray(0, 12)), /count/);
   bytes[0] = 1; assert.throws(() => doomSound(bytes), /DMX/);
   assert.throws(() => wavSound(new Uint8Array(1), 0), /rate/);

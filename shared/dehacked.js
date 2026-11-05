@@ -18,17 +18,11 @@ function splitKeyValue(line) {
   return match ? [match[1], match[2]] : null;
 }
 
-/** Strips the inline `#`/`//` comments DEHACKED files use freely. */
+/** Strips the full-line `#` comments DEHACKED files use, but leaves inline
+ * `#`/`//` alone: GZDoom's reader only skips lines whose first character is
+ * `#`, so a string like `HUSTR_1 = Entry #1` keeps its `#`. */
 function stripComment(line) {
-  let result = '', quote = false;
-  for (let index = 0; index < line.length; index++) {
-    const char = line[index];
-    if (char === '"') quote = !quote;
-    if (!quote && char === '#' ) break;
-    if (!quote && char === '/' && line[index + 1] === '/') break;
-    result += char;
-  }
-  return result;
+  return /^\s*#/.test(line) ? '' : line;
 }
 
 /**

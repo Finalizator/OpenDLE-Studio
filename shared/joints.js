@@ -53,9 +53,11 @@ const round = value => {
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0));
 
 function normalizeAxis(axis) {
-  const length = Math.hypot(axis?.x || 0, axis?.y || 0, axis?.z || 0);
+  // A caller may name only the components it cares about; the rest are zero, not NaN.
+  const x = Number(axis?.x) || 0, y = Number(axis?.y) || 0, z = Number(axis?.z) || 0;
+  const length = Math.hypot(x, y, z);
   if (!length) return { x: 0, y: 0, z: 1 };
-  return { x: +(axis.x / length).toFixed(4), y: +(axis.y / length).toFixed(4), z: +(axis.z / length).toFixed(4) };
+  return { x: +(x / length).toFixed(4), y: +(y / length).toFixed(4), z: +(z / length).toFixed(4) };
 }
 
 /** The middle of two objects, which is where a new joint is anchored. */
@@ -139,7 +141,12 @@ export function jointWithin(joint, ids) {
 export function transformJoint(joint, { x = 0, y = 0, angle = 0 } = {}) {
   const radians = angle * Math.PI / 180, cos = Math.cos(radians), sin = Math.sin(radians);
   const clean = value => Math.abs(value) < 1e-12 ? 0 : value;
-  const rotate = point => ({ x: clean(point.x * cos - point.y * sin), y: clean(point.x * sin + point.y * cos) });
+  // An axis may omit a component (validation reads a missing one as zero), so rotate with
+  // numbers rather than `undefined`, which used to write NaN into a placed joint.
+  const rotate = point => {
+    const px = Number(point.x) || 0, py = Number(point.y) || 0;
+    return { x: clean(px * cos - py * sin), y: clean(px * sin + py * cos) };
+  };
   const anchor = rotate(joint.anchor);
   joint.anchor = { ...joint.anchor, x: x + anchor.x, y: y + anchor.y };
   if (joint.axis) joint.axis = { ...joint.axis, ...rotate(joint.axis) };

@@ -10,10 +10,10 @@
 // terminate: preprocessor directives, `while`/`do`, arrays, structs, and any resource
 // other than the screen channels.
 
-const typeSizes = { float: 1, int: 1, bool: 1, vec2: 2, vec3: 3, vec4: 4, mat2: 4, mat3: 9, mat4: 16 };
+const typeSizes = { float: 1, int: 1, bool: 1, vec2: 2, vec3: 3, vec4: 4, ivec2: 2, ivec3: 3, ivec4: 4, bvec2: 2, bvec3: 3, bvec4: 4, mat2: 4, mat3: 9, mat4: 16 };
 const matrixSizes = { mat2: 2, mat3: 3, mat4: 4 };
 const scalarTypes = new Set(['float', 'int', 'bool']);
-const vectorSize = type => (scalarTypes.has(type) ? 1 : matrixSizes[type] ? 1 : Number(String(type).slice(3)) || 1);
+const vectorSize = type => (scalarTypes.has(type) ? 1 : matrixSizes[type] ? 1 : Number(String(type).replace(/^[bi]/, '').slice(3)) || 1);
 const unary = ['abs', 'sign', 'floor', 'ceil', 'fract', 'round', 'trunc', 'sin', 'cos', 'tan', 'asin', 'acos', 'exp', 'log', 'exp2', 'log2', 'sqrt', 'inversesqrt'];
 const binary = ['mod', 'min', 'max', 'pow', 'step', 'atan'];
 const ternary = ['clamp', 'mix', 'smoothstep'];
@@ -53,9 +53,21 @@ export function shadertoySource(source) {
   const [head, colour, coord] = match;
   const start = match.index + head.length;
   let depth = 1, index = start;
-  for (; index < source.length && depth > 0; index++) {
-    if (source[index] === '{') depth++;
-    else if (source[index] === '}') depth--;
+  while (index < source.length && depth > 0) {
+    const char = source[index];
+    if (char === '/' && source[index + 1] === '/') {
+      const end = source.indexOf('\n', index + 2);
+      index = end < 0 ? source.length : end + 1;
+      continue;
+    }
+    if (char === '/' && source[index + 1] === '*') {
+      const end = source.indexOf('*/', index + 2);
+      index = end < 0 ? source.length : end + 2;
+      continue;
+    }
+    if (char === '{') depth++;
+    else if (char === '}') depth--;
+    index++;
   }
   if (depth !== 0) throw new Error('Unterminated Shadertoy mainImage body');
   const body = source.slice(start, index - 1);
@@ -105,7 +117,7 @@ export function parseShaderSource(rawSource, uniforms = {}) {
     if (tokens.length > 16384) throw new Error('GLSL source exceeds the 16384-token budget');
   }
 
-  let index = 0, nodes = 0;
+  let index = 0, nodes = 0, loopDepth = 0;
   const peek = () => tokens[index]?.value;
   const fail = message => { throw new Error(`${message} at character ${(tokens[index]?.offset ?? source.length) + 1}`); };
   function take(expected) {
@@ -183,7 +195,7 @@ export function parseShaderSource(rawSource, uniforms = {}) {
       return node({ isTexture: true, channel, coord: args[1] }, 'vec4');
     }
     if (constructors.includes(name)) {
-      const type = name.replace(/^[ib]/, '');
+      const type = name;
       const size = typeSizes[type];
       if (!args.length) fail(`${name} needs at least one component`);
       const total = types.reduce((sum, item) => sum + (typeSizes[item] || 1), 0);
@@ -239,13 +251,6 @@ export function parseShaderSource(rawSource, uniforms = {}) {
   function expression(minimum = 0) {
     if (++nodes > 8192) fail('GLSL source exceeds the 8192-expression budget');
     let value = unaryExpression();
-    if (minimum === 0 && peek() === '?') {
-      take('?');
-      const whenTrue = expression(0);
-      take(':');
-      const whenFalse = expression(0);
-      value = node({ isTernary: true, condition: value, whenTrue, whenFalse }, compatible(whenTrue.valueType, whenFalse.valueType));
-    }
     for (;;) {
       const operator = peek();
       const weight = precedence[operator];
@@ -253,6 +258,16 @@ export function parseShaderSource(rawSource, uniforms = {}) {
       take();
       const right = expression(weight + 1);
       value = binaryOperation(operator, value, right);
+    }
+    // The conditional operator binds looser than every binary operator, so it is read
+    // only once the surrounding arithmetic has been folded: `x > 0.5 ? a : b` must keep
+    // `x > 0.5` as the condition, not leave the `?` dangling after consuming it.
+    if (minimum === 0 && peek() === '?') {
+      take('?');
+      const whenTrue = expression(0);
+      take(':');
+      const whenFalse = expression(0);
+      value = node({ isTernary: true, condition: value, whenTrue, whenFalse }, compatible(whenTrue.valueType, whenFalse.valueType));
     }
     return value;
   }
@@ -298,7 +313,10 @@ export function parseShaderSource(rawSource, uniforms = {}) {
         if (matrixSizes[value.valueType]) fail(`Swizzling ${value.valueType} is not supported; use its components`);
         const alphabet = ['xyzw', 'rgba', 'stpq'].find(group => [...swizzle].every(letter => group.includes(letter)));
         if (!alphabet || swizzle.length > 4 || [...swizzle].some(letter => alphabet.indexOf(letter) >= components)) fail(`Invalid ${value.valueType} swizzle ${swizzle}`);
-        value = node({ isSwizzle: true, expression: value, swizzle }, swizzle.length === 1 ? 'float' : `vec${swizzle.length}`);
+        const base = value.valueType;
+        const scalar = base.startsWith('bvec') || base === 'bool' ? 'bool' : base.startsWith('ivec') || base === 'int' ? 'int' : 'float';
+        const vector = base.startsWith('bvec') ? 'bvec' : base.startsWith('ivec') ? 'ivec' : 'vec';
+        value = node({ isSwizzle: true, expression: value, swizzle }, swizzle.length === 1 ? scalar : `${vector}${swizzle.length}`);
       } else if (peek() === '[') {
         take('[');
         const at = expression(0);
@@ -395,7 +413,9 @@ export function parseShaderSource(rawSource, uniforms = {}) {
       const update = statement();
       if (!update.isAssignment && !update.isIncrement) fail('A for loop needs a counter update such as i++');
       take(')');
+      loopDepth++;
       const body = bodyOf();
+      loopDepth--;
       scopes.pop();
       return { isFor: true, init, condition, update, body };
     }
@@ -406,8 +426,8 @@ export function parseShaderSource(rawSource, uniforms = {}) {
       take(';');
       return { isReturn: true, value: returned };
     }
-    if (value === 'break') { take('break'); take(';'); return { isBreak: true }; }
-    if (value === 'continue') { take('continue'); take(';'); return { isContinue: true }; }
+    if (value === 'break') { take('break'); take(';'); if (loopDepth === 0) fail('break may only appear inside a for loop'); return { isBreak: true }; }
+    if (value === 'continue') { take('continue'); take(';'); if (loopDepth === 0) fail('continue may only appear inside a for loop'); return { isContinue: true }; }
     if (isType(value) || value === 'const') return declaration();
     const target = primary();
     if (peek() === '++' || peek() === '--') {

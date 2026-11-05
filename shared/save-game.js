@@ -14,6 +14,9 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // Diagnostics and derived handles stay out of saves: the unsupported-action set is
 // rebuilt as problems occur, and the weapon machine is re-entered on load.
 const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus',
+  // The controller readout is written onto the live state by the host each frame; it is a session
+  // fact, not game state, so it must not leak into a save (a field the loader does not know).
+  'controllerStatus',
   'worldTerminalActive', 'worldTerminalId',
   'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'surfaces',
   // Diagnostics describe the session, not the game; they are rebuilt on load. Leaving
@@ -297,7 +300,7 @@ function validateRuntime(project, state, baseline) {
     }
   }
   for (const [key, motion] of state.sectorMotions) {
-    if (!plain(motion) || !sectorIds.has(motion.sectorId) || !['floorHeight', 'ceilingHeight'].includes(motion.surface) ||
+    if (!plain(motion) || !sectorIds.has(motion.sectorId) || !['floorHeight', 'ceilingHeight', 'light'].includes(motion.surface) ||
       key !== `${motion.sectorId}:${motion.surface}` || !['out', 'return'].includes(motion.direction) ||
       !['origin', 'waiting', 'height', 'speed'].every(field => Number.isFinite(motion[field])) ||
       motion.moveCeiling !== undefined && (typeof motion.moveCeiling !== 'boolean' || motion.surface !== 'floorHeight')) fail('invalid sector motion');

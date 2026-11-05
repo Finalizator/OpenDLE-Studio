@@ -71,7 +71,7 @@ export const toolDefinitions = [
   { name: 'game_menu_install', description: 'Install editable title/pause/settings HUDs and interface-phase visual rules on a project without game menus. Imported WAD/PK3 menus are installed by their importer; this explicit tool adds the no-artwork fallback. Does not overwrite existing menus. User settings are browser-local, not authored project variables.', shape: {} },
   { name: 'actor_list', description: 'List the actor table this project runs (imported DECORATE/ZScript definitions or built-in classic Doom data): names, editor numbers, stats, flags and whether the actor is a monster or weapon. Read this before editing actors.', shape: {} },
   { name: 'actor_get', description: 'Read one actor by name, including its compiled state frames, labels and action functions, so gameplay can be inspected and edited precisely.', shape: { name: z.string().min(1).max(80) } },
-  { name: 'actor_update', description: 'Edit one imported actor. Changes are validated and transactional: stats (health, speed, damage, painChance, radius, height, mass, reactionTime) and flags can be changed, states can be replaced with a compiled frame list, and sounds/drops can be set. Entity behaviour in Play comes from this data, not from hidden code.',
+  { name: 'actor_update', description: 'Edit one imported actor. Changes are validated and transactional: stats (health, speed, damage, painChance, radius, height, mass, reactionTime) and flags can be changed, states can be replaced with a compiled frame list, and sounds can be set. Entity behaviour in Play comes from this data, not from hidden code.',
     shape: {
       name: z.string().min(1).max(80),
       stats: z.record(z.number().finite()).optional(),
@@ -161,7 +161,7 @@ export const toolDefinitions = [
     shape: { name: z.string().min(1).max(100).optional(), sheetId: z.string().optional(), groupId: z.string().optional(), parentId: z.string().optional(),
       comment: z.string().max(2000).optional(), conditionMode: z.enum(['and', 'or']).optional(), forEachType: z.enum(INSTANCE_PICKABLE_TYPES).optional(),
       ownerId: z.string().optional(), condition: z.record(z.unknown()), conditions: z.array(z.record(z.unknown())).max(15).optional(),
-      actions: z.array(z.record(z.unknown())).max(32), once: z.boolean().default(true) } },
+      actions: z.array(z.record(z.unknown())).max(32), once: z.boolean().default(false) } },
   { name: 'events_update_rule', description: 'Edit existing visual rules, including Engine defaults. All references/commands are validated. Use project_replace to remove optional metadata such as an owner or sheet association.',
     shape: { id: z.string(), name: z.string().min(1).max(100).optional(), enabled: z.boolean().optional(), once: z.boolean().optional(),
       sheetId: z.string().optional(), groupId: z.string().optional(), comment: z.string().max(2000).optional(), conditionMode: z.enum(['and', 'or']).optional(),
@@ -227,6 +227,7 @@ export function applyTool(project, name, args, context = {}) {
       if (!level) throw new Error(`Unknown game level ${input.levelId}`);
       for (const key of ['next', 'secretNext']) if (Object.hasOwn(input, key)) level[key] = input[key];
       if (input.entry) next.game.entry = input.levelId;
+      else if (input.entry === false) throw new Error('entry must be true to select the campaign entry');
       break;
     }
     case 'game_menu_install':
@@ -401,8 +402,13 @@ export function applyTool(project, name, args, context = {}) {
     }
     case 'map_add_room': addRoom(next, input); break;
     case 'map_add_entity':
-      if (input.type === 'player') Object.assign(next.map.entities.find(entity => entity.type === 'player'), input);
-      else next.map.entities.push({ id: newId('entity'), ...input });
+      if (input.type === 'player') {
+        const move = { ...input };
+        // Moving the start relocates it; the shape's angle default 0 must not
+        // silently re-point an existing player that was not asked to turn.
+        if (!Object.hasOwn(args, 'angle')) delete move.angle;
+        Object.assign(next.map.entities.find(entity => entity.type === 'player'), move);
+      } else next.map.entities.push({ id: newId('entity'), ...input });
       break;
     case 'map_update_wall': {
       const wall = next.map.walls.find(item => item.id === input.id);
@@ -432,6 +438,15 @@ export function applyTool(project, name, args, context = {}) {
     case 'entity_set_physics': {
       const entity = next.map.entities.find(entity => entity.id === input.id);
       if (!entity) throw new Error('Entity not found');
+      if (input.shape === 'ball') {
+        // A ball's height must be twice its radius, but the field defaults are
+        // independent (height 32, radius 12), so a ball created with defaults was
+        // invalid. Derive the dimension the caller did not supply.
+        const explicitHeight = Object.hasOwn(args, 'height');
+        const explicitRadius = Object.hasOwn(args, 'radius');
+        if (!explicitHeight) input.height = input.radius * 2;
+        else if (!explicitRadius) input.radius = input.height / 2;
+      }
       const { id, ...physics } = input;
       entity.physics = physics;
       break;

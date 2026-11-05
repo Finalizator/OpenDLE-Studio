@@ -155,7 +155,9 @@ export function measureAssetForward(asset, { format = null } = {}) {
   let angle = null;
   try {
     const bytes = decodeDataURI(src);
-    const kind = format || (asset.name?.toLowerCase().endsWith('.glb') ? 'glb' : 'gltf');
+    // An asset carries its format, and a MODELDEF-converted OBJ keeps its `.obj`
+    // name while storing GLB bytes; the name is only a fallback for old records.
+    const kind = format || asset.format || (asset.name?.toLowerCase().endsWith('.glb') ? 'glb' : 'gltf');
     angle = modelForwardAngle(readModel(bytes, kind).json);
   } catch {
     angle = null;

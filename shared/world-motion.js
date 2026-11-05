@@ -124,7 +124,9 @@ export function advanceSectors(state, dt) {
       motion.direction = motion.direction === 'out' ? 'return' : 'out'; continue;
     }
     const ceiling = sector.ceilingHeight + (motion.moveCeiling ? next - old : 0);
-    if (motion.surface === 'floorHeight' && next > old && occupants.some(entity => Math.max(floorAt(state, entity), next) + entityHeight(entity) > ceiling)) continue;
+    if (motion.surface === 'floorHeight' && next > old && occupants.some(entity => Math.max(floorAt(state, entity), next) + entityHeight(entity) > ceiling)) {
+      motion.direction = motion.direction === 'out' ? 'return' : 'out'; continue;
+    }
     sector[motion.surface] = next;
     if (motion.moveCeiling && motion.surface === 'floorHeight') sector.ceilingHeight = ceiling;
     if (next !== old) {
@@ -163,9 +165,9 @@ const doors = new Map([
   [113, ['use', 'close']], [114, ['use', 'return']], [115, ['use', 'stay']], [116, ['use', 'close']],
 ]);
 const lifts = new Map([[10, 'cross'], [21, 'use'], [62, 'use'], [88, 'cross'], [120, 'cross'], [121, 'cross'], [122, 'use'], [123, 'use']]);
-const floorLower = new Map([[19, 'cross'], [23, 'use'], [36, 'cross'], [37, 'cross'], [38, 'cross'], [60, 'use'], [70, 'use'], [71, 'use'], [82, 'cross'], [83, 'cross'], [84, 'cross'], [98, 'cross'], [102, 'use']]);
-const floorRaise = new Map([[5, 'cross'], [18, 'use'], [24, 'shoot'], [30, 'cross'], [45, 'use'], [56, 'cross'], [58, 'cross'], [59, 'cross'], [64, 'use'], [65, 'use'], [69, 'use'], [91, 'cross'], [92, 'cross'], [93, 'cross'], [94, 'cross'], [96, 'cross'], [101, 'use'], [119, 'cross'], [128, 'cross'], [129, 'cross'], [130, 'cross'], [131, 'use'], [132, 'use']]);
-const repeatable = new Set([1, 26, 27, 28, 42, 46, 60, 61, 62, 63, 64, 65, 69, 70, 75, 76, 82, 83, 84, 86, 88, 90, 91, 92, 93, 94, 96, 98, 105, 106, 107, 114, 115, 116, 117, 120, 123, 128, 129, 132]);
+const floorLower = new Map([[19, 'cross'], [23, 'use'], [36, 'cross'], [37, 'cross'], [38, 'cross'], [45, 'use'], [60, 'use'], [70, 'use'], [71, 'use'], [82, 'cross'], [83, 'cross'], [84, 'cross'], [98, 'cross'], [102, 'use']]);
+const floorRaise = new Map([[5, 'cross'], [18, 'use'], [24, 'shoot'], [30, 'cross'], [56, 'cross'], [58, 'cross'], [59, 'cross'], [64, 'use'], [65, 'use'], [69, 'use'], [91, 'cross'], [92, 'cross'], [93, 'cross'], [94, 'cross'], [96, 'cross'], [101, 'use'], [119, 'cross'], [128, 'cross'], [129, 'cross'], [130, 'cross'], [131, 'use'], [132, 'use']]);
+const repeatable = new Set([1, 26, 27, 28, 42, 45, 46, 60, 61, 62, 63, 64, 65, 69, 70, 75, 76, 82, 83, 84, 86, 88, 90, 91, 92, 93, 94, 96, 98, 105, 106, 107, 114, 115, 116, 117, 120, 123, 128, 129, 132]);
 
 export function classicSectorMover(special) {
   const effect = doomSpecialBehaviour(special)?.effect;
@@ -307,9 +309,9 @@ function classicActions(project, wall, behaviour, targets, warnings) {
     });
   }
   if (effect.kind === 'stairs') {
-    // Stairs climb away from the line, one step per tagged sector.
-    const ordered = [...targets].sort((a, b) => (a.bounds?.minX ?? 0) - (b.bounds?.minX ?? 0)
-      || (a.bounds?.minY ?? 0) - (b.bounds?.minY ?? 0));
+    // Stairs climb away from the line, one step per tagged sector, so the step
+    // closest to the activating line rises first.
+    const ordered = [...targets].sort((a, b) => stairDistance(project, wall, a) - stairDistance(project, wall, b));
     const base = Math.min(...targets.map(sector => sector.floorHeight));
     return ordered.map((sector, index) => ({ type: 'moveSector', sectorId: sector.id, surface: 'floorHeight',
       height: base + effect.step * (index + 1), speed: effect.speed || 35, wait: 0, returnMode: 'stay', sound: 'DSPSTART' }));
@@ -320,7 +322,6 @@ function classicActions(project, wall, behaviour, targets, warnings) {
     // own floor and ceiling instead of being skipped.
     const neighbours = neighbouringSectors(project, sector);
     const heights = neighbours.length ? neighbours : [sector];
-    const lowest = Math.min(...heights.map(s => s.floorHeight));
     if (effect.kind === 'ceiling' || effect.kind === 'ceilingThenFloor') {
       const target = effect.target === 'floor' ? sector.floorHeight : Math.min(...heights.map(s => s.ceilingHeight)) - 4;
       actions.push({ type: 'moveSector', sectorId: sector.id, surface: 'ceilingHeight', height: target,
@@ -329,14 +330,29 @@ function classicActions(project, wall, behaviour, targets, warnings) {
         sound: 'DSDOROPN' });
     }
     if (effect.kind === 'floor' || effect.kind === 'ceilingThenFloor') {
+      // "Nearest" here means the next higher neighbouring floor: Doom's raise-to-next
+      // specials skip a neighbour below the sector and never lower it instead.
       const target = effect.by ? sector.floorHeight + effect.by
-        : effect.target === 'nearest' ? lowest
+        : effect.target === 'nearest' ? Math.min(...heights.map(s => s.floorHeight).filter(height => height > sector.floorHeight))
           : Math.min(...heights.map(s => s.ceilingHeight));
-      actions.push({ type: 'moveSector', sectorId: sector.id, surface: 'floorHeight', height: target,
+      if (Number.isFinite(target)) actions.push({ type: 'moveSector', sectorId: sector.id, surface: 'floorHeight', height: target,
         speed: effect.speed || 35, wait: 0, returnMode: 'stay', sound: 'DSPSTART' });
     }
   }
   return actions;
+}
+
+/** Stairs are built outward from the activating line, so distance orders them.
+ * Shared with `line-specials.js`: a Hexen stair special measures the same distance. */
+export function stairDistance(project, wall, sector) {
+  const a = project.map.vertices.find(vertex => vertex.id === wall?.a);
+  const b = project.map.vertices.find(vertex => vertex.id === wall?.b);
+  if (!a || !b) return 0;
+  const bounds = sector.bounds;
+  const cx = bounds ? (bounds.minX + bounds.maxX) / 2 : 0;
+  const cy = bounds ? (bounds.minY + bounds.maxY) / 2 : 0;
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  return Math.hypot(cx - mx, cy - my);
 }
 
 /** Sectors sharing a two-sided line with this one. */

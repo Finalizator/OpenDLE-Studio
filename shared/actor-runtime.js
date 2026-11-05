@@ -108,6 +108,9 @@ export function setActorState(project, entity, label, { restart = false } = {}) 
   if (!restart && state.index === target) return true;
   state.index = target;
   state.tics = 0;
+  // Entering a new state means its first frame has not run yet, even when the
+  // change happened from inside the previous frame's action list.
+  state.entered = false;
   entity.stateLabel = String(label);
   return true;
 }
@@ -141,7 +144,12 @@ export function actorTic(project, state, entity, moveTarget = true) {
     // Actions execute once, when the frame is entered.
     if (!runtime.entered) {
       runtime.entered = true;
+      const enteredIndex = runtime.index;
       runActions(project, state, entity, actor, frame.actions, { moveTarget });
+      // An action may have moved the machine (A_Jump, A_Look, A_Chase, Pain, ...).
+      // The new state's first frame must run from the top on the next tic, not be
+      // skipped by this frame's own countdown and advance.
+      if (runtime.index !== enteredIndex) return;
     }
     if (frame.duration < 0) return;
     runtime.tics--;
@@ -533,6 +541,7 @@ export function spawnActorProjectile(project, state, owner, projectileName, { sp
     // Explosions come from the missile's own Death states (A_Explode), not from a
     // radius invented here, so a mod's projectile behaves like its definition.
     speed: missileSpeed * TIC_RATE, damage: damageValue, diceSides: 8, radius: 0,
+    damageType: actor?.damageType || null,
     age: 0, color: '#ff8833', clipId: clips.fly, impactClipId: clips.impact,
     tracerId: actor?.flags?.SEEKERMISSILE === true ? '$player' : null,
   });
@@ -594,7 +603,12 @@ const targetDistance = (state, entity) => {
 };
 const meleeable = (state, entity) => targetDistance(state, entity) <= meleeRange;
 
-function actorFlag(actor, name) {
+function actorFlag(actor, name, entity) {
+  // A_ChangeFlag writes per-entity overrides; they shadow the actor's declared flags.
+  if (entity?.actorFlags) {
+    const key = Object.keys(entity.actorFlags).find(candidate => candidate.toLowerCase() === name.toLowerCase());
+    if (key !== undefined) return Boolean(entity.actorFlags[key]);
+  }
   return Boolean(actor?.flags?.[name]) || Boolean(actor?.flags?.[name.toUpperCase()]);
 }
 
@@ -602,11 +616,18 @@ function actorFlag(actor, name) {
  * Applies damage the way Doom does: health, the pain roll, and — when a monster
  * hurt another monster — a target switch, which is what makes infighting happen.
  */
-export function hurtActor(project, state, entity, amount, source = null) {
+export function hurtActor(project, state, entity, amount, source = null, damageType = null) {
   if (!entity || entity.type !== 'enemy' || (entity.health ?? 0) <= 0 || !(amount > 0)) return false;
   const actor = actorOf(project, entity);
+  // DamageFactor "Fire", 0 makes an actor immune to fire; 2 doubles the fire it takes.
+  // The compile stores each factor under both its authored case and lowercase.
+  if (damageType && actor?.damageFactors) {
+    const factor = actor.damageFactors[damageType] ?? actor.damageFactors[String(damageType).toLowerCase()] ?? 1;
+    if (factor !== 1) amount = Math.max(0, Math.floor(amount * factor));
+    if (!(amount > 0)) return false;
+  }
   entity.health = Math.max(0, entity.health - amount);
-  if (source && source !== state.player && source !== entity && !actorFlag(actor, 'NOINFIGHTING')) {
+  if (source && source !== state.player && source !== entity && !actorFlag(actor, 'NOINFIGHTING', entity)) {
     // A monster remembers who shot it, so it fights back against its own kind.
     entity.targetId = source.id;
   } else if (source === state.player) {
@@ -618,14 +639,15 @@ export function hurtActor(project, state, entity, amount, source = null) {
     state.physics?.remove(entity.id);
     return true;
   }
-  const chance = Math.max(0, Math.min(256, actor?.painChance ?? 0));
+  const typeChance = damageType ? (actor?.painChances?.[damageType] ?? actor?.painChances?.[String(damageType).toLowerCase()]) : undefined;
+  const chance = Math.max(0, Math.min(256, typeChance ?? actor?.painChance ?? 0));
   if (chance > 0 && randomDamage(state, 1, 256) <= chance) {
     // Pain interrupts whatever the monster was doing, and clears reaction time so
     // it can retaliate at once, exactly like P_DamageMobj.
     if (setActorState(project, entity, 'Pain')) {
-      const runtime = actorStateOf(entity);
-      runtime.reactionTime = 0;
-      saySound(state, actor?.sounds?.pain, entity);
+      // GZDoom plays the pain sound from the Pain state's own A_Pain frame, so
+      // playing it here too doubles the sound every time a monster flinches.
+      actorStateOf(entity).reactionTime = 0;
     }
   }
   return true;
@@ -647,7 +669,7 @@ function monsterHitscan(ctx, damage, diceSides, spread = 0) {
   if (hits === null) return;
   const amount = randomDamage(state, damage, diceSides);
   if (target === state.player) damagePlayer(state, amount);
-  else hurtActor(ctx.project, state, target, amount, entity);
+  else hurtActor(ctx.project, state, target, amount, entity, ctx.actor?.damageType || null);
 }
 
 /**
@@ -689,18 +711,26 @@ export const ACTIONS = {
     // Doom's A_Look only looks for a player, inside a 180 degree cone unless the
     // actor has LOOKALLAROUND, and wakes on gunfire through P_RecursiveSound. An
     // AMBUSH monster ignores the sound and only reacts to what it can see.
-    const fov = actorFlag(actor, 'LOOKALLAROUND') ? 360 : 180;
+    const fov = actorFlag(actor, 'LOOKALLAROUND', entity) ? 360 : 180;
     const seen = canSeePlayer(state, entity, 2048, fov);
-    if (!seen && (actorFlag(actor, 'AMBUSH') || entity.ambush || !hearsPlayer(state, entity))) return;
+    if (!seen && (actorFlag(actor, 'AMBUSH', entity) || entity.ambush || !hearsPlayer(state, entity))) return;
     setActorTarget(entity, state.player);
     saySound(state, actor.sounds?.see, entity);
     setActorState(ctx.project, entity, 'See');
   },
   A_LookEx(ctx) {
+    // GZDoom's signature is (flags, minseedist, maxseedist, maxheardist, fov, seestate):
+    // argument 0 is a flag bitfield, 2 and 1 bound the sight range, 4 is the view
+    // angle and 5 names the state to wake into. Reading 0 as a distance and 4 as the
+    // state label — the old mapping — made every A_LookEx with default flags blind.
     const { state, entity, actor } = ctx;
-    if (!canSeePlayer(state, entity, numArg(ctx, 0, 2048))) return;
+    const minSeed = numArg(ctx, 1, 0);
+    const maxSeed = numArg(ctx, 2, 0);
+    const fov = numArg(ctx, 4, 0) || 180;
+    if (!canSeePlayer(state, entity, maxSeed > 0 ? maxSeed : 2048, fov)) return;
+    if (minSeed > 0 && targetDistance(state, entity) <= minSeed) return;
     saySound(state, actor.sounds?.see, entity);
-    setActorState(ctx.project, entity, arg(ctx, 4) || 'See');
+    setActorState(ctx.project, entity, arg(ctx, 5) || 'See');
   },
   A_Chase(ctx) {
     const { state, entity, actor } = ctx;
@@ -726,8 +756,8 @@ export const ACTIONS = {
     // MISSILEMORE flags bias that roll the way Doom does.
     if (!canSeeTarget(state, entity, target, 2048)) return;
     let reach = Math.max(0, distance - 64) - 128;
-    if (actorFlag(actor, 'MISSILEMORE')) reach += 100;
-    if (actorFlag(actor, 'MISSILEEVENMORE')) reach += 200;
+    if (actorFlag(actor, 'MISSILEMORE', entity)) reach += 100;
+    if (actorFlag(actor, 'MISSILEEVENMORE', entity)) reach += 200;
     if (reach < 200 && randomDamage(state, 1, 256) < reach) return;
     if (setActorState(ctx.project, entity, missileLabel)) runtime.reactionTime = actor.reactionTime || 8;
   },
@@ -746,7 +776,9 @@ export const ACTIONS = {
     saySound(ctx.state, ctx.actor.sounds?.pain, ctx.entity);
   },
   A_Scream(ctx) { saySound(ctx.state, ctx.actor.sounds?.death, ctx.entity); },
-  A_XScream(ctx) { saySound(ctx.state, ctx.actor.sounds?.death, ctx.entity); },
+  // GZDoom's A_XScream plays the gib sound ("misc/gibbed"), not the death scream,
+  // which A_Scream already plays from the ordinary Death state.
+  A_XScream(ctx) { saySound(ctx.state, 'misc/gibbed', ctx.entity); },
   A_ActiveSound(ctx) { saySound(ctx.state, ctx.actor.sounds?.active, ctx.entity); },
   A_AlertMonsters(ctx) {
     const { state, entity } = ctx;
@@ -859,7 +891,7 @@ export const ACTIONS = {
       if (!target) continue;
       let damage = fixedDamage;
       if (!damage) for (let roll = 0; roll < rolls; roll++) damage += randomDamage(state, 1, 8);
-      hurtActor(project, state, target, damage, sprayOrigin(state, entity));
+      hurtActor(project, state, target, damage, sprayOrigin(state, entity), ctx.actor?.damageType || null);
       spawnEffect(project, state, spray, { x: target.x, y: target.y,
         z: floorAt(state, target) + (target.height ?? 56) / 4 });
     }
@@ -926,7 +958,7 @@ export const ACTIONS = {
     for (const other of state.entities) {
       if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
       const distance = Math.hypot(other.x - entity.x, other.y - entity.y);
-      if (distance < radius && reaches(other)) hurtActor(project, state, other, falloff(distance), blastSource(state, entity));
+      if (distance < radius && reaches(other)) hurtActor(project, state, other, falloff(distance), blastSource(state, entity), ctx.actor?.damageType || null);
     }
     saySound(state, 'DSBAREXP', entity);
   },
@@ -937,13 +969,14 @@ export const ACTIONS = {
     for (const other of state.entities) {
       if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
       if (Math.hypot(other.x - entity.x, other.y - entity.y) >= radius) continue;
-      hurtActor(project, state, other, damage, blastSource(state, entity));
+      hurtActor(project, state, other, damage, blastSource(state, entity), ctx.actor?.damageType || null);
     }
   },
   A_Jump(ctx) {
     const { state, entity, actor } = ctx;
     const chance = numArg(ctx, 0, 0);
-    if (randomDamage(state, 1, 256) > chance && chance > 0) return;
+    // GZDoom: a chance of 256 (or more) always jumps, 0 never does.
+    if (chance < 256 && randomDamage(state, 1, 256) > chance) return;
     const offsets = ctx.args.slice(1).filter(value => value !== undefined && value !== null);
     if (!offsets.length) return;
     const runtime = actorStateOf(entity);
@@ -1027,10 +1060,10 @@ export const ACTIONS = {
     const holder = inventoryHolder(ctx.state, actorTarget(ctx.state, ctx.entity));
     if (holder) ACTIONS.A_GiveInventory({ ...ctx, entity: holder });
   },
-  A_ClearTarget(ctx) { actorStateOf(ctx.entity).target = null; },
+  A_ClearTarget(ctx) { setActorTarget(ctx.entity, null); },
   A_SetScale(ctx) { ctx.entity.scale = numArg(ctx, 0, 1); },
   A_ChangeFlag(ctx) {
-    const flag = String(arg(ctx, 0) || '');
+    const flag = String(arg(ctx, 0) || '').toUpperCase();
     const value = arg(ctx, 1, true);
     ctx.entity.actorFlags ||= {};
     ctx.entity.actorFlags[flag] = typeof value === 'boolean' ? value : Number(value) !== 0;
@@ -1264,7 +1297,7 @@ export function stepThingGravity(project, state, dt, { levelGravity = SV_GRAVITY
       // Rapier already drops the objects that have a body.
       if (entity.physics && entity.physics.body !== 'none') continue;
       const actor = actorOf(project, entity);
-      if (!actor || actorFlag(actor, 'NOGRAVITY') || actorFlag(actor, 'FLOAT')) {
+      if (!actor || actorFlag(actor, 'NOGRAVITY', entity) || actorFlag(actor, 'FLOAT', entity)) {
         entity.fallSpeed = 0;
         continue;
       }

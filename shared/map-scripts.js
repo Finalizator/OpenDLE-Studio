@@ -721,7 +721,15 @@ export function createMapScripts(project, state, callbacks = {}) {
     if (AMMO_NAMES[key] && amount) { addAmmo(state, AMMO_NAMES[key], amount); return; }
     if (WEAPON_NAMES[key] && amount > 0) { state.inventory.weapons.add(WEAPON_NAMES[key]); return; }
     if (KEY_NAMES[key] && amount > 0) { state.inventory.keys.add(KEY_NAMES[key]); return; }
-    if (ARMOR_NAMES[key] && amount > 0) { state.playerStats.armor = Math.max(state.playerStats.armor, ARMOR_NAMES[key]); return; }
+    if (ARMOR_NAMES[key] && amount > 0) {
+      // BasicArmorSavePercent: green saves a third (divisor 3), blue saves half (divisor 2).
+      const divisor = key === 'bluearmor' ? 2 : 3;
+      if (state.playerStats.armor < ARMOR_NAMES[key]) {
+        state.playerStats.armor = ARMOR_NAMES[key];
+        state.playerStats.armorDivisor = divisor;
+      }
+      return;
+    }
     if (HEALTH_NAMES[key] && amount > 0) {
       const [each, most] = HEALTH_NAMES[key];
       if (state.playerStats.health >= most) return;

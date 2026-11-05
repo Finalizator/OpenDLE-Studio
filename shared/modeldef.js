@@ -16,7 +16,7 @@
  * ```
  *
  * The block names an actor class, declares the model files it may show (`Model <index> "<file>"`)
- * and then maps sprite frames onto them with `FrameIndex <sprite> <letter> <frame> <model>`.
+ * and then maps sprite frames onto them with `FrameIndex <sprite> <letter> <model index> <frame number>`.
  * `ROTATING` spins the mesh inside its own frame around `Rotation-Vector` at
  * `Rotation-Speed` degrees per tic, which is how a mod makes a decoration turn without a
  * single line of script — so it is imported as data onto the actor, not faked per object.
@@ -82,10 +82,10 @@ function parseModelBlock(name, body) {
         if (args.length >= 2) record.models.push({ index: Number(args[0]) || 0, file: args[1] });
         break;
       case 'frameindex':
-        // FrameIndex <sprite> <letter> <frame> <model>
+        // FrameIndex <sprite> <letter> <model index> <frame number>
         if (args.length >= 4) {
           record.frames.push({ sprite: String(args[0]).toUpperCase(), letter: String(args[1]).toUpperCase(),
-            frame: Number(args[2]) || 0, model: Number(args[3]) || 0 });
+            frame: Number(args[3]) || 0, model: Number(args[2]) || 0 });
         }
         break;
       case 'rotating': record.rotating = true; break;

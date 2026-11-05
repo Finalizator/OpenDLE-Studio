@@ -127,8 +127,10 @@ export function actorFrameRun(actor, label) {
     // Real state data terminates a block before the next label, but a list that
     // omits the terminator must not bleed into the following state.
     if (index > start && label0 && frames[index].label && frames[index].label !== label0) break;
+    // A zero-duration state (`SKEL G 0 A_FaceTarget`) runs and falls through; it is not a
+    // block terminator. `goto`/`loop`/`stop`/`wait`/`fail` records and the next label end the
+    // run, never the duration.
     run.push(frames[index]);
-    if (!(frames[index].duration > 0)) break;
   }
   return run;
 }

@@ -171,7 +171,10 @@ export function createGameHandler({ root = bundleRoot, store, token, version, li
           try { parsed = JSON.parse(body.toString('utf8')); }
           catch { return sendJson(response, 400, { error: 'Request body must be valid JSON' }); }
           if (!parsed || !Object.hasOwn(parsed, 'projectId')) return sendJson(response, 400, { error: 'Save request is missing project identity. Refresh the editor before saving.' });
-          const snapshot = store.update(parsed.project, parsed.revision, parsed.projectId);
+          // The shared editor answers a `stale-revision` conflict by re-saving with
+          // `replaceStale`; the game honours the same protocol the studio serves.
+          const snapshot = store.update(parsed.project, parsed.revision, parsed.projectId,
+            { replaceStale: parsed.replaceStale === true });
           return sendJson(response, 200, snapshot);
         }
         if (pathname === '/api/open-browser' && request.method === 'POST') {
@@ -200,7 +203,14 @@ export function createGameHandler({ root = bundleRoot, store, token, version, li
       return sendFile(request, response, file);
     } catch (error) {
       const status = error.status || 400;
-      return sendJson(response, status, { error: status === 413 ? 'Request is too large' : error.message });
+      // A save conflict says which one it is, exactly as the studio reports it, so the
+      // editor can tell a stale save (which it resolves itself) from one aimed at a
+      // project another window opened (which it cannot).
+      return sendJson(response, status, {
+        error: status === 413 ? 'Request is too large' : error.message,
+        ...(error.code ? { code: error.code } : {}),
+        ...(error.revision !== undefined ? { revision: error.revision } : {}),
+      });
     }
   };
 }

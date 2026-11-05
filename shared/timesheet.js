@@ -169,13 +169,17 @@ export function startTimesheetRun(project, state, timesheetId, { loop = null, re
   if (!sheet) return false;
   const book = runs(state);
   const existing = book.get(timesheetId);
+  // `restart: no` on a timeline that is still going (playing or paused) leaves it exactly as
+  // it is — that is what "don't restart" means. A run that reached here while not playing has
+  // finished on its own, so it starts from the top again rather than parking at its old finish
+  // line and never playing another cue.
   if (existing && !restart && existing.playing) return true;
   const run = {
-    time: existing && !restart ? existing.time : 0,
+    time: 0,
     playing: true,
     paused: false,
     loop: loop === null ? Boolean(sheet.loop) : Boolean(loop),
-    passes: existing && !restart ? existing.passes || 0 : 0,
+    passes: 0,
     due: new Set(),
   };
   // Cues on the first frame have not been crossed by a clock, so they are queued here; without
