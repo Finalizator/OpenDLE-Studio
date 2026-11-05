@@ -29,7 +29,7 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   'pathCompleted', 'pathSampler', 'viewCameraHeight', 'teleportFog', 'lightning',
   // A camera glide is a frame-by-frame animation, and the sequence number only names the next
   // camera a rule creates; saving either would record a moment rather than the game.
-  'cameraMoves', 'cameraSequence',
+  'cameraMoves', 'cameraSequence', 'rumbles',
   // The speed the player is travelling at is read off the momentum every tic, so it is derived
   // rather than part of the game state.
   'speed']);

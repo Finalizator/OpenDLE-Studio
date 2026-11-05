@@ -308,6 +308,10 @@ export function hudBinding(binding, state) {
   if (binding === 'game:binding') return state.bindingKey ? `Press a key or mouse button for ${state.bindingKey}; Escape cancels` : 'Select a binding to change it';
   if (/^game:save[1-6]$/.test(binding)) return state.saveSlots?.[Number(binding.at(-1)) - 1] || 'Empty slot';
   if (binding === 'game:saveStatus') return state.saveStatus || '';
+  // Which controller is plugged in, or the words for the fact that none is: a player looking for
+  // a reason their pad does nothing should not have to open the editor to find it.
+  if (binding === 'game:controller') return state.controllerStatus
+    || (state.settings?.gamepadEnabled === false ? 'Controllers are off' : 'No controller connected');
   if (binding === 'message') return state.settings?.messages === false ? '' : state.messageTime > 0 ? state.message : '';
   if (binding.startsWith('var:')) return state.variables[binding.slice(4)];
   return playerBinding(binding, state);

@@ -159,6 +159,8 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     hudState: createHUDState(project),
     randomSeed: 1,
     sounds: [],
+    // Rumbles a rule asked for this frame, drained by whatever is holding the controllers.
+    rumbles: [],
     soundOverflow: 0,
     projectiles: [],
     projectileSequence: 0,
@@ -665,6 +667,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   let currentSignal = null;
   const deliveredSignals = new Set();
   state.sounds.length = 0;
+  state.rumbles.length = 0;
   advanceHUD(project, state.hudState, dt, 'interface');
   runRules('interface');
   dispatchSignals('interface');
@@ -1359,6 +1362,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         }
         case 'setPlayerPitch':
           player.pitch = action.pitch * Math.PI / 180;
+          break;
+        case 'rumbleController':
+          // Kept as a request for the frame rather than played here: the runtime has no access to
+          // a controller, and the page that does drains this after the step.
+          if (state.settings.gamepadEnabled !== false && state.settings.gamepadRumble !== false) {
+            state.rumbles.push({ strength: action.strength, seconds: action.seconds });
+          }
           break;
         // ---- Cameras ---------------------------------------------------------------------
         case 'createCamera': {

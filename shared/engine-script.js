@@ -230,6 +230,10 @@ export const ENGINE_ACTIONS = [
     { ...numeric('z', undefined, -32768, 32768), optional: true },
     { ...numeric('angle', undefined, -3600, 3600), optional: true }, { ...numeric('pitch', undefined, -89, 89), optional: true },
     numeric('seconds', 2, 0, 3600), choice('easing', 'easeInOut', EASINGS)] },
+  // Controllers. A rumble is a game event like a sound, so a rule says when it happens rather
+  // than the engine guessing that being shot should buzz.
+  { type: 'rumbleController', label: 'Controller: rumble', fields: [
+    { ...numeric('strength', .6, 0, 1), hint: 'How hard, 0 to 1' }, numeric('seconds', .2, .01, 5)] },
   { type: 'followCamera', label: 'Camera: follow an object', fields: [
     cameraRef('camera', '$active'), { name: 'target', kind: 'string', value: '$player' },
     choice('copyAngle', 'no', ['yes', 'no'])] },

@@ -40,6 +40,8 @@ page.
   switch levels in the editor or during play.
 - **Design the interface:** edit HUDs and menus with responsive layouts,
   animations and gameplay bindings, including native browser save/load slots.
+- **Play with a controller:** PS5, PS4, Xbox and Switch Pro pads work with no setup —
+  sticks, triggers, d-pad and menus — and a rule can rumble them.
 - **Browser-native rendering:** WebGPU preferred, WebGL2 fallback, Rapier
   physics, portable GLSL effects and a [shader engine](Docs/shader-engine.md)
   ported from *3D Game Shaders For Beginners* with events to drive it at play time.

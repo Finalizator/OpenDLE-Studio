@@ -24,6 +24,14 @@ export const GAME_SETTINGS = {
   difficulty: { value: 4, min: 1, max: 5, step: 1 },
   bunnyhop: { value: false },
   bunnyhopGain: { value: .02, min: 0, max: .1, step: .01 },
+  // Controllers. A pad is read as the same key codes the keyboard produces, so these only decide
+  // how much travel a stick needs and how fast the view turns — the layout is the browser's
+  // standard mapping and does not need a setting.
+  gamepadEnabled: { value: true },
+  gamepadDeadzone: { value: .2, min: .05, max: .6, step: .05 },
+  gamepadLookSensitivity: { value: 1, min: .1, max: 3, step: .1 },
+  gamepadInvertY: { value: false },
+  gamepadRumble: { value: true },
 };
 export const GAME_BINDINGS = {
   KeyW: 'Forward', KeyS: 'Backward', KeyA: 'Strafe left', KeyD: 'Strafe right',
@@ -32,7 +40,7 @@ export const GAME_BINDINGS = {
 };
 export const GAME_HUD_BINDINGS = [...Object.keys(GAME_SETTINGS).map(key => `setting:${key}`),
   ...Object.keys(GAME_BINDINGS).map(key => `key:${key}`), 'game:screen', 'game:binding',
-  ...Array.from({ length: 6 }, (_, index) => `game:save${index + 1}`), 'game:saveStatus'];
+  ...Array.from({ length: 6 }, (_, index) => `game:save${index + 1}`), 'game:saveStatus', 'game:controller'];
 
 export function setGameScreen(state, target) {
   if (state.intermission && !state.intermission.confirmed && target !== 'intermission') return;

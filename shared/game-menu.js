@@ -8,6 +8,7 @@ const aliases = {
   episodemenu: 'episode', quitmenu: 'quit', readthismenu: 'help',
   savegamemenu: 'save', loadgamemenu: 'load',
   soundoptions: 'audio', mouseoptions: 'controls', controls: 'controls', videomode: 'display',
+  gamepadoptions: 'controller', joystickoptions: 'controller',
 };
 const cvars = { snd_sfxvolume: 'volume', snd_musicvolume: 'musicVolume', mouse_sensitivity: 'sensitivity',
   invertmouse: 'invertY', fov: 'fov', vid_brightness: 'brightness', show_messages: 'messages', cl_run: 'alwaysRun',
@@ -300,10 +301,22 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
     { text: 'Music: MIDI and Doom MUS soundtracks are synthesized.\nEmbedded WAV / OGG / MP3 tracks play directly.', fontSize: 7 * sy });
   element('display', 'text', 'Display compatibility', 24, 42, 272, 64,
     { text: 'Browser rendering overrides are in the editor Engine tweaks. Imported renderer-specific controls require translation.', align: 'left' });
-  setting('controls', 'sensitivity', 'Mouse sensitivity', 45);
-  setting('controls', 'invertY', 'Invert mouse Y', 70);
-  setting('controls', 'alwaysRun', 'Always run', 95);
-  button('controls', 'Key bindings', 130, [go('keys')]);
+  setting('controls', 'sensitivity', 'Mouse sensitivity', 36);
+  setting('controls', 'invertY', 'Invert mouse Y', 58);
+  setting('controls', 'alwaysRun', 'Always run', 80);
+  button('controls', 'Controller', 102, [go('controller')]);
+  button('controls', 'Key bindings', 126, [go('keys')]);
+  // The controller page: the same readout the editor prints, plus what each physical button does
+  // on this player's own pad, named the way it is printed on it (Cross, not "button 0").
+  page('controller', 'Controller', 'controls');
+  element('controller', 'text', 'Controller status', 20, 32, 280, 12, { binding: 'game:controller', fontSize: 7 * sy });
+  setting('controller', 'gamepadEnabled', 'Controllers', 52);
+  setting('controller', 'gamepadDeadzone', 'Stick deadzone', 74);
+  setting('controller', 'gamepadLookSensitivity', 'Look speed', 96);
+  setting('controller', 'gamepadInvertY', 'Invert stick Y', 118, GAME_SETTINGS.gamepadInvertY.step);
+  element('controller', 'text', 'Controller help', 20, 142, 280, 40,
+    { text: 'Left stick: move   Right stick: look / turn\nD-pad: menus and turning   Cross / A: jump, confirm\nR2 / RT: fire   L2 / LT: alt fire   Circle / B: use',
+      fontSize: 7 * sy, align: 'left' });
   Object.entries(GAME_BINDINGS).forEach(([key, label], index) => {
     const y = 31 + index * 13;
     element('keys', 'text', label, 30, y, 140, 11, { text: label, align: 'left' });

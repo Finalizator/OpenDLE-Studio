@@ -247,6 +247,38 @@ the chain breaks. It is off by default and tuned by `bunnyhopGain`.
 
 ---
 
+### Controllers
+
+A PlayStation 5, PlayStation 4, Xbox or Switch Pro controller works without any setup:
+browsers report all of them with the same standard layout, and the engine translates them into
+the key codes the keyboard produces, so a pad drives events, ACS button bits, the weapon slots
+and the menus with no controller-specific rule at all.
+
+| Input | Action |
+| --- | --- |
+| Left stick | Forward / back / strafe |
+| Right stick | Look and turn |
+| D-pad | Arrow keys — turning, and menu navigation |
+| Cross / A | Jump, and confirm on a menu |
+| Circle / B | Use, and back on a menu |
+| Square / X | Run |
+| R2 / RT | Fire |
+| L2 / LT | Alt fire |
+| Options / Menu | Pause |
+
+A pad button presses the **action** its key is bound to, so rebinding Forward to the up arrow
+moves the left stick with it. The pad's own settings — deadzone, look speed, inverted look and
+whether it rumbles — are in the editor's **Engine tweaks**, because an imported game's classic
+menus have no Controls page.
+
+```text
+Enemy dies:
+  Controller: rumble (strength = 0.8, seconds = 0.3)
+```
+
+`rumbleController` is the one thing a rule has to ask for: a game decides what is worth a buzz,
+and the engine does not guess that being shot should be one.
+
 ### Cameras
 
 A camera is an object with `type: 'camera'` — place one in the level, add a
@@ -491,6 +523,7 @@ keep their existing global-variable output.
 | enable / disable the shader engine stack | `setPostFxStack` | — | enabled |
 | enable / disable one shader engine pass | `setPostFxPass` | — | kind, enabled |
 | set a shader engine parameter | `setPostFxParam` | — | kind, param, value |
+| rumble the controller | `rumbleController` | — | strength, seconds |
 | create a camera | `createCamera` | — | x, y, z, angle, pitch, fov, name, activate |
 | switch the view to a camera | `switchCamera` | — | camera |
 | set camera position | `setCameraPosition` | — | camera, x, y, z |

@@ -4177,6 +4177,50 @@ tall canvas inside a 1010 px window and the bottom of the status bar sat below t
 canvas now takes the screen's own size, which is what GZDoom does and what a field of view that
 widens at the sides is for.
 
+### Controllers: PS5, PS4, Xbox and anything with the standard layout
+
+A controller is not a second input system. `shared/gamepad.js` reads the pads the browser exposes
+and answers with **the same key codes the keyboard produces**, so a pad drives every event, ACS
+`GetPlayerInput` bit, weapon slot and menu row that already existed — with no controller code in
+the runtime, the event sheet or the HUD. `PAD_DEFAULT_ACTIONS` is that translation: a button names
+the **action** (Doom's key code for it) and `settings.bindings` decides which physical code that
+action answers to today, so rebinding Forward to the up arrow moves the left stick with it.
+
+The layout is the one browsers guarantee — `mapping === 'standard'` — which DualSense, DualShock 4,
+Xbox One/Series and Switch Pro all report on Windows, macOS and Linux. The `id` string is used
+only to name the controller and to label its buttons (`padLabels`), never to decide how a press is
+read: calling the confirm button "A" on a PlayStation pad would be wrong on half the controllers in
+the world. A pad that reports a **non-standard** mapping is left alone and says so, rather than
+having its buttons guessed at — a button that means "jump" on one device and "pause" on another is
+worse than a pad that does not respond.
+
+Three separate mechanisms, deliberately:
+
+- **The sticks are keys.** The left stick is `KeyW`/`KeyS`/`KeyA`/`KeyD` held while it is pushed,
+  through `stickDirection` with hysteresis (pressing takes more travel than releasing), so a stick
+  resting on the threshold cannot chatter.
+- **The right stick is not.** It feeds `lookPlayer` continuously, scaled by the frame time so the
+  view turns at the same speed on a slow machine and a fast one, and by both the stick's own look
+  speed and the mouse sensitivity — one slider then turns the view at one speed whatever is in
+  your hands. Inside the deadzone `shaped()` returns exactly zero, because a view that drifts
+  while the stick is untouched is the complaint every controller port has to answer.
+- **A menu is a third context.** Menus are driven through the DOM (a row is focused, then
+  clicked), so `PAD_MENU_ACTIONS` gives Cross `Enter` and Circle `Escape` there — and Circle must
+  *not* mean Escape while playing, or using a door would open the pause menu. Both the keyboard
+  handler and the pad call one `handleMenuKey`, so a press cannot arrive twice.
+
+Rumble is an **event**, not an inference: `rumbleController` pushes a request and the page that
+holds the controllers plays it through `vibrationActuator.playEffect('dual-rumble', …)`. The
+engine does not decide that being shot is worth a buzz — a game does, in a rule — and the request
+is transient state (`state.rumbles`), cleared every frame like `state.sounds` and excluded from
+saves.
+
+Settings live in **Engine tweaks** (`gamepadEnabled`, `gamepadDeadzone`, `gamepadLookSensitivity`,
+`gamepadInvertY`, `gamepadRumble`), which is where browser-build settings already live: an imported
+game's classic Doom options page has no Controls screen at all. The generated menus also get a
+**Controls → Controller** page with the same controls and a `game:controller` readout, so a project
+built in the studio can show which pad is plugged in without opening the editor.
+
 ### A weapon's wrist runs behind the status bar
 
 Doom draws psprites inside the **view window**, which is 168 of the 200 units tall when the status

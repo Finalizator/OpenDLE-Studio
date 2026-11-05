@@ -77,6 +77,7 @@ import { createPixiEditor, isEditableImage, PIXIEDITOR_KINDS } from './pixiedito
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
 import { installIntermission } from '/shared/intermission.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen, changeSetting, verticalFov } from '/shared/game-settings.js';
+import { gamepadLook, playRumble, readGamepads, rumbleEffect } from '/shared/gamepad.js';
 import { statusBarHidden } from '/shared/game-view.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
 import { cloneForLevelSwitch, selectGameLevel } from '/shared/game-levels.js';
@@ -1964,7 +1965,14 @@ function renderEngineTweaks() {
   for (const [key, label] of [['masterVolume', 'Overall sound level (0 = silent, 1 = full)'], ['muted', 'Mute preview audio'],
     ['renderResolution', 'Render resolution'], ['fov', 'Field of view — horizontal degrees of a 4:3 view'],
     ['resolution', 'Render scale'], ['brightness', 'Brightness'],
-    ['bunnyhop', 'Simulated bunnyhop (speed gain while chaining jumps)'], ['bunnyhopGain', 'Bunnyhop speed gain per chained jump']]) {
+    ['bunnyhop', 'Simulated bunnyhop (speed gain while chaining jumps)'], ['bunnyhopGain', 'Bunnyhop speed gain per chained jump'],
+    // Controllers: an imported game's classic menus have no Controls page, so this is the one
+    // place every project can reach. The pad itself needs no layout setting — the browser
+    // normalises PS5, PS4, Xbox and Switch pads onto one mapping.
+    ['gamepadEnabled', 'Controllers (PS5, PS4, Xbox, Switch and other standard-mapping pads)'],
+    ['gamepadDeadzone', 'Stick deadzone (how far a stick must move before it counts)'],
+    ['gamepadLookSensitivity', 'Stick look speed (the mouse sensitivity multiplies this too)'],
+    ['gamepadInvertY', 'Invert the look stick'], ['gamepadRumble', 'Rumble when a rule asks for it']]) {
     const wrapper = make('label', label), spec = GAME_SETTINGS[key];
     if (spec.options) {
       const select = document.createElement('select');
@@ -4343,7 +4351,8 @@ async function togglePreviewFullscreen() {
 $('preview-fullscreen').addEventListener('click', guard(togglePreviewFullscreen));
 $('stop').addEventListener('click', stopPreview);
 function backFromGameMenu(event) {
-  event.preventDefault();
+  // The dialog's own `cancel` event, the Escape key and a controller's Circle all land here.
+  event?.preventDefault?.();
   if (runtime?.bindingKey) { runtime.bindingKey = null; return; }
   if (!runtime) return;
   if (runtime.gameScreen === 'playing' || runtime.gameScreen === 'pause') pauseGame();
@@ -4416,28 +4425,44 @@ document.addEventListener('pointerlockerror', () => {
 document.addEventListener('mousemove', event => {
   if (runtime && !runtime.hudState.cursor && document.pointerLockElement === $('preview')) lookPlayer(runtime, event.movementX, event.movementY);
 });
+/**
+ * One menu key, from the keyboard or from a controller.
+ *
+ * Menus are driven through the DOM — the focused row is focused and activated by clicking it — so
+ * a controller cannot reach them by adding codes to the key set alone: a synthetic keypress would
+ * be the other way, and then one press would arrive twice. One function both callers share is
+ * what keeps a pad and a keyboard the same thing here too.
+ *
+ * Answers whether the press was a menu key, so the caller knows not to treat it as gameplay.
+ */
+function handleMenuKey(code) {
+  if (!runtime || runtime.gameScreen === 'playing') return false;
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape'].includes(code)) return false;
+  if (code === 'Escape') { backFromGameMenu(); return true; }
+  if (['ArrowLeft', 'ArrowRight'].includes(code)) {
+    if (!keys.has(code)) pressed.add(code);
+    keys.add(code);
+    return true;
+  }
+  const buttons = [...$('hud-overlay').querySelectorAll('[role="button"]')]
+    .filter(node => node.tabIndex === 0 && node.dataset.menuSelectable !== 'false');
+  const index = buttons.findIndex(node => node.dataset.hudId === runtime.hudState.focused);
+  if (code === 'Enter') buttons[index < 0 ? 0 : index]?.click();
+  else buttons[(index < 0 ? code === 'ArrowDown' ? 0 : buttons.length - 1
+    : (index + (code === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length)]?.focus();
+  return true;
+}
+
 document.addEventListener('keydown', event => {
   if (runtime && $('play-dialog').open) {
     if (event.target === $('play-level')) return;
-    if (event.code === 'Escape') { backFromGameMenu(event); return; }
     if (runtime.bindingKey && event.code !== 'Escape') {
       event.preventDefault();
       try { bindKey(runtime, event.code); } catch (error) { mouseStatus(error.message, true); }
       return;
     }
     if (runtime.gameScreen !== 'playing') {
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(event.code)) {
-        event.preventDefault(); event.stopPropagation();
-        if (['ArrowLeft', 'ArrowRight'].includes(event.code)) {
-          if (!keys.has(event.code)) pressed.add(event.code);
-          keys.add(event.code); return;
-        }
-        const buttons = [...$('hud-overlay').querySelectorAll('[role="button"]')].filter(node => node.tabIndex === 0 && node.dataset.menuSelectable !== 'false');
-        const index = buttons.findIndex(node => node.dataset.hudId === runtime.hudState.focused);
-        if (event.code === 'Enter') buttons[index < 0 ? 0 : index]?.click();
-        else buttons[(index < 0 ? event.code === 'ArrowDown' ? 0 : buttons.length - 1
-          : (index + (event.code === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length)]?.focus();
-      }
+      if (handleMenuKey(event.code)) { event.preventDefault(); event.stopPropagation(); }
       return;
     }
   }
@@ -4447,6 +4472,58 @@ document.addEventListener('keydown', event => {
   keys.add(event.code);
 }, true);
 document.addEventListener('keyup', event => { keys.delete(event.code); });
+
+/**
+ * Says what is plugged in, in the status line and in the pause menu's own readout, so "the
+ * controller does not work" has an answer the player can see.
+ */
+function setControllerStatus(state, report) {
+  state.controllerStatus = report;
+  // The menu's binding reads this, so the change has to look like a setting change to redraw.
+  if (state.hudState) state.hudState.controller = report;
+  state.settingsRevision++;
+  status(report ? `Controller connected: ${report}` : 'Controller disconnected');
+}
+
+/** What the pads said last frame, for the sticks' hysteresis and the buttons' press edges. */
+let padState = { held: new Map(), sticks: new Map(), looks: new Map() };
+let padReport = '';
+/**
+ * Reads the controllers once per frame.
+ *
+ * Nothing else in the engine knows a pad exists: this answers with the same key codes the
+ * keyboard produces plus a look delta for the right stick, so the runtime, the menus and the
+ * event sheet need no controller code at all. The only visible side effect is a line saying what
+ * is plugged in, which is the difference between "the controller is not working" and "the
+ * controller is not connected".
+ */
+function pollGamepads(state, dt) {
+  const empty = { keys: new Set(), pressed: new Set() };
+  if (!navigator.getGamepads || !state.settings.gamepadEnabled) {
+    if (padReport) setControllerStatus(state, '');
+    return empty;
+  }
+  const pads = [...navigator.getGamepads()].filter(Boolean);
+  // On a menu screen the same buttons mean confirm and back rather than jump and use: see
+  // PAD_MENU_ACTIONS — a Circle that meant Escape while playing would pause the game on a door.
+  const result = readGamepads(pads, state.settings, padState, { menu: state.gameScreen !== 'playing' });
+  padState = { held: result.held, sticks: result.sticks, looks: result.looks };
+  const report = result.connected.length
+    ? result.connected.map(pad => `${pad.name}${pad.standard ? '' : ' (unsupported layout)'}`).join(', ')
+    : '';
+  // Only a change is announced: a status line every frame is noise, and the pause menu carries
+  // the same text for anyone who missed it.
+  if (report !== padReport) {
+    padReport = report;
+    setControllerStatus(state, report);
+  }
+  // A menu is driven through the DOM, so its presses go through the same menu handler the
+  // keyboard uses; in play the codes are merged into the key set and the runtime reads them.
+  for (const code of result.pressed) handleMenuKey(code);
+  const look = gamepadLook(result, dt);
+  if ((look.x || look.y) && !state.hudState.cursor) lookPlayer(state, look.x, look.y);
+  return result;
+}
 window.addEventListener('blur', () => {
   lookDrag = null; keys.clear(); pressed.clear();
   if (runtime) { runtime.input.mouseX = 0; runtime.input.mouseY = 0; }
@@ -4465,8 +4542,14 @@ function frame(now) {
       const onMenu = runtime.gameScreen !== 'playing';
       previewRenderer?.updateScreenInteraction?.();
       addonHost.emit('beforeStep', runtime, dt);
-      stepRuntime(previewProject, runtime, dt, onMenu ? keys : mappedKeys(keys, runtime.settings),
-        onMenu ? pressed : mappedKeys(pressed, runtime.settings)); pressed.clear();
+      // A controller is the same input as the keyboard: its buttons add the key codes its actions
+      // are bound to, and its right stick turns the view the way the mouse does. Both are added
+      // here, once per frame, so an event, an ACS button bit or a menu row cannot tell them apart.
+      const pad = pollGamepads(runtime, dt);
+      const heldKeys = pad.keys.size ? new Set([...keys, ...pad.keys]) : keys;
+      const pressedKeys = pad.pressed.size ? new Set([...pressed, ...pad.pressed]) : pressed;
+      stepRuntime(previewProject, runtime, dt, onMenu ? heldKeys : mappedKeys(heldKeys, runtime.settings),
+        onMenu ? pressedKeys : mappedKeys(pressedKeys, runtime.settings)); pressed.clear();
       addonHost.emit('afterStep', runtime, dt);
       addonHost.emit('frame', dt, runtime);
       if (settingsRevision !== runtime.settingsRevision) {
@@ -4497,6 +4580,11 @@ function frame(now) {
         requestAnimationFrame(frame); return;
       }
       frameParts.step = performance.now() - frameStart;
+      // A rumble a rule asked for is played by whoever holds the controllers, which is this page.
+      if (runtime.rumbles?.length) {
+        const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+        for (const request of runtime.rumbles.splice(0)) playRumble(pads, rumbleEffect(request));
+      }
       audioPlayer?.update(runtime);
       frameParts.audio = performance.now() - frameStart - frameParts.step;
       previewRenderer.render(runtime, runtime.gameScreen === 'playing' || runtime.ambientWorld ? dt : 0);
