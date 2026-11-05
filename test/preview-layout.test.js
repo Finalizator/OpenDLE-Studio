@@ -30,3 +30,22 @@ test('the preview toolbar keeps a one-click way back from a hidden status bar', 
   // never missing before the player has done anything.
   assert.match(app, /if \(statusBarHidden\(snapshot\.hud, nextRuntime\.settings\)\) \{[\s\S]{0,400}?changeSetting\(nextRuntime, 'viewSize', 10\)/);
 });
+
+test('the editor tab strip scrolls sideways instead of clipping its own labels', () => {
+  // The strip is a fixed 26px row. `overflow: auto` put a horizontal scrollbar *inside*
+  // that row, which took 15px of it and cut every tab label in half: on a window narrower
+  // than the whole strip, the row of tabs read as one unreadable smear. It scrolls
+  // sideways only, the scrollbar is hidden (the ‹ › buttons drive it), and the buttons keep
+  // their own width so a crowded strip scrolls rather than squashing the labels.
+  const strip = /\.document-tabs\s*\{([^}]*)\}/.exec(css);
+  assert.ok(strip, 'the tab strip rule exists');
+  assert.match(strip[1], /overflow-x:\s*auto/);
+  assert.match(strip[1], /overflow-y:\s*hidden/);
+  assert.match(strip[1], /scrollbar-width:\s*none/);
+  assert.match(strip[1], /height:\s*26px/);
+  assert.doesNotMatch(strip[1], /overflow:\s*auto/, 'a two-axis scrollbar clips the labels');
+  assert.match(css, /\.document-tabs::-webkit-scrollbar\s*\{[^}]*display:\s*none/);
+  assert.match(css, /\.document-tabs button\s*\{[^}]*flex:\s*0 0 auto/);
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /function scrollTabs\(direction\)/, 'the arrows are the way to reach the hidden tabs');
+});

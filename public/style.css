@@ -53,7 +53,9 @@ header { grid-column: 3; display: flex; align-items: center; gap: 2px; min-width
 header > button { flex: 0 0 auto; background: transparent; padding: 4px; font-size: 10px; }
 #menu-toggle { text-transform: uppercase; }
 .badge { display: inline-block; font-size: 9px; padding: 2px 4px; color: var(--muted); white-space: nowrap; }
-#dirty { margin-left: auto; }
+/* The save state stays readable however crowded the header is: shrinking it to nothing hid the
+   only cue that unsaved work exists. */
+#dirty { flex: 0 0 auto; margin-left: auto; }
 .filebar { position: fixed; top: 30px; left: calc(var(--left-width) + 2px); width: 220px; z-index: 20; padding: 4px; background: #454545; border: 1px solid #686868; box-shadow: 0 5px 15px #0008; }
 .filebar button { display: block; text-align: left; width: 100%; background: transparent; padding: 7px; }
 .filebar button:hover { background: #606060; }
@@ -113,8 +115,14 @@ body.splitter-dragging-y { cursor: row-resize; }
 .property-help p { margin-bottom: 0; }
 .property-section { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
 .workspace { grid-column: 3; grid-row: 2; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; padding: 0 2px; }
-.document-tabs { display: flex; gap: 2px; overflow: auto; min-width: 0; height: 26px; }
-.document-tabs button { white-space: nowrap; padding: 3px 8px; background: #636060; color: #ddd; border-radius: 3px 3px 0 0; font-size: 10px; }
+/* The strip scrolls sideways (the ‹ › buttons drive it), never vertically: a visible scrollbar
+   inside a 26px row took 15px of it, so on a narrow window every tab label was cut in half and
+   the row of tabs read as one smear. The scrollbar is hidden instead, and the buttons keep their
+   own width so a crowded strip scrolls rather than squashing the labels. */
+.document-tabs { display: flex; gap: 2px; overflow-x: auto; overflow-y: hidden; min-width: 0; height: 26px;
+  scrollbar-width: none; -ms-overflow-style: none; }
+.document-tabs::-webkit-scrollbar { display: none; }
+.document-tabs button { flex: 0 0 auto; white-space: nowrap; padding: 3px 8px; background: #636060; color: #ddd; border-radius: 3px 3px 0 0; font-size: 10px; }
 .document-tabs button.active { background: #e9d9ad; color: #292929; }
 .document-content { flex: 1; min-height: 0; overflow: auto; background: #333; }
 .panel { padding: 12px; min-height: 100%; }
