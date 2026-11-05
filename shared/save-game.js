@@ -14,6 +14,9 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // Diagnostics and derived handles stay out of saves: the unsupported-action set is
 // rebuilt as problems occur, and the weapon machine is re-entered on load.
 const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus',
+  // The host's save-file store (read/write/list) is a capability, not state: a function cannot be
+  // encoded, so it is dropped here and the preview that restores the game attaches it again.
+  'saveFileHost',
   // The controller readout is written onto the live state by the host each frame; it is a session
   // fact, not game state, so it must not leak into a save (a field the loader does not know).
   'controllerStatus',
@@ -80,8 +83,15 @@ export async function gameSaveIdentity(project) {
       game: { ...project.game, active: project.game.entry, levels: project.game.levels.map(level =>
         level.id === project.game.active ? { ...level, data: activeData } : level) } };
   }
-  const bytes = new TextEncoder().encode(canonical(content));
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  const text = canonical(content);
+  // `crypto.subtle` only exists in a secure context. The studio is happy to be opened over the
+  // network (a phone on the same wifi, another machine on `http://192.168.…`), and there the
+  // engine used to fail every preview with "Cannot read properties of undefined (reading
+  // 'digest')". The identity is an accidental-mismatch check, not a signature, so a plain digest
+  // is enough; it is prefixed differently so the two kinds can never be mistaken for each other.
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return `opendle-save-v1-fnv:${checksum(text)}`;
+  const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));
   return `opendle-save-v1:${[...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 

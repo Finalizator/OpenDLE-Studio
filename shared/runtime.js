@@ -47,7 +47,7 @@ import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { projectIds } from './project-ids.js';
-import { variableSnapshot } from './save-files.js';
+import { saveFileDocument, serializeSaveFile, parseSaveFile, applyVariableSave, saveFileName, variableSnapshot } from './save-files.js';
 import { BT } from './acs.js';
 import { initialiseAuthoredDoors, operateSectorDoor, sectorDoorClosed, sectorDoorMoving, sectorDoorOpen,
   updateProximityDoors, useManualDoor } from './doors.js';
@@ -158,7 +158,8 @@ export function postFxParamValue(state, kind, name) {
   return Number.isFinite(stored) ? stored : postFxParamDefault(kind, name);
 }
 
-export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false, progress, addons = null } = {}) {
+export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false, progress, addons = null,
+  saveFiles = null } = {}) {
   // Missile artwork has to exist before the renderer builds its sprite index.
   installActorProjectileSprites(project);
   const spawn = project.map.entities.find(entity => entity.type === 'player');
@@ -183,6 +184,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     // itself lives with the host (the browser, the exported game's storage), not in the state, so a
     // full-state save does not carry every other save file inside it.
     saveFiles: new Set(), saveFileError: '',
+    // The host's save-file store: `read`, `write`, `list` and the game identity the files belong to.
+    // A function cannot travel in a save, so the loader re-attaches it (see save-game.js `omitted`).
+    saveFileHost: saveFiles,
     newGameLevel: project.game && project.gameMenus?.episodes?.length === 1 ? project.gameMenus.episodes[0].levelId : null,
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0, up: [...WORLD_UP] },
     // Momentum is Doom's, in map units per tic; see shared/player-motion.js.
@@ -1479,17 +1483,41 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'loadGame':
           if (!state.saveSlots[action.slot - 1]) { state.saveStatus = 'This save slot is empty.'; break; }
           state.menuRequests.push({ type: 'load', slot: action.slot }); break;
-        // Save files. The host owns the storage, so these hand it a request and report through
+        // Save files. The host owns the storage, and every one of them reports through
         // `saveStatus`/`saveFileError`; a rule can then branch on `saveFileFailed`.
-        case 'saveVariables': {
-          // The values are taken now, not when the host gets to the request: a rule that saves and
-          // then changes a value must store the value it had when the action ran.
-          const values = variableSnapshot(project, state, action.variables);
-          state.menuRequests.push({ type: 'save-file', kind: 'variables', file: action.file, values });
+        // Variables travel through the host's store *now*, not as a request handled after the
+        // frame: a rule that loads and then reads (or saves) in the same event must see the loaded
+        // values, and a save after a load must not store the state the load replaced.
+        case 'saveVariables':
+          try {
+            const values = variableSnapshot(project, state, action.variables);
+            const host = state.saveFileHost;
+            if (!host?.write) throw new Error('save files are not available in this context');
+            const document = saveFileDocument({ kind: 'variables', name: action.file, identity: host.identity || null,
+              levelId: project.game?.active ?? null, variables: values });
+            host.write(action.file, serializeSaveFile(document));
+            state.saveFiles.add(saveFileName(action.file));
+            state.saveFileError = '';
+            state.saveStatus = `Saved ${Object.keys(values).length} variable(s) to the save file ${action.file}.`;
+          } catch (error) { state.saveFileError = error.message; state.saveStatus = `Save failed: ${error.message}`; }
           break;
-        }
         case 'loadVariables':
-          state.menuRequests.push({ type: 'load-file', kind: 'variables', file: action.file }); break;
+          try {
+            const host = state.saveFileHost;
+            if (!host?.read) throw new Error('save files are not available in this context');
+            const text = host.read(action.file);
+            if (text === null || text === undefined) throw new Error(`there is no save file named ${action.file}`);
+            const document = parseSaveFile(text);
+            if (document.kind !== 'variables') throw new Error(`${action.file} holds a whole game, not variables`);
+            if (document.identity && host.identity && document.identity !== host.identity) {
+              throw new Error(`${action.file} was saved by a different game`);
+            }
+            const { applied, skipped } = applyVariableSave(project, state, document);
+            state.saveFileError = '';
+            state.saveStatus = `Loaded ${applied.length} variable(s) from the save file ${action.file}.` +
+              (skipped.length ? ` Skipped: ${skipped.join(', ')}.` : '');
+          } catch (error) { state.saveFileError = error.message; state.saveStatus = `Load failed: ${error.message}`; }
+          break;
         case 'saveGameState':
           if (!state.hasGame || state.intermission || state.playerStats.health <= 0) {
             state.saveStatus = 'Start or resume a living game before saving.'; break;

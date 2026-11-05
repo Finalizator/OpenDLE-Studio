@@ -52,6 +52,23 @@ export function variableSnapshot(project, state, list = '') {
   return Object.fromEntries(names.map(name => [name, state.variables?.[name] ?? project.variables[name]]));
 }
 
+/**
+ * A saved value has to survive a JSON round trip unchanged: `NaN`, `Infinity` and `undefined`
+ * all turn into `null` (or nothing at all) through `JSON.stringify`, so the file would hold a
+ * value the load then refuses to apply — and the rule that saved it would have said "saved".
+ */
+function checkSavedValue(value, path) {
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    throw new Error(`Cannot save ${path}: a number has to be finite (it would be saved as null)`);
+  }
+  if (value === undefined) throw new Error(`Cannot save ${path}: it is undefined`);
+  if (typeof value === 'function' || typeof value === 'symbol') throw new Error(`Cannot save ${path}: it is not data`);
+  if (Array.isArray(value)) { value.forEach((item, index) => checkSavedValue(item, `${path}[${index}]`)); return; }
+  if (value === null || typeof value !== 'object') return;
+  if (!plain(value)) throw new Error(`Cannot save ${path}: it is not plain data`);
+  for (const [key, item] of Object.entries(value)) checkSavedValue(item, `${path}.${key}`);
+}
+
 /** Builds the document both kinds share. `record` is only used by the `game` kind. */
 export function saveFileDocument({ kind, name, identity = null, levelId = null, variables = null, record = null,
   createdAt = new Date().toISOString() }) {
@@ -62,6 +79,7 @@ export function saveFileDocument({ kind, name, identity = null, levelId = null, 
   if (!Number.isFinite(Date.parse(document.createdAt))) fail('missing creation time');
   if (kind === 'variables') {
     if (!plain(variables)) fail('missing variables');
+    for (const [name, value] of Object.entries(variables)) checkSavedValue(value, name);
     document.variables = variables;
   } else {
     if (!plain(record)) fail('missing game record');

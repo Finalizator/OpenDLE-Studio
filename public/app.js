@@ -85,7 +85,7 @@ import { cloneForLevelSwitch, selectGameLevel } from '/shared/game-levels.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
 import * as gameSaves from './game-saves.js';
-import { saveFileDocument, serializeSaveFile, parseSaveFile, applyVariableSave, saveFileName } from '/shared/save-files.js';
+import { saveFileDocument, serializeSaveFile, parseSaveFile, saveFileName } from '/shared/save-files.js';
 import { installSplitters } from './splitters.js';
 
 const $ = id => document.getElementById(id);
@@ -4222,7 +4222,10 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     audioPlayer = createAudioPlayer(snapshot, message => mouseStatus(message, true), undefined, primeAudio() || undefined);
     status('Loading renderer and embedded images (WebGPU preferred, WebGL fallback)...');
     const nextRuntime = restored?.runtime || createRuntime(snapshot, { settings, gameMode, progress,
-      screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing', addons: addonHost.runtime() });
+      screen: gameMode && !start ? snapshot.gameMenus.entry : 'playing', addons: addonHost.runtime(),
+      saveFiles: saveFileHost });
+    // A restored runtime was built inside `restoreGameSave`, which has no host: attach it again.
+    nextRuntime.saveFileHost = saveFileHost;
     // A restored game is a fresh runtime built inside `restoreGameSave`; the implementations are not
     // part of a save, so they are attached to it the same way they were attached to a new one.
     if (restored?.runtime) setAddonHooks(restored.runtime, addonHost.runtime());
@@ -4355,6 +4358,13 @@ function removeSaveFile(name) {
   try { localStorage.removeItem(`${SAVE_FILE_PREFIX}${saveFileName(name)}`); }
   catch (error) { throw new Error(`Could not remove the save file: ${error.message}`); }
 }
+/** The store the runtime writes and reads through; `identity` is read lazily, once a preview exists. */
+const saveFileHost = {
+  read: name => readSaveFile(name),
+  write: (name, text) => writeSaveFile(name, text),
+  list: () => saveFileKeys(),
+  get identity() { return previewSaveIdentity; },
+};
 /** Tells the running game which save files exist, so a rule can ask before loading one. */
 function publishSaveFiles(session) {
   if (session) session.saveFiles = new Set(saveFileKeys());
@@ -4379,35 +4389,22 @@ async function processGameSave(request) {
         setGameScreen(session, 'save');
       }
     } else if (request.type === 'save-file') {
-      // Both kinds are one JSON document, so what the game writes is a file the player can keep.
-      const document = request.kind === 'game'
-        ? saveFileDocument({ kind: 'game', name: request.file, identity, levelId: previewProject.game?.active ?? null,
-          record: captureGameSave(previewProject, session, identity) })
-        : saveFileDocument({ kind: 'variables', name: request.file, identity, levelId: previewProject.game?.active ?? null,
-          // The rule snapshotted the values when it ran; late changes must not leak into the file.
-          variables: request.values });
+      // A whole-game file: the record needs the game identity and a restore restarts the preview,
+      // so it goes through a request. Variable files are written by the rule itself, immediately.
+      const document = saveFileDocument({ kind: 'game', name: request.file, identity,
+        levelId: previewProject.game?.active ?? null, record: captureGameSave(previewProject, session, identity) });
       writeSaveFile(request.file, serializeSaveFile(document));
       if (runtime === session) {
         publishSaveFiles(session);
-        session.saveStatus = request.kind === 'game'
-          ? `Saved the game to the save file ${request.file}.`
-          : `Saved ${Object.keys(document.variables).length} variable(s) to the save file ${request.file}.`;
+        session.saveFileError = '';
+        session.saveStatus = `Saved the game to the save file ${request.file}.`;
       }
     } else if (request.type === 'load-file') {
       const text = readSaveFile(request.file);
       if (text === null) throw new Error(`there is no save file named ${request.file}`);
       const document = parseSaveFile(text);
-      if (document.kind !== request.kind) {
-        throw new Error(`${request.file} holds ${document.kind === 'game' ? 'a whole game' : 'variables'}, not ${request.kind === 'game' ? 'a whole game' : 'variables'}`);
-      }
-      if (request.kind === 'variables') {
-        const { applied, skipped } = applyVariableSave(previewProject, session, document);
-        if (runtime === session) {
-          session.saveFileError = '';
-          session.saveStatus = `Loaded ${applied.length} variable(s) from ${request.file}.` +
-            (skipped.length ? ` Skipped: ${skipped.join(', ')}.` : '');
-        }
-      } else if (runtime === session) {
+      if (document.kind !== 'game') throw new Error(`${request.file} holds variables, not a whole game`);
+      if (runtime === session) {
         // The record is the same shape a save slot holds, so a full-state save file resumes through
         // exactly the path a slot load takes — including the campaign level the record names.
         await beginPreview(session.gameMode, session.settings, true, undefined, undefined, document.record);
@@ -4478,19 +4475,26 @@ $('save-files-import').addEventListener('click', () => $('save-files-input').cli
 $('save-files-input').addEventListener('change', async () => {
   const files = [...$('save-files-input').files];
   if (!files.length) return;
-  const saved = [], refused = [];
+  const saved = new Set(), kept = new Set(), refused = [];
   for (const file of files) {
     try {
-      const document = parseSaveFile(await file.text());
-      writeSaveFile(document.name, serializeSaveFile(document));
-      saved.push(document.name);
+      const parsed = parseSaveFile(await file.text());
+      // Importing a file a player already has would throw their own save away without a word,
+      // so it asks first — the same courtesy a rule's save gives before it overwrites a slot.
+      if (saveFileKeys().includes(parsed.name) &&
+        !confirm(`Replace the save file ${parsed.name} in this browser? The one already there is lost.`)) {
+        kept.add(parsed.name); continue;
+      }
+      writeSaveFile(parsed.name, serializeSaveFile(parsed));
+      saved.add(parsed.name);
     } catch (error) { refused.push(`${file.name}: ${error.message}`); }
   }
   $('save-files-input').value = '';
   publishSaveFiles(runtime);
   renderSaveFiles();
   $('save-files-status').textContent = [
-    saved.length ? `Imported ${saved.join(', ')}.` : '',
+    saved.size ? `Imported ${[...saved].join(', ')}.` : '',
+    kept.size ? `Kept the save file already here: ${[...kept].join(', ')}.` : '',
     refused.length ? `Refused ${refused.join('; ')}` : '',
   ].filter(Boolean).join(' ');
 });

@@ -346,6 +346,21 @@ LOAD menus. A rule can also keep something of its own, as a `.json` document:
 | Whole game | `saveGameState` (`file`) | Writes the whole runtime — the very record a save slot holds — with no menu and no overwrite prompt: the checkpoint a rule decides on. |
 | Whole game | `loadGameState` (`file`) | Resumes that file, including the campaign level it names. |
 
+Both kinds of read happen **inside the rule that asked for them**, so an action after a
+`loadVariables` already sees the loaded numbers — a checkpoint restored and then added to
+gives the expected total, not one added to the values it replaced. The whole-game kind is
+the exception: resuming restarts the preview, so it is a request the host handles after the
+rule finished, and the actions after it still run on the game it is replacing.
+
+A `variables` file remembers the game that wrote it, and a rule that loads one written by a
+different game is refused with the file's name rather than overwriting the live variables
+with a stranger's numbers. A saving rule also hears about a value JSON cannot hold: `NaN`,
+`Infinity` and `undefined` have no place in a `.json` document, so the save fails with
+`Cannot save score: a number has to be finite` instead of quietly writing `null` for the
+load to refuse later. The identity is a digest of the project; on a page the browser does
+not treat as secure (`http://` on a LAN address, where `crypto.subtle` is missing) it is a
+plain checksum with its own prefix, so previews still run and saves still match their game.
+
 Two conditions read the same index: `saveFileExists` (`file`) asks whether a save
 file of that name is stored, and `saveFileFailed` reports that the last write or
 read did not complete (a full disk, a corrupt document, a name the host does not
@@ -356,7 +371,9 @@ The document is plain JSON — `format: "opendle-save-file"`, `version: 1`, and 
 `kind` of `variables` or `game` — so it is a file a player can keep. **Save
 files…** in the play toolbar downloads any of them as `<name>.json`, deletes one,
 or imports a file back; importing validates the document before storing it, so a
-hand-edited or foreign file is refused with the reason rather than half-loaded.
+hand-edited or foreign file is refused with the reason rather than half-loaded,
+and importing over a name the browser already holds asks first instead of throwing
+the player's own save away.
 
 The running game holds only the *names* of the files it may read, so a whole-game
 save never carries every other save file inside it. Both kinds live with the host

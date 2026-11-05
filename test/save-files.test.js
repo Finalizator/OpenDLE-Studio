@@ -78,21 +78,86 @@ test('a save file can carry only the variables a rule names', () => {
   assert.equal(saveFileName('  checkpoint_1 '), 'checkpoint_1');
 });
 
-test('the save actions ask the host and the load conditions read what it published', () => {
+test('the save actions write through the host at once and report the outcome', () => {
   const value = project();
   value.events = rule([
     { type: 'saveVariables', file: 'slot-1', variables: 'score' },
     { type: 'saveGameState', file: 'checkpoint' },
   ]);
   validateProject(value);
-  const state = createRuntime(value);
+  const files = new Map();
+  const state = createRuntime(value, { saveFiles: {
+    read: name => files.get(name) ?? null,
+    write: (name, text) => { files.set(name, text); },
+    list: () => [...files.keys()],
+    identity: 'identity',
+  } });
   tick(value, state);
-  assert.deepEqual(state.menuRequests, [
-    // The values travel with the request, taken when the action ran.
-    { type: 'save-file', kind: 'variables', file: 'slot-1', values: { score: 10 } },
-    { type: 'save-file', kind: 'game', file: 'checkpoint' },
-  ]);
+  // The variable file exists the moment the action ran; a whole-game file is a request, because
+  // restoring one restarts the preview.
+  assert.deepEqual([...files.keys()], ['slot-1']);
+  assert.deepEqual(parseSaveFile(files.get('slot-1')).variables, { score: 10 });
+  assert.match(state.saveStatus, /Saved 1 variable/);
+  assert.deepEqual(state.menuRequests, [{ type: 'save-file', kind: 'game', file: 'checkpoint' }]);
   assert.equal(state.saveFileError, '');
+});
+
+test('a load applies inside the same rule, so later actions see the loaded values', () => {
+  const value = project();
+  value.events = rule([
+    { type: 'setVariable', variable: 'score', value: 7 },
+    { type: 'loadVariables', file: 'slot-1' },
+    { type: 'addVariable', variable: 'score', value: 1 },
+  ]);
+  validateProject(value);
+  const files = new Map([['slot-1', serializeSaveFile(saveFileDocument({ kind: 'variables', name: 'slot-1',
+    identity: 'identity', variables: { score: 500 } }))]]);
+  const state = createRuntime(value, { saveFiles: { read: name => files.get(name) ?? null,
+    write: (name, text) => files.set(name, text), identity: 'identity' } });
+  tick(value, state);
+  assert.equal(state.variables.score, 501, 'the load replaced 7 with 500 before the +1 ran');
+  assert.match(state.saveStatus, /Loaded 1 variable/);
+});
+
+test('a save after a load in the same rule stores the loaded values, not the replaced ones', () => {
+  const value = project();
+  value.events = rule([
+    { type: 'setVariable', variable: 'score', value: 7 },
+    { type: 'loadVariables', file: 'slot-1' },
+    { type: 'saveVariables', file: 'copy' },
+  ]);
+  validateProject(value);
+  const files = new Map([['slot-1', serializeSaveFile(saveFileDocument({ kind: 'variables', name: 'slot-1',
+    identity: 'identity', variables: { score: 500 } }))]]);
+  const state = createRuntime(value, { saveFiles: { read: name => files.get(name) ?? null,
+    write: (name, text) => files.set(name, text), identity: 'identity' } });
+  tick(value, state);
+  assert.equal(parseSaveFile(files.get('copy')).variables.score, 500);
+});
+
+test('a save file from a different game is refused instead of replacing this game variables', () => {
+  const value = project();
+  value.events = rule([{ type: 'loadVariables', file: 'foreign' }]);
+  validateProject(value);
+  const files = new Map([['foreign', serializeSaveFile(saveFileDocument({ kind: 'variables', name: 'foreign',
+    identity: 'another-game', variables: { score: 999 } }))]]);
+  const state = createRuntime(value, { saveFiles: { read: name => files.get(name) ?? null,
+    write: () => {}, identity: 'this-game' } });
+  tick(value, state);
+  assert.equal(state.variables.score, 10, 'the live value is untouched');
+  assert.match(state.saveStatus, /different game/);
+  assert.match(state.saveFileError, /different game/);
+});
+
+test('a missing file or a whole-game file is reported, not thrown', () => {
+  const value = project();
+  value.events = rule([{ type: 'loadVariables', file: 'gone' }, { type: 'loadVariables', file: 'game' }]);
+  validateProject(value);
+  const files = new Map([['game', serializeSaveFile(saveFileDocument({ kind: 'game', name: 'game', record: { version: 1 } }))]]);
+  const state = createRuntime(value, { saveFiles: { read: name => files.get(name) ?? null, write: () => {}, identity: 'id' } });
+  assert.doesNotThrow(() => tick(value, state));
+  assert.match(state.saveFileError, /holds a whole game/);
+  assert.equal(state.variables.score, 10);
 });
 
 test('a full-state load refuses a name the host has not published', () => {
@@ -187,4 +252,58 @@ test('a bad file name or an unknown variable is refused while the rule is writte
       : rule([action]);
     assert.throws(() => validateProject(value), message, JSON.stringify(action));
   }
+});
+
+test('a value JSON cannot hold is refused at save time, not turned into null', () => {
+  // `JSON.stringify` writes NaN and Infinity as `null` and drops undefined, so the file used to
+  // hold a value the load then refuses to apply — while the rule that saved it said "Saved 1
+  // variable". A number the game cannot write down is an error the saving rule has to hear.
+  for (const [label, value, message] of [
+    ['NaN', NaN, /Cannot save score: a number has to be finite/],
+    ['Infinity', Infinity, /Cannot save score: a number has to be finite/],
+    ['undefined', undefined, /Cannot save score: it is undefined/],
+    ['a function', () => 1, /Cannot save score: it is not data/],
+    ['a Map', new Map(), /Cannot save score: it is not plain data/],
+  ]) {
+    assert.throws(() => saveFileDocument({ kind: 'variables', name: 'slot-1', variables: { score: value } }),
+      message, `${label} must be refused`);
+  }
+  // A nested one is named by its path, so a rule's author can find it.
+  assert.throws(() => saveFileDocument({ kind: 'variables', name: 'slot-1',
+    variables: { bag: { list: [1, NaN] } } }), /Cannot save bag\.list\[1\]: a number has to be finite/);
+  // Everything JSON does hold still passes untouched.
+  const kept = { score: 1, label: 'a\u0000b😀', nested: { list: [1, 'x', { on: true }] }, nothing: null };
+  assert.deepEqual(saveFileDocument({ kind: 'variables', name: 'slot-1', variables: kept }).variables, kept);
+});
+
+test('a rule that saves a number JSON cannot hold reports the failure and writes no file', () => {
+  const value = project();
+  value.events = rule([{ type: 'saveVariables', file: 'slot-1', variables: '' }]);
+  validateProject(value);
+  const files = new Map();
+  const state = createRuntime(value, { saveFiles: {
+    read: name => files.get(name) ?? null,
+    write: (name, text) => { files.set(name, text); },
+    list: () => [...files.keys()],
+    identity: 'identity',
+  } });
+  state.variables.score = NaN;
+  tick(value, state);
+  assert.equal(files.size, 0, 'no file is written for a save that cannot be read back');
+  assert.match(state.saveStatus, /Save failed: Cannot save score: a number has to be finite/);
+  assert.match(state.saveFileError, /Cannot save score/);
+});
+
+test('importing a save file asks before it replaces one of the same name', async () => {
+  // The import handler runs in the page, so this checks the source it is written from: without
+  // the question, a player importing a file from another machine silently loses their own save.
+  const { readFileSync } = await import('node:fs');
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const handler = /save-files-input'\)\.addEventListener\('change', async \(\) => \{([\s\S]*?)\n\}\);/.exec(app);
+  assert.ok(handler, 'the import handler is there');
+  const body = handler[1];
+  assert.match(body, /saveFileKeys\(\)\.includes\(parsed\.name\)/, 'it looks for a file already stored under that name');
+  assert.match(body, /confirm\(`Replace the save file \$\{parsed\.name\}/, 'and asks before writing over it');
+  assert.ok(body.indexOf('saveFileKeys().includes(parsed.name)') < body.indexOf('writeSaveFile(parsed.name'),
+    'the question comes before the write');
 });
