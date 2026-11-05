@@ -393,6 +393,14 @@ dialog::backdrop { background: #111c; }
   pointer-events: none; max-height: 3.4em; overflow: hidden; }
 #game-message:empty { display: none; }
 #game-variables { font: 11px monospace; color: #ddd; }
+/* Save files: one row per document a rule wrote, with the two things a player does with it. */
+.save-file-list { display: grid; gap: 4px; margin: 10px 0; max-height: 45vh; overflow: auto; min-width: min(560px, 80vw); }
+.save-file-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 1.4fr) auto auto; align-items: center;
+  gap: 8px; padding: 4px 6px; background: #363636; border: 1px solid #4a4a4a; border-radius: 2px; }
+.save-file-name { font-weight: 600; font-size: 11px; overflow-wrap: anywhere; }
+.save-file-detail { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.save-file-action { font-size: 10px; padding: 3px 6px; }
+#save-files-dialog p { max-width: 620px; }
 #import-dialog p { max-width: 460px; }
 #import-dialog select { width: 100%; }
 #import-status { padding: 9px; background: #363636; border: 1px solid #666; overflow-wrap: anywhere; }

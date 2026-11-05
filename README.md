@@ -40,6 +40,10 @@ page.
   switch levels in the editor or during play.
 - **Design the interface:** edit HUDs and menus with responsive layouts,
   animations and gameplay bindings, including native browser save/load slots.
+- **Save what you want, when you want:** rules can write the project variables or
+  the whole game to a `.json` save file and load it back — a custom checkpoint
+  system with no menu in the way — and **Save files** in the play toolbar
+  downloads or imports those documents, so a save outlives the browser.
 - **Play with a controller:** PS5, PS4, Xbox and Switch Pro pads work with no setup —
   sticks, triggers, d-pad and menus — and a rule can rumble them.
 - **Browser-native rendering:** WebGPU preferred, WebGL2 fallback, Rapier

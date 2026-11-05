@@ -56,7 +56,10 @@ const optional = new Set(['areaEntries', 'intervals', 'decalCounter', 'lastShot'
   'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock', 'gravityClock',
   // Where an addon keeps state of its own. Rules and scripts write the engine's fields through the API;
   // this one bag is theirs, so their data travels with a save without a field per addon.
-  'addonState', 'waggles']);
+  'addonState', 'waggles',
+  // Save files are names the host knows about; the documents themselves live with the host, so a
+  // record only carries the index a rule's `saveFileExists` condition reads, and the last error.
+  'saveFiles', 'saveFileError']);
 const fail = message => { throw new Error(`Invalid game save: ${message}`); };
 const plain = value => value !== null && typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -225,6 +228,13 @@ function validateRuntime(project, state, baseline) {
     for (const [key, due] of state.intervals) if (typeof key !== 'string' || !Number.isFinite(due) || due < 0) fail('invalid periodic clock');
   }
   for (const [id, enabled] of state.groups) if (!baseline.groups.has(id) || typeof enabled !== 'boolean') fail('invalid event group');
+  // The save-file index a rule's condition reads: names only, so a damaged save cannot smuggle a
+  // document (or a size) in through it.
+  if (state.saveFiles !== undefined) {
+    if (!(state.saveFiles instanceof Set)) fail('invalid save file list');
+    for (const name of state.saveFiles) if (typeof name !== 'string' || !name.length || name.length > 80) fail('invalid save file name');
+  }
+  if (state.saveFileError !== undefined && typeof state.saveFileError !== 'string') fail('invalid save file error');
   // The objects this level has, plus the ones it made while playing: a spawned enemy is a real
   // object with its own animation, its own per-object rules and its own fired marks, and a save
   // written while it is alive has to load.

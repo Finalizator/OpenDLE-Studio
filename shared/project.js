@@ -26,6 +26,7 @@ import { isImageAsset } from './media-assets.js';
 import { nodeSignals, SIGNAL_NAME, validateSignalEvent } from './signals.js';
 import { resolveDoorHeights, elevatorHeights, sectorMover } from './sector-movers.js';
 import { projectIds } from './project-ids.js';
+import { saveFileName, saveVariableNames } from './save-files.js';
 
 /** How many timelines one project may carry. */
 export const MAX_TIMESHEETS = 32;
@@ -1333,6 +1334,17 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       if (command.type === 'playAssetSound')
         assert(project.assets.some(asset => asset.id === command.assetId && asset.kind === 'sound'),
           'Sound command references an unknown imported sound');
+      if (['saveVariables', 'loadVariables', 'saveGameState', 'loadGameState', 'saveFileExists'].includes(command.type)) {
+        // A save file is a name the player may have to type or pick from a list, so it is checked
+        // here rather than when the rule runs: a rule that names a file the engine cannot store is
+        // refused while it is being written.
+        try { saveFileName(command.file); }
+        catch (error) { assert(false, error.message); }
+        if (command.type === 'saveVariables' && command.variables) {
+          try { saveVariableNames(project, command.variables); }
+          catch (error) { assert(false, error.message); }
+        }
+      }
       if (['startTimesheet', 'stopTimesheet', 'setTimesheetPaused'].includes(command.type))
         assert((project.timesheets || []).some(sheet => sheet.id === command.timesheetId) ||
           command.type === 'stopTimesheet' && command.all === 'yes',

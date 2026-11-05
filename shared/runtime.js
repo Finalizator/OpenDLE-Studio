@@ -47,6 +47,7 @@ import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { projectIds } from './project-ids.js';
+import { variableSnapshot } from './save-files.js';
 import { BT } from './acs.js';
 import { initialiseAuthoredDoors, operateSectorDoor, sectorDoorClosed, sectorDoorMoving, sectorDoorOpen,
   updateProximityDoors, useManualDoor } from './doors.js';
@@ -178,6 +179,10 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     addonState: {},
     menuRequests: [], interfaceStarted: false,
     saveSlots: Array(6).fill(''), saveStatus: '', pendingSaveSlot: null,
+    // Save files: the names the host knows about, and why the last write or read failed. The text
+    // itself lives with the host (the browser, the exported game's storage), not in the state, so a
+    // full-state save does not carry every other save file inside it.
+    saveFiles: new Set(), saveFileError: '',
     newGameLevel: project.game && project.gameMenus?.episodes?.length === 1 ? project.gameMenus.episodes[0].levelId : null,
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0, up: [...WORLD_UP] },
     // Momentum is Doom's, in map units per tic; see shared/player-motion.js.
@@ -1405,6 +1410,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         return false;
       }
       if (condition.type === 'variableCompare') return compare(state.variables[condition.variable], condition.operator, condition.value);
+      if (condition.type === 'saveFileExists') return Boolean(state.saveFiles?.has(String(condition.file ?? '').trim()));
+      if (condition.type === 'saveFileFailed') return Boolean(state.saveFileError);
       if (condition.type === 'timerReady') return state.time + 1e-9 >= (state.timers.get(`${event.ownerId || '$scene'}:${condition.timer}`) || 0);
       if (condition.type === 'timerExists') return state.timers.has(`${event.ownerId || '$scene'}:${condition.timer}`);
       if (condition.type === 'groupActive') return state.groups.get(condition.groupId);
@@ -1472,6 +1479,28 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'loadGame':
           if (!state.saveSlots[action.slot - 1]) { state.saveStatus = 'This save slot is empty.'; break; }
           state.menuRequests.push({ type: 'load', slot: action.slot }); break;
+        // Save files. The host owns the storage, so these hand it a request and report through
+        // `saveStatus`/`saveFileError`; a rule can then branch on `saveFileFailed`.
+        case 'saveVariables': {
+          // The values are taken now, not when the host gets to the request: a rule that saves and
+          // then changes a value must store the value it had when the action ran.
+          const values = variableSnapshot(project, state, action.variables);
+          state.menuRequests.push({ type: 'save-file', kind: 'variables', file: action.file, values });
+          break;
+        }
+        case 'loadVariables':
+          state.menuRequests.push({ type: 'load-file', kind: 'variables', file: action.file }); break;
+        case 'saveGameState':
+          if (!state.hasGame || state.intermission || state.playerStats.health <= 0) {
+            state.saveStatus = 'Start or resume a living game before saving.'; break;
+          }
+          // No menu and no confirmation: a checkpoint written by a rule overwrites itself.
+          state.menuRequests.push({ type: 'save-file', kind: 'game', file: action.file }); break;
+        case 'loadGameState':
+          if (!state.saveFiles?.has(String(action.file ?? '').trim())) {
+            state.saveStatus = `There is no save file named ${action.file}.`; state.saveFileError = 'missing'; break;
+          }
+          state.menuRequests.push({ type: 'load-file', kind: 'game', file: action.file }); break;
         case 'setGameScreen': setGameScreen(state, action.screen); break;
         case 'selectGameEpisode':
           if (!project.game?.levels.some(level => level.id === action.levelId)) throw new Error(`Unknown game level ${action.levelId}`);

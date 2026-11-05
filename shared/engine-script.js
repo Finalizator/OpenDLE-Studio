@@ -133,6 +133,12 @@ export const ENGINE_CONDITIONS = [
   { type: 'entityHasHealth', label: 'Object: has explicit health', fields: [], target: true },
   { type: 'timerReady', label: 'System: timer ready', fields: [timer()] },
   { type: 'timerExists', label: 'System: timer exists', fields: [timer()] },
+  // Save files: what a rule can ask about the player's own save documents. The conditions read
+  // the list the host keeps, so a level that opens a door only when a save exists works before
+  // any rule has written one in this session.
+  { type: 'saveFileExists', label: 'Save: a save file exists',
+    fields: [{ name: 'file', kind: 'text', value: 'save1' }] },
+  { type: 'saveFileFailed', label: 'Save: the last save or load failed', fields: [] },
   // ---- Instances: picking ---------------------------------------------------------------
   // Both GDevelop and Construct work by *picking*: a condition narrows the set of instances an
   // event is about, and everything in that event then applies to the narrowed set. These four
@@ -159,6 +165,21 @@ export const ENGINE_ACTIONS = [
   { type: 'saveGame', label: 'Game: save to slot', fields: [numeric('slot', 1, 1, 6)] },
   { type: 'loadGame', label: 'Game: load slot', fields: [numeric('slot', 1, 1, 6)] },
   { type: 'confirmSaveGame', label: 'Game: confirm overwriting save', fields: [] },
+  // Save files. The slot actions above are the player's own saves, reached through the game's
+  // SAVE/LOAD menus; these four are what a rule calls when the game itself decides to keep
+  // something. A `variables` file carries the project variables and replaces them on load; a
+  // `game` file carries the whole runtime — the same record a slot holds — and resumes it.
+  { type: 'saveVariables', label: 'Save: write variables to a save file',
+    fields: [{ name: 'file', kind: 'text', value: 'save1' },
+      // A comma-separated list; blank means every project variable, so it is optional and unset by
+      // default. It is text rather than an identifier because the list holds commas.
+      { name: 'variables', kind: 'string', optional: true }] },
+  { type: 'loadVariables', label: 'Save: load variables from a save file',
+    fields: [{ name: 'file', kind: 'text', value: 'save1' }] },
+  { type: 'saveGameState', label: 'Save: write the whole game to a save file (automatic)',
+    fields: [{ name: 'file', kind: 'text', value: 'checkpoint' }] },
+  { type: 'loadGameState', label: 'Save: load the whole game from a save file',
+    fields: [{ name: 'file', kind: 'text', value: 'checkpoint' }] },
   { type: 'setGameScreen', label: 'Game: open menu / resume', fields: [{ name: 'screen', kind: 'text', value: 'title' }] },
   { type: 'startGame', label: 'Game: start a new game', fields: [] },
   { type: 'selectGameEpisode', label: 'Game: select new game episode', fields: [{ name: 'levelId', kind: 'text', value: 'MAP01' }] },

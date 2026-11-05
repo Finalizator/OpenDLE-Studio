@@ -334,6 +334,34 @@ the chain breaks. It is off by default and tuned by `bunnyhopGain`.
 - Events are deterministic given the same inputs, which is the basis for the
   planned authoritative multiplayer mode; see `Docs/multiplayer-plan.md`.
 
+### Save files a rule writes and reads
+
+The save slots above are the *player's* saves, reached through the game's SAVE and
+LOAD menus. A rule can also keep something of its own, as a `.json` document:
+
+| What | Action | What it does |
+|---|---|---|
+| Variables | `saveVariables` (`file`, optional `variables`) | Writes the project variables — all of them, or the comma-separated ones named — into a save file. |
+| Variables | `loadVariables` (`file`) | Reads the file back and **replaces the live variables** with the saved values. A value that no longer fits — a variable that was renamed, or a number that became text — is skipped and reported instead of being written. |
+| Whole game | `saveGameState` (`file`) | Writes the whole runtime — the very record a save slot holds — with no menu and no overwrite prompt: the checkpoint a rule decides on. |
+| Whole game | `loadGameState` (`file`) | Resumes that file, including the campaign level it names. |
+
+Two conditions read the same index: `saveFileExists` (`file`) asks whether a save
+file of that name is stored, and `saveFileFailed` reports that the last write or
+read did not complete (a full disk, a corrupt document, a name the host does not
+have). A rule can therefore save, branch on whether it worked, and load a
+checkpoint only when one exists.
+
+The document is plain JSON — `format: "opendle-save-file"`, `version: 1`, and a
+`kind` of `variables` or `game` — so it is a file a player can keep. **Save
+files…** in the play toolbar downloads any of them as `<name>.json`, deletes one,
+or imports a file back; importing validates the document before storing it, so a
+hand-edited or foreign file is refused with the reason rather than half-loaded.
+
+The running game holds only the *names* of the files it may read, so a whole-game
+save never carries every other save file inside it. Both kinds live with the host
+(the browser for a preview or an exported game) under the name the action gave.
+
 ---
 
 ### Controllers

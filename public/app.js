@@ -85,6 +85,7 @@ import { cloneForLevelSwitch, selectGameLevel } from '/shared/game-levels.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
 import * as gameSaves from './game-saves.js';
+import { saveFileDocument, serializeSaveFile, parseSaveFile, applyVariableSave, saveFileName } from '/shared/save-files.js';
 import { installSplitters } from './splitters.js';
 
 const $ = id => document.getElementById(id);
@@ -224,6 +225,8 @@ let audioPlayer = null, audioContext = null, hudWarningShown = false, musicRepor
 let settingsRevision = -1, settingsStorageKey = '';
 let hudView = null, acsHud = null, acsHost = null, previewProject = null, hudCursorActive = false;
 let saveIdentityVersion = -1, saveIdentityPromise = null, previewSaveIdentity = '', saveBusy = false;
+/** Saves run one at a time; a rule that asks for two of them gets both, in order. */
+let saveQueue = Promise.resolve();
 let lookDrag = null, draggedLook = false;
 let wadImport = null;
 let packageSource = null, packageInspection = null, packageBusy = false, packageController = null;
@@ -4233,6 +4236,7 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
       nextRuntime.message = 'Screen size 11 hides the whole HUD, so it was set back to 10. Raise it in Options if you meant it.';
       nextRuntime.messageTime = 6;
     }
+    publishSaveFiles(nextRuntime);
     try { nextRuntime.saveSlots = saveSlotLabels(await gameSaves.list(identity)); }
     catch (error) { nextRuntime.saveStatus = `Saved games unavailable: ${error.message}`; status(nextRuntime.saveStatus, true); }
     if (generation !== previewGeneration) throw new Error('Preview was stopped while loading.');
@@ -4318,12 +4322,53 @@ function saveSlotLabels(slots) {
     return slot ? `${slot.levelId || 'Level'} / ${new Date(slot.createdAt).toLocaleString()}` : '';
   });
 }
+/**
+ * Save files: the documents a rule writes and reads, kept in browser storage under their name.
+ *
+ * The text is exactly the `.json` a player can download and keep, so what the game saves and what
+ * the Save files dialog exports are the same bytes — there is no second format to drift.
+ */
+const SAVE_FILE_PREFIX = 'opendle-save-file:';
+function saveFileKeys() {
+  const names = [];
+  try {
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (!key || !key.startsWith(SAVE_FILE_PREFIX)) continue;
+      const name = key.slice(SAVE_FILE_PREFIX.length);
+      try { names.push(saveFileName(name)); } catch { /* an entry the engine would not write is ignored */ }
+    }
+  } catch { /* storage unavailable: the list is empty and a save reports why */ }
+  return names.sort((a, b) => a.localeCompare(b));
+}
+function readSaveFile(name) {
+  const key = `${SAVE_FILE_PREFIX}${saveFileName(name)}`;
+  try { return localStorage.getItem(key); }
+  catch (error) { throw new Error(`Browser storage is unavailable: ${error.message}`); }
+}
+function writeSaveFile(name, text) {
+  const key = `${SAVE_FILE_PREFIX}${saveFileName(name)}`;
+  try { localStorage.setItem(key, text); }
+  catch (error) { throw new Error(`Could not write the save file: ${error.message}`); }
+}
+function removeSaveFile(name) {
+  try { localStorage.removeItem(`${SAVE_FILE_PREFIX}${saveFileName(name)}`); }
+  catch (error) { throw new Error(`Could not remove the save file: ${error.message}`); }
+}
+/** Tells the running game which save files exist, so a rule can ask before loading one. */
+function publishSaveFiles(session) {
+  if (session) session.saveFiles = new Set(saveFileKeys());
+  return session?.saveFiles || new Set();
+}
 async function processGameSave(request) {
   if (saveBusy || !runtime || previewLoading) return;
   const session = runtime, identity = previewSaveIdentity;
   saveBusy = true;
+  const saving = request.type === 'save' || request.type === 'save-file';
+  const label = request.type.endsWith('-file') ? request.file : `slot ${request.slot}`;
   try {
-    session.saveStatus = request.type === 'save' ? 'Saving game...' : 'Loading game...';
+    session.saveStatus = `${saving ? 'Saving' : 'Loading'} ${label}...`;
+    session.saveFileError = '';
     if (request.type === 'save') {
       const record = captureGameSave(previewProject, session, identity);
       await gameSaves.save(identity, request.slot, record);
@@ -4333,15 +4378,122 @@ async function processGameSave(request) {
         session.saveStatus = `Game saved in slot ${request.slot}.`;
         setGameScreen(session, 'save');
       }
+    } else if (request.type === 'save-file') {
+      // Both kinds are one JSON document, so what the game writes is a file the player can keep.
+      const document = request.kind === 'game'
+        ? saveFileDocument({ kind: 'game', name: request.file, identity, levelId: previewProject.game?.active ?? null,
+          record: captureGameSave(previewProject, session, identity) })
+        : saveFileDocument({ kind: 'variables', name: request.file, identity, levelId: previewProject.game?.active ?? null,
+          // The rule snapshotted the values when it ran; late changes must not leak into the file.
+          variables: request.values });
+      writeSaveFile(request.file, serializeSaveFile(document));
+      if (runtime === session) {
+        publishSaveFiles(session);
+        session.saveStatus = request.kind === 'game'
+          ? `Saved the game to the save file ${request.file}.`
+          : `Saved ${Object.keys(document.variables).length} variable(s) to the save file ${request.file}.`;
+      }
+    } else if (request.type === 'load-file') {
+      const text = readSaveFile(request.file);
+      if (text === null) throw new Error(`there is no save file named ${request.file}`);
+      const document = parseSaveFile(text);
+      if (document.kind !== request.kind) {
+        throw new Error(`${request.file} holds ${document.kind === 'game' ? 'a whole game' : 'variables'}, not ${request.kind === 'game' ? 'a whole game' : 'variables'}`);
+      }
+      if (request.kind === 'variables') {
+        const { applied, skipped } = applyVariableSave(previewProject, session, document);
+        if (runtime === session) {
+          session.saveFileError = '';
+          session.saveStatus = `Loaded ${applied.length} variable(s) from ${request.file}.` +
+            (skipped.length ? ` Skipped: ${skipped.join(', ')}.` : '');
+        }
+      } else if (runtime === session) {
+        // The record is the same shape a save slot holds, so a full-state save file resumes through
+        // exactly the path a slot load takes — including the campaign level the record names.
+        await beginPreview(session.gameMode, session.settings, true, undefined, undefined, document.record);
+      }
     } else {
       const record = await gameSaves.load(identity, request.slot);
       if (runtime === session) await beginPreview(session.gameMode, session.settings, true, undefined, undefined, record);
     }
   } catch (error) {
-    if (runtime === session) session.saveStatus = `${request.type === 'save' ? 'Save' : 'Load'} failed: ${error.message}`;
-    status(`${request.type === 'save' ? 'Save' : 'Load'} failed: ${error.message}`, true);
+    if (runtime === session) {
+      session.saveStatus = `${saving ? 'Save' : 'Load'} failed: ${error.message}`;
+      session.saveFileError = error.message;
+    }
+    status(`${saving ? 'Save' : 'Load'} failed: ${error.message}`, true);
   } finally { saveBusy = false; }
 }
+/** The Save files dialog: the same documents the rules write, as files a player can keep. */
+function saveFileRow(name) {
+  const row = document.createElement('div');
+  row.className = 'save-file-row';
+  const label = document.createElement('span');
+  label.className = 'save-file-name';
+  label.textContent = name;
+  const detail = document.createElement('span');
+  detail.className = 'save-file-detail';
+  let kind = '';
+  try {
+    const document = parseSaveFile(readSaveFile(name) || '');
+    kind = document.kind === 'game' ? 'whole game' : `${Object.keys(document.variables).length} variable(s)`;
+    detail.textContent = `${kind} · ${new Date(document.createdAt).toLocaleString()}`;
+  } catch (error) { detail.textContent = `unreadable: ${error.message}`; }
+  const download = button('Download', () => {
+    try {
+      const text = readSaveFile(name);
+      if (text === null) throw new Error('the file is gone');
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url; link.download = `${name}.json`;
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      $('save-files-status').textContent = `Downloaded ${name}.json.`;
+    } catch (error) { $('save-files-status').textContent = `Could not download ${name}: ${error.message}`; }
+  }, 'save-file-action');
+  const remove = button('Delete', () => {
+    try {
+      removeSaveFile(name);
+      publishSaveFiles(runtime);
+      renderSaveFiles();
+      $('save-files-status').textContent = `Deleted ${name}.`;
+    } catch (error) { $('save-files-status').textContent = `Could not delete ${name}: ${error.message}`; }
+  }, 'save-file-action');
+  row.append(label, detail, download, remove);
+  return row;
+}
+function renderSaveFiles() {
+  const host = $('save-files-list');
+  const names = saveFileKeys();
+  host.replaceChildren(...(names.length ? names.map(saveFileRow)
+    : [Object.assign(document.createElement('p'), { className: 'muted', textContent: 'No save file yet. A rule that saves writes the first one.' })]));
+}
+$('save-files').addEventListener('click', () => {
+  renderSaveFiles();
+  $('save-files-status').textContent = '';
+  $('save-files-dialog').showModal();
+});
+$('save-files-close').addEventListener('click', () => $('save-files-dialog').close());
+$('save-files-import').addEventListener('click', () => $('save-files-input').click());
+$('save-files-input').addEventListener('change', async () => {
+  const files = [...$('save-files-input').files];
+  if (!files.length) return;
+  const saved = [], refused = [];
+  for (const file of files) {
+    try {
+      const document = parseSaveFile(await file.text());
+      writeSaveFile(document.name, serializeSaveFile(document));
+      saved.push(document.name);
+    } catch (error) { refused.push(`${file.name}: ${error.message}`); }
+  }
+  $('save-files-input').value = '';
+  publishSaveFiles(runtime);
+  renderSaveFiles();
+  $('save-files-status').textContent = [
+    saved.length ? `Imported ${saved.join(', ')}.` : '',
+    refused.length ? `Refused ${refused.join('; ')}` : '',
+  ].filter(Boolean).join(' ');
+});
 $('play-level').addEventListener('change', guard(async () => {
   if (!runtime || previewLoading) return;
   hudWarningShown = false; musicReported = false;
@@ -4581,8 +4733,12 @@ function frame(now) {
         catch (error) { mouseStatus(`Settings could not be saved: ${error.message}`, true); }
       }
       const requests = runtime.menuRequests.splice(0);
-      const saveRequest = requests.find(request => ['save', 'load'].includes(request?.type));
-      if (saveRequest) void processGameSave(saveRequest);
+      // A frame can ask for more than one save: two rules, or a checkpoint and a record of it. Each
+      // request is queued rather than only the first, because the work is asynchronous and both
+      // writes have to land in the order the rules asked for them.
+      for (const request of requests.filter(request => ['save', 'load', 'save-file', 'load-file'].includes(request?.type))) {
+        saveQueue = saveQueue.then(() => processGameSave(request)).catch(() => {});
+      }
       const levelRequest = requests.find(request => request?.type === 'level');
       if (levelRequest) {
         const settings = structuredClone(runtime.settings), mode = runtime.gameMode;
