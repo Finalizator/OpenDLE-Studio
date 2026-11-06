@@ -107,6 +107,10 @@ export const ENGINE_CONDITIONS = [
   { type: 'sectorTagMoving', label: 'World: any sector with this tag is moving', fields: [numeric('tag', 0, 0, 65535)] },
   // A decompiled ACS script keeps its variables where the level keeps them — the interpreter's
   // map, world and global stores — so a rule reads the same numbers the rest of the scripts do.
+  // A script's own inventory test: `CheckInventory("Shells") >= 5`, by the ACS item name, so
+  // the name table the interpreter uses is the one a rule uses too.
+  { type: 'acsInventory', label: 'Script: ACS inventory count compares', fields: [
+    { name: 'item', value: 'Shells', kind: 'text' }, comparison(), numeric('value', 1, 0, 100000)] },
   { type: 'acsVariable', label: 'Script: ACS variable compares', fields: [
     choice('scope', 'map', ['map', 'world', 'global']), numeric('index', 0, 0, 255), comparison(),
     numeric('value', 0, -1000000, 1000000), { ...numeric('module', 0, 0, 63), optional: true }] },
@@ -378,6 +382,19 @@ export const ENGINE_ACTIONS = [
     numeric('tag', 0, 0, 65535), choice('blocking', 'yes', ['yes', 'no'])] },
   { type: 'setLineMonsterBlocking', label: 'World: set whether tagged lines block monsters', fields: [
     numeric('tag', 0, 0, 65535), choice('monsters', 'yes', ['yes', 'no'])] },
+  // The script callables that touch the player's inventory and an actor's health, named the
+  // way ACS names them, resolved through the interpreter's host functions.
+  { type: 'giveInventory', label: 'Script: give an ACS item', fields: [
+    { name: 'item', value: 'Shells', kind: 'text' }, numeric('amount', 1, 1, 100000)] },
+  { type: 'takeInventory', label: 'Script: take an ACS item', fields: [
+    { name: 'item', value: 'Shells', kind: 'text' }, numeric('amount', 1, 1, 100000)] },
+  { type: 'damageThing', label: 'Script: damage the things with this tag', fields: [
+    numeric('tid', 0, 0, 65535), numeric('amount', 10, 0, 100000),
+    { name: 'kind', value: 'Normal', kind: 'text', allowEmpty: true }] },
+  { type: 'sectorDamage', label: 'Script: damage every sector with this tag', fields: [
+    numeric('tag', 0, 0, 65535), numeric('amount', 5, 0, 100000),
+    { name: 'kind', value: 'Normal', kind: 'text', allowEmpty: true },
+    { name: 'protection', value: '', kind: 'text', allowEmpty: true }] },
   { type: 'setLineSpecial', label: 'World: set a line special by tag', fields: [
     numeric('tag', 0, 0, 65535), { ...numeric('special', 1, 0, 65535), integer: true },
     { ...numeric('arg1', 0, -32768, 32767), optional: true },

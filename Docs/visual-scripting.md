@@ -427,7 +427,12 @@ functions so a decompiled script and a bytecode one change the level identically
 `setSectorFlat` (`surface`, `tag`, `flat` — ACS `ChangeFloor`/`ChangeCeiling`),
 `setLineTexture` (`line`, `side`, `part`, `texture`), `setLineBlocking` (`tag`, `blocking`),
 `setLineMonsterBlocking` (`tag`, `monsters`) and `setLineSpecial` (`tag`, `special`,
-`arg1`…`arg5`). A random roll becomes the expression `floor(random(min, max))` where the script
+`arg1`…`arg5`). The inventory and health calls work the same way: `giveInventory` and
+`takeInventory` (`item`, `amount`) give and take the items a script names (`"Shells"`,
+`"BlueCard"`, `"Shotgun"`), `damageThing` (`tid`, `amount`, `kind`) hurts the things with a tag,
+`sectorDamage` (`tag`, `amount`, `kind`, `protection`) hurts everything standing in a tagged
+sector, and `acsInventory` (`item`, `operator`, `value`) asks how many of an item the player
+has — which is what `CheckInventory` asks. A random roll becomes the expression `floor(random(min, max))` where the script
 used `Random`, so `SetLineSpecial(Random(map6, map6 + 2), 70, …)` keeps its own range.
 
 Shootable props are actors too: a barrel imports with 20 health and a `Death` state, and

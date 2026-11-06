@@ -217,11 +217,16 @@ export function decompileScript(program, selector) {
       // The builtins a script calls directly, as the actions that do the same thing.
       const builtin = BUILTINS[name];
       if (builtin) {
-        const values = stack.splice(Math.max(0, stack.length - builtin.count));
+        // A `*DIRECT` opcode carries its arguments as operands; the stack form pops them.
+        const values = builtin.operands
+          ? operands.slice(0, builtin.count).map(value => ({ kind: 'number', value: Number(value) || 0 }))
+          : stack.splice(Math.max(0, stack.length - builtin.count));
         if (values.length !== builtin.count) return null;
         const action = builtin.action(values, module);
         if (!action) return null;
-        pending.actions.push(action);
+        // `CheckInventory` leaves a count on the stack for the comparison that follows.
+        if (builtin.result) stack.push(action);
+        else pending.actions.push(action);
         offset = next; continue;
       }
 
@@ -310,6 +315,22 @@ const BUILTINS = {
     type: 'setLineSpecial', tag: argumentOf(tag), special: argumentOf(special),
     arg1: argumentOf(args[0]), arg2: argumentOf(args[1]), arg3: argumentOf(args[2]),
     arg4: argumentOf(args[3]), arg5: argumentOf(args[4]) }) },
+  GIVEINVENTORY: { count: 2, action: ([name, amount], module) => withItem({ type: 'giveInventory' },
+    name, module, { amount: argumentOf(amount) }) },
+  GIVEINVENTORYDIRECT: { operands: true, count: 2, action: ([name, amount], module) => withItem({
+    type: 'giveInventory' }, name, module, { amount: argumentOf(amount) }) },
+  TAKEINVENTORY: { count: 2, action: ([name, amount], module) => withItem({ type: 'takeInventory' },
+    name, module, { amount: argumentOf(amount) }) },
+  TAKEINVENTORYDIRECT: { operands: true, count: 2, action: ([name, amount], module) => withItem({
+    type: 'takeInventory' }, name, module, { amount: argumentOf(amount) }) },
+  // `CheckInventory` leaves a count behind, which the comparison after it reads.
+  CHECKINVENTORY: { count: 1, result: true, action: ([name], module) => withItem({
+    kind: 'inventory' }, name, module) },
+  THINGDAMAGE2: { count: 3, action: ([tid, amount, kind], module) => withKind({
+    type: 'damageThing', tid: argumentOf(tid), amount: argumentOf(amount) }, kind, module) },
+  SECTORDAMAGE: { count: 5, action: ([tag, amount, kind, protection], module) => withKind({
+    type: 'sectorDamage', tag: argumentOf(tag), amount: argumentOf(amount),
+    protection: nameOf(protection, module) ?? '' }, kind, module) },
 };
 
 /**
@@ -329,6 +350,25 @@ function flatAction(surface, tag, flat, module) {
   if (name === null) return null;
   const action = { type: 'setSectorFlat', surface, tag: argumentOf(tag) };
   return named(action, 'flat', name);
+}
+
+/** The name a string index stands for, or null when it is not one this can read. */
+function nameOf(value, module) {
+  const name = stringOf(value, module);
+  return typeof name === 'string' ? name : null;
+}
+
+/** An inventory command, from an item name the module's string table holds. */
+function withItem(action, name, module, extra = {}) {
+  const item = nameOf(name, module);
+  if (item === null) return null;
+  return { ...action, ...extra, item };
+}
+
+/** A damage command; its damage type is a name, and an unknown one is left empty. */
+function withKind(action, kind, module) {
+  if ([...Object.values(action)].some(entry => entry === null)) return null;
+  return { ...action, kind: nameOf(kind, module) ?? '' };
 }
 
 /** Adds a name field to an action, refusing the whole action when the name could not be read. */
@@ -360,7 +400,7 @@ function compare(left, operator, right) {
     const holds = compareNumbers(Number(left.value), operator, Number(right.value));
     return { kind: 'number', value: holds ? 1 : 0 };
   }
-  if (left?.kind === 'variable' && right?.kind === 'number') {
+  if ((left?.kind === 'variable' || left?.kind === 'inventory') && right?.kind === 'number') {
     return { kind: 'expr', operator, left, right };
   }
   if (left?.kind === 'number' && right?.kind === 'variable') {
@@ -410,6 +450,11 @@ function conditionsFor(entry, invert = false) {
     return { conditions: [...left.conditions, ...right.conditions] };
   }
   const { left, right } = entry;
+  // `CheckInventory("Shells") >= 5`: the count is the script's, asked through the same table.
+  if (left?.kind === 'inventory' && right?.kind === 'number') {
+    return { conditions: [{ type: 'acsInventory', item: left.item,
+      operator: invert ? NEGATED[entry.operator] : entry.operator, value: Number(right.value) }] };
+  }
   if (left?.kind !== 'variable' || right?.kind !== 'number') return null;
   // `x + 1 >= 2` is the test for `if (++x >= 2)`: read the counter with the offset folded in.
   const threshold = Number(right.value) - (left.add || 0);

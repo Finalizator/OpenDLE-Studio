@@ -1118,3 +1118,59 @@ test('acsflat reads the name a variable stands for, out of the level\'s own stri
   assert.equal(state.sectors.find(sector => sector.tag === 1).floorAsset, 'asset_hex01',
     'the name in map12 was "HEX01", and the floor took that flat');
 });
+
+test('a script that gives an item, checks it and damages what it tagged keeps those calls', () => {
+  // `GiveInventory("Shells", 8); if (CheckInventory("Shells") >= 8) { Thing_Damage(9, 20,
+  // "Normal"); SectorDamage(1, 5, "Fire", ""); }` — the three callables become the three
+  // actions, and the count the script asks about is the count the rule asks about.
+  const asm = emitter();
+  asm.pushBytes(0, 8).ins('GIVEINVENTORY');
+  asm.pushBytes(0).ins('CHECKINVENTORY');
+  asm.pushBytes(8).ins('GE');
+  asm.ins('IFNOTGOTO', 0);
+  const operandAt = asm.code.length - 4;
+  asm.pushBytes(9, 20, 1).ins('THINGDAMAGE2');
+  asm.pushBytes(1, 5, 2, 3, 0).ins('SECTORDAMAGE');
+  asm.patch(operandAt);
+  asm.ins('TERMINATE');
+  const described = describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }], strings: ['Shells', 'Normal', 'Fire', ''] }));
+  const program = programFor({ mapScripts: described.mapScripts });
+  const rules = acsScriptStepRules(program, program.scripts[0], { sheetId: 'sheet', groupId: 'group' });
+  const rule = rules.find(event => !event.parentId);
+  assert.deepEqual(rule.actions[0], { type: 'giveInventory', item: 'Shells', amount: 8 });
+  const guard = rules.find(event => event.parentId === rule.id);
+  assert.equal(guard.condition.type, 'acsInventory');
+  assert.equal(guard.condition.item, 'Shells');
+  assert.equal(guard.condition.operator, '>=');
+  assert.equal(guard.condition.value, 8);
+  const damage = guard.actions.find(action => action.type === 'damageThing');
+  assert.deepEqual(damage, { type: 'damageThing', tid: 9, amount: 20, kind: 'Normal' });
+  const sector = guard.actions.find(action => action.type === 'sectorDamage');
+  assert.equal(sector.tag, 1);
+  assert.equal(sector.amount, 5);
+  assert.equal(sector.kind, 'Fire');
+});
+
+test('a rule gives an ACS item and asks the level how many the player has', () => {
+  // `GiveInventory` and `CheckInventory` name items the way a script does; the rule goes through
+  // the interpreter's host functions, so the same names mean the same items either way.
+  const asm = emitter();
+  asm.ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] })).mapScripts });
+  const world = project.eventSheets.find(sheet => sheet.name === 'World');
+  const group = project.eventGroups.find(item => item.sheetId === world.id);
+  const shared = { sheetId: world.id, groupId: group.id, enabled: true, once: false };
+  project.events.push(
+    { ...shared, id: 'give_shells', condition: { type: 'onStart' }, conditions: [],
+      actions: [{ type: 'giveInventory', item: 'Shells', amount: 8 }] },
+    { ...shared, id: 'count_shells', once: true,
+      condition: { type: 'acsInventory', item: 'Shells', operator: '>=', value: 8 }, conditions: [],
+      actions: [{ type: 'takeInventory', item: 'Shells', amount: 3 }] },
+  );
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.playerStats.shells, 5, 'eight shells were given, then the guard took three');
+});

@@ -1406,6 +1406,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const label = actor && index !== null ? labelIndex(actor, condition.state) : null;
         return index !== null && label !== null && index === label;
       }
+      if (condition.type === 'acsInventory') {
+        const count = state.scripts?.host?.checkInventory(String(condition.item ?? ''), 'player') ?? 0;
+        return compareValues(count, condition.operator || '=', Number(condition.value) || 0);
+      }
       if (condition.type === 'acsVariable') {
         const store = acsVariableStore(state, condition.scope, condition.module);
         return Boolean(store) && compareValues(store[condition.index] | 0, condition.operator || '=', Number(condition.value) || 0);
@@ -2027,6 +2031,20 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // A decompiled script's own builtins — `ChangeFloor(tag, "HEX01")`, `SetLineSpecial`,
         // `SetLineBlocking` — run through the interpreter's host functions, so the rule and a
         // script that was not decompiled change the level the same way.
+        case 'giveInventory':
+          hostFor(action).giveInventory(String(action.item ?? ''), Number(action.amount) || 0, 'player');
+          break;
+        case 'takeInventory':
+          hostFor(action).takeInventory(String(action.item ?? ''), Number(action.amount) || 0, 'player');
+          break;
+        case 'damageThing':
+          hostFor(action).damageThing(Number(action.tid) || 0, Number(action.amount) || 0,
+            String(action.kind ?? ''), 'player');
+          break;
+        case 'sectorDamage':
+          hostFor(action).sectorDamage(Number(action.tag) || 0, Number(action.amount) || 0,
+            String(action.kind ?? ''), String(action.protection ?? ''), 0);
+          break;
         case 'setSectorFlat': {
           hostFor(action).changeFlat(Number(action.tag) || 0, String(action.flat ?? ''), action.surface === 'ceiling');
           break;
