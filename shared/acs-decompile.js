@@ -217,11 +217,9 @@ export function decompileScript(program, selector) {
       // The builtins a script calls directly, as the actions that do the same thing.
       const builtin = BUILTINS[name];
       if (builtin) {
-        const values = builtin.count ? stack.splice(Math.max(0, stack.length - builtin.count)) : [];
+        const values = stack.splice(Math.max(0, stack.length - builtin.count));
         if (values.length !== builtin.count) return null;
-        const args = values.map(argumentOf);
-        if (args.some(value => value === null)) return null;
-        const action = builtin.action(name, args, module);
+        const action = builtin.action(values, module);
         if (!action) return null;
         pending.actions.push(action);
         offset = next; continue;
@@ -295,31 +293,50 @@ function expressionOf(entry) {
  * arguments from the stack, and a string argument is a string-table index, which the module
  * can resolve — `PUSHBYTE 1; CHANGEFLOOR` is `ChangeFloor(tag, "HEX01")`.
  */
+/** Each builtin reads its arguments as stack entries: numbers, variables, or a string index. */
 const BUILTINS = {
-  CHANGEFLOOR: { count: 2, action: (name, [tag, flat], module) => flatAction('floor', tag, flat, module) },
-  CHANGEFLOORDIRECT: { count: 2, action: (name, [tag, flat], module) => flatAction('floor', tag, flat, module) },
-  CHANGECEILING: { count: 2, action: (name, [tag, flat], module) => flatAction('ceiling', tag, flat, module) },
-  CHANGECEILINGDIRECT: { count: 2, action: (name, [tag, flat], module) => flatAction('ceiling', tag, flat, module) },
-  SETLINETEXTURE: { count: 4, action: (name, [line, side, part, texture], module) => ({
-    type: 'setLineTexture', line, side, part, texture: stringOf(texture, module) }) },
-  SETLINEBLOCKING: { count: 2, action: (name, [tag, mode]) => (typeof mode === 'number'
-    ? { type: 'setLineBlocking', tag, blocking: mode === 0 ? 'no' : 'yes' } : null) },
-  SETLINEMONSTERBLOCKING: { count: 2, action: (name, [tag, on]) => (typeof on === 'number'
-    ? { type: 'setLineMonsterBlocking', tag, monsters: on === 0 ? 'no' : 'yes' } : null) },
-  SETLINESPECIAL: { count: 7, action: (name, [tag, special, ...args]) => ({
-    type: 'setLineSpecial', tag, special, arg1: args[0] ?? 0, arg2: args[1] ?? 0,
-    arg3: args[2] ?? 0, arg4: args[3] ?? 0, arg5: args[4] ?? 0 }) },
+  CHANGEFLOOR: { count: 2, action: ([tag, flat], module) => flatAction('floor', tag, flat, module) },
+  CHANGEFLOORDIRECT: { count: 2, action: ([tag, flat], module) => flatAction('floor', tag, flat, module) },
+  CHANGECEILING: { count: 2, action: ([tag, flat], module) => flatAction('ceiling', tag, flat, module) },
+  CHANGECEILINGDIRECT: { count: 2, action: ([tag, flat], module) => flatAction('ceiling', tag, flat, module) },
+  SETLINETEXTURE: { count: 4, action: ([line, side, part, texture], module) => named({
+    type: 'setLineTexture', line: argumentOf(line), side: argumentOf(side), part: argumentOf(part) },
+  'texture', stringOf(texture, module)) },
+  SETLINEBLOCKING: { count: 2, action: ([tag, mode]) => (mode?.kind !== 'number' ? null
+    : { type: 'setLineBlocking', tag: argumentOf(tag), blocking: Number(mode.value) === 0 ? 'no' : 'yes' }) },
+  SETLINEMONSTERBLOCKING: { count: 2, action: ([tag, on]) => (on?.kind !== 'number' ? null
+    : { type: 'setLineMonsterBlocking', tag: argumentOf(tag), monsters: Number(on.value) === 0 ? 'no' : 'yes' }) },
+  SETLINESPECIAL: { count: 7, action: ([tag, special, ...args]) => ({
+    type: 'setLineSpecial', tag: argumentOf(tag), special: argumentOf(special),
+    arg1: argumentOf(args[0]), arg2: argumentOf(args[1]), arg3: argumentOf(args[2]),
+    arg4: argumentOf(args[3]), arg5: argumentOf(args[4]) }) },
 };
 
-/** A flat name from a string index, or null when the argument is not one this can resolve. */
+/**
+ * A flat or texture name. A constant index is resolved now, out of the module's own string
+ * table; a variable is resolved at run time, because that is when the script would have read it.
+ */
 function stringOf(value, module) {
-  if (typeof value !== 'number') return null;
-  return lookupString(module, value & 0xffff);
+  if (value?.kind === 'number') return lookupString(module, Number(value.value) & 0xffff);
+  if (value?.kind === 'variable' && value.scope !== 'script') {
+    return { expr: `acsflat("${value.scope}", ${value.index})` };
+  }
+  return null;
 }
 
 function flatAction(surface, tag, flat, module) {
   const name = stringOf(flat, module);
-  return name === null ? null : { type: 'setSectorFlat', surface, tag, flat: name };
+  if (name === null) return null;
+  const action = { type: 'setSectorFlat', surface, tag: argumentOf(tag) };
+  return named(action, 'flat', name);
+}
+
+/** Adds a name field to an action, refusing the whole action when the name could not be read. */
+function named(action, field, value) {
+  if (value === null || value === undefined) return null;
+  if ([...Object.values(action)].some(entry => entry === null)) return null;
+  action[field] = value;
+  return action;
 }
 
 /** Constant folding; a variable on either side needs a rule, not a number. */

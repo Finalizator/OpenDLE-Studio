@@ -872,7 +872,9 @@ test('a script this engine can read is written as the actions it performs', { sk
   const program = programFor(project);
   const coverage = decompileCoverage(program);
   assert.ok(coverage.translated > 0, 'at least one script is a plain list of specials');
-  assert.ok(coverage.translated < coverage.total, 'and the rest are honestly left as bytecode');
+  // Every script in this map is now a body the decompiler can read; a script it cannot read
+  // still keeps its `runScript` rule, and other maps in the test corpus exercise that path.
+  assert.equal(coverage.translated, coverage.total, 'and every script in this map reads as rules');
   const translated = program.scripts.filter(script => decompileScript(program, script.number));
   const sample = decompileScript(program, translated[0].number);
   assert.deepEqual(sample.actions[0].type, 'runLineSpecial', 'the body reads as the actions it performs');
@@ -1005,9 +1007,7 @@ test('a script that changes a line or a floor becomes the action that does the s
   assert.equal(child.condition.value, 3);
   const flat = child.actions.find(action => action.type === 'setSectorFlat');
   assert.deepEqual(flat, { type: 'setSectorFlat', surface: 'floor', tag: { expr: 'acsvar("map", 3)' }, flat: 'HEXA01' });
-  // Ten of the eleven scripts in this map now read as rules; the last hands the interpreter a
-  // flat name held in a variable, which a rule's field cannot carry.
-  assert.equal(decompileCoverage(program).translated, 10);
+  assert.equal(decompileCoverage(program).translated, 11, 'every script in this map reads as rules');
 });
 
 test('a script that rolls a random line becomes an expression with the script\'s own range', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
@@ -1077,4 +1077,44 @@ test('a line whose script tests a counter carries that test as a sub-event of th
   const child = project.events.find(event => event.parentId === parent.id);
   assert.ok(child, 'and the guard is a sub-event of it');
   assert.equal(child.condition.type, 'acsVariable');
+});
+
+test('a script that keeps a flat name in a variable keeps it in the rule too', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // `activatePurpleTeleport` is the last script in MAP05: `ChangeFloor(map11, map12)` where
+  // map12 holds a string-table index. A rule cannot hold a name it does not know yet, so the
+  // action carries `acsflat("map", 12)` and the name is read from the level when it runs.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  const program = programFor(project);
+  const entry = program.scripts.find(script => script.name === 'activatePurpleTeleport');
+  const [rule] = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
+  const floor = rule.actions.find(action => action.type === 'setSectorFlat' && action.surface === 'floor');
+  assert.deepEqual(floor, { type: 'setSectorFlat', surface: 'floor', tag: { expr: 'acsvar("map", 11)' },
+    flat: { expr: 'acsflat("map", 12)' } });
+  assert.ok(rule.actions.some(action => action.type === 'setSectorFlat' && action.surface === 'ceiling'));
+  assert.ok(rule.actions.some(action => action.type === 'setLineSpecial' && action.special === 70));
+});
+
+test('acsflat reads the name a variable stands for, out of the level\'s own string table', () => {
+  // The interpreter passes flats and textures as string-table indexes, so a rule that got one
+  // from a variable asks the same table for the name — never a guess, never a copy.
+  const asm = emitter();
+  asm.ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }], strings: ['HEX01'] })).mapScripts });
+  project.assets.push({ id: 'asset_hex01', kind: 'flat', name: 'HEX01', width: 64, height: 64, src: 'data:image/png;base64,AA==' });
+  const world = project.eventSheets.find(sheet => sheet.name === 'World');
+  const group = project.eventGroups.find(item => item.sheetId === world.id);
+  project.events.push({ id: 'script_flat', sheetId: world.id, groupId: group.id, enabled: true, once: true,
+    condition: { type: 'onStart' }, conditions: [], actions: [
+      { type: 'setAcsVariable', scope: 'map', index: 12, mode: 'set', value: 0 },
+      { type: 'setSectorFlat', surface: 'floor', tag: 1, flat: { expr: 'acsflat("map", 12)' } },
+    ] });
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.sectors.find(sector => sector.tag === 1).floorAsset, 'asset_hex01',
+    'the name in map12 was "HEX01", and the floor took that flat');
 });

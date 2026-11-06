@@ -21,3 +21,21 @@ export function readAcsVariable(state, scope = 'map', index = 0, module = 0) {
   const store = acsVariableStore(state, scope, module);
   return store ? store[Number(index) || 0] | 0 : 0;
 }
+
+/**
+ * A variable that holds a string-table index, read back as the name it stands for.
+ *
+ * ACS passes flats and textures as strings, and a script may keep one in a variable —
+ * `ChangeFloor(tag, flatVar)` — so a rule asks for the name the same way the interpreter did:
+ * through the same table, at run time, with `acsflat("map", 12)`.
+ */
+export function readAcsString(state, scope = 'map', index = 0, module = 0) {
+  const vm = state?.scripts?.vm;
+  if (!vm) return '';
+  const behaviour = vm.program?.modules?.[Number(module) || 0]?.module || vm.module;
+  const slot = readAcsVariable(state, scope, index, module);
+  if (!behaviour) return '';
+  // An interned string (from `Str` handling) lives in the pool, not the module's table.
+  if ((slot >>> 0) >= 0x40000000) return vm.pool?.[slot & 0xffff] ?? '';
+  return behaviour.strings?.[slot & 0xffff] ?? '';
+}

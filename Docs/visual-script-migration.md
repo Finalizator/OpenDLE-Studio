@@ -60,12 +60,13 @@ useful alone:
       `runLineSpecial`, a wait splits the script (each step waits on the timer the one
       before it started), map/world/global variables become `setAcsVariable` / `acsVariable`
       / `acsvar("map", n)`, and an `IFNOTGOTO` guard becomes a **sub-event** of its step
-      (10 of 11 scripts on Ascent MAP05 today). The builtins a script calls directly are
+      (all 11 scripts of Ascent MAP05 today). The builtins a script calls directly are
       actions that use the interpreter's host functions: `setSectorFlat`
       (`ChangeFloor`/`ChangeCeiling`), `setLineTexture`, `setLineBlocking`,
       `setLineMonsterBlocking`, `setLineSpecial`; `Random` becomes the expression
-      `floor(random(min, max))` over the script's own bounds. Still to add: loops (backward
-      jumps), a flat or texture name held in a variable, inventory and damage calls
+      `floor(random(min, max))` over the script's own bounds, and a flat or texture kept in a
+      variable is the expression `acsflat("map", n)` — the name read from the module's string
+      table when the rule runs. Still to add: loops (backward jumps), inventory and damage calls
       (`GiveInventory`, `TakeInventory`, `Thing_Damage`, `SectorDamage`), `SetThingSpecial`,
       and arrays.
 - [~] **Step 3 — control flow.** `if` is done: an `IFNOTGOTO` guard is a sub-event of the

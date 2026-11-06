@@ -1202,7 +1202,12 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       if (!definition) return;
       for (const field of definition.fields) {
         if (field.optional && command[field.name] === undefined) continue;
-        if (isExpression(command[field.name]) && ['number', 'value', 'string', 'waypoint'].includes(field.kind)) { expression(command[field.name]); continue; }
+        // A field the catalogue marks as an expression takes `=…` text even when it is a name:
+        // a flat the script kept in a variable is `acsflat("map", 12)`, not a literal.
+        if (isExpression(command[field.name]) &&
+          (['number', 'value', 'string', 'waypoint'].includes(field.kind) || field.expression)) {
+          expression(command[field.name]); continue;
+        }
         if (field.kind === 'number') {
           number(command[field.name], field.name, field.min, field.max);
           if (['diceSides', 'pellets'].includes(field.name)) assert(Number.isInteger(command[field.name]), `${field.name} must be an integer`);

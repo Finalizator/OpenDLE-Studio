@@ -417,9 +417,10 @@ decompiled see the same numbers: `setAcsVariable` (`scope`, `index`, `mode` `set
 `acsvar("map", 2)` reads one inside any expression. A guard — ACS `if`, compiled as
 `IFNOTGOTO` — becomes a sub-event of the step, evaluated after the actions above it, so
 `count += 1; if (count >= 2) open the door` reads exactly as it does in the script. A body
-with a loop, an array or a flat name held in a variable is left as the compiled module, shown
-disassembled in the Scripts tab, because a rule that ran half a script would be worse than one
-that runs none.
+with a loop or an array is left as the compiled module, shown disassembled in the Scripts tab,
+because a rule that ran half a script would be worse than one that runs none. A flat or texture
+the script kept in a variable is read when the rule runs, with `acsflat("map", 12)` — the same
+string table, the same index, so `ChangeFloor(map11, map12)` is still that call.
 
 The builtins a script calls directly are actions too, and they run the interpreter's own host
 functions so a decompiled script and a bytecode one change the level identically:

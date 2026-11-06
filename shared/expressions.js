@@ -1,10 +1,10 @@
 import { GAME_SETTINGS } from './game-settings.js';
 import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTY_NAMES, readInstanceProperty } from './instance-properties.js';
 import { PLAYER_STATS } from './player-state.js';
-import { readAcsVariable } from './acs-state.js';
+import { readAcsVariable, readAcsString } from './acs-state.js';
 
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
-export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), property("enemy","health"), count("enemy"), player("health"), acsvar("map", 2), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
+export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), property("enemy","health"), count("enemy"), player("health"), acsvar("map", 2), acsflat("map", 3), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
 export const isExpression = value => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && typeof value.expr === 'string';
 
 export function scalar(value) {
@@ -116,7 +116,7 @@ const textFunctions = {
   find: [2, 2, (s, needle) => text(s).indexOf(text(needle))],
 };
 // `acsvar("map", 2)` reads a compiled script's variable: the level's own store, not a copy.
-const references = { global: 1, local: 1, object: 2, property: 2, player: 1, setting: 1, count: 1, acsvar: 2 };
+const references = { global: 1, local: 1, object: 2, property: 2, player: 1, setting: 1, count: 1, acsvar: 2, acsflat: 2 };
 /**
  * The properties an expression can read.
  *
@@ -165,6 +165,7 @@ export function expressionContext(project, event, state, dt = 0, { selection } =
         return state ? state.settings[args[0]] : GAME_SETTINGS[args[0]].value;
       }
       if (kind === 'acsvar') return readAcsVariable(state, args[0], Number(args[1]) || 0);
+      if (kind === 'acsflat') return readAcsString(state, args[0], Number(args[1]) || 0);
       if (kind === 'global') return variable(state?.variables || project.variables, args[0]);
       if (kind === 'player') {
         if (!playerStats.has(args[0])) throw new Error(`Unknown player expression stat: ${args[0]}`);
@@ -203,12 +204,12 @@ function checkCall(node) {
   const min = count || (node.name === 'random' ? 2 : definition?.[0]);
   const max = count || (node.name === 'random' ? 2 : definition?.[1]);
   if (min === undefined || node.args.length < min || node.args.length > max) throw new Error(`Unknown function or invalid argument count: ${node.name}`);
-  if (node.name === 'acsvar') {
+  if (node.name === 'acsvar' || node.name === 'acsflat') {
     const [scope, index] = node.args;
     if (scope?.op !== 'literal' || !['map', 'world', 'global'].includes(scope.value))
-      throw new Error('acsvar requires a scope: "map", "world" or "global"');
+      throw new Error(`${node.name} requires a scope: "map", "world" or "global"`);
     if (index?.op !== 'literal' || typeof index.value !== 'number')
-      throw new Error('acsvar requires a literal variable index');
+      throw new Error(`${node.name} requires a literal variable index`);
     return;
   }
   if (count && node.args.some(arg => arg.op !== 'literal' || typeof arg.value !== 'string')) throw new Error(`${node.name} references require literal quoted names`);
