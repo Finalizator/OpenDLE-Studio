@@ -12,6 +12,7 @@ import { describeMapScripts, createMapScripts, scriptSummary, decodeBase64, prog
 import { loadacsNames, acsLibrariesFromWad, selectAcsLibraries } from '../shared/acs-libraries.js';
 import { createProgram, findScript, startScriptsOfKind } from '../shared/acs.js';
 import { executeSpecial, specialName, unsupportedSpecials } from '../shared/line-specials.js';
+import { scriptSteps } from '../shared/world-motion.js';
 import { importWadMap, readWad } from '../shared/wad.js';
 import { captureGameSave, restoreGameSave } from '../shared/save-game.js';
 import { decompileCoverage, decompileScript } from '../shared/acs-decompile.js';
@@ -898,4 +899,22 @@ test('a script that waits becomes a chain of steps, not one rule that lies', { s
   const last = steps.at(-1);
   assert.ok(last.actions.some(action => action.type === 'runLineSpecial'));
   for (const step of steps) assert.ok(step.actions.length, `${step.name} does something`);
+});
+
+test('a line that starts a script this engine can read carries the script\'s steps', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // `ACS_Execute` on a line used to be one opaque special. When the script it names is a
+  // list of specials and waits, the line's rule carries those steps instead — with timers
+  // named after the line, so two lines running the same script keep separate clocks.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  const steps = scriptSteps(project, -9, 'w42');
+  assert.ok(steps.length >= 2, 'the script becomes several steps');
+  assert.ok(steps[0].actions.some(action => action.type === 'runLineSpecial'));
+  const timers = steps.flatMap(step => step.actions.filter(action => action.type === 'startTimer').map(action => action.timer));
+  assert.ok(timers.every(timer => timer.startsWith('acs_w42_step')), `timers belong to the line: ${timers}`);
+  const second = steps[1];
+  assert.ok(second.conditions.some(condition => condition.type === 'timerExists' &&
+    condition.timer.startsWith('acs_w42_step')), 'the next step waits on the line\'s own clock');
 });

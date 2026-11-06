@@ -2,6 +2,7 @@ import { sectorAt } from './sectors.js';
 import { floorAt, entityHeight, soundEvent } from './combat.js';
 import { doomSpecialBehaviour, doomSpecialName } from './doom-specials.js';
 import { specialName } from './line-specials.js';
+import { acsScriptStepRules, programFor } from './map-scripts.js';
 
 function intersection(a, b, wall) {
   const dx = b.x - a.x, dy = b.y - a.y, sx = wall.end.x - wall.start.x, sy = wall.end.y - wall.start.y;
@@ -190,6 +191,29 @@ export function classicSpecialSupported(special) {
     Boolean(doomSpecialBehaviour(special));
 }
 
+/** The steps an ACS script a line starts can be written as, or null when it is bytecode. */
+export function scriptSteps(project, script, wallId) {
+  const program = programFor(project);
+  if (!program || script === undefined || script === null) return null;
+  const entry = program.scripts.find(candidate => String(candidate.number) === String(script));
+  if (!entry) return null;
+  const rules = acsScriptStepRules(program, entry, { id: value => `linestep_${wallId}_${value}` });
+  if (!rules.length) return null;
+  // The steps' timers are named after the script; each line gets its own, so two lines
+  // running the same script do not share one clock.
+  const rename = timer => typeof timer === 'string'
+    ? timer.replace(/^acs_.*_step(\d+)$/, (_, step) => scriptTimer(wallId, Number(step))) : timer;
+  return rules.map(rule => ({
+    ...rule,
+    actions: rule.actions.map(action => (action.type === 'startTimer' || action.type === 'clearTimer'
+      ? { ...action, timer: rename(action.timer) } : action)),
+    conditions: (rule.conditions || []).map(condition => (condition.timer
+      ? { ...condition, timer: rename(condition.timer) } : condition)),
+  }));
+}
+
+const scriptTimer = (wallId, index) => `acs_${wallId}_step${index + 1}`;
+
 export function installWorldScripts(project, warnings) {
   const sheetId = project.eventSheets.find(sheet => sheet.name === 'World').id;
   const groupId = project.eventGroups.find(group => group.sheetId === sheetId).id;
@@ -212,11 +236,25 @@ export function installWorldScripts(project, warnings) {
     const name = specialName(wall.special);
     if (!name) { unhandled.add(wall.special); continue; }
     const args = wall.args || (wall.tag ? [wall.tag, 0, 0, 0, 0] : []);
+    // A line that starts an ACS script the decompiler understands carries the script's own
+    // steps instead of the special: the flow of that line is then in the sheet, step by step.
+    const steps = wall.special === 80 || wall.special === 226
+      ? scriptSteps(project, args[0], wall.id) : null;
     const modes = wall.activationModes?.length ? wall.activationModes : ['use'];
     for (const mode of modes) {
-      rule(`Linedef ${wall.id} / ${name}`.slice(0, 100), { type: 'wallActivated', wallId: wall.id, mode },
-        [{ type: 'runLineSpecial', special: wall.special, arg1: args[0] ?? 0, arg2: args[1] ?? 0,
-          arg3: args[2] ?? 0, arg4: args[3] ?? 0, arg5: args[4] ?? 0 }]);
+      const actions = steps?.length
+        ? steps[0].actions
+        : [{ type: 'runLineSpecial', special: wall.special, arg1: args[0] ?? 0, arg2: args[1] ?? 0,
+          arg3: args[2] ?? 0, arg4: args[3] ?? 0, arg5: args[4] ?? 0 }];
+      const parent = rule(`Linedef ${wall.id} / ${name}`.slice(0, 100), { type: 'wallActivated', wallId: wall.id, mode }, actions);
+      if (!steps?.length) continue;
+      // The steps after the first wait on the ones before them; the line's own rule is step 1.
+      for (let index = 1; index < steps.length; index++) {
+        const step = steps[index];
+        rule(`Linedef ${wall.id} / ${name} (step ${index + 1})`.slice(0, 100),
+          { type: 'timerExists', timer: scriptTimer(wall.id, index) }, step.actions,
+          { conditions: step.conditions });
+      }
     }
     wall.ruleActivated = true;
   }

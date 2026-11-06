@@ -406,7 +406,8 @@ sheet, whose number is recorded in `mapScripts.ruleScripts` so the interpreter n
 starts it — one script, one starter. Where a script's body is constants, line specials and waits, the rules describe it instead of
 starting the script at all (`shared/acs-decompile.js`): the specials appear as
 `runLineSpecial` actions, and a wait splits the script into steps — a delay becomes the next
-step's `startTimer`/`timerReady`, a `TagWait` becomes `sectorTagMoving` staying false, and
+step's `startTimer`/`timerReady`, a `TagWait` becomes `sectorTagMoving` staying false, a line whose `ACS_Execute` names such a
+script carries the script's steps itself (with timers named after the line), and
 each step clears the timer it waited on so it runs once. A body with a jump, a loop or a
 variable is left as the compiled module, shown disassembled in the Scripts tab, because a
 rule that ran half a script would be worse than one that runs none.
