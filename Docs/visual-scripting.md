@@ -416,7 +416,8 @@ decompiled see the same numbers: `setAcsVariable` (`scope`, `index`, `mode` `set
 `value`) writes one, `acsVariable` (`scope`, `index`, `operator`, `value`) asks about one, and
 `acsvar("map", 2)` reads one inside any expression. A guard — ACS `if`, compiled as
 `IFNOTGOTO` — becomes a sub-event of the step, evaluated after the actions above it, so
-`count += 1; if (count >= 2) open the door` reads exactly as it does in the script. A body
+`count += 1; if (count >= 2) open the door` reads exactly as it does in the script, and an
+`if`/`else` becomes two sub-events with opposite tests, so exactly one branch acts. A body
 with a loop or an array is left as the compiled module, shown disassembled in the Scripts tab,
 because a rule that ran half a script would be worse than one that runs none. A flat or texture
 the script kept in a variable is read when the rule runs, with `acsflat("map", 12)` — the same

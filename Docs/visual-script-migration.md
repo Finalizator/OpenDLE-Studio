@@ -105,9 +105,11 @@ useful alone:
       sheet).
 - [~] **Step 3 — control flow.** `if` is done: an `IFNOTGOTO` guard is a sub-event of the
       rule that runs before it, so the counter-increment-then-test order of the script
-      survives (`openLabDoor` in MAP05 reads exactly as its bytecode did). Still open:
-      `while`/`for` (backward jumps) as a timer-driven loop, and an `else` (a forwarded
-      `GOTO` over one branch). Where bytecode cannot be expressed (raw stack juggling,
+      survives (`openLabDoor` in MAP05 reads exactly as its bytecode did), and an `if`/`else`
+      (a guarded block whose last instruction jumps over the other branch) becomes two
+      sub-events with opposite tests. Counted `while`/`for` loops unroll. Still open: a loop
+      whose bound is a *map variable* rather than a constant (the count is only known at run
+      time), and a wait inside a conditional block. Where bytecode cannot be expressed (raw stack juggling,
       `ScriptWait` across call frames), the rule keeps a `runScript(n)` action — never a
       silent drop.
 - [~] Tests: `test/acs.test.js` covers the counter-and-guard script both as rules and at

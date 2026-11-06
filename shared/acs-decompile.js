@@ -169,8 +169,31 @@ export function decompileScript(program, selector, { args = [] } = {}) {
         }
         if (!guards) return null;
         // `IFNOTGOTO` runs its block when the value is true; `IFGOTO` skips the block then.
-        const guarded = conditionsFor(pop(), name === 'IFGOTO', resolveLocal);
+        const guardTest = pop();
+        const guarded = conditionsFor(guardTest, name === 'IFGOTO', resolveLocal);
         if (!guarded) return null;
+        // `if (c) A; else B;` compiles as a guarded block whose last instruction jumps past B.
+        const skip = lastBefore(next, target);
+        if (skip?.name === 'GOTO' && Number(skip.operands[0]) > target) {
+          const alternative = conditionsFor(guardTest, name !== 'IFGOTO', resolveLocal);
+          if (!alternative) return null;
+          const thenPart = read(next, skip.offset, { nested: true, guards: false, waits: false });
+          const elsePart = read(target, Number(skip.operands[0]), { nested: true, guards: false, waits: false });
+          if (!thenPart || !elsePart || thenPart.wait || elsePart.wait) return null;
+          flush();
+          if (!guarded.dead) {
+            const actions = thenPart.steps.flatMap(step => step.actions);
+            if (actions.length) steps.push({ conditions: guarded.conditions, actions });
+          }
+          if (!alternative.dead) {
+            const actions = elsePart.steps.flatMap(step => step.actions);
+            if (actions.length) steps.push({ conditions: alternative.conditions, actions });
+          }
+          const ended = thenPart.ended || elsePart.ended;
+          if (ended) return { steps, offset: Number(skip.operands[0]), wait: null, ended: true };
+          offset = Number(skip.operands[0]);
+          continue;
+        }
         const inside = read(next, target, { nested: true, guards: false, waits: false });
         if (!inside || inside.wait) return null;
         flush();
@@ -238,9 +261,11 @@ export function decompileScript(program, selector, { args = [] } = {}) {
       }
       if (name === 'ENDHUDMESSAGE' || name === 'ENDHUDMESSAGEBOLD') {
         const base = (print.hudStart ?? stack.length) - 6;
-        if (base < 0 || stack.length < base + 7) return null;
+        if (base < 0 || stack.length < base + 6) return null;
         const [type, id, color, x, y, hold] = stack.slice(base, base + 6);
-        const fade = stack[base + 6];
+        // The interpreter reads the fade just past the six parameters and drops whatever a
+        // script pushed after it (`HudMessage`'s optional delay), so this reads the same one.
+        const fade = stack[base + 6] ?? { kind: 'number', value: 0 };
         const message = hudAction({ type, id, color, x, y, hold, fade }, print.text, print);
         if (!message) return null;
         pending.actions.push(message);
@@ -523,6 +548,18 @@ export function decompileScript(program, selector, { args = [] } = {}) {
     // The step must lead back to the header, or it is not this loop's own step.
     if (backTarget !== block.start || offset !== block.end) return null;
     return found;
+  };
+
+  /** The last instruction that starts before `limit`, walking forward from `start`. */
+  const lastBefore = (start, limit) => {
+    let offset = start, last = null;
+    for (let guard = 0; guard < 4096; guard++) {
+      const instruction = instructionAt(module, offset);
+      if (!instruction?.end || instruction.end > limit) return last;
+      last = instruction;
+      offset = instruction.end;
+    }
+    return last;
   };
 
   /** Whether the loop's body waits, which decides whether its iterations are steps. */

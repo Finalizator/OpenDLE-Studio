@@ -1444,3 +1444,42 @@ test('a script that prints a HUD message becomes the message it draws', { skip: 
   assert.ok(drawn, 'the message reached the screen queue');
   assert.deepEqual([drawn.x, drawn.y, drawn.hold, drawn.id], [0.25, 0.75, 2, 2]);
 });
+
+test('an if/else becomes two steps, one for each branch', () => {
+  // ACC compiles `if (a < b) A; else B;` as a conditional jump over `A`, a `GOTO` past `B`,
+  // then `B`. A rule says the same thing with two steps: one guarded by the test, one by its
+  // opposite, so exactly one of them acts.
+  const asm = emitter();
+  asm.ins('PUSHMAPVAR').byte(0);
+  asm.ins('PUSHMAPVAR').byte(1);
+  asm.ins('LT');
+  asm.ins('IFNOTGOTO', 0);
+  const elseJump = asm.code.length - 4;
+  asm.pushBytes(1).ins('LSPEC1').byte(5);
+  asm.ins('GOTO', 0);
+  const endJump = asm.code.length - 4;
+  const elseAt = asm.at();
+  asm.pushBytes(1).ins('LSPEC1').byte(6);
+  const endAt = asm.at();
+  const writeTarget = (position, target) => {
+    asm.code[position] = target & 0xff; asm.code[position + 1] = (target >> 8) & 0xff;
+    asm.code[position + 2] = (target >> 16) & 0xff; asm.code[position + 3] = (target >> 24) & 0xff;
+  };
+  writeTarget(elseJump, elseAt);
+  writeTarget(endJump, endAt);
+  asm.ins('TERMINATE');
+  const described = describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] }));
+  const program = programFor({ mapScripts: described.mapScripts });
+  const rules = acsScriptStepRules(program, program.scripts[0], { sheetId: 'sheet', groupId: 'group' });
+  const parent = rules.find(event => !event.parentId);
+  const branch = rules.find(event => event.parentId === parent.id);
+  const other = rules.filter(event => event.parentId === parent.id)[1];
+  assert.ok(parent && branch && other, 'both branches are in the sheet');
+  // Both halves are guarded, so both are sub-events of the rule that the script started.
+  assert.equal(branch.condition.type, 'expressionCompare');
+  assert.equal(other.condition.type, 'expressionCompare');
+  assert.notEqual(branch.condition.operator, other.condition.operator, 'the branches are opposite tests');
+  assert.equal(branch.actions[0].special, 5);
+  assert.equal(other.actions[0].special, 6);
+});
