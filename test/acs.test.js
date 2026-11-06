@@ -1329,3 +1329,50 @@ test('a script that fades the screen becomes the fade the interpreter performs',
   stepRuntime(room, state, 1 / 35, new Set());
   assert.equal(state.screenFadeNow?.amount, 1, 'the screen is black, as the script asked');
 });
+
+test('a script reads an actor and a sector the way its opcodes did', () => {
+  // `GetActorZ(9)`, `GetSectorFloorZ(tag, x, y)`, `GetActorProperty(3, APROP_Health)` and the
+  // 16.16 maths around them become expressions the rule evaluates through the same host
+  // functions the interpreter calls — a live read, not a copy taken at import time.
+  const asm = emitter();
+  asm.pushBytes(9).ins('GETACTORZ');       // actor height, fixed point
+  asm.pushBytes(16).ins('RSHIFT');         // drop the fixed point: x >> 16
+  asm.pushBytes(1, 0, 0).ins('GETSECTORFLOORZ');
+  asm.pushBytes(3, 0).ins('GETACTORPROPERTY'); // health
+  asm.pushBytes(35).ins('PUSHBYTE').byte(2);
+  asm.ins('FIXEDMUL');                     // 2 map units in fixed point
+  asm.pushBytes(7, 0, 0, 0, 0).ins('SETACTORPOSITION');
+  asm.ins('DROP');
+  asm.ins('TERMINATE');
+  const described = describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] }));
+  const program = programFor({ mapScripts: described.mapScripts });
+  const rules = acsScriptStepRules(program, program.scripts[0], { sheetId: 'sheet', groupId: 'group' });
+  assert.equal(rules.length, 1, 'the reads are values, not steps');
+  const move = rules[0].actions.find(action => action.type === 'setActorPosition');
+  assert.ok(move, 'the write is an action');
+  assert.equal(move.tid, 7);
+});
+
+test('a rule reads an actor\'s height and moves a tagged actor through the level\'s own host', () => {
+  const asm = emitter();
+  asm.ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] })).mapScripts });
+  project.map.entities.push({ id: 'bed', name: 'Bed', type: 'decoration', x: 0, y: 0, angle: 0, z: 59, elevation: 59, tid: 8 });
+  project.variables = { ...project.variables, seen: 0 };
+  const world = project.eventSheets.find(sheet => sheet.name === 'World');
+  const group = project.eventGroups.find(item => item.sheetId === world.id);
+  project.events.push({ id: 'acs_reads', sheetId: world.id, groupId: group.id, enabled: true, once: true,
+    condition: { type: 'onStart' }, conditions: [], actions: [
+      { type: 'setVariable', variable: 'seen', value: { expr: 'acsactor(8, "z")' } },
+      { type: 'setActorPosition', tid: 8, x: 505 * 65536, y: 54 * 65536, z: 58 * 65536, fog: 0 },
+    ] });
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.variables.seen, 59 * 65536, 'the height comes back in ACS fixed point');
+  const bed = state.entities.find(entity => entity.id === 'bed');
+  assert.equal(Math.round(bed.x), 505, 'and the move landed on the map units it named');
+  assert.equal(Math.round(bed.z), 58);
+});

@@ -432,7 +432,15 @@ functions so a decompiled script and a bytecode one change the level identically
 `setLineMonsterBlocking` (`tag`, `monsters`) and `setLineSpecial` (`tag`, `special`,
 `arg1`…`arg5`), and ACS `FadeTo` is the `fadeTo` action (`red`, `green`, `blue`, `amount`,
 `seconds`) — a constant is converted out of ACS's 16.16 fixed point in the sheet, a variable is
-divided at run time. The inventory and health calls work the same way: `giveInventory` and
+divided at run time. `setActorPosition` (`tid`, `x`, `y`, `z`, `fog`) moves every thing carrying
+a tag, with 16.16 fixed-point coordinates as ACS means them.
+
+The reads a script makes are expressions, so a rule reads live state instead of a copy:
+`acsactor(tid, "z")` (also `"x"`, `"y"`, `"floorZ"`, `"ceilingZ"`, `"angle"`, `"pitch"`,
+`"light"`), `acsactorproperty(tid, index)` for an `APROP_` property, and
+`acssectorz(tag, x, y, "floor")` — each one going through the interpreter's own host function.
+ACS's fixed-point arithmetic and trigonometry (`x >> 16`, `FixedMul`, `Sin`, `Cos`) are
+expressions too, so `GetActorZ(tid) >> 16` reads as `floor(acsactor(tid, "z") / 65536)`. The inventory and health calls work the same way: `giveInventory` and
 `takeInventory` (`item`, `amount`) give and take the items a script names (`"Shells"`,
 `"BlueCard"`, `"Shotgun"`), `damageThing` (`tid`, `amount`, `kind`) hurts the things with a tag,
 `sectorDamage` (`tag`, `amount`, `kind`, `protection`) hurts everything standing in a tagged

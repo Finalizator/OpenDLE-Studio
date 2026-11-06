@@ -282,6 +282,37 @@ export function decompileScript(program, selector, { args = [] } = {}) {
         stack.push(of.kind === 'number' ? { kind: 'number', value: of.value ? 0 : 1 } : { kind: 'not', of });
         offset = next; continue;
       }
+      // Trigonometry and shifts, in the units ACS uses: an angle is a 16.16 fraction of a
+      // turn and a result is fixed point again, and `x >> 16` is the fixed-point drop.
+      if (name === 'SIN' || name === 'COS') {
+        const angle = textOf(pop(), resolveLocal);
+        if (angle === null) return null;
+        stack.push({ kind: 'value',
+          text: `round(${name.toLowerCase()}(((${angle}) % 65536) / 65536 * 2 * pi) * 65536)` });
+        offset = next; continue;
+      }
+      // Fixed-point multiply and divide, which ACS carries as 16.16 shifts of an integer.
+      if (name === 'FIXEDMUL' || name === 'FIXEDDIV') {
+        const right = textOf(resolveLocal(pop()), resolveLocal);
+        const left = textOf(resolveLocal(pop()), resolveLocal);
+        if (left === null || right === null) return null;
+        stack.push({ kind: 'value', text: name === 'FIXEDMUL'
+          ? `floor((${left}) * (${right}) / 65536)`
+          : `floor((${left}) * 65536 / (${right}))` });
+        offset = next; continue;
+      }
+      if (name === 'LSHIFT' || name === 'RSHIFT') {
+        const by = resolveLocal(pop()), value = resolveLocal(pop());
+        if (by?.kind !== 'number' || value === undefined) return null;
+        const bits = Number(by.value);
+        if (!Number.isInteger(bits) || bits < 0 || bits > 24) return null;
+        const text = textOf(value, resolveLocal);
+        if (text === null) return null;
+        const factor = 2 ** bits;
+        stack.push({ kind: 'value', text: name === 'RSHIFT'
+          ? `floor((${text}) / ${factor})` : `((${text}) * ${factor})` });
+        offset = next; continue;
+      }
       if (name === 'UNARYMINUS') {
         const of = pop();
         if (!of) return null;
@@ -300,6 +331,14 @@ export function decompileScript(program, selector, { args = [] } = {}) {
       }
 
       // The builtins a script calls directly, as the actions that do the same thing.
+      const query = QUERIES[name];
+      if (query) {
+        const value = query(stack, resolveLocal);
+        if (!value) return null;
+        stack.push(value);
+        offset = next; continue;
+      }
+
       const builtin = BUILTINS[name];
       if (builtin) {
         // A `*DIRECT` opcode carries its arguments as operands; the stack form pops them.
@@ -580,6 +619,43 @@ function expressionOf(entry) {
  * arguments from the stack, and a string argument is a string-table index, which the module
  * can resolve — `PUSHBYTE 1; CHANGEFLOOR` is `ChangeFloor(tag, "HEX01")`.
  */
+/**
+ * The reads a script makes: `GetActorZ(tid)` leaves the height where the tid was, and
+ * `GetActorProperty(tid, p)` leaves the property. They become expressions the rule evaluates
+ * through the same host functions the interpreter uses, so a rule reads live state, not a copy.
+ */
+const QUERIES = {
+  GETACTORX: actorRead('x'), GETACTORY: actorRead('y'), GETACTORZ: actorRead('z'),
+  GETACTORFLOORZ: actorRead('floorZ'), GETACTORCEILINGZ: actorRead('ceilingZ'),
+  GETACTORANGLE: actorRead('angle'), GETACTORPITCH: actorRead('pitch'),
+  GETACTORLIGHTLEVEL: actorRead('light'),
+  GETACTORPROPERTY: (stack, resolve) => {
+    const property = stack.pop(), tid = stack.pop();
+    return call(['acsactorproperty', tid, property], resolve);
+  },
+  GETSECTORFLOORZ: sectorRead('floor'),
+  GETSECTORCEILINGZ: sectorRead('ceiling'),
+};
+
+function actorRead(kind) {
+  return (stack, resolve) => call(['acsactor', stack.pop(), { kind: 'name', text: kind }], resolve);
+}
+
+function sectorRead(surface) {
+  return (stack, resolve) => {
+    const y = stack.pop(), x = stack.pop(), tag = stack.pop();
+    return call(['acssectorz', tag, x, y, { kind: 'name', text: surface }], resolve);
+  };
+}
+
+/** `name(parts…)` as a value the rule can carry, or null when a part cannot be read. */
+function call(parts, resolve) {
+  const [name, ...args] = parts;
+  const rendered = args.map(part => (part?.kind === 'name' ? `"${part.text}"` : textOf(part, resolve)));
+  if (rendered.some(text => text === null)) return null;
+  return { kind: 'value', text: `${name}(${rendered.join(', ')})` };
+}
+
 /** Each builtin reads its arguments as stack entries: numbers, variables, or a string index. */
 const BUILTINS = {
   CHANGEFLOOR: { count: 2, action: ([tag, flat], module) => flatAction('floor', tag, flat, module) },
@@ -609,6 +685,9 @@ const BUILTINS = {
     return { type: 'fadeTo', red: colours[0], green: colours[1], blue: colours[2],
       amount: strength, seconds: duration };
   } },
+  SETACTORPOSITION: { count: 5, action: ([tid, x, y, z, fog]) => ({
+    type: 'setActorPosition', tid: argumentOf(tid), x: argumentOf(x), y: argumentOf(y),
+    z: argumentOf(z), fog: argumentOf(fog) }) },
   GIVEINVENTORY: { count: 2, action: ([name, amount], module) => withItem({ type: 'giveInventory' },
     name, module, { amount: argumentOf(amount) }) },
   GIVEINVENTORYDIRECT: { operands: true, count: 2, action: ([name, amount], module) => withItem({

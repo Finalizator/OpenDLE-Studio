@@ -388,6 +388,11 @@ export const ENGINE_ACTIONS = [
     { name: 'item', value: 'Shells', kind: 'text' }, numeric('amount', 1, 1, 100000)] },
   { type: 'takeInventory', label: 'Script: take an ACS item', fields: [
     { name: 'item', value: 'Shells', kind: 'text' }, numeric('amount', 1, 1, 100000)] },
+  // `SetActorPosition(tid, x, y, z, fog)`: ACS coordinates are 16.16 fixed point.
+  { type: 'setActorPosition', label: 'Script: move the things with this tag', fields: [
+    numeric('tid', 0, 0, 65535), numeric('x', 0, -1000000000, 1000000000),
+    numeric('y', 0, -1000000000, 1000000000), numeric('z', 0, -1000000000, 1000000000),
+    { ...numeric('fog', 0, 0, 1), optional: true }] },
   { type: 'damageThing', label: 'Script: damage the things with this tag', fields: [
     numeric('tid', 0, 0, 65535), numeric('amount', 10, 0, 100000),
     { name: 'kind', value: 'Normal', kind: 'text', allowEmpty: true }] },

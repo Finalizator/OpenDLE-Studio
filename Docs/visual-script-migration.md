@@ -60,7 +60,7 @@ useful alone:
       `runLineSpecial`, a wait splits the script (each step waits on the timer the one
       before it started), map/world/global variables become `setAcsVariable` / `acsVariable`
       / `acsvar("map", n)`, and an `IFNOTGOTO` guard becomes a **sub-event** of its step
-      (all 11 scripts of Ascent MAP05, and 38 of the 54 scripts across the whole Ascension
+      (all 11 scripts of Ascent MAP05, and 39 of the 54 scripts across the whole Ascension
       campaign today; `node /tmp/cov.mjs`-style scans are cheap to redo — decompile every
       script of every map and count). The builtins a script calls directly are
       actions that use the interpreter's host functions: `setSectorFlat`
@@ -83,9 +83,13 @@ useful alone:
 `FadeTo` is the `fadeTo` action (constants converted out of 16.16 fixed
       point, variables divided at run time). Still to add: `SetThingSpecial`, `Spawn`,
       `ClearInventory`, `FADERANGE` (which the interpreter itself ignores — translating it would
-      bake that gap into the sheet), the actor/sector queries (`GetActorZ`, `GetSectorFloorZ`,
-      `GetActorProperty`), the HUD-message family (`SETHUDSIZE`, `HudMessage`), arrays, and
-      waits inside a conditional block (a step chain cannot express "wait only if").
+      bake that gap into the sheet) and arrays. The actor/sector **reads are in**: `GetActorZ`,
+      `GetActorProperty` and `GetSectorFloorZ` become `acsactor(…)`, `acsactorproperty(…)` and
+      `acssectorz(…)` expressions, `SetActorPosition` is an action, and the fixed-point maths
+      around them (`x >> 16`, `FixedMul`, `Sin`, `Cos`) composes. What those scripts still need
+      is the HUD-message family (`SETHUDSIZE`, `HudMessage` — the engine's HUD is authored while
+      ACS draws transient positioned text) and waits inside a conditional block, which a step
+      chain cannot express: a step that starts no timer leaves the next step waiting forever.
       The remaining blockers, in the order the corpus hits them: **`CALLFUNC`** (user
       functions such as `StarDraw`, which draw HUD art through `HudMessage`),
       **`GETACTORPROPERTY`** (`BossHealth` reads health and max health into script variables),

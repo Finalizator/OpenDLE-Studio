@@ -4,7 +4,10 @@ import { PLAYER_STATS } from './player-state.js';
 import { readAcsVariable, readAcsString } from './acs-state.js';
 
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
-export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), property("enemy","health"), count("enemy"), player("health"), acsvar("map", 2), acsflat("map", 3), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
+/** The actor values `acsactor(tid, "…")` can read: the ones the ACS opcodes read. */
+export const ACTOR_VALUE_KINDS = ['x', 'y', 'z', 'floorZ', 'ceilingZ', 'angle', 'pitch', 'light'];
+
+export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), property("enemy","health"), count("enemy"), player("health"), acsvar("map", 2), acsflat("map", 3), acsactor(3, "z"), acsactorproperty(3, 0), acssectorz(7, 0, 0, "floor"), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
 export const isExpression = value => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && typeof value.expr === 'string';
 
 export function scalar(value) {
@@ -118,6 +121,12 @@ const textFunctions = {
 // `acsvar("map", 2)` reads a compiled script's variable: the level's own store, not a copy.
 const references = { global: 1, local: 1, object: 2, property: 2, player: 1, setting: 1, count: 1, acsvar: 2, acsflat: 2 };
 /**
+ * Reads that ask the running level a question, the way a compiled script's `GetActorZ`,
+ * `GetActorProperty` and `GetSectorFloorZ` do. Their name argument is a literal (a property,
+ * a surface), everything before it is a value the rule computes.
+ */
+const hostedReads = { acsactor: 2, acsactorproperty: 2, acssectorz: 4 };
+/**
  * The properties an expression can read.
  *
  * `shared/instance-properties.js` owns the list, so a property added for the picking conditions is
@@ -164,6 +173,15 @@ export function expressionContext(project, event, state, dt = 0, { selection } =
         if (!Object.hasOwn(GAME_SETTINGS, args[0])) throw new Error(`Unknown setting expression: ${args[0]}`);
         return state ? state.settings[args[0]] : GAME_SETTINGS[args[0]].value;
       }
+      if (hostedReads[kind]) {
+        const host = state?.scripts?.host;
+        if (!host) return 0;
+        const name = String(args[args.length - 1]);
+        const numbers = args.slice(0, -1).map(value => Number(value) || 0);
+        if (kind === 'acsactor') return host.getActor(numbers[0], name, 'player') | 0;
+        if (kind === 'acsactorproperty') return host.getActorProperty(numbers[0], numbers[1], 'player') | 0;
+        return host.getSectorZ(numbers[0], numbers[1], numbers[2], name === 'ceiling') | 0;
+      }
       if (kind === 'acsvar') return readAcsVariable(state, args[0], Number(args[1]) || 0);
       if (kind === 'acsflat') return readAcsString(state, args[0], Number(args[1]) || 0);
       if (kind === 'global') return variable(state?.variables || project.variables, args[0]);
@@ -198,12 +216,23 @@ export function expressionContext(project, event, state, dt = 0, { selection } =
 }
 function checkCall(node) {
   if (forbidden.has(node.name) || !Object.hasOwn(functions, node.name) && !Object.hasOwn(textFunctions, node.name) &&
-    !Object.hasOwn(references, node.name) && node.name !== 'random') throw new Error(`Unknown expression function: ${node.name}`);
+    !Object.hasOwn(references, node.name) && !Object.hasOwn(hostedReads, node.name) &&
+    node.name !== 'random') throw new Error(`Unknown expression function: ${node.name}`);
   const definition = functions[node.name] || textFunctions[node.name];
-  const count = references[node.name];
+  const count = references[node.name] || hostedReads[node.name];
   const min = count || (node.name === 'random' ? 2 : definition?.[0]);
   const max = count || (node.name === 'random' ? 2 : definition?.[1]);
   if (min === undefined || node.args.length < min || node.args.length > max) throw new Error(`Unknown function or invalid argument count: ${node.name}`);
+  if (hostedReads[node.name]) {
+    const name = node.args[node.args.length - 1];
+    if (name?.op !== 'literal' || typeof name.value !== 'string')
+      throw new Error(`${node.name} needs a literal name as its last argument`);
+    if (node.name === 'acsactor' && !ACTOR_VALUE_KINDS.includes(name.value))
+      throw new Error(`acsactor names one of: ${ACTOR_VALUE_KINDS.join(', ')}`);
+    if (node.name === 'acssectorz' && !['floor', 'ceiling'].includes(name.value))
+      throw new Error('acssectorz names "floor" or "ceiling"');
+    return;
+  }
   if (node.name === 'acsvar' || node.name === 'acsflat') {
     const [scope, index] = node.args;
     if (scope?.op !== 'literal' || !['map', 'world', 'global'].includes(scope.value))
@@ -268,7 +297,7 @@ export function evaluateExpression(value, context) {
     } else if (node.op === 'call') {
       checkCall(node);
       const args = node.args.map(evaluate);
-      if (references[node.name]) result = context.reference(node.name, args);
+      if (references[node.name] || hostedReads[node.name]) result = context.reference(node.name, args);
       else if (node.name === 'random') {
         const [min, max] = args.map(numeric); if (min > max) throw new Error('random minimum exceeds maximum');
         result = min + context.random() * (max - min);

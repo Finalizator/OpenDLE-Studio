@@ -2036,6 +2036,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             blue: Number(action.blue) || 0, amount: Number(action.amount) || 0,
             seconds: Number(action.seconds) || 0 });
           break;
+        case 'setActorPosition':
+          hostFor(action).setActorPosition(Number(action.tid) || 0, Number(action.x) || 0,
+            Number(action.y) || 0, Number(action.z) || 0, Number(action.fog) || 0, 'player');
+          break;
         case 'giveInventory':
           hostFor(action).giveInventory(String(action.item ?? ''), Number(action.amount) || 0, 'player');
           break;
