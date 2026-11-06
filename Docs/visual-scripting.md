@@ -394,6 +394,12 @@ Enemies sheet:
 | attacks | alerted, the Doom distance roll (`enemyAttackChance`) allows it, the last attack finished | `facePlayer`, `playActorState` (`Missile`, or `Melee` for a claw-only monster) |
 | melee when close | within `P_CheckMeleeRange` of the actor's radius | `facePlayer`, `playActorState` (`Melee`) |
 
+A UDMF or Hexen line is a rule too: the import writes `Linedef <id> / <Special_Name>` with
+the line's activation modes as conditions and `runLineSpecial` (`special`, `arg1`…`arg5`)
+carrying the special and its arguments, then marks the wall so the engine does not run the
+same line a second time. The special table itself is the one the runtime uses, so the rule
+and the line cannot disagree.
+
 An ACS script can be started from a rule with `runScript` (`script`, `arg1`…`arg3`). A level's
 `OPEN` and `ENTER` scripts are written that way at import: one rule per script in the World
 sheet, whose number is recorded in `mapScripts.ruleScripts` so the interpreter no longer

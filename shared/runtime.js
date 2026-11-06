@@ -48,6 +48,7 @@ import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { projectIds } from './project-ids.js';
+import { executeSpecial } from './line-specials.js';
 import { weaponEventActors } from './weapon-script.js';
 import { enemyEventActors } from './enemy-script.js';
 import { projectileEventActors } from './projectile-script.js';
@@ -1997,6 +1998,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (entity) entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;
           break;
         }
+        // A line's special, executed from a rule: the same table the engine uses when a
+        // UDMF line activates natively, so the two cannot drift.
+        case 'runLineSpecial':
+          if (!state.worldTerminalActive) {
+            executeSpecial(project, state, action.special,
+              [action.arg1, action.arg2, action.arg3, action.arg4, action.arg5], { scripts: state.scripts, format: 'zdoom' });
+          }
+          break;
         // Starts a compiled ACS script from a rule — the trigger is in the sheet, the body
         // is the module the WAD shipped, shown disassembled in the Scripts tab.
         case 'runScript': {

@@ -337,6 +337,15 @@ export const ENGINE_ACTIONS = [
     { name: 'spray', value: 'BFGExtra', kind: 'string' }, numeric('rays', 40, 1, 256),
     numeric('rolls', 15, 1, 256), numeric('spread', 90, 1, 360), numeric('range', 1024, 0, 8192),
     numeric('damage', 0, 0, 10000)], target: true },
+  // One line's UDMF/Hexen behaviour, callable from a rule: the sheet names the special
+  // and its arguments instead of the engine matching the line at activation time.
+  { type: 'runLineSpecial', label: 'World: run a line special', fields: [
+    { ...numeric('special', 1, 0, 65535), integer: true },
+    { ...numeric('arg1', 0, -32768, 32767), optional: true },
+    { ...numeric('arg2', 0, -32768, 32767), optional: true },
+    { ...numeric('arg3', 0, -32768, 32767), optional: true },
+    { ...numeric('arg4', 0, -32768, 32767), optional: true },
+    { ...numeric('arg5', 0, -32768, 32767), optional: true }] },
   // A compiled ACS script, callable from a rule: the trigger is a rule, the body is the
   // module the WAD shipped (visible in the Scripts tab).
   { type: 'runScript', label: 'Script: run an ACS script', fields: [

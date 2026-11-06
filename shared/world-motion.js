@@ -1,6 +1,7 @@
 import { sectorAt } from './sectors.js';
 import { floorAt, entityHeight, soundEvent } from './combat.js';
 import { doomSpecialBehaviour, doomSpecialName } from './doom-specials.js';
+import { specialName } from './line-specials.js';
 
 function intersection(a, b, wall) {
   const dx = b.x - a.x, dy = b.y - a.y, sx = wall.end.x - wall.start.x, sy = wall.end.y - wall.start.y;
@@ -202,6 +203,23 @@ export function installWorldScripts(project, warnings) {
     return id;
   }
   const unhandled = new Set();
+  // UDMF and Hexen lines: their behaviour is already a table of specials, so each line
+  // becomes the rule that runs its own special with its own arguments. The activation
+  // modes the line carries become the rule's conditions, and the wall is marked so the
+  // engine does not run the same line a second time.
+  for (const wall of project.map.walls) {
+    if (wall.specialFormat !== 'zdoom' || !wall.special) continue;
+    const name = specialName(wall.special);
+    if (!name) { unhandled.add(wall.special); continue; }
+    const args = wall.args || (wall.tag ? [wall.tag, 0, 0, 0, 0] : []);
+    const modes = wall.activationModes?.length ? wall.activationModes : ['use'];
+    for (const mode of modes) {
+      rule(`Linedef ${wall.id} / ${name}`.slice(0, 100), { type: 'wallActivated', wallId: wall.id, mode },
+        [{ type: 'runLineSpecial', special: wall.special, arg1: args[0] ?? 0, arg2: args[1] ?? 0,
+          arg3: args[2] ?? 0, arg4: args[3] ?? 0, arg5: args[4] ?? 0 }]);
+    }
+    wall.ruleActivated = true;
+  }
   for (const wall of project.map.walls) {
     const special = wall.special || 0;
     if (!special) continue;

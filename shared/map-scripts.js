@@ -770,6 +770,8 @@ export function createMapScripts(project, state, callbacks = {}) {
     // Classic Doom line types are a different numbering whose behaviour comes
     // from the visual rules; only Hexen/UDMF lines use this table.
     if (!wall?.special || wall.specialFormat !== 'zdoom') return false;
+    // A line that has a rule of its own runs from the sheet, not from here.
+    if (wall.ruleActivated) return false;
     const modes = wall.activationModes?.length ? wall.activationModes : ['use'];
     if (!modes.includes(mode)) return false;
     const args = wall.args || (wall.tag ? [wall.tag, 0, 0, 0, 0] : []);

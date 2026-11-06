@@ -211,3 +211,24 @@ test('a sidedef offsets each texture slot on its own, so a ring of walls can sha
   assert.equal(project.map.walls[0].right.slots.mid.offsetX, 345);
   validateProject(project);
 });
+
+test('every UDMF line becomes the rule that runs its own special', () => {
+  // The engine used to match the line's special at activation time, so what a line did was
+  // nowhere in the sheets. Each line is now a rule with its special and its arguments, and
+  // the wall is marked so the line does not also run natively.
+  const { project } = importWadMap(map(source), 'CUSTOM');
+  const specials = project.map.walls.filter(wall => wall.specialFormat === 'zdoom' && wall.special);
+  assert.ok(specials.length > 0, 'the map has UDMF lines');
+  const world = project.eventSheets.find(entry => entry.name === 'World');
+  const rules = project.events.filter(event => event.sheetId === world?.id &&
+    event.actions.some(action => action.type === 'runLineSpecial'));
+  assert.equal(rules.length >= specials.length, true, 'at least one rule per line');
+  for (const wall of specials) {
+    assert.equal(wall.ruleActivated, true, `${wall.id} is owned by its rule`);
+    const rule = rules.find(candidate => candidate.condition.wallId === wall.id);
+    assert.ok(rule, `${wall.id} has a rule`);
+    assert.deepEqual(rule.actions[0].special, wall.special);
+    assert.equal(rule.condition.type, 'wallActivated');
+  }
+  validateProject(project);
+});
