@@ -56,23 +56,36 @@ useful alone:
       already ran from their line's rule. The body stays the module, linked in the
       Scripts tab.
 - [~] **Step 2 — straight-line bodies become rules.** `shared/acs-decompile.js` walks
-      `instructionAt` and translates a body that is only pushes and line specials into
-      `runLineSpecial` actions, splitting a script at its waits into a chain of steps
-      (5 of 11 scripts on Ascent MAP05 today). Still to add: jumps/loops (`if`, `while`),
-      variables, inventory and damage calls.
-- [ ] **Step 3 — control flow.** `if`/`while`/`for` become sub-events; loops that wait
-      become timers. Where bytecode cannot be expressed (raw stack juggling,
-      `ScriptWait` across call frames), the rule keeps a `runScript(n)` action and says
-      why — never silently dropped.
-- [ ] Tests: a decompiled script runs and does what the bytecode did, for each step.
+      `instructionAt` and translates a body into steps: pushes and line specials become
+      `runLineSpecial`, a wait splits the script (each step waits on the timer the one
+      before it started), map/world/global variables become `setAcsVariable` / `acsVariable`
+      / `acsvar("map", n)`, and an `IFNOTGOTO` guard becomes a **sub-event** of its step
+      (8 of 11 scripts on Ascent MAP05 today). Still to add: loops (backward jumps),
+      `RANDOM`, the ACS builtins a script calls directly (`ChangeFloor`, `ChangeCeiling`,
+      `SetLineSpecial`, `SetLineTexture`, `SetLineBlocking`), inventory and damage calls
+      (`GiveInventory`, `TakeInventory`, `Thing_Damage`, `SectorDamage`), and arrays.
+- [~] **Step 3 — control flow.** `if` is done: an `IFNOTGOTO` guard is a sub-event of the
+      rule that runs before it, so the counter-increment-then-test order of the script
+      survives (`openLabDoor` in MAP05 reads exactly as its bytecode did). Still open:
+      `while`/`for` (backward jumps) as a timer-driven loop, and an `else` (a forwarded
+      `GOTO` over one branch). Where bytecode cannot be expressed (raw stack juggling,
+      `ScriptWait` across call frames), the rule keeps a `runScript(n)` action — never a
+      silent drop.
+- [~] Tests: `test/acs.test.js` covers the counter-and-guard script both as rules and at
+      run time, and a rule reading and writing the interpreter's own ACS variables.
 
 ## 4. ZScript functions
 
-- [ ] Class defaults and states are already parsed into actor records.
-- [ ] Function bodies (a `States` frame that calls a user function) go through the same
-      body compiler as ACS steps 2–3.
-- [ ] Until then, the `actor_unsupported` report must keep naming them, and must not say
-      "unsupported by design".
+- [x] Class defaults and states are already parsed into actor records.
+- [~] Function bodies (a `States` frame that calls a user function) are executed by
+      `shared/actor-functions.js`: declarations, arithmetic, comparisons, `if`/`else`, and
+      engine actions called from inside the body (`A_PlaySound("x")`), all against the
+      actor the frame belongs to. Still missing: loops, calls to other user functions, and
+      reading another actor — each of those is named in `actor_unsupported` and changes
+      nothing, so the report keeps telling the truth. The next step is to compile the body
+      into rules (`runFunction` with the actions it performs) so a creator can edit it.
+- [x] The `actor_unsupported` report names them, per actor, and never says "unsupported by
+      design".
 
 ## Definition of done
 

@@ -4,6 +4,7 @@ import { floorHeightAt } from './three-d-floors.js';
 import { entitySector, sectorAt, sectorGeometry } from './sectors.js';
 import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
+import { acsVariableStore } from './acs-state.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validateHUDProperty } from './hud.js';
 import { postFxParamDefault } from './post-fx.js';
@@ -153,6 +154,8 @@ export function runtimeEntities(project, settings = {}) {
   return structuredClone(project.map.entities).filter(entity => entity.type === 'player' || !entity.skillMask || (entity.skillMask & skillBit))
     .map(entity => ({ ...entity, variables: { ...(entity.variables || {}) } }));
 }
+
+export { acsVariableStore } from './acs-state.js';
 
 /** Whether a Shader Engine pass is on: the project's toggle, then a script's override. */
 export function postFxPassEnabled(state, kind) {
@@ -1403,6 +1406,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const label = actor && index !== null ? labelIndex(actor, condition.state) : null;
         return index !== null && label !== null && index === label;
       }
+      if (condition.type === 'acsVariable') {
+        const store = acsVariableStore(state, condition.scope, condition.module);
+        return Boolean(store) && compareValues(store[condition.index] | 0, condition.operator || '=', Number(condition.value) || 0);
+      }
       if (condition.type === 'sectorTagMoving') {
         return state.sectors.some(sector => sector.tag === condition.tag &&
           (state.sectorMotions.has(`${sector.id}:floorHeight`) || state.sectorMotions.has(`${sector.id}:ceilingHeight`)));
@@ -2090,6 +2097,16 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'showMessage': state.message = action.message; state.messageTime = 6; break;
         case 'setVariable': assignVariable(state.variables, action.variable, action.value, false); break;
         case 'addVariable': assignVariable(state.variables, action.variable, action.value, true); break;
+        case 'setAcsVariable': {
+          // The store a decompiled script writes is the interpreter's own, so the rest of the
+          // level sees the change exactly as it did when the script ran as bytecode.
+          const store = acsVariableStore(state, action.scope, action.module);
+          if (!store) throw new Error(`Event "${event.name || event.id}": the level has no ACS variables`);
+          const index = Number(action.index) || 0;
+          const value = Number(action.value) || 0;
+          store[index] = (action.mode === 'add' ? (store[index] | 0) + value : value) | 0;
+          break;
+        }
         case 'teleport':
           player.x = action.x; player.y = action.y;
           if (!state.physics) {

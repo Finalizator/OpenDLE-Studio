@@ -872,7 +872,7 @@ test('a script this engine can read is written as the actions it performs', { sk
   const sample = decompileScript(program, translated[0].number);
   assert.deepEqual(sample.actions[0].type, 'runLineSpecial', 'the body reads as the actions it performs');
   assert.ok(Number.isInteger(sample.actions[0].special));
-  // A body with a jump or a wait is not translated, rather than half-run.
+  // A body this cannot read — a loop, an array, an ACS builtin — keeps its bytecode rule.
   const runtime = createRuntime(project);
   stepRuntime(project, runtime, 1 / 35, new Set());
   assert.equal(runtime.scriptState.opened, true);
@@ -917,4 +917,67 @@ test('a line that starts a script this engine can read carries the script\'s ste
   const second = steps[1];
   assert.ok(second.conditions.some(condition => condition.type === 'timerExists' &&
     condition.timer.startsWith('acs_w42_step')), 'the next step waits on the line\'s own clock');
+});
+
+test('a script with a counter and a test becomes a rule with a sub-event', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // `openLabDoor` in MAP05 is `map13 += 1; if (map13 >= 2) Door_Open(map2, 16)`. A rule cannot
+  // ask a question before it acts, so the increment is the rule and the question is a
+  // sub-event: the counter is raised first, then the test is made, exactly as in the bytecode.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  const program = programFor(project);
+  const entry = program.scripts.find(script => script.name === 'openLabDoor');
+  assert.ok(entry, 'the script is in the module');
+  const rules = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
+  const parent = rules.find(rule => !rule.parentId);
+  const child = rules.find(rule => rule.parentId === parent.id);
+  assert.ok(parent.actions.some(action => action.type === 'setAcsVariable' && action.scope === 'map' &&
+    action.mode === 'add' && action.value === 1), 'the counter is raised by the rule itself');
+  assert.ok(child, 'the test is a sub-event of that rule');
+  assert.equal(child.condition.type, 'acsVariable');
+  assert.equal(child.condition.operator, '>=');
+  assert.equal(child.condition.value, 2);
+  const special = child.actions.find(action => action.type === 'runLineSpecial');
+  assert.equal(special.special, 11, 'Door_Open');
+  assert.deepEqual(special.arg1, { expr: 'acsvar("map", 2)' }, 'the tag is the level variable it was');
+});
+
+test('a rule keeps its counter in the ACS variables, the way a script does', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // The store belongs to the level, not to the rule: `setAcsVariable`, `acsVariable` and
+  // `acsvar()` all read and write the interpreter's own arrays, so a script that is still
+  // bytecode and a script that became rules agree on the numbers between them.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  const world = project.eventSheets.find(sheet => sheet.name === 'World');
+  const group = project.eventGroups.find(item => item.sheetId === world.id);
+  const shared = { sheetId: world.id, groupId: group.id, enabled: true, once: false };
+  project.variables = { ...project.variables, trigger: 0, seen: 0 };
+  project.events = [
+    { ...shared, id: 'acs_counter', condition: { type: 'variableCompare', variable: 'trigger', operator: '=', value: 1 },
+      conditions: [], actions: [{ type: 'setAcsVariable', scope: 'map', index: 100, mode: 'add', value: 1 }] },
+    { ...shared, id: 'acs_guard', parentId: 'acs_counter',
+      condition: { type: 'acsVariable', scope: 'map', index: 100, operator: '>=', value: 2 }, conditions: [],
+      actions: [{ type: 'setAcsVariable', scope: 'map', index: 101, mode: 'add', value: 1 },
+        { type: 'setVariable', variable: 'seen', value: { expr: 'acsvar("map", 101)' } }] },
+  ];
+  validateProject(project);
+  const state = createRuntime(project);
+  const vm = state.scripts.vm;
+  const step = () => stepRuntime(project, state, 1 / 35, new Set());
+  state.variables.trigger = 1;
+  step();
+  assert.equal(vm.mapVars[0][100], 1, 'the first pass counts one');
+  assert.equal(vm.mapVars[0][101], 0, 'and the test has not passed yet');
+  assert.equal(state.variables.seen, 0);
+  state.variables.trigger = 0;
+  step();
+  state.variables.trigger = 1;
+  step();
+  assert.equal(vm.mapVars[0][100], 2, 'the second pass counts two');
+  assert.equal(vm.mapVars[0][101], 1, 'so the guarded sub-event runs once');
+  assert.equal(state.variables.seen, 1, 'and an expression reads the same store');
 });

@@ -105,6 +105,11 @@ export const ENGINE_CONDITIONS = [
     fields: [choice('surface', 'ceilingHeight', ['ceilingHeight', 'floorHeight'])] },
   // A script that waits for its tag to finish moving before the next step.
   { type: 'sectorTagMoving', label: 'World: any sector with this tag is moving', fields: [numeric('tag', 0, 0, 65535)] },
+  // A decompiled ACS script keeps its variables where the level keeps them — the interpreter's
+  // map, world and global stores — so a rule reads the same numbers the rest of the scripts do.
+  { type: 'acsVariable', label: 'Script: ACS variable compares', fields: [
+    choice('scope', 'map', ['map', 'world', 'global']), numeric('index', 0, 0, 255), comparison(),
+    numeric('value', 0, -1000000, 1000000), { ...numeric('module', 0, 0, 63), optional: true }] },
   { type: 'sectorDoorOpen', label: 'Door: is open', sector: true, door: true, fields: [] },
   { type: 'sectorDoorClosed', label: 'Door: is closed', sector: true, door: true, fields: [] },
   { type: 'sectorDoorMoving', label: 'Door: is moving', sector: true, door: true, fields: [] },
@@ -355,6 +360,11 @@ export const ENGINE_ACTIONS = [
     { ...numeric('arg1', 0, -1000000, 1000000), optional: true },
     { ...numeric('arg2', 0, -1000000, 1000000), optional: true },
     { ...numeric('arg3', 0, -1000000, 1000000), optional: true }] },
+  // The write half of a decompiled script's variables: the same stores the interpreter uses.
+  { type: 'setAcsVariable', label: 'Script: set an ACS variable', fields: [
+    choice('scope', 'map', ['map', 'world', 'global']), numeric('index', 0, 0, 255),
+    choice('mode', 'set', ['set', 'add']), numeric('value', 0, -1000000, 1000000),
+    { ...numeric('module', 0, 0, 63), optional: true }] },
   { type: 'playActorState', label: 'Object: play an imported actor state', fields: [
     { name: 'state', value: 'See', kind: 'string' }], target: true },
   { type: 'facePlayer', label: 'Enemy: face player for attack', fields: [], target: true },

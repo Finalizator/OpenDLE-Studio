@@ -938,12 +938,16 @@ export function acsScriptRules(project, { sheetId, groupId, id = value => `engin
  * The rules that run one script: one rule when its body is a single segment, a chain when it
  * waits. A wait becomes the next step's condition — its timer for a delay, its tag coming to
  * rest for `TagWait` — and each step clears the timer it waited on, so a step runs once.
+ *
+ * A guarded block (`if (map13 >= 2)`) is a sub-event of the step: the step's own actions run
+ * first, then the guard is decided, which is the order the bytecode had. A script that opens
+ * with a guard has no actions of its own, and every group becomes a sub-event.
  */
 export function acsScriptStepRules(program, entry, { sheetId, groupId, id = value => `engine_${value}` } = {}) {
   const key = String(entry.number !== undefined && entry.number !== null ? entry.number : entry.name || '');
   const label = entry.name || key;
   const decompiled = decompileScript(program, entry.number ?? entry.name);
-  const segments = decompiled?.segments?.filter(segment => segment.actions.length) || [];
+  const segments = decompiled?.segments?.filter(segment => segment.steps.length) || [];
   if (!segments.length) {
     return [{ id: id(`acs_${key}`), name: `ACS script ${label}`.slice(0, 100),
       sheetId, groupId, enabled: true, once: false,
@@ -962,16 +966,30 @@ export function acsScriptStepRules(program, entry, { sheetId, groupId, id = valu
         conditions.push({ type: 'sectorTagMoving', tag: previous.wait.tag, inverted: true });
       }
     }
-    const actions = [...segment.actions];
+    // The first group is the step's own actions unless it is guarded; every guarded group is
+    // a sub-event, so the guard is asked after the actions before it have happened.
+    const groups = segment.steps;
+    const open = groups[0]?.conditions?.length ? [] : groups[0]?.actions || [];
+    const guarded = groups[0]?.conditions?.length ? groups : groups.slice(1);
+    const actions = [...open];
     if (previous) actions.push({ type: 'clearTimer', timer: previous.timer });
     if (segment.wait?.kind === 'delay') actions.push({ type: 'startTimer', timer, seconds: segment.wait.seconds });
     if (segment.wait?.kind === 'tag') actions.push({ type: 'startTimer', timer, seconds: 0 });
-    events.push({ id: id(`acs_${key}_step${index + 1}`),
+    const parentId = id(`acs_${key}_step${index + 1}`);
+    events.push({ id: parentId,
       name: `ACS script ${label}${index ? ` (step ${index + 1})` : ''}`.slice(0, 100),
       sheetId, groupId, enabled: true, once: false,
       condition: index ? { type: 'timerExists', timer: previous.timer } : { type: 'onStart' },
       conditions, actions,
       comment: `Step ${index + 1} of the level's ${entry.type.toUpperCase()} script ${key}, translated from its bytecode.` });
+    guarded.forEach((group, branch) => {
+      const [test, ...rest] = group.conditions;
+      events.push({ id: id(`acs_${key}_step${index + 1}_if${branch + 1}`),
+        name: `ACS script ${label}${index ? ` (step ${index + 1})` : ''} (condition)`.slice(0, 100),
+        sheetId, groupId, enabled: true, once: false, parentId,
+        condition: test, conditions: rest, actions: [...group.actions],
+        comment: `The ${entry.type.toUpperCase()} script ${key}'s own test, run in order after the actions above it.` });
+    });
     previous = { timer, wait: segment.wait };
   });
   return events;

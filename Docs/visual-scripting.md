@@ -403,14 +403,23 @@ and the line cannot disagree.
 An ACS script can be started from a rule with `runScript` (`script`, `arg1`…`arg3`). A level's
 `OPEN` and `ENTER` scripts are written that way at import: one rule per script in the World
 sheet, whose number is recorded in `mapScripts.ruleScripts` so the interpreter no longer
-starts it — one script, one starter. Where a script's body is constants, line specials and waits, the rules describe it instead of
-starting the script at all (`shared/acs-decompile.js`): the specials appear as
-`runLineSpecial` actions, and a wait splits the script into steps — a delay becomes the next
-step's `startTimer`/`timerReady`, a `TagWait` becomes `sectorTagMoving` staying false, a line whose `ACS_Execute` names such a
-script carries the script's steps itself (with timers named after the line), and
-each step clears the timer it waited on so it runs once. A body with a jump, a loop or a
-variable is left as the compiled module, shown disassembled in the Scripts tab, because a
-rule that ran half a script would be worse than one that runs none.
+starts it — one script, one starter. Where a script's body is constants, line specials, waits
+and counters, the rules describe it instead of starting the script at all
+(`shared/acs-decompile.js`): the specials appear as `runLineSpecial` actions, and a wait splits
+the script into steps — a delay becomes the next step's `startTimer`/`timerReady`, a `TagWait`
+becomes `sectorTagMoving` staying false, a line whose `ACS_Execute` names such a script carries
+the script's steps itself (with timers named after the line), and each step clears the timer it
+waited on so it runs once.
+
+The script's variables stay where the level keeps them, so a rule and a script that was not
+decompiled see the same numbers: `setAcsVariable` (`scope`, `index`, `mode` `set`/`add`,
+`value`) writes one, `acsVariable` (`scope`, `index`, `operator`, `value`) asks about one, and
+`acsvar("map", 2)` reads one inside any expression. A guard — ACS `if`, compiled as
+`IFNOTGOTO` — becomes a sub-event of the step, evaluated after the actions above it, so
+`count += 1; if (count >= 2) open the door` reads exactly as it does in the script. A body
+with a loop, an array, a random roll or one of ACS's own builtins (`ChangeFloor`,
+`SetLineSpecial`) is left as the compiled module, shown disassembled in the Scripts tab,
+because a rule that ran half a script would be worse than one that runs none.
 
 Shootable props are actors too: a barrel imports with 20 health and a `Death` state, and
 the import writes two rules from that state — `ExplosiveBarrel: explodes` (`explodeArea`

@@ -11,10 +11,15 @@
  * ```
  *
  * It is deliberately all-or-nothing: a body is translated only when **every** instruction
- * is understood. Anything else — a jump, a loop, a variable, a wait — returns null and the
+ * is understood. Anything else — a loop, an array, stack juggling — returns null and the
  * script keeps its `runScript` rule, because a rule that runs half a script is worse than
  * one that runs none of it. Coverage therefore grows by teaching this module one construct
  * at a time, and the import report can say how many scripts are still bytecode.
+ *
+ * A script comes back as **segments** split at its waits, each a list of **steps**: the
+ * straight-line actions, then one step per guarded block. A step's conditions are the
+ * `IFNOTGOTO` test that led to it, so `map13 += 1; if (map13 >= 2) open` reads as "add one,
+ * then — if the counter reached two — open the door", which is a rule with a sub-event.
  */
 
 import { instructionAt } from './acs.js';
@@ -23,6 +28,14 @@ const PUSHES = {
   PUSHBYTE: 1, PUSH2BYTES: 2, PUSH3BYTES: 3, PUSH4BYTES: 4, PUSH5BYTES: 5,
 };
 const SPECIALS = /^LSPEC([1-5])(DIRECT|DIRECTB)?$/;
+const VARIABLE = /^(PUSH|ASSIGN|ADD|SUB|MUL|DIV|MOD|INC|DEC)(SCRIPT|MAP|WORLD|GLOBAL)VAR$/;
+const SCOPE = { SCRIPT: 'script', MAP: 'map', WORLD: 'world', GLOBAL: 'global' };
+const COMPARISONS = { EQ: '=', NE: '!=', LT: '<', GT: '>', LE: '<=', GE: '>=' };
+const FOLDS = { ADD: '+', SUBTRACT: '-', MULTIPLY: '*', DIVIDE: '/', MODULUS: '%' };
+const MIRROR = { '=': '=', '!=': '!=', '<': '>', '>': '<', '<=': '>=', '>=': '<=' };
+const NEGATED = { '=': '!=', '!=': '=', '<': '>=', '>=': '<', '>': '<=', '<=': '>' };
+const ENDS = /^(TERMINATE|SUSPEND|RETURNVOID|RETURNVAL|END)$/;
+const WAITS = /^(DELAY|DELAYDIRECT|TAGWAIT|TAGWAITDIRECT)$/;
 
 /**
  * The actions one script performs, or null when its body uses anything this cannot read.
@@ -34,99 +47,290 @@ export function decompileScript(program, selector) {
   if (!script) return null;
   const module = program.modules?.[script.moduleIndex ?? 0]?.module;
   if (!module) return null;
+  const moduleIndex = script.moduleIndex ?? 0;
   const segments = [];
-  let actions = [];
-  const stack = [];
   const seen = new Set();
   let offset = script.address;
-  const finish = wait => {
-    segments.push({ actions, wait });
-    actions = [];
-  };
-  for (let guard = 0; guard < 4096; guard++) {
-    if (offset === null || offset === undefined) return null;
-    if (seen.has(offset)) return null;
-    seen.add(offset);
-    const instruction = instructionAt(module, offset);
-    if (!instruction?.supported) return null;
-    const name = instruction.name;
-    const operands = instruction.operands || [];
-    if (name === 'TERMINATE' || name === 'RETURNVOID' || name === 'RETURNVAL' || name === 'END') {
-      if (actions.length) segments.push({ actions, wait: null });
-      else if (segments.length) segments[segments.length - 1].wait = null;
-      const flat = segments.flatMap(segment => segment.actions);
-      return { actions: flat, segments, instructions: seen.size };
-    }
-    // A wait splits the body: everything after it happens later, so the segment ends here.
-    if (name === 'DELAY' || name === 'DELAYDIRECT') {
-      const tics = name === 'DELAYDIRECT' ? Number(operands[0]) : popNumber(stack);
-      if (!Number.isFinite(tics)) return null;
-      finish({ kind: 'delay', seconds: Math.max(0, tics) / 35 });
-      offset = instruction.end;
-      continue;
-    }
-    if (name === 'TAGWAIT' || name === 'TAGWAITDIRECT') {
-      const tag = name === 'TAGWAITDIRECT' ? Number(operands[0]) : popNumber(stack);
-      if (!Number.isFinite(tag)) return null;
-      finish({ kind: 'tag', tag });
-      offset = instruction.end;
-      continue;
-    }
-    // Constant arithmetic is folded, so `35 * 1` becomes the delay it stands for.
-    if (['ADD', 'SUBTRACT', 'MULTIPLY', 'DIVIDE'].includes(name)) {
-      const right = popNumber(stack), left = popNumber(stack);
-      if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
-      const value = name === 'ADD' ? left + right : name === 'SUBTRACT' ? left - right
-        : name === 'MULTIPLY' ? left * right : right === 0 ? null : left / right;
-      if (value === null) return null;
-      stack.push(value);
-      offset = instruction.end;
-      continue;
-    }
-    // A string argument names a message: `PUSHSTRING 3; PRINTSTRING` shows string 3.
-    if (name === 'PUSHSTRING') { stack.push({ text: module.strings?.[operands[0]] ?? '' }); offset = instruction.end; continue; }
-    if (name === 'PRINTSTRING') {
-      const value = stack.pop();
-      if (value?.text === undefined) return null;
-      actions.push({ type: 'showMessage', message: String(value.text).slice(0, 200), seconds: 4 });
-      offset = instruction.end;
-      continue;
-    }
-    // A dropped value changes nothing a rule could see.
-    if (name === 'DROP') { stack.pop(); offset = instruction.end; continue; }
-    const pushed = PUSHES[name];
-    if (pushed) {
-      // A push of N bytes hands the caller N arguments, in the order they are written.
-      for (const value of operands.slice(0, pushed)) stack.push(value);
-      offset = instruction.end;
-      continue;
-    }
-    const special = SPECIALS.exec(name);
-    if (special) {
-      const count = Number(special[1]);
-      let args;
-      if (special[2]) args = operands.slice(1, 1 + count);
-      else {
-        // The stack form pops its arguments, so the last pushed is the last argument.
-        if (stack.length < count) return null;
-        args = stack.splice(stack.length - count, count);
+
+  /**
+   * Reads instructions from `start` until the script ends or `limit` is reached.
+   *
+   * A guard inside a guard, or a wait inside a guard, is not translated: a step is one rule
+   * with one set of conditions, and an inner wait would need a rule chain per branch.
+   */
+  const read = (start, limit, depth) => {
+    const stack = [];
+    // Script variables live in the running script and a rule has no such frame, so they are
+    // only followed while the value is a constant this can carry forward.
+    const locals = new Map();
+    const steps = [];
+    let pending = { conditions: [], actions: [] };
+    let offset = start;
+    const flush = () => {
+      if (pending.actions.length) steps.push(pending);
+      pending = { conditions: [], actions: [] };
+    };
+    const pop = () => stack.pop();
+    for (let guard = 0; guard < 8192; guard++) {
+      if (limit !== null && limit !== undefined) {
+        if (offset === limit) { flush(); return { steps, offset, wait: null, ended: false }; }
+        if (offset > limit) return null;
       }
-      if (!args.length && count > 0) return null;
-      actions.push({ type: 'runLineSpecial', special: Number(operands[0]), arg1: args[0] ?? 0, arg2: args[1] ?? 0,
-        arg3: args[2] ?? 0, arg4: args[3] ?? 0, arg5: args[4] ?? 0 });
-      offset = instruction.end;
-      continue;
+      if (offset === null || offset === undefined) return null;
+      if (depth === 0) {
+        if (seen.has(offset)) return null; // a loop
+        seen.add(offset);
+      }
+      const instruction = instructionAt(module, offset);
+      if (!instruction?.supported || !instruction.end) return null;
+      const name = instruction.name;
+      const operands = instruction.operands || [];
+      const next = instruction.end;
+
+      if (ENDS.test(name)) { flush(); return { steps, offset: next, wait: null, ended: true }; }
+
+      // A wait splits the body: everything after it happens later.
+      if (WAITS.test(name)) {
+        if (depth > 0) return null;
+        // `DELAY` and `TAGWAIT` take their number off the stack; anything else left on it is
+        // a value the next step would have needed, which a step boundary cannot carry.
+        const raw = name === 'DELAY' || name === 'TAGWAIT' ? pop() : null;
+        const operand = raw ? (raw.kind === 'number' ? Number(raw.value) || 0 : NaN) : Number(operands[0]);
+        if (!Number.isFinite(operand) || stack.length) return null;
+        const wait = name === 'DELAY' || name === 'DELAYDIRECT'
+          ? { kind: 'delay', seconds: operand / 35 } : { kind: 'tag', tag: operand };
+        if (!Number.isFinite(wait.seconds ?? wait.tag)) return null;
+        flush();
+        return { steps, offset: next, wait, ended: false };
+      }
+
+      if (name === 'IFNOTGOTO' || name === 'IFGOTO') {
+        if (depth > 0) return null;
+        const target = Number(operands[0]);
+        // A backward jump is a loop; a forward one that is not a guard has no rule shape yet.
+        if (!(target > next)) return null;
+        // `IFNOTGOTO` runs its block when the value is true; `IFGOTO` skips the block then.
+        const guarded = conditionsFor(pop(), name === 'IFGOTO');
+        if (!guarded) return null;
+        const inside = read(next, target, depth + 1);
+        if (!inside || inside.wait) return null;
+        flush();
+        // At this depth `read` cannot nest, so the block is one group of plain actions.
+        if (!guarded.dead) {
+          const actions = inside.steps.flatMap(step => step.actions);
+          if (actions.length) steps.push({ conditions: guarded.conditions, actions });
+        }
+        if (inside.ended) return { steps, offset: target, wait: null, ended: true };
+        offset = target;
+        continue;
+      }
+      if (name === 'GOTO' || name === 'GOTOSTACK' || name === 'CASEGOTO' || name === 'CASEGOTOSORTED') return null;
+
+      if (name === 'PUSHSTRING') { stack.push({ kind: 'string', text: module.strings?.[operands[0]] ?? '' }); offset = next; continue; }
+      if (name === 'PRINTSTRING') {
+        const shown = pop();
+        if (shown?.kind !== 'string') return null;
+        pending.actions.push({ type: 'showMessage', message: String(shown.text).slice(0, 200), seconds: 4 });
+        offset = next; continue;
+      }
+      // A dropped value changes nothing a rule could see.
+      if (name === 'DROP') { pop(); offset = next; continue; }
+
+      const variable = VARIABLE.exec(name);
+      if (variable) {
+        const [, operation, scopeName] = variable;
+        const scope = SCOPE[scopeName];
+        const index = Number(operands[0]);
+        if (scope === 'script') {
+          if (operation === 'PUSH') {
+            if (!locals.has(index)) return null;
+            stack.push(locals.get(index));
+            offset = next; continue;
+          }
+          if (operation === 'ASSIGN') {
+            const assigned = pop();
+            if (assigned?.kind !== 'number') return null;
+            locals.set(index, { kind: 'number', value: Number(assigned.value) || 0 });
+            offset = next; continue;
+          }
+          return null;
+        }
+        if (operation === 'PUSH') {
+          stack.push({ kind: 'variable', scope, index, module: moduleIndex, add: 0 });
+          offset = next; continue;
+        }
+        const store = (mode, amount) => pending.actions.push({ type: 'setAcsVariable', scope, index,
+          module: moduleIndex, mode, value: amount });
+        if (operation === 'ASSIGN') {
+          const assigned = pop();
+          if (assigned?.kind === 'number') { store('set', Number(assigned.value) || 0); offset = next; continue; }
+          // `mapVar = mapVar + 1` is how some builds compile `mapVar++`.
+          if (assigned?.kind === 'variable' && assigned.scope === scope && assigned.index === index) {
+            if (assigned.add) store('add', assigned.add);
+            offset = next; continue;
+          }
+          return null;
+        }
+        // `INC`/`DEC` carry no operand; the rest pop the amount they apply.
+        const amount = /^(INC|DEC)$/.test(operation) ? { kind: 'number', value: 1 } : pop();
+        if (amount?.kind !== 'number') return null;
+        if (!['INC', 'DEC', 'ADD', 'SUB'].includes(operation)) return null;
+        const delta = operation === 'DEC' ? -Number(amount.value) : Number(amount.value);
+        if (delta) store('add', delta);
+        offset = next; continue;
+      }
+
+      // Constant arithmetic is folded, so `35 * 1` becomes the delay it stands for.
+      if (FOLDS[name]) {
+        const folded = fold(FOLDS[name], pop(), pop());
+        if (!folded) return null;
+        stack.push(folded);
+        offset = next; continue;
+      }
+      if (COMPARISONS[name]) {
+        const right = pop();
+        const compared = compare(pop(), COMPARISONS[name], right);
+        if (!compared) return null;
+        stack.push(compared);
+        offset = next; continue;
+      }
+      if (name === 'ANDLOGICAL' || name === 'ORLOGICAL' || name === 'NEGATELOGICAL') {
+        const right = name === 'NEGATELOGICAL' ? null : pop();
+        const joined = logic(name, pop(), right);
+        if (!joined) return null;
+        stack.push(joined);
+        offset = next; continue;
+      }
+
+      const pushed = PUSHES[name];
+      if (pushed) {
+        // A push of N bytes hands the caller N arguments, in the order they are written.
+        for (const entry of operands.slice(0, pushed)) stack.push({ kind: 'number', value: Number(entry) || 0 });
+        offset = next; continue;
+      }
+      const special = SPECIALS.exec(name);
+      if (special) {
+        const count = Number(special[1]);
+        let args;
+        if (special[2]) args = operands.slice(1, 1 + count);
+        else {
+          // The stack form pops its arguments, so the last pushed is the last argument.
+          if (stack.length < count) return null;
+          args = stack.splice(stack.length - count, count).map(argumentOf);
+        }
+        if (args.some(argument => argument === null)) return null;
+        if (!args.length && count > 0) return null;
+        pending.actions.push({ type: 'runLineSpecial', special: Number(operands[0]), arg1: args[0] ?? 0,
+          arg2: args[1] ?? 0, arg3: args[2] ?? 0, arg4: args[3] ?? 0, arg5: args[4] ?? 0 });
+        offset = next; continue;
+      }
+      // Anything else — loops, arrays, stack juggling, a call frame — is not translated.
+      return null;
     }
-    // Anything else — jumps, loops, variables, waits, stack juggling — is not translated.
     return null;
+  };
+
+  for (;;) {
+    const segment = read(offset, null, 0);
+    if (!segment) return null;
+    const steps = segment.steps.filter(step => step.actions.length);
+    if (steps.length || segment.wait) segments.push({ steps, wait: segment.wait });
+    if (!segment.wait || segment.ended) break;
+    offset = segment.offset;
+  }
+  const actions = segments.flatMap(segment => segment.steps.flatMap(step => step.actions));
+  return { actions, segments, instructions: seen.size };
+}
+
+/**
+ * An argument as the value a rule passes: a plain number, or `acsvar("map", 3)` for a level
+ * variable, which the runtime reads from the same store the rest of the scripts use.
+ */
+function argumentOf(entry) {
+  if (entry === undefined || entry === null) return 0;
+  if (entry.kind === 'number') return Number(entry.value) || 0;
+  if (entry.kind === 'variable' && entry.scope !== 'script' && !entry.add) {
+    return { expr: `acsvar("${entry.scope}", ${entry.index})` };
   }
   return null;
 }
 
-/** A numeric stack entry, or NaN when the top is not a plain number. */
-function popNumber(stack) {
-  const value = stack.pop();
-  return typeof value === 'number' ? value : NaN;
+/** Constant folding; a variable on either side needs a rule, not a number. */
+function fold(operator, right, left) {
+  if (left?.kind !== 'number' || right?.kind !== 'number') {
+    // `x + 1` and `x - 1` keep their offset, which is how a counter is read against a bound.
+    if (left?.kind === 'variable' && right?.kind === 'number' && (operator === '+' || operator === '-')) {
+      return { ...left, add: (left.add || 0) + (operator === '+' ? right.value : -right.value) };
+    }
+    return null;
+  }
+  const a = Number(left.value), b = Number(right.value);
+  const value = operator === '+' ? a + b : operator === '-' ? a - b : operator === '*' ? a * b
+    : operator === '/' ? (b === 0 ? null : a / b) : (b === 0 ? null : a % b);
+  return value === null ? null : { kind: 'number', value };
+}
+
+/** A comparison, folded to a number when both sides are constants. */
+function compare(left, operator, right) {
+  if (left?.kind === 'number' && right?.kind === 'number') {
+    const holds = compareNumbers(Number(left.value), operator, Number(right.value));
+    return { kind: 'number', value: holds ? 1 : 0 };
+  }
+  if (left?.kind === 'variable' && right?.kind === 'number') {
+    return { kind: 'expr', operator, left, right };
+  }
+  if (left?.kind === 'number' && right?.kind === 'variable') {
+    return { kind: 'expr', operator: MIRROR[operator], left: right, right: left };
+  }
+  return null;
+}
+
+function compareNumbers(a, operator, b) {
+  switch (operator) {
+    case '=': return a === b;
+    case '!=': return a !== b;
+    case '<': return a < b;
+    case '>': return a > b;
+    case '<=': return a <= b;
+    default: return a >= b;
+  }
+}
+
+/** `&&` joins two tests; `||` cannot be said with a rule's conditions, so it is refused. */
+function logic(name, left, right) {
+  if (name === 'NEGATELOGICAL') {
+    if (left?.kind === 'number') return { kind: 'number', value: left.value ? 0 : 1 };
+    if (left?.kind !== 'expr' || left.operator === '&&') return null;
+    return { kind: 'expr', operator: NEGATED[left.operator], left: left.left, right: left.right };
+  }
+  if (name !== 'ANDLOGICAL') return null;
+  if (left?.kind === 'expr' && right?.kind === 'expr') return { kind: 'expr', operator: '&&', left, right };
+  if (left?.kind === 'number') return left.value ? right : { kind: 'number', value: 0 };
+  if (right?.kind === 'number') return right.value ? left : { kind: 'number', value: 0 };
+  return null;
+}
+
+/**
+ * The conditions a test becomes, or `{ dead: true }` when it can only be true or only false.
+ * `invert` is for `IFGOTO`, whose guarded block runs when the test is false.
+ */
+function conditionsFor(entry, invert = false) {
+  if (entry?.kind === 'number') {
+    return (Number(entry.value) !== 0) !== invert ? { conditions: [] } : { dead: true };
+  }
+  if (entry?.kind !== 'expr') return null;
+  if (entry.operator === '&&') {
+    if (invert) return null;
+    const left = conditionsFor(entry.left), right = conditionsFor(entry.right);
+    if (!left || !right) return null;
+    return { conditions: [...left.conditions, ...right.conditions] };
+  }
+  const { left, right } = entry;
+  if (left?.kind !== 'variable' || right?.kind !== 'number') return null;
+  // `x + 1 >= 2` is the test for `if (++x >= 2)`: read the counter with the offset folded in.
+  const threshold = Number(right.value) - (left.add || 0);
+  return { conditions: [{ type: 'acsVariable', scope: left.scope, index: left.index,
+    module: left.module || 0, operator: invert ? NEGATED[entry.operator] : entry.operator, value: threshold }] };
 }
 
 function findEntry(program, selector) {

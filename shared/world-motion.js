@@ -249,11 +249,23 @@ export function installWorldScripts(project, warnings) {
       const parent = rule(`Linedef ${wall.id} / ${name}`.slice(0, 100), { type: 'wallActivated', wallId: wall.id, mode }, actions);
       if (!steps?.length) continue;
       // The steps after the first wait on the ones before them; the line's own rule is step 1.
-      for (let index = 1; index < steps.length; index++) {
-        const step = steps[index];
-        rule(`Linedef ${wall.id} / ${name} (step ${index + 1})`.slice(0, 100),
-          { type: 'timerExists', timer: scriptTimer(wall.id, index) }, step.actions,
-          { conditions: step.conditions });
+      // A guard inside a step hangs under the rule for that step, so it is asked in order.
+      const installed = new Map([[steps[0].id, parent]]);
+      let stepNumber = 1;
+      for (const step of steps.slice(1)) {
+        const holder = step.parentId ? installed.get(step.parentId) : undefined;
+        if (step.parentId) {
+          // A guard whose step is not in the sheet cannot be attached; the script keeps its
+          // own bytecode rule in that case, so this one is not skipped silently by accident.
+          if (!holder) break;
+          installed.set(step.id, rule(`Linedef ${wall.id} / ${name} (condition)`.slice(0, 100), step.condition,
+            step.actions, { conditions: step.conditions, parentId: holder }));
+          continue;
+        }
+        stepNumber++;
+        installed.set(step.id, rule(`Linedef ${wall.id} / ${name} (step ${stepNumber})`.slice(0, 100),
+          { type: 'timerExists', timer: scriptTimer(wall.id, stepNumber - 1) }, step.actions,
+          { conditions: step.conditions }));
       }
     }
     wall.ruleActivated = true;
