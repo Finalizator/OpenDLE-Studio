@@ -577,6 +577,18 @@ export function explodeAt(project, state, entity, damage = 128, radius = 128, da
   saySound(state, 'DSBAREXP', entity);
 }
 
+/**
+ * Homing, for a missile's own state or for a rule that steers something.
+ *
+ * GZDoom turns 16.875 degrees every fourth tic and leaves a smoke puff behind the tracer.
+ */
+export function homeMissile(project, state, missile, { turn = 16.875, everyTics = 4 } = {}) {
+  if (everyTics > 1 && (Math.round((state.time || 0) * TIC_RATE) % everyTics)) return false;
+  spawnEffect(project, state, 'BulletPuff', { x: missile.x, y: missile.y, z: missile.z });
+  spawnEffect(project, state, 'RevenantTracerSmoke', { x: missile.x, y: missile.y, z: missile.z, vz: 1 });
+  return tracerStep({ project, state, entity: missile }, turn);
+}
+
 /** Spawns a projectile actor owned by an enemy, aimed at the player. */
 export function spawnActorProjectile(project, state, owner, projectileName, { speed = 0, damage = null, angle = null } = {}) {
   const aim = actorTarget(state, owner);
@@ -913,13 +925,7 @@ export const ACTIONS = {
   },
   // Homing, from the missile's own state: GZDoom turns 16.875 degrees every fourth
   // tic and leaves a smoke puff behind the tracer.
-  A_Tracer(ctx) {
-    if (Math.round((ctx.state.time || 0) * TIC_RATE) & 3) return;
-    const { project, state, entity } = ctx;
-    spawnEffect(project, state, 'BulletPuff', { x: entity.x, y: entity.y, z: entity.z });
-    spawnEffect(project, state, 'RevenantTracerSmoke', { x: entity.x, y: entity.y, z: entity.z, vz: 1 });
-    tracerStep(ctx, 16.875);
-  },
+  A_Tracer(ctx) { homeMissile(ctx.project, ctx.state, ctx.entity); },
   A_Tracer2(ctx) { tracerStep(ctx, numArg(ctx, 0, 19.6875)); },
   // A_BFGSpray(spraytype, rays, damagecount, spread, distance, vrange, damage):
   // the BFG ball's Death state sweeps a deadly cone of rays across what it sees.
