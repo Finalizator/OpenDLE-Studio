@@ -97,11 +97,12 @@ useful alone:
       transient message queue (`state.acsMessages`), so a rule draws the same text at the same
       place. Still open: waits inside a conditional block — a step that starts no timer leaves
       the next step waiting forever, so the decompiler refuses rather than stalls the chain.
-      The remaining blockers, in the order the corpus hits them: **`CALLFUNC`** as rules (the
-      interpreter *runs* the call now — it used to end the script there — but the sheet cannot
-      show a function body yet), **`ASSIGNSCRIPTARRAY`** (`BossStart`) and `REPLACETEXTURES`
-      (the interpreter itself does nothing for it — translating it would bake that gap into the
-      sheet).
+      The remaining blockers, in the order the corpus hits them: **`CALLFUNC`** — the
+      interpreter runs the call now instead of ending the script, but these maps ship *no
+      function table at all* (0 functions, no `LOADACS` library), so the callee does not exist
+      and the call reports "no loaded module defines it". Nothing can inline what is not there;
+      **`ASSIGNSCRIPTARRAY`** (`BossStart`) and `REPLACETEXTURES` (the interpreter itself does
+      nothing for it — translating it would bake that gap into the sheet).
 - [~] **Step 3 — control flow.** `if` is done: an `IFNOTGOTO` guard is a sub-event of the
       rule that runs before it, so the counter-increment-then-test order of the script
       survives (`openLabDoor` in MAP05 reads exactly as its bytecode did), and an `if`/`else`
