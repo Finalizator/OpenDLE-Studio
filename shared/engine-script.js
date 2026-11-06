@@ -126,6 +126,8 @@ export const ENGINE_CONDITIONS = [
   // monster's rules are written against.
   { type: 'entityActorName', label: 'Object: imported actor name', fields: [{ name: 'actor', value: 'DoomImp', kind: 'string' }], target: true },
   { type: 'actorState', label: 'Object: imported actor state', fields: [{ name: 'state', value: 'See', kind: 'string' }], target: true },
+  // A missile is its own object: a rule can iterate the flying ones and drive each.
+  { type: 'projectileState', label: 'Object: imported missile state', fields: [{ name: 'state', value: 'Death', kind: 'string' }], target: true },
   { type: 'hudAnimationPlaying', label: 'HUD: animation is playing', fields: [], hudAnimation: true },
   { type: 'hudClicked', label: 'HUD: on element clicked', fields: [], hudElement: true },
   { type: 'hudFocused', label: 'HUD: element selected / focused', fields: [], hudElement: true },

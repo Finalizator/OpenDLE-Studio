@@ -394,6 +394,10 @@ Enemies sheet:
 | attacks | alerted, the Doom distance roll (`enemyAttackChance`) allows it, the last attack finished | `facePlayer`, `playActorState` (`Missile`, or `Melee` for a claw-only monster) |
 | melee when close | within `P_CheckMeleeRange` of the actor's radius | `facePlayer`, `playActorState` (`Melee`) |
 
+A rule can also be about a **missile**: `forEachType: "projectile"` iterates the ones in
+flight and `projectileState` (`state`) asks which of its imported states one is in, so a
+missile's flight and its death can be described the same way an actor's are.
+
 `explodeArea` (`damage`, `radius`) is the blast a missile's `Death` state performs, as an
 action: the rocket's own `A_Explode` frame and a rule that wants something to blow up call
 the same code, so a translated explosion cannot drift from a hand-written one.

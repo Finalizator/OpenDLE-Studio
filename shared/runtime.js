@@ -9,7 +9,7 @@ import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validat
 import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
-  setActorState, explodeAt } from './actor-runtime.js';
+  setActorState, explodeAt, projectileActor, labelIndex } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
 import { HL2_MOVEMENT, clampHorizontal, horizontalStep, measuredVelocity } from './source-motion.js';
@@ -85,6 +85,13 @@ function setVisualScale(entity, scale) {
  * would act on all of them.
  */
 export function pickedInstances(state, picks, type) {
+  // A missile is not a map entity: it lives in its own list, so "for each projectile" is
+  // the only way a rule can speak about one. Everything else iterates entities.
+  if (type === 'projectile') {
+    const chosen = picks?.get(type);
+    const flying = state.projectiles || [];
+    return chosen ? flying.filter(projectile => chosen.has(projectile.id)) : flying;
+  }
   const chosen = picks?.get(type);
   if (chosen) return (state.entities || []).filter(entity => entity.type === type && chosen.has(entity.id));
   return entityLookup(state).byType.get(type) || [];
@@ -1129,7 +1136,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (!event.enabled || (event.once && state.fired.has(keyOf()))) return;
     const lookup = entityLookup(state);
     if (event.ownerId && !lookup.byId.has(event.ownerId)) return;
-    const findTarget = id => entityLookup(state).byId.get(resolveEntityId(event, id));
+    // A missile id resolves too: a rule about a projectile ("for each projectile" or a
+    // sub-event of one) needs `$self` to mean the missile it is about.
+    const findTarget = id => {
+      const resolved = resolveEntityId(event, id);
+      return entityLookup(state).byId.get(resolved) ||
+        (state.projectiles || []).find(projectile => String(projectile.id) === String(resolved)) || undefined;
+    };
     // The expression context (which builds closures and lookups) is only needed when a
     // command actually contains an expression, so it is built on first use.
     let context = null;
@@ -1374,6 +1387,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const entity = findTarget(condition.entityId);
         const alerted = entity && state.time < (state.timers.get(`${entity.id}:alert`) || 0);
         return entity && canSeePlayer(state, entity, condition.range, alerted ? 360 : condition.fov ?? 360);
+      }
+      if (condition.type === 'projectileState') {
+        const projectile = findTarget(condition.entityId);
+        const actor = projectile ? projectileActor(project, projectile) : null;
+        const index = projectile?.actorState?.index ?? null;
+        const label = actor && index !== null ? labelIndex(actor, condition.state) : null;
+        return index !== null && label !== null && index === label;
       }
       if (condition.type === 'actorState') {
         const entity = findTarget(condition.entityId);
