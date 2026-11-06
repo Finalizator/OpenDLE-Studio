@@ -42,7 +42,7 @@ const WAITS = /^(DELAY|DELAYDIRECT|TAGWAIT|TAGWAITDIRECT)$/;
  *
  * `selector` is a script number or name, as everywhere else in the ACS layer.
  */
-export function decompileScript(program, selector) {
+export function decompileScript(program, selector, { args = [] } = {}) {
   const script = findEntry(program, selector);
   if (!script) return null;
   const module = program.modules?.[script.moduleIndex ?? 0]?.module;
@@ -54,6 +54,12 @@ export function decompileScript(program, selector) {
   // A script variable lives as long as the script does, not as long as one step of it: a
   // script that sets a pause length, waits, and uses it again keeps that value.
   const locals = new Map();
+  // The script's arguments arrive in its first slots: `ACS_Execute(n, 0, a, b)` hands a and b
+  // to script n, so a body that reads them can be read when the caller's values are known.
+  for (const [index, value] of args.entries()) {
+    if (index >= (script.argCount || 0)) break;
+    if (typeof value === 'number') locals.set(index, { kind: 'number', value });
+  }
 
   /**
    * Reads instructions from `start` until the script ends or `limit` is reached.
@@ -259,11 +265,24 @@ export function decompileScript(program, selector) {
         stack.push(compared);
         offset = next; continue;
       }
-      if (name === 'ANDLOGICAL' || name === 'ORLOGICAL' || name === 'NEGATELOGICAL') {
-        const right = name === 'NEGATELOGICAL' ? null : pop();
+      if (name === 'ANDLOGICAL' || name === 'ORLOGICAL') {
+        const right = pop();
         const joined = logic(name, pop(), right);
         if (!joined) return null;
         stack.push(joined);
+        offset = next; continue;
+      }
+      if (name === 'NEGATELOGICAL') {
+        const of = resolveLocal(pop());
+        if (!of) return null;
+        // Kept as a test of its own: `!x` is the opposite question, not arithmetic.
+        stack.push(of.kind === 'number' ? { kind: 'number', value: of.value ? 0 : 1 } : { kind: 'not', of });
+        offset = next; continue;
+      }
+      if (name === 'UNARYMINUS') {
+        const of = pop();
+        if (!of) return null;
+        stack.push(fold('-', of, { kind: 'number', value: 0 }));
         offset = next; continue;
       }
 
@@ -518,6 +537,12 @@ export function decompileScript(program, selector) {
  * An argument as the value a rule passes: a plain number, or `acsvar("map", 3)` for a level
  * variable, which the runtime reads from the same store the rest of the scripts use.
  */
+/** The expression text an entry reads as, resolving a script variable through its value. */
+function textOf(entry, resolveLocal) {
+  const resolved = resolveLocal ? resolveLocal(entry) : entry;
+  return resolved ? expressionOf(resolved) : null;
+}
+
 function argumentOf(entry) {
   if (entry === undefined || entry === null) return 0;
   if (entry.kind === 'number') return Number(entry.value) || 0;
@@ -530,6 +555,14 @@ function argumentOf(entry) {
 function expressionOf(entry) {
   if (entry?.kind === 'number') return String(Number(entry.value) || 0);
   if (entry?.kind === 'random') return `floor(random(${entry.min}, ${entry.max}))`;
+  if (entry?.kind === 'not') {
+    const inner = expressionOf(entry.of);
+    return inner === null ? null : `(${inner} == 0 ? 1 : 0)`;
+  }
+  if (entry?.kind === 'negate') {
+    const inner = expressionOf(entry.of);
+    return inner === null ? null : `(-(${inner}))`;
+  }
   if (entry?.kind === 'variable' && entry.scope !== 'script') {
     const name = `acsvar("${entry.scope}", ${entry.index})`;
     const offset = entry.add || 0;
@@ -626,6 +659,11 @@ function named(action, field, value) {
 
 /** Constant folding; a variable on either side needs a rule, not a number. */
 function fold(operator, right, left) {
+  // `0 - x` is a negation: keep the sign with the value it applies to.
+  if (operator === '-' && left?.kind === 'number' && Number(left.value) === 0 &&
+    ['variable', 'local'].includes(right?.kind)) {
+    return right.kind === 'local' ? null : { kind: 'negate', of: right };
+  }
   if (left?.kind !== 'number' || right?.kind !== 'number') {
     // `x + 1` and `x - 1` keep their offset, which is how a counter is read against a bound.
     if ((left?.kind === 'variable' || left?.kind === 'local') && right?.kind === 'number' &&
@@ -646,10 +684,8 @@ function compare(left, operator, right) {
     const holds = compareNumbers(Number(left.value), operator, Number(right.value));
     return { kind: 'number', value: holds ? 1 : 0 };
   }
-  if ((left?.kind === 'variable' || left?.kind === 'inventory' || left?.kind === 'local') &&
-    right?.kind === 'number') {
-    return { kind: 'expr', operator, left, right };
-  }
+  // Any other pair stays a test for `conditionsFor` to express — two variables included.
+  if (left && right) return { kind: 'expr', operator, left, right };
   if (left?.kind === 'number' && right?.kind === 'variable') {
     return { kind: 'expr', operator: MIRROR[operator], left: right, right: left };
   }
@@ -689,6 +725,21 @@ function conditionsFor(entry, invert = false, resolveLocal = value => value) {
   if (entry?.kind === 'number') {
     return (Number(entry.value) !== 0) !== invert ? { conditions: [] } : { dead: true };
   }
+  // `!x` is the opposite question: ask the inner test and expect the other answer.
+  if (entry?.kind === 'not') return conditionsFor(entry.of, !invert, resolveLocal);
+  // A value on its own is a test of whether it is zero: `if (mapVar) …`.
+  if (entry?.kind === 'variable') {
+    return { conditions: [{ type: 'acsVariable', scope: entry.scope, index: entry.index,
+      module: entry.module || 0, operator: invert ? '=' : '!=', value: 0 - (entry.add || 0) }] };
+  }
+  if (entry?.kind === 'local' || entry?.kind === 'inventory') {
+    const text = textOf(entry, resolveLocal);
+    const resolved = entry.kind === 'local' ? resolveLocal(entry) : entry;
+    if (resolved?.kind === 'number') return conditionsFor(resolved, invert, resolveLocal);
+    if (text === null) return null;
+    return { conditions: [{ type: 'expressionCompare', left: { expr: text },
+      operator: invert ? '=' : '!=', right: { expr: '0' } }] };
+  }
   if (entry?.kind !== 'expr') return null;
   if (entry.operator === '&&') {
     if (invert) return null;
@@ -701,20 +752,30 @@ function conditionsFor(entry, invert = false, resolveLocal = value => value) {
   // A script variable with a known value decides the test now, as it did in the bytecode.
   if (left?.kind === 'local') {
     const resolved = resolveLocal(left);
-    if (resolved?.kind !== 'number' || right?.kind !== 'number') return null;
-    const holds = compareNumbers(Number(resolved.value), entry.operator, Number(right.value));
-    return holds !== invert ? { conditions: [] } : { dead: true };
+    if (resolved?.kind === 'number' && right?.kind === 'number') {
+      const holds = compareNumbers(Number(resolved.value), entry.operator, Number(right.value));
+      return holds !== invert ? { conditions: [] } : { dead: true };
+    }
+    // Not a constant test: fall through and let the expression language compare it.
   }
   // `CheckInventory("Shells") >= 5`: the count is the script's, asked through the same table.
   if (left?.kind === 'inventory' && right?.kind === 'number') {
     return { conditions: [{ type: 'acsInventory', item: left.item,
       operator: invert ? NEGATED[entry.operator] : entry.operator, value: Number(right.value) }] };
   }
-  if (left?.kind !== 'variable' || right?.kind !== 'number') return null;
-  // `x + 1 >= 2` is the test for `if (++x >= 2)`: read the counter with the offset folded in.
-  const threshold = Number(right.value) - (left.add || 0);
-  return { conditions: [{ type: 'acsVariable', scope: left.scope, index: left.index,
-    module: left.module || 0, operator: invert ? NEGATED[entry.operator] : entry.operator, value: threshold }] };
+  const operator = invert ? NEGATED[entry.operator] : entry.operator;
+  if (left?.kind === 'variable' && right?.kind === 'number') {
+    // `x + 1 >= 2` is the test for `if (++x >= 2)`: read the counter with the offset folded in.
+    const threshold = Number(right.value) - (left.add || 0);
+    return { conditions: [{ type: 'acsVariable', scope: left.scope, index: left.index,
+      module: left.module || 0, operator, value: threshold }] };
+  }
+  // Anything else the expression language can say — two variables, a variable against a
+  // random roll, a negation — is a comparison of two expressions, which the engine evaluates.
+  const leftText = textOf(left, resolveLocal), rightText = textOf(right, resolveLocal);
+  if (leftText === null || rightText === null) return null;
+  return { conditions: [{ type: 'expressionCompare', left: { expr: leftText }, operator,
+    right: { expr: rightText } }] };
 }
 
 function findEntry(program, selector) {

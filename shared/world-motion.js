@@ -192,12 +192,13 @@ export function classicSpecialSupported(special) {
 }
 
 /** The steps an ACS script a line starts can be written as, or null when it is bytecode. */
-export function scriptSteps(project, script, wallId) {
+export function scriptSteps(project, script, wallId, scriptArgs = []) {
   const program = programFor(project);
   if (!program || script === undefined || script === null) return null;
   const entry = program.scripts.find(candidate => String(candidate.number) === String(script));
   if (!entry) return null;
-  const rules = acsScriptStepRules(program, entry, { id: value => `linestep_${wallId}_${value}` });
+  const rules = acsScriptStepRules(program, entry, { id: value => `linestep_${wallId}_${value}`,
+    args: scriptArgs });
   if (!rules.length) return null;
   // The steps' timers are named after the script; each line gets its own, so two lines
   // running the same script do not share one clock.
@@ -238,8 +239,9 @@ export function installWorldScripts(project, warnings) {
     const args = wall.args || (wall.tag ? [wall.tag, 0, 0, 0, 0] : []);
     // A line that starts an ACS script the decompiler understands carries the script's own
     // steps instead of the special: the flow of that line is then in the sheet, step by step.
+    // `ACS_Execute(script, map, a, b, c)`: the three after the map are the script's arguments.
     const steps = wall.special === 80 || wall.special === 226
-      ? scriptSteps(project, args[0], wall.id) : null;
+      ? scriptSteps(project, args[0], wall.id, args.slice(2)) : null;
     const modes = wall.activationModes?.length ? wall.activationModes : ['use'];
     for (const mode of modes) {
       const actions = steps?.length

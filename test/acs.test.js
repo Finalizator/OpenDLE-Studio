@@ -1272,3 +1272,21 @@ test('a counted loop without a wait is unrolled into the same step', () => {
   assert.deepEqual(specials.map(action => [action.special, action.arg1, action.arg2]),
     [[5, 1, 0], [5, 1, 1], [5, 1, 2]], 'the counter runs 0, 1, 2 through the same call');
 });
+
+test('a script that reads its arguments is read with the arguments its line passes', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP07.wad', import.meta.url)) }, () => {
+  // `splitDoor` is `script "-1" (int tag, int tics)`: its body reads `PUSHSCRIPTVAR 1` before
+  // anything assigned it. A line that runs it passes those numbers, so the rule can carry them;
+  // a caller that passes nothing leaves the script as bytecode, which is the honest answer.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP07.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP07', { actors: false });
+  const program = programFor(project);
+  const entry = program.scripts.find(script => script.name === 'splitDoor');
+  assert.equal(entry.argCount, 2, 'the script declares two arguments');
+  const unknown = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
+  assert.equal(unknown[0].actions[0].type, 'runScript', 'without the arguments it stays bytecode');
+  const known = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group', args: [7, 4] });
+  const opened = known[0].actions.find(action => action.type === 'runLineSpecial');
+  assert.equal(opened.arg1, 7, 'the tag the caller passed is the tag the rule opens');
+});

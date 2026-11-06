@@ -60,7 +60,7 @@ useful alone:
       `runLineSpecial`, a wait splits the script (each step waits on the timer the one
       before it started), map/world/global variables become `setAcsVariable` / `acsVariable`
       / `acsvar("map", n)`, and an `IFNOTGOTO` guard becomes a **sub-event** of its step
-      (all 11 scripts of Ascent MAP05, and 32 of the 54 scripts across the whole Ascension
+      (all 11 scripts of Ascent MAP05, and 36 of the 54 scripts across the whole Ascension
       campaign today; `node /tmp/cov.mjs`-style scans are cheap to redo — decompile every
       script of every map and count). The builtins a script calls directly are
       actions that use the interpreter's host functions: `setSectorFlat`
@@ -70,7 +70,11 @@ useful alone:
       variable is the expression `acsflat("map", n)` — the name read from the module's string
       table when the rule runs. The inventory and damage calls are actions too
       (`giveInventory`, `takeInventory`, `damageThing`, `sectorDamage`, with `acsInventory`
-      for `CheckInventory`). **Counted loops** are done: ACC compiles `for` as a
+      for `CheckInventory`). **Negation and two-sided tests** are done too: `!x` asks the
+      inner test the other way round, `-x` is an expression, a bare value on the stack is a test
+      of "is not zero", and a comparison the `acsVariable` condition cannot phrase (two
+      variables, a variable against a roll) becomes `expressionCompare`. Scripts that read their
+      own arguments are read with the numbers their line passes. **Counted loops** are done: ACC compiles `for` as a
       header test that jumps *into* the body, a `GOTO exit` on the false path, a step block
       and a back edge; `countedLoop`/`unroll` read that shape, unroll a body with no wait into
       one step (three `LineSpecial`s in one tic, as the script ran them) and a body that waits

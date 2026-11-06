@@ -943,10 +943,10 @@ export function acsScriptRules(project, { sheetId, groupId, id = value => `engin
  * first, then the guard is decided, which is the order the bytecode had. A script that opens
  * with a guard has no actions of its own, and every group becomes a sub-event.
  */
-export function acsScriptStepRules(program, entry, { sheetId, groupId, id = value => `engine_${value}` } = {}) {
+export function acsScriptStepRules(program, entry, { sheetId, groupId, id = value => `engine_${value}`, args = [] } = {}) {
   const key = String(entry.number !== undefined && entry.number !== null ? entry.number : entry.name || '');
   const label = entry.name || key;
-  const decompiled = decompileScript(program, entry.number ?? entry.name);
+  const decompiled = decompileScript(program, entry.number ?? entry.name, { args });
   const segments = decompiled?.segments?.filter(segment => segment.steps.length) || [];
   if (!segments.length) {
     return [{ id: id(`acs_${key}`), name: `ACS script ${label}`.slice(0, 100),
