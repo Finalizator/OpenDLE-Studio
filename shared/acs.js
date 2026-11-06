@@ -829,6 +829,10 @@ function defineFlow() {
     else { pop(vm, script); vm.pc = found; }
   });
   define(P.CALL, 'b', (vm, script, [index]) => callFunction(vm, script, index, false));
+  // `CallFunc` is the same call by index the module's own table resolves — including a
+  // function a library defines, which `resolveFunction` follows through the imports. It used
+  // to be "not implemented", so every script that called a function this way stopped there.
+  define(P.CALLFUNC, 'b', (vm, script, [index]) => callFunction(vm, script, index, false));
   define(P.CALLDISCARD, 'b', (vm, script, [index]) => callFunction(vm, script, index, true));
   define(P.RETURNVOID, '', (vm, script) => returnFromFunction(vm, script, 0));
   define(P.RETURNVAL, '', (vm, script) => returnFromFunction(vm, script, pop(vm, script)));

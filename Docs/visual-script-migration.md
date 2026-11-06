@@ -97,11 +97,10 @@ useful alone:
       transient message queue (`state.acsMessages`), so a rule draws the same text at the same
       place. Still open: waits inside a conditional block — a step that starts no timer leaves
       the next step waiting forever, so the decompiler refuses rather than stalls the chain.
-      The remaining blockers, in the order the corpus hits them: **`CALLFUNC`** (user
-      functions such as `StarDraw`, which draw HUD art through `HudMessage`),
-      **`GETACTORPROPERTY`** (`BossHealth` reads health and max health into script variables),
-      **`ASSIGNSCRIPTARRAY`** and **`SETHUDSIZE`** (`BossStart`), and `REPLACETEXTURES` (the
-      interpreter itself does nothing for it — translating it would bake that gap into the
+      The remaining blockers, in the order the corpus hits them: **`CALLFUNC`** as rules (the
+      interpreter *runs* the call now — it used to end the script there — but the sheet cannot
+      show a function body yet), **`ASSIGNSCRIPTARRAY`** (`BossStart`) and `REPLACETEXTURES`
+      (the interpreter itself does nothing for it — translating it would bake that gap into the
       sheet).
 - [~] **Step 3 — control flow.** `if` is done: an `IFNOTGOTO` guard is a sub-event of the
       rule that runs before it, so the counter-increment-then-test order of the script

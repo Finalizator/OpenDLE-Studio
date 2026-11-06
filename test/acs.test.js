@@ -1483,3 +1483,23 @@ test('an if/else becomes two steps, one for each branch', () => {
   assert.equal(branch.actions[0].special, 5);
   assert.equal(other.actions[0].special, 6);
 });
+
+test('CallFunc runs the function it names instead of stopping the script', () => {
+  // `CallFunc` is a call by index into the module's function table — the same table `Call`
+  // uses, with library imports followed. It used to be "not implemented", so a script that
+  // reached one ended there and everything after it never happened.
+  const asm = emitter();
+  asm.push(0).ins('CALLFUNC').byte(0).ins('ASSIGNMAPVAR').byte(1).ins('TERMINATE');
+  const functionAt = asm.at();
+  asm.push(7).ins('ASSIGNMAPVAR').byte(0).push(42).ins('RETURNVAL');
+  const described = describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }],
+    functions: [{ args: 0, locals: 0, returns: true, address: functionAt }] }));
+  const project = room(0, [], { withScripts: described.mapScripts });
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.scripts.vm.mapVars[0][0], 7, 'the function ran');
+  assert.equal(state.scripts.vm.mapVars[0][1], 42, 'and its return value reached the caller');
+  assert.equal(state.scripts.vm.active.length, 0, 'and the script carried on to its end');
+  assert.equal([...state.scripts.vm.unsupported].includes('CALLFUNC'), false, 'nothing was reported missing');
+});
