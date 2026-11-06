@@ -25,7 +25,7 @@
 import { instructionAt, lookupString } from './acs.js';
 
 const PUSHES = {
-  PUSHBYTE: 1, PUSH2BYTES: 2, PUSH3BYTES: 3, PUSH4BYTES: 4, PUSH5BYTES: 5,
+  PUSHBYTE: 1, PUSHNUMBER: 1, PUSH2BYTES: 2, PUSH3BYTES: 3, PUSH4BYTES: 4, PUSH5BYTES: 5,
 };
 const SPECIALS = /^LSPEC([1-5])(DIRECT|DIRECTB)?$/;
 const VARIABLE = /^(PUSH|ASSIGN|ADD|SUB|MUL|DIV|MOD|INC|DEC)(SCRIPT|MAP|WORLD|GLOBAL)VAR$/;
@@ -51,6 +51,9 @@ export function decompileScript(program, selector) {
   const segments = [];
   const seen = new Set();
   let offset = script.address;
+  // A script variable lives as long as the script does, not as long as one step of it: a
+  // script that sets a pause length, waits, and uses it again keeps that value.
+  const locals = new Map();
 
   /**
    * Reads instructions from `start` until the script ends or `limit` is reached.
@@ -60,9 +63,6 @@ export function decompileScript(program, selector) {
    */
   const read = (start, limit, depth) => {
     const stack = [];
-    // Script variables live in the running script and a rule has no such frame, so they are
-    // only followed while the value is a constant this can carry forward.
-    const locals = new Map();
     const steps = [];
     let pending = { conditions: [], actions: [] };
     let offset = start;
@@ -96,10 +96,19 @@ export function decompileScript(program, selector) {
         // a value the next step would have needed, which a step boundary cannot carry.
         const raw = name === 'DELAY' || name === 'TAGWAIT' ? pop() : null;
         const operand = raw ? (raw.kind === 'number' ? Number(raw.value) || 0 : NaN) : Number(operands[0]);
-        if (!Number.isFinite(operand) || stack.length) return null;
-        const wait = name === 'DELAY' || name === 'DELAYDIRECT'
-          ? { kind: 'delay', seconds: operand / 35 } : { kind: 'tag', tag: operand };
-        if (!Number.isFinite(wait.seconds ?? wait.tag)) return null;
+        if (stack.length) return null;
+        let wait;
+        if (name === 'DELAY' || name === 'DELAYDIRECT') {
+          if (!Number.isFinite(operand)) return null;
+          wait = { kind: 'delay', seconds: operand / 35 };
+        } else if (Number.isFinite(operand)) {
+          wait = { kind: 'tag', tag: operand };
+        } else {
+          // A tag may be a variable: the script waits on whatever tag it was handed.
+          const text = raw ? expressionOf(raw) : null;
+          if (text === null) return null;
+          wait = { kind: 'tag', tag: { expr: text } };
+        }
         flush();
         return { steps, offset: next, wait, ended: false };
       }

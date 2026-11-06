@@ -1174,3 +1174,30 @@ test('a rule gives an ACS item and asks the level how many the player has', () =
   stepRuntime(project, state, 1 / 35, new Set());
   assert.equal(state.playerStats.shells, 5, 'eight shells were given, then the guard took three');
 });
+
+test('a script waits on a tag it was handed, and keeps its variables across the wait', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP08.wad', import.meta.url)) }, () => {
+  // `OpenSouth` waits on `TagWait(map15)` — a tag that is not a constant — and `OpenUp` sets a
+  // pause length, waits, then uses it again. Both are things the bytecode does and a rule must
+  // be able to say: the wait's tag is an expression, and a script variable outlives the wait.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP08.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP08', { actors: false });
+  const program = programFor(project);
+  const stepsFor = name => {
+    const entry = program.scripts.find(script => script.name === name);
+    assert.ok(entry, `${name} is in the module`);
+    return acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
+  };
+  const south = stepsFor('OpenSouth');
+  const wait = south.find(rule => rule.conditions.some(condition => condition.type === 'sectorTagMoving'));
+  assert.deepEqual(wait.conditions.find(condition => condition.type === 'sectorTagMoving').tag,
+    { expr: 'acsvar("map", 15)' }, 'the wait names the tag it was given');
+  const up = stepsFor('OpenUp');
+  assert.ok(up.length >= 3, `OpenUp is several steps: ${up.length}`);
+  // The pause length is set before the first wait and used again after it (`PUSHSCRIPTVAR(0)`
+  // on the far side of a `DELAY`), so the later step still delays ten tics, not nothing.
+  const second = up[1];
+  assert.ok(second.actions.some(action => action.type === 'startTimer' && Math.abs(action.seconds - 10 / 35) < 1e-9),
+    'the delay is still ten tics after the wait');
+});
