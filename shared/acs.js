@@ -1575,12 +1575,14 @@ export function tickAcs(vm) {
 }
 
 /** Runs every script of a type, as the level does for OPEN and ENTER scripts. */
-export function startScriptsOfKind(vm, kind, activator = null) {
+export function startScriptsOfKind(vm, kind, activator = null, skip = null) {
   let started = 0;
   // Libraries carry their own OPEN/ENTER scripts (Furdoom's double jump is an
   // ENTER script in acs/DoubleJump.o), so every module is started, in load order.
+  // `skip` names the scripts an event rule starts instead, so one script never runs twice.
   for (const entry of vm.program.scripts) {
     if (entry.type !== kind) continue;
+    if (skip?.has(String(entry.number))) continue;
     if (startEntry(vm, entry, { activator })) started++;
   }
   return started;

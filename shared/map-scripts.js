@@ -789,8 +789,9 @@ export function createMapScripts(project, state, callbacks = {}) {
     if (!api.vm) return;
     if (!api.opened) {
       api.opened = true;
-      startScriptsOfKind(api.vm, 'open');
-      startScriptsOfKind(api.vm, 'enter');
+      const ruleOwned = new Set((project.mapScripts?.ruleScripts || []).map(String));
+      startScriptsOfKind(api.vm, 'open', null, ruleOwned);
+      startScriptsOfKind(api.vm, 'enter', null, ruleOwned);
     }
     api.acc += dt;
     const tic = 1 / TIC_RATE;
@@ -905,4 +906,34 @@ export function createMapScripts(project, state, callbacks = {}) {
   }
 
   return api;
+}
+
+/**
+ * A level's OPEN and ENTER scripts, as the rules that start them.
+ *
+ * Both run when the level begins, so the rule is the same shape; what changes is who
+ * starts the script. The numbers are recorded in `mapScripts.ruleScripts`, and the
+ * interpreter no longer starts those scripts itself — one script, one starter.
+ */
+export function acsScriptRules(project, { sheetId, groupId, id = value => `engine_${value}` } = {}) {
+  const program = programFor(project);
+  if (!program) return { events: [], skipped: [], ruleScripts: [] };
+  const events = [], skipped = [], ruleScripts = [];
+  for (const entry of program.scripts) {
+    if (entry.type !== 'open' && entry.type !== 'enter') continue;
+    // A library script runs from the map's own scripts, not from the level start.
+    if (entry.moduleIndex) continue;
+    // A numbered script is selected by its number; a named one by its name.
+    const key = entry.number !== undefined && entry.number !== null ? String(entry.number) : String(entry.name || '');
+    if (!key) continue;
+    if (ruleScripts.includes(key)) continue;
+    ruleScripts.push(key);
+    const label = entry.name || key;
+    events.push({ id: id(`acs_${key}`), name: `ACS script ${label}`.slice(0, 100),
+      sheetId, groupId, enabled: true, once: false,
+      condition: { type: 'onStart' }, conditions: [], actions: [{ type: 'runScript', script: key }],
+      comment: `The level's ${entry.type.toUpperCase()} script ${key}. The body is the compiled ACS shown in the Scripts tab; `
+        + 'delete this rule to let the interpreter start the script itself again.' });
+  }
+  return { events, skipped, ruleScripts };
 }

@@ -18,6 +18,7 @@ import { weaponScriptRules } from './weapon-script.js';
 import { enemyScriptRules } from './enemy-script.js';
 import { projectileScriptRules } from './projectile-script.js';
 import { propScriptRules } from './enemy-script.js';
+import { acsScriptRules } from './map-scripts.js';
 
 // Every key a creator can bind to an event, including the letters Doom leaves free, so
 // scriptlets such as the spray can be rebound from the event sheet.
@@ -336,6 +337,13 @@ export const ENGINE_ACTIONS = [
     { name: 'spray', value: 'BFGExtra', kind: 'string' }, numeric('rays', 40, 1, 256),
     numeric('rolls', 15, 1, 256), numeric('spread', 90, 1, 360), numeric('range', 1024, 0, 8192),
     numeric('damage', 0, 0, 10000)], target: true },
+  // A compiled ACS script, callable from a rule: the trigger is a rule, the body is the
+  // module the WAD shipped (visible in the Scripts tab).
+  { type: 'runScript', label: 'Script: run an ACS script', fields: [
+    { name: 'script', value: '1', kind: 'string' },
+    { ...numeric('arg1', 0, -1000000, 1000000), optional: true },
+    { ...numeric('arg2', 0, -1000000, 1000000), optional: true },
+    { ...numeric('arg3', 0, -1000000, 1000000), optional: true }] },
   { type: 'playActorState', label: 'Object: play an imported actor state', fields: [
     { name: 'state', value: 'See', kind: 'string' }], target: true },
   { type: 'facePlayer', label: 'Enemy: face player for attack', fields: [], target: true },
@@ -679,6 +687,12 @@ export function installEngineScripts(project, { organizeStarter = false, include
           spread: style === 'melee' ? 0 : 22.5, pellets: type === 9 || type === 7 ? 3 : 1 },
       { type: 'playSound', sound: style === 'projectile' ? 'DSRLAUNC' : type === 9 ? 'DSSHOTGN' : 'DSPISTOL', volume: .4 },
     ], [...living, { type: 'timerReady', timer: 'attackWindup' }], { forEachType: 'enemy' });
+  }
+  const scripts = acsScriptRules(project, { sheetId: sheets.World.id, groupId: groups.World.id, id });
+  events.push(...scripts.events);
+  if (scripts.ruleScripts.length) {
+    project.mapScripts = { ...project.mapScripts, ruleScripts: scripts.ruleScripts };
+    warnings?.push(`${scripts.ruleScripts.length} ACS script(s) now start from rules in the World sheet.`);
   }
   if (!scriptedEnemies) {
     const props = propScriptRules(project, { sheetId: sheets.World.id, groupId: groups.World.id, id });

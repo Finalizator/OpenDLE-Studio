@@ -1997,6 +1997,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (entity) entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;
           break;
         }
+        // Starts a compiled ACS script from a rule — the trigger is in the sheet, the body
+        // is the module the WAD shipped, shown disassembled in the Scripts tab.
+        case 'runScript': {
+          const selector = /^-?\d+$/.test(String(action.script)) ? Number(action.script) : String(action.script);
+          state.scripts?.execute(selector, [action.arg1 ?? 0, action.arg2 ?? 0, action.arg3 ?? 0, action.arg4 ?? 0]);
+          break;
+        }
         case 'setEntitySolid': {
           const entity = findTarget(action.entityId);
           if (entity) { entity.solid = action.solid === 'yes'; if (!entity.solid) state.physics?.remove(entity.id); }

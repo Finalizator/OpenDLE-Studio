@@ -394,6 +394,12 @@ Enemies sheet:
 | attacks | alerted, the Doom distance roll (`enemyAttackChance`) allows it, the last attack finished | `facePlayer`, `playActorState` (`Missile`, or `Melee` for a claw-only monster) |
 | melee when close | within `P_CheckMeleeRange` of the actor's radius | `facePlayer`, `playActorState` (`Melee`) |
 
+An ACS script can be started from a rule with `runScript` (`script`, `arg1`…`arg3`). A level's
+`OPEN` and `ENTER` scripts are written that way at import: one rule per script in the World
+sheet, whose number is recorded in `mapScripts.ruleScripts` so the interpreter no longer
+starts it — one script, one starter. The body stays the compiled module the WAD shipped,
+shown disassembled in the Scripts tab.
+
 Shootable props are actors too: a barrel imports with 20 health and a `Death` state, and
 the import writes two rules from that state — `ExplosiveBarrel: explodes` (`explodeArea`
 128/128, once per barrel, guarded by its own timer) and `ExplosiveBarrel: stops blocking`

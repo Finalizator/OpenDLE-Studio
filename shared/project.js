@@ -615,6 +615,15 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       text(scripts.data, 'ACS module data', 8 * 1024 * 1024);
       assert(/^[A-Za-z0-9+/=]+$/.test(scripts.data), 'ACS module data must be base64');
     }
+    // Scripts an event rule starts instead of the interpreter, so a level's OPEN/ENTER
+    // scripts are visible in the World sheet and run once.
+    if (scripts.ruleScripts !== undefined) {
+      array(scripts.ruleScripts, 'Rule-started ACS scripts', 4096);
+      for (const number of scripts.ruleScripts) {
+        assert(/^-?\d+$/.test(String(number)) || /^[A-Za-z_][\w:]{0,63}$/.test(String(number)),
+          'Rule-started ACS script must be a number or a script name');
+      }
+    }
     if (scripts.libraries !== undefined) {
       array(scripts.libraries, 'ACS libraries', 32);
       for (const library of scripts.libraries) {

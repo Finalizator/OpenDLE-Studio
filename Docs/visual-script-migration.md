@@ -51,9 +51,10 @@ The remaining blocker is that rules iterate **entities** while missiles live in
 The compiled map scripts need a decompiler, not a translation pass. Three steps, each
 useful alone:
 
-- [ ] **Step 1 — script becomes a rule.** Every script in the module gets a rule that
-      says *when* it runs (linedef special, `OPEN`, `ENTER`, `ACS_Execute`), with its
-      arguments visible, and the body linked to its disassembly.
+- [x] **Step 1 — script becomes a rule.** `OPEN`/`ENTER` scripts are rules in the World
+      sheet (`runScript`, numbers in `mapScripts.ruleScripts`); linedef-triggered ones
+      already ran from their line's rule. The body stays the module, linked in the
+      Scripts tab.
 - [ ] **Step 2 — straight-line bodies become rules.** Assignments, `ACS_Execute`,
       `Thing_Damage`, `Door_*`, `Floor_*`, `PlaySound`, `Print`/`HudMessage` map 1:1 onto
       existing actions.

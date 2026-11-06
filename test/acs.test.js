@@ -9,7 +9,7 @@ import { parseBehavior, describeBehavior, disassemble, scanBehavior, createAcsVm
 import { describeMapScripts, createMapScripts, scriptSummary, decodeBase64, programFor, collectSpecials }
   from '../shared/map-scripts.js';
 import { loadacsNames, acsLibrariesFromWad, selectAcsLibraries } from '../shared/acs-libraries.js';
-import { createProgram, findScript } from '../shared/acs.js';
+import { createProgram, findScript, startScriptsOfKind } from '../shared/acs.js';
 import { executeSpecial, specialName, unsupportedSpecials } from '../shared/line-specials.js';
 import { importWadMap, readWad } from '../shared/wad.js';
 import { captureGameSave, restoreGameSave } from '../shared/save-game.js';
@@ -831,4 +831,25 @@ test('SetActorPosition takes the fixed-point coordinates a script pushes', () =>
   assert.equal(Math.round(bed.x), 505, 'x is 505 map units, not 505 << 16');
   assert.equal(Math.round(bed.y), 54);
   assert.equal(Math.round(bed.z), 58, 'the bed sits five units above the star');
+});
+
+test('a level\'s OPEN and ENTER scripts start from rules, exactly once', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // The trigger used to be interpreter-only. It is now a rule in the World sheet, and the
+  // script numbers are recorded so the interpreter does not start the same script as well.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  assert.ok(project.mapScripts.ruleScripts.length, 'the imported scripts are rule-started');
+  const world = project.eventSheets.find(entry => entry.name === 'World');
+  const rules = project.events.filter(event => event.sheetId === world?.id &&
+    event.actions.some(action => action.type === 'runScript'));
+  assert.equal(rules.length, project.mapScripts.ruleScripts.length);
+  for (const rule of rules) assert.equal(rule.condition.type, 'onStart');
+  // The interpreter skips exactly those numbers, so a script runs once.
+  const started = startScriptsOfKind(createAcsVm(programFor(project)), 'open', null,
+    new Set(project.mapScripts.ruleScripts.map(String)));
+  const all = startScriptsOfKind(createAcsVm(programFor(project)), 'open');
+  assert.equal(started, 0, 'none of the rule-started scripts start themselves');
+  assert.ok(all > 0, 'the scripts are otherwise startable');
 });
