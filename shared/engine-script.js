@@ -404,6 +404,16 @@ export const ENGINE_ACTIONS = [
   { type: 'fadeTo', label: 'Screen: fade towards a colour', fields: [
     numeric('red', 0, 0, 255), numeric('green', 0, 0, 255), numeric('blue', 0, 0, 255),
     numeric('amount', 1, 0, 1), numeric('seconds', 0, 0, 600)] },
+  // ACS `HudMessage`: text drawn on the screen at a fraction of the view, kept for a while.
+  // `x`/`y` are 0..1 corners, `holdTime`/`fade` are seconds, `type` 0 is a plain message and
+  // `id` lets a later message replace this one.
+  { type: 'showHudMessage', label: 'Screen: show a script HUD message', fields: [
+    { name: 'text', value: '', kind: 'text', allowEmpty: true },
+    numeric('messageType', 0, 0, 3), numeric('id', -1, -1, 32767), numeric('color', 0, 0, 0xffffff),
+    numeric('x', 0.5, 0, 1), numeric('y', 0.5, 0, 1), numeric('holdTime', 3, 0, 600),
+    numeric('fade', 0, 0, 600), { ...numeric('hudWidth', 0, 0, 4096), optional: true },
+    { ...numeric('hudHeight', 0, 0, 4096), optional: true },
+    { name: 'font', value: '', kind: 'text', allowEmpty: true, optional: true }] },
   // ACS `FadeRange`: a fade from one tint to another, which is how a map fades in from black.
   { type: 'fadeRange', label: 'Screen: fade from one colour to another', fields: [
     numeric('redFrom', 0, 0, 255), numeric('greenFrom', 0, 0, 255), numeric('blueFrom', 0, 0, 255),

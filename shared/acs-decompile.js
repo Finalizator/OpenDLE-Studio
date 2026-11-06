@@ -54,6 +54,9 @@ export function decompileScript(program, selector, { args = [] } = {}) {
   // A script variable lives as long as the script does, not as long as one step of it: a
   // script that sets a pause length, waits, and uses it again keeps that value.
   const locals = new Map();
+  // A printed string is built up over several instructions (`BEGINPRINT`, pushes, `ENDPRINT`),
+  // and a HudMessage adds six numbers between the text and the end.
+  const print = { text: '', open: false, hud: false, hudStart: null, width: 0, height: 0, font: null };
   // The script's arguments arrive in its first slots: `ACS_Execute(n, 0, a, b)` hands a and b
   // to script n, so a body that reads them can be read when the caller's values are known.
   for (const [index, value] of args.entries()) {
@@ -183,10 +186,66 @@ export function decompileScript(program, selector, { args = [] } = {}) {
       if (name === 'GOTO' || name === 'GOTOSTACK' || name === 'CASEGOTO' || name === 'CASEGOTOSORTED') return null;
 
       if (name === 'PUSHSTRING') { stack.push({ kind: 'string', text: module.strings?.[operands[0]] ?? '' }); offset = next; continue; }
-      if (name === 'PRINTSTRING') {
-        const shown = pop();
-        if (shown?.kind !== 'string') return null;
-        pending.actions.push({ type: 'showMessage', message: String(shown.text).slice(0, 200), seconds: 4 });
+
+      // The message a script prints, built one piece at a time.
+      if (name === 'BEGINPRINT') { print.text = ''; print.open = true; offset = next; continue; }
+      if (name === 'PRINTSTRING' || name === 'PRINTLOCALIZED') {
+        const shown = resolveLocal(pop());
+        if (!print.open || !shown) return null;
+        // A string argument reaches PRINTSTRING as an index into the module's string table.
+        if (shown.kind === 'string') print.text += String(shown.text);
+        else if (shown.kind === 'number') print.text += lookupString(module, Number(shown.value) & 0xffff);
+        else return null;
+        offset = next; continue;
+      }
+      if (name === 'PRINTNUMBER' || name === 'PRINTFIXED' || name === 'PRINTCHARACTER') {
+        const value = resolveLocal(pop());
+        if (!print.open || value?.kind !== 'number') return null;
+        const number = Number(value.value);
+        print.text += name === 'PRINTNUMBER' ? String(number)
+          : name === 'PRINTCHARACTER' ? String.fromCharCode(number & 0xff)
+            : String(Math.round((number / 65536) * 1000) / 1000);
+        offset = next; continue;
+      }
+      if (name === 'ENDPRINT' || name === 'ENDPRINTBOLD' || name === 'ENDLOG') {
+        if (!print.open) return null;
+        pending.actions.push({ type: 'showMessage', message: print.text.slice(0, 200), seconds: 4 });
+        print.text = ''; print.open = false;
+        offset = next; continue;
+      }
+      if (name === 'MOREHUDMESSAGE') { print.hud = true; offset = next; continue; }
+      if (name === 'OPTHUDMESSAGE') { print.hudStart = stack.length; offset = next; continue; }
+      if (name === 'SETFONT' || name === 'SETFONTDIRECT') {
+        const entry = name === 'SETFONT' ? pop() : { kind: 'number', value: Number(operands[0]) || 0 };
+        const resolved = resolveLocal(entry);
+        if (resolved?.kind !== 'number') return null;
+        const font = lookupString(module, Number(resolved.value) & 0xffff);
+        print.font = font || null;
+        offset = next; continue;
+      }
+      if (name === 'SETSTYLE' || name === 'SETSTYLEDIRECT') {
+        if (name === 'SETSTYLE') pop();
+        offset = next; continue;
+      }
+      if (name === 'SETHUDSIZE') {
+        // Pushed width, height, wraparound; the size applies to the messages after it.
+        const block = pop(), height = pop(), width = pop();
+        const w = resolveLocal(width), h = resolveLocal(height);
+        if (w?.kind !== 'number' || h?.kind !== 'number' || !block) return null;
+        print.width = Math.abs(Number(w.value));
+        print.height = Math.abs(Number(h.value));
+        offset = next; continue;
+      }
+      if (name === 'ENDHUDMESSAGE' || name === 'ENDHUDMESSAGEBOLD') {
+        const base = (print.hudStart ?? stack.length) - 6;
+        if (base < 0 || stack.length < base + 7) return null;
+        const [type, id, color, x, y, hold] = stack.slice(base, base + 6);
+        const fade = stack[base + 6];
+        const message = hudAction({ type, id, color, x, y, hold, fade }, print.text, print);
+        if (!message) return null;
+        pending.actions.push(message);
+        stack.length = base;
+        print.text = ''; print.open = false; print.hud = false; print.hudStart = null;
         offset = next; continue;
       }
       // A dropped value changes nothing a rule could see.
@@ -579,6 +638,27 @@ export function decompileScript(program, selector, { args = [] } = {}) {
  * An argument as the value a rule passes: a plain number, or `acsvar("map", 3)` for a level
  * variable, which the runtime reads from the same store the rest of the scripts use.
  */
+/** A script's `HudMessage` as the action that shows it, or null when a field is unreadable. */
+function hudAction(fields, text, print) {
+  const whole = entry => {
+    const resolved = entry;
+    return resolved?.kind === 'number' ? Number(resolved.value) : null;
+  };
+  const [, id, color] = [fields.type, fields.id, fields.color].map(whole);
+  const [type] = [fields.type].map(whole);
+  const x = fixed(fields.x, 1, value => value / 65536);
+  const y = fixed(fields.y, 1, value => value / 65536);
+  const holdTime = fixed(fields.hold, 600, value => value / 65536);
+  const fade = fixed(fields.fade, 600, value => value / 65536);
+  if ([type, id, color].some(value => value === null) || [x, y, holdTime, fade].some(value => value === null)) return null;
+  // `messageType` rather than `type`: `type` is the action's own name.
+  const action = { type: 'showHudMessage', text: String(text).slice(0, 500), messageType: type, id, color,
+    x, y, holdTime, fade,
+    hudWidth: print.width || 0, hudHeight: print.height || 0 };
+  if (print.font) action.font = print.font;
+  return action;
+}
+
 /** The expression text an entry reads as, resolving a script variable through its value. */
 function textOf(entry, resolveLocal) {
   const resolved = resolveLocal ? resolveLocal(entry) : entry;

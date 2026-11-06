@@ -63,7 +63,7 @@ useful alone:
       `runLineSpecial`, a wait splits the script (each step waits on the timer the one
       before it started), map/world/global variables become `setAcsVariable` / `acsVariable`
       / `acsvar("map", n)`, and an `IFNOTGOTO` guard becomes a **sub-event** of its step
-      (all 11 scripts of Ascent MAP05, and 40 of the 54 scripts across the whole Ascension
+      (all 11 scripts of Ascent MAP05, and 41 of the 54 scripts across the whole Ascension
       campaign today; `node /tmp/cov.mjs`-style scans are cheap to redo — decompile every
       script of every map and count). The builtins a script calls directly are
       actions that use the interpreter's host functions: `setSectorFlat`
@@ -91,9 +91,12 @@ useful alone:
       `GetActorProperty` and `GetSectorFloorZ` become `acsactor(…)`, `acsactorproperty(…)` and
       `acssectorz(…)` expressions, `SetActorPosition` is an action, and the fixed-point maths
       around them (`x >> 16`, `FixedMul`, `Sin`, `Cos`) composes. What those scripts still need
-      is the HUD-message family (`SETHUDSIZE`, `HudMessage` — the engine's HUD is authored while
-      ACS draws transient positioned text) and waits inside a conditional block, which a step
-      chain cannot express: a step that starts no timer leaves the next step waiting forever.
+      were the HUD-message family and waits inside a conditional block. The **HUD messages are in**:
+      `BEGINPRINT`/`PRINTSTRING`/`ENDHUDMESSAGE` (with `MOREHUDMESSAGE`, `OPTHUDMESSAGE`,
+      `SETHUDSIZE`, `SETFONT`) become `showHudMessage`, pushed onto the interpreter's own
+      transient message queue (`state.acsMessages`), so a rule draws the same text at the same
+      place. Still open: waits inside a conditional block — a step that starts no timer leaves
+      the next step waiting forever, so the decompiler refuses rather than stalls the chain.
       The remaining blockers, in the order the corpus hits them: **`CALLFUNC`** (user
       functions such as `StarDraw`, which draw HUD art through `HudMessage`),
       **`GETACTORPROPERTY`** (`BossHealth` reads health and max health into script variables),

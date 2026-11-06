@@ -1402,3 +1402,45 @@ test('FadeRange fades from the tint it names to the one it names', () => {
   assert.deepEqual(fade, { type: 'fadeRange', redFrom: 0, greenFrom: 0, blueFrom: 0, amountFrom: 1,
     red: 255, green: 255, blue: 255, amount: 0, seconds: 2 });
 });
+
+test('a script that prints a HUD message becomes the message it draws', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP00.wad', import.meta.url)) }, () => {
+  // `quakeMessage1` prints "You have suddenly gained the ability to jump up here!" at the
+  // middle of the screen for three seconds, with a one-second fade in. That is a `HudMessage`
+  // the engine already draws; the rule now carries the words and their position.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP00.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP00', { actors: false });
+  const program = programFor(project);
+  const entry = program.scripts.find(script => script.name === 'quakeMessage1');
+  const rules = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
+  const message = rules.flatMap(rule => rule.actions).find(action => action.type === 'showHudMessage');
+  assert.ok(message, 'the HudMessage is an action');
+  assert.match(message.text, /gained the ability to jump/);
+  assert.equal(message.x, 0.5);
+  assert.equal(message.y, 0.5);
+  assert.equal(message.holdTime, 3);
+  assert.equal(message.fade, 1);
+  assert.equal(message.id, 1);
+  // And the action puts it on the screen through the interpreter's own queue.
+  const room = createProject();
+  room.events = [];
+  room.map.vertices = [[-256, -256], [256, -256], [256, 256], [-256, 256]].map(([x, y], index) => ({ id: `v${index}`, x, y }));
+  room.map.walls = [['v0', 'v1'], ['v1', 'v2'], ['v2', 'v3'], ['v3', 'v0']].map(([a, b], index) => ({
+    id: `w${index}`, a, b, height: 128, color: '#888888', solid: true, right: { sectorId: 's', offsetX: 0, offsetY: 0 } }));
+  room.map.sectors = [{ id: 's', floorHeight: 0, ceilingHeight: 128, light: 160, sky: false, tag: 1 }];
+  room.map.entities = [{ id: 'player', type: 'player', name: 'Player', x: 0, y: 0, angle: 0 }];
+  installEngineScripts(room);
+  const worldSheet = room.eventSheets.find(sheet => sheet.name === 'World');
+  room.events.push({ id: 'hud_rule', sheetId: worldSheet.id,
+    groupId: room.eventGroups.find(group => group.sheetId === worldSheet.id).id,
+    enabled: true, once: true, condition: { type: 'onStart' }, conditions: [],
+    actions: [{ type: 'showHudMessage', text: 'hello', messageType: 0, id: 2, color: 9, x: 0.25, y: 0.75,
+      holdTime: 2, fade: 0 }] });
+  validateProject(room);
+  const state = createRuntime(room);
+  stepRuntime(room, state, 1 / 35, new Set());
+  const drawn = (state.acsMessages || []).find(entry => entry.text === 'hello');
+  assert.ok(drawn, 'the message reached the screen queue');
+  assert.deepEqual([drawn.x, drawn.y, drawn.hold, drawn.id], [0.25, 0.75, 2, 2]);
+});

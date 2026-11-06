@@ -433,7 +433,11 @@ functions so a decompiled script and a bytecode one change the level identically
 `arg1`…`arg5`), and ACS `FadeTo` is the `fadeTo` action (`red`, `green`, `blue`, `amount`,
 `seconds`) — a constant is converted out of ACS's 16.16 fixed point in the sheet, a variable is
 divided at run time — and `fadeRange` (`redFrom`, `greenFrom`, `blueFrom`, `amountFrom`, `red`,
-`green`, `blue`, `amount`, `seconds`) is its two-ended form, from one tint to another. `setActorPosition` (`tid`, `x`, `y`, `z`, `fog`) moves every thing carrying
+`green`, `blue`, `amount`, `seconds`) is its two-ended form, from one tint to another.
+ACS `HudMessage` is the `showHudMessage` action (`text`, `messageType`, `id`, `color`, `x`, `y`,
+`holdTime`, `fade`, and the `hudWidth`/`hudHeight`/`font` a script set before it): the words a
+script draws on the screen, at a fraction of the view, kept for a while — and `id` lets a later
+message replace the one before it. `setActorPosition` (`tid`, `x`, `y`, `z`, `fog`) moves every thing carrying
 a tag, with 16.16 fixed-point coordinates as ACS means them.
 
 The reads a script makes are expressions, so a rule reads live state instead of a copy:
