@@ -99,12 +99,15 @@ export function actorOf(project, entity) {
 }
 
 /** Places an entity's state machine at a label (Spawn for new monsters). */
-export function setActorState(project, entity, label, { restart = false } = {}) {
+export function setActorState(project, entity, label, { restart = false, ifDifferent = false } = {}) {
   const actor = actorOf(project, entity);
   if (!actor) return false;
   const state = actorStateOf(entity);
   const target = labelIndex(actor, label);
   if (target === null) return false;
+  // A rule that says "be in this state" every frame must not restart the animation each
+  // time; the machine's own state changes keep their restart behaviour.
+  if (ifDifferent && state.index !== null && entity.stateLabel === String(label)) return true;
   if (!restart && state.index === target) return true;
   state.index = target;
   state.tics = 0;
@@ -166,6 +169,8 @@ export function actorTic(project, state, entity, moveTarget = true) {
     const target = frame.kind === 'loop' ? frame.label : frame.target;
     const resolved = labelIndex(actor, target);
     runtime.index = resolved === null ? null : resolved;
+    // A rule asks which state an actor is in; a `goto` back into a label counts.
+    if (resolved !== null) entity.stateLabel = String(target);
     return;
   }
   if (frame.kind === 'wait') return;
@@ -193,8 +198,28 @@ function suspendAcs(ctx, named, terminate = false) {
   else scripts.suspend(selector);
 }
 
+/**
+ * The monster decisions a rule takes over once the archetype is translated.
+ *
+ * Everything else a state frame calls — sounds, death, item drops, the attack
+ * functions themselves — keeps running, so the state stays the description of what
+ * the actor is and the sheet is the description of what it decides.
+ */
+export const AI_ACTIONS = new Set(['A_Look', 'A_LookEx', 'A_Wander', 'A_Chase', 'A_FaceTarget',
+  'A_AlertMonsters', 'A_CPosRefire', 'A_FastChase', 'A_SmartChase']);
+
+function aiSuppressed(state, entity) {
+  const name = entity?.actorName;
+  return Boolean(name) && Array.isArray(state.enemyEventActors) &&
+    state.enemyEventActors.includes(String(name).toLowerCase());
+}
+
 export function runActions(project, state, entity, actor, actions, context = {}) {
+  const suppressed = aiSuppressed(state, entity);
   for (const action of actions || []) {
+    // A translated archetype decides through its rules; the state machine keeps the
+    // frames, the sounds and the attack functions.
+    if (suppressed && AI_ACTIONS.has(action.name)) continue;
     const handler = ACTIONS[action.name];
     if (!handler) {
       // A frame may call one of the actor's own functions (`PLAY A 1 Rotate;` with

@@ -15,6 +15,7 @@ import { addonCommands, addonCommand, declaredAddonTypes } from './addons.js';
 import { PATH_EASINGS } from './timesheet.js';
 import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTIES } from './instance-properties.js';
 import { weaponScriptRules } from './weapon-script.js';
+import { enemyScriptRules } from './enemy-script.js';
 
 // Every key a creator can bind to an event, including the letters Doom leaves free, so
 // scriptlets such as the spray can be rebound from the event sheet.
@@ -121,6 +122,10 @@ export const ENGINE_CONDITIONS = [
   { type: 'playerFeedback', label: 'Player: compare feedback signal', fields: [choice('signal', 'damage', ['damage', 'damageDirection', 'attackTime', 'weaponPickup']), comparison(), numeric('value', 0, -1e6, 1e6)] },
   { type: 'playerFace', label: 'Player: face expression', fields: [choice('expression', 'idle', FACE_EXPRESSIONS)] },
   { type: 'entityDoomType', label: 'Object: Doom thing type', fields: [numeric('doomType', 2007, 0, 65535)], target: true },
+  // An imported archetype is identified by its actor name, which is what a translated
+  // monster's rules are written against.
+  { type: 'entityActorName', label: 'Object: imported actor name', fields: [{ name: 'actor', value: 'DoomImp', kind: 'string' }], target: true },
+  { type: 'actorState', label: 'Object: imported actor state', fields: [{ name: 'state', value: 'See', kind: 'string' }], target: true },
   { type: 'hudAnimationPlaying', label: 'HUD: animation is playing', fields: [], hudAnimation: true },
   { type: 'hudClicked', label: 'HUD: on element clicked', fields: [], hudElement: true },
   { type: 'hudFocused', label: 'HUD: element selected / focused', fields: [], hudElement: true },
@@ -315,6 +320,8 @@ export const ENGINE_ACTIONS = [
   { type: 'setGravityScale', label: 'Physics: set gravity scale', target: true, fields: [numeric('scale', 1, 0, 10)] },
   { type: 'setDamping', label: 'Physics: set linear damping', target: true, fields: [numeric('damping', .1, 0, 100)] },
   { type: 'moveEnemy', label: 'Enemy: move toward player with collision', fields: [numeric('speed', 80, 0, 1024)], target: true },
+  { type: 'playActorState', label: 'Object: play an imported actor state', fields: [
+    { name: 'state', value: 'See', kind: 'string' }], target: true },
   { type: 'facePlayer', label: 'Enemy: face player for attack', fields: [], target: true },
   { type: 'enemyHitscan', label: 'Enemy: trace shot at player', fields: [numeric('damage', 3, 0, 10000), numeric('diceSides', 5, 1, 256), numeric('range', 1024, 1, 65536),
     { ...numeric('spread', 22.5, 0, 180), optional: true }, { ...numeric('pellets', 1, 1, 64), optional: true }], target: true },
@@ -605,6 +612,10 @@ export function installEngineScripts(project, { organizeStarter = false, include
     68: [500, 64, 5, 8, 'projectile'], 71: [400, 48, 3, 8, 'projectile'], 66: [300, 80, 6, 8, 'projectile'],
     67: [600, 48, 8, 8, 'projectile'], 64: [700, 96, 10, 8, 'hitscan'], 16: [4000, 64, 20, 8, 'projectile'], 7: [3000, 48, 3, 5, 'hitscan'],
   };
+  // An imported game has the monsters it came with, so each archetype is written into
+  // this sheet from its own actor record — health, walking speed, melee reach and the
+  // length of its attack animation — and its state machine stops deciding for itself.
+  // A project without an actor table falls back to the engine's own type profiles.
   const present = scriptedEnemies
     ? [...new Set([0, ...project.map.entities.filter(entity => entity.type === 'enemy').map(entity => entity.doomType ?? 0)])] : [];
   for (const [name, condition] of [
@@ -652,6 +663,13 @@ export function installEngineScripts(project, { organizeStarter = false, include
           spread: style === 'melee' ? 0 : 22.5, pellets: type === 9 || type === 7 ? 3 : 1 },
       { type: 'playSound', sound: style === 'projectile' ? 'DSRLAUNC' : type === 9 ? 'DSSHOTGN' : 'DSPISTOL', volume: .4 },
     ], [...living, { type: 'timerReady', timer: 'attackWindup' }], { forEachType: 'enemy' });
+  }
+  if (!scriptedEnemies) {
+    const translated = enemyScriptRules(project, { sheetId: sheets.Enemies.id, groupId: groups.Enemies.id, id });
+    events.push(...translated.events);
+    for (const skipped of translated.skipped) {
+      warnings?.push(`Monster ${skipped.name} keeps its DECORATE state machine instead of rules: ${skipped.reasons.join('; ')}.`);
+    }
   }
   rule('Combat', 'remove_dead_enemies', { type: 'entityHealth', entityId: '$self', operator: '<=', value: 0 },
     [{ type: 'playSound', sound: 'DSPODTH1', volume: .5 }, { type: 'removeEntity', entityId: '$self' }], [], { forEachType: 'enemy' });

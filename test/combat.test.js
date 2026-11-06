@@ -383,9 +383,11 @@ test('real Freedoom imports PCM effects and a native actor table instead of gene
   const { project } = importWad(readFileSync(freedoom), 'MAP01');
   const pistol = project.assets.find(asset => asset.kind === 'sound' && asset.name === 'DSPISTOL');
   assert.ok(pistol); assert.equal(pistol.generated, undefined);
-  // Monsters and weapons run their own state machines now, so no duplicated
-  // scripted archetype or weapon rules are generated on top of them.
-  assert.equal(project.events.some(event => event.condition.type === 'enemySeesPlayer'), false);
+  // Monsters and weapons are translated into rules that run the actor's own states,
+  // so what the sheet says and what the actor does are the same thing.
+  const notices = project.events.filter(event => event.condition.type === 'enemySeesPlayer');
+  assert.ok(notices.length >= 10, 'each imported monster gets a rule that notices the player');
+  assert.ok(notices.every(event => event.enemyActor), 'and each names the archetype it came from');
   // A plain WAD carries the classic weapons, and each one is written into the Weapons
   // sheet from its own states, so the gun a player fires is a rule they can read.
   const shotgun = project.actors.find(actor => actor.name === 'SuperShotgun');

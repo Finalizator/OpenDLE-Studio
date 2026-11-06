@@ -381,6 +381,29 @@ save never carries every other save file inside it. Both kinds live with the hos
 
 ---
 
+### Imported monsters are rules too
+
+The same split applies to every imported monster: what it **decides** is a rule, what it
+**is** stays its DECORATE states. Each archetype in the actor table gets four rules in the
+Enemies sheet:
+
+| Rule | Condition | Actions |
+|---|---|---|
+| notices the player | `enemySeesPlayer` (the actor's own `LOOKALLAROUND` picks 180° or 360°) | `playActorState` (`See`), start the alert timer |
+| chases | the alert timer is running | `moveEnemy` at the actor's own speed, `playActorState` (`See`) |
+| attacks | alerted, the Doom distance roll (`enemyAttackChance`) allows it, the last attack finished | `facePlayer`, `playActorState` (`Missile`, or `Melee` for a claw-only monster) |
+| melee when close | within `P_CheckMeleeRange` of the actor's radius | `facePlayer`, `playActorState` (`Melee`) |
+
+`playActorState` enters a state the actor is not already in, so a rule can say "be in
+See" every frame without restarting the animation under it, and the walking rules stand
+down while an attack state plays rather than cutting it short. The attack itself still
+runs from the state — `A_TroopAttack` keeps choosing claw or fireball exactly as the mod
+wrote it — so a translated monster decides in the sheet and acts with its own functions.
+
+Two conditions make this readable: `entityActorName` (which archetype a rule is about)
+and `actorState` (which state the actor is playing). A monster whose states have no `See`
+or no `Melee`/`Missile` to attack from keeps its machine and the import says so.
+
 ### Imported weapons are rules
 
 A WAD's weapons arrive as DECORATE states, and the engine's rule is that gameplay is

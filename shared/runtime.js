@@ -8,7 +8,8 @@ import { isExpression, evaluateExpression, expressionContext, scalar } from './e
 import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validateHUDProperty } from './hud.js';
 import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
-  initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
+  initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
+  setActorState } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
 import { HL2_MOVEMENT, clampHorizontal, horizontalStep, measuredVelocity } from './source-motion.js';
@@ -48,6 +49,7 @@ import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { projectIds } from './project-ids.js';
 import { weaponEventActors } from './weapon-script.js';
+import { enemyEventActors } from './enemy-script.js';
 import { saveFileDocument, serializeSaveFile, parseSaveFile, applyVariableSave, saveFileName, variableSnapshot } from './save-files.js';
 import { BT } from './acs.js';
 import { initialiseAuthoredDoors, operateSectorDoor, sectorDoorClosed, sectorDoorMoving, sectorDoorOpen,
@@ -191,6 +193,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     // Imported weapons whose firing is an event rule. Those run their states for pictures and
     // sounds only, so a translated weapon is never fired by the machine as well as the rule.
     weaponEventActors: weaponEventActors(project),
+    // Imported monsters whose decisions are event rules: their states keep the frames,
+    // sounds and attack functions, and no longer look, chase or pick their own fights.
+    enemyEventActors: enemyEventActors(project),
     newGameLevel: project.game && project.gameMenus?.episodes?.length === 1 ? project.gameMenus.episodes[0].levelId : null,
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0, up: [...WORLD_UP] },
     // Momentum is Doom's, in map units per tic; see shared/player-motion.js.
@@ -1370,6 +1375,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const alerted = entity && state.time < (state.timers.get(`${entity.id}:alert`) || 0);
         return entity && canSeePlayer(state, entity, condition.range, alerted ? 360 : condition.fov ?? 360);
       }
+      if (condition.type === 'actorState') {
+        const entity = findTarget(condition.entityId);
+        return Boolean(entity?.stateLabel) && String(entity.stateLabel).toLowerCase() === String(condition.state).toLowerCase();
+      }
+      if (condition.type === 'entityActorName') {
+        const entity = findTarget(condition.entityId);
+        return Boolean(entity?.actorName) && String(entity.actorName).toLowerCase() === String(condition.actor).toLowerCase();
+      }
       if (condition.type === 'enemyAttackChance') {
         const entity = findTarget(condition.entityId);
         return entity && enemyAttackChance(state, entity);
@@ -1955,6 +1968,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'facePlayer': {
           const entity = findTarget(action.entityId);
           if (entity) entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;
+          break;
+        }
+        // Runs an imported actor's own state, which is where its frames, sounds and its
+        // attack function live — a translated monster's rule says *when*, the state says how.
+        case 'playActorState': {
+          const entity = findTarget(action.entityId);
+          if (entity && entity.health > 0) setActorState(project, entity, action.state, { ifDifferent: true });
           break;
         }
         case 'moveEnemy': {
