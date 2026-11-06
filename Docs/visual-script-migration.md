@@ -60,7 +60,7 @@ useful alone:
       `runLineSpecial`, a wait splits the script (each step waits on the timer the one
       before it started), map/world/global variables become `setAcsVariable` / `acsVariable`
       / `acsvar("map", n)`, and an `IFNOTGOTO` guard becomes a **sub-event** of its step
-      (all 11 scripts of Ascent MAP05, and 30 of the 54 scripts across the whole Ascension
+      (all 11 scripts of Ascent MAP05, and 32 of the 54 scripts across the whole Ascension
       campaign today; `node /tmp/cov.mjs`-style scans are cheap to redo — decompile every
       script of every map and count). The builtins a script calls directly are
       actions that use the interpreter's host functions: `setSectorFlat`
@@ -70,16 +70,19 @@ useful alone:
       variable is the expression `acsflat("map", n)` — the name read from the module's string
       table when the rule runs. The inventory and damage calls are actions too
       (`giveInventory`, `takeInventory`, `damageThing`, `sectorDamage`, with `acsInventory`
-      for `CheckInventory`). Still to add: loops (backward jumps), `SetThingSpecial`,
-      `Spawn`, `ClearInventory`, and arrays. The remaining blockers, in the order the corpus
-      hits them: **loops** (`TeleportNorth`, `TeleportSouth`, `DieAltar`, `BossStart` — ACC
-      compiles `for` as a header test jumping *into* the body with a `GOTO exit` on the false
-      path, then an increment block and a back edge, so the linear walker must learn that
-      shape or the sheets need an iteration construct), **`CALLFUNC`** (user functions such as
-      `StarDraw`, which draw HUD art through `HudMessage`), **`GETACTORPROPERTY`**
-      (`BossHealth` reads health and max health into script variables), **`ASSIGNSCRIPTARRAY`**
-      and **`SETHUDSIZE`** (`BossStart`), and `REPLACETEXTURES` (the interpreter itself does
-      nothing for it — translating it would bake that gap into the sheet).
+      for `CheckInventory`). **Counted loops** are done: ACC compiles `for` as a
+      header test that jumps *into* the body, a `GOTO exit` on the false path, a step block
+      and a back edge; `countedLoop`/`unroll` read that shape, unroll a body with no wait into
+      one step (three `LineSpecial`s in one tic, as the script ran them) and a body that waits
+      into one step per turn, each waiting on the one before. Loops longer than 32 turns, with
+      a body that tests something, or that step a *map* variable, keep their bytecode.
+      Still to add: `SetThingSpecial`, `Spawn`, `ClearInventory`, `FADERANGE`, and arrays.
+      The remaining blockers, in the order the corpus hits them: **`CALLFUNC`** (user
+      functions such as `StarDraw`, which draw HUD art through `HudMessage`),
+      **`GETACTORPROPERTY`** (`BossHealth` reads health and max health into script variables),
+      **`ASSIGNSCRIPTARRAY`** and **`SETHUDSIZE`** (`BossStart`), and `REPLACETEXTURES` (the
+      interpreter itself does nothing for it — translating it would bake that gap into the
+      sheet).
 - [~] **Step 3 — control flow.** `if` is done: an `IFNOTGOTO` guard is a sub-event of the
       rule that runs before it, so the counter-increment-then-test order of the script
       survives (`openLabDoor` in MAP05 reads exactly as its bytecode did). Still open:

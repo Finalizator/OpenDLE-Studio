@@ -61,7 +61,22 @@ export function decompileScript(program, selector) {
    * A guard inside a guard, or a wait inside a guard, is not translated: a step is one rule
    * with one set of conditions, and an inner wait would need a rule chain per branch.
    */
-  const read = (start, limit, depth) => {
+  /**
+   * A script variable's value, for the places that need a number rather than the variable.
+   * Returns null when the variable was never assigned a value this can follow.
+   */
+  const resolveLocal = entry => {
+    if (entry?.kind !== 'local') return entry;
+    const stored = locals.get(entry.index);
+    if (!stored) return null;
+    const add = entry.add || 0;
+    if (!add) return stored;
+    if (stored.kind === 'number') return { kind: 'number', value: Number(stored.value) + add };
+    if (stored.kind === 'variable') return { ...stored, add: (stored.add || 0) + add };
+    return null;
+  };
+
+  const read = (start, limit, { nested = false, guards = true, waits = true } = {}) => {
     const stack = [];
     const steps = [];
     let pending = { conditions: [], actions: [] };
@@ -71,14 +86,17 @@ export function decompileScript(program, selector) {
       pending = { conditions: [], actions: [] };
     };
     const pop = () => stack.pop();
+    const peek = () => stack[stack.length - 1];
+    // An argument is the value it stands for: a script variable resolves to what it holds.
+    const argOf = entry => (entry?.kind === 'local' ? argumentOf(resolveLocal(entry)) : argumentOf(entry));
     for (let guard = 0; guard < 8192; guard++) {
       if (limit !== null && limit !== undefined) {
         if (offset === limit) { flush(); return { steps, offset, wait: null, ended: false }; }
         if (offset > limit) return null;
       }
       if (offset === null || offset === undefined) return null;
-      if (depth === 0) {
-        if (seen.has(offset)) return null; // a loop
+      if (!nested) {
+        if (seen.has(offset)) return null; // a loop that is not counted cannot be unrolled
         seen.add(offset);
       }
       const instruction = instructionAt(module, offset);
@@ -91,10 +109,10 @@ export function decompileScript(program, selector) {
 
       // A wait splits the body: everything after it happens later.
       if (WAITS.test(name)) {
-        if (depth > 0) return null;
+        if (!waits) return null;
         // `DELAY` and `TAGWAIT` take their number off the stack; anything else left on it is
         // a value the next step would have needed, which a step boundary cannot carry.
-        const raw = name === 'DELAY' || name === 'TAGWAIT' ? pop() : null;
+        const raw = name === 'DELAY' || name === 'TAGWAIT' ? resolveLocal(pop()) : null;
         const operand = raw ? (raw.kind === 'number' ? Number(raw.value) || 0 : NaN) : Number(operands[0]);
         if (stack.length) return null;
         let wait;
@@ -114,14 +132,37 @@ export function decompileScript(program, selector) {
       }
 
       if (name === 'IFNOTGOTO' || name === 'IFGOTO') {
-        if (depth > 0) return null;
         const target = Number(operands[0]);
-        // A backward jump is a loop; a forward one that is not a guard has no rule shape yet.
         if (!(target > next)) return null;
+        // A `for` loop: the test jumps *into* its body and the false path jumps past it.
+        const test = peek();
+        const loop = name === 'IFGOTO' ? countedLoop(offset, target, next, test) : null;
+        if (loop) {
+          if (!loop.holdsWait) {
+            const unrolled = unroll(loop);
+            if (!unrolled) return null;
+            flush();
+            for (const step of unrolled) steps.push(step);
+            offset = loop.exit;
+            continue;
+          }
+          // The body waits, so each iteration is a step of its own: this one joins the
+          // segment being read, the rest are read after it on the timers the waits start.
+          locals.set(loop.test.index, { kind: 'number', value: loop.test.from });
+          const first = read(loop.bodyStart, loop.bodyEnd, { nested: true, guards: true });
+          if (!first || !first.wait) return null;
+          flush();
+          for (const step of first.steps) if (step.actions.length) steps.push(step);
+          const remaining = loop.test.count > 1;
+          locals.set(loop.test.index, { kind: 'number', value: loop.test.from + loop.step.by });
+          return { steps, offset: loop.exit, wait: first.wait, ended: false,
+            loop: remaining ? { ...loop, iteration: 1, resumeAt: first.offset } : null };
+        }
+        if (!guards) return null;
         // `IFNOTGOTO` runs its block when the value is true; `IFGOTO` skips the block then.
-        const guarded = conditionsFor(pop(), name === 'IFGOTO');
+        const guarded = conditionsFor(pop(), name === 'IFGOTO', resolveLocal);
         if (!guarded) return null;
-        const inside = read(next, target, depth + 1);
+        const inside = read(next, target, { nested: true, guards: false, waits: false });
         if (!inside || inside.wait) return null;
         flush();
         // At this depth `read` cannot nest, so the block is one group of plain actions.
@@ -153,18 +194,31 @@ export function decompileScript(program, selector) {
         if (scope === 'script') {
           if (operation === 'PUSH') {
             if (!locals.has(index)) return null;
-            stack.push(locals.get(index));
+            // Kept symbolic: the value is known, but a `for` loop's test has to stay visible
+            // until the jump reads it, or the loop cannot be recognised as counted.
+            stack.push({ kind: 'local', index });
             offset = next; continue;
           }
           if (operation === 'ASSIGN') {
             // A script variable is a temporary here: it holds whatever the stack held, so a
             // random roll or a counter offset can be carried to the call that uses it.
-            const assigned = pop();
+            const assigned = resolveLocal(pop());
             if (!assigned) return null;
             locals.set(index, assigned);
             offset = next; continue;
           }
-          return null;
+          // `i++`, `i += 2`: the value this walker carries moves with it, so a script that
+          // keeps a base number in a variable can still be read past the increment.
+          if (!['INC', 'DEC', 'ADD', 'SUB'].includes(operation)) return null;
+          const amount = /^(INC|DEC)$/.test(operation) ? { kind: 'number', value: 1 } : resolveLocal(pop());
+          if (amount?.kind !== 'number') return null;
+          const current = locals.get(index);
+          if (!current) return null;
+          const delta = operation === 'DEC' ? -Number(amount.value) : Number(amount.value);
+          const updated = fold(delta < 0 ? '-' : '+', { kind: 'number', value: Math.abs(delta) }, current);
+          if (!updated) return null;
+          locals.set(index, updated);
+          offset = next; continue;
         }
         if (operation === 'PUSH') {
           stack.push({ kind: 'variable', scope, index, module: moduleIndex, add: 0 });
@@ -231,7 +285,7 @@ export function decompileScript(program, selector) {
           ? operands.slice(0, builtin.count).map(value => ({ kind: 'number', value: Number(value) || 0 }))
           : stack.splice(Math.max(0, stack.length - builtin.count));
         if (values.length !== builtin.count) return null;
-        const action = builtin.action(values, module);
+        const action = builtin.action(values.map(resolveLocal), module);
         if (!action) return null;
         // `CheckInventory` leaves a count on the stack for the comparison that follows.
         if (builtin.result) stack.push(action);
@@ -253,7 +307,7 @@ export function decompileScript(program, selector) {
         else {
           // The stack form pops its arguments, so the last pushed is the last argument.
           if (stack.length < count) return null;
-          args = stack.splice(stack.length - count, count).map(argumentOf);
+          args = stack.splice(stack.length - count, count).map(argOf);
         }
         if (args.some(argument => argument === null)) return null;
         if (!args.length && count > 0) return null;
@@ -267,12 +321,193 @@ export function decompileScript(program, selector) {
     return null;
   };
 
-  for (;;) {
-    const segment = read(offset, null, 0);
+  /**
+   * Recognises the counted `for` ACC compiles, and returns what is needed to unroll it:
+   *
+   * ```
+   * header: PUSH counter; PUSH limit; LT        the test
+   *         IFGOTO body                          jump into the body while it holds
+   *         GOTO exit                            and past the loop when it does not
+   *         continue: INC counter                (the `for` step)
+   *   body: ... ; GOTO continue | GOTO header
+   * exit:
+   * ```
+   *
+   * Only the shapes a rule can express are accepted: a script-variable counter with a known
+   * value, a constant limit, a step of one, a body with no waits and a bound that keeps the
+   * unrolled script small. Everything else returns null and the script keeps its bytecode.
+   */
+  const countedLoop = (header, bodyStart, next, test) => {
+    const afterTest = instructionAt(module, next);
+    if (afterTest?.name !== 'GOTO') return null;
+    const exit = Number(afterTest.operands[0]);
+    if (!(exit > bodyStart)) return null;
+    // The `for` step sits between the exit jump and the body; a `while` has none.
+    const continueBlock = afterTest.end === bodyStart ? null : { start: afterTest.end, end: bodyStart };
+    const back = findBackEdge(bodyStart, header);
+    if (!back) return null;
+    const step = continueBlock ? stepOf(continueBlock, back.target, header) : null;
+    if (!step) return null;
+    const counted = countOf(test, step);
+    if (!counted) return null;
+    return { header, bodyStart, bodyEnd: back.at, continueBlock, exit, step, test: counted,
+      backTarget: back.target, holdsWait: containsWait(bodyStart, back.at) };
+  };
+
+  /** The first `GOTO` in the body that jumps back to the loop, which ends the body. */
+  const findBackEdge = (start, header) => {
+    let offset = start;
+    for (let guard = 0; guard < 4096; guard++) {
+      const instruction = instructionAt(module, offset);
+      if (!instruction?.end) return null;
+      if (instruction.name === 'GOTO') {
+        const target = Number(instruction.operands[0]);
+        // A jump back to the test, or back to the `for` step that leads to it, ends the body.
+        if (target <= header || target < offset) return { at: offset, target };
+        offset = target;
+        continue;
+      }
+      if (ENDS.test(instruction.name)) return null;
+      offset = instruction.end;
+    }
+    return null;
+  };
+
+  /**
+   * What the `for` step does to the counter: `INC`/`DEC`, or `ADD`/`SUB` of a constant. The
+   * counter has to be a script variable, because that is the only one this follows.
+   */
+  const stepOf = (block, backTarget, header) => {
+    let offset = block.start;
+    let found = null;
+    for (let guard = 0; guard < 32; guard++) {
+      const instruction = instructionAt(module, offset);
+      if (!instruction?.end) return null;
+      const variable = VARIABLE.exec(instruction.name);
+      if (variable) {
+        const [, operation, scopeName] = variable;
+        if (SCOPE[scopeName] !== 'script') return null;
+        if (found) return null; // two variables stepped at once is not a counted loop
+        const by = operation === 'INC' ? 1 : operation === 'DEC' ? -1 : null;
+        if (by === null) return null;
+        found = { index: Number(instruction.operands[0]), by };
+      } else if (instruction.name === 'GOTO' && Number(instruction.operands[0]) <= header) {
+        // The step ends by jumping back to the test, which is what makes it the loop's step.
+        offset = instruction.end;
+        break;
+      } else if (!/^NOP$/.test(instruction.name)) return null;
+      offset = instruction.end;
+      if (offset === block.end) break;
+    }
+    if (!found) return null;
+    // The step must lead back to the header, or it is not this loop's own step.
+    if (backTarget !== block.start || offset !== block.end) return null;
+    return found;
+  };
+
+  /** Whether the loop's body waits, which decides whether its iterations are steps. */
+  const containsWait = (start, end) => {
+    let offset = start;
+    for (let guard = 0; guard < 4096 && offset < end; guard++) {
+      const instruction = instructionAt(module, offset);
+      if (!instruction?.end) return true; // cannot tell: assume it waits, which is the safe path
+      if (WAITS.test(instruction.name)) return true;
+      offset = instruction.end;
+    }
+    return false;
+  };
+
+  /**
+   * Turns `counter < limit` into "how many times": the counter must be the variable the step
+   * changes, and the bound a constant. A loop longer than 32 iterations is refused, because an
+   * unrolled rule with a hundred copies in it is not a sheet a creator can read.
+   */
+  const countOf = (test, step) => {
+    if (test?.kind !== 'expr' || test.left?.kind !== 'local' || step.index === null) return null;
+    if (test.left.index !== step.index || test.right?.kind !== 'number') return null;
+    const from = resolveLocal(test.left);
+    if (from?.kind !== 'number') return null;
+    const start = Number(from.value), limit = Number(test.right.value);
+    const up = step.by > 0;
+    const forwards = { '<': limit - start, '<=': limit - start + 1 };
+    const backwards = { '>': start - limit, '>=': start - limit + 1 };
+    const count = (up ? forwards : backwards)[test.operator];
+    if (!Number.isInteger(count) || count < 0 || count > 32) return null;
+    return { index: test.left.index, from: start, count };
+  };
+
+  /**
+   * The body of a counted loop, once per iteration, with the counter pinned to its value.
+   *
+   * The iterations run back to back in one tic, so they join the actions of a single step. A
+   * body with a test in it would need a sub-event per iteration, which a flat list cannot say
+   * in order — those loops keep their bytecode.
+   */
+  const unroll = loop => {
+    const test = loop.test;
+    if (!test) return null;
+    const actions = [];
+    for (let index = 0; index < test.count; index++) {
+      locals.set(test.index, { kind: 'number', value: test.from + loop.step.by * index });
+      const inside = read(loop.bodyStart, loop.bodyEnd, { nested: true, guards: true });
+      if (!inside || inside.wait || inside.ended) return null;
+      for (const step of inside.steps) {
+        if (step.conditions.length) return null;
+        actions.push(...step.actions);
+      }
+      if (actions.length > 256) return null;
+    }
+    locals.set(test.index, { kind: 'number', value: test.from + loop.step.by * test.count });
+    return actions.length ? [{ conditions: [], actions }] : [];
+  };
+
+  // A loop whose body waits is read one iteration per step; `queue` carries it between them.
+  // The code after the body's wait (the `for` step, usually) belongs to the next step, which is
+  // why the queue remembers where the iteration resumes.
+  let queue = null;
+  let prefix = null;
+  for (let guard = 0; guard < 1024; guard++) {
+    let segment = null;
+    const collected = [];
+    if (queue) {
+      const { loop, iteration, resumeAt } = queue;
+      if (resumeAt !== null && resumeAt !== undefined) {
+        const resume = read(resumeAt, loop.bodyEnd, { nested: true, guards: true });
+        if (!resume || resume.wait) return null; // one wait per iteration is what a step can be
+        for (const step of resume.steps) if (step.actions.length) collected.push(step);
+      }
+      const finished = iteration >= loop.test.count;
+      if (finished) {
+        // The last iteration's tail joins the code that follows the loop, in one step.
+        locals.set(loop.test.index, { kind: 'number', value: loop.test.from + loop.step.by * loop.test.count });
+        queue = null;
+        offset = loop.exit;
+        prefix = collected;
+        continue;
+      }
+      locals.set(loop.test.index, { kind: 'number', value: loop.test.from + loop.step.by * iteration });
+      const part = read(loop.bodyStart, loop.bodyEnd, { nested: true, guards: true });
+      if (!part) return null;
+      for (const step of part.steps) if (step.actions.length) collected.push(step);
+      segments.push({ steps: collected, wait: part.wait });
+      queue = { loop, iteration: iteration + 1, resumeAt: part.wait ? part.offset : null };
+      if (!part.wait) return null; // a repeated body that does not wait cannot be a step
+      continue;
+    }
+    segment = read(offset, null, 0);
     if (!segment) return null;
-    const steps = segment.steps.filter(step => step.actions.length);
+    const steps = [...(prefix || []), ...segment.steps].filter(step => step.actions.length);
+    prefix = null;
     if (steps.length || segment.wait) segments.push({ steps, wait: segment.wait });
-    if (!segment.wait || segment.ended) break;
+    if (segment.loop) {
+      queue = { loop: segment.loop, iteration: segment.loop.iteration || 1, resumeAt: segment.loop.resumeAt };
+      offset = segment.loop.exit;
+      continue;
+    }
+    if (!segment.wait) {
+      if (!segment.ended) return null; // more code after a step that nothing waits on
+      break;
+    }
     offset = segment.offset;
   }
   const actions = segments.flatMap(segment => segment.steps.flatMap(step => step.actions));
@@ -286,6 +521,7 @@ export function decompileScript(program, selector) {
 function argumentOf(entry) {
   if (entry === undefined || entry === null) return 0;
   if (entry.kind === 'number') return Number(entry.value) || 0;
+  if (entry.kind === 'local') return null; // a script variable is resolved by the caller
   const text = expressionOf(entry);
   return text === null ? null : { expr: text };
 }
@@ -392,7 +628,8 @@ function named(action, field, value) {
 function fold(operator, right, left) {
   if (left?.kind !== 'number' || right?.kind !== 'number') {
     // `x + 1` and `x - 1` keep their offset, which is how a counter is read against a bound.
-    if (left?.kind === 'variable' && right?.kind === 'number' && (operator === '+' || operator === '-')) {
+    if ((left?.kind === 'variable' || left?.kind === 'local') && right?.kind === 'number' &&
+      (operator === '+' || operator === '-')) {
       return { ...left, add: (left.add || 0) + (operator === '+' ? right.value : -right.value) };
     }
     return null;
@@ -409,7 +646,8 @@ function compare(left, operator, right) {
     const holds = compareNumbers(Number(left.value), operator, Number(right.value));
     return { kind: 'number', value: holds ? 1 : 0 };
   }
-  if ((left?.kind === 'variable' || left?.kind === 'inventory') && right?.kind === 'number') {
+  if ((left?.kind === 'variable' || left?.kind === 'inventory' || left?.kind === 'local') &&
+    right?.kind === 'number') {
     return { kind: 'expr', operator, left, right };
   }
   if (left?.kind === 'number' && right?.kind === 'variable') {
@@ -447,18 +685,26 @@ function logic(name, left, right) {
  * The conditions a test becomes, or `{ dead: true }` when it can only be true or only false.
  * `invert` is for `IFGOTO`, whose guarded block runs when the test is false.
  */
-function conditionsFor(entry, invert = false) {
+function conditionsFor(entry, invert = false, resolveLocal = value => value) {
   if (entry?.kind === 'number') {
     return (Number(entry.value) !== 0) !== invert ? { conditions: [] } : { dead: true };
   }
   if (entry?.kind !== 'expr') return null;
   if (entry.operator === '&&') {
     if (invert) return null;
-    const left = conditionsFor(entry.left), right = conditionsFor(entry.right);
+    const left = conditionsFor(entry.left, false, resolveLocal);
+    const right = conditionsFor(entry.right, false, resolveLocal);
     if (!left || !right) return null;
     return { conditions: [...left.conditions, ...right.conditions] };
   }
   const { left, right } = entry;
+  // A script variable with a known value decides the test now, as it did in the bytecode.
+  if (left?.kind === 'local') {
+    const resolved = resolveLocal(left);
+    if (resolved?.kind !== 'number' || right?.kind !== 'number') return null;
+    const holds = compareNumbers(Number(resolved.value), entry.operator, Number(right.value));
+    return holds !== invert ? { conditions: [] } : { dead: true };
+  }
   // `CheckInventory("Shells") >= 5`: the count is the script's, asked through the same table.
   if (left?.kind === 'inventory' && right?.kind === 'number') {
     return { conditions: [{ type: 'acsInventory', item: left.item,

@@ -1201,3 +1201,74 @@ test('a script waits on a tag it was handed, and keeps its variables across the 
   assert.ok(second.actions.some(action => action.type === 'startTimer' && Math.abs(action.seconds - 10 / 35) < 1e-9),
     'the delay is still ten tics after the wait');
 });
+
+test('a counted loop becomes one step per turn, with the counter it had', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP08.wad', import.meta.url)) }, () => {
+  // `TeleportNorth` is `for (i = 0; i < 3; i++) { Line_Teleport(map13 + i, map13 + i + 3);
+  // Delay(20); }`. A rule cannot loop over a wait, so the loop becomes three steps, each
+  // waiting on the one before it — and each carrying the arguments that turn had.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP08.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP08', { actors: false });
+  const program = programFor(project);
+  const entry = program.scripts.find(script => script.name === 'TeleportNorth');
+  const steps = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
+  assert.equal(steps.length, 3, 'three turns, three steps');
+  const argumentsOf = step => steps[steps.indexOf(step)].actions
+    .filter(action => action.type === 'runLineSpecial')
+    .map(action => [action.arg1?.expr ?? action.arg1, action.arg2?.expr ?? action.arg2]);
+  assert.deepEqual(argumentsOf(steps[0]), [['acsvar("map", 13)', '(acsvar("map", 13) + 3)']]);
+  assert.deepEqual(argumentsOf(steps[1]), [['(acsvar("map", 13) + 1)', '(acsvar("map", 13) + 4)']]);
+  assert.deepEqual(argumentsOf(steps[2]), [['(acsvar("map", 13) + 2)', '(acsvar("map", 13) + 5)']]);
+  // Each turn waits twenty tics, and each step after the first waits on the one before it.
+  for (const [index, step] of steps.entries()) {
+    assert.ok(step.actions.some(action => action.type === 'startTimer' && Math.abs(action.seconds - 20 / 35) < 1e-9),
+      `step ${index + 1} delays twenty tics`);
+    if (index) assert.equal(step.condition.type, 'timerExists', `step ${index + 1} waits on its predecessor`);
+  }
+});
+
+test('a counted loop without a wait is unrolled into the same step', () => {
+  // `for (i = 0; i < 3; i++) LineSpecial(5, i)` runs in one tic, so the rule runs it in one
+  // tic too: three actions, with the counter's value in each. ACC compiles the test as a jump
+  // *into* the body, so the loop is read from that shape.
+  const asm = emitter();
+  asm.pushBytes(0);
+  asm.ins('ASSIGNSCRIPTVAR').byte(0);
+  const header = asm.at();
+  asm.ins('PUSHSCRIPTVAR').byte(0);
+  asm.pushBytes(3);
+  asm.ins('LT');
+  asm.ins('IFGOTO', 0);
+  const bodyJump = asm.code.length - 4;
+  asm.ins('GOTO', 0);
+  const exitJump = asm.code.length - 4;
+  const step = asm.at();
+  asm.ins('INCSCRIPTVAR').byte(0);
+  asm.ins('GOTO', header);
+  const body = asm.at();
+  asm.pushBytes(1);
+  asm.ins('PUSHSCRIPTVAR').byte(0);
+  asm.ins('LSPEC2').byte(5);
+  asm.ins('GOTO', step);
+  const exit = asm.at();
+  // Both jumps are patched once their targets are known: `patch` writes the current address,
+  // so the earlier jump is written by hand to the address recorded above.
+  const writeTarget = (position, target) => {
+    asm.code[position] = target & 0xff;
+    asm.code[position + 1] = (target >> 8) & 0xff;
+    asm.code[position + 2] = (target >> 16) & 0xff;
+    asm.code[position + 3] = (target >> 24) & 0xff;
+  };
+  writeTarget(bodyJump, body);
+  writeTarget(exitJump, exit);
+  asm.ins('TERMINATE');
+  const described = describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] }));
+  const program = programFor({ mapScripts: described.mapScripts });
+  const rules = acsScriptStepRules(program, program.scripts[0], { sheetId: 'sheet', groupId: 'group' });
+  assert.equal(rules.length, 1, 'one step, because nothing waits');
+  const specials = rules[0].actions.filter(action => action.type === 'runLineSpecial');
+  assert.deepEqual(specials.map(action => [action.special, action.arg1, action.arg2]),
+    [[5, 1, 0], [5, 1, 1], [5, 1, 2]], 'the counter runs 0, 1, 2 through the same call');
+});
