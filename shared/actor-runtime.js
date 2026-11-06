@@ -205,6 +205,8 @@ function suspendAcs(ctx, named, terminate = false) {
  * functions themselves — keeps running, so the state stays the description of what
  * the actor is and the sheet is the description of what it decides.
  */
+import { PROJECTILE_ACTIONS } from './projectile-script.js';
+
 export const AI_ACTIONS = new Set(['A_Look', 'A_LookEx', 'A_Wander', 'A_Chase', 'A_FaceTarget',
   'A_AlertMonsters', 'A_CPosRefire', 'A_FastChase', 'A_SmartChase']);
 
@@ -402,8 +404,12 @@ const PROJECTILE_UNSAFE = new Set(['A_Look', 'A_LookEx', 'A_Chase', 'A_Wander', 
   'A_FaceTarget', 'A_GiveInventory', 'A_GiveToTarget', 'A_JumpIfInTargetInventory']);
 
 function runProjectileActions(project, state, projectile, actor, actions) {
+  const translated = Array.isArray(state.projectileEventActors) &&
+    state.projectileEventActors.includes(String(actor?.name || '').toLowerCase());
   for (const action of actions || []) {
     if (PROJECTILE_UNSAFE.has(action.name)) continue;
+    // A translated missile's flight and death are its rules' business.
+    if (translated && PROJECTILE_ACTIONS.has(action.name)) continue;
     const handler = ACTIONS[action.name];
     if (!handler) {
       state.actorUnsupported ||= new Set();
@@ -575,6 +581,43 @@ export function explodeAt(project, state, entity, damage = 128, radius = 128, da
     }
   }
   saySound(state, 'DSBAREXP', entity);
+}
+
+/**
+ * The BFG ball's death sweep, for its own state or for a rule that sprays.
+ *
+ * A_BFGSpray(spraytype, rays, damagecount, spread, distance, vrange, damage): a cone of
+ * rays across what the ball can see, each doing `damagecount` eight-sided dice of damage.
+ */
+export function bfgSpray(project, state, entity, { spray: sprayType = 'BFGExtra', rays = 40, rolls = 15,
+  spread = 90, range = 0, damage = 0, damageType = null } = {}) {
+  const spray = String(sprayType || 'BFGExtra').replace(/^"|"$/g, '');
+  const count = Math.max(1, Math.min(256, Math.floor(rays || 40)));
+  const rollCount = Math.max(1, Math.floor(rolls || 15));
+  const arc = Math.max(1, spread || 90) * Math.PI / 180;
+  const reach = range > 0 ? range : 1024;
+  const fixed = damage || 0;
+  const origin = sprayOrigin(state, entity);
+  const eye = { x: origin.x, y: origin.y, z: (origin.z ?? floorAt(state, origin)) + (origin === state.player ? 48 : 32) };
+  const base = Math.atan2(entity?.dy ?? Math.sin((entity?.angle || 0) * Math.PI / 180),
+    entity?.dx ?? Math.cos((entity?.angle || 0) * Math.PI / 180));
+  for (let ray = 0; ray < count; ray++) {
+    const angle = base - arc / 2 + arc / count * ray;
+    const direction = { x: Math.cos(angle), y: Math.sin(angle), z: 0 };
+    let nearest = geometryDistance(state, eye, direction, reach);
+    let target = null;
+    for (const candidate of state.entities) {
+      if (candidate.type !== 'enemy' || (candidate.health ?? 0) <= 0) continue;
+      const hit = entityDistance(state, eye, direction, candidate, nearest);
+      if (hit !== null) { nearest = hit; target = candidate; }
+    }
+    if (!target) continue;
+    let amount = fixed;
+    if (!amount) for (let roll = 0; roll < rollCount; roll++) amount += randomDamage(state, 1, 8);
+    hurtActor(project, state, target, amount, sprayOrigin(state, entity), damageType);
+    spawnEffect(project, state, spray, { x: target.x, y: target.y,
+      z: floorAt(state, target) + (target.height ?? 56) / 4 });
+  }
 }
 
 /**
@@ -930,34 +973,10 @@ export const ACTIONS = {
   // A_BFGSpray(spraytype, rays, damagecount, spread, distance, vrange, damage):
   // the BFG ball's Death state sweeps a deadly cone of rays across what it sees.
   A_BFGSpray(ctx) {
-    const { project, state, entity } = ctx;
-    const spray = String(arg(ctx, 0) || 'BFGExtra').replace(/^"|"$/g, '');
-    const rays = Math.max(1, Math.min(256, Math.floor(numArg(ctx, 1, 40) || 40)));
-    const rolls = Math.max(1, Math.floor(numArg(ctx, 2, 15) || 15));
-    const spread = Math.max(1, numArg(ctx, 3, 90) || 90) * Math.PI / 180;
-    const range = numArg(ctx, 4, 0) > 0 ? numArg(ctx, 4) : 1024;
-    const fixedDamage = numArg(ctx, 6, 0);
-    const origin = sprayOrigin(state, entity);
-    const eye = { x: origin.x, y: origin.y, z: (origin.z ?? floorAt(state, origin)) + (origin === state.player ? 48 : 32) };
-    const base = Math.atan2(entity?.dy ?? Math.sin((entity?.angle || 0) * Math.PI / 180),
-      entity?.dx ?? Math.cos((entity?.angle || 0) * Math.PI / 180));
-    for (let ray = 0; ray < rays; ray++) {
-      const angle = base - spread / 2 + spread / rays * ray;
-      const direction = { x: Math.cos(angle), y: Math.sin(angle), z: 0 };
-      let nearest = geometryDistance(state, eye, direction, range);
-      let target = null;
-      for (const candidate of state.entities) {
-        if (candidate.type !== 'enemy' || (candidate.health ?? 0) <= 0) continue;
-        const hit = entityDistance(state, eye, direction, candidate, nearest);
-        if (hit !== null) { nearest = hit; target = candidate; }
-      }
-      if (!target) continue;
-      let damage = fixedDamage;
-      if (!damage) for (let roll = 0; roll < rolls; roll++) damage += randomDamage(state, 1, 8);
-      hurtActor(project, state, target, damage, sprayOrigin(state, entity), ctx.actor?.damageType || null);
-      spawnEffect(project, state, spray, { x: target.x, y: target.y,
-        z: floorAt(state, target) + (target.height ?? 56) / 4 });
-    }
+    bfgSpray(ctx.project, ctx.state, ctx.entity, {
+      spray: arg(ctx, 0, 'BFGExtra'), rays: numArg(ctx, 1, 40), rolls: numArg(ctx, 2, 15),
+      spread: numArg(ctx, 3, 90), range: numArg(ctx, 4, 0), damage: numArg(ctx, 6, 0),
+      damageType: ctx.actor?.damageType || null });
   },
   A_FatAttack1(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'FatShot')); saySound(ctx.state, 'DSFIRSHT', ctx.entity); },
   A_FatAttack2(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'FatShot')); },

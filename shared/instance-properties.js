@@ -29,6 +29,8 @@ export const CAMERA_DEFAULTS = Object.freeze({ fov: 90, pitch: 0, height: 48 });
 export const INSTANCE_TYPES = Object.freeze(['player', 'enemy', 'pickup', 'light', 'decoration', 'ramp', 'zone', 'camera']);
 /** The types an instance rule can iterate or pick: everything except the one player. */
 export const INSTANCE_PICKABLE_TYPES = Object.freeze(INSTANCE_TYPES.filter(type => type !== 'player'));
+/** What a for-each rule may iterate: the map's objects, and the missiles in flight. */
+export const FOR_EACH_TYPES = Object.freeze([...INSTANCE_PICKABLE_TYPES, 'projectile']);
 
 /**
  * Every readable instance property.

@@ -16,6 +16,7 @@ import { PATH_EASINGS } from './timesheet.js';
 import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTIES } from './instance-properties.js';
 import { weaponScriptRules } from './weapon-script.js';
 import { enemyScriptRules } from './enemy-script.js';
+import { projectileScriptRules } from './projectile-script.js';
 
 // Every key a creator can bind to an event, including the letters Doom leaves free, so
 // scriptlets such as the spray can be rebound from the event sheet.
@@ -326,6 +327,12 @@ export const ENGINE_ACTIONS = [
   // imported rocket's explosion and the BFG's spray stop being code only the machine runs.
   { type: 'explodeArea', label: 'Combat: explode at this object', fields: [
     numeric('damage', 128, 0, 10000), numeric('radius', 128, 0, 4096)], target: true },
+  { type: 'homeMissile', label: 'Combat: home a missile on its target', fields: [
+    numeric('turn', 16.875, 0, 360)], target: true },
+  { type: 'bfgSpray', label: 'Combat: BFG spray from this object', fields: [
+    { name: 'spray', value: 'BFGExtra', kind: 'string' }, numeric('rays', 40, 1, 256),
+    numeric('rolls', 15, 1, 256), numeric('spread', 90, 1, 360), numeric('range', 1024, 0, 8192),
+    numeric('damage', 0, 0, 10000)], target: true },
   { type: 'playActorState', label: 'Object: play an imported actor state', fields: [
     { name: 'state', value: 'See', kind: 'string' }], target: true },
   { type: 'facePlayer', label: 'Enemy: face player for attack', fields: [], target: true },
@@ -671,6 +678,11 @@ export function installEngineScripts(project, { organizeStarter = false, include
     ], [...living, { type: 'timerReady', timer: 'attackWindup' }], { forEachType: 'enemy' });
   }
   if (!scriptedEnemies) {
+    const missiles = projectileScriptRules(project, { sheetId: sheets.World.id, groupId: groups.World.id, id });
+    events.push(...missiles.events);
+    for (const skipped of missiles.skipped) {
+      warnings?.push(`Missile ${skipped.name} keeps its DECORATE states instead of a rule: ${skipped.reasons.join('; ')}.`);
+    }
     const translated = enemyScriptRules(project, { sheetId: sheets.Enemies.id, groupId: groups.Enemies.id, id });
     events.push(...translated.events);
     for (const skipped of translated.skipped) {

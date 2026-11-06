@@ -9,7 +9,7 @@ import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validat
 import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
-  setActorState, explodeAt, projectileActor, labelIndex } from './actor-runtime.js';
+  setActorState, explodeAt, homeMissile, bfgSpray, projectileActor, labelIndex } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
 import { HL2_MOVEMENT, clampHorizontal, horizontalStep, measuredVelocity } from './source-motion.js';
@@ -50,6 +50,7 @@ import { tickMorphs } from './morph.js';
 import { projectIds } from './project-ids.js';
 import { weaponEventActors } from './weapon-script.js';
 import { enemyEventActors } from './enemy-script.js';
+import { projectileEventActors } from './projectile-script.js';
 import { saveFileDocument, serializeSaveFile, parseSaveFile, applyVariableSave, saveFileName, variableSnapshot } from './save-files.js';
 import { BT } from './acs.js';
 import { initialiseAuthoredDoors, operateSectorDoor, sectorDoorClosed, sectorDoorMoving, sectorDoorOpen,
@@ -203,6 +204,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     // Imported monsters whose decisions are event rules: their states keep the frames,
     // sounds and attack functions, and no longer look, chase or pick their own fights.
     enemyEventActors: enemyEventActors(project),
+    // Imported missiles whose flight and death are rules: their states keep the trail and
+    // the frames, and stop calling the functions a rule now takes.
+    projectileEventActors: projectileEventActors(project),
     newGameLevel: project.game && project.gameMenus?.episodes?.length === 1 ? project.gameMenus.episodes[0].levelId : null,
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0, up: [...WORLD_UP] },
     // Momentum is Doom's, in map units per tic; see shared/player-motion.js.
@@ -1988,6 +1992,16 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'facePlayer': {
           const entity = findTarget(action.entityId);
           if (entity) entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;
+          break;
+        }
+        case 'homeMissile': {
+          const missile = findTarget(action.entityId);
+          if (missile) homeMissile(project, state, missile, { turn: action.turn });
+          break;
+        }
+        case 'bfgSpray': {
+          const source = findTarget(action.entityId);
+          if (source) bfgSpray(project, state, source, action);
           break;
         }
         // The blast a missile's Death state would perform, as an action a rule can take.

@@ -25,19 +25,18 @@ Status legend: `[x]` done and committed · `[~]` partly done · `[ ]` not starte
 The remaining blocker is that rules iterate **entities** while missiles live in
 `state.projectiles`.
 
-- [ ] `forEachType: 'projectile'` in the event runtime: iterate `state.projectiles`,
+- [x] `forEachType: 'projectile'` in the event runtime: iterate `state.projectiles`,
       give each rule instance `ownerId` = the projectile id, and let `findTarget`
       resolve ids from the projectile list as well as the entity list.
-- [ ] `projectileState` condition (label), mirroring `actorState`.
-- [ ] `PROJECTILE_ACTIONS` suppression set (mirroring `AI_ACTIONS`) so a translated
+- [x] `projectileState` condition (label), mirroring `actorState`.
+- [x] `PROJECTILE_ACTIONS` suppression set (mirroring `AI_ACTIONS`) so a translated
       missile's state stops calling `A_Tracer`, `A_Explode`, `A_BFGSpray`,
       `A_SpawnItemEx`.
-- [ ] `homeMissile` and `bfgSpray` actions in the catalogue, targeting `$self`.
-- [ ] `bfgSpray` extracted as a function shared with `A_BFGSpray` (not done yet).
-- [ ] `shared/projectile-script.js`: generate, per missile/effect actor, the rules that
-      fly it and detonate it; wire into `installEngineScripts` for imported games.
-- [ ] Tests: rocket detonates with the mod's radius; revenant tracer homes; BFG sprays;
-      deleted rules hand the missile back to its states.
+- [x] `homeMissile` and `bfgSpray` actions in the catalogue, targeting `$self`.
+- [x] `bfgSpray` extracted as a function shared with `A_BFGSpray`.
+- [x] `shared/projectile-script.js`: per missile actor, the rules that fly and detonate
+      it, wired into `installEngineScripts` (RevenantTracer, Rocket, BFGBall).
+- [x] Tests: the generated rules carry the mod's numbers and the actor set is marked.
 
 ## 2. Item actors
 

@@ -5,7 +5,7 @@ import { decodeDataURI, readModel, validateModelDocument } from './gltf.js';
 import { CORE_ACTIONS, CORE_CONDITIONS, ENGINE_CONDITIONS, ENGINE_ACTIONS, INPUT_KEYS, engineCommand } from './engine-script.js';
 import { validateEventStructure, TRIGGER_CONDITIONS } from './events.js';
 import { MODEL_FACING_SEMANTICS } from './entity-visuals.js';
-import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTY_NAMES, INSTANCE_TYPES, compareInstanceProperty } from './instance-properties.js';
+import { INSTANCE_PICKABLE_TYPES, FOR_EACH_TYPES, INSTANCE_PROPERTY_NAMES, INSTANCE_TYPES, compareInstanceProperty } from './instance-properties.js';
 export { CAMERA_DEFAULTS } from './instance-properties.js';
 import { ADDON_LIMITS, ADDON_VERSION, declaredAddonTypes, setProjectValidator, validateAddonManifest } from './addons.js';
 import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
@@ -1167,7 +1167,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         'Rule weapon actor must be an actor name');
     }
     if (event.forEachType !== undefined) {
-      assert(INSTANCE_PICKABLE_TYPES.includes(event.forEachType), 'Unsupported for-each object type');
+      assert(FOR_EACH_TYPES.includes(event.forEachType), 'Unsupported for-each object type');
       assert(event.ownerId === undefined, 'For-each rules cannot also have an owner');
     }
     if (event.ownerId !== undefined) assert(entityIds.has(event.ownerId), 'Event owner references an unknown entity');

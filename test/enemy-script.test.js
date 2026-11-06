@@ -6,6 +6,7 @@ import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { buildVanillaActors } from '../shared/actors.js';
 import { AI_ACTIONS, explodeAt } from '../shared/actor-runtime.js';
 import { analyseMonster, enemyEventActors, enemyScriptRules, stateSeconds } from '../shared/enemy-script.js';
+import { projectileEventActors } from '../shared/projectile-script.js';
 
 function imported() {
   const project = createProject();
@@ -102,4 +103,19 @@ test('an explosion is one action a rule can take, not a function only the machin
   explodeAt(project, state, barrel, 128, 128);
   assert.ok(state.playerStats.health < before, 'a blast beside the player hurts him');
   assert.ok(state.sounds.some(sound => sound.name === 'DSBAREXP'), 'and it makes the blast sound');
+});
+
+test('missiles that do more than fly straight are rules now', () => {
+  // The rocket's blast, the revenant's homing and the BFG's spray were the last gameplay
+  // the projectile machine ran out of sight; each is generated as a rule about the missile.
+  const project = imported();
+  const world = project.eventSheets.find(entry => entry.name === 'World');
+  const rules = project.events.filter(event => event.sheetId === world.id && event.projectileActor);
+  assert.deepEqual(rules.map(rule => rule.actions[0].type).sort(), ['bfgSpray', 'explodeArea', 'homeMissile']);
+  const rocket = rules.find(rule => rule.projectileActor === 'Rocket');
+  assert.deepEqual(rocket.condition, { type: 'projectileState', entityId: '$self', state: 'Death' });
+  assert.deepEqual(rocket.actions[0], { type: 'explodeArea', entityId: '$self', damage: 128, radius: 128 });
+  assert.ok(rocket.conditions.some(condition => condition.type === 'entityActorName' && condition.actor === 'Rocket'));
+  assert.deepEqual(projectileEventActors(project), ['bfgball', 'revenanttracer', 'rocket']);
+  validateProject(project);
 });
