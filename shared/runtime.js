@@ -2031,6 +2031,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // A decompiled script's own builtins — `ChangeFloor(tag, "HEX01")`, `SetLineSpecial`,
         // `SetLineBlocking` — run through the interpreter's host functions, so the rule and a
         // script that was not decompiled change the level the same way.
+        case 'fadeRange':
+          hostFor(action).fadeRange({
+            from: { red: Number(action.redFrom) || 0, green: Number(action.greenFrom) || 0,
+              blue: Number(action.blueFrom) || 0, amount: Number(action.amountFrom) || 0 },
+            to: { red: Number(action.red) || 0, green: Number(action.green) || 0,
+              blue: Number(action.blue) || 0, amount: Number(action.amount) || 0 },
+            seconds: Number(action.seconds) || 0 });
+          break;
         case 'fadeTo':
           hostFor(action).fadeTo({ red: Number(action.red) || 0, green: Number(action.green) || 0,
             blue: Number(action.blue) || 0, amount: Number(action.amount) || 0,

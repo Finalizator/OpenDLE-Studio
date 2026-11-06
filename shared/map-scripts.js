@@ -355,6 +355,18 @@ export function createMapScripts(project, state, callbacks = {}) {
       state.fadeClock = 0;
       if (!seconds) state.screenFadeNow = amount > 0.002 ? { red, green, blue, amount } : null;
     },
+    /**
+     * `FadeRange` from a script: the tint it starts from and the one it reaches. The runtime
+     * owns the clock, so the fade keeps going after the script ends.
+     */
+    fadeRange: ({ from = {}, to = {}, seconds = 0 } = {}) => {
+      state.screenFade = { red: to.red ?? 0, green: to.green ?? 0, blue: to.blue ?? 0,
+        amount: to.amount ?? 0, seconds: Math.max(0, seconds) };
+      state.screenFadeFrom = { red: from.red ?? 0, green: from.green ?? 0, blue: from.blue ?? 0,
+        amount: from.amount ?? 0 };
+      state.fadeClock = 0;
+      if (!seconds) state.screenFadeNow = (to.amount ?? 0) > 0.002 ? { ...state.screenFade } : null;
+    },
     changeLevel: map => callbacks.changeLevel?.(map),
     sectorBusy: tag => sectorsTagged(tag).some(sector => state.sectorMotions.has(`${sector.id}:floorHeight`) ||
       state.sectorMotions.has(`${sector.id}:ceilingHeight`)),

@@ -43,8 +43,11 @@ The remaining blocker is that rules iterate **entities** while missiles live in
 - [x] Shootable props: `ExplosiveBarrel` is a real actor (health 20, `Death` with
       `A_Scream`/`A_Explode`/`A_NoBlocking`) instead of a flat decoration, and its blast
       and solidity are rules (`PROP_FUNCTIONS` suppression).
-- [ ] Emit `entityDamaged` → `playSound` (the actor's own pain sound) for item archetypes.
-      Take behaviour is already 20 rules in the Pickups sheet.
+- [x] Emit `entityDamaged` → `playSound` (the actor's own pain sound) for item archetypes —
+      **not needed**: an imported item carries no health (`entityDamaged` refuses a thing
+      without it), so such a rule could never fire. Monsters and barrels do carry health and
+      their `Pain` state still plays its own sound, because only the AI functions are
+      suppressed. Take behaviour is already 20 rules in the Pickups sheet.
 
 ## 3. ACS (`BEHAVIOR`) decompiler
 
@@ -60,7 +63,7 @@ useful alone:
       `runLineSpecial`, a wait splits the script (each step waits on the timer the one
       before it started), map/world/global variables become `setAcsVariable` / `acsVariable`
       / `acsvar("map", n)`, and an `IFNOTGOTO` guard becomes a **sub-event** of its step
-      (all 11 scripts of Ascent MAP05, and 39 of the 54 scripts across the whole Ascension
+      (all 11 scripts of Ascent MAP05, and 40 of the 54 scripts across the whole Ascension
       campaign today; `node /tmp/cov.mjs`-style scans are cheap to redo — decompile every
       script of every map and count). The builtins a script calls directly are
       actions that use the interpreter's host functions: `setSectorFlat`
@@ -82,8 +85,9 @@ useful alone:
       a body that tests something, or that step a *map* variable, keep their bytecode.
 `FadeTo` is the `fadeTo` action (constants converted out of 16.16 fixed
       point, variables divided at run time). Still to add: `SetThingSpecial`, `Spawn`,
-      `ClearInventory`, `FADERANGE` (which the interpreter itself ignores — translating it would
-      bake that gap into the sheet) and arrays. The actor/sector **reads are in**: `GetActorZ`,
+      `ClearInventory` and arrays. `FadeRange` used to be nine pops and nothing else in the
+      *interpreter* as well; it is now a real fade (host `fadeRange`, action `fadeRange`), so
+      those scripts behave and read as rules. The actor/sector **reads are in**: `GetActorZ`,
       `GetActorProperty` and `GetSectorFloorZ` become `acsactor(…)`, `acsactorproperty(…)` and
       `acssectorz(…)` expressions, `SetActorPosition` is an action, and the fixed-point maths
       around them (`x >> 16`, `FixedMul`, `Sin`, `Cos`) composes. What those scripts still need

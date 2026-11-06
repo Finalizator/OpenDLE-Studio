@@ -1376,3 +1376,29 @@ test('a rule reads an actor\'s height and moves a tagged actor through the level
   assert.equal(Math.round(bed.x), 505, 'and the move landed on the map units it named');
   assert.equal(Math.round(bed.z), 58);
 });
+
+test('FadeRange fades from the tint it names to the one it names', () => {
+  // `FadeRange(r1, g1, b1, a1, r2, g2, b2, a2, seconds)` used to be nine pops and nothing
+  // else, so a map that faded in from black simply cut. It reaches the host now, and both
+  // ends arrive as ordinary numbers.
+  const asm = emitter();
+  // Colours are 16.16 fixed point in ACS: 255 is 16711680, not a plain 255.
+  asm.pushBytes(0, 0, 0).push(65536).push(16711680).push(16711680).push(16711680).push(0).push(131072)
+    .ins('FADERANGE');
+  asm.ins('TERMINATE');
+  const parsed = parseBehavior(behavior({ code: asm.code, scripts: [{ number: 1, type: 1, args: 0, address: 8 }] }));
+  const fades = [];
+  const vm = createAcsVm(parsed, { fadeRange: fade => fades.push(fade) });
+  startScript(vm, 1);
+  tickAcs(vm);
+  assert.deepEqual(fades, [{ from: { red: 0, green: 0, blue: 0, amount: 1 },
+    to: { red: 255, green: 255, blue: 255, amount: 0 }, seconds: 2 }]);
+  // And the decompiler writes the same call as a rule action.
+  const described = describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] }));
+  const program = programFor({ mapScripts: described.mapScripts });
+  const rules = acsScriptStepRules(program, program.scripts[0], { sheetId: 'sheet', groupId: 'group' });
+  const fade = rules[0].actions.find(action => action.type === 'fadeRange');
+  assert.deepEqual(fade, { type: 'fadeRange', redFrom: 0, greenFrom: 0, blueFrom: 0, amountFrom: 1,
+    red: 255, green: 255, blue: 255, amount: 0, seconds: 2 });
+});

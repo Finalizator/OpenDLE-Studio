@@ -432,7 +432,8 @@ functions so a decompiled script and a bytecode one change the level identically
 `setLineMonsterBlocking` (`tag`, `monsters`) and `setLineSpecial` (`tag`, `special`,
 `arg1`…`arg5`), and ACS `FadeTo` is the `fadeTo` action (`red`, `green`, `blue`, `amount`,
 `seconds`) — a constant is converted out of ACS's 16.16 fixed point in the sheet, a variable is
-divided at run time. `setActorPosition` (`tid`, `x`, `y`, `z`, `fog`) moves every thing carrying
+divided at run time — and `fadeRange` (`redFrom`, `greenFrom`, `blueFrom`, `amountFrom`, `red`,
+`green`, `blue`, `amount`, `seconds`) is its two-ended form, from one tint to another. `setActorPosition` (`tid`, `x`, `y`, `z`, `fog`) moves every thing carrying
 a tag, with 16.16 fixed-point coordinates as ACS means them.
 
 The reads a script makes are expressions, so a rule reads live state instead of a copy:

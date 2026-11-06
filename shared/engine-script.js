@@ -404,6 +404,11 @@ export const ENGINE_ACTIONS = [
   { type: 'fadeTo', label: 'Screen: fade towards a colour', fields: [
     numeric('red', 0, 0, 255), numeric('green', 0, 0, 255), numeric('blue', 0, 0, 255),
     numeric('amount', 1, 0, 1), numeric('seconds', 0, 0, 600)] },
+  // ACS `FadeRange`: a fade from one tint to another, which is how a map fades in from black.
+  { type: 'fadeRange', label: 'Screen: fade from one colour to another', fields: [
+    numeric('redFrom', 0, 0, 255), numeric('greenFrom', 0, 0, 255), numeric('blueFrom', 0, 0, 255),
+    numeric('amountFrom', 0, 0, 1), numeric('red', 0, 0, 255), numeric('green', 0, 0, 255),
+    numeric('blue', 0, 0, 255), numeric('amount', 0, 0, 1), numeric('seconds', 0, 0, 600)] },
   { type: 'setLineSpecial', label: 'World: set a line special by tag', fields: [
     numeric('tag', 0, 0, 65535), { ...numeric('special', 1, 0, 65535), integer: true },
     { ...numeric('arg1', 0, -32768, 32767), optional: true },

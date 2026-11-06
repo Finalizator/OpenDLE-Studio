@@ -1200,6 +1200,10 @@ function defineWorld() {
   define(P.REPLACETEXTURES, '', (vm, script) => { pop(vm, script); pop(vm, script); pop(vm, script); });
   define(P.SETFLOORTRIGGER, '', (vm, script) => { for (let index = 0; index < 8; index++) pop(vm, script); });
   define(P.SETCEILINGTRIGGER, '', (vm, script) => { for (let index = 0; index < 8; index++) pop(vm, script); });
+  // ACS colours arrive as 16.16 fixed point, but small values are also written as plain bytes.
+  const scaleColour = value => Math.max(0, Math.min(255, Math.round(value / 65536 || value)));
+  const scaleAmount = value => Math.max(0, Math.min(1, value / 65536));
+  const scaleSeconds = value => Math.max(0, value / 65536);
   define(P.FADETO, '', (vm, script) => {
     // `FadeTo(red, green, blue, amount, seconds)`: amount is 0..1 of the colour over the
     // screen, and seconds is how long the change takes (0 is instant). A title map fades the
@@ -1207,11 +1211,18 @@ function defineWorld() {
     // opcode made that whole transition a single hard cut.
     const seconds = pop(vm, script), amount = pop(vm, script);
     const blue = pop(vm, script), green = pop(vm, script), red = pop(vm, script);
-    const scale = value => Math.max(0, Math.min(255, Math.round(value / 65536 || value)));
-    vm.host.fadeTo({ red: scale(red), green: scale(green), blue: scale(blue),
-      amount: Math.max(0, Math.min(1, amount / 65536)), seconds: Math.max(0, seconds / 65536) });
+    vm.host.fadeTo({ red: scaleColour(red), green: scaleColour(green), blue: scaleColour(blue),
+      amount: scaleAmount(amount), seconds: scaleSeconds(seconds) });
   });
-  define(P.FADERANGE, '', (vm, script) => { for (let index = 0; index < 9; index++) pop(vm, script); });
+  // `FadeRange(r1, g1, b1, a1, r2, g2, b2, a2, seconds)`: from one tint to another, which is
+  // how a map fades in from black without going through a hard cut. Ignoring it left those
+  // scripts with no fade at all.
+  define(P.FADERANGE, '', (vm, script) => {
+    const [r1, g1, b1, a1, r2, g2, b2, a2, seconds] = popArgs(vm, script, 9);
+    vm.host.fadeRange({ from: { red: scaleColour(r1), green: scaleColour(g1), blue: scaleColour(b1),
+      amount: scaleAmount(a1) }, to: { red: scaleColour(r2), green: scaleColour(g2), blue: scaleColour(b2),
+      amount: scaleAmount(a2) }, seconds: scaleSeconds(seconds) });
+  });
   define(P.CANCELFADE, '', () => {});
   define(P.PLAYMOVIE, '', (vm, script) => { pop(vm, script); push(vm, script, -1); });
   define(P.CHANGELEVEL, '', (vm, script) => {

@@ -688,6 +688,18 @@ const BUILTINS = {
   SETACTORPOSITION: { count: 5, action: ([tid, x, y, z, fog]) => ({
     type: 'setActorPosition', tid: argumentOf(tid), x: argumentOf(x), y: argumentOf(y),
     z: argumentOf(z), fog: argumentOf(fog) }) },
+  // `FadeRange(r1, g1, b1, a1, r2, g2, b2, a2, seconds)`: the same fixed point as `FadeTo`,
+  // twice — where the tint starts and where it ends.
+  FADERANGE: { count: 9, action: ([r1, g1, b1, a1, r2, g2, b2, a2, seconds]) => {
+    const colour = entry => fixed(entry, 255, value => Math.round(value / 65536 || value));
+    const amount = entry => fixed(entry, 1, value => value / 65536);
+    const from = [colour(r1), colour(g1), colour(b1), amount(a1)];
+    const to = [colour(r2), colour(g2), colour(b2), amount(a2)];
+    const duration = fixed(seconds, 600, value => value / 65536);
+    if ([...from, ...to, duration].some(value => value === null)) return null;
+    return { type: 'fadeRange', redFrom: from[0], greenFrom: from[1], blueFrom: from[2], amountFrom: from[3],
+      red: to[0], green: to[1], blue: to[2], amount: to[3], seconds: duration };
+  } },
   GIVEINVENTORY: { count: 2, action: ([name, amount], module) => withItem({ type: 'giveInventory' },
     name, module, { amount: argumentOf(amount) }) },
   GIVEINVENTORYDIRECT: { operands: true, count: 2, action: ([name, amount], module) => withItem({
