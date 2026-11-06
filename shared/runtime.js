@@ -9,7 +9,7 @@ import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validat
 import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
-  setActorState } from './actor-runtime.js';
+  setActorState, explodeAt } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
 import { HL2_MOVEMENT, clampHorizontal, horizontalStep, measuredVelocity } from './source-motion.js';
@@ -1968,6 +1968,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'facePlayer': {
           const entity = findTarget(action.entityId);
           if (entity) entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;
+          break;
+        }
+        // The blast a missile's Death state would perform, as an action a rule can take.
+        case 'explodeArea': {
+          const entity = findTarget(action.entityId);
+          if (entity) explodeAt(project, state, entity, action.damage, action.radius);
           break;
         }
         // Runs an imported actor's own state, which is where its frames, sounds and its

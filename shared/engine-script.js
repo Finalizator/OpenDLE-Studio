@@ -320,6 +320,10 @@ export const ENGINE_ACTIONS = [
   { type: 'setGravityScale', label: 'Physics: set gravity scale', target: true, fields: [numeric('scale', 1, 0, 10)] },
   { type: 'setDamping', label: 'Physics: set linear damping', target: true, fields: [numeric('damping', .1, 0, 100)] },
   { type: 'moveEnemy', label: 'Enemy: move toward player with collision', fields: [numeric('speed', 80, 0, 1024)], target: true },
+  // A missile's own Death state calls these; a rule can call them too, which is how an
+  // imported rocket's explosion and the BFG's spray stop being code only the machine runs.
+  { type: 'explodeArea', label: 'Combat: explode at this object', fields: [
+    numeric('damage', 128, 0, 10000), numeric('radius', 128, 0, 4096)], target: true },
   { type: 'playActorState', label: 'Object: play an imported actor state', fields: [
     { name: 'state', value: 'See', kind: 'string' }], target: true },
   { type: 'facePlayer', label: 'Enemy: face player for attack', fields: [], target: true },

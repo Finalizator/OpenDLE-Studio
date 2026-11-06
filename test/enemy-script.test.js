@@ -4,7 +4,7 @@ import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { buildVanillaActors } from '../shared/actors.js';
-import { AI_ACTIONS } from '../shared/actor-runtime.js';
+import { AI_ACTIONS, explodeAt } from '../shared/actor-runtime.js';
 import { analyseMonster, enemyEventActors, enemyScriptRules, stateSeconds } from '../shared/enemy-script.js';
 
 function imported() {
@@ -86,4 +86,20 @@ test('a monster with nothing to attack with keeps its machine and is reported', 
   const { events, skipped } = enemyScriptRules(project);
   assert.equal(events.length, 0);
   assert.deepEqual(skipped.map(item => item.name), ['Statue']);
+});
+
+test('an explosion is one action a rule can take, not a function only the machine runs', () => {
+  // The rocket's Death state calls `A_Explode`; a rule that wants a barrel to blow up, or a
+  // translated blast of its own, takes the same action with the same numbers.
+  const project = imported();
+  const state = createRuntime(project);
+  state.hasGame = true;
+  const player = state.entities.find(entity => entity.type === 'player');
+  const barrel = { id: 'barrel', type: 'enemy', name: 'Barrel', x: player.x + 40, y: player.y, z: 0,
+    elevation: 0, health: 500, radius: 20, height: 56, angle: 0, solid: true };
+  state.entities.push(barrel);
+  const before = state.playerStats.health;
+  explodeAt(project, state, barrel, 128, 128);
+  assert.ok(state.playerStats.health < before, 'a blast beside the player hurts him');
+  assert.ok(state.sounds.some(sound => sound.name === 'DSBAREXP'), 'and it makes the blast sound');
 });

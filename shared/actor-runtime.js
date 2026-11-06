@@ -556,6 +556,27 @@ export function installActorProjectileSprites(project) {
   }
 }
 
+/**
+ * A blast at a point, for an `A_Explode` frame or a rule's `explodeArea` action.
+ *
+ * Like P_RadiusAttack, a blast only reaches what the explosion point can see: a wall
+ * between them shelters the thing behind it.
+ */
+export function explodeAt(project, state, entity, damage = 128, radius = 128, damageType = null) {
+  const falloff = distance => Math.max(0, Math.round(damage * (1 - distance / radius)));
+  const reaches = target => canSeeTarget(state, entity, target, Infinity);
+  const playerDistance = Math.hypot(state.player.x - entity.x, state.player.y - entity.y);
+  if (playerDistance < radius && reaches(state.player)) damagePlayer(state, falloff(playerDistance));
+  for (const other of state.entities) {
+    if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
+    const distance = Math.hypot(other.x - entity.x, other.y - entity.y);
+    if (distance < radius && reaches(other)) {
+      hurtActor(project, state, other, falloff(distance), blastSource(state, entity), damageType);
+    }
+  }
+  saySound(state, 'DSBAREXP', entity);
+}
+
 /** Spawns a projectile actor owned by an enemy, aimed at the player. */
 export function spawnActorProjectile(project, state, owner, projectileName, { speed = 0, damage = null, angle = null } = {}) {
   const aim = actorTarget(state, owner);
@@ -983,20 +1004,7 @@ export const ACTIONS = {
   // own defaults are 128 damage over a 128-unit radius. A missile's Death state is
   // where this now runs, so a rocket's blast comes from its definition.
   A_Explode(ctx) {
-    const { project, state, entity } = ctx;
-    const damage = numArg(ctx, 0, 128), radius = numArg(ctx, 1, 128);
-    const falloff = distance => Math.max(0, Math.round(damage * (1 - distance / radius)));
-    // Like P_RadiusAttack, a blast only reaches what the explosion point can see: a wall
-    // between them shelters the thing behind it.
-    const reaches = target => canSeeTarget(state, entity, target, Infinity);
-    const playerDistance = Math.hypot(state.player.x - entity.x, state.player.y - entity.y);
-    if (playerDistance < radius && reaches(state.player)) damagePlayer(state, falloff(playerDistance));
-    for (const other of state.entities) {
-      if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
-      const distance = Math.hypot(other.x - entity.x, other.y - entity.y);
-      if (distance < radius && reaches(other)) hurtActor(project, state, other, falloff(distance), blastSource(state, entity), ctx.actor?.damageType || null);
-    }
-    saySound(state, 'DSBAREXP', entity);
+    explodeAt(ctx.project, ctx.state, ctx.entity, numArg(ctx, 0, 128), numArg(ctx, 1, 128), ctx.actor?.damageType || null);
   },
   A_RadiusDamage(ctx) {
     const { project, state, entity } = ctx;
