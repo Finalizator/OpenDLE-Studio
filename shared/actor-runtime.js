@@ -233,7 +233,14 @@ export function runActions(project, state, entity, actor, actions, context = {})
       // `void Rotate() { angle += 1; }`). Its body is executed as written.
       const source = actorFunctionSource(actor, action.name);
       if (source !== null) {
-        const result = runActorFunction(entity, source);
+        // A function may call an engine action: it runs with the same actor context, so
+        // `A_PlaySound("x")` inside a mod's own function behaves like the frame calling it.
+        const call = (name, args) => {
+          const inner = ACTIONS[name];
+          if (!inner) throw new Error(`unknown action ${name}`);
+          inner({ project, state, entity, actor, action, args, named: {} });
+        };
+        const result = runActorFunction(entity, source, call);
         if (!result.ran) {
           state.actorUnsupported ||= new Set();
           if (state.actorUnsupported.size < 200) state.actorUnsupported.add(action.name);

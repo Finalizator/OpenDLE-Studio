@@ -209,12 +209,38 @@ test("a state function runs the mod's own code", () => {
   assert.equal(star.angle, 40, 'angles wrap into 0..360');
   assert.equal(runActorFunction(star, 'angle = angle + 1').ran, true);
   assert.equal(star.angle, 41);
-  const unsupported = runActorFunction(star, 'if (health < 10) { angle += 1; }');
+  const unsupported = runActorFunction(star, 'while (angle < 90) { angle += 1; }');
   assert.equal(unsupported.ran, false);
-  assert.match(unsupported.unsupported, /if \(health/);
+  assert.match(unsupported.unsupported, /while \(angle/);
   assert.equal(star.angle, 41, 'nothing is applied when a statement cannot be run');
   assert.equal(actorFunctionSource({ functions: [{ name: 'Rotate', source: 'angle += 1;' }] }, 'rotate'), 'angle += 1;');
   assert.equal(actorFunctionSource({ functions: [] }, 'Rotate'), null);
+});
+
+test('a state function keeps its own variables, adds up and chooses a branch', () => {
+  const star = { angle: 0, health: 100 };
+  const spun = runActorFunction(star, 'int step = 2; int turns = 3; angle += step * turns; angle -= 1 % 2;');
+  assert.deepEqual(spun, { ran: true, unsupported: null });
+  assert.equal(star.angle, 5, 'locals and arithmetic run before the field is written');
+  runActorFunction(star, 'if (health < 50) { angle += 100; } else { angle += 10; }');
+  assert.equal(star.angle, 15, 'the else branch is the one taken');
+  runActorFunction(star, 'health -= 60; if (health < 50) angle += 1;');
+  assert.equal(star.health, 40);
+  assert.equal(star.angle, 16, 'a branch without braces still runs its one statement');
+  // A local named like a field shadows it, so a counter called `health` cannot hurt the actor.
+  const wary = { angle: 0, health: 100 };
+  runActorFunction(wary, 'int health = 5; health += 1;');
+  assert.equal(wary.health, 100);
+});
+
+test('a state function calls the engine actions the frame could have called', () => {
+  const calls = [];
+  const entity = { angle: 0 };
+  const result = runActorFunction(entity, 'A_PlaySound("star/hum"); A_SetAngle(90, 0);', (name, args) => calls.push([name, args]));
+  assert.deepEqual(result, { ran: true, unsupported: null });
+  assert.deepEqual(calls, [['A_PlaySound', ['star/hum']], ['A_SetAngle', [90, 0]]]);
+  // A call with no dispatcher is not silently dropped: it is unsupported, so the report says so.
+  assert.equal(runActorFunction(entity, 'A_PlaySound("star/hum")').ran, false);
 });
 
 test('a ZScript actor keeps its frame action, its loop and its function', () => {
