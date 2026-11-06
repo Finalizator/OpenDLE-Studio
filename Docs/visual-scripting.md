@@ -403,8 +403,10 @@ and the line cannot disagree.
 An ACS script can be started from a rule with `runScript` (`script`, `arg1`…`arg3`). A level's
 `OPEN` and `ENTER` scripts are written that way at import: one rule per script in the World
 sheet, whose number is recorded in `mapScripts.ruleScripts` so the interpreter no longer
-starts it — one script, one starter. The body stays the compiled module the WAD shipped,
-shown disassembled in the Scripts tab.
+starts it — one script, one starter. Where a script's body is nothing but line specials, the rule lists those specials and their
+arguments instead of starting the script at all (`shared/acs-decompile.js`); a body with a
+jump, a loop, a variable or a wait is left as the compiled module, shown disassembled in the
+Scripts tab, because a rule that ran half a script would be worse than one that runs none.
 
 Shootable props are actors too: a barrel imports with 20 health and a `Death` state, and
 the import writes two rules from that state — `ExplosiveBarrel: explodes` (`explodeArea`

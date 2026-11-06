@@ -55,9 +55,10 @@ useful alone:
       sheet (`runScript`, numbers in `mapScripts.ruleScripts`); linedef-triggered ones
       already ran from their line's rule. The body stays the module, linked in the
       Scripts tab.
-- [ ] **Step 2 — straight-line bodies become rules.** Assignments, `ACS_Execute`,
-      `Thing_Damage`, `Door_*`, `Floor_*`, `PlaySound`, `Print`/`HudMessage` map 1:1 onto
-      existing actions.
+- [~] **Step 2 — straight-line bodies become rules.** `shared/acs-decompile.js` walks
+      `instructionAt` and translates a body that is only pushes and line specials into
+      `runLineSpecial` actions (2 of 11 scripts on Ascent MAP05 today). Still to add:
+      assignments, `Print`/`HudMessage`, `ACS_Execute`, inventory and damage calls.
 - [ ] **Step 3 — control flow.** `if`/`while`/`for` become sub-events; loops that wait
       become timers. Where bytecode cannot be expressed (raw stack juggling,
       `ScriptWait` across call frames), the rule keeps a `runScript(n)` action and says

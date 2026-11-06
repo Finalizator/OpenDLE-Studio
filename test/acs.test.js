@@ -13,6 +13,7 @@ import { createProgram, findScript, startScriptsOfKind } from '../shared/acs.js'
 import { executeSpecial, specialName, unsupportedSpecials } from '../shared/line-specials.js';
 import { importWadMap, readWad } from '../shared/wad.js';
 import { captureGameSave, restoreGameSave } from '../shared/save-game.js';
+import { decompileCoverage, decompileScript } from '../shared/acs-decompile.js';
 
 const P = Object.fromEntries(PCODE_NAMES.map((name, code) => [name, code]));
 
@@ -852,4 +853,25 @@ test('a level\'s OPEN and ENTER scripts start from rules, exactly once', { skip:
   const all = startScriptsOfKind(createAcsVm(programFor(project)), 'open');
   assert.equal(started, 0, 'none of the rule-started scripts start themselves');
   assert.ok(all > 0, 'the scripts are otherwise startable');
+});
+
+test('a script this engine can read is written as the actions it performs', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // Bytecode cannot appear in a sheet, so the ones that are only a list of specials are
+  // written as those specials, with their arguments. Everything else keeps runScript.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  const program = programFor(project);
+  const coverage = decompileCoverage(program);
+  assert.ok(coverage.translated > 0, 'at least one script is a plain list of specials');
+  assert.ok(coverage.translated < coverage.total, 'and the rest are honestly left as bytecode');
+  const translated = program.scripts.filter(script => decompileScript(program, script.number));
+  const sample = decompileScript(program, translated[0].number);
+  assert.deepEqual(sample.actions[0].type, 'runLineSpecial', 'the body reads as the actions it performs');
+  assert.ok(Number.isInteger(sample.actions[0].special));
+  // A body with a jump or a wait is not translated, rather than half-run.
+  const runtime = createRuntime(project);
+  stepRuntime(project, runtime, 1 / 35, new Set());
+  assert.equal(runtime.scriptState.opened, true);
 });

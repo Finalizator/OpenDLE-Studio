@@ -8,6 +8,7 @@
  * implementations instead of engine-specific stubs.
  */
 
+import { decompileScript } from './acs-decompile.js';
 import { createAcsVm, createProgram, startScript, startScriptsOfKind, tickAcs, terminateScript, suspendScript,
   parseBehavior, describeBehavior, disassemble, scanBehavior, instructionAt } from './acs.js';
 import { executeSpecial, specialName, unsupportedSpecials } from './line-specials.js';
@@ -931,11 +932,17 @@ export function acsScriptRules(project, { sheetId, groupId, id = value => `engin
     if (ruleScripts.includes(key)) continue;
     ruleScripts.push(key);
     const label = entry.name || key;
+    // A body this module can read becomes the actions it performs; anything else keeps the
+    // script itself, so the rule never claims to do only part of what the script does.
+    const decompiled = decompileScript(program, entry.number ?? entry.name);
+    const actions = decompiled?.actions?.length ? decompiled.actions : [{ type: 'runScript', script: key }];
     events.push({ id: id(`acs_${key}`), name: `ACS script ${label}`.slice(0, 100),
       sheetId, groupId, enabled: true, once: false,
-      condition: { type: 'onStart' }, conditions: [], actions: [{ type: 'runScript', script: key }],
-      comment: `The level's ${entry.type.toUpperCase()} script ${key}. The body is the compiled ACS shown in the Scripts tab; `
-        + 'delete this rule to let the interpreter start the script itself again.' });
+      condition: { type: 'onStart' }, conditions: [], actions,
+      comment: decompiled?.actions?.length
+        ? `The level's ${entry.type.toUpperCase()} script ${key}, translated from its bytecode into the actions below.`
+        : `The level's ${entry.type.toUpperCase()} script ${key}. Its body is the compiled ACS shown in the Scripts tab; `
+          + 'delete this rule to let the interpreter start the script itself again.' });
   }
   return { events, skipped, ruleScripts };
 }
