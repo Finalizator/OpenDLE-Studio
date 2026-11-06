@@ -395,6 +395,10 @@ export const ENGINE_ACTIONS = [
     numeric('tag', 0, 0, 65535), numeric('amount', 5, 0, 100000),
     { name: 'kind', value: 'Normal', kind: 'text', allowEmpty: true },
     { name: 'protection', value: '', kind: 'text', allowEmpty: true }] },
+  // ACS `FadeTo`, through the interpreter's own fade: a screen tint over a number of seconds.
+  { type: 'fadeTo', label: 'Screen: fade towards a colour', fields: [
+    numeric('red', 0, 0, 255), numeric('green', 0, 0, 255), numeric('blue', 0, 0, 255),
+    numeric('amount', 1, 0, 1), numeric('seconds', 0, 0, 600)] },
   { type: 'setLineSpecial', label: 'World: set a line special by tag', fields: [
     numeric('tag', 0, 0, 65535), { ...numeric('special', 1, 0, 65535), integer: true },
     { ...numeric('arg1', 0, -32768, 32767), optional: true },

@@ -1290,3 +1290,42 @@ test('a script that reads its arguments is read with the arguments its line pass
   const opened = known[0].actions.find(action => action.type === 'runLineSpecial');
   assert.equal(opened.arg1, 7, 'the tag the caller passed is the tag the rule opens');
 });
+
+test('a script that fades the screen becomes the fade the interpreter performs', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/TITLEMAP.wad', import.meta.url)) }, () => {
+  // `FadeTo(0, 0, 0, 1.0, 5.0)` — ACS writes those as 16.16 fixed point, and the action takes
+  // ordinary numbers, so the decompiler converts a constant and leaves a variable as an
+  // expression the rule evaluates.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/TITLEMAP.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'TITLEMAP', { actors: false });
+  const program = programFor(project);
+  const entry = program.scripts.find(script => script.name === 'fadeIn');
+  const rules = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
+  const fades = rules.flatMap(rule => rule.actions).filter(action => action.type === 'fadeTo');
+  assert.ok(fades.length >= 2, `both fades are actions: ${fades.length}`);
+  for (const fade of fades) {
+    assert.deepEqual([fade.red, fade.green, fade.blue], [0, 0, 0]);
+    assert.ok(fade.amount >= 0 && fade.amount <= 1, `amount is a fraction: ${fade.amount}`);
+  }
+  assert.equal(fades[0].seconds, 0, 'the first cut to black is instant');
+  assert.ok(fades[1].seconds > 0, `the fade back in takes time: ${fades[1].seconds}`);
+  // And the action performs the interpreter's own fade.
+  const room = createProject();
+  room.events = [];
+  room.map.vertices = [[-256, -256], [256, -256], [256, 256], [-256, 256]].map(([x, y], index) => ({ id: `v${index}`, x, y }));
+  room.map.walls = [['v0', 'v1'], ['v1', 'v2'], ['v2', 'v3'], ['v3', 'v0']].map(([a, b], index) => ({
+    id: `w${index}`, a, b, height: 128, color: '#888888', solid: true, right: { sectorId: 's', offsetX: 0, offsetY: 0 } }));
+  room.map.sectors = [{ id: 's', floorHeight: 0, ceilingHeight: 128, light: 160, sky: false, tag: 1 }];
+  room.map.entities = [{ id: 'player', type: 'player', name: 'Player', x: 0, y: 0, angle: 0 }];
+  installEngineScripts(room);
+  const worldSheet = room.eventSheets.find(sheet => sheet.name === 'World');
+  room.events.push({ id: 'fade_rule', sheetId: worldSheet.id,
+    groupId: room.eventGroups.find(group => group.sheetId === worldSheet.id).id,
+    enabled: true, once: true, condition: { type: 'onStart' }, conditions: [],
+    actions: [{ type: 'fadeTo', red: 0, green: 0, blue: 0, amount: 1, seconds: 0 }] });
+  validateProject(room);
+  const state = createRuntime(room);
+  stepRuntime(room, state, 1 / 35, new Set());
+  assert.equal(state.screenFadeNow?.amount, 1, 'the screen is black, as the script asked');
+});

@@ -430,7 +430,9 @@ functions so a decompiled script and a bytecode one change the level identically
 `setSectorFlat` (`surface`, `tag`, `flat` — ACS `ChangeFloor`/`ChangeCeiling`),
 `setLineTexture` (`line`, `side`, `part`, `texture`), `setLineBlocking` (`tag`, `blocking`),
 `setLineMonsterBlocking` (`tag`, `monsters`) and `setLineSpecial` (`tag`, `special`,
-`arg1`…`arg5`). The inventory and health calls work the same way: `giveInventory` and
+`arg1`…`arg5`), and ACS `FadeTo` is the `fadeTo` action (`red`, `green`, `blue`, `amount`,
+`seconds`) — a constant is converted out of ACS's 16.16 fixed point in the sheet, a variable is
+divided at run time. The inventory and health calls work the same way: `giveInventory` and
 `takeInventory` (`item`, `amount`) give and take the items a script names (`"Shells"`,
 `"BlueCard"`, `"Shotgun"`), `damageThing` (`tid`, `amount`, `kind`) hurts the things with a tag,
 `sectorDamage` (`tag`, `amount`, `kind`, `protection`) hurts everything standing in a tagged

@@ -253,7 +253,10 @@ export function decompileScript(program, selector, { args = [] } = {}) {
 
       // Constant arithmetic is folded, so `35 * 1` becomes the delay it stands for.
       if (FOLDS[name]) {
-        const folded = fold(FOLDS[name], pop(), pop());
+        // Arithmetic needs values, not variable names: a script variable resolves to what it holds.
+        const right = resolveLocal(pop()), left = resolveLocal(pop());
+        if (!right || !left) return null;
+        const folded = fold(FOLDS[name], right, left);
         if (!folded) return null;
         stack.push(folded);
         offset = next; continue;
@@ -554,6 +557,7 @@ function argumentOf(entry) {
 /** The expression text a stack entry reads as, or null when it is not something a rule can say. */
 function expressionOf(entry) {
   if (entry?.kind === 'number') return String(Number(entry.value) || 0);
+  if (entry?.kind === 'value') return entry.text;
   if (entry?.kind === 'random') return `floor(random(${entry.min}, ${entry.max}))`;
   if (entry?.kind === 'not') {
     const inner = expressionOf(entry.of);
@@ -593,6 +597,18 @@ const BUILTINS = {
     type: 'setLineSpecial', tag: argumentOf(tag), special: argumentOf(special),
     arg1: argumentOf(args[0]), arg2: argumentOf(args[1]), arg3: argumentOf(args[2]),
     arg4: argumentOf(args[3]), arg5: argumentOf(args[4]) }) },
+  // `FadeTo(red, green, blue, amount, seconds)`: ACS carries these as 16.16 fixed point, and
+  // the action takes ordinary numbers, so a constant is converted here and a variable becomes
+  // the expression the rule evaluates.
+  FADETO: { count: 5, action: ([red, green, blue, amount, seconds]) => {
+    const colour = entry => fixed(entry, 255, value => Math.round(value / 65536 || value));
+    const colours = [red, green, blue].map(colour);
+    const strength = fixed(amount, 1, value => value / 65536);
+    const duration = fixed(seconds, 600, value => value / 65536);
+    if (colours.some(value => value === null) || strength === null || duration === null) return null;
+    return { type: 'fadeTo', red: colours[0], green: colours[1], blue: colours[2],
+      amount: strength, seconds: duration };
+  } },
   GIVEINVENTORY: { count: 2, action: ([name, amount], module) => withItem({ type: 'giveInventory' },
     name, module, { amount: argumentOf(amount) }) },
   GIVEINVENTORYDIRECT: { operands: true, count: 2, action: ([name, amount], module) => withItem({
@@ -630,6 +646,19 @@ function flatAction(surface, tag, flat, module) {
   return named(action, 'flat', name);
 }
 
+/**
+ * A 16.16 fixed-point argument as the number an action takes: a constant is converted now, a
+ * variable becomes an expression that divides when the rule runs.
+ */
+function fixed(entry, max, convert = value => value) {
+  if (entry?.kind === 'number') {
+    return Math.max(0, Math.min(max, Math.round(convert(Number(entry.value)) * 1000) / 1000));
+  }
+  const text = expressionOf(entry);
+  if (text === null) return null;
+  return { expr: `min(${max}, max(0, (${text}) / 65536))` };
+}
+
 /** The name a string index stands for, or null when it is not one this can read. */
 function nameOf(value, module) {
   const name = stringOf(value, module);
@@ -657,25 +686,28 @@ function named(action, field, value) {
   return action;
 }
 
-/** Constant folding; a variable on either side needs a rule, not a number. */
+/** Constant folding; anything the expression language can read composes, a number stays one. */
 function fold(operator, right, left) {
   // `0 - x` is a negation: keep the sign with the value it applies to.
   if (operator === '-' && left?.kind === 'number' && Number(left.value) === 0 &&
     ['variable', 'local'].includes(right?.kind)) {
     return right.kind === 'local' ? null : { kind: 'negate', of: right };
   }
-  if (left?.kind !== 'number' || right?.kind !== 'number') {
-    // `x + 1` and `x - 1` keep their offset, which is how a counter is read against a bound.
-    if ((left?.kind === 'variable' || left?.kind === 'local') && right?.kind === 'number' &&
-      (operator === '+' || operator === '-')) {
-      return { ...left, add: (left.add || 0) + (operator === '+' ? right.value : -right.value) };
-    }
-    return null;
+  // `x + 1` and `x - 1` keep their offset, which is how a counter is read against a bound.
+  if ((left?.kind === 'variable' || left?.kind === 'local') && right?.kind === 'number' &&
+    (operator === '+' || operator === '-')) {
+    return { ...left, add: (left.add || 0) + (operator === '+' ? right.value : -right.value) };
   }
-  const a = Number(left.value), b = Number(right.value);
-  const value = operator === '+' ? a + b : operator === '-' ? a - b : operator === '*' ? a * b
-    : operator === '/' ? (b === 0 ? null : a / b) : (b === 0 ? null : a % b);
-  return value === null ? null : { kind: 'number', value };
+  if (left?.kind === 'number' && right?.kind === 'number') {
+    const a = Number(left.value), b = Number(right.value);
+    const value = operator === '+' ? a + b : operator === '-' ? a - b : operator === '*' ? a * b
+      : operator === '/' ? (b === 0 ? null : a / b) : (b === 0 ? null : a % b);
+    return value === null ? null : { kind: 'number', value };
+  }
+  // Two values the expression language can read compose into one it can read.
+  const leftText = expressionOf(left), rightText = expressionOf(right);
+  if (leftText === null || rightText === null) return null;
+  return { kind: 'value', text: `(${leftText} ${operator} ${rightText})` };
 }
 
 /** A comparison, folded to a number when both sides are constants. */
