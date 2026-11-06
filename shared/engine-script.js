@@ -365,6 +365,26 @@ export const ENGINE_ACTIONS = [
     choice('scope', 'map', ['map', 'world', 'global']), numeric('index', 0, 0, 255),
     choice('mode', 'set', ['set', 'add']), numeric('value', 0, -1000000, 1000000),
     { ...numeric('module', 0, 0, 63), optional: true }] },
+  // A script's own builtins, which change the level through the interpreter's host functions
+  // (`ChangeFloor`, `SetLineTexture`, `SetLineBlocking`, `SetLineMonsterBlocking`,
+  // `SetLineSpecial`). Tag is an ACS sector or line tag, as the script meant it.
+  { type: 'setSectorFlat', label: 'World: set the flat of every sector with this tag', fields: [
+    choice('surface', 'floor', ['floor', 'ceiling']), numeric('tag', 0, 0, 65535),
+    { name: 'flat', value: '', kind: 'text', allowEmpty: true }] },
+  { type: 'setLineTexture', label: 'World: set a line texture by tag', fields: [
+    numeric('line', 0, 0, 65535), numeric('side', 0, 0, 1), numeric('part', 1, 0, 2),
+    { name: 'texture', value: '', kind: 'text', allowEmpty: true }] },
+  { type: 'setLineBlocking', label: 'World: set whether tagged lines block', fields: [
+    numeric('tag', 0, 0, 65535), choice('blocking', 'yes', ['yes', 'no'])] },
+  { type: 'setLineMonsterBlocking', label: 'World: set whether tagged lines block monsters', fields: [
+    numeric('tag', 0, 0, 65535), choice('monsters', 'yes', ['yes', 'no'])] },
+  { type: 'setLineSpecial', label: 'World: set a line special by tag', fields: [
+    numeric('tag', 0, 0, 65535), { ...numeric('special', 1, 0, 65535), integer: true },
+    { ...numeric('arg1', 0, -32768, 32767), optional: true },
+    { ...numeric('arg2', 0, -32768, 32767), optional: true },
+    { ...numeric('arg3', 0, -32768, 32767), optional: true },
+    { ...numeric('arg4', 0, -32768, 32767), optional: true },
+    { ...numeric('arg5', 0, -32768, 32767), optional: true }] },
   { type: 'playActorState', label: 'Object: play an imported actor state', fields: [
     { name: 'state', value: 'See', kind: 'string' }], target: true },
   { type: 'facePlayer', label: 'Enemy: face player for attack', fields: [], target: true },

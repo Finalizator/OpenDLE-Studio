@@ -417,9 +417,17 @@ decompiled see the same numbers: `setAcsVariable` (`scope`, `index`, `mode` `set
 `acsvar("map", 2)` reads one inside any expression. A guard — ACS `if`, compiled as
 `IFNOTGOTO` — becomes a sub-event of the step, evaluated after the actions above it, so
 `count += 1; if (count >= 2) open the door` reads exactly as it does in the script. A body
-with a loop, an array, a random roll or one of ACS's own builtins (`ChangeFloor`,
-`SetLineSpecial`) is left as the compiled module, shown disassembled in the Scripts tab,
-because a rule that ran half a script would be worse than one that runs none.
+with a loop, an array or a flat name held in a variable is left as the compiled module, shown
+disassembled in the Scripts tab, because a rule that ran half a script would be worse than one
+that runs none.
+
+The builtins a script calls directly are actions too, and they run the interpreter's own host
+functions so a decompiled script and a bytecode one change the level identically:
+`setSectorFlat` (`surface`, `tag`, `flat` — ACS `ChangeFloor`/`ChangeCeiling`),
+`setLineTexture` (`line`, `side`, `part`, `texture`), `setLineBlocking` (`tag`, `blocking`),
+`setLineMonsterBlocking` (`tag`, `monsters`) and `setLineSpecial` (`tag`, `special`,
+`arg1`…`arg5`). A random roll becomes the expression `floor(random(min, max))` where the script
+used `Random`, so `SetLineSpecial(Random(map6, map6 + 2), 70, …)` keeps its own range.
 
 Shootable props are actors too: a barrel imports with 20 health and a `Death` state, and
 the import writes two rules from that state — `ExplosiveBarrel: explodes` (`explodeArea`

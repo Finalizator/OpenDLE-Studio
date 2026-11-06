@@ -1526,6 +1526,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     }
     if (!matches) return;
     if (event.once) state.fired.add(keyOf());
+    // A rule that performs one of a decompiled script's own builtins uses the interpreter's
+    // host function, so the level changes exactly as it did when the script ran as bytecode.
+    const hostFor = action => {
+      const host = state.scripts?.host;
+      if (!host) throw new Error(`Event "${event.name || event.id}": ${action.type} needs a level with compiled scripts`);
+      return host;
+    };
     for (const sourceAction of event.actions) {
       const action = PICK_ACTIONS.has(sourceAction.type) ? sourceAction : resolveCommand(sourceAction);
       switch (action.type) {
@@ -2017,6 +2024,31 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
               [action.arg1, action.arg2, action.arg3, action.arg4, action.arg5], { scripts: state.scripts, format: 'zdoom' });
           }
           break;
+        // A decompiled script's own builtins — `ChangeFloor(tag, "HEX01")`, `SetLineSpecial`,
+        // `SetLineBlocking` — run through the interpreter's host functions, so the rule and a
+        // script that was not decompiled change the level the same way.
+        case 'setSectorFlat': {
+          hostFor(action).changeFlat(Number(action.tag) || 0, String(action.flat ?? ''), action.surface === 'ceiling');
+          break;
+        }
+        case 'setLineTexture': {
+          hostFor(action).setLineTexture(Number(action.line) || 0, Number(action.side) || 0,
+            Number(action.part) || 0, String(action.texture ?? ''));
+          break;
+        }
+        case 'setLineBlocking': {
+          hostFor(action).setLineBlocking(Number(action.tag) || 0, action.blocking === 'no' ? 0 : 1);
+          break;
+        }
+        case 'setLineMonsterBlocking': {
+          hostFor(action).setLineMonsterBlocking(Number(action.tag) || 0, action.monsters === 'yes');
+          break;
+        }
+        case 'setLineSpecial': {
+          hostFor(action).setLineSpecial(Number(action.tag) || 0, Number(action.special) || 0,
+            [action.arg1 ?? 0, action.arg2 ?? 0, action.arg3 ?? 0, action.arg4 ?? 0, action.arg5 ?? 0]);
+          break;
+        }
         // Starts a compiled ACS script from a rule — the trigger is in the sheet, the body
         // is the module the WAD shipped, shown disassembled in the Scripts tab.
         case 'runScript': {

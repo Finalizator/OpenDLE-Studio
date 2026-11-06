@@ -1220,6 +1220,10 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           assert(INSTANCE_PROPERTY_NAMES.includes(command[field.name]), `Unknown object property: ${command[field.name]}`);
         } else if (field.kind === 'objectReference') {
           if (command[field.name] !== '$player') targetId(command[field.name]);
+        } else if (field.allowEmpty && command[field.name] === '') {
+          // A flat or texture name a script did not resolve stays empty rather than failing:
+          // the action then leaves the surface as it is.
+          continue;
         } else if (field.kind === 'image') {
           // An empty image means "not chosen yet": the event is still valid, and the
           // runtime reports which spray needed artwork when it is triggered.

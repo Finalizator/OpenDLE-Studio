@@ -16,6 +16,7 @@ import { scriptSteps } from '../shared/world-motion.js';
 import { importWadMap, readWad } from '../shared/wad.js';
 import { captureGameSave, restoreGameSave } from '../shared/save-game.js';
 import { decompileCoverage, decompileScript } from '../shared/acs-decompile.js';
+import { installWorldScripts } from '../shared/world-motion.js';
 
 const P = Object.fromEntries(PCODE_NAMES.map((name, code) => [name, code]));
 
@@ -845,10 +846,14 @@ test('a level\'s OPEN and ENTER scripts start from rules, exactly once', { skip:
   const { project } = importWadMap(wad, 'MAP05', { actors: false });
   assert.ok(project.mapScripts.ruleScripts.length, 'the imported scripts are rule-started');
   const world = project.eventSheets.find(entry => entry.name === 'World');
-  const rules = project.events.filter(event => event.sheetId === world?.id &&
-    event.actions.some(action => action.type === 'runScript'));
-  assert.equal(rules.length, project.mapScripts.ruleScripts.length);
-  for (const rule of rules) assert.equal(rule.condition.type, 'onStart');
+  // Each rule-started script owns a rule in the World sheet. Its actions are the script's own
+  // steps when the decompiler could read them, and a `runScript` when it could not.
+  for (const key of project.mapScripts.ruleScripts) {
+    const owned = project.events.filter(event => event.sheetId === world?.id &&
+      String(event.id).startsWith(`acs_${key}_`));
+    assert.ok(owned.length, `script ${key} starts from a rule`);
+    assert.equal(owned[0].condition.type, 'onStart', 'and starts when the level does');
+  }
   // The interpreter skips exactly those numbers, so a script runs once.
   const started = startScriptsOfKind(createAcsVm(programFor(project)), 'open', null,
     new Set(project.mapScripts.ruleScripts.map(String)));
@@ -980,4 +985,96 @@ test('a rule keeps its counter in the ACS variables, the way a script does', { s
   assert.equal(vm.mapVars[0][100], 2, 'the second pass counts two');
   assert.equal(vm.mapVars[0][101], 1, 'so the guarded sub-event runs once');
   assert.equal(state.variables.seen, 1, 'and an expression reads the same store');
+});
+
+test('a script that changes a line or a floor becomes the action that does the same', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // `raiseArenaBridge` is `map14 += 1; if (map14 >= 3) { Floor_RaiseByValue(map3, 16, 8);
+  // ChangeFloor(map3, "HEX01"); Line_... }`. The builtin becomes `setSectorFlat`, the counter
+  // and the test stay as they were, and the flat's name comes back out of the string table.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  const program = programFor(project);
+  const entry = program.scripts.find(script => script.name === 'raiseArenaBridge');
+  const rules = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
+  const parent = rules.find(rule => !rule.parentId);
+  const child = rules.find(rule => rule.parentId === parent.id);
+  assert.ok(parent.actions.some(action => action.type === 'setAcsVariable' && action.value === 1));
+  assert.equal(child.condition.type, 'acsVariable');
+  assert.equal(child.condition.value, 3);
+  const flat = child.actions.find(action => action.type === 'setSectorFlat');
+  assert.deepEqual(flat, { type: 'setSectorFlat', surface: 'floor', tag: { expr: 'acsvar("map", 3)' }, flat: 'HEXA01' });
+  // Ten of the eleven scripts in this map now read as rules; the last hands the interpreter a
+  // flat name held in a variable, which a rule's field cannot carry.
+  assert.equal(decompileCoverage(program).translated, 10);
+});
+
+test('a script that rolls a random line becomes an expression with the script\'s own range', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // `randomizeHellTeleport` picks a teleport line: `SetLineSpecial(Random(map6, map6 + 2), 70,
+  // map7, …)`. The roll is a `random()` expression, not a rule engine invention, and its bounds
+  // are the map variables the script used.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  const program = programFor(project);
+  const entry = program.scripts.find(script => script.name === 'randomizeHellTeleport');
+  const [rule] = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
+  const action = rule.actions.find(item => item.type === 'setLineSpecial');
+  assert.equal(action.special, 70);
+  assert.deepEqual(action.tag, { expr: 'floor(random(acsvar("map", 6), (acsvar("map", 6) + 2)))' });
+  assert.deepEqual(action.arg1, { expr: 'acsvar("map", 7)' });
+});
+
+test('a rule performs the level changes a decompiled script asked for', () => {
+  // `ChangeFloor`, `SetLineSpecial` and `SetLineBlocking` in bytecode call the interpreter's
+  // host functions; the same actions from a rule must go through those functions too, so the
+  // two ways of saying it cannot drift apart.
+  const asm = emitter();
+  asm.ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] })).mapScripts });
+  project.assets.push({ id: 'asset_hex01', kind: 'flat', name: 'HEX01', width: 64, height: 64, src: 'data:image/png;base64,AA==' });
+  const world = project.eventSheets.find(sheet => sheet.name === 'World');
+  const group = project.eventGroups.find(item => item.sheetId === world.id);
+  project.events.push({ id: 'script_builtins', sheetId: world.id, groupId: group.id, enabled: true, once: true,
+    condition: { type: 'onStart' }, conditions: [], actions: [
+      { type: 'setSectorFlat', surface: 'floor', tag: 1, flat: 'HEX01' },
+      { type: 'setLineSpecial', tag: 1, special: 70, arg1: 4, arg2: 0, arg3: 0, arg4: 0, arg5: 0 },
+      { type: 'setLineBlocking', tag: 1, blocking: 'yes' },
+    ] });
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.sectors.find(sector => sector.tag === 1).floorAsset, 'asset_hex01', 'the tagged floor takes the flat');
+  const door = state.walls.find(wall => wall.id === 'door');
+  assert.equal(door.special, 70, 'the tagged line takes the new special');
+  assert.equal(door.args[0], 4, 'with the arguments the script gave it');
+  assert.equal(door.solid, true, 'and the line blocks, as the script asked');
+});
+
+test('a line whose script tests a counter carries that test as a sub-event of the line', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // Every `ACS_Execute` line in MAP05 names script 0, so the guard path is exercised here with
+  // the script this map really does contain: point a line at `openLabDoor` and the line's rule
+  // gains the script's own test as a sub-event, hanging under the rule that raises the counter.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  const steps = scriptSteps(project, -2, 'w42');
+  const holder = steps.find(step => !step.parentId);
+  const guard = steps.find(step => step.parentId === holder.id);
+  assert.ok(guard, 'the guard hangs under the step it belongs to');
+  assert.equal(guard.condition.type, 'acsVariable');
+  // And the World sheet gets it as a child rule of that line's rule.
+  const line = project.map.walls.find(wall => wall.specialFormat === 'zdoom' && wall.special === 80);
+  line.args = [-2, 0, 0, 0, 0];
+  project.events = [];
+  installWorldScripts(project, []);
+  const parent = project.events.find(event => event.name.includes(`Linedef ${line.id} /`) && !event.parentId);
+  assert.ok(parent, 'the line has its rule');
+  const child = project.events.find(event => event.parentId === parent.id);
+  assert.ok(child, 'and the guard is a sub-event of it');
+  assert.equal(child.condition.type, 'acsVariable');
 });

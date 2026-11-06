@@ -22,7 +22,7 @@
  * then — if the counter reached two — open the door", which is a rule with a sub-event.
  */
 
-import { instructionAt } from './acs.js';
+import { instructionAt, lookupString } from './acs.js';
 
 const PUSHES = {
   PUSHBYTE: 1, PUSH2BYTES: 2, PUSH3BYTES: 3, PUSH4BYTES: 4, PUSH5BYTES: 5,
@@ -148,9 +148,11 @@ export function decompileScript(program, selector) {
             offset = next; continue;
           }
           if (operation === 'ASSIGN') {
+            // A script variable is a temporary here: it holds whatever the stack held, so a
+            // random roll or a counter offset can be carried to the call that uses it.
             const assigned = pop();
-            if (assigned?.kind !== 'number') return null;
-            locals.set(index, { kind: 'number', value: Number(assigned.value) || 0 });
+            if (!assigned) return null;
+            locals.set(index, assigned);
             offset = next; continue;
           }
           return null;
@@ -202,6 +204,29 @@ export function decompileScript(program, selector) {
         offset = next; continue;
       }
 
+      if (name === 'RANDOM' || name === 'RANDOMDIRECT') {
+        // `Random(min, max)` is inclusive; the expression that replaces it floors a roll.
+        const max = name === 'RANDOM' ? pop() : { kind: 'number', value: Number(operands[1]) || 0 };
+        const min = name === 'RANDOM' ? pop() : { kind: 'number', value: Number(operands[0]) || 0 };
+        const low = expressionOf(min), high = expressionOf(max);
+        if (low === null || high === null) return null;
+        stack.push({ kind: 'random', min: low, max: high });
+        offset = next; continue;
+      }
+
+      // The builtins a script calls directly, as the actions that do the same thing.
+      const builtin = BUILTINS[name];
+      if (builtin) {
+        const values = builtin.count ? stack.splice(Math.max(0, stack.length - builtin.count)) : [];
+        if (values.length !== builtin.count) return null;
+        const args = values.map(argumentOf);
+        if (args.some(value => value === null)) return null;
+        const action = builtin.action(name, args, module);
+        if (!action) return null;
+        pending.actions.push(action);
+        offset = next; continue;
+      }
+
       const pushed = PUSHES[name];
       if (pushed) {
         // A push of N bytes hands the caller N arguments, in the order they are written.
@@ -249,10 +274,52 @@ export function decompileScript(program, selector) {
 function argumentOf(entry) {
   if (entry === undefined || entry === null) return 0;
   if (entry.kind === 'number') return Number(entry.value) || 0;
-  if (entry.kind === 'variable' && entry.scope !== 'script' && !entry.add) {
-    return { expr: `acsvar("${entry.scope}", ${entry.index})` };
+  const text = expressionOf(entry);
+  return text === null ? null : { expr: text };
+}
+
+/** The expression text a stack entry reads as, or null when it is not something a rule can say. */
+function expressionOf(entry) {
+  if (entry?.kind === 'number') return String(Number(entry.value) || 0);
+  if (entry?.kind === 'random') return `floor(random(${entry.min}, ${entry.max}))`;
+  if (entry?.kind === 'variable' && entry.scope !== 'script') {
+    const name = `acsvar("${entry.scope}", ${entry.index})`;
+    const offset = entry.add || 0;
+    return offset ? `(${name} + ${offset})` : name;
   }
   return null;
+}
+
+/**
+ * The ACS builtins a script calls directly, and the action each one becomes. They take their
+ * arguments from the stack, and a string argument is a string-table index, which the module
+ * can resolve — `PUSHBYTE 1; CHANGEFLOOR` is `ChangeFloor(tag, "HEX01")`.
+ */
+const BUILTINS = {
+  CHANGEFLOOR: { count: 2, action: (name, [tag, flat], module) => flatAction('floor', tag, flat, module) },
+  CHANGEFLOORDIRECT: { count: 2, action: (name, [tag, flat], module) => flatAction('floor', tag, flat, module) },
+  CHANGECEILING: { count: 2, action: (name, [tag, flat], module) => flatAction('ceiling', tag, flat, module) },
+  CHANGECEILINGDIRECT: { count: 2, action: (name, [tag, flat], module) => flatAction('ceiling', tag, flat, module) },
+  SETLINETEXTURE: { count: 4, action: (name, [line, side, part, texture], module) => ({
+    type: 'setLineTexture', line, side, part, texture: stringOf(texture, module) }) },
+  SETLINEBLOCKING: { count: 2, action: (name, [tag, mode]) => (typeof mode === 'number'
+    ? { type: 'setLineBlocking', tag, blocking: mode === 0 ? 'no' : 'yes' } : null) },
+  SETLINEMONSTERBLOCKING: { count: 2, action: (name, [tag, on]) => (typeof on === 'number'
+    ? { type: 'setLineMonsterBlocking', tag, monsters: on === 0 ? 'no' : 'yes' } : null) },
+  SETLINESPECIAL: { count: 7, action: (name, [tag, special, ...args]) => ({
+    type: 'setLineSpecial', tag, special, arg1: args[0] ?? 0, arg2: args[1] ?? 0,
+    arg3: args[2] ?? 0, arg4: args[3] ?? 0, arg5: args[4] ?? 0 }) },
+};
+
+/** A flat name from a string index, or null when the argument is not one this can resolve. */
+function stringOf(value, module) {
+  if (typeof value !== 'number') return null;
+  return lookupString(module, value & 0xffff);
+}
+
+function flatAction(surface, tag, flat, module) {
+  const name = stringOf(flat, module);
+  return name === null ? null : { type: 'setSectorFlat', surface, tag, flat: name };
 }
 
 /** Constant folding; a variable on either side needs a rule, not a number. */
