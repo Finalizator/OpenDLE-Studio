@@ -206,6 +206,7 @@ function suspendAcs(ctx, named, terminate = false) {
  * the actor is and the sheet is the description of what it decides.
  */
 import { PROJECTILE_ACTIONS } from './projectile-script.js';
+import { PROP_FUNCTIONS } from './enemy-script.js';
 
 export const AI_ACTIONS = new Set(['A_Look', 'A_LookEx', 'A_Wander', 'A_Chase', 'A_FaceTarget',
   'A_AlertMonsters', 'A_CPosRefire', 'A_FastChase', 'A_SmartChase']);
@@ -218,10 +219,14 @@ function aiSuppressed(state, entity) {
 
 export function runActions(project, state, entity, actor, actions, context = {}) {
   const suppressed = aiSuppressed(state, entity);
+  const propOwned = Array.isArray(state.propEventActors) && entity?.actorName &&
+    state.propEventActors.includes(String(entity.actorName).toLowerCase());
   for (const action of actions || []) {
     // A translated archetype decides through its rules; the state machine keeps the
     // frames, the sounds and the attack functions.
     if (suppressed && AI_ACTIONS.has(action.name)) continue;
+    // A translated prop's blast and solidity are its rules' business.
+    if (propOwned && PROP_FUNCTIONS.has(action.name)) continue;
     const handler = ACTIONS[action.name];
     if (!handler) {
       // A frame may call one of the actor's own functions (`PLAY A 1 Rotate;` with

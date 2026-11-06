@@ -51,6 +51,7 @@ import { projectIds } from './project-ids.js';
 import { weaponEventActors } from './weapon-script.js';
 import { enemyEventActors } from './enemy-script.js';
 import { projectileEventActors } from './projectile-script.js';
+import { propEventActors } from './enemy-script.js';
 import { saveFileDocument, serializeSaveFile, parseSaveFile, applyVariableSave, saveFileName, variableSnapshot } from './save-files.js';
 import { BT } from './acs.js';
 import { initialiseAuthoredDoors, operateSectorDoor, sectorDoorClosed, sectorDoorMoving, sectorDoorOpen,
@@ -204,6 +205,8 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     // Imported monsters whose decisions are event rules: their states keep the frames,
     // sounds and attack functions, and no longer look, chase or pick their own fights.
     enemyEventActors: enemyEventActors(project),
+    // Shootable props whose blast and solidity are rules: their states stop doing it.
+    propEventActors: propEventActors(project),
     // Imported missiles whose flight and death are rules: their states keep the trail and
     // the frames, and stop calling the functions a rule now takes.
     projectileEventActors: projectileEventActors(project),
@@ -1992,6 +1995,11 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'facePlayer': {
           const entity = findTarget(action.entityId);
           if (entity) entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;
+          break;
+        }
+        case 'setEntitySolid': {
+          const entity = findTarget(action.entityId);
+          if (entity) { entity.solid = action.solid === 'yes'; if (!entity.solid) state.physics?.remove(entity.id); }
           break;
         }
         case 'homeMissile': {

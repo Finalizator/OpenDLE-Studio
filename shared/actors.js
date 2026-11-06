@@ -566,6 +566,20 @@ export const CLASSIC_EFFECTS = [
     states: ['Spawn: PUFF ABABC 4', 'stop'] },
 ];
 
+/**
+ * Classic Doom's shootable props.
+ *
+ * A barrel is not a monster and not a missile, but it has health and a Death state whose
+ * `A_Explode` is what makes it dangerous. Without an actor record a barrel imports as a
+ * flat decoration nobody can shoot; with one it takes damage and explodes like Doom's.
+ */
+export const CLASSIC_PROPS = [
+  { name: 'ExplosiveBarrel', doomedNum: 2035, sprite: 'BAR1', health: 20, radius: 10, height: 32,
+    flags: ['SOLID', 'SHOOTABLE', 'NOBLOOD'],
+    states: ['Spawn: BAR1 A -1', 'Death: BEXP A 5', 'BEXP B 5 A_Scream', 'BEXP C 5 A_Explode',
+      'BEXP D 5', 'BEXP E 5 A_NoBlocking', 'BEXP F -1', 'stop'] },
+];
+
 /** Actors the native action functions spawn by name, so their clips are pre-built. */
 export const NATIVE_EFFECT_ACTORS = ['BFGExtra', 'BulletPuff', 'RevenantTracerSmoke'];
 
@@ -576,8 +590,8 @@ function classicActorRecord(entry, index) {
   if (flags.MISSILE) flags.PROJECTILE = true;
   return {
     id: `actor_${entry.name.toLowerCase()}`,
-    name: entry.name, parent: 'Actor', doomedNum: null, replaces: null,
-    health: 1000, speed: entry.speed ?? 0, damage: entry.damage ?? 0, painChance: 0, painChances: {}, damageFactors: {},
+    name: entry.name, parent: 'Actor', doomedNum: entry.doomedNum ?? null, replaces: null,
+    health: entry.health ?? 1000, speed: entry.speed ?? 0, damage: entry.damage ?? 0, painChance: 0, painChances: {}, damageFactors: {},
     radius: entry.radius ?? 6, height: entry.height ?? 8, mass: 100, reactionTime: 8, fastSpeed: 0,
     damageType: null, species: null, renderStyle: null, alpha: null, scale: null, xScale: null, yScale: null,
     gravity: null, translation: null,
@@ -635,7 +649,8 @@ export function buildVanillaActors() {
   const weapons = CLASSIC_WEAPONS.map((weapon, index) => classicWeaponRecord(weapon, monsters.length + index));
   const offset = monsters.length + weapons.length;
   const extras = [...CLASSIC_MISSILES, ...CLASSIC_EFFECTS].map((entry, index) => classicActorRecord(entry, offset + index));
-  return [...monsters, ...weapons, ...extras];
+  const props = CLASSIC_PROPS.map((entry, index) => classicActorRecord(entry, offset + extras.length + index));
+  return [...monsters, ...weapons, ...extras, ...props];
 }
 
 /**

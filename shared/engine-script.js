@@ -17,6 +17,7 @@ import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTIES } from './instance-propert
 import { weaponScriptRules } from './weapon-script.js';
 import { enemyScriptRules } from './enemy-script.js';
 import { projectileScriptRules } from './projectile-script.js';
+import { propScriptRules } from './enemy-script.js';
 
 // Every key a creator can bind to an event, including the letters Doom leaves free, so
 // scriptlets such as the spray can be rebound from the event sheet.
@@ -327,6 +328,8 @@ export const ENGINE_ACTIONS = [
   // imported rocket's explosion and the BFG's spray stop being code only the machine runs.
   { type: 'explodeArea', label: 'Combat: explode at this object', fields: [
     numeric('damage', 128, 0, 10000), numeric('radius', 128, 0, 4096)], target: true },
+  // A prop's death removes its collision, which is what A_NoBlocking does.
+  { type: 'setEntitySolid', label: 'Object: set solidity', fields: [choice('solid', 'no', ['yes', 'no'])], target: true },
   { type: 'homeMissile', label: 'Combat: home a missile on its target', fields: [
     numeric('turn', 16.875, 0, 360)], target: true },
   { type: 'bfgSpray', label: 'Combat: BFG spray from this object', fields: [
@@ -678,6 +681,8 @@ export function installEngineScripts(project, { organizeStarter = false, include
     ], [...living, { type: 'timerReady', timer: 'attackWindup' }], { forEachType: 'enemy' });
   }
   if (!scriptedEnemies) {
+    const props = propScriptRules(project, { sheetId: sheets.World.id, groupId: groups.World.id, id });
+    events.push(...props.events);
     const missiles = projectileScriptRules(project, { sheetId: sheets.World.id, groupId: groups.World.id, id });
     events.push(...missiles.events);
     for (const skipped of missiles.skipped) {

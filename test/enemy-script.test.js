@@ -4,8 +4,8 @@ import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { buildVanillaActors } from '../shared/actors.js';
-import { AI_ACTIONS, explodeAt } from '../shared/actor-runtime.js';
-import { analyseMonster, enemyEventActors, enemyScriptRules, stateSeconds } from '../shared/enemy-script.js';
+import { AI_ACTIONS, explodeAt, hurtActor, setActorState } from '../shared/actor-runtime.js';
+import { analyseMonster, enemyEventActors, enemyScriptRules, propEventActors, stateSeconds } from '../shared/enemy-script.js';
 import { projectileEventActors } from '../shared/projectile-script.js';
 
 function imported() {
@@ -118,4 +118,43 @@ test('missiles that do more than fly straight are rules now', () => {
   assert.ok(rocket.conditions.some(condition => condition.type === 'entityActorName' && condition.actor === 'Rocket'));
   assert.deepEqual(projectileEventActors(project), ['bfgball', 'revenanttracer', 'rocket']);
   validateProject(project);
+});
+
+test('a barrel is a shootable prop whose blast is a rule', () => {
+  // Without an actor record a barrel imported as a flat decoration nobody could shoot;
+  // it now has health, a Death state, and two rules generated from that state.
+  const { actors } = { actors: buildVanillaActors() };
+  const barrel = actors.find(actor => actor.name === 'ExplosiveBarrel');
+  assert.ok(barrel, 'the classic barrel is in the actor table');
+  assert.equal(barrel.doomedNum, 2035);
+  assert.equal(barrel.health, 20);
+  assert.equal(barrel.flags.SHOOTABLE, true);
+
+  const project = imported();
+  const world = project.eventSheets.find(entry => entry.name === 'World');
+  const rules = project.events.filter(event => event.sheetId === world.id && event.propActor);
+  assert.deepEqual(rules.map(rule => rule.name), ['ExplosiveBarrel: explodes', 'ExplosiveBarrel: stops blocking']);
+  assert.deepEqual(propEventActors(project), ['explosivebarrel']);
+  const blast = rules.find(rule => rule.name === 'ExplosiveBarrel: explodes');
+  assert.deepEqual(blast.actions[1], { type: 'explodeArea', entityId: '$self', damage: 128, radius: 128 });
+  validateProject(project);
+
+  // It explodes once, not once a frame, and it stops blocking.
+  const state = createRuntime(project);
+  state.hasGame = true;
+  const player = state.entities.find(entity => entity.type === 'player');
+  const target = { id: 'barrel1', type: 'enemy', name: 'Barrel', doomType: 2035, actorName: 'ExplosiveBarrel',
+    actorId: 'actor_explosivebarrel', x: player.x + 40, y: player.y, z: 0, elevation: 0, radius: 10,
+    height: 32, angle: 0, solid: true, health: 20, maxHealth: 20 };
+  state.entities.push(target);
+  stepRuntime(project, state, 1 / 35, new Set());
+  hurtActor(project, state, target, 20);
+  // In play `stepActors` moves a dead actor into its Death state; this map has no
+  // geometry for that loop to walk, so the same state change is made directly.
+  setActorState(project, target, 'Death');
+  for (let tic = 0; tic < 30; tic++) stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(target.stateLabel, 'Death');
+  assert.equal(target.solid, false, 'the corpse stops blocking');
+  // 128 damage falls off over a 128 radius, so 40 units away is 88: one blast, not seven.
+  assert.equal(state.playerStats.health, 12);
 });

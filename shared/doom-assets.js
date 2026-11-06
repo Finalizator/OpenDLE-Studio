@@ -554,7 +554,7 @@ export const doomThings = {
   5: ['BKEY', 'pickup'], 6: ['YKEY', 'pickup'], 13: ['RKEY', 'pickup'], 38: ['RSKU', 'pickup'],
   39: ['YSKU', 'pickup'], 40: ['BSKU', 'pickup'], 2022: ['PINV', 'pickup'], 2023: ['PSTR', 'pickup'],
   2024: ['PINS', 'pickup'], 2025: ['SUIT', 'pickup'], 2026: ['PMAP', 'pickup'], 2045: ['PVIS', 'pickup'],
-  2035: ['BAR1', 'decoration'], 70: ['FCAN', 'decoration'], 2028: ['COLU', 'decoration'],
+  2035: ['BAR1', 'enemy'], 70: ['FCAN', 'decoration'], 2028: ['COLU', 'decoration'],
   34: ['CAND', 'light'], 35: ['CBRA', 'light'], 44: ['TBLU', 'light'], 45: ['TGRN', 'light'],
   46: ['TRED', 'light'], 55: ['SMBT', 'light'], 56: ['SMGT', 'light'], 57: ['SMRT', 'light'],
   48: ['ELEC', 'decoration'], 30: ['COL1', 'decoration'], 31: ['COL2', 'decoration'],

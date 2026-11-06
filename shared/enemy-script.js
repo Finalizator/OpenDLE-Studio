@@ -62,6 +62,62 @@ export function analyseMonster(project, actor) {
     seeFov: actor.flags?.LOOKALLAROUND === true ? 360 : 180 };
 }
 
+/**
+ * Shootable props (barrels and the like), as rules.
+ *
+ * A barrel has no AI: what it *is* is a Death state that explodes and stops blocking. Those
+ * two functions move to rules so the blast a player causes is the same one a rule could
+ * write, and `PROP_FUNCTIONS` stops the state from doing it a second time.
+ */
+export function propScriptRules(project, { sheetId, groupId, id = uniqueId(project) } = {}) {
+  const events = [];
+  for (const actor of project.actors || []) {
+    if (actor?.flags?.MONSTER === true || actor?.flags?.MISSILE === true) continue;
+    if (actor?.flags?.SHOOTABLE !== true) continue;
+    const functions = deathFunctions(actor);
+    if (!functions.includes('A_Explode')) continue;
+    const suffix = String(actor.name).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const base = { sheetId, groupId, enabled: true, once: false, forEachType: 'enemy',
+      propActor: actor.name,
+      comment: `Imported from the ${actor.name} actor's Death state. Edit the blast freely; delete the rule to hand it back to the state.` };
+    // Once per barrel: the Death state lasts several frames, and a blast every frame would
+    // be a bomb. The timer is per instance, so each barrel still explodes once.
+    events.push({ id: id(`prop_${suffix}_blast`), name: `${actor.name}: explodes`,
+      ...base, condition: { type: 'actorState', entityId: '$self', state: 'Death' },
+      conditions: [{ type: 'entityActorName', entityId: '$self', actor: actor.name },
+        { type: 'timerReady', timer: `prop_${suffix}_blast` }],
+      actions: [{ type: 'startTimer', timer: `prop_${suffix}_blast`, seconds: 3600 },
+        { type: 'explodeArea', entityId: '$self', damage: 128, radius: 128 }] });
+    if (functions.some(name => name === 'A_NoBlocking' || name === 'A_Noblocking')) {
+      events.push({ id: id(`prop_${suffix}_passable`), name: `${actor.name}: stops blocking`,
+        ...base, condition: { type: 'actorState', entityId: '$self', state: 'Death' },
+        conditions: [{ type: 'entityActorName', entityId: '$self', actor: actor.name }],
+        actions: [{ type: 'setEntitySolid', entityId: '$self', solid: 'no' }] });
+    }
+  }
+  return { events, skipped: [] };
+}
+
+/** The function names a Death state calls, up to the marker that ends it. */
+function deathFunctions(actor) {
+  const frames = actor?.states?.frames || [];
+  const start = labelIndex(actor, 'Death');
+  if (start === null) return [];
+  const names = [];
+  for (let index = start; index < frames.length; index++) {
+    const frame = frames[index];
+    if (frame.kind !== 'frame') {
+      if (frame.kind === 'goto' || frame.kind === 'loop' || frame.kind === 'stop' || frame.kind === null) break;
+      continue;
+    }
+    for (const action of frame.actions || []) names.push(action.name);
+  }
+  return names;
+}
+
+/** The functions a translated prop's state no longer performs itself. */
+export const PROP_FUNCTIONS = new Set(['A_Explode', 'A_NoBlocking', 'A_Noblocking']);
+
 /** The conditions every one of a monster's rules carries: it is alive and it is itself. */
 function living(plan) {
   return [{ type: 'entityHealth', entityId: '$self', operator: '>', value: 0 },
@@ -148,6 +204,16 @@ export function enemyEventActors(project) {
   for (const event of project.events || []) {
     if (!event.enabled || !event.enemyActor) continue;
     names.add(String(event.enemyActor).toLowerCase());
+  }
+  return [...names].sort();
+}
+
+/** The props whose Death effects are rules; their states stop performing them. */
+export function propEventActors(project) {
+  const names = new Set();
+  for (const event of project.events || []) {
+    if (!event.enabled || !event.propActor) continue;
+    names.add(String(event.propActor).toLowerCase());
   }
   return [...names].sort();
 }

@@ -38,10 +38,12 @@ The remaining blocker is that rules iterate **entities** while missiles live in
       it, wired into `installEngineScripts` (RevenantTracer, Rocket, BFGBall).
 - [x] Tests: the generated rules carry the mod's numbers and the actor set is marked.
 
-## 2. Item actors
+## 2. Props and item actors
 
-- [ ] Emit `entityDamaged` → `playSound` (the actor's own pain sound) and death
-      `setEntitySolid no` (A_NoBlocking) as generated rules for item archetypes.
+- [x] Shootable props: `ExplosiveBarrel` is a real actor (health 20, `Death` with
+      `A_Scream`/`A_Explode`/`A_NoBlocking`) instead of a flat decoration, and its blast
+      and solidity are rules (`PROP_FUNCTIONS` suppression).
+- [ ] Emit `entityDamaged` → `playSound` (the actor's own pain sound) for item archetypes.
       Take behaviour is already 20 rules in the Pickups sheet.
 
 ## 3. ACS (`BEHAVIOR`) decompiler
