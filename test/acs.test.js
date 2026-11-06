@@ -6,7 +6,8 @@ import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { parseBehavior, describeBehavior, disassemble, scanBehavior, createAcsVm, startScript, tickAcs,
   terminateScript, suspendScript, instructionAt, PCODE_NAMES } from '../shared/acs.js';
-import { describeMapScripts, createMapScripts, scriptSummary, decodeBase64, programFor, collectSpecials }
+import { describeMapScripts, createMapScripts, scriptSummary, decodeBase64, programFor, collectSpecials,
+  acsScriptStepRules }
   from '../shared/map-scripts.js';
 import { loadacsNames, acsLibrariesFromWad, selectAcsLibraries } from '../shared/acs-libraries.js';
 import { createProgram, findScript, startScriptsOfKind } from '../shared/acs.js';
@@ -874,4 +875,27 @@ test('a script this engine can read is written as the actions it performs', { sk
   const runtime = createRuntime(project);
   stepRuntime(project, runtime, 1 / 35, new Set());
   assert.equal(runtime.scriptState.opened, true);
+});
+
+test('a script that waits becomes a chain of steps, not one rule that lies', { skip: !existsSync(new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url)) }, () => {
+  // `lowerComp1` lowers a floor, waits for the tag, pauses, then raises it. One rule cannot
+  // say that, so the translation is a step per segment: each waits on the one before it and
+  // clears the timer it waited on, so no step runs twice.
+  const path = new URL('../Projects/ascentoftitan-1-1/maps/MAP05.wad', import.meta.url);
+  const buffer = readFileSync(path);
+  const wad = readWad(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  const { project } = importWadMap(wad, 'MAP05', { actors: false });
+  const program = programFor(project);
+  const entry = program.scripts.find(script => script.name === 'lowerComp1');
+  assert.ok(entry, 'the script is in the module');
+  const steps = acsScriptStepRules(program, entry);
+  assert.ok(steps.length >= 2, `the wait splits it into ${steps.length} steps`);
+  assert.equal(steps[0].condition.type, 'onStart');
+  assert.equal(steps[1].condition.type, 'timerExists', 'the second step waits on the first');
+  assert.ok(steps[1].conditions.some(condition => condition.type === 'timerReady'));
+  assert.ok(steps[1].conditions.some(condition => condition.type === 'sectorTagMoving' && condition.inverted));
+  assert.ok(steps[1].actions.some(action => action.type === 'clearTimer'), 'it clears the timer it waited on');
+  const last = steps.at(-1);
+  assert.ok(last.actions.some(action => action.type === 'runLineSpecial'));
+  for (const step of steps) assert.ok(step.actions.length, `${step.name} does something`);
 });

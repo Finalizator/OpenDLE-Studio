@@ -34,10 +34,15 @@ export function decompileScript(program, selector) {
   if (!script) return null;
   const module = program.modules?.[script.moduleIndex ?? 0]?.module;
   if (!module) return null;
-  const actions = [];
+  const segments = [];
+  let actions = [];
   const stack = [];
   const seen = new Set();
   let offset = script.address;
+  const finish = wait => {
+    segments.push({ actions, wait });
+    actions = [];
+  };
   for (let guard = 0; guard < 4096; guard++) {
     if (offset === null || offset === undefined) return null;
     if (seen.has(offset)) return null;
@@ -47,8 +52,48 @@ export function decompileScript(program, selector) {
     const name = instruction.name;
     const operands = instruction.operands || [];
     if (name === 'TERMINATE' || name === 'RETURNVOID' || name === 'RETURNVAL' || name === 'END') {
-      return { actions, instructions: seen.size };
+      if (actions.length) segments.push({ actions, wait: null });
+      else if (segments.length) segments[segments.length - 1].wait = null;
+      const flat = segments.flatMap(segment => segment.actions);
+      return { actions: flat, segments, instructions: seen.size };
     }
+    // A wait splits the body: everything after it happens later, so the segment ends here.
+    if (name === 'DELAY' || name === 'DELAYDIRECT') {
+      const tics = name === 'DELAYDIRECT' ? Number(operands[0]) : popNumber(stack);
+      if (!Number.isFinite(tics)) return null;
+      finish({ kind: 'delay', seconds: Math.max(0, tics) / 35 });
+      offset = instruction.end;
+      continue;
+    }
+    if (name === 'TAGWAIT' || name === 'TAGWAITDIRECT') {
+      const tag = name === 'TAGWAITDIRECT' ? Number(operands[0]) : popNumber(stack);
+      if (!Number.isFinite(tag)) return null;
+      finish({ kind: 'tag', tag });
+      offset = instruction.end;
+      continue;
+    }
+    // Constant arithmetic is folded, so `35 * 1` becomes the delay it stands for.
+    if (['ADD', 'SUBTRACT', 'MULTIPLY', 'DIVIDE'].includes(name)) {
+      const right = popNumber(stack), left = popNumber(stack);
+      if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+      const value = name === 'ADD' ? left + right : name === 'SUBTRACT' ? left - right
+        : name === 'MULTIPLY' ? left * right : right === 0 ? null : left / right;
+      if (value === null) return null;
+      stack.push(value);
+      offset = instruction.end;
+      continue;
+    }
+    // A string argument names a message: `PUSHSTRING 3; PRINTSTRING` shows string 3.
+    if (name === 'PUSHSTRING') { stack.push({ text: module.strings?.[operands[0]] ?? '' }); offset = instruction.end; continue; }
+    if (name === 'PRINTSTRING') {
+      const value = stack.pop();
+      if (value?.text === undefined) return null;
+      actions.push({ type: 'showMessage', message: String(value.text).slice(0, 200), seconds: 4 });
+      offset = instruction.end;
+      continue;
+    }
+    // A dropped value changes nothing a rule could see.
+    if (name === 'DROP') { stack.pop(); offset = instruction.end; continue; }
     const pushed = PUSHES[name];
     if (pushed) {
       // A push of N bytes hands the caller N arguments, in the order they are written.
@@ -76,6 +121,12 @@ export function decompileScript(program, selector) {
     return null;
   }
   return null;
+}
+
+/** A numeric stack entry, or NaN when the top is not a plain number. */
+function popNumber(stack) {
+  const value = stack.pop();
+  return typeof value === 'number' ? value : NaN;
 }
 
 function findEntry(program, selector) {

@@ -1403,6 +1403,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const label = actor && index !== null ? labelIndex(actor, condition.state) : null;
         return index !== null && label !== null && index === label;
       }
+      if (condition.type === 'sectorTagMoving') {
+        return state.sectors.some(sector => sector.tag === condition.tag &&
+          (state.sectorMotions.has(`${sector.id}:floorHeight`) || state.sectorMotions.has(`${sector.id}:ceilingHeight`)));
+      }
       if (condition.type === 'actorState') {
         const entity = findTarget(condition.entityId);
         return Boolean(entity?.stateLabel) && String(entity.stateLabel).toLowerCase() === String(condition.state).toLowerCase();

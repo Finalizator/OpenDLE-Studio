@@ -926,23 +926,53 @@ export function acsScriptRules(project, { sheetId, groupId, id = value => `engin
     if (entry.type !== 'open' && entry.type !== 'enter') continue;
     // A library script runs from the map's own scripts, not from the level start.
     if (entry.moduleIndex) continue;
-    // A numbered script is selected by its number; a named one by its name.
-    const key = entry.number !== undefined && entry.number !== null ? String(entry.number) : String(entry.name || '');
-    if (!key) continue;
-    if (ruleScripts.includes(key)) continue;
+    const key = String(entry.number !== undefined && entry.number !== null ? entry.number : entry.name || '');
+    if (!key || ruleScripts.includes(key)) continue;
     ruleScripts.push(key);
-    const label = entry.name || key;
-    // A body this module can read becomes the actions it performs; anything else keeps the
-    // script itself, so the rule never claims to do only part of what the script does.
-    const decompiled = decompileScript(program, entry.number ?? entry.name);
-    const actions = decompiled?.actions?.length ? decompiled.actions : [{ type: 'runScript', script: key }];
-    events.push({ id: id(`acs_${key}`), name: `ACS script ${label}`.slice(0, 100),
-      sheetId, groupId, enabled: true, once: false,
-      condition: { type: 'onStart' }, conditions: [], actions,
-      comment: decompiled?.actions?.length
-        ? `The level's ${entry.type.toUpperCase()} script ${key}, translated from its bytecode into the actions below.`
-        : `The level's ${entry.type.toUpperCase()} script ${key}. Its body is the compiled ACS shown in the Scripts tab; `
-          + 'delete this rule to let the interpreter start the script itself again.' });
+    events.push(...acsScriptStepRules(program, entry, { sheetId, groupId, id }));
   }
   return { events, skipped, ruleScripts };
+}
+
+/**
+ * The rules that run one script: one rule when its body is a single segment, a chain when it
+ * waits. A wait becomes the next step's condition — its timer for a delay, its tag coming to
+ * rest for `TagWait` — and each step clears the timer it waited on, so a step runs once.
+ */
+export function acsScriptStepRules(program, entry, { sheetId, groupId, id = value => `engine_${value}` } = {}) {
+  const key = String(entry.number !== undefined && entry.number !== null ? entry.number : entry.name || '');
+  const label = entry.name || key;
+  const decompiled = decompileScript(program, entry.number ?? entry.name);
+  const segments = decompiled?.segments?.filter(segment => segment.actions.length) || [];
+  if (!segments.length) {
+    return [{ id: id(`acs_${key}`), name: `ACS script ${label}`.slice(0, 100),
+      sheetId, groupId, enabled: true, once: false,
+      condition: { type: 'onStart' }, conditions: [], actions: [{ type: 'runScript', script: key }],
+      comment: `The level's ${entry.type.toUpperCase()} script ${key}. Its body is the compiled ACS shown in the Scripts tab; `
+        + 'delete this rule to let the interpreter start the script itself again.' }];
+  }
+  const events = [];
+  let previous = null;
+  segments.forEach((segment, index) => {
+    const timer = `acs_${key}_step${index + 1}`;
+    const conditions = [];
+    if (previous) {
+      conditions.push({ type: 'timerExists', timer: previous.timer }, { type: 'timerReady', timer: previous.timer });
+      if (previous.wait?.kind === 'tag') {
+        conditions.push({ type: 'sectorTagMoving', tag: previous.wait.tag, inverted: true });
+      }
+    }
+    const actions = [...segment.actions];
+    if (previous) actions.push({ type: 'clearTimer', timer: previous.timer });
+    if (segment.wait?.kind === 'delay') actions.push({ type: 'startTimer', timer, seconds: segment.wait.seconds });
+    if (segment.wait?.kind === 'tag') actions.push({ type: 'startTimer', timer, seconds: 0 });
+    events.push({ id: id(`acs_${key}_step${index + 1}`),
+      name: `ACS script ${label}${index ? ` (step ${index + 1})` : ''}`.slice(0, 100),
+      sheetId, groupId, enabled: true, once: false,
+      condition: index ? { type: 'timerExists', timer: previous.timer } : { type: 'onStart' },
+      conditions, actions,
+      comment: `Step ${index + 1} of the level's ${entry.type.toUpperCase()} script ${key}, translated from its bytecode.` });
+    previous = { timer, wait: segment.wait };
+  });
+  return events;
 }

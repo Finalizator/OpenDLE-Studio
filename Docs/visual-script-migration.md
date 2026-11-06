@@ -57,8 +57,9 @@ useful alone:
       Scripts tab.
 - [~] **Step 2 — straight-line bodies become rules.** `shared/acs-decompile.js` walks
       `instructionAt` and translates a body that is only pushes and line specials into
-      `runLineSpecial` actions (2 of 11 scripts on Ascent MAP05 today). Still to add:
-      assignments, `Print`/`HudMessage`, `ACS_Execute`, inventory and damage calls.
+      `runLineSpecial` actions, splitting a script at its waits into a chain of steps
+      (5 of 11 scripts on Ascent MAP05 today). Still to add: jumps/loops (`if`, `while`),
+      variables, inventory and damage calls.
 - [ ] **Step 3 — control flow.** `if`/`while`/`for` become sub-events; loops that wait
       become timers. Where bytecode cannot be expressed (raw stack juggling,
       `ScriptWait` across call frames), the rule keeps a `runScript(n)` action and says

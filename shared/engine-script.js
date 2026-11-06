@@ -103,6 +103,8 @@ export const ENGINE_CONDITIONS = [
     fields: [choice('mode', 'use', ['use', 'cross', 'shoot'])] },
   { type: 'sectorMoving', label: 'World: sector surface is moving', sector: true,
     fields: [choice('surface', 'ceilingHeight', ['ceilingHeight', 'floorHeight'])] },
+  // A script that waits for its tag to finish moving before the next step.
+  { type: 'sectorTagMoving', label: 'World: any sector with this tag is moving', fields: [numeric('tag', 0, 0, 65535)] },
   { type: 'sectorDoorOpen', label: 'Door: is open', sector: true, door: true, fields: [] },
   { type: 'sectorDoorClosed', label: 'Door: is closed', sector: true, door: true, fields: [] },
   { type: 'sectorDoorMoving', label: 'Door: is moving', sector: true, door: true, fields: [] },
