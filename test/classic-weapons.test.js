@@ -5,6 +5,7 @@ import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { buildVanillaActors, importActors, classFamily, actorIndex } from '../shared/actors.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { weaponActor } from '../shared/actor-runtime.js';
+import { weaponEventActors } from '../shared/weapon-script.js';
 
 const SLOTS = ['fist', 'pistol', 'shotgun', 'superShotgun', 'chaingun', 'rocketLauncher', 'plasmaRifle', 'bfg', 'chainsaw'];
 
@@ -17,6 +18,19 @@ function plainProject() {
     ({ id: `asset_${name}`, name, kind: 'sprite', width: 16, height: 16, offsetX: 8, offsetY: 16,
       src: 'data:image/png;base64,iVBORw0KGgo=' }));
   installEngineScripts(project, { includeHUD: false });
+  return project;
+}
+
+/**
+ * The same project with the generated weapon rules removed.
+ *
+ * Those rules are the shipped translation of each weapon (see shared/weapon-script.js);
+ * these tests are about the DECORATE machine underneath, which a player gets back by
+ * deleting them, so they are taken out here rather than fought with.
+ */
+function machineOnly(project) {
+  const sheet = project.eventSheets.find(entry => entry.name === 'Weapons');
+  project.events = project.events.filter(event => event.sheetId !== sheet?.id);
   return project;
 }
 
@@ -73,16 +87,35 @@ test('a plain WAD import carries the classic weapons, projectiles and effects', 
   for (const effect of ['BFGExtra', 'BulletPuff', 'RevenantTracerSmoke']) assert.ok(index.byName.get(effect.toLowerCase()), effect);
 });
 
-test('a plain WAD import runs Doom weapon states instead of scripted firing rules', () => {
+test('a WAD import writes each weapon into the Weapons sheet, and its states stop firing', () => {
+  // The engine's rule is that gameplay is in the event sheets. An imported weapon is
+  // therefore translated from its own DECORATE states (shared/weapon-script.js) instead of
+  // running invisibly inside the actor machine.
   const project = createProject();
   project.actors = buildVanillaActors();
   installEngineScripts(project, { includeHUD: false });
-  assert.equal(project.events.some(event => event.name === 'superShotgun'), false,
-    'no scripted weapon rules sit on top of the actor machines');
+  const sheet = project.eventSheets.find(entry => entry.name === 'Weapons');
+  const rules = project.events.filter(event => event.sheetId === sheet.id);
+  assert.deepEqual(rules.map(rule => rule.name).sort(), [...SLOTS].sort());
+  for (const rule of rules) {
+    assert.ok(rule.weaponActor, `${rule.name} names the actor whose states wrote it`);
+    // Present the states, fire the shot, wait the cadence — the same shape the engine's
+    // own table uses, with an ammo spend in front of it when the weapon needs one.
+    const types = rule.actions.map(action => action.type);
+    const animation = types.indexOf('weaponAnimation');
+    assert.ok(animation >= 0, `${rule.name} still runs its own state for the sound and flash`);
+    assert.equal(types.at(-1), 'startTimer', `${rule.name} waits the cadence its frames add up to`);
+    const shots = types.slice(animation + 1, -1);
+    assert.ok(shots.length >= 1 && shots.every(type => ['hitscan', 'launchProjectile'].includes(type)),
+      `${rule.name} fires the shot its state fires`);
+  }
+  assert.deepEqual(weaponEventActors(project).sort(), ['bfg9000', 'chaingun', 'chainsaw', 'fist', 'pistol',
+    'plasmarifle', 'rocketlauncher', 'shotgun', 'supershotgun']);
   const bare = createProject();
   installEngineScripts(bare, { includeHUD: false });
   assert.ok(bare.events.some(event => event.name === 'superShotgun'),
-    'a project without an actor table still gets the scripted rules');
+    'a project without an actor table still gets the engine table');
+  assert.deepEqual(weaponEventActors(bare), [], 'and nothing is marked as fired by a rule');
 });
 
 test('screen interaction suppresses classic weapon fire and ammo consumption until aim leaves', () => {
@@ -99,7 +132,7 @@ test('screen interaction suppresses classic weapon fire and ammo consumption unt
 });
 
 test('classic weapon cadences come from their own frame durations', () => {
-  const project = plainProject();
+  const project = machineOnly(plainProject());
   const state = armed(project);
   // A_ReFire restarts Fire the tic its frame is entered, so the refire cycle is the
   // sum of the frames before it: pistol 4+6+4 = 14 tics, plasma 3+1, BFG 40.
@@ -115,7 +148,7 @@ test('classic weapon cadences come from their own frame durations', () => {
 });
 
 test('the trigger is consumed by A_WeaponReady and A_ReFire decides refiring', () => {
-  const project = plainProject();
+  const project = machineOnly(plainProject());
   const state = armed(project);
   state.inventory.selectedWeapon = 'pistol';
   // Ready idles until the trigger is held, then enters Fire.

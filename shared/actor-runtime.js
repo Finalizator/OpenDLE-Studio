@@ -321,10 +321,21 @@ function tracerStep(ctx, turn) {
  * per 35 Hz tic, so it is converted to the per-second value the projectile step
  * and the level's own movement share.
  */
-export function missileProjectile(project, name) {
+/**
+ * The actor a missile class names, without building its clips.
+ *
+ * Translating a weapon asks what class a state fires, not what it looks like; going
+ * through `missileProjectile` would build sprites clips before the artwork is imported
+ * and leave the project's sprite index remembering nothing.
+ */
+export function missileActor(project, name) {
   const index = projectilesByName(project);
-  const actor = index.byName.get(String(name || '').toLowerCase()) ||
-    index.byId.get(`actor_${String(name || '').toLowerCase().replace(/[^a-z0-9_]/g, '_')}`);
+  return index.byName.get(String(name || '').toLowerCase()) ||
+    index.byId.get(`actor_${String(name || '').toLowerCase().replace(/[^a-z0-9_]/g, '_')}`) || null;
+}
+
+export function missileProjectile(project, name) {
+  const actor = missileActor(project, name);
   if (!actor) return null;
   const clips = actorProjectileClips(project, actor);
   return { name: actor.name, actorId: actor.id, speed: (actor.speed || 10) * TIC_RATE, damage: actor.damage ?? 0,
@@ -1371,7 +1382,7 @@ export function initialiseActorEntities(project, entities) {
  * hardcoded table.
  */
 
-const WEAPON_ACTOR_BY_SLOT = {
+export const WEAPON_ACTOR_BY_SLOT = {
   fist: ['Fist', 'Punch'], chainsaw: ['Chainsaw'], pistol: ['Pistol'],
   shotgun: ['Shotgun'], superShotgun: ['SuperShotgun', 'Shotgun2'], chaingun: ['Chaingun'],
   rocketLauncher: ['RocketLauncher', 'MissileLauncher'], plasmaRifle: ['PlasmaRifle', 'PlasmaGun'],
@@ -1403,18 +1414,26 @@ export function beginWeapon(project, state, slot) {
   if (!actor) { state.weaponActor = null; return false; }
   state.weaponActor = { actor, index: labelIndex(actor, 'Ready') ?? 0, tics: 0, entered: false, ready: false, flash: null };
   state.weaponSlot = slot;
+  // Which state A_ReFire repeats; `A_WeaponReady` records AltFire when that is what started.
+  state.weaponRefireLabel = null;
   return true;
 }
 
-/** Steps the player's weapon state machine for one 35 Hz tic. */
-export function weaponTic(project, state, attackHeld) {
+/**
+ * Steps the player's weapon state machine for one 35 Hz tic.
+ *
+ * `presentation` runs the states for their pictures and sounds only: a weapon whose
+ * firing is an event rule still plays its own reload and charge sounds, but never
+ * fires, spends ammo or leaves its ready state on its own.
+ */
+export function weaponTic(project, state, attackHeld, { presentation = false } = {}) {
   const runtime = state.weaponActor;
   if (!runtime?.actor) return;
   const actor = runtime.actor;
   const frames = actor.states.frames;
   const frame = frames[runtime.index];
   if (!frame) { runtime.index = labelIndex(actor, 'Ready') ?? 0; return; }
-  const context = { project, state, entity: state.player, actor, weapon: true, runtime };
+  const context = { project, state, entity: state.player, actor, weapon: true, runtime, presentation };
   if (frame.kind !== 'frame') {
     runtime.entered = false;
     if (frame.kind === 'stop' || frame.kind === null) { runtime.index = labelIndex(actor, 'Ready') ?? 0; return; }
@@ -1548,20 +1567,32 @@ function runWeaponAction(ctx, action) {
     case 'A_WeaponReady': {
       runtime.ready = true;
       state.weaponReady = true;
+      // A translated weapon is fired by its rules, so this state only presents: the
+      // trigger is not its to consume, and entering a Fire state would fire twice.
+      if (ctx.presentation || state.hudState?.cursor) return;
+      // GZDoom's alt attack starts here as well, so a mod's secondary fire is reached
+      // through the same ready state its primary fire is.
+      const alt = state.weaponAltHeld === true;
+      if (!alt && !state.weaponTriggerHeld) return;
+      const label = alt && labelIndex(actor, 'AltFire') !== null ? 'AltFire' : 'Fire';
       // GZDoom consumes the attack button here: a held trigger starts the weapon's
       // own Fire sequence, which is why A_ReFire (not this) decides refiring.
-      if (!state.weaponTriggerHeld || state.hudState?.cursor) return;
-      const fire = labelIndex(actor, 'Fire');
+      const fire = labelIndex(actor, label);
       if (fire === null) return;
       runtime.index = fire; runtime.tics = 0; runtime.entered = false; runtime.jumped = true;
       runtime.ready = false; state.weaponReady = false;
+      state.weaponRefireLabel = label;
       return;
     }
-    case 'A_ReFire':
-      // Doom re-enters Fire while the trigger is held, otherwise returns to Ready.
-      if (state.weaponTriggerHeld) { teleportWeapon(runtime, actor, 'Fire'); return; }
+    case 'A_ReFire': {
+      // Doom re-enters the state it fired from while the trigger is held, otherwise
+      // returns to Ready — an alt fire therefore repeats its own state, not Fire.
+      const label = ctx.presentation ? null
+        : state.weaponAltHeld ? 'AltFire' : state.weaponTriggerHeld ? (state.weaponRefireLabel || 'Fire') : null;
+      if (label && labelIndex(actor, label) !== null) { teleportWeapon(runtime, actor, label); return; }
       teleportWeapon(runtime, actor, 'Ready');
       return;
+    }
     case 'A_CheckReload':
       if (!weaponHasAmmo(state, actor)) teleportWeapon(runtime, actor, 'Ready');
       return;
@@ -1604,6 +1635,19 @@ function runWeaponAction(ctx, action) {
   }
 }
 
+/** Puts the drawn weapon into a named state, for a rule that animates the imported weapon. */
+export function playWeaponState(project, state, label) {
+  const runtime = state.weaponActor;
+  if (!runtime?.actor) return false;
+  const target = labelIndex(runtime.actor, label);
+  if (target === null) return false;
+  runtime.index = target; runtime.tics = 0; runtime.entered = false; runtime.jumped = true;
+  runtime.ready = false; state.weaponReady = false;
+  // `A_ReFire` repeats the state that fired; a rule choosing the state says which one.
+  state.weaponRefireLabel = label === 'AltFire' ? 'AltFire' : 'Fire';
+  return true;
+}
+
 function teleportWeapon(runtime, actor, label) {
   const target = labelIndex(actor, label);
   if (target === null) return;
@@ -1626,11 +1670,67 @@ function weaponHasAmmo(state, actor) {
 // GZDoom's native weapon action functions start their own CHAN_WEAPON sound. A
 // DECORATE/ZScript weapon only names the action, so the shot is silent unless the
 // sound is played here. Names are logical SNDINFO aliases, not lump names.
-const FIRE_SOUNDS = {
+export const FIRE_SOUNDS = {
   A_FirePistol: 'weapons/pistol', A_FireShotgun: 'weapons/shotgf', A_FireShotgun2: 'weapons/sshotf',
   A_FireCGun: 'weapons/chngun', A_FireMissile: 'weapons/rocklf', A_FirePlasma: 'weapons/plasmaf',
   A_FireBFG: 'weapons/bfgf', A_Saw: 'weapons/sawfull', A_Punch: '*fist',
 };
+
+/**
+ * The shot a weapon action produces, from the arguments the mod wrote.
+ *
+ * Kept apart from `fireWeapon` because the event-sheet translation asks the same
+ * question: an imported weapon's `A_FireBullets` becomes a `hitscan` action with
+ * exactly these numbers, so the rule and the interpreter cannot drift apart.
+ * `{ missing }` means a class the project does not define, and the weapon does not fire.
+ */
+export function weaponAttackFor(project, actionName, args = [], named = {}) {
+  const ctx = { project, args, named };
+  const missile = (name, damage, radius, fallbackSpeed = 700) => {
+    const resolved = missileActor(project, name);
+    const amount = Number(resolved?.damage);
+    // An actor's `speed` is map units a tic; the rest of the engine works in units a second.
+    const actorSpeed = Number(resolved?.speed) * TIC_RATE;
+    const attack = { kind: 'missile', missile: resolved?.name || name,
+      damage: Number.isFinite(amount) && amount > 0 ? amount : damage, diceSides: 8,
+      speed: Number.isFinite(actorSpeed) && actorSpeed > 0 ? actorSpeed : fallbackSpeed, radius,
+      actorId: resolved?.actorId || null, seeker: resolved?.flags?.SEEKERMISSILE === true };
+    // The actor's own Death state carries the explosion, so its radius is not invented.
+    if (attack.actorId) attack.radius = 0;
+    return attack;
+  };
+  switch (actionName) {
+    case 'A_FireBullets': {
+      const spread = numArg(ctx, 0, 0), pellets = Math.max(1, Math.min(40, numArg(ctx, 2, 1)));
+      const damage = Math.max(1, numArg(ctx, 3, 5)), range = numArg(ctx, 9, 2048) || 2048;
+      return { attack: { kind: 'hitscan', damage: [damage, Math.max(1, numArg(ctx, 1, 3))], pellets, spread, range } };
+    }
+    case 'A_FireShotgun': return { attack: { kind: 'hitscan', damage: [5, 3], pellets: 7, spread: 11.25, range: 2048 } };
+    case 'A_FireShotgun2': return { attack: { kind: 'hitscan', damage: [5, 3], pellets: 20, spread: 22.5, range: 2048 } };
+    case 'A_FireCGun': return { attack: { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 5.625, range: 2048 } };
+    case 'A_FirePistol': return { attack: { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 0, range: 2048 } };
+    case 'A_Punch': return { attack: { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64 } };
+    case 'A_Saw': return { attack: { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64, hitSound: 'weapons/sawhit' } };
+    case 'A_FireMissile': return { attack: missile('Rocket', 20, 128) };
+    case 'A_FirePlasma': return { attack: missile('PlasmaBall', 5, 0) };
+    case 'A_FireBFG': return { attack: missile('BFGBall', 100, 256) };
+    case 'A_FireCustomMissile':
+    case 'A_FireProjectile': {
+      const className = String(arg(ctx, 0) || '').replace(/^"|"$/g, '');
+      const resolved = missileActor(project, className);
+      // No placeholder: a weapon that names a class the project does not contain
+      // does not fire, and the shot is reported rather than faked.
+      if (!resolved) return { missing: className };
+      return { attack: { kind: 'missile', missile: resolved.name, actorId: resolved.id,
+        damage: resolved.damage > 0 ? resolved.damage : 1, diceSides: 8,
+        speed: (Number(resolved.speed) || 10) * TIC_RATE,
+        radius: 0, seeker: resolved.flags?.SEEKERMISSILE === true,
+        angle: numArg(ctx, 1, 0), spawnofs: numArg(ctx, 3, 0), spawnheight: numArg(ctx, 4, 0),
+        pitch: numArg(ctx, 6, 0) } };
+    }
+    default: return { attack: { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 0, range: 2048 } };
+  }
+}
 
 function fireWeapon(ctx, actionName) {
   const { state, actor } = ctx;
@@ -1639,53 +1739,21 @@ function fireWeapon(ctx, actionName) {
   const custom = actionName === 'A_FireCustomMissile' || actionName === 'A_FireProjectile';
   const spendAmmo = !custom || !(arg(ctx, 2, true) === false || numArg(ctx, 2, 1) === 0);
   const { type, use } = weaponAmmo(actor);
-  if (type && spendAmmo) {
+  // A translated weapon still spends and shoots through its rule, but the shot sound
+  // belongs to the state that fires it, so it plays here either way and the rule does
+  // not repeat it. The alias is what the audio player resolves, mod included.
+  if (!ctx.presentation && type && spendAmmo) {
     // `Weapon.AmmoUse 0` is a weapon that needs the ammo type but spends none.
     if ((state.playerStats[type] || 0) < use) { state.weaponTriggerHeld = false; return; }
     state.playerStats[type] -= use;
   }
   if (FIRE_SOUNDS[actionName]) saySound(state, FIRE_SOUNDS[actionName], null, 127);
-  const missile = (name, damage, radius) => {
-    const resolved = missileProjectile(ctx.project, name);
-    const amount = Number(resolved?.damage);
-    state.weaponAttack = { kind: 'missile', missile: resolved?.name || name,
-      damage: Number.isFinite(amount) && amount > 0 ? amount : damage, diceSides: 8,
-      speed: resolved?.speed || 700, radius, actorId: resolved?.actorId || null,
-      seeker: resolved?.seeker === true };
-  };
-  switch (actionName) {
-    case 'A_FireBullets': {
-      const spread = numArg(ctx, 0, 0), pellets = Math.max(1, Math.min(40, numArg(ctx, 2, 1)));
-      const damage = Math.max(1, numArg(ctx, 3, 5)), range = numArg(ctx, 9, 2048) || 2048;
-      state.weaponAttack = { kind: 'hitscan', damage: [damage, Math.max(1, numArg(ctx, 1, 3))], pellets, spread, range };
-      break;
-    }
-    case 'A_FireShotgun': state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 7, spread: 11.25, range: 2048 }; break;
-    case 'A_FireShotgun2': state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 20, spread: 22.5, range: 2048 }; break;
-    case 'A_FireCGun': state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 5.625, range: 2048 }; break;
-    case 'A_FirePistol': state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 0, range: 2048 }; break;
-    case 'A_Punch': state.weaponAttack = { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64 }; break;
-    case 'A_Saw': state.weaponAttack = { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64, hitSound: 'weapons/sawhit' }; break;
-    // The actor's own Death state carries the explosion (the rocket's A_Explode, the
-    // BFG ball's A_BFGSpray), so no radius is invented here. The fallbacks keep a
-    // project without an actor table playable.
-    case 'A_FireMissile': missile('Rocket', 20, 128); if (state.weaponAttack?.actorId) state.weaponAttack.radius = 0; break;
-    case 'A_FirePlasma': missile('PlasmaBall', 5, 0); break;
-    case 'A_FireBFG': missile('BFGBall', 100, 256); if (state.weaponAttack?.actorId) state.weaponAttack.radius = 0; break;
-    case 'A_FireCustomMissile':
-    case 'A_FireProjectile': {
-      const className = String(arg(ctx, 0) || '').replace(/^"|"$/g, '');
-      const resolved = missileProjectile(ctx.project, className);
-      // No placeholder: a weapon that names a class the project does not contain
-      // does not fire, and the shot is reported rather than faked.
-      if (!resolved) { state.missileGaps ||= new Set(); if (state.missileGaps.size < 40) state.missileGaps.add(className); return; }
-      state.weaponAttack = { kind: 'missile', missile: resolved.name, actorId: resolved.actorId,
-        damage: resolved.damage > 0 ? resolved.damage : 1, diceSides: 8, speed: resolved.speed,
-        radius: 0, seeker: resolved.seeker,
-        angle: numArg(ctx, 1, 0), spawnofs: numArg(ctx, 3, 0), spawnheight: numArg(ctx, 4, 0),
-        pitch: numArg(ctx, 6, 0) };
-      return;
-    }
-    default: state.weaponAttack = { kind: 'hitscan', damage: [5, 3], pellets: 1, spread: 0, range: 2048 };
+  if (ctx.presentation) return;
+  const shot = weaponAttackFor(ctx.project, actionName, ctx.args || [], ctx.named || {});
+  if (shot.missing) {
+    state.missileGaps ||= new Set();
+    if (state.missileGaps.size < 40) state.missileGaps.add(shot.missing);
+    return;
   }
+  if (shot.attack) state.weaponAttack = shot.attack;
 }

@@ -381,6 +381,50 @@ save never carries every other save file inside it. Both kinds live with the hos
 
 ---
 
+### Imported weapons are rules
+
+A WAD's weapons arrive as DECORATE states, and the engine's rule is that gameplay is
+readable in the event sheets — so an import **writes each weapon into the Weapons
+sheet** instead of leaving it to run inside the actor machine. Every imported weapon
+gets one rule, built from that weapon's own states:
+
+| Part of the rule | Where it comes from |
+|---|---|
+| Condition | `Mouse0` held (and a second rule with `Mouse2` when the states have an `AltFire`) |
+| Conditions | alive, weapon selected, weapon owned, enough ammo, `timerReady` on the weapon's own timer |
+| `addAmmo` | `Weapon.AmmoType` and `Weapon.AmmoUse` of the actor |
+| `weaponAnimation` | the state the weapon fires from — it plays the shot sound, the reload and the flash, and nothing else |
+| `hitscan` / `launchProjectile` | the `A_FirePistol`/`A_FireShotgun`/`A_FireBullets`/`A_FireCustomMissile` arguments the mod wrote; a missile keeps its actor class, so the mod's explosion is the one that happens |
+| `startTimer` | the tics the firing state's frames add up to, divided by 35 |
+
+A weapon that fires twice in one pass — the chaingun, the chainsaw — spends and shoots
+twice in its rule and waits a whole pass, so ammo and shots a second are exact.
+
+The cadence is the mod's, not a guess: pistol 15 tics, shotgun 38, super shotgun 58,
+chaingun 9 for two shots, rocket launcher 21, plasma rifle 4, BFG 41, fist 18,
+chainsaw 9 for two shots. A rule fires its first shot the frame the trigger is held,
+where the states spend a few tics raising the weapon, so the very first press can be
+up to one pass earlier than the animation suggests.
+
+Two actions make this possible, and both are in the catalogue for your own rules:
+
+- `weaponAnimation` (`weapon`, `state`) runs an imported weapon's named state
+  (`Fire`, `AltFire`, `Ready`, `Flash`) — its pictures, its shot sound, its reload and
+  its flash — without firing or spending anything.
+- `weaponTrigger` (`weapon`, `trigger` = `fire`/`alt`) holds an imported weapon's
+  trigger for the frame, which lets the weapon's own states decide the rate when you
+  want them to.
+
+A rule that names an actor in its `weaponActor` field owns that weapon: the state
+machine then runs for pictures and sounds only, so the weapon is fired once and not
+twice. Deleting the rule hands the weapon back to its states unchanged; editing the
+rule changes the weapon — the ammo cost, the damage, the cadence, the projectile are
+all just actions and fields. Two things stay in the actor, because they are what the
+actor is: its state pictures and its sounds. A weapon whose states a single rule
+cannot promise — two different shots in one pass, a class the project does not
+contain, a state that stops or jumps out of the cycle — keeps its state machine and
+the import says which weapon and why.
+
 ### Controllers
 
 A PlayStation 5, PlayStation 4, Xbox or Switch Pro controller works without any setup:

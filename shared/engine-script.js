@@ -14,6 +14,7 @@ import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 import { addonCommands, addonCommand, declaredAddonTypes } from './addons.js';
 import { PATH_EASINGS } from './timesheet.js';
 import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTIES } from './instance-properties.js';
+import { weaponScriptRules } from './weapon-script.js';
 
 // Every key a creator can bind to an event, including the letters Doom leaves free, so
 // scriptlets such as the spray can be rebound from the event sheet.
@@ -319,10 +320,20 @@ export const ENGINE_ACTIONS = [
     { ...numeric('spread', 22.5, 0, 180), optional: true }, { ...numeric('pellets', 1, 1, 64), optional: true }], target: true },
   { type: 'launchProjectile', label: 'Combat: launch projectile from player', fields: [numeric('speed', 700, 1, 4096), numeric('damage', 20, 0, 10000),
     numeric('diceSides', 8, 1, 256), numeric('radius', 128, 0, 1024), choice('color', '#ff8833', ['#ff8833', '#66bbff', '#66ff88']),
-    { name: 'sound', value: 'DSBAREXP', kind: 'string', optional: true }, ...projectileClips()] },
+    { name: 'sound', value: 'DSBAREXP', kind: 'string', optional: true }, ...projectileClips(),
+    // An imported actor class makes the shot the mod's own projectile: its flight clip, its
+    // Death state and its explosion come from the actor, not from the numbers beside it.
+    { name: 'missile', value: '', kind: 'string', optional: true }] },
   { type: 'enemyProjectile', label: 'Enemy: launch projectile at player', fields: [numeric('speed', 300, 1, 4096), numeric('damage', 3, 0, 10000),
     numeric('diceSides', 8, 1, 256), numeric('radius', 0, 0, 1024), choice('color', '#ff8833', ['#ff8833', '#66bbff', '#66ff88']),
     { name: 'sound', value: 'DSFIRXPL', kind: 'string', optional: true }, ...projectileClips()], target: true },
+  // Imported weapons keep their DECORATE states, and a rule drives them: `weaponAnimation`
+  // runs the state for its pictures and sounds, `weaponTrigger` holds the trigger for the
+  // frame when the rule wants the states to decide the rate themselves.
+  { type: 'weaponAnimation', label: 'Weapon: play an imported weapon state', fields: [
+    choice('weapon', 'pistol', WEAPONS), choice('state', 'Fire', ['Fire', 'AltFire', 'Ready', 'Flash'])] },
+  { type: 'weaponTrigger', label: 'Weapon: hold an imported weapon trigger this frame', fields: [
+    choice('weapon', 'pistol', WEAPONS), choice('trigger', 'fire', ['fire', 'alt'])] },
   { type: 'setWeaponOwned', label: 'Inventory: set weapon ownership', fields: [choice('weapon', 'pistol', WEAPONS), choice('owned', 'yes', ['yes', 'no'])] },
   { type: 'selectWeapon', label: 'Inventory: select owned weapon', fields: [choice('weapon', 'pistol', WEAPONS)] },
   { type: 'setKeyOwned', label: 'Inventory: set key ownership', fields: [choice('key', 'blueCard', KEYS), choice('owned', 'yes', ['yes', 'no'])] },
@@ -361,7 +372,9 @@ export const ENGINE_ACTIONS = [
     { ...choice('direction', 'front', ['front', 'left', 'right', 'self']), optional: true }] },
   { type: 'setEntityHealth', label: 'Object: set health', fields: [numeric('health', 20, 0, 1000000)], target: true },
   { type: 'hitscan', label: 'Combat: trace and damage enemies', fields: [numeric('damage', 5, 0, 10000), numeric('diceSides', 3, 1, 256),
-    numeric('pellets', 1, 1, 64), numeric('spread', 0, 0, 180), numeric('range', 2048, 1, 65536)] },
+    numeric('pellets', 1, 1, 64), numeric('spread', 0, 0, 180), numeric('range', 2048, 1, 65536),
+    // The chainsaw plays its own hit sound from the state that fired it.
+    { name: 'hitSound', value: '', kind: 'string', optional: true }] },
   { type: 'startTimer', label: 'System: start timer (seconds)', fields: [timer(), numeric('seconds', .4, 0, 3600)] },
   { type: 'clearTimer', label: 'System: clear timer', fields: [timer()] },
   { type: 'showPlayerHUD', label: 'HUD: show / hide overlay (legacy stats)', fields: [choice('visible', 'yes', ['yes', 'no'])] },
@@ -490,7 +503,7 @@ export function compareValues(a, operator, b) {
   }
 }
 
-export function installEngineScripts(project, { organizeStarter = false, includeHUD = true } = {}) {
+export function installEngineScripts(project, { organizeStarter = false, includeHUD = true, warnings } = {}) {
   if (project.playerControl === 'events' || project.eventSheets?.some(sheet => sheet.section === 'engine')) {
     throw new Error('Engine sheets already exist; edit the existing defaults instead of replacing your rules');
   }
@@ -558,18 +571,28 @@ export function installEngineScripts(project, { organizeStarter = false, include
     ['chainsaw', null, 0, 4, 'DSSAWFUL', trace(2, 10, 1, 0, 64)],
     ['superShotgun', 'shells', 2, 54, 'DSSGT2F', trace(5, 3, 20, 22.5, 2048)],
   ];
-  // When the project carries imported actor definitions, the actor runtime runs
-  // the game's own monster and weapon state machines. Generated rules would fire
-  // a second time on top of them, so only the untouched paths are scripted here.
+  // A project with no actor table gets the engine's own weapon table. An imported game
+  // has the weapons it came with, so each one is written into this sheet from its own
+  // DECORATE states — the cadence its frame durations add up to, the ammo it spends, the
+  // shot it fires — and its state machine stops firing on its own (`weaponEventActors`).
+  // A weapon the translation cannot promise keeps its machine and is reported instead.
   const scriptedWeapons = !project.actors?.some(actor => actor.flags?.WEAPON);
   const scriptedEnemies = !project.actors?.some(actor => actor.states?.frames?.length && (actor.flags?.MONSTER || actor.flags?.COUNTKILL));
-  for (const [weapon, ammo, cost, tics, sound, attack] of (scriptedWeapons ? weapons : [])) {
-    rule('Weapons', weapon, { type: 'keyHeld', key: 'Mouse0' }, [
-      ...(ammo ? [{ type: 'addAmmo', ammo, amount: -cost }] : []), attack,
-      { type: 'playSound', sound, volume: .7 },
-      { type: 'startTimer', timer: 'weapon', seconds: tics / 35 },
-    ], [alive, { type: 'weaponSelected', weapon }, { type: 'weaponOwned', weapon },
-      ...(ammo ? [{ type: 'playerStat', stat: ammo, operator: '>=', value: cost }] : []), { type: 'timerReady', timer: 'weapon' }]);
+  if (scriptedWeapons) {
+    for (const [weapon, ammo, cost, tics, sound, attack] of weapons) {
+      rule('Weapons', weapon, { type: 'keyHeld', key: 'Mouse0' }, [
+        ...(ammo ? [{ type: 'addAmmo', ammo, amount: -cost }] : []), attack,
+        { type: 'playSound', sound, volume: .7 },
+        { type: 'startTimer', timer: 'weapon', seconds: tics / 35 },
+      ], [alive, { type: 'weaponSelected', weapon }, { type: 'weaponOwned', weapon },
+        ...(ammo ? [{ type: 'playerStat', stat: ammo, operator: '>=', value: cost }] : []), { type: 'timerReady', timer: 'weapon' }]);
+    }
+  } else {
+    const translated = weaponScriptRules(project, { sheetId: sheets.Weapons.id, groupId: groups.Weapons.id, id });
+    events.push(...translated.events);
+    for (const skipped of translated.skipped) {
+      warnings?.push(`Weapon ${skipped.name} keeps its DECORATE states instead of a rule: ${skipped.reasons.join('; ')}.`);
+    }
   }
   for (const [key, weapon] of WEAPONS.map((weapon, index) => [`Digit${index + 1}`, weapon])) {
     rule('Input', `select_${weapon}`, { type: 'keyPressed', key }, [{ type: 'selectWeapon', weapon }], [{ type: 'weaponOwned', weapon }]);

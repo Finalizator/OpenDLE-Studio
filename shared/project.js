@@ -1160,6 +1160,12 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     if (event.conditionMode !== undefined) assert(['and', 'or'].includes(event.conditionMode), 'Condition mode must be and/or');
     if (event.sheetId !== undefined) assert(sheetIds.has(event.sheetId), 'Event references an unknown sheet');
     assert(typeof event.enabled === 'boolean' && typeof event.once === 'boolean', 'Event enabled/once must be boolean');
+    // A translated weapon names the actor whose states wrote the rule; the runtime reads the
+    // field to know the weapon is fired here and not by its state machine.
+    if (event.weaponActor !== undefined) {
+      assert(typeof event.weaponActor === 'string' && event.weaponActor.length > 0 && event.weaponActor.length <= 64,
+        'Rule weapon actor must be an actor name');
+    }
     if (event.forEachType !== undefined) {
       assert(INSTANCE_PICKABLE_TYPES.includes(event.forEachType), 'Unsupported for-each object type');
       assert(event.ownerId === undefined, 'For-each rules cannot also have an owner');

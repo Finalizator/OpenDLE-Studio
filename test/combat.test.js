@@ -386,13 +386,15 @@ test('real Freedoom imports PCM effects and a native actor table instead of gene
   // Monsters and weapons run their own state machines now, so no duplicated
   // scripted archetype or weapon rules are generated on top of them.
   assert.equal(project.events.some(event => event.condition.type === 'enemySeesPlayer'), false);
-  // A plain WAD now carries the classic weapons too, so the player's guns run
-  // Doom's own Ready/Fire/Flash machines instead of scripted firing rules.
+  // A plain WAD carries the classic weapons, and each one is written into the Weapons
+  // sheet from its own states, so the gun a player fires is a rule they can read.
   const shotgun = project.actors.find(actor => actor.name === 'SuperShotgun');
   assert.ok(shotgun?.flags.WEAPON, 'the classic weapon actors are installed');
   assert.equal(shotgun.weaponAmmoType, 'Shell');
   assert.equal(shotgun.weaponAmmoUse, 2);
-  assert.equal(project.events.some(event => event.name === 'superShotgun'), false);
+  const rule = project.events.find(event => event.name === 'superShotgun');
+  assert.equal(rule?.weaponActor, 'SuperShotgun', 'the super shotgun is fired by an editable rule');
+  assert.equal(rule.actions.find(action => action.type === 'addAmmo').amount, -2, 'two shells a shot');
   const imp = project.actors.find(actor => actor.name === 'DoomImp');
   assert.ok(imp, 'imported actor table carries the classic monsters');
   assert.equal(imp.health, 60);

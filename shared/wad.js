@@ -682,7 +682,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   if (missingSpecials.length) {
     warnings.push(`Line specials kept as data but not performed by the native runtime: ${missingSpecials.join(', ')}.`);
   }
-  installEngineScripts(project, { includeHUD: false });
+  installEngineScripts(project, { includeHUD: false, warnings });
   // Classic Doom numbers are translated into rules, so their report comes from the
   // translator itself (it knows which ones it could not perform).
   installWorldScripts(project, warnings);

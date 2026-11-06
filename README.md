@@ -134,8 +134,11 @@ with any arguments passed through. It prints the controls on start, and fills in
 the keys GZDoom leaves unbound (its default layout has no arrow keys at all) the
 first time it runs.
 
-**This is an early engine, not complete GZDoom compatibility.** Imported weapons,
-enemies and pickups run their own DECORATE/ZScript state machines, map line
+**This is an early engine, not complete GZDoom compatibility.** Imported enemies
+and pickups run their own DECORATE/ZScript state machines, while imported weapons
+are translated into editable rules in the Weapons event sheet — the ammo they
+spend, the shot they fire and the cadence their frame durations add up to — with
+their states still played for the shot sound and the flash. Map line
 specials execute natively, and each map's compiled ACS module (`BEHAVIOR`) runs
 at Doom's 35 Hz inside the engine, together with the game's `LOADACS` script
 libraries. Actor translations, morphs and ANIMDEFS camera textures

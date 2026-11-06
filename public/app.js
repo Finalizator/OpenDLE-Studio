@@ -84,6 +84,7 @@ import { engineTweaks } from '/shared/engine-tweaks.js';
 import { cloneForLevelSwitch, selectGameLevel } from '/shared/game-levels.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
+import { weaponScriptRules } from '/shared/weapon-script.js';
 import * as gameSaves from './game-saves.js';
 import { saveFileDocument, serializeSaveFile, parseSaveFile, saveFileName } from '/shared/save-files.js';
 import { installSplitters } from './splitters.js';
@@ -2580,6 +2581,39 @@ function siblingRules(event) {
 }
 function unfiledSheetOptions() { return ruleRenderCacheFor().unfiled; }
 function groupOptions(sheetId) { return ruleRenderCacheFor().lists.get(sheetId) || [['', 'Ungrouped']]; }
+/**
+ * What an empty sheet says.
+ *
+ * The Weapons sheet of an imported game is empty until the imported weapons are
+ * translated, and "add a condition and an action" there invites a rule that fires a
+ * second shot on top of the state machine. So it explains, and offers the translation
+ * the importer would have written.
+ */
+function appendEmptySheetHint(parent, owner, sheet) {
+  const imported = (project.actors || []).filter(actor => actor.flags?.WEAPON === true);
+  if (owner || !sheet || sheet.name !== 'Weapons' || !imported.length) {
+    parent.append(make('p', owner ? 'No script attached yet. Add an event to this object.'
+      : 'No events in this sheet. Add a condition and an action.', 'muted'));
+    return;
+  }
+  parent.append(make('p', `${imported.length} imported weapons are still fired by their DECORATE states, `
+    + 'not by this sheet. Translating them writes one rule per weapon: the ammo its states spend, the '
+    + 'shot they fire, and the cadence their frames add up to. You can edit or delete each rule afterwards.', 'muted'));
+  parent.append(button(`Translate ${imported.length} weapon${imported.length === 1 ? '' : 's'} to events`, () => {
+    let skipped = [];
+    edit(next => {
+      const target = next.eventSheets.find(entry => entry.id === sheet.id);
+      const group = next.eventGroups?.find(entry => entry.sheetId === sheet.id);
+      const translated = weaponScriptRules(next, { sheetId: target.id, groupId: group?.id });
+      next.events.push(...translated.events);
+      skipped = translated.skipped;
+    }, 'Imported weapons translated into editable rules.');
+    status(skipped.length
+      ? `${skipped.length} weapon(s) keep their DECORATE states: ${skipped.map(item => `${item.name} (${item.reasons[0]})`).join('; ')}.`
+      : 'Every imported weapon now fires from a rule in this sheet.', skipped.length > 0);
+  }, 'primary'));
+}
+
 function renderEvents() {
   const parent = $('event-list');
   // A large imported game carries hundreds of event rules; rebuilding every
@@ -2630,7 +2664,7 @@ function renderEvents() {
     scriptScope === '$scene' ? event.ownerId === undefined && !event.forEachType && !event.sheetId : event.ownerId === scriptScope);
   const count = project.events.filter(matchesScope).length;
   $('script-count').textContent = `${count} events`;
-  if (!count) parent.append(make('p', owner ? 'No script attached yet. Add an event to this object.' : 'No events in this sheet. Add a condition and an action.', 'muted'));
+  if (!count) appendEmptySheetHint(parent, owner, currentSheet);
   project.events.forEach((event, index) => {
     if (!matchesScope(event)) return;
     const card = make('div', undefined, 'event-card');

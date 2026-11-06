@@ -7,7 +7,7 @@ import { compareValues, engineCommand } from './engine-script.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validateHUDProperty } from './hud.js';
 import { postFxParamDefault } from './post-fx.js';
-import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic,
+import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
@@ -47,6 +47,7 @@ import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { projectIds } from './project-ids.js';
+import { weaponEventActors } from './weapon-script.js';
 import { saveFileDocument, serializeSaveFile, parseSaveFile, applyVariableSave, saveFileName, variableSnapshot } from './save-files.js';
 import { BT } from './acs.js';
 import { initialiseAuthoredDoors, operateSectorDoor, sectorDoorClosed, sectorDoorMoving, sectorDoorOpen,
@@ -187,6 +188,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     // The host's save-file store: `read`, `write`, `list` and the game identity the files belong to.
     // A function cannot travel in a save, so the loader re-attaches it (see save-game.js `omitted`).
     saveFileHost: saveFiles,
+    // Imported weapons whose firing is an event rule. Those run their states for pictures and
+    // sounds only, so a translated weapon is never fired by the machine as well as the rule.
+    weaponEventActors: weaponEventActors(project),
     newGameLevel: project.game && project.gameMenus?.episodes?.length === 1 ? project.gameMenus.episodes[0].levelId : null,
     player: { x: spawn.x, y: spawn.y, angle: spawn.angle * Math.PI / 180, pitch: 0, up: [...WORLD_UP] },
     // Momentum is Doom's, in map units per tic; see shared/player-motion.js.
@@ -790,6 +794,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // The nearest line that actually carries a special, so a plain wall in front of a door
   // does not swallow the press.
   state.worldTriggers.useSpecial = usedWall?.special ?? null;
+  // The weapon trigger is one bit a frame: a rule may hold it (`weaponTrigger`), and
+  // without such a rule the mouse holds it (see `stepWeapon`). Clearing the requests here
+  // means a rule that stops running lets go.
+  state.weaponTriggerRequest = false;
+  state.weaponAltRequest = false;
+  state.weaponTriggerHeld = false;
+  state.weaponAltHeld = false;
   runRules('beforePhysics');
   dispatchSignals('beforePhysics');
   stage('rules');
@@ -964,8 +975,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // machines; they run at Doom's 35 Hz tic rate next to the frame update.
   if (project.actors?.length) {
     stepActors(project, state, dt);
-    if (!state.worldTerminalActive) stepWeapon(project, state, dt, !hud.cursor && state.playerStats.health > 0 && keys.has('Mouse0'));
-    else { state.weaponTriggerHeld = false; state.weaponAttack = null; }
+    const armed = !hud.cursor && state.playerStats.health > 0;
+    if (!state.worldTerminalActive) stepWeapon(project, state, dt, armed && keys.has('Mouse0'), armed && keys.has('Mouse2'));
+    else { state.weaponTriggerHeld = false; state.weaponAltHeld = false; state.weaponAttack = null; }
     applyWeaponAttack(project, state);
     tickMorphs(project, state);
   }
@@ -1848,6 +1860,19 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         case 'selectWeapon':
           if (!state.inventory.weapons.has(action.weapon)) throw new Error(`Cannot select unowned weapon: ${action.weapon}`);
           state.inventory.selectedWeapon = action.weapon; break;
+        // Runs the imported weapon's own state, for its sounds and its flash. The damage,
+        // ammo and rate a translated rule writes live in the rule itself.
+        case 'weaponAnimation':
+          if (action.weapon === state.inventory.selectedWeapon) playWeaponState(project, state, action.state);
+          break;
+        // Holds the imported weapon's trigger for this frame. The weapon's own states still
+        // decide the rate and everything else; a rule decides *when* the trigger is down, and
+        // a weapon with such a rule stops reading the mouse (see `stepWeapon`).
+        case 'weaponTrigger':
+          if (action.weapon === state.inventory.selectedWeapon) {
+            if (action.trigger === 'alt') state.weaponAltRequest = true; else state.weaponTriggerRequest = true;
+          }
+          break;
         case 'setKeyOwned':
           if (action.owned === 'yes') state.inventory.keys.add(action.key); else state.inventory.keys.delete(action.key);
           break;
@@ -1942,7 +1967,11 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (entity) enemyHitscan(state, entity, action);
           break;
         }
-        case 'launchProjectile': if (!state.worldTerminalActive) launchProjectile(state, action); break;
+        case 'launchProjectile':
+          // An `missile` names an imported actor class, so a translated weapon fires the
+          // mod's own projectile — flight clip, explosion and all — instead of a lookalike.
+          if (!state.worldTerminalActive) launchProjectile(state, missileShot(project, action));
+          break;
         case 'enemyProjectile': {
           const entity = findTarget(action.entityId);
           if (entity && entity.health > 0 && canSeePlayer(state, entity, 65536)) launchProjectile(state, action, entity);
@@ -1953,7 +1982,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           if (target) target.health = action.health;
           break;
         }
-        case 'hitscan': if (!state.worldTerminalActive) fireHitscan(project, state, action); break;
+        case 'hitscan':
+          if (!state.worldTerminalActive) {
+            fireHitscan(project, state, action);
+            // A weapon whose own states play a hit sound (the chainsaw) keeps it.
+            if (action.hitSound && state.lastShot?.hits.length) saySound(state, action.hitSound, null, 127);
+          }
+          break;
         case 'startTimer': state.timers.set(`${event.ownerId || '$scene'}:${action.timer}`, state.time + action.seconds); break;
         case 'clearTimer': state.timers.delete(`${event.ownerId || '$scene'}:${action.timer}`); break;
         case 'showPlayerHUD': state.hud = action.visible === 'yes'; break;
@@ -2058,13 +2093,23 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
 /**
  * Drives the imported weapon state machine. Weapons keep their own tic clock so
  * a mod's fire rates stay exact even when a frame renders faster than 35 Hz.
+ *
+ * The trigger is one bit the frame owns. A rule that holds it (`weaponTrigger`) takes
+ * the weapon over: the mouse stops reaching this machine, so a translated weapon is
+ * fired by its event rules and by nothing else. A weapon with no such rule still reads
+ * the mouse, which keeps every project that has never been translated behaving as before.
  */
-function stepWeapon(project, state, dt, trigger) {
+function stepWeapon(project, state, dt, held, altHeld) {
   const slot = state.inventory.selectedWeapon;
   if (!state.weaponActor || state.weaponSlot !== slot) {
-    if (!beginWeapon(project, state, slot)) { state.weaponTriggerHeld = false; return; }
+    if (!beginWeapon(project, state, slot)) { state.weaponTriggerHeld = false; state.weaponAltHeld = false; return; }
   }
-  state.weaponTriggerHeld = Boolean(trigger);
+  const driven = weaponDrivenByEvents(state, state.weaponActor?.actor);
+  // A weapon whose firing is an event rule stops reading both the mouse and the trigger
+  // actions: its pictures and sounds still run, but the shot itself belongs to the rule.
+  // Otherwise either the mouse or a `weaponTrigger` action holds it for the frame.
+  state.weaponTriggerHeld = driven ? false : held || state.weaponTriggerRequest === true;
+  state.weaponAltHeld = driven ? false : altHeld || state.weaponAltRequest === true;
   state.weaponClock = (state.weaponClock || 0) + dt * 35;
   const whole = Math.floor(state.weaponClock + 1e-6);
   const tics = Math.min(4, whole);
@@ -2073,7 +2118,16 @@ function stepWeapon(project, state, dt, trigger) {
   // trigger is held; a weapon without it fires once per press, as in Doom). An
   // external "trigger held and ready means Fire" shortcut re-entered Fire every
   // tic or two and burned the whole clip in under a second.
-  for (let tic = 0; tic < tics; tic++) weaponTic(project, state, trigger);
+  for (let tic = 0; tic < tics; tic++) {
+    weaponTic(project, state, held || altHeld, { presentation: driven });
+  }
+}
+
+/** Whether event rules hold this weapon's trigger; anything else is the mouse's job. */
+function weaponDrivenByEvents(state, actor) {
+  const name = actor?.name;
+  return Boolean(name) && Array.isArray(state.weaponEventActors) &&
+    state.weaponEventActors.includes(String(name).toLowerCase());
 }
 
 /** Converts a weapon state's action into the existing hit-scan/projectile path. */
@@ -2120,6 +2174,29 @@ function activateWallTriggers(state) {
     const latest = state.scripts.errors[state.scripts.errors.length - 1];
     if (latest !== state.scriptWarning) { state.scriptWarning = latest; state.message = latest; state.messageTime = 5; }
   }
+}
+
+/**
+ * A `launchProjectile` action, with an imported actor class when the rule names one.
+ *
+ * The class is what a mod's weapon already fired through its `A_FireCustomMissile`; a
+ * translated rule names the same class, so the projectile keeps its flight clip, its
+ * Death state and its explosion instead of becoming a plain ball with the same numbers.
+ */
+function missileShot(project, action) {
+  if (!action.missile) return action;
+  const missile = missileProjectile(project, action.missile);
+  if (!missile) return action;
+  return { ...action,
+    speed: action.speed || missile.speed, damage: Number.isFinite(action.damage) ? action.damage : missile.damage,
+    actorId: missile.actorId, actorName: missile.name, damageType: missile.damageType || null,
+    // A clip the rule already carries (the sheet fills projectile clips when the art is
+    // imported) wins over nothing: the actor's own clip is only a fallback.
+    clipId: action.clipId || missile.clipId || null,
+    impactClipId: action.impactClipId || missile.impactClipId || null,
+    angleOffset: action.angleOffset ?? action.angle ?? 0, spawnOffset: action.spawnOffset ?? action.spawnofs ?? 0,
+    spawnHeight: action.spawnHeight ?? action.spawnheight ?? 0, pitchOffset: action.pitchOffset ?? action.pitch ?? 0,
+    seeker: action.seeker === undefined ? missile.seeker === true : action.seeker };
 }
 
 function applyWeaponAttack(project, state) {

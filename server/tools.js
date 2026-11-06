@@ -15,6 +15,7 @@ import { addRamp, bindRampPath, normalizeRamp, syncRampModels } from '../shared/
 import { PROFILE_FIELDS, CORNER_STYLES, MAX_PROFILE_VERTICES } from '../shared/ramp-profile.js';
 import { cutLevelGeometry, MAX_CUT_POINTS } from '../shared/geometry-cut.js';
 import { INSTANCE_PICKABLE_TYPES } from '../shared/instance-properties.js';
+import { weaponScriptRules } from '../shared/weapon-script.js';
 
 const coordinate = z.number().min(-65536).max(65536);
 const cutPointShape = z.object({ x: coordinate, y: coordinate, z: z.number().min(-32768).max(32767).optional() });
@@ -109,6 +110,8 @@ export const toolDefinitions = [
     shape: { css: z.string().max(131072) } },
   { name: 'project_set_title', description: 'Rename the project.', shape: { title: z.string().min(1).max(100) } },
   { name: 'engine_install_starter', description: 'Explicitly opt a legacy project into editable FPS starter sheets (NOT complete Doom compatibility). Preserves existing events. Adds Input/Player/Combat/Weapons/Enemies/Pickups/World/HUD sheets and event-driven controls. Throws if Engine sheets already exist.',
+    shape: {} },
+  { name: 'weapons_translate', description: 'Write the imported weapons into the Weapons event sheet as editable rules: one rule per weapon with the ammo its DECORATE states spend, the shot they fire (hitscan or the mod\'s own projectile class) and the cadence its frame durations add up to. Rules already translated are left alone, and a weapon whose states cannot be expressed as one rule is reported rather than dropped.',
     shape: {} },
   { name: 'engine_add_wall_walk_demo', description: 'Add (or reinstall) the "Wall walking (experiment)" event sheet: jump at a wall or ceiling to rotate the player gravity onto it and walk on that surface, touch a floor or hold F to return to normal gravity. Only that sheet\'s rules are replaced; everything else is preserved. Uses the playerTouchingSurface and playerAirborne conditions with the setPlayerGravity action.',
     shape: {} },
@@ -373,6 +376,19 @@ export function applyTool(project, name, args, context = {}) {
       break;
     case 'postfx_set': next.postFx = input.postFx; break;
     case 'engine_install_starter': installEngineScripts(next); break;
+    case 'weapons_translate': {
+      const sheet = next.eventSheets?.find(entry => entry.name === 'Weapons');
+      if (!sheet) throw new Error('This project has no Weapons sheet; install the engine sheets first');
+      const group = next.eventGroups?.find(entry => entry.sheetId === sheet.id);
+      // Already-translated weapons are left as they are: an author may have edited them.
+      const owned = new Set(next.events.filter(event => event.weaponActor).map(event => event.weaponActor));
+      const translated = weaponScriptRules(next, { sheetId: sheet.id, groupId: group?.id });
+      const fresh = translated.events.filter(event => !owned.has(event.weaponActor));
+      next.events.push(...fresh);
+      input.skipped = [...translated.skipped, ...translated.events.filter(event => owned.has(event.weaponActor))
+        .map(event => ({ name: event.weaponActor, reasons: ['already translated'] }))];
+      break;
+    }
     case 'engine_add_wall_walk_demo': installWallWalkDemo(next); break;
     case 'event_sheet_add':
       next.eventSheets ||= [];

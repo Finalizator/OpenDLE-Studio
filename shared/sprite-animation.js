@@ -238,6 +238,10 @@ export function actorProjectileClips(project, actor) {
   }
   result.fly = clip('fly', 'Spawn', true) || clip('fly', 'See', true);
   result.impact = clip('impact', 'Death', false) || clip('impact', 'Crash', false);
+  // A missile asked for before its artwork is imported has no clips yet. Remembering
+  // that would hand `null` to every later caller — including the import that gives it
+  // the artwork — so a miss is not cached.
+  if (!result.fly && !result.impact) cached.delete(actor.id);
   return result;
 }
 

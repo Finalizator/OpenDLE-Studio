@@ -14,6 +14,8 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 // Diagnostics and derived handles stay out of saves: the unsupported-action set is
 // rebuilt as problems occur, and the weapon machine is re-entered on load.
 const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendingSaveSlot', 'rendererStatus',
+  // A frame-long trigger request: what a rule asked for this frame, not game state.
+  'weaponTriggerRequest', 'weaponAltRequest',
   // The host's save-file store (read/write/list) is a capability, not state: a function cannot be
   // encoded, so it is dropped here and the preview that restores the game attaches it again.
   'saveFileHost',
@@ -56,7 +58,8 @@ const optional = new Set(['areaEntries', 'intervals', 'decalCounter', 'lastShot'
   // Teleport lines are derived from the map, but they are cached on the state on first use.
   'teleportLines',
   // Falling things keep their own tic clock, like the actor and projectile machines.
-  'weaponTriggerHeld', 'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock', 'gravityClock',
+  'weaponTriggerHeld', 'weaponAltHeld', 'weaponRefireLabel', 'weaponEventActors',
+  'weaponLight', 'weaponRaised', 'weaponAttack', 'projectileClock', 'gravityClock',
   // Where an addon keeps state of its own. Rules and scripts write the engine's fields through the API;
   // this one bag is theirs, so their data travels with a save without a field per addon.
   'addonState', 'waggles',
