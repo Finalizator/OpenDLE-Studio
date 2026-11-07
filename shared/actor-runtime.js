@@ -57,12 +57,16 @@ function syncActorSprite(project, state, entity, actor, runtime) {
   const frame = actor.states.frames[runtime.index];
   const name = SPRITE_STATE_BY_LABEL[String(frame?.label || '').toLowerCase()];
   if (!name || !entity.spriteStates?.[name]) return;
+  // A pain clip is restarted when the actor *enters* Pain, not on every tic it stays there:
+  // restarting it each tic held the flinch on its first frame and played it all over again
+  // after the state had already handed the actor back to See.
+  const entering = runtime.sprite !== name;
   runtime.sprite = name;
   // Asked every tic rather than only when the wanted name changes: `setSpriteState` declines to
   // cut a one-shot clip short, and the state machine finishes its pain frames while the machine
   // is already back in See. Remembering the name meant that refusal was never retried, so the
   // pain picture stayed on screen for ever.
-  setSpriteState(project, state, entity, name, name === 'pain');
+  if (entering || name !== 'pain') setSpriteState(project, state, entity, name, entering && name === 'pain');
 }
 
 /** Persistent per-entity actor state, created on first use. */
