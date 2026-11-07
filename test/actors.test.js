@@ -6,7 +6,8 @@ import { parseDecorate, resolveActorInheritance, compileActorStates, frameBodyAc
 import { parseZScript, parseActorDefinitions } from '../shared/zscript.js';
 import { parseDehacked, dehackedChanges, mergeDehackedPatches, thingName } from '../shared/dehacked.js';
 import { buildVanillaActors, importActors, applyDehacked, actorIndex, parseEditorNumbers } from '../shared/actors.js';
-import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile,
+import * as spriteAnimations from '../shared/sprite-animation.js';
+import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile, hurtActor,
   unsupportedActorActions, actionSupported, WEAPON_ACTION_NAMES } from '../shared/actor-runtime.js';
 import { actorProjectileClips, installActorSpriteStates } from '../shared/sprite-animation.js';
 import { importActorSprites, importWadMap, readWad } from '../shared/wad.js';
@@ -684,4 +685,110 @@ test('a mod thing is mapped through its DECORATE class, not left as a grey place
   assert.equal(candle.name, 'ModCandle');
   assert.equal(byDoomType.has(9500), false, 'an invisible dynamic light is not a grey box on the map');
   assert.match(warnings.join('\n'), /1 marker things that draw nothing/);
+});
+
+test('a monster\'s sprite follows its machine out of pain and through death', () => {
+  // The clip used to be set only when the machine landed on a `goto` or a label record, and it
+  // read that record's own label — the state being left. A monster that went back to See after
+  // a hit therefore kept its pain picture for ever, and a barrel kept its standing picture
+  // through the whole explosion, because both states are entered from a `goto`.
+  const project = createProject();
+  project.assets = ['POSSA0', 'POSSG0', 'POSSD0'].map(spriteAsset);
+  project.events = [];
+  project.actors = [{
+    id: 'actor_zombie', name: 'Zombie', flags: { MONSTER: true }, doomedNum: 3004, health: 20, painChance: 255,
+    states: { labels: { Spawn: 0, See: 1, Pain: 3, Death: 5 }, frames: [
+      { kind: 'frame', sprite: 'POSS', letter: 'A', duration: -1, actions: [], label: 'Spawn' },
+      { kind: 'frame', sprite: 'POSS', letter: 'A', duration: 2, actions: [], label: 'See' },
+      { kind: 'loop', label: 'See' },
+      { kind: 'frame', sprite: 'POSS', letter: 'G', duration: 2, actions: [], label: 'Pain' },
+      { kind: 'goto', label: 'Pain', target: 'See' },
+      { kind: 'frame', sprite: 'POSS', letter: 'D', duration: 2, actions: [], label: 'Death' },
+      { kind: 'stop', label: 'Death' },
+    ] },
+  }];
+  project.spriteClips = [
+    { id: 'clip_stand', name: 'Zombie / stand', frames: ['asset_POSSA0'], seconds: .1, loop: true },
+    { id: 'clip_walk', name: 'Zombie / walk', frames: ['asset_POSSA0'], seconds: .1, loop: true },
+    { id: 'clip_pain', name: 'Zombie / pain', frames: ['asset_POSSG0'], seconds: .1, loop: false },
+    { id: 'clip_death', name: 'Zombie / death', frames: ['asset_POSSD0'], seconds: .1, loop: false },
+  ];
+  project.map.entities.push({ id: 'zombie1', name: 'Zombie', type: 'enemy', doomType: 3004, x: 0, y: 0, angle: 0, health: 20,
+    spriteStates: { stand: 'clip_stand', walk: 'clip_walk', pain: 'clip_pain', death: 'clip_death' } });
+  validateProject(project);
+  const state = createRuntime(project);
+  const zombie = state.entities.find(entity => entity.id === 'zombie1');
+  const clip = () => state.spriteAnimations.get(zombie.id)?.name;
+  const tick = () => stepRuntime(project, state, 1 / 35, new Set());
+  tick();
+  assert.equal(clip(), 'stand', 'the spawn frame is the standing clip');
+  hurtActor(project, state, zombie, 5, null);
+  tick();
+  assert.equal(clip(), 'pain', 'being hit shows the pain clip');
+  for (let i = 0; i < 6; i++) tick();
+  assert.equal(zombie.stateLabel, 'See', 'the pain state hands the actor back to See');
+  assert.equal(clip(), 'walk', 'and the sprite goes back to walking with it');
+  hurtActor(project, state, zombie, 100, null);
+  tick();
+  assert.equal(clip(), 'death', 'a fatal hit shows the death clip');
+});
+
+test('an actor whose spawn frame never ends still explodes when it dies', () => {
+  // A barrel's Spawn is one frame with no duration (`BAR1 A -1`): it stands for ever. Its Death
+  // is a run of ordinary frames, and the clip for them used to be set by the `goto` that enters
+  // no state at all, so the barrel died showing its standing picture.
+  const project = createProject();
+  project.assets = ['BARA0', 'BEXPA0', 'BEXPB0', 'BEXPC0'].map(spriteAsset);
+  project.events = [];
+  project.actors = [{
+    id: 'actor_barrel', name: 'Barrel', flags: { SHOOTABLE: true }, doomedNum: 2035, health: 20,
+    states: { labels: { Spawn: 0, Death: 1 }, frames: [
+      { kind: 'frame', sprite: 'BAR', letter: 'A', duration: -1, actions: [], label: 'Spawn' },
+      { kind: 'frame', sprite: 'BEXP', letter: 'A', duration: 5, actions: [], label: 'Death' },
+      { kind: 'frame', sprite: 'BEXP', letter: 'B', duration: 5, actions: [], label: 'Death' },
+      { kind: 'frame', sprite: 'BEXP', letter: 'C', duration: 5, actions: [], label: 'Death' },
+      { kind: 'stop', label: 'Death' },
+    ] },
+  }];
+  project.spriteClips = [
+    { id: 'clip_stand', name: 'Barrel / stand', frames: ['asset_BARA0'], seconds: .1, loop: true },
+    { id: 'clip_death', name: 'Barrel / death', frames: ['asset_BEXPA0', 'asset_BEXPB0', 'asset_BEXPC0'], seconds: .4, loop: false },
+  ];
+  project.map.entities.push({ id: 'barrel1', name: 'Barrel', type: 'enemy', doomType: 2035, x: 0, y: 0, angle: 0, health: 20,
+    spriteStates: { stand: 'clip_stand', death: 'clip_death' } });
+  validateProject(project);
+  const state = createRuntime(project);
+  const barrel = state.entities.find(entity => entity.id === 'barrel1');
+  const tick = () => stepRuntime(project, state, 1 / 35, new Set());
+  tick();
+  assert.equal(state.spriteAnimations.get(barrel.id)?.name, 'stand');
+  hurtActor(project, state, barrel, 100, null);
+  tick();
+  assert.equal(barrel.stateLabel, 'Death');
+  assert.equal(state.spriteAnimations.get(barrel.id)?.name, 'death', 'the explosion is what it shows');
+});
+
+test('the generated enemy sprite rules are dropped from a project its actors animate', () => {
+  // They were written for scripted enemies; with a state machine running they overwrite it, so
+  // a project that gained an actor table loses them on the next load. A project without one
+  // keeps them, and a rule the creator wrote is left alone whatever it is called.
+  const { migrateEnemySpriteRules } = spriteAnimations;
+  const project = createProject();
+  project.events = [
+    { id: 'sprite_rule_0', name: 'Enemy sprite / rest', sheetId: 'engine_enemies', groupId: 'group_enemies',
+      enabled: true, once: false, forEachType: 'enemy', condition: { type: 'always' }, conditions: [],
+      actions: [{ type: 'setSpriteState', entityId: '$self', state: 'stand', restart: 'no' }] },
+    { id: 'sprite_rule_1', name: 'Enemy sprite / pain', sheetId: 'engine_enemies', groupId: 'group_enemies',
+      enabled: true, once: false, forEachType: 'enemy', condition: { type: 'always' }, conditions: [],
+      actions: [{ type: 'setSpriteState', entityId: '$self', state: 'pain', restart: 'no' }] },
+    { id: 'mine', name: 'Enemy sprite / rest', sheetId: 'engine_enemies', groupId: 'group_enemies',
+      enabled: true, once: false, forEachType: 'enemy', condition: { type: 'always' }, conditions: [],
+      actions: [{ type: 'setSpriteState', entityId: '$self', state: 'stand', restart: 'no' }] },
+  ];
+  migrateEnemySpriteRules(project);
+  assert.deepEqual(project.events.map(event => event.id), ['sprite_rule_0', 'sprite_rule_1', 'mine'],
+    'nothing is dropped from a project with no actor table');
+  project.actors = [{ id: 'actor_x', name: 'X', states: { frames: [], labels: {} } }];
+  migrateEnemySpriteRules(project);
+  assert.deepEqual(project.events.map(event => event.id), ['mine'], 'the generated rules go, the authored one stays');
 });

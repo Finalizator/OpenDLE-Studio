@@ -497,6 +497,14 @@ Two conditions make this readable: `entityActorName` (which archetype a rule is 
 and `actorState` (which state the actor is playing). A monster whose states have no `See`
 or no `Melee`/`Missile` to attack from keeps its machine and the import says so.
 
+The pictures belong to the state the actor is in: every tic the machine sets the clip its
+current state names (`Spawn` stands, `See` walks, `Pain` flinches, `Death` dies), so a
+monster that a hit put in `Pain` goes back to its walking frames when the state hands it to
+`See`, and a barrel whose `Spawn` is one frame that never ends still shows every explosion
+frame. A project with an actor table therefore gets no `Enemy sprite / …` rules — those
+write the clip for a scripted enemy and would overwrite the machine — and a project saved
+before this rule drops them the next time it is opened.
+
 ### Imported weapons are rules
 
 A WAD's weapons arrive as DECORATE states, and the engine's rule is that gameplay is

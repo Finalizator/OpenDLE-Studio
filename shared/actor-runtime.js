@@ -56,8 +56,12 @@ const SPRITE_STATE_BY_LABEL = { spawn: 'stand', see: 'walk', missile: 'attack', 
 function syncActorSprite(project, state, entity, actor, runtime) {
   const frame = actor.states.frames[runtime.index];
   const name = SPRITE_STATE_BY_LABEL[String(frame?.label || '').toLowerCase()];
-  if (!name || runtime.sprite === name || !entity.spriteStates?.[name]) return;
+  if (!name || !entity.spriteStates?.[name]) return;
   runtime.sprite = name;
+  // Asked every tic rather than only when the wanted name changes: `setSpriteState` declines to
+  // cut a one-shot clip short, and the state machine finishes its pain frames while the machine
+  // is already back in See. Remembering the name meant that refusal was never retried, so the
+  // pain picture stayed on screen for ever.
   setSpriteState(project, state, entity, name, name === 'pain');
 }
 
@@ -142,6 +146,11 @@ export function actorTic(project, state, entity, moveTarget = true) {
   const frames = actor.states.frames;
   const frame = frames[runtime.index];
   if (!frame) return;
+  // The sprite follows the state the machine is in, every tic. It used to be set only when
+  // the machine landed on a `goto` or a label, which meant a state entered by that `goto`
+  // never showed: a monster's pain clip stayed on screen after it had gone back to See, and
+  // a barrel kept its standing frame through the whole explosion.
+  syncActorSprite(project, state, entity, actor, runtime);
   if (frame.kind === 'frame') {
     if (runtime.tics <= 0) runtime.tics = Math.max(0, frame.duration);
     // Actions execute once, when the frame is entered.
@@ -161,7 +170,6 @@ export function actorTic(project, state, entity, moveTarget = true) {
     runtime.index++;
     return;
   }
-  syncActorSprite(project, state, entity, actor, runtime);
   // Non-frame records immediately move the machine.
   runtime.entered = false;
   if (frame.kind === 'stop') { runtime.index = null; runtime.stopped = true; return; }

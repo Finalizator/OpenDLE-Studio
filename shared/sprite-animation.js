@@ -245,6 +245,26 @@ export function actorProjectileClips(project, actor) {
   return result;
 }
 
+/** The generated rules a scripted enemy's sprites need, which an actor's state machine replaces. */
+const SUPERSEDED_SPRITE_RULES = ['Enemy sprite / rest', 'Enemy sprite / pain'];
+
+/**
+ * Drops the scripted-enemy sprite rules from a project whose sprites come from an actor table.
+ *
+ * They were generated for projects without one, and with a machine running they overwrite it:
+ * a monster that went back to `See` after a hit kept showing its pain frame, and a barrel kept
+ * its standing picture through the whole explosion. Only the rules this build generated are
+ * removed — a rule the creator wrote is never touched.
+ */
+export function migrateEnemySpriteRules(project) {
+  if (!project?.actors?.length || !Array.isArray(project.events)) return project;
+  project.events = project.events.filter(event => !(SUPERSEDED_SPRITE_RULES.includes(event.name)
+    && String(event.id).startsWith('sprite_rule_')
+    && event.forEachType === 'enemy'
+    && (event.actions || []).length === 1 && event.actions[0].type === 'setSpriteState'));
+  return project;
+}
+
 /**
  * Replaces the classic letter sequences with the actor's own state frames, and
  * gives a placed actor's clips real frames instead of guesses. Runs after
@@ -445,7 +465,11 @@ export function installSpriteAnimations(project, assets) {
     event.actions.push({ type: 'setSpriteState', entityId: '$self', state: event.name.endsWith('_chase') ? 'walk' : 'attack', restart: event.name.endsWith('_chase') ? 'no' : 'yes' });
   }
   let sequence = 0;
-  for (const [name, condition, stateName, conditions] of [
+  // These two rules are how a *scripted* enemy animates. A project with an actor table gets its
+  // clips from the state machine instead (`syncActorSprite`, which sets the clip from the state
+  // the actor is really in), and a rule that says "stand" whenever the enemy is not alerted
+  // fights it: a monster that went back to See after a hit kept showing its pain frame.
+  for (const [name, condition, stateName, conditions] of project.actors?.length ? [] : [
     ['rest', { type: 'enemyAlert', entityId: '$self', inverted: true }, 'stand', []],
     ['pain', { type: 'entityDamaged', entityId: '$self' }, 'pain', []],
   ]) {

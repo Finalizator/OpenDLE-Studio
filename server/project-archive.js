@@ -14,6 +14,7 @@ import { posix } from 'node:path';
 import yauzl from 'yauzl';
 import { PROJECT_FILE, isFolderDocument, unpackProject } from './project-folder.js';
 import { migrateModelFacing } from '../shared/entity-visuals.js';
+import { migrateEnemySpriteRules } from '../shared/sprite-animation.js';
 
 const MiB = 1024 * 1024;
 const MAX_ARCHIVE = 1024 * MiB;
@@ -88,5 +89,5 @@ export async function readProjectArchive(buffer) {
   const unpacked = unpackProject(folder, path => files.get(archivePath(`${prefix}${path}`)) || null);
   // An archive is a project from outside, possibly one written before a facing stopped turning the
   // mesh; it is read the same way a stored one is.
-  return { ...unpacked, project: migrateModelFacing(unpacked.project) };
+  return { ...unpacked, project: migrateEnemySpriteRules(migrateModelFacing(unpacked.project)) };
 }
