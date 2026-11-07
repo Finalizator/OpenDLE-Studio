@@ -97,12 +97,22 @@ useful alone:
       transient message queue (`state.acsMessages`), so a rule draws the same text at the same
       place. Still open: waits inside a conditional block — a step that starts no timer leaves
       the next step waiting forever, so the decompiler refuses rather than stalls the chain.
-      The remaining blockers, in the order the corpus hits them: **`CALLFUNC`** — the
-      interpreter runs the call now instead of ending the script, but these maps ship *no
-      function table at all* (0 functions, no `LOADACS` library), so the callee does not exist
-      and the call reports "no loaded module defines it". Nothing can inline what is not there;
-      **`ASSIGNSCRIPTARRAY`** (`BossStart`) and `REPLACETEXTURES` (the interpreter itself does
-      nothing for it — translating it would bake that gap into the sheet).
+      Arrays are in: `ASSIGNSCRIPTARRAY` is the `setAcsArray` action and `PUSHSCRIPTARRAY` the
+      `acsarray("script", 1, 0)` expression, against the store the interpreter keeps.
+      `ReplaceTextures` now does what it says in the interpreter as well, and is the
+      `replaceTextures` action (flags 1/2/4/8/16 name the surfaces to *leave alone*).
+      The blockers left, measured per script over the campaign's 58 scripts (41 translated):
+      **`CALLFUNC`** in five of them (`moveCamera` ×3, `openHellSecret`, `StarDraw`,
+      `FlagAdder`) — the interpreter runs the call now instead of ending the script, but these
+      maps ship *no function table at all* (0 functions, no `LOADACS` library), so the callee
+      does not exist and the call reports "no loaded module defines it". Nothing can inline
+      what is not there. **A `while` loop whose bound is a map variable** (`slimeBridge`,
+      `invertStairs`, `BossStart`, `DieAltar`): the body is counted at run time and waits, so
+      it cannot be unrolled, and an event cannot say "repeat until a condition fails, then
+      carry on" without inventing state the script never had. **A wait inside a conditional
+      block** (`bobCamera` ×3, `activatePower`): the guard becomes a sub-event, and a sub-event
+      that waits would need its own rule chain per branch. **`PUSHSCRIPTVAR`** where the walker
+      cannot follow the value (`threeButtons`, `splitDoor`, `SmallStarDraw`).
 - [~] **Step 3 — control flow.** `if` is done: an `IFNOTGOTO` guard is a sub-event of the
       rule that runs before it, so the counter-increment-then-test order of the script
       survives (`openLabDoor` in MAP05 reads exactly as its bytecode did), and an `if`/`else`
