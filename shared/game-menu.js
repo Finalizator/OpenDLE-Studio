@@ -224,7 +224,12 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
   }
   function button(page, label, y, actions, patch, x = 86, width = 148) {
     const image = patch && art(patch);
-    const item = element(page, 'button', label, x, y, image?.width || width, image?.height || 12,
+    // Doom centres a menu item's artwork on the 320-wide screen rather than lining the items
+    // up on one edge, and an imported patch is often wider than the text column — Freedoom's
+    // M_JKILL is 246 units and M_ROUGH 248 — so a fixed left edge ran them off the right of
+    // the menu and past the canvas.
+    const item = element(page, 'button', label, image ? (320 - image.width) / 2 : x, y,
+      image?.width || width, image?.height || 12,
       { text: image ? '' : label, align: 'left', background: '#00000000', ...(image ? { assetId: image.id } : {}) });
     rule(label, { type: 'hudClicked', elementId: item.id }, actions, [screen(page)]);
     return item;

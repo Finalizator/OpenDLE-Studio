@@ -115,7 +115,15 @@ export function advanceMomentum(momentum, thrust, { grounded = true, blocked = n
   return next;
 }
 
-const ZERO = Object.freeze({ x: 0, y: 0, z: 0 });
+/**
+ * A stopped player's momentum. Frozen because it is handed back to every caller that has
+ * stopped and nothing should be writing to a shared value — but `state.momentum` must never be
+ * this object: the wall-stop code below zeroes an axis on it, and assigning to a frozen
+ * property throws "Cannot assign to read only property 'y'", which is exactly what a player
+ * standing against a wall used to crash the preview with.
+ */
+export const ZERO_MOMENTUM = Object.freeze({ x: 0, y: 0, z: 0 });
+const ZERO = ZERO_MOMENTUM;
 
 /** Momentum converted to the units per second the physics world moves the player at. */
 export function momentumSpeed(momentum) {

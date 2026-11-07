@@ -11,7 +11,7 @@ import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
   setActorState, explodeAt, homeMissile, bfgSpray, projectileActor, labelIndex } from './actor-runtime.js';
-import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, advanceMomentum, bamPerDegreePerSecond, bobFor,
+import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, ZERO_MOMENTUM, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
 import { HL2_MOVEMENT, clampHorizontal, horizontalStep, measuredVelocity } from './source-motion.js';
 
@@ -903,7 +903,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     // event turns gravity onto a wall: forward and strafe stay on that surface.
     const basis = playerBasis(player.up), cosHeading = Math.cos(player.angle), sinHeading = Math.sin(player.angle);
     state.momentum ||= { x: 0, y: 0, z: 0 };
-    state.momentum = advanceMomentum(state.momentum, {
+    const advanced = advanceMomentum(state.momentum, {
       x: (basis.forward[0] * cosHeading + basis.right[0] * sinHeading) * thrust.forward
         + (basis.right[0] * cosHeading - basis.forward[0] * sinHeading) * thrust.side,
       y: (basis.forward[1] * cosHeading + basis.right[1] * sinHeading) * thrust.forward
@@ -911,6 +911,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       z: (basis.forward[2] * cosHeading + basis.right[2] * sinHeading) * thrust.forward
         + (basis.right[2] * cosHeading - basis.forward[2] * sinHeading) * thrust.side,
     }, { grounded });
+    // A stopped player gets its own zero: the shared one is frozen, and the wall-stop code
+    // further down zeroes axes on `state.momentum`. Storing the frozen object made a player
+    // pressed against a wall throw and kill the preview.
+    state.momentum = advanced === ZERO_MOMENTUM ? { x: 0, y: 0, z: 0 } : advanced;
   }
   state.sourceGrounded = grounded;
   if (tics) {

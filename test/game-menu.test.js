@@ -417,3 +417,33 @@ test('the player runs by default, as in Doom, so a walking monster cannot keep u
   assert.ok(Math.abs(ran - walked * 2) < 0.6, `running is twice walking: ${ran.toFixed(1)} vs ${walked.toFixed(1)} a tic`);
   assert.ok(ran * 35 > 500, `a running player covers ${(ran * 35).toFixed(0)} units a second`);
 });
+test('imported menu artwork is centred and never runs past the canvas', { skip: !existsSync(freedoom) }, () => {
+  // Freedoom's own menu patches are wider than Doom's and wider than the text column: M_SKILL
+  // is 236 units, M_JKILL 246 and M_ROUGH 248 on a 320-wide screen. Laid out from a fixed left
+  // edge the two widest rows ended past the canvas, which is what the skill menu looked like
+  // when it was reported as "off".
+  const p = menuProject(), bytes = readFileSync(freedoom);
+  const source = createDoomAssets(readWad(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)), encodeImage);
+  const include = id => {
+    if (!p.assets.some(asset => asset.id === id)) p.assets.push(source.assets.find(asset => asset.id === id));
+    return id;
+  };
+  rebuildGameMenu(p, { has: source.has, get: (name, kind) => include(source.get(name, kind)),
+    atlas: (...args) => { const result = source.atlas(...args); include(result.assetId); return result; } });
+  validateProject(p);
+  const generated = p.hud.elements.filter(item => p.gameMenus.elementIds.includes(item.id));
+  // Nothing the generated menus place may leave the canvas, and every menu row drawn with
+  // imported artwork is centred on it. The save-slot borders are artwork laid out in a row on
+  // purpose, so they are only held to the first rule.
+  for (const item of generated.filter(item => item.width > 0 && !item.anchors)) {
+    assert.ok(item.x + item.width <= p.hud.width + .01,
+      `${item.name} ends at ${item.x + item.width} on a ${p.hud.width} wide canvas`);
+    assert.ok(item.x >= -.01, `${item.name} starts at ${item.x}`);
+  }
+  const rows = generated.filter(item => item.type === 'button' && item.assetId);
+  assert.ok(rows.length > 5, `menu artwork found (${rows.length})`);
+  for (const item of rows) {
+    assert.ok(Math.abs(item.x + item.width / 2 - p.hud.width / 2) < .01,
+      `${item.name} is centred: ${item.x} + ${item.width}`);
+  }
+});

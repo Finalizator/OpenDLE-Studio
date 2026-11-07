@@ -5,6 +5,7 @@ import {
   DOOM_FRICTION, MAXBOB, PLAYER_SPEED, VIEW_BOB_STEP, advanceMomentum, bobFor, momentumSpeed, terminalSpeed,
   thrustFor, thrustTowards, turnStep, weaponBob, viewBob,
 } from '../shared/player-motion.js';
+import { createProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { importWad } from '../server/import.js';
 
@@ -103,3 +104,45 @@ test('a shot that hits a wall leaves a mark on it, and enough shots do not grow 
 function fixtureWad() {
   return new URL('../Projects/freedoom2.wad', import.meta.url);
 }
+
+test('a stopped player still reported against a wall does not write to a frozen momentum', () => {
+  // The preview died with "Cannot assign to read only property 'y' of object '#<Object>'".
+  // `advanceMomentum` hands one frozen zero to every caller that has stopped, and the wall-stop
+  // step further down zeroes an axis on `state.momentum`. A collision world keeps the wall it
+  // last refused until it runs another substep, so a player who has let go of the keys next to a
+  // wall can be reported blocked on a frame that runs none — and the write landed on that shared
+  // frozen zero. The world is stubbed because the case is the report itself, not the collision.
+  assert.equal(Object.isFrozen(advanceMomentum({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 })), true);
+  const project = createProject();
+  project.events = [];
+  const state = createRuntime(project);
+  const stepped = [];
+  state.physics = {
+    blocked: { x: 0, y: 3 }, playerVelocity: null,
+    syncWorld() {}, step(dt, velocity) { stepped.push(velocity); }, probeSurfaces: () => [],
+  };
+  for (let frame = 0; frame < 4; frame++) {
+    stepRuntime(project, state, 1 / 60, new Set());
+    assert.equal(Object.isFrozen(state.momentum), false, `momentum writable on frame ${frame}`);
+  }
+  assert.equal(stepped.length, 4, 'the world was stepped every frame');
+});
+
+test('a player walking into a wall keeps a momentum object that can be written to', () => {
+  // The same invariant on the plain walking path, where the runtime works out for itself
+  // whether the move was refused.
+  const project = createProject();
+  project.events = [];
+  project.map.vertices = [[-256, -256], [256, -256], [256, 256], [-256, 256]]
+    .map(([x, y], index) => ({ id: `v${index}`, x, y }));
+  const side = { sectorId: 's', offsetX: 0, offsetY: 0 };
+  project.map.walls = [['v0', 'v1'], ['v1', 'v2'], ['v2', 'v3'], ['v3', 'v0']].map(([a, b], index) => ({
+    id: `w${index}`, a, b, right: side, left: null, solid: true, height: 128, color: '#888888' }));
+  project.map.sectors = [{ id: 's', floorHeight: 0, ceilingHeight: 128, light: 255, sky: false }];
+  project.map.entities = [{ id: 'player', type: 'player', name: 'Player', x: -240, y: 0, angle: 0 }];
+  const state = createRuntime(project);
+  for (let frame = 0; frame < 120; frame++) {
+    stepRuntime(project, state, 1 / 35, new Set(['KeyW']));
+    assert.equal(Object.isFrozen(state.momentum), false, `momentum writable on frame ${frame}`);
+  }
+});
