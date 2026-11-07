@@ -32,6 +32,8 @@ const choice = (name, value, options) => ({ name, value, kind: 'choice', options
 const waypoint = (name, value, extra = {}) => ({ name, value, kind: 'waypoint', ...extra });
 const stat = () => choice('stat', 'health', PLAYER_STATS);
 const comparison = () => choice('operator', '>', ['<', '<=', '=', '!=', '>=', '>']);
+/** `ReplaceTextures` flags: the surfaces to leave alone, so 0 replaces all of them. */
+const numericalFlags = () => numeric('flags', 0, 0, 31);
 const timer = () => ({ name: 'timer', value: 'weapon', kind: 'text' });
 /** Easing names a camera move shares with a path tween, so a glide reads the same in both. */
 const EASINGS = PATH_EASINGS;
@@ -388,6 +390,10 @@ export const ENGINE_ACTIONS = [
   { type: 'setLineTexture', label: 'World: set a line texture by tag', fields: [
     numeric('line', 0, 0, 65535), numeric('side', 0, 0, 1), numeric('part', 1, 0, 2),
     { name: 'texture', value: '', kind: 'text', allowEmpty: true, expression: true }] },
+  { type: 'replaceTextures', label: 'World: replace one texture with another everywhere', fields: [
+    { name: 'from', value: '', kind: 'text', allowEmpty: true },
+    { name: 'to', value: '', kind: 'text', allowEmpty: true },
+    numericalFlags()] },
   { type: 'setLineBlocking', label: 'World: set whether tagged lines block', fields: [
     numeric('tag', 0, 0, 65535), choice('blocking', 'yes', ['yes', 'no'])] },
   { type: 'setLineMonsterBlocking', label: 'World: set whether tagged lines block monsters', fields: [

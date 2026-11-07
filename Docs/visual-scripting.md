@@ -441,7 +441,9 @@ because a rule cannot invent an argument.
 The builtins a script calls directly are actions too, and they run the interpreter's own host
 functions so a decompiled script and a bytecode one change the level identically:
 `setSectorFlat` (`surface`, `tag`, `flat` — ACS `ChangeFloor`/`ChangeCeiling`),
-`setLineTexture` (`line`, `side`, `part`, `texture`), `setLineBlocking` (`tag`, `blocking`),
+`setLineTexture` (`line`, `side`, `part`, `texture`),
+`replaceTextures` (`from`, `to`, `flags` — ACS `ReplaceTextures`, where the flags name the
+surfaces to leave alone: 1 upper, 2 middle, 4 lower, 8 floor, 16 ceiling), `setLineBlocking` (`tag`, `blocking`),
 `setLineMonsterBlocking` (`tag`, `monsters`) and `setLineSpecial` (`tag`, `special`,
 `arg1`…`arg5`), and ACS `FadeTo` is the `fadeTo` action (`red`, `green`, `blue`, `amount`,
 `seconds`) — a constant is converted out of ACS's 16.16 fixed point in the sheet, a variable is

@@ -826,6 +826,10 @@ const BUILTINS = {
   SETLINETEXTURE: { count: 4, action: ([line, side, part, texture], module) => named({
     type: 'setLineTexture', line: argumentOf(line), side: argumentOf(side), part: argumentOf(part) },
   'texture', stringOf(texture, module)) },
+  // `ReplaceTextures(from, to, flags)`: the names come out of the string table, and the flags
+  // say which surfaces to leave alone.
+  REPLACETEXTURES: { count: 3, action: ([from, to, flags], module) => (flags?.kind !== 'number' ? null : named({
+    type: 'replaceTextures', from: stringOf(from, module), to: stringOf(to, module) }, 'flags', Number(flags.value) || 0)) },
   SETLINEBLOCKING: { count: 2, action: ([tag, mode]) => (mode?.kind !== 'number' ? null
     : { type: 'setLineBlocking', tag: argumentOf(tag), blocking: Number(mode.value) === 0 ? 'no' : 'yes' }) },
   SETLINEMONSTERBLOCKING: { count: 2, action: ([tag, on]) => (on?.kind !== 'number' ? null

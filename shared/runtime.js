@@ -2122,6 +2122,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             Number(action.part) || 0, String(action.texture ?? ''));
           break;
         }
+        case 'replaceTextures': {
+          // `ReplaceTextures(from, to, flags)`: the same host function the interpreter calls,
+          // so a translated script and a bytecode one swap the same surfaces.
+          hostFor(action).replaceTextures(String(action.from ?? ''), String(action.to ?? ''), Number(action.flags) || 0);
+          break;
+        }
         case 'setLineBlocking': {
           hostFor(action).setLineBlocking(Number(action.tag) || 0, action.blocking === 'no' ? 0 : 1);
           break;

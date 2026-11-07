@@ -266,6 +266,7 @@ export function createMapScripts(project, state, callbacks = {}) {
     hasKey: key => (state.inventory.keys?.has(key) ? 1 : 0),
     changeFlat: (tag, name, ceiling) => changeFlat(tag, name, ceiling),
     setLineTexture: (tag, side, part, name) => setLineTexture(tag, side, part, name),
+    replaceTextures: (from, to, flags) => replaceTextures(from, to, flags),
     setLineBlocking: (tag, mode) => setLineBlocking(tag, mode),
     setLineMonsterBlocking: (tag, on) => setLineMonsterBlocking(tag, on),
     setLineSpecial: (tag, special, args) => setLineSpecial(tag, special, args),
@@ -447,6 +448,41 @@ export function createMapScripts(project, state, callbacks = {}) {
     for (const sector of sectorsTagged(tag)) {
       if (ceiling) sector.ceilingAsset = asset?.id || null;
       else sector.floorAsset = asset?.id || null;
+    }
+    state.worldRevision++;
+  }
+
+  /**
+   * `ReplaceTextures(from, to, flags)`: every surface showing one texture shows another.
+   *
+   * The flags name the surfaces to *leave alone*, exactly as GZDoom's NOT_TOP / NOT_MIDDLE /
+   * NOT_BOTTOM / NOT_FLOOR / NOT_CEILING do, so 0 replaces everything. Walls look the name up
+   * among the texture assets and sectors among the flats, because a script may swap one for a
+   * flat of the same name.
+   */
+  function replaceTextures(from, to, flags = 0) {
+    const wanted = String(from).toUpperCase(), replacement = String(to).toUpperCase();
+    const find = kind => project.assets?.find(asset => asset.kind === kind && asset.name.toUpperCase() === replacement);
+    const textures = find('texture'), flats = find('flat');
+    const wearing = (record, field, kind) => record?.[field]
+      && String(project.assets?.find(asset => asset.id === record[field])?.name || '').toUpperCase() === wanted
+      && (kind === 'texture' ? textures : flats);
+    for (const wall of state.walls) {
+      for (const record of [wall.right, wall.left]) {
+        if (!record) continue;
+        for (const [field, bit] of [['upper', 1], ['middle', 2], ['lower', 4]]) {
+          if (flags & bit) continue;
+          const swap = wearing(record, field, 'texture');
+          if (swap) record[field] = swap.id;
+        }
+      }
+    }
+    for (const sector of state.sectors) {
+      for (const [field, bit, kind] of [['floorAsset', 8, 'flat'], ['ceilingAsset', 16, 'flat']]) {
+        if (flags & bit) continue;
+        const swap = wearing(sector, field, kind);
+        if (swap) sector[field] = swap.id;
+      }
     }
     state.worldRevision++;
   }

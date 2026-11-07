@@ -1201,7 +1201,12 @@ function defineWorld() {
     vm.host.thingSound(tid, vmString(vm, sound), volume);
   });
   define(P.SOUNDSEQUENCE, '', (vm, script) => { pop(vm, script); });
-  define(P.REPLACETEXTURES, '', (vm, script) => { pop(vm, script); pop(vm, script); pop(vm, script); });
+  define(P.REPLACETEXTURES, '', (vm, script) => {
+    // `ReplaceTextures(from, to, flags)`, pushed in that order; the flags name the surfaces
+    // to leave alone.
+    const flags = pop(vm, script), to = pop(vm, script), from = pop(vm, script);
+    vm.host.replaceTextures(vmString(vm, from), vmString(vm, to), flags | 0);
+  });
   define(P.SETFLOORTRIGGER, '', (vm, script) => { for (let index = 0; index < 8; index++) pop(vm, script); });
   define(P.SETCEILINGTRIGGER, '', (vm, script) => { for (let index = 0; index < 8; index++) pop(vm, script); });
   // ACS colours arrive as 16.16 fixed point, but small values are also written as plain bytes.
@@ -1402,6 +1407,7 @@ const HOST_DEFAULTS = {
   hasKey: () => 0,
   changeFlat: () => {},
   setLineTexture: () => {},
+  replaceTextures: () => {},
   setLineBlocking: () => {},
   setLineMonsterBlocking: () => {},
   setLineSpecial: () => {},

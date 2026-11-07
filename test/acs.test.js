@@ -1532,3 +1532,37 @@ test('a script writing and reading one of its arrays becomes an action and an ex
   assert.equal(state.scripts.vm.mapVars[0][90], 7, 'the read found what the write stored');
   assert.equal(readAcsArray(state, 'script', 1, 0), 7, 'and the array holds it');
 });
+
+test('a script that replaces a texture swaps the surfaces a rule swaps too', () => {
+  // `ReplaceTextures("STONE", "BRICK", 8)` — the names are string-table indices, and the flags
+  // say which surfaces to leave alone (8 is NOT_FLOOR). The action runs the interpreter's own
+  // host function, so a translated script and a bytecode one change the same sidedefs.
+  const asm = emitter();
+  asm.ins('PUSHBYTE').byte(0).ins('PUSHBYTE').byte(1).push(8).ins('REPLACETEXTURES').ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }], strings: ['STONE', 'BRICK'] })).mapScripts });
+  const png = 'data:image/png;base64,AA==';
+  project.assets.push(
+    { id: 'tex_stone', name: 'STONE', kind: 'texture', width: 64, height: 128, src: png },
+    { id: 'tex_brick', name: 'BRICK', kind: 'texture', width: 64, height: 128, src: png },
+    { id: 'flat_stone', name: 'STONE', kind: 'flat', width: 64, height: 64, src: png },
+    { id: 'flat_brick', name: 'BRICK', kind: 'flat', width: 64, height: 64, src: png });
+  for (const wall of project.map.walls) {
+    Object.assign(wall.right, { upper: 'tex_stone', middle: 'tex_stone', lower: 'tex_stone' });
+  }
+  for (const sector of project.map.sectors) { sector.floorAsset = 'flat_stone'; sector.ceilingAsset = 'flat_stone'; }
+  validateProject(project);
+  const program = programFor(project);
+  const decompiled = decompileScript(program, 1);
+  assert.deepEqual(decompiled.actions, [
+    { type: 'replaceTextures', from: 'STONE', to: 'BRICK', flags: 8 },
+  ]);
+  project.eventSheets.push({ id: 'acs_sheet', name: 'ACS rules', section: 'game', enabled: true, phase: 'afterPhysics' });
+  project.events = acsScriptStepRules(program, program.scripts[0], { sheetId: 'acs_sheet' });
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.walls.find(wall => wall.id === 'w0').right.middle, 'tex_brick', 'the wall changed');
+  assert.equal(state.sectors.find(sector => sector.id === 's0').floorAsset, 'flat_stone', 'the flag left the floor alone');
+  assert.equal(state.sectors.find(sector => sector.id === 's0').ceilingAsset, 'flat_brick', 'and replaced the ceiling');
+});
