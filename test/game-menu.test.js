@@ -395,7 +395,7 @@ ListMenu "Second"
   assert.throws(() => parseMenuDefinitions(absurd, 'mod'), /more than 256 menus/);
 });
 
-test('the player runs by default, as in Doom, so a 280-a-second monster cannot keep up', () => {
+test('the player runs by default, as in Doom, so a walking monster cannot keep up', () => {
   // Doom ships `always_run` on (GZDoom's `cl_run` defaults to 1) and the speed key walks.
   // OpenDLE started off, which made the player walk at 291 units a second — a zombie's own
   // chase speed — so every monster in an imported game looked twice as fast as it does in
@@ -415,5 +415,5 @@ test('the player runs by default, as in Doom, so a 280-a-second monster cannot k
   settle(walking); settle(running);
   const walked = perTic(walking), ran = perTic(running);
   assert.ok(Math.abs(ran - walked * 2) < 0.6, `running is twice walking: ${ran.toFixed(1)} vs ${walked.toFixed(1)} a tic`);
-  assert.ok(ran * 35 > 500, `a running player covers ${(ran * 35).toFixed(0)} units a second, well past a monster's 280`);
+  assert.ok(ran * 35 > 500, `a running player covers ${(ran * 35).toFixed(0)} units a second`);
 });

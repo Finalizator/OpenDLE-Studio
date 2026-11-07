@@ -37,6 +37,38 @@ export function stateSeconds(actor, label) {
 }
 
 /**
+ * The tics between two `A_Chase` calls in the actor's own See state.
+ *
+ * This is the number that makes or breaks a chase speed. `A_Chase` moves the monster `Speed`
+ * map units — but it runs once per **state frame**, not once per tic. Every classic monster's
+ * See state is four frames of four tics (`POSS AABBCCDD 4 A_Chase`), so a Zombieman covers 8
+ * units every four tics: 2 units a tic, not 8. GZDoom's own trace in `Docs/gzdoom-parity.md`
+ * says the same thing, and the state machine here already behaves that way, because it runs a
+ * frame's action when it enters the frame.
+ *
+ * A rule that moved the monster every tic made it four times too fast. Returns 4 when the
+ * states cannot be read, which is the classic value.
+ */
+export function chaseStepTics(actor) {
+  const frames = actor?.states?.frames || [];
+  const start = labelIndex(actor, 'See');
+  if (start === null) return 4;
+  let tics = 0, calls = 0;
+  for (let index = start; index < frames.length; index++) {
+    const frame = frames[index];
+    if (frame.kind !== 'frame') {
+      if (frame.kind === 'goto' || frame.kind === 'loop') break;
+      continue;
+    }
+    if (frame.duration < 0) break;
+    tics += frame.duration || 1;
+    if ((frame.actions || []).some(action => action.name === 'A_Chase')) calls++;
+    if (tics > 64) break;
+  }
+  return calls ? Math.max(1, tics / calls) : 4;
+}
+
+/**
  * What a monster's rules would say, or why they cannot be written.
  *
  * A monster needs a `See` state to wake into and something to attack with: a `Missile`
@@ -52,8 +84,11 @@ export function analyseMonster(project, actor) {
   if (!missile && !melee) return { expressible: false, reasons: [`${name} has no Melee or Missile state to attack with`] };
   return { expressible: true, name, missile, melee,
     health: Number(actor.health) || 20,
-    // An actor's `speed` is map units a tic; the movement action takes units a second.
-    speed: Math.round((Number(actor.speed) || 8) * 35),
+    // `A_Chase` moves `speed` map units once per See frame, and a classic See frame lasts four
+    // tics — 8 units every four tics, which is 70 a second, not 280. The rule moves the monster
+    // every frame, so the speed it is given is that average, and the walk matches GZDoom's.
+    speed: Math.round((Number(actor.speed) || 8) * 35 / chaseStepTics(actor)),
+    seeStepTics: chaseStepTics(actor),
     radius: Number(actor.radius) || 20,
     // P_CheckMeleeRange: MELEERANGE - 20 + the monster's radius.
     meleeRange: Math.round(64 - 20 + (Number(actor.radius) || 20)),

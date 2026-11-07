@@ -5,7 +5,7 @@ import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { buildVanillaActors } from '../shared/actors.js';
 import { AI_ACTIONS, explodeAt, hurtActor, setActorState } from '../shared/actor-runtime.js';
-import { analyseMonster, enemyEventActors, enemyScriptRules, propEventActors, stateSeconds } from '../shared/enemy-script.js';
+import { analyseMonster, chaseStepTics, enemyEventActors, enemyScriptRules, propEventActors, stateSeconds } from '../shared/enemy-script.js';
 import { projectileEventActors } from '../shared/projectile-script.js';
 
 function imported() {
@@ -37,9 +37,10 @@ test('each imported monster archetype becomes rules that decide, not animate', (
     assert.equal(rule.forEachType, 'enemy');
     assert.ok(rule.conditions.some(condition => condition.type === 'entityActorName' && condition.actor === rule.enemyActor));
   }
-  // The walk uses the actor's own speed (8 map units a tic is 280 a second).
+  // The walk uses the actor's own speed *as `A_Chase` applies it*: 8 map units once per See
+  // frame, and an imp's See frames last 3 tics — 8 × 35 / 3 = 93 a second, not 280.
   const chase = imp.find(rule => rule.name === 'DoomImp: chases');
-  assert.equal(chase.actions.find(action => action.type === 'moveEnemy').speed, 280);
+  assert.equal(chase.actions.find(action => action.type === 'moveEnemy').speed, 93);
   // The attack goes through the actor's own state, which is where its attack lives.
   const attack = imp.find(rule => rule.name === 'DoomImp: attacks');
   assert.deepEqual(attack.actions.find(action => action.type === 'playActorState'), { type: 'playActorState', entityId: '$self', state: 'Missile' });
@@ -185,7 +186,7 @@ test('a translated monster cannot restart its attack, and rolls the dice once a 
 
 test('a translated monster walks at Doom speed whatever the frame rate', () => {
   // `moveEnemy` takes the frame time, so a walk has to cover the same ground at 30, 60 and
-  // 144 frames a second: 8 map units a tic is 280 a second, whichever clock is drawn on.
+  // 144 frames a second. An imp walks 8 units per 3-tic See frame, which is 93 a second.
   const travel = fps => {
     const project = imported();
     // A room with room to walk: the starter map is small enough that a walker would reach the
@@ -211,7 +212,7 @@ test('a translated monster walks at Doom speed whatever the frame rate', () => {
   };
   const thirty = travel(30), sixty = travel(60), fast = travel(144);
   for (const [name, moved] of [['30 fps', thirty], ['60 fps', sixty], ['144 fps', fast]])
-    assert.ok(Math.abs(moved - 280) < 8, `${name} covers ${moved.toFixed(1)} units a second, not 280`);
+    assert.ok(Math.abs(moved - 93) < 4, `${name} covers ${moved.toFixed(1)} units a second, not 93`);
 });
 
 test('a translated monster waits out its attack before it decides on another', () => {
@@ -234,3 +235,28 @@ test('a translated monster waits out its attack before it decides on another', (
   assert.ok(entries >= 1, 'the imp attacked through its own Missile state');
   assert.ok(entries <= 6, `the attack plays out instead of restarting: ${entries} entries`);
 });
+
+test('a translated monster walks at the pace its own See frames give it', () => {
+  // The regression that made monsters four times too fast. `A_Chase` moves `Speed` map units
+  // once per **state frame**, and classic See states are frames of four tics — GZDoom's own
+  // trace in `Docs/gzdoom-parity.md` records "a Zombieman moves 8 units every four tics". A
+  // rule that moved the monster every tic therefore walked it at 280 a second instead of 70.
+  const actors = buildVanillaActors();
+  const expected = { ZombieMan: 4, DoomImp: 3, Demon: 2, BaronOfHell: 3, LostSoul: 6 };
+  for (const [name, tics] of Object.entries(expected)) {
+    const actor = actors.find(candidate => candidate.name === name);
+    assert.ok(actor, `${name} is in the vanilla table`);
+    assert.equal(chaseStepTics(actor), tics, `${name} calls A_Chase every ${tics} tics`);
+    const plan = analyseMonster({}, actor);
+    assert.equal(plan.speed, Math.round(actor.speed * 35 / tics),
+      `${name} walks ${plan.speed} units a second: ${actor.speed} units every ${tics} tics`);
+  }
+  // A Zombieman is the number the parity doc measured: 8 units every four tics is 70 a second.
+  const zombie = analyzeZombie(actors.find(actor => actor.name === 'ZombieMan'));
+  assert.equal(zombie, 70);
+});
+
+/** The Zombieman's walking speed in units a second, as the rules give it. */
+function analyzeZombie(actor) {
+  return analyseMonster({}, actor).speed;
+}

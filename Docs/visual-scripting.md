@@ -655,9 +655,13 @@ floor/lift or a configured `elevator`.
 
 The player runs by default, as Doom ships it (`always_run` on, GZDoom's `cl_run` defaulting to
 1) and the speed key walks instead; the input sheet's `movePlayer` speed is a *walking* speed
-and running doubles it, the same ratio as Doom's `normforwardmove` 25 and 50. A monster chasing
-at its 8 map units a tic (280 a second) therefore cannot keep up with the player, which is what
-GZDoom looks like.
+and running doubles it, the same ratio as Doom's `normforwardmove` 25 and 50.
+
+A monster's chase speed follows its own states, not a guess: `A_Chase` moves `Speed` map units
+**once per See frame**, and classic See states are frames of three or four tics — a Zombieman
+covers 8 units every four tics (70 a second), an imp 8 every three (93), a demon 10 every two
+(175). The import writes that average into `moveEnemy`'s `speed`, because the rule moves the
+monster every frame; moving it by `Speed` per frame walked it four times too fast.
 
 `oncePerTic` passes at most once per 35 Hz simulation tic, per rule and per object instance, so
 a decision Doom takes once a tic (an attack roll) keeps that rate on a 144 Hz machine. The
