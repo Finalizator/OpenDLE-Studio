@@ -405,3 +405,37 @@ test('real Freedoom imports PCM effects and a native actor table instead of gene
   assert.ok(imp.states.labels.See !== undefined && imp.states.labels.Death !== undefined);
   assert.equal(validateProject(JSON.parse(JSON.stringify(project))).assets.length, project.assets.length);
 });
+
+test('a monster notices a door opening on the next frame, not a sight answer kept from before', () => {
+  // Sight is memoised because one frame asks each monster several times, and the answer is
+  // only good for that frame: a door opening between two frames looks identical to every
+  // input the memo compares, so the memo has to be dropped as the frame starts.
+  const project = createProject();
+  project.events = [];
+  // Three sectors in a row: a room, the doorway between them, and the room the player is in.
+  project.map.vertices = [[-224, -96], [-32, -96], [32, -96], [224, -96], [-224, 96], [-32, 96], [32, 96], [224, 96]]
+    .map(([x, y], index) => ({ id: `v${index}`, x, y }));
+  project.map.sectors = [0, 1, 2].map(index => ({ id: `s${index}`, floorHeight: 0,
+    ceilingHeight: index === 1 ? 0 : 128, light: 255, sky: false, tag: index }));
+  const side = sectorId => ({ sectorId, offsetX: 0, offsetY: 0 });
+  project.map.walls = [
+    [0, 1, 's0'], [1, 5, 's0', 's1'], [5, 4, 's0'], [4, 0, 's0'],
+    [1, 2, 's1'], [2, 6, 's1', 's2'], [6, 5, 's1'], [2, 3, 's2'], [3, 7, 's2'], [7, 6, 's2'],
+  ].map(([a, b, right, left], index) => ({ id: `w${index}`, a: `v${a}`, b: `v${b}`, right: side(right),
+    left: left ? side(left) : null, solid: !left, height: 128, color: '#888888', special: 0, tag: 0 }));
+  // A decoration: it never moves and no rule of its own asks about sight, so nothing but the
+  // frame boundary can make the memo wrong.
+  project.map.entities = [{ id: 'monster', type: 'decoration', name: 'Monster', x: -96, y: 0, angle: 0 },
+    { id: 'player', type: 'player', name: 'Player', x: 96, y: 0, angle: 0 }];
+  installEngineScripts(project);
+  validateProject(project);
+  const state = createRuntime(project);
+  const monster = state.entities.find(item => item.id === 'monster');
+  const door = state.sectors.find(sector => sector.id === 's1');
+  assert.equal(canSeePlayer(state, monster, 4096), false, 'the shut door hides the player');
+  assert.equal(state.sightMemo.size, 1, 'the answer is kept for the rest of the frame');
+  door.ceilingHeight = 128;
+  tick(project, state);
+  assert.equal(state.sightMemo.size, 0, 'the next frame starts with no answer from the last one');
+  assert.equal(canSeePlayer(state, monster, 4096), true, 'the open door is seen on the next frame');
+});

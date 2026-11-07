@@ -41,6 +41,9 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // The instances a rule picked are a scope that exists only while that rule runs, so a save taken
   // from inside a rule (a checkpoint action) must not record the rule's own bookkeeping.
   'picks',
+  // Sight answers are kept for the length of one frame, because one frame asks each monster
+  // several times; saving them would record a moment rather than the game.
+  'sightMemo',
   // The speed the player is travelling at is read off the momentum every tic, so it is derived
   // rather than part of the game state.
   'speed']);

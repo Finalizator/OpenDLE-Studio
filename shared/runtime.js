@@ -103,10 +103,20 @@ export function pickedInstances(state, picks, type) {
 
 /** The pick a per-instance rule sees: the parent's, narrowed to the one instance it is about. */
 function ownPick(picks, type, id) {
-  const own = new Map(picks);
-  const current = picks.get(type);
-  own.set(type, current ? new Set([...current].filter(candidate => candidate === id)) : new Set([id]));
+  // Narrowing a set to a single member is that member, so the filter this used to run is
+  // only work: this is on the path of every action of every object rule of every frame.
+  const own = picks.size ? new Map(picks) : new Map();
+  own.set(type, ONE_MEMBER.get(id) || newSingleMember(id));
   return own;
+}
+// Every action of every object rule narrows to one instance, so the one-member sets are
+// shared rather than rebuilt; they are never mutated, only replaced by a fresh map.
+const ONE_MEMBER = new Map();
+function newSingleMember(id) {
+  const set = new Set([id]);
+  if (ONE_MEMBER.size > 4096) ONE_MEMBER.clear();
+  ONE_MEMBER.set(id, set);
+  return set;
 }
 
 /** Applies a picked set back into the pick map, keeping the map immutable between events. */
@@ -505,14 +515,22 @@ export function entityLookup(state) {
   const last = entities[entities.length - 1];
   if (cache.entity && cache.entity.list === entities && cache.entity.count === entities.length &&
     cache.entity.last === last) return cache.entity;
-  const byId = new Map(), byType = new Map();
+  const byId = new Map(), byType = new Map(), spawned = new Map();
   for (const entity of entities) {
     byId.set(entity.id, entity);
     let list = byType.get(entity.type);
     if (!list) byType.set(entity.type, list = []);
     list.push(entity);
+    // What a rule about an imported actor also owns: leftovers it spawned. An imported
+    // campaign has a rule per actor in every level, so looking this up by scanning the entity
+    // list once per rule was the largest single cost of a frame.
+    if (entity.spawnedFrom) {
+      let children = spawned.get(entity.spawnedFrom);
+      if (!children) spawned.set(entity.spawnedFrom, children = []);
+      children.push(entity);
+    }
   }
-  return (cache.entity = { list: entities, count: entities.length, last, byId, byType });
+  return (cache.entity = { list: entities, count: entities.length, last, byId, byType, spawned });
 }
 
 // Probing costs a dozen ray casts and a handful of objects per frame, so it only
@@ -743,6 +761,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     for (const key of ['Mouse0', 'Mouse2']) { keys.delete(key); pressed.delete(key); }
   }
   dt = Math.max(0, Math.min(0.05, dt));
+  // Sight is asked several times per object per frame; it only ever lives for one frame,
+  // because the geometry it depends on (a door that opens) can change between them.
+  state.sightMemo?.clear();
   const stepStarted = performance.now(), stepParts = (cacheFor(state).stepParts ||= {});
   let stepMark = stepStarted;
   const stage = name => { const now = performance.now(); stepParts[name] = now - stepMark; stepMark = now; };
@@ -1061,10 +1082,11 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
      * An empty map means "nothing narrowed yet", and every consumer then means every instance of
      * the type — so a rule that never picks still behaves exactly as it always did.
      */
-    function visit(source, ownerId, picks = new Map()) {
+    function visit(source, ownerId, picks) {
       if (source.groupId && !state.groups.get(source.groupId)) return;
       // Each branch owns its narrowing; siblings start again from the parent's selection.
-      picks = new Map(picks);
+      // The root of a branch has none of its own to own, so its map is made once, here.
+      picks = picks ? new Map(picks) : new Map();
       const owner = entityLookup(state).byId.get(ownerId || source.ownerId);
       if (owner && !ownerId) picks = ownPick(picks, owner.type, owner.id);
       if (ownerId) {
@@ -1104,18 +1126,26 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         }
       }
     }
+    const lookup = entityLookup(state);
     for (const source of roots) {
       if (source.timesheetId) continue;
       if (hasSignalCondition(source) !== signalDispatch) continue;
-      visit(source, undefined);
-      if (phase !== 'interface' && state.gameScreen !== 'playing') break;
+      // A rule about one imported actor has nothing to run when that actor is not in the
+      // level being played, and an imported campaign has one for every actor in every level.
+      // Its children are skipped with it, exactly as the rule body skipping them was.
       if (source.ownerId) {
-        const spawned = state.entities.filter(entity => entity.spawnedFrom === source.ownerId);
-        for (const entity of spawned) {
+        // A rule earlier in this phase may have spawned one of these or removed its owner, so
+        // the index is asked again here: it is a few identity checks, not a rebuild.
+        const owners = entityLookup(state);
+        if (owners.byId.has(source.ownerId)) {
+          visit(source, undefined);
+          if (phase !== 'interface' && state.gameScreen !== 'playing') break;
+        }
+        for (const entity of owners.spawned.get(source.ownerId) || []) {
           visit(source, entity.id, ownPick(new Map(), entity.type, entity.id));
           if (phase !== 'interface' && state.gameScreen !== 'playing') break;
         }
-      }
+      } else visit(source, undefined);
       if (phase !== 'interface' && state.gameScreen !== 'playing') break;
     }
     if (!signalDispatch && phase === 'afterPhysics' && state.gameScreen === 'playing') {

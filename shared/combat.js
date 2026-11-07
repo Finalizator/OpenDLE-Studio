@@ -153,7 +153,19 @@ export function canSeeTarget(state, entity, target, range, fov = 360) {
   return distance <= range && geometryDistance(state, origin, { x: dx / (distance || 1), y: dy / (distance || 1), z: dz / (distance || 1) }, distance + .01) >= distance;
 }
 export function canSeePlayer(state, entity, range, fov = 360) {
-  return canSeeTarget(state, entity, state.player, range, fov);
+  // A monster's sight is asked about several times in one frame — the See rule, the alert
+  // rule and the hearing check — and answering it traces the geometry under the whole level.
+  // Everything it depends on is compared here, and the memo is dropped at the start of every
+  // frame so a door that opens is never missed.
+  const player = state.player, memo = state.sightMemo ||= new Map();
+  const previous = memo.get(entity.id);
+  if (previous && previous.range === range && previous.fov === fov && previous.ex === entity.x &&
+    previous.ey === entity.y && previous.ez === entity.z && previous.angle === entity.angle &&
+    previous.px === player.x && previous.py === player.y && previous.pz === player.z) return previous.value;
+  const value = canSeeTarget(state, entity, player, range, fov);
+  memo.set(entity.id, { range, fov, ex: entity.x, ey: entity.y, ez: entity.z, angle: entity.angle,
+    px: player.x, py: player.y, pz: player.z, value });
+  return value;
 }
 // The sector the current noise came from, worked out once per shot rather than per object.
 const noiseSectors = new WeakMap();
