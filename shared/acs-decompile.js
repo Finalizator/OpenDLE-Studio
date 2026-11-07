@@ -29,6 +29,7 @@ const PUSHES = {
 };
 const SPECIALS = /^LSPEC([1-5])(DIRECT|DIRECTB)?$/;
 const VARIABLE = /^(PUSH|ASSIGN|ADD|SUB|MUL|DIV|MOD|INC|DEC)(SCRIPT|MAP|WORLD|GLOBAL)VAR$/;
+const ARRAY = /^(PUSH|ASSIGN|ADD|SUB|MUL|DIV|MOD|INC|DEC|AND|EOR|OR|LS|RS)(SCRIPT|MAP|WORLD|GLOBAL)ARRAY$/;
 const SCOPE = { SCRIPT: 'script', MAP: 'map', WORLD: 'world', GLOBAL: 'global' };
 const COMPARISONS = { EQ: '=', NE: '!=', LT: '<', GT: '>', LE: '<=', GE: '>=' };
 const FOLDS = { ADD: '+', SUBTRACT: '-', MULTIPLY: '*', DIVIDE: '/', MODULUS: '%' };
@@ -42,9 +43,14 @@ const WAITS = /^(DELAY|DELAYDIRECT|TAGWAIT|TAGWAITDIRECT)$/;
  *
  * `selector` is a script number or name, as everywhere else in the ACS layer.
  */
-export function decompileScript(program, selector, { args = [] } = {}) {
+export function decompileScript(program, selector, { args = [], report = null } = {}) {
   const script = findEntry(program, selector);
   if (!script) return null;
+  // The instruction the walker was reading when it gave up. A script that keeps its bytecode
+  // says so in its sheet, and "it could not read SELFBOTTOM at 42" is a reason a creator can
+  // act on where "this script cannot be translated" is not.
+  let reading = null;
+  const giveUp = where => { if (report) { report.opcode = reading?.name ?? null; report.offset = reading?.offset ?? null; report.at = where; } return null; };
   const module = program.modules?.[script.moduleIndex ?? 0]?.module;
   if (!module) return null;
   const moduleIndex = script.moduleIndex ?? 0;
@@ -109,8 +115,9 @@ export function decompileScript(program, selector, { args = [] } = {}) {
         seen.add(offset);
       }
       const instruction = instructionAt(module, offset);
-      if (!instruction?.supported || !instruction.end) return null;
+      if (!instruction?.supported || !instruction.end) return giveUp('opcode');
       const name = instruction.name;
+      reading = { name, offset };
       const operands = instruction.operands || [];
       const next = instruction.end;
 
@@ -319,6 +326,10 @@ export function decompileScript(program, selector, { args = [] } = {}) {
         if (operation === 'ASSIGN') {
           const assigned = pop();
           if (assigned?.kind === 'number') { store('set', Number(assigned.value) || 0); offset = next; continue; }
+          // A variable assigned from something a rule reads rather than a constant: an array
+          // element, an actor's height, a roll. The action keeps the expression.
+          const text = expressionOf(resolveLocal(assigned));
+          if (text !== null) { store('set', { expr: text }); offset = next; continue; }
           // `mapVar = mapVar + 1` is how some builds compile `mapVar++`.
           if (assigned?.kind === 'variable' && assigned.scope === scope && assigned.index === index) {
             if (assigned.add) store('add', assigned.add);
@@ -333,6 +344,38 @@ export function decompileScript(program, selector, { args = [] } = {}) {
         const delta = operation === 'DEC' ? -Number(amount.value) : Number(amount.value);
         if (delta) store('add', delta);
         offset = next; continue;
+      }
+
+      // A script's arrays: `ASSIGNSCRIPTARRAY` stores an element and `PUSHSCRIPTARRAY` reads
+      // one. Only a whole element is written and read here — an increment names the element
+      // twice, so it would need a condition on the element itself.
+      const array = ARRAY.exec(name);
+      if (array) {
+        const [, operation, scopeName] = array;
+        const scope = SCOPE[scopeName];
+        const id = Number(operands[0]);
+        // A map array's number is read from a variable slot, so it is only known at run time;
+        // the other scopes name the array directly.
+        if (scope === 'map') return null;
+        if (operation === 'PUSH') {
+          const index = expressionOf(resolveLocal(pop()) || { kind: 'number', value: 0 });
+          if (index === null) return null;
+          stack.push({ kind: 'value', text: `acsarray("${scope}", ${id}, ${index})` });
+          offset = next; continue;
+        }
+        // `array[3] = v` — the index is pushed first, and it is a number this walker can see,
+        // because an element only means something to a rule as a fixed slot.
+        if (operation === 'ASSIGN') {
+          const value = resolveLocal(pop());
+          const index = resolveLocal(pop());
+          const text = value ? expressionOf(value) : null;
+          if (index?.kind !== 'number' || text === null) return null;
+          pending.actions.push({ type: 'setAcsArray', scope, id,
+            index: Number(index.value) || 0, mode: 'set', value: { expr: text } });
+          offset = next; continue;
+        }
+        // An increment reads and writes the same element, which one action cannot say.
+        return null;
       }
 
       // Constant arithmetic is folded, so `35 * 1` becomes the delay it stands for.
@@ -652,7 +695,7 @@ export function decompileScript(program, selector, { args = [] } = {}) {
       continue;
     }
     segment = read(offset, null, 0);
-    if (!segment) return null;
+    if (!segment) return giveUp('body');
     const steps = [...(prefix || []), ...segment.steps].filter(step => step.actions.length);
     prefix = null;
     if (steps.length || segment.wait) segments.push({ steps, wait: segment.wait });
@@ -668,6 +711,7 @@ export function decompileScript(program, selector, { args = [] } = {}) {
     offset = segment.offset;
   }
   const actions = segments.flatMap(segment => segment.steps.flatMap(step => step.actions));
+  if (!segments.length && report) giveUp('empty');
   return { actions, segments, instructions: seen.size };
 }
 

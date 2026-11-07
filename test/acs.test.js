@@ -16,6 +16,7 @@ import { scriptSteps } from '../shared/world-motion.js';
 import { importWadMap, readWad } from '../shared/wad.js';
 import { captureGameSave, restoreGameSave } from '../shared/save-game.js';
 import { decompileCoverage, decompileScript } from '../shared/acs-decompile.js';
+import { readAcsArray } from '../shared/acs-state.js';
 import { installWorldScripts } from '../shared/world-motion.js';
 
 const P = Object.fromEntries(PCODE_NAMES.map((name, code) => [name, code]));
@@ -1502,4 +1503,32 @@ test('CallFunc runs the function it names instead of stopping the script', () =>
   assert.equal(state.scripts.vm.mapVars[0][1], 42, 'and its return value reached the caller');
   assert.equal(state.scripts.vm.active.length, 0, 'and the script carried on to its end');
   assert.equal([...state.scripts.vm.unsupported].includes('CALLFUNC'), false, 'nothing was reported missing');
+});
+
+test('a script writing and reading one of its arrays becomes an action and an expression', () => {
+  // `array[0] = 7; mapVar = array[0];` — ACC compiles the write as PUSH index, PUSH value,
+  // ASSIGNSCRIPTARRAY, and the read as PUSH index, PUSHSCRIPTARRAY. The write is the
+  // `setAcsArray` action and the read the `acsarray("script", id, index)` expression, so a
+  // creator sees both; at run time they go through the store the interpreter uses.
+  const asm = emitter();
+  asm.push(0).push(7).ins('ASSIGNSCRIPTARRAY').byte(1)
+    .push(0).ins('PUSHSCRIPTARRAY').byte(1).ins('ASSIGNMAPVAR').byte(90).ins('TERMINATE');
+  const project = room(0, [], { withScripts: describeMapScripts(behavior({ code: asm.code,
+    scripts: [{ number: 1, type: 1, args: 0, address: 8 }] })).mapScripts });
+  const program = programFor(project);
+  const decompiled = decompileScript(program, 1);
+  assert.ok(decompiled, 'the script reads as rules');
+  assert.deepEqual(decompiled.actions, [
+    { type: 'setAcsArray', scope: 'script', id: 1, index: 0, mode: 'set', value: { expr: '7' } },
+    { type: 'setAcsVariable', scope: 'map', index: 90, module: 0, mode: 'set', value: { expr: 'acsarray("script", 1, 0)' } },
+  ]);
+  // The same write and read as the rules a sheet runs: the level's store ends up with the
+  // value the script would have written, and the array keeps it for a later step or script.
+  project.eventSheets.push({ id: 'acs_sheet', name: 'ACS rules', section: 'game', enabled: true, phase: 'afterPhysics' });
+  project.events = acsScriptStepRules(program, program.scripts[0], { sheetId: 'acs_sheet' });
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.scripts.vm.mapVars[0][90], 7, 'the read found what the write stored');
+  assert.equal(readAcsArray(state, 'script', 1, 0), 7, 'and the array holds it');
 });

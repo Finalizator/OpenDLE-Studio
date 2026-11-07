@@ -421,11 +421,16 @@ waited on so it runs once.
 The script's variables stay where the level keeps them, so a rule and a script that was not
 decompiled see the same numbers: `setAcsVariable` (`scope`, `index`, `mode` `set`/`add`,
 `value`) writes one, `acsVariable` (`scope`, `index`, `operator`, `value`) asks about one, and
-`acsvar("map", 2)` reads one inside any expression. A guard — ACS `if`, compiled as
+`acsvar("map", 2)` reads one inside any expression. An array element is reachable the same
+way: `ASSIGNSCRIPTARRAY` is the `setAcsArray` action (`scope`, `id`, `index`, `mode`
+`set`/`add`, `value`) and `PUSHSCRIPTARRAY` is `acsarray("script", 1, 0)` in an expression,
+both against the store the interpreter keeps, so a script that was not decompiled and a rule
+that was read the same elements. A guard — ACS `if`, compiled as
 `IFNOTGOTO` — becomes a sub-event of the step, evaluated after the actions above it, so
 `count += 1; if (count >= 2) open the door` reads exactly as it does in the script, and an
 `if`/`else` becomes two sub-events with opposite tests, so exactly one branch acts. A body
-with a loop or an array is left as the compiled module, shown disassembled in the Scripts tab,
+with a loop, or one that only *increments* an array element, is left as the compiled module,
+shown disassembled in the Scripts tab,
 because a rule that ran half a script would be worse than one that runs none. A flat or texture
 the script kept in a variable is read when the rule runs, with `acsflat("map", 12)` — the same
 string table, the same index, so `ChangeFloor(map11, map12)` is still that call. A script that

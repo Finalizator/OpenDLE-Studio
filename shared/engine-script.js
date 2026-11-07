@@ -369,7 +369,15 @@ export const ENGINE_ACTIONS = [
   // The write half of a decompiled script's variables: the same stores the interpreter uses.
   { type: 'setAcsVariable', label: 'Script: set an ACS variable', fields: [
     choice('scope', 'map', ['map', 'world', 'global']), numeric('index', 0, 0, 255),
-    choice('mode', 'set', ['set', 'add']), numeric('value', 0, -1000000, 1000000),
+    choice('mode', 'set', ['set', 'add']),
+    { ...numeric('value', 0, -1000000, 1000000), expression: true },
+    { ...numeric('module', 0, 0, 63), optional: true }] },
+  // The same for one element of a script's array, which is where `ASSIGNSCRIPTARRAY` writes:
+  // the scope is the array's, the number names it and the index names the element.
+  { type: 'setAcsArray', label: 'Script: set an element of an ACS array', fields: [
+    choice('scope', 'script', ['script', 'world', 'global']), numeric('id', 0, 0, 255),
+    numeric('index', 0, 0, 4095), choice('mode', 'set', ['set', 'add']),
+    { ...numeric('value', 0, -1000000, 1000000), expression: true },
     { ...numeric('module', 0, 0, 63), optional: true }] },
   // A script's own builtins, which change the level through the interpreter's host functions
   // (`ChangeFloor`, `SetLineTexture`, `SetLineBlocking`, `SetLineMonsterBlocking`,

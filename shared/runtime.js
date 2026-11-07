@@ -4,7 +4,7 @@ import { floorHeightAt } from './three-d-floors.js';
 import { entitySector, sectorAt, sectorGeometry } from './sectors.js';
 import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
-import { acsVariableStore } from './acs-state.js';
+import { acsVariableStore, readAcsArray, writeAcsArray } from './acs-state.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validateHUDProperty } from './hud.js';
 import { postFxParamDefault } from './post-fx.js';
@@ -2223,6 +2223,15 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           const index = Number(action.index) || 0;
           const value = Number(action.value) || 0;
           store[index] = (action.mode === 'add' ? (store[index] | 0) + value : value) | 0;
+          break;
+        }
+        case 'setAcsArray': {
+          // A decompiled script's arrays are the level's own stores, so a script that was not
+          // translated and a rule that was read the same elements.
+          const stored = writeAcsArray(state, action.scope, action.id, action.index,
+            action.mode === 'add' ? readAcsArray(state, action.scope, action.id, action.index, action.module) + (Number(action.value) || 0)
+              : Number(action.value) || 0, action.module);
+          if (!stored) throw new Error(`Event "${event.name || event.id}": the level has no ACS arrays`);
           break;
         }
         case 'teleport':
