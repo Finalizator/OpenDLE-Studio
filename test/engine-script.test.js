@@ -24,7 +24,9 @@ test('Engine defaults are portable editable sheets and installation never overwr
   assert.equal(validateProject(JSON.parse(JSON.stringify(project))).playerControl, 'events');
   assert.throws(() => installEngineScripts(project), /already exist/);
   project.events.find(event => event.name === 'move_KeyW').actions[0].forward = 80;
-  const state = createRuntime(project);
+  // The sheet's `forward` is a *walk* speed, and Doom (like GZDoom at its defaults) doubles it
+  // while the player runs — so the run is switched off here to measure the number as typed.
+  const state = createRuntime(project, { settings: { alwaysRun: false } });
   stepRuntime(project, state, .05, new Set(['KeyW']));
   // The player accelerates towards the speed the input sheet asks for instead of starting
   // at it: Doom's thrust and friction, measured in tools/gzdoom. One slow frame moves a
@@ -36,6 +38,13 @@ test('Engine defaults are portable editable sheets and installation never overwr
   // The sheet's `forward` is the speed the player settles at, in units per second.
   const reached = (state.player.x - before) / .05;
   assert.ok(Math.abs(reached - 80) < 3, `top speed ${reached}`);
+  // With the default always-run the same sheet settles at twice the typed speed, which is
+  // Doom's own ratio between `normforwardmove` walking and running.
+  const running = createRuntime(project);
+  for (let frame = 0; frame < 40; frame++) stepRuntime(project, running, .05, new Set(['KeyW']));
+  const mark = running.player.x;
+  stepRuntime(project, running, .05, new Set(['KeyW']));
+  assert.ok(Math.abs((running.player.x - mark) / .05 - 160) < 6, 'always-run doubles the sheet speed');
   const input = project.eventSheets.find(sheet => sheet.name === 'Input');
   input.enabled = false;
   const next = createRuntime(project);

@@ -17,7 +17,11 @@ export const GAME_SETTINGS = {
   resolution: { value: 1, min: .5, max: 1.5, step: .25 },
   brightness: { value: 1, min: .5, max: 2, step: .1 },
   messages: { value: true },
-  alwaysRun: { value: false },
+  // Doom's `always_run` is on out of the box (GZDoom's `cl_run` defaults to 1), and the speed
+  // key walks instead of runs. Starting off made the player walk at 291 units a second, which
+  // is a zombie's own chase speed, so every monster in an imported game looked twice as fast as
+  // it does in GZDoom — the player simply never got away from one.
+  alwaysRun: { value: true },
   jumping: { value: true },
   lowDetail: { value: false },
   viewSize: { value: 10, min: 3, max: 11, step: 1 },

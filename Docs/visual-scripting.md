@@ -391,8 +391,15 @@ Enemies sheet:
 |---|---|---|
 | notices the player | `enemySeesPlayer` (the actor's own `LOOKALLAROUND` picks 180° or 360°) | `playActorState` (`See`), start the alert timer |
 | chases | the alert timer is running | `moveEnemy` at the actor's own speed, `playActorState` (`See`) |
-| attacks | alerted, the Doom distance roll (`enemyAttackChance`) allows it, the last attack finished | `facePlayer`, `playActorState` (`Missile`, or `Melee` for a claw-only monster) |
-| melee when close | within `P_CheckMeleeRange` of the actor's radius | `facePlayer`, `playActorState` (`Melee`) |
+| attacks | alerted, not already in `Melee`/`Missile`, `oncePerTic`, the Doom distance roll (`enemyAttackChance`) allows it, the last attack finished | `facePlayer`, `playActorState` (`Missile`, or `Melee` for a claw-only monster) |
+| melee when close | alerted, not already attacking, `oncePerTic`, within `P_CheckMeleeRange` of the actor's radius | `facePlayer`, `playActorState` (`Melee`) |
+
+Two conditions in those rows exist for the same reason: Doom decides once a tic and plays an
+attack out to its end. `oncePerTic` keeps the attack roll at 35 Hz however fast the machine
+draws frames, and the not-attacking test stops the rule re-entering `Missile` while it is
+already there — a restart instead of a play, which froze monsters in their firing pose and made
+them look like they were flapping. The walk itself carries no such gate: `moveEnemy` takes the
+frame time, so a monster covers 8 map units a tic (280 a second) at 30, 60 or 144 frames.
 
 A UDMF or Hexen line is a rule too: the import writes `Linedef <id> / <Special_Name>` with
 the line's activation modes as conditions and `runLineSpecial` (`special`, `arg1`…`arg5`)
@@ -646,6 +653,17 @@ Elevator conditions `sectorElevatorRaised`, `sectorElevatorLowered` and
 `sectorElevatorMoving` similarly take `sectorId` and target an imported moving
 floor/lift or a configured `elevator`.
 
+The player runs by default, as Doom ships it (`always_run` on, GZDoom's `cl_run` defaulting to
+1) and the speed key walks instead; the input sheet's `movePlayer` speed is a *walking* speed
+and running doubles it, the same ratio as Doom's `normforwardmove` 25 and 50. A monster chasing
+at its 8 map units a tic (280 a second) therefore cannot keep up with the player, which is what
+GZDoom looks like.
+
+`oncePerTic` passes at most once per 35 Hz simulation tic, per rule and per object instance, so
+a decision Doom takes once a tic (an attack roll) keeps that rate on a 144 Hz machine. The
+walk is not gated by it: `moveEnemy` takes the frame time and covers the same ground at any
+frame rate.
+
 `everySeconds` fires immediately on its first evaluation, then waits for its
 interval. Each condition and each object instance has an independent clock,
 including sub-events of for-each rules. Game saves retain those deadlines, so
@@ -716,6 +734,7 @@ activate in the shot's original frame.
 | owns backpack | `backpackOwned` | — | — |
 | ammo below capacity | `ammoBelowCapacity` | — | ammo |
 | every N seconds | `everySeconds` | — | seconds |
+| at most once a simulation tic | `oncePerTic` | — | — |
 | random chance (0-1) | `randomChance` | — | probability |
 | count of live objects | `objectCount` | — | entityType, operator, value |
 | compare facing angle | `entityAngle` | yes | operator, value |

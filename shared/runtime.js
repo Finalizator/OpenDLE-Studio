@@ -1244,6 +1244,16 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         return true;
       }
       if (condition.type === 'randomChance') return nextRandom(state) < condition.probability;
+      // Doom's AI makes its decisions once a tic, not once a frame: a rule carrying this runs
+      // at most once per 35 Hz tic, so an attack roll cannot fire faster on a faster machine.
+      if (condition.type === 'oncePerTic') {
+        const seen = state.ticSeen ||= new Map();
+        const key = `${keyOf()}:${index}`;
+        const tic = Math.floor(state.time * 35 + 1e-6);
+        if (seen.get(key) === tic) return false;
+        seen.set(key, tic);
+        return true;
+      }
       if (condition.type === 'objectCount') {
         // A missing type means any object, which is what the `'any'` branch below counts: the
         // runtime does not lean on the editor having filled the field in. (This read a field no

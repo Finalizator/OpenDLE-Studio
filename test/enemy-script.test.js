@@ -158,3 +158,79 @@ test('a barrel is a shootable prop whose blast is a rule', () => {
   // 128 damage falls off over a 128 radius, so 40 units away is 88: one blast, not seven.
   assert.equal(state.playerStats.health, 12);
 });
+
+test('a translated monster cannot restart its attack, and rolls the dice once a tic', () => {
+  // Two problems this pins down, both reported from play as "movement broken and too fast":
+  //
+  // - Re-entering `Missile` while already in it restarted the animation instead of playing it,
+  //   so the monster stood in its firing pose for good and looked like it was flapping. The
+  //   attack has to wait until the states are back in `See`, which is what `notAttacking` says.
+  // - Doom rolls `P_CheckMissileRange` once a tic (35 Hz). Evaluated once a frame it fired more
+  //   often the faster the machine drew, so the rule carries `oncePerTic`.
+  const project = imported();
+  const rules = project.events.filter(event => event.enemyActor === 'DoomImp');
+  for (const name of ['DoomImp: attacks', 'DoomImp: melee when close']) {
+    const rule = rules.find(event => event.name === name);
+    assert.ok(rule, `${name} exists`);
+    const kinds = rule.conditions.map(condition => condition.type);
+    assert.ok(kinds.includes('oncePerTic'), `${name} decides at most once a tic`);
+    for (const state of ['Melee', 'Missile'])
+      assert.ok(rule.conditions.some(condition => condition.type === 'actorState' &&
+        condition.state === state && condition.inverted === true), `${name} waits out ${state}`);
+  }
+  const chase = rules.find(event => event.name === 'DoomImp: chases');
+  assert.ok(!chase.conditions.some(condition => condition.type === 'oncePerTic'),
+    'the walk itself keeps moving every frame, because `moveEnemy` takes the frame time');
+});
+
+test('a translated monster walks at Doom speed whatever the frame rate', () => {
+  // `moveEnemy` takes the frame time, so a walk has to cover the same ground at 30, 60 and
+  // 144 frames a second: 8 map units a tic is 280 a second, whichever clock is drawn on.
+  const travel = fps => {
+    const project = imported();
+    // A room with room to walk: the starter map is small enough that a walker would reach the
+    // player in a fraction of a second and stop, which would measure nothing.
+    project.map.vertices = [[-3000, -3000], [3000, -3000], [3000, 3000], [-3000, 3000]]
+      .map(([x, y], index) => ({ id: `v${index}`, x, y }));
+    const side = { sectorId: 'room', offsetX: 0, offsetY: 0 };
+    project.map.walls = [['v0', 'v1'], ['v1', 'v2'], ['v2', 'v3'], ['v3', 'v0']].map(([a, b], index) => ({
+      id: `w${index}`, a, b, right: side, left: null, solid: true, height: 256, color: '#888888', flags: 0 }));
+    project.map.sectors = [{ id: 'room', floorHeight: 0, ceilingHeight: 256, light: 255, sky: false }];
+    const state = createRuntime(project);
+    const player = state.entities.find(entity => entity.type === 'player');
+    const enemy = { id: 'walker', type: 'enemy', name: 'Imp', actorName: 'DoomImp', doomType: 3001,
+      x: player.x - 1800, y: player.y, z: 0, elevation: 0, health: 60, radius: 20, height: 56, angle: 0, solid: true };
+    state.entities.push(enemy);
+    // Alert without attacking: a far-away walker only rolls for an attack a fifth of the time,
+    // which would blur the measurement. The walk rule is what is being measured.
+    state.timers.set(`${enemy.id}:alert`, 999);
+    project.events = project.events.filter(event => !/: attacks$/.test(event.name || ''));
+    const start = { x: enemy.x, y: enemy.y };
+    for (let frame = 0; frame < fps; frame++) stepRuntime(project, state, 1 / fps, new Set());
+    return Math.hypot(enemy.x - start.x, enemy.y - start.y);
+  };
+  const thirty = travel(30), sixty = travel(60), fast = travel(144);
+  for (const [name, moved] of [['30 fps', thirty], ['60 fps', sixty], ['144 fps', fast]])
+    assert.ok(Math.abs(moved - 280) < 8, `${name} covers ${moved.toFixed(1)} units a second, not 280`);
+});
+
+test('a translated monster waits out its attack before it decides on another', () => {
+  // The bug this pins: the attack rule re-entered `Missile` every time its timer was ready, so
+  // the state restarted instead of playing, and the monster never walked again.
+  const project = imported();
+  const state = createRuntime(project);
+  const player = state.entities.find(entity => entity.type === 'player');
+  const enemy = { id: 'imp2', type: 'enemy', name: 'Imp', actorName: 'DoomImp', doomType: 3001,
+    x: player.x + 120, y: player.y, z: 0, elevation: 0, health: 60, radius: 20, height: 56, angle: 180, solid: true };
+  state.entities.push(enemy);
+  let entries = 0, previous = null;
+  for (let tic = 0; tic < 120; tic++) {
+    stepRuntime(project, state, 1 / 35, new Set());
+    if (enemy.stateLabel === 'Missile' && previous !== 'Missile') entries++;
+    previous = enemy.stateLabel;
+  }
+  // A 22-tic Missile state in a 120-tic window can be entered a handful of times, but a rule
+  // that restarts it every frame would enter it dozens of times.
+  assert.ok(entries >= 1, 'the imp attacked through its own Missile state');
+  assert.ok(entries <= 6, `the attack plays out instead of restarting: ${entries} entries`);
+});

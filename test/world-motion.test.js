@@ -245,11 +245,10 @@ test('actual Freedoom enemy pursues, animates and fires when approached in its r
   enemy.angle = Math.atan2(from.y - enemy.y, from.x - enemy.x) * 180 / Math.PI;
   const original = { x: enemy.x, y: enemy.y };
   let flying = false, animated = false;
-  // 40 tics, not 35: a state change now starts the destination's first frame on the
-  // next tic instead of skipping it (see actorTic), which delays this imp's opening
-  // attack by one tic. The behaviour under test — it walks, animates and fires — is
-  // unchanged; only the time it needs to get going moved.
-  for (let i = 0; i < 40; i++) {
+  // 90 tics, because a translated monster now plays its attack out instead of restarting it:
+  // the imp's Missile state is 22 tics, and while it plays the monster stands still, exactly as
+  // in Doom. Two attack cycles and the walks between them need more than one of those.
+  for (let i = 0; i < 90; i++) {
     tick(p, s);
     flying ||= s.projectiles.length > 0;
     animated ||= spriteAsset(p, s, enemy) !== enemy.spriteAsset;

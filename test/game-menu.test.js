@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { installGameMenu, parseMenuDefinitions, attachMenuElement, rebuildGameMenu } from '../shared/game-menu.js';
-import { gameSettings, changeSetting, mappedKeys, bindKey, setGameScreen } from '../shared/game-settings.js';
+import { GAME_SETTINGS, gameSettings, changeSetting, mappedKeys, bindKey, setGameScreen } from '../shared/game-settings.js';
 import { createRuntime, stepRuntime, lookPlayer } from '../shared/runtime.js';
 import { hudElement, hudBinding, hudRect, hudViewport } from '../shared/hud.js';
 import { damagePlayer } from '../shared/combat.js';
@@ -154,7 +154,8 @@ test('typed settings, sensitivity, inverted Y, key swaps and persistent serializ
   assert.deepEqual(gameSettings(JSON.parse(JSON.stringify(s.settings))), s.settings);
   assert.throws(() => gameSettings({ bindings: { KeyW: 'KeyS' } }), /Duplicate/);
   assert.throws(() => gameSettings({ volume: NaN }));
-  const slow = createRuntime(p), fast = createRuntime(p, { settings: { alwaysRun: true } });
+  // Always-run is the default (Doom ships it on), so the slow half has to be asked for.
+  const slow = createRuntime(p, { settings: { alwaysRun: false } }), fast = createRuntime(p, { settings: { alwaysRun: true } });
   step(p, slow, ['KeyW']); step(p, fast, ['KeyW']);
   const start = p.map.entities.find(e => e.type === 'player');
   assert.ok(Math.abs((fast.player.x - start.x) / (slow.player.x - start.x) - 2) < .0001);
@@ -392,4 +393,27 @@ ListMenu "Second"
   assert.match(warnings.join('\n'), /unresolved submenu\(s\)/);
   const absurd = Array.from({ length: 300 }, (_, index) => `OptionMenu "Extra${index}" { StaticText 10, 20, "x" }`).join('\n');
   assert.throws(() => parseMenuDefinitions(absurd, 'mod'), /more than 256 menus/);
+});
+
+test('the player runs by default, as in Doom, so a 280-a-second monster cannot keep up', () => {
+  // Doom ships `always_run` on (GZDoom's `cl_run` defaults to 1) and the speed key walks.
+  // OpenDLE started off, which made the player walk at 291 units a second — a zombie's own
+  // chase speed — so every monster in an imported game looked twice as fast as it does in
+  // GZDoom, and read as "enemy movement is broken and too fast".
+  assert.equal(GAME_SETTINGS.alwaysRun.value, true);
+  const p = menuProject();
+  const walking = createRuntime(p, { settings: { alwaysRun: false } });
+  const running = createRuntime(p, { settings: { alwaysRun: true } });
+  // Doom's thrust-and-friction ramp needs about thirty tics, so the measurement is the
+  // terminal speed: the ground covered by one tic once the ramp is done.
+  const settle = state => { for (let frame = 0; frame < 40; frame++) step(p, state, ['KeyW']); };
+  const perTic = state => {
+    const before = state.player.x;
+    step(p, state, ['KeyW']);
+    return state.player.x - before;
+  };
+  settle(walking); settle(running);
+  const walked = perTic(walking), ran = perTic(running);
+  assert.ok(Math.abs(ran - walked * 2) < 0.6, `running is twice walking: ${ran.toFixed(1)} vs ${walked.toFixed(1)} a tic`);
+  assert.ok(ran * 35 > 500, `a running player covers ${(ran * 35).toFixed(0)} units a second, well past a monster's 280`);
 });

@@ -164,11 +164,15 @@ export function enemyScriptRules(project, { sheetId, groupId, id = uniqueId(proj
       conditions: [...living(plan), ...notAttacking],
       actions: [{ type: 'moveEnemy', entityId: '$self', speed: plan.speed },
         { type: 'playActorState', entityId: '$self', state: 'See' }] });
-    // Attack: the Doom distance roll decides, and the last attack has to finish first.
+    // Attack: the Doom distance roll decides, once a tic as Doom rolls it — not once a frame,
+    // which on a fast machine made every monster attack more often than the game it came from.
+    // `notAttacking` is what keeps an attack from restarting itself: re-entering `Missile`
+    // every time the timer is ready held the monster in its firing pose for good, so it never
+    // took a step again.
     events.push({ id: id(`enemy_${suffix}_attack`), name: `${plan.name}: attacks`,
       ...base, condition: { type: 'enemyAlert', entityId: '$self' },
-      conditions: [...living(plan), { type: 'enemyAttackChance', entityId: '$self' },
-        { type: 'timerReady', timer }],
+      conditions: [...living(plan), ...notAttacking, { type: 'oncePerTic' },
+        { type: 'enemyAttackChance', entityId: '$self' }, { type: 'timerReady', timer }],
       actions: [{ type: 'facePlayer', entityId: '$self' },
         { type: 'playActorState', entityId: '$self', state: attacking[0] },
         { type: 'startTimer', timer, seconds: plan.attackSeconds }] });
@@ -177,7 +181,8 @@ export function enemyScriptRules(project, { sheetId, groupId, id = uniqueId(proj
     if (plan.melee) {
       events.push({ id: id(`enemy_${suffix}_melee`), name: `${plan.name}: melee when close`,
         ...base, condition: { type: 'enemyAlert', entityId: '$self' },
-        conditions: [...living(plan), { type: 'enemySeesPlayer', entityId: '$self', range: plan.meleeRange, fov: 360 },
+        conditions: [...living(plan), ...notAttacking, { type: 'oncePerTic' },
+          { type: 'enemySeesPlayer', entityId: '$self', range: plan.meleeRange, fov: 360 },
           { type: 'timerReady', timer }],
         actions: [{ type: 'facePlayer', entityId: '$self' }, { type: 'playActorState', entityId: '$self', state: 'Melee' },
           { type: 'startTimer', timer, seconds: plan.attackSeconds }] });

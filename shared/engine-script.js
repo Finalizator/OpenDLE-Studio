@@ -129,6 +129,8 @@ export const ENGINE_CONDITIONS = [
   { type: 'backpackOwned', label: 'Inventory: owns backpack', fields: [] },
   { type: 'ammoBelowCapacity', label: 'Inventory: ammo below capacity', fields: [choice('ammo', 'bullets', AMMO_TYPES)] },
   { type: 'everySeconds', label: 'System: every N seconds', fields: [numeric('seconds', 1, .01, 3600)] },
+  // Doom's AI decides once a tic (35 Hz); a rule carrying this keeps that rate on any frame rate.
+  { type: 'oncePerTic', label: 'System: at most once per simulation tic', fields: [] },
   { type: 'randomChance', label: 'System: random chance (0-1)', fields: [numeric('probability', .5, 0, 1)] },
   { type: 'objectCount', label: 'Objects: count of live objects', fields: [
     choice('entityType', 'enemy', ['any', ...INSTANCE_PICKABLE_TYPES]), comparison(), numeric('value', 0, 0, 100000)] },
@@ -658,8 +660,9 @@ export function installEngineScripts(project, { organizeStarter = false, include
     { type: 'setPlayerStat', stat: 'armorDivisor', value: 3 }, { type: 'setPlayerStat', stat: 'bullets', value: 50 },
   ], [{ type: 'levelTransition', inverted: true }]);
   // Doom's own walking speed, measured from GZDoom by tools/gzdoom: 8.333 map units a
-  // tic, which is 291.6 a second. Running doubles it, the same ratio as Doom's
-  // `normforwardmove` 25 and 50, and the run setting does that doubling here.
+  // tic, which is 291.6 a second. The typed number is a *walking* speed: running doubles it,
+  // the same ratio as Doom's `normforwardmove` 25 and 50, and always-run is on by default
+  // exactly as it is in Doom — so a monster chasing at 280 a second cannot keep up.
   const speed = PLAYER_SPEED.walk;
   for (const [key, forward, strafe] of [['KeyW', speed, 0], ['KeyS', -speed, 0], ['KeyA', 0, -speed], ['KeyD', 0, speed]]) {
     rule('Input', `move_${key}`, { type: 'keyHeld', key }, [{ type: 'movePlayer', forward, strafe }], [alive]);
@@ -761,7 +764,7 @@ export function installEngineScripts(project, { organizeStarter = false, include
       { type: 'startTimer', timer: 'attackWindup', seconds: windup },
       { type: 'startTimer', timer: 'attackPose', seconds: windup + 8 / 35 },
       { type: 'startTimer', timer: 'attack', seconds: windup + recovery },
-    ], [], { forEachType: 'enemy', parentId: decision });
+    ], [{ type: 'oncePerTic' }], { forEachType: 'enemy', parentId: decision });
     rule('Enemies', `enemy_${type}_fire`, { type: 'timerExists', timer: 'attackWindup' }, [
       { type: 'clearTimer', timer: 'attackWindup' },
       style === 'projectile' ? { type: 'enemyProjectile', entityId: '$self', speed: 300, damage, diceSides, radius: 0, color: '#ff8833', sound: 'DSFIRXPL' }
