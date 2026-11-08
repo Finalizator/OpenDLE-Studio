@@ -1910,10 +1910,17 @@ export async function createPreview(canvas, project, state, { editor = false, on
         }
         let selected = project.environment.weaponAssets
           ? project.environment.weaponAssets[state.inventory.selectedWeapon] : project.environment.weaponAsset;
-        const weaponAnimation = state.weaponAnimations.get(state.inventory.selectedWeapon);
-        if (weaponAnimation) {
-          const frame = spriteIndex.frame(weaponAnimation.clipId, state.time - weaponAnimation.start);
-          if (frame.assetId && !frame.finished) selected = frame.assetId;
+        // The weapon actor's own state machine owns the gun's picture, so the gun and its muzzle
+        // flash are always on the same tic — the flash is the `Flash` psprite of the same states.
+        // A weapon with no actor record (a project with no actor table) falls back to the clip a
+        // rule plays, and then to the weapon's standing picture.
+        if (state.weaponAsset) selected = state.weaponAsset;
+        else {
+          const weaponAnimation = state.weaponAnimations.get(state.inventory.selectedWeapon);
+          if (weaponAnimation) {
+            const frame = spriteIndex.frame(weaponAnimation.clipId, state.time - weaponAnimation.start);
+            if (frame.assetId && !frame.finished) selected = frame.assetId;
+          }
         }
         writeDataset('weaponFrame', selected || '');
         // A model that follows a route is placed by it, so the first follower's position and
@@ -1926,6 +1933,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
         const showWeapon = state.gameScreen === 'playing' && state.playerStats.health > 0;
         // Doom's muzzle flash is the weapon's `Flash` psprite, drawn over the gun for the few
         // tics it lasts; `state.weaponFlashAsset` is the picture it is on this frame.
+        // A weapon's own state frames name sprite assets rather than the standing weapon asset the
+        // project was built with, so the gun's plane is created on demand the first time a state
+        // names a picture (a `Fire` frame, the raise, the reload).
+        if (showWeapon && selected) overlayFor(selected);
         const flashId = showWeapon ? state.weaponFlashAsset : null;
         // The flash draws above the gun: Doom's two psprite layers are the gun under the flash,
         // and the flash artwork is the small muzzle bloom that sits over its barrel.

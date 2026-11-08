@@ -530,7 +530,9 @@ twice in its rule and waits a whole pass, so ammo and shots a second are exact.
 The muzzle flash is the weapon's own `Flash` state, drawn as a second psprite over the gun
 for the tics its frames last, exactly as GZDoom's `A_GunFlash` does — a fire function starts
 it whether the shot came from the states or from a rule, so a weapon fired by a rule flashes
-too. Its frames carry `A_Light1`/`A_Light0`, and a `Flash` state that loops back to a picture
+too. The gun itself is drawn from the same states (`Ready`, `Fire`, `Select`, …), so the two
+psprites are always on the same tic and the flash lands on the barrel of the recoil frame the
+weapon is really showing; a weapon with no actor record falls back to the clip a rule plays. Its frames carry `A_Light1`/`A_Light0`, and a `Flash` state that loops back to a picture
 it has already shown is ended rather than left glowing for ever.
 
 The cadence is the mod's, not a guess: pistol 15 tics, shotgun 38, super shotgun 58,

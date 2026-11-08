@@ -1628,6 +1628,10 @@ export function weaponTic(project, state, attackHeld, { presentation = false } =
   const frame = frames[runtime.index];
   if (!frame) { runtime.index = labelIndex(actor, 'Ready') ?? 0; return; }
   const context = { project, state, entity: state.player, actor, weapon: true, runtime, presentation };
+  // The gun's own psprite follows the state it is in, exactly as an enemy's picture does, so the
+  // gun and the muzzle flash are always drawn from the same clock. Driving the gun from a separate
+  // clip instead let the flash arrive before the barrel had reached the frame it belongs to.
+  state.weaponAsset = frame.kind === 'frame' ? frameAsset(project, frame) : state.weaponAsset;
   if (frame.kind !== 'frame') {
     runtime.entered = false;
     if (frame.kind === 'stop' || frame.kind === null) { runtime.index = labelIndex(actor, 'Ready') ?? 0; return; }
@@ -1855,8 +1859,14 @@ function enterFlashFrame(project, state, frame) {
     else if (action.name === 'A_Light1') state.weaponLight = 1;
     else if (action.name === 'A_Light2') state.weaponLight = 2;
   }
+  state.weaponFlashAsset = frameAsset(project, frame);
+}
+
+/** The picture a state frame draws, or null when the artwork does not exist (Doom's `TNT1`). */
+function frameAsset(project, frame) {
+  if (frame?.kind !== 'frame' || !frame.sprite) return null;
   const names = spriteAssetNames(project), sprite = String(frame.sprite).toUpperCase();
-  state.weaponFlashAsset = names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`) || null;
+  return names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`) || null;
 }
 
 /** Advances the muzzle flash one weapon tic; where the drawn flash frame is read at render time. */

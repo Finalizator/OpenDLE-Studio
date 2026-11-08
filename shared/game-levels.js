@@ -51,15 +51,16 @@ export function gameLevelAssetIds(project) {
   for (const mapping of project.materialAnimations || []) {
     references.add(mapping.assetId);
   }
-  // A weapon's muzzle flash is drawn from its `Flash` state, which no clip names, so its
-  // pictures have to travel with every level the same way a clip's frames do — otherwise the
-  // first shot of the first game throws "Preview image PISFA0 was not loaded".
+  // A weapon is drawn from its own state frames — the gun's `Ready`/`Fire`/`Select` pictures and
+  // its `Flash` muzzle bloom — and no clip names them, so they have to travel with every level the
+  // same way a clip's frames do: without them the first shot throws
+  // "Preview image PISFA0 was not loaded".
   const spriteNames = spriteAssetNames(project);
   for (const actor of project.actors || []) {
     if (!actor?.flags?.WEAPON) continue;
     for (const frame of actor.states?.frames || []) {
-      if (frame.kind !== 'frame' || String(frame.label) !== 'Flash') continue;
-      const sprite = String(frame.sprite || '').toUpperCase();
+      if (frame.kind !== 'frame' || !frame.sprite) continue;
+      const sprite = String(frame.sprite).toUpperCase();
       const id = spriteNames.get(`${sprite}${frame.letter}0`) || spriteNames.get(`${sprite}${frame.letter}1`);
       if (id) references.add(id);
     }

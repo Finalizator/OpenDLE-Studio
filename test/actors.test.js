@@ -794,7 +794,7 @@ test('the generated enemy sprite rules are dropped from a project its actors ani
   assert.deepEqual(project.events.map(event => event.id), ['mine'], 'the generated rules go, the authored one stays');
 });
 
-test('firing shows the weapon\'s own muzzle flash, and the flash turns the light off again', () => {
+test('the drawn gun and its muzzle flash come from the same tic of the same states', () => {
   // Doom's muzzle flash is not part of the gun's animation: `A_FirePistol` calls `A_GunFlash`,
   // which puts a *second* psprite into the weapon's `Flash` state while the gun keeps running
   // its `Fire` state underneath. A weapon whose firing is an event rule only *presents* its
@@ -821,12 +821,19 @@ class Pistol : Weapon
   beginWeapon(project, state, 'pistol');
   assert.ok(!state.weaponFlashAsset, 'nothing is drawn before the shot');
   state.weaponTriggerHeld = true;
-  const shown = [];
+  const shown = [], guns = [];
   for (let tic = 0; tic < 20; tic++) {
     weaponTic(project, state, true);
     shown.push(state.weaponFlashAsset ? String(state.weaponFlashAsset).replace('asset_', '') : '-');
+    guns.push(state.weaponAsset ? String(state.weaponAsset).replace('asset_', '') : '-');
   }
   assert.ok(shown.includes('PISFA0'), `the flash is drawn: ${shown.join(' ')}`);
+  // The gun is drawn from the same state frames, so the flash is never shown against a picture
+  // the weapon is not actually on: every tic with a flash is a tic on a `Fire` frame.
+  for (const [index, flash] of shown.entries()) {
+    if (flash === '-') continue;
+    assert.ok(['PISGB0', 'PISGC0'].includes(guns[index]), `flash on a Fire frame: ${guns[index]} at ${index}`);
+  }
   assert.equal(state.weaponLight, 0, 'and the light is turned off when its own state ends');
   assert.equal(state.weaponFlash, null, 'the flash is over');
   assert.equal(state.weaponFlashAsset, null);
