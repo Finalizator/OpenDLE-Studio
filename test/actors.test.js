@@ -831,6 +831,29 @@ test('a save taken while a dropped item lies on the floor loads again', async ()
   assert.equal(copy.spawnedFrom, drop.spawnedFrom);
 });
 
+test('a save taken while monster AI is running loads again', async () => {
+  // Every monster's rules carry "at most once per tic", which the runtime remembers in a per-tic
+  // memo. That memo was not part of the save format, so saving after anything moved failed with
+  // "unknown runtime field ticSeen" - the game said the save did not work, and no save existed.
+  const project = createProject();
+  project.events = [];
+  project.actors = buildVanillaActors();
+  installEngineScripts(project, { includeHUD: false });
+  const player = project.map.entities.find(entity => entity.type === 'player');
+  project.map.entities.push({ id: 'zombie1', name: 'ZombieMan', type: 'enemy', doomType: 3004,
+    x: player.x + 48, y: player.y, angle: 180, health: 20 });
+  validateProject(project);
+  const state = createRuntime(project);
+  state.hasGame = true;
+  const keys = new Set();
+  for (let frame = 0; frame < 200 && !state.ticSeen?.size; frame++) stepRuntime(project, state, 1 / 35, keys);
+  assert.ok(state.ticSeen?.size, 'the monster AI ran, so the per-tic memo is in the runtime');
+  const identity = await gameSaveIdentity(project);
+  const saved = captureGameSave(project, state, identity);
+  const restored = restoreGameSave(project, JSON.parse(JSON.stringify(saved)), identity).runtime;
+  assert.ok(restored.entities.some(entity => entity.id === 'zombie1'), 'the monster came back');
+});
+
 test('a dropped item can be taken on a level that never places one', () => {
   // Pickup rules are generated from the items a level *places*, so a clip dropped on a level
   // with no clip of its own was there but could not be picked up.

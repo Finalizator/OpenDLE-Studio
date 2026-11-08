@@ -44,6 +44,10 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // Sight answers are kept for the length of one frame, because one frame asks each monster
   // several times; saving them would record a moment rather than the game.
   'sightMemo',
+  // Which rules have already had their "at most once per tic" turn is a memo for the current
+  // 35 Hz tic — the same shape as `sightMemo`. Every monster's AI rules carry that condition, so
+  // any save taken after something moved failed with "unknown runtime field ticSeen".
+  'ticSeen',
   // The speed the player is travelling at is read off the momentum every tic, so it is derived
   // rather than part of the game state.
   'speed',
