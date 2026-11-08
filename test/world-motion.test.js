@@ -9,7 +9,7 @@ import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { SPRITE_ANIMATIONS } from '../shared/vanilla-animations.js';
 import { createPhysics } from '../shared/physics.js';
 import { moveSector, installWorldScripts, classicSpecialSupported } from '../shared/world-motion.js';
-import { specialName, unsupportedSpecials } from '../shared/line-specials.js';
+import { specialName, unsupportedSpecials, teleportDestination } from '../shared/line-specials.js';
 import { sectorAt } from '../shared/sectors.js';
 import { canSeePlayer } from '../shared/combat.js';
 import { clipFrame, spriteAsset, spriteView, setSpriteState, installSpriteAnimations } from '../shared/sprite-animation.js';
@@ -397,6 +397,104 @@ test('classic Doom specials keep Doom numbering and the newly performed ones run
     'the same number is judged against the map format it came from');
 });
 
+/**
+ * An L-shaped room tagged 15 with a corridor tagged 0 beside it, and a detached room tagged 8
+ * standing in the notch of the L — inside the L's bounding box but not inside the L.
+ *
+ * This is MAP03's shape, and it is what broke teleporters: the destination marker was looked up
+ * by bounding box, so the L-shaped room's teleporter resolved to the *other* room's marker.
+ */
+function notchedRooms() {
+  const p = createProject();
+  p.events = [];
+  p.map.vertices = [[0, 0], [256, 0], [256, 96], [96, 96], [96, 256], [0, 256], [384, 0], [384, 96],
+    [128, 128], [224, 128], [224, 224], [128, 224]].map(([x, y], index) => ({ id: `v${index}`, x, y }));
+  p.map.sectors = [
+    { id: 'left', floorHeight: 0, ceilingHeight: 160, light: 160, sky: false, tag: 15 },
+    { id: 'corridor', floorHeight: 0, ceilingHeight: 160, light: 160, sky: false, tag: 0 },
+    { id: 'island', floorHeight: 64, ceilingHeight: 160, light: 160, sky: false, tag: 8 },
+  ];
+  const side = sectorId => ({ sectorId, offsetX: 0, offsetY: 0 });
+  p.map.walls = [
+    { id: 'a', a: 'v0', b: 'v1', right: side('left') },
+    // Front side facing the corridor, so the L-shaped room walks its own loop in reverse — the
+    // same convention `corridor()` uses for its shared door.
+    { id: 'teleport', a: 'v2', b: 'v1', right: side('corridor'), left: side('left'), solid: false, special: 97, tag: 15 },
+    { id: 'c', a: 'v2', b: 'v3', right: side('left') },
+    { id: 'd', a: 'v3', b: 'v4', right: side('left') },
+    { id: 'e', a: 'v4', b: 'v5', right: side('left') },
+    { id: 'f', a: 'v5', b: 'v0', right: side('left') },
+    { id: 'g', a: 'v1', b: 'v6', right: side('corridor') },
+    { id: 'h', a: 'v6', b: 'v7', right: side('corridor') },
+    { id: 'i', a: 'v7', b: 'v2', right: side('corridor') },
+    { id: 'island1', a: 'v8', b: 'v9', right: side('island') },
+    { id: 'island2', a: 'v9', b: 'v10', right: side('island') },
+    { id: 'island3', a: 'v10', b: 'v11', right: side('island') },
+    { id: 'island4', a: 'v11', b: 'v8', right: side('island') },
+  ].map(wall => ({ color: '#888888', height: 160, solid: true, ...wall }));
+  // The island's marker is listed first, exactly as it is in MAP03: a bounding-box search finds
+  // it and every teleporter in the level goes there.
+  p.map.entities = [
+    { id: 'islandDest', type: 'decoration', name: 'Teleport destination', doomType: 14, x: 176, y: 176, angle: 0 },
+    { id: 'leftDest', type: 'decoration', name: 'Teleport destination', doomType: 14, x: 48, y: 48, angle: 90 },
+    { id: 'player', type: 'player', name: 'Player', x: 320, y: 48, angle: 180 },
+  ];
+  installEngineScripts(p);
+  installWorldScripts(p, []);
+  validateProject(p);
+  return p;
+}
+
+test('a teleporter lands on the destination inside its own sector, not one beside it', () => {
+  const p = notchedRooms();
+  const teleport = p.events.find(event => event.actions.some(action => action.type === 'teleport'));
+  assert.deepEqual(teleport.actions[0], { type: 'teleport', x: 48, y: 48, z: 0, angle: 90 },
+    'the marker inside the tagged sector wins over one that merely shares its bounding box');
+  assert.equal(teleport.condition.mode, 'cross');
+});
+
+test('a teleport line fixes a landing an older import baked in the wrong room', t => {
+  const p = notchedRooms();
+  // What the earlier import wrote: the island's marker coordinates, in a project whose line is
+  // tagged 15. A coordinate baked at import cannot be trusted, so the line is resolved at play.
+  for (const event of p.events) {
+    for (const action of event.actions || []) {
+      if (action.type === 'teleport') Object.assign(action, { x: 176, y: 176, z: 64, angle: 0 });
+    }
+  }
+  const s = physics(t, p);
+  tick(p, s, 1);
+  // Walk west out of the corridor across the teleport line into the L-shaped room.
+  for (let tic = 0; tic < 60 && s.player.x > 200; tic++) tick(p, s, 1, ['KeyW']);
+  assert.ok(s.player.x <= 200, `the line was crossed: ${s.player.x.toFixed(0)}`);
+  assert.ok(Math.abs(s.player.x - 48) < 24 && Math.abs(s.player.y - 48) < 24,
+    `landed at the marker in the tagged sector, not the island: ${s.player.x.toFixed(0)},${s.player.y.toFixed(0)}`);
+  assert.equal(sectorAt(s.sectors, s.player.x, s.player.y)?.id, 'left');
+});
+
+test('a tag carried by several sectors finds the marker in whichever of them holds it', () => {
+  // GZDoom walks every sector with the tag. Only looking at the first left MAP20's tag-28
+  // teleporter with nothing to do, although sector162 of that tag holds a destination.
+  const p = notchedRooms();
+  p.map.sectors.push({ id: 'annex', floorHeight: 0, ceilingHeight: 160, light: 160, sky: false, tag: 8 });
+  const s = createRuntime(p);
+  s.entities.push({ id: 'annexPlayer', type: 'decoration', name: 'Marker', x: 176, y: 176, angle: 0 });
+  const landing = teleportDestination(s, null, 8);
+  assert.deepEqual([landing.x, landing.y], [176, 176], 'the marker in the second sector of tag 8 is the destination');
+  assert.equal(teleportDestination(s, null, 99), null, 'a tag no sector carries has no destination');
+});
+
+test('a teleport line with no destination thing does nothing, as in Doom', () => {
+  const p = notchedRooms();
+  p.map.entities = p.map.entities.filter(entity => entity.id !== 'leftDest' && entity.id !== 'islandDest');
+  const warnings = [];
+  p.events = p.events.filter(event => !event.id.startsWith('world_special_'));
+  installWorldScripts(p, warnings);
+  assert.equal(p.events.some(event => event.actions.some(action => action.type === 'teleport')), false,
+    'no teleport rule is invented for a sector with no marker');
+  assert.match(warnings.join('\n'), /no teleport destination thing/i);
+});
+
 test('classic Doom specials 97, 25 and 133 become engine rules with baked targets', () => {
   const p = corridor();
   p.events = p.events.filter(e => !e.id.startsWith('world_special_'));
@@ -410,8 +508,8 @@ test('classic Doom specials 97, 25 and 133 become engine rules with baked target
   validateProject(p);
 
   const teleport = p.events.find(event => event.actions.some(action => action.type === 'teleport'));
-  assert.deepEqual(teleport.actions[0], { type: 'teleport', x: 120, y: 40, z: 24, angle: 90 },
-    'the landing marker position and angle are resolved at import');
+  assert.deepEqual(teleport.actions[0], { type: 'teleport', x: 120, y: 40, z: 0, angle: 90 },
+    'the landing marker position and angle are resolved at import, on the destination floor');
   assert.equal(teleport.condition.mode, 'cross');
   assert.equal(teleport.once, false, 'WR teleport lines stay active');
 

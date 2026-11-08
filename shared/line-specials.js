@@ -240,16 +240,14 @@ function actorsByTid(state, tid) {
 }
 
 function teleportTo(state, sector) {
-  // Doom places a "teleport destination" marker (thing 14) where the player
-  // should arrive; without one, the middle of the tagged sector is used.
+  // Doom puts the arriving thing on a "teleport destination" marker (thing 14) standing inside
+  // the sector its tag names, and does nothing at all when that sector holds none. The middle of
+  // the sector is not a destination: a sector's bounding box also covers its neighbours, and the
+  // centre of an L-shaped room is often inside a wall — which is how a teleporter could leave the
+  // player outside the level. Positions are where the feet go.
   const marker = state.entities.find(entity => entity.doomType === 14 &&
     sectorAt(state.sectors, entity.x, entity.y)?.id === sector.id);
-  // Positions are where the feet go, and GZDoom puts a teleported thing on the floor.
-  if (marker) return { x: marker.x, y: marker.y, z: floorAt(state, marker), angle: marker.angle };
-  const centre = sector.bounds
-    ? { x: (sector.bounds.minX + sector.bounds.maxX) / 2, y: (sector.bounds.minY + sector.bounds.maxY) / 2 }
-    : { x: state.player.x, y: state.player.y };
-  return { x: centre.x, y: centre.y, z: sector.floorHeight };
+  return marker ? { x: marker.x, y: marker.y, z: floorAt(state, marker), angle: marker.angle } : null;
 }
 
 const TELEPORT_DESTINATIONS = new Set([14, 9043, 9044]);
@@ -258,7 +256,7 @@ const TELEPORT_DESTINATIONS = new Set([14, 9043, 9044]);
  * Where `Teleport`/`Teleport_NoFog` send a thing: the destination with `tid` (restricted to
  * sectors tagged `tag` when one is given), or with no tid, a marker in the tagged sectors.
  */
-function teleportDestination(state, tid, tag) {
+export function teleportDestination(state, tid, tag) {
   const inTag = entity => !tag || sectorAt(state.sectors, entity.x, entity.y)?.tag === tag;
   if (tid) {
     const named = state.entities.filter(entity => entity.tid === tid && inTag(entity));
@@ -267,8 +265,16 @@ function teleportDestination(state, tid, tag) {
     return spot ? { x: spot.x, y: spot.y, z: spot.doomType === 9044 ? floorAt(state, spot) : sectorFloorAt(state, spot),
       angle: spot.angle } : null;
   }
-  const sector = tag ? taggedSectors(state, tag)[0] : null;
-  return sector ? teleportTo(state, sector) : null;
+  if (!tag) return null;
+  // GZDoom walks every sector carrying the tag and takes the first destination it meets, so a
+  // tag shared by several sectors works as long as one of them holds the marker. Only looking at
+  // the first sector made MAP20's tag-28 teleporter do nothing at all.
+  for (const sector of state.sectors) {
+    if (sector.tag !== tag) continue;
+    const landing = teleportTo(state, sector);
+    if (landing) return landing;
+  }
+  return null;
 }
 
 /** The thing a special acts on when it names none: the activating thing, or the player. */

@@ -49,7 +49,7 @@ import { decalTarget, sprayTarget, clipDecalToFace } from './spray.js';
 import { createMapScripts, expireHudMessages } from './map-scripts.js';
 import { tickMorphs } from './morph.js';
 import { projectIds } from './project-ids.js';
-import { executeSpecial } from './line-specials.js';
+import { executeSpecial, teleportDestination } from './line-specials.js';
 import { weaponEventActors } from './weapon-script.js';
 import { enemyEventActors } from './enemy-script.js';
 import { projectileEventActors } from './projectile-script.js';
@@ -2374,20 +2374,30 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
               if (!stored) throw new Error(`Event "${event.name || event.id}": the level has no ACS arrays`);
               break;
             }
-            case 'teleport':
-              frame.player.x = action.x; frame.player.y = action.y;
+            case 'teleport': {
+              // A teleport line's destination is geometry, not a coordinate: Doom looks for the
+              // `TeleportDest` thing standing in the sector the line's tag names. Resolving it
+              // here is also what repairs a project imported while that marker was looked up by
+              // the sector's bounding box — on MAP03 all twelve of its teleporters shared one
+              // landing, and one of them dropped the player outside the level.
+              const line = teleportLine(project, event);
+              // A line whose destination sector holds no marker does nothing, exactly as in Doom.
+              const landing = line ? (line.tag > 0 ? teleportDestination(state, null, line.tag) : null) : action;
+              if (!landing) break;
+              frame.player.x = landing.x; frame.player.y = landing.y;
               if (!state.physics) {
                 const entity = state.entities.find(item => item.type === 'player');
-                const floor = sectorAt(state.sectors, action.x, action.y)?.floorHeight ?? 0;
-                const z = action.z ?? floor + (entity.elevation || 0);
-                Object.assign(entity, { x: action.x, y: action.y, z, elevation: z - floor });
+                const floor = sectorAt(state.sectors, landing.x, landing.y)?.floorHeight ?? 0;
+                const z = landing.z ?? floor + (entity.elevation || 0);
+                Object.assign(entity, { x: landing.x, y: landing.y, z, elevation: z - floor });
                 frame.player.z = z;
               }
               // Doom drops the player's momentum when it teleports them.
               resetMomentum(state);
-              if (action.angle !== undefined) frame.player.angle = action.angle * Math.PI / 180;
-              state.physics?.teleport(state.entities.find(entity => entity.type === 'player').id, action.x, action.y, action.z);
+              if (landing.angle !== undefined) frame.player.angle = landing.angle * Math.PI / 180;
+              state.physics?.teleport(state.entities.find(entity => entity.type === 'player').id, landing.x, landing.y, landing.z);
               break;
+            }
             case 'removeEntity': {
               const id = resolveEntityId(event, action.entityId);
               removeEntityFromLevel(state, state.entities.find(item => item.id === id));
@@ -2620,6 +2630,14 @@ function addBulletMark(state, eye, direction, distance) {
     decal: { assetId: BULLET_MARK.assetId, corners: face.corners, uv: face.uv } });
   const marks = state.impacts.filter(effect => effect.decal && effect.decal.assetId === BULLET_MARK.assetId);
   if (marks.length > BULLET_MARK.limit) state.impacts.splice(state.impacts.indexOf(marks[0]), 1);
+}
+
+/** The teleport line a rule is about, when its action came from one. */
+function teleportLine(project, event) {
+  const wallId = event?.condition?.type === 'wallActivated' ? event.condition.wallId : null;
+  const wall = wallId ? (project.map.walls || []).find(candidate => candidate.id === wallId) : null;
+  // Doom's Teleport (W1) and Teleport (WR) are the only line specials that carry a tag here.
+  return wall && [39, 97].includes(wall.special) ? wall : null;
 }
 
 function fireHitscan(project, state, action) {

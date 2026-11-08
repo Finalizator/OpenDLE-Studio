@@ -1,4 +1,4 @@
-import { sectorAt } from './sectors.js';
+import { sectorAt, sectorGeometry } from './sectors.js';
 import { floorAt, entityHeight, soundEvent } from './combat.js';
 import { doomSpecialBehaviour, doomSpecialName } from './doom-specials.js';
 import { specialName } from './line-specials.js';
@@ -365,9 +365,18 @@ export function installWorldScripts(project, warnings) {
 function classicActions(project, wall, behaviour, targets, warnings) {
   const effect = behaviour.effect;
   if (effect.kind === 'teleport') {
-    const destination = targets[0];
-    if (!destination) { warnings.push(`Linedef ${wall.id} special ${wall.special}: teleport has no destination sector.`); return []; }
-    const landing = teleportLanding(project, destination);
+    if (!targets.length) { warnings.push(`Linedef ${wall.id} special ${wall.special}: teleport has no destination sector.`); return []; }
+    // A tag may be carried by several sectors; the destination is in whichever of them holds a
+    // marker, exactly as GZDoom searches them.
+    let landing = null;
+    for (const destination of targets) {
+      landing = teleportLanding(project, destination);
+      if (landing) break;
+    }
+    if (!landing) {
+      warnings.push(`Linedef ${wall.id} special ${wall.special} (tag ${wall.tag}) has no teleport destination thing in its sector, so it does nothing — as in Doom.`);
+      return [];
+    }
     return [{ type: 'teleport', x: landing.x, y: landing.y, z: landing.z, angle: landing.angle }];
   }
   if (effect.kind === 'door') {
@@ -437,12 +446,21 @@ function neighbouringSectors(project, sector) {
 }
 
 /** The teleport landing spot a tagged sector holds, or its centre. */
-function teleportLanding(project, sector) {
+const landingGeometry = new WeakMap();
+/**
+ * Where a Doom teleport line puts the player: the `TeleportDest` (thing 14) standing *inside* the
+ * sector its tag names.
+ *
+ * The marker used to be found by the sector's bounding box, which also covers the sector's
+ * neighbours: on MAP03 all twelve teleporters, whose tags name four different rooms, resolved to
+ * the same marker, and the rest of the campaign was the same. A sector with no marker has no
+ * destination at all — Doom does nothing there, and neither do we.
+ */
+export function teleportLanding(project, sector) {
+  let geometry = landingGeometry.get(project);
+  if (!geometry) { geometry = sectorGeometry(project || { map: { vertices: [], walls: [] } }); landingGeometry.set(project, geometry); }
   const marker = (project?.map.entities || []).find(entity => entity.doomType === 14 &&
-    entity.x >= (sector.bounds?.minX ?? -Infinity) && entity.x <= (sector.bounds?.maxX ?? Infinity) &&
-    entity.y >= (sector.bounds?.minY ?? -Infinity) && entity.y <= (sector.bounds?.maxY ?? Infinity));
-  if (marker) return { x: marker.x, y: marker.y, z: sector.floorHeight + 24, angle: marker.angle ?? 0 };
-  const bounds = sector.bounds;
-  if (!bounds) return { x: 0, y: 0, z: sector.floorHeight + 24, angle: 0 };
-  return { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2, z: sector.floorHeight + 24, angle: 0 };
+    sectorAt(geometry, entity.x, entity.y)?.id === sector.id);
+  // Positions are where the feet go: a teleported thing lands on the destination floor.
+  return marker ? { x: marker.x, y: marker.y, z: sector.floorHeight, angle: marker.angle ?? 0 } : null;
 }
