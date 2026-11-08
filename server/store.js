@@ -303,6 +303,17 @@ export class ProjectStore {
     };
   }
 
+  /**
+   * Which project is open, without copying it.
+   *
+   * `snapshot()` deep-clones the project so a caller can hold it safely, which on an imported
+   * campaign is hundreds of megabytes; callers that only need the identity must not pay that.
+   */
+  identity() {
+    return { projectId: this.index.active, title: this.project?.title ?? null, revision: this.revision,
+      temporary: Boolean(this.activeEntry()?.temporary) };
+  }
+
   snapshot() {
     return { project: structuredClone(this.project), revision: this.revision,
       projectId: this.index.active, title: this.project.title ?? null,

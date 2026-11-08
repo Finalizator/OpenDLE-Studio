@@ -1,0 +1,18 @@
+{
+  "// Why": "Imported campaigns are hundreds of megabytes of JSON and tens of thousands of image files. Watching and indexing them costs the editor its own memory for no benefit.",
+  "files.watcherExclude": {
+    "**/data/**": true,
+    "**/logs/**": true,
+    "**/dist/**": true,
+    "**/scratch/**": true,
+    "**/Projects/**": true,
+    "**/.mashup/**": true
+  },
+  "search.exclude": {
+    "**/data/**": true,
+    "**/logs/**": true,
+    "**/dist/**": true,
+    "**/scratch/**": true,
+    "**/Projects/**": true
+  }
+}

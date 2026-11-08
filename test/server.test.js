@@ -368,15 +368,22 @@ test('WAD library/import APIs are authenticated, bounded to WAD files and return
   assert.ok(draft.project.assets.some(asset => asset.name === 'STBAR'));
   assert.ok(draft.project.hud.elements.some(element => element.name === 'Player face'));
   assert.equal(draft.project.hud.reserveBottom, 32);
-  assert.equal(store.snapshot().revision, 0);
-  assert.notEqual(store.snapshot().project.title, draft.project.title);
+  // A full-game draft is a third of a gigabyte of decoded artwork, and `snapshot()` deep-clones
+  // the store's project, so every needless call here allocates another copy of it.
+  const before = store.snapshot();
+  assert.equal(before.revision, 0);
+  assert.notEqual(before.title, draft.project.title);
   const saved = await fetch(`${url}/api/project`, { method: 'PUT', headers, body: JSON.stringify({ project: draft.project, revision: 0, projectId: null }) });
   assert.equal(saved.status, 200);
   assert.equal(store.snapshot().project.assets.length, draft.project.assets.length);
+  // The level import below builds a second full draft; holding the first one as well is what
+  // pushed this test past three gigabytes. Only its HUD is still compared.
+  const expectedHud = draft.project.hud;
+  draft.project = null;
   const uploaded = await fetch(`${url}/api/import/wad?map=MAP01&scope=level`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/octet-stream' },
     body: readFileSync(new URL('../Projects/freedoom2.wad', import.meta.url)) });
   assert.equal(uploaded.status, 200);
-  assert.deepEqual((await uploaded.json()).project.hud, draft.project.hud);
+  assert.deepEqual((await uploaded.json()).project.hud, expectedHud);
   assert.equal((await fetch(`${url}/api/import/local-wad`, { method: 'POST', headers, body: JSON.stringify({ name: '../freedoom2.wad', map: 'MAP01' }) })).status, 400);
   assert.equal((await fetch(`${url}/api/import/wad?map=MAP01`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/octet-stream' }, body: new Uint8Array([1, 2, 3]) })).status, 400);
   assert.equal((await fetch(`${url}/Projects/freedoom2.wad`)).status, 404);

@@ -126,7 +126,12 @@ export function createApp({
   // PixiEditor: the project's bitmap artwork goes out as a PNG in a scratch folder and
   // comes back through the same file. The client sends the asset itself (it holds the
   // edit that may not be saved yet), so opening never depends on a save round trip.
-  const pixiProject = () => store.snapshot().projectId || projectSlug(store.snapshot().project?.title || 'project');
+  // Both values come from the store's identity: `snapshot()` was cloning the whole campaign
+  // (hundreds of megabytes for an imported full game) twice just to read a slug.
+  const pixiProject = () => {
+    const { projectId, title } = store.identity();
+    return projectId || projectSlug(title || 'project');
+  };
   app.get('/api/pixieditor', (req, res) => res.json({ ...pixiEditor.status(), kinds: PIXIEDITOR_KINDS }));
   app.post('/api/pixieditor/open', async (req, res) => {
     try {

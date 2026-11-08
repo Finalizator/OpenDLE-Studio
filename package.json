@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env scripts/launch.js",
     "serve": "node --env-file-if-exists=.env server/index.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-concurrency=${TEST_CONCURRENCY:-4} test/*.test.js",
     "test:freedoom": "node scripts/check-freedoom.js",
     "check": "node scripts/check.js",
     "gzdoom:fetch": "node tools/gzdoom/fetch.mjs",

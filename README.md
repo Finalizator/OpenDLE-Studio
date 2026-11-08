@@ -97,6 +97,21 @@ if the desktop runtime cannot start.
 Use **Play level** to test the current map or **Play game** to open its menus.
 DeepSeek is optional; configure it using [.env.example](./.env.example).
 
+### Running the tests
+
+```sh
+npm test                            # the whole suite, four test files at a time
+TEST_CONCURRENCY=2 npm test         # on a machine with 16 GB of memory or less
+node --test test/runtime.test.js    # one file while working on it
+```
+
+The suite imports whole WADs, and one full-game import is a third of a gigabyte of
+decoded artwork, so a single test worker can peak near 3 GB. Node runs one test file
+per core by default: on a 32-core machine that meant thirty imports at once, which
+put the machine out of memory and took the editor down with it. `npm test` therefore
+limits itself to four workers (about 70 s for the suite, 108 s at two). Lower
+`TEST_CONCURRENCY` if memory is tight.
+
 ## Documentation
 
 - [Node editor, terminals and doors](Docs/node-editor.md): viewport controls,
