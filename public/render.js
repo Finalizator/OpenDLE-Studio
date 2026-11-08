@@ -996,7 +996,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
         return;
       }
       const asset = assetMap.get(entity.spriteAsset);
-      const map = entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
+      const map = entity.spriteAsset ? spriteTexture(entity.spriteAsset) : null;
       const color = asset ? '#ffffff' : entityColors[entity.type] || '#ffffff';
       if (!asset) placeholder(entity, 'billboard', entity.spriteAsset ? `sprite ${entity.spriteAsset} is not in the project` : 'no sprite assigned');
       const style = { map, color, sizeAttenuation: true };
@@ -1014,6 +1014,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
       else if (!entity.shaderId) spriteTemplates.set(spriteMode, material);
       materials.add(material);
       const sprite = new THREE.Sprite(material);
+      // A card whose picture was not loaded is a white rectangle if it is drawn at all, so it is
+      // hidden from the first frame rather than from the first update.
+      if (!map) sprite.visible = false;
       sprite.userData.selection = { kind: 'entity', id: entity.id };
       trackScreen(sprite, material);
       scene.add(sprite); sprites.set(entity.id, sprite);
@@ -1053,7 +1056,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
       if (material.userData.mapSignature === signature) return;
       material.userData.mapSignature = signature;
       const previous = material.map;
-      const source = assetId ? imageTexture(assetId) : null;
+      const source = assetId ? spriteTexture(assetId) : null;
       if (!source) {
         material.map = null;
         if (previous) { textures.delete(previous.uuid); previous.dispose(); }
@@ -1139,7 +1142,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
       const signature = entity.spriteAsset || '';
       if (entry.textureAsset === signature) return;
       entry.textureAsset = signature;
-      const image = signature ? imageTexture(signature) : null;
+      const image = signature ? spriteTexture(signature) : null;
       for (const material of entry.tinted) {
         const previous = material.map;
         if (previous && material.userData.ownMap) { textures.delete(previous.uuid); previous.dispose(); }
@@ -1266,7 +1269,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
     function addWorldNode(entity) {
       const nodeTexture = entity.projector
         ? projectorTexture(entity)
-        : entity.spriteAsset ? imageTexture(entity.spriteAsset) : null;
+        : entity.spriteAsset ? spriteTexture(entity.spriteAsset) : null;
       const built = createWorldNodeObject(THREE, entity, {
         texture: nodeTexture,
         materialFactory: config => withEffectFor(new THREE.MeshBasicNodeMaterial(config), entity),
@@ -1432,7 +1435,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
       if (existing) return existing;
       const weapon = assetMap.get(weaponId);
       if (!weapon) return null;
-      const mat = new THREE.MeshBasicMaterial({ map: imageTexture(weapon.id), transparent: true, depthTest: false, depthWrite: false });
+      // A gun with no picture is left undrawn and reported. A plane with no map would be a white
+      // rectangle over the whole view, and throwing would end a game that is otherwise fine —
+      // the psprite is cosmetic, and a mod weapon can name a picture the level never shipped.
+      const picture = spriteTexture(weapon.id);
+      if (!picture) return null;
+      const mat = new THREE.MeshBasicMaterial({ map: picture, transparent: true, depthTest: false, depthWrite: false });
       const overlay = mesh(new THREE.PlaneGeometry(weapon.width, weapon.height), mat, overlayScene);
       const left = weapon.offsetX === undefined ? 160 - weapon.width / 2 : -weapon.offsetX;
       // A psprite hangs from the top of the view window and its wrist runs **past** the bottom of
@@ -1541,7 +1549,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
       let material = decalMaterials.get(assetId);
       if (material) return material;
       material = withEffect(new THREE.MeshBasicNodeMaterial({
-        map: imageTexture(assetId), transparent: true, alphaTest: .1, depthWrite: false,
+        map: spriteTexture(assetId), transparent: true, alphaTest: .1, depthWrite: false,
         side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
       }));
       materials.add(material); decalMaterials.set(assetId, material);
@@ -1559,6 +1567,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
         geometry.computeBoundingSphere();
         geometries.add(geometry);
         const object = new THREE.Mesh(geometry, decalMaterial(effect.decal.assetId));
+        object.visible = Boolean(object.material.map);
         object.userData.decal = true;
         scene.add(object);
         entry = { id: effect.id, object, frame: undefined, revision: frameRevision };
@@ -1582,7 +1591,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
       }
       entry.revision = frameRevision;
       if (asset && entry.object.isSprite && entry.frame !== frame.assetId) {
-        entry.object.material.map = imageTexture(frame.assetId);
+        entry.object.material.map = spriteTexture(frame.assetId);
         entry.object.scale.set(asset.width, asset.height, 1);
         if (Number.isFinite(asset.offsetX) && Number.isFinite(asset.offsetY))
           entry.object.center.set(asset.offsetX / asset.width, 1 - asset.offsetY / asset.height);
@@ -1863,7 +1872,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
           const material = list[entry];
           if (material.userData.frameAsset === frame.assetId) continue;
           material.userData.frameAsset = frame.assetId;
-          material.map = imageTexture(frame.assetId);
+          material.map = spriteTexture(frame.assetId);
         }
       }
       if (!editor && worldRevision !== state.worldRevision) {
