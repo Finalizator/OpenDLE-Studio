@@ -4226,7 +4226,14 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     // campaign are hundreds of megabytes that the clone copied and the lines below then threw
     // away, which the browser had to collect while the level ran.
     const playing = levelId || (gameMode ? project.game?.entry : project.game?.active);
-    const snapshot = structuredClone(stripInactiveLevels(project, playing));
+    // The actor table is shared rather than copied: it is the largest part of an imported
+    // project (76 MB of objects for Furdoom) and playing never changes it, while the copy was
+    // one more thing the collector had to walk on every pause. The editor shares it between
+    // undo snapshots for the same reason.
+    const playable = stripInactiveLevels(project, playing);
+    const snapshot = structuredClone({ ...playable, actors: undefined });
+    delete snapshot.actors;
+    if (project.actors !== undefined) snapshot.actors = project.actors;
     if (snapshot.game && !savedGame) selectGameLevel(snapshot, playing);
     const restored = savedGame ? restoreGameSave(snapshot, savedGame, identity) : null;
     installIntermission(snapshot);
