@@ -5,6 +5,8 @@ import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { launchProjectile, advanceProjectiles, canSeePlayer, canHearPlayer, moveEnemy, soundEvent, entityDistance, enemyHitscan, enemyAttackChance } from '../shared/combat.js';
+import { explodeAt } from '../shared/actor-runtime.js';
+import { buildVanillaActors } from '../shared/actors.js';
 import { doomSound, wavSound } from '../shared/sound.js';
 import { createAudioPlayer } from '../public/audio.js';
 import { importWad } from '../server/import.js';
@@ -438,4 +440,33 @@ test('a monster notices a door opening on the next frame, not a sight answer kep
   tick(project, state);
   assert.equal(state.sightMemo.size, 0, 'the next frame starts with no answer from the last one');
   assert.equal(canSeePlayer(state, monster, 4096), true, 'the open door is seen on the next frame');
+});
+
+test('a blast shoves what it hits, the way Doom throws a barrel before it goes off', () => {
+  // `P_RadiusAttack` damages what it reaches and `P_DamageMobj` then throws it: the momentum is
+  // `damage * 12.5 / Mass` units a tic, slid along the floor and slowed by FRICTION. Without it
+  // a row of barrels chain-reacted in place instead of scattering the way Doom's do.
+  const project = createProject();
+  project.events = [];
+  project.actors = buildVanillaActors();
+  project.map.vertices = [[-256, -256], [256, -256], [256, 256], [-256, 256]]
+    .map(([x, y], index) => ({ id: `v${index}`, x, y }));
+  const side = { sectorId: 's', offsetX: 0, offsetY: 0 };
+  project.map.sectors = [{ id: 's', floorHeight: 0, ceilingHeight: 160, light: 200, sky: false }];
+  project.map.walls = [['v0', 'v1'], ['v1', 'v2'], ['v2', 'v3'], ['v3', 'v0']].map(([a, b], index) => ({
+    id: `w${index}`, a, b, right: side, left: null, solid: true, height: 160, color: '#888888' }));
+  project.map.entities.push(
+    { id: 'first', name: 'ExplosiveBarrel', type: 'enemy', doomType: 2035, x: 0, y: 0, angle: 0, health: 20 },
+    { id: 'second', name: 'ExplosiveBarrel', type: 'enemy', doomType: 2035, x: 64, y: 0, angle: 0, health: 20 });
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  const first = state.entities.find(entity => entity.id === 'first');
+  const second = state.entities.find(entity => entity.id === 'second');
+  const before = second.x;
+  explodeAt(project, state, first, 128, 128);
+  assert.ok(second.vx > 0, `the blast pushes the second barrel away (${second.vx})`);
+  assert.equal(Math.abs(second.vy) < 1e-6, true, 'straight along the line from the blast');
+  for (let tic = 0; tic < 6; tic++) stepRuntime(project, state, 1 / 35, new Set());
+  assert.ok(second.x > before + 2, `and it has travelled (${before} -> ${second.x})`);
 });

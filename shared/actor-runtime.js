@@ -619,11 +619,75 @@ export function explodeAt(project, state, entity, damage = 128, radius = 128, da
   for (const other of state.entities) {
     if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
     const distance = Math.hypot(other.x - entity.x, other.y - entity.y);
-    if (distance < radius && reaches(other)) {
-      hurtActor(project, state, other, falloff(distance), blastSource(state, entity), damageType);
+    if (!(distance < radius) || !reaches(other)) continue;
+    const amount = falloff(distance);
+    hurtActor(project, state, other, amount, blastSource(state, entity), damageType);
+    // Doom's `P_DamageMobj` throws what it hits: a blast that damages a barrel shoves it away
+    // before it goes off, which is why a row of barrels scatters as it chain-reacts. The push
+    // is `damage * 12.5 / Mass` units a tic — momentum this engine keeps in units a second.
+    const mass = other.mass ?? actorOf(project, other)?.mass ?? 100;
+    if (amount > 0 && mass > 0) {
+      const angle = Math.atan2(other.y - entity.y, other.x - entity.x);
+      const thrust = amount * 12.5 / mass * TIC_RATE;
+      other.vx = (other.vx || 0) + Math.cos(angle) * thrust;
+      other.vy = (other.vy || 0) + Math.sin(angle) * thrust;
     }
   }
   saySound(state, 'DSBAREXP', entity);
+}
+
+/**
+ * Advances the momentum a blast (or an `A_Recoil`) gave a thing, one Doom tic at a time.
+ *
+ * Doom's `P_XYMovement` slides a thing along its momentum and slows it by Friction every tic,
+ * which is what makes a shoved barrel travel a few dozen units and stop. Enemies are otherwise
+ * moved by their AI (`moveEnemy`), so this momentum lives beside it rather than inside it.
+ */
+export function advanceThrusts(project, state, dt) {
+  state.thrustClock = (state.thrustClock || 0) + dt * TIC_RATE;
+  const whole = Math.floor(state.thrustClock + 1e-6);
+  state.thrustClock -= whole;
+  const tics = Math.min(whole, MAX_TICS_PER_STEP);
+  for (let tic = 0; tic < tics; tic++) {
+    for (const entity of state.entities) {
+      if (entity.type === 'player') continue;
+      const vx = entity.vx || 0, vy = entity.vy || 0;
+      if (!vx && !vy) continue;
+      const speed = Math.hypot(vx, vy);
+      if (speed < DOOM_STOP_SPEED) { entity.vx = 0; entity.vy = 0; continue; }
+      slideEntity(state, entity, vx / TIC_RATE, vy / TIC_RATE);
+      entity.vx = vx * DOOM_BLAST_FRICTION;
+      entity.vy = vy * DOOM_BLAST_FRICTION;
+    }
+  }
+}
+
+// Doom's `FRICTION` is 0xe800 (0.90625); anything below the stop speed has its momentum
+// dropped rather than creeping for ever.
+const DOOM_BLAST_FRICTION = 0xe800 / 0x10000;
+const DOOM_STOP_SPEED = 0.5;
+
+/** Moves a shoved thing, stopping it at a wall or a ledge instead of pushing it through. */
+function slideEntity(state, entity, dx, dy) {
+  const distance = Math.hypot(dx, dy);
+  if (!distance) return;
+  const floor = floorAt(state, entity);
+  const origin = { x: entity.x, y: entity.y, z: floor + 28 };
+  const direction = { x: dx / distance, y: dy / distance, z: 0 };
+  if (geometryDistance(state, origin, direction, distance + 16, true) < distance + 16) {
+    entity.vx = 0; entity.vy = 0;
+    return;
+  }
+  const x = entity.x + dx, y = entity.y + dy;
+  const sector = state.sectors.length ? sectorAt(state.sectors, x, y) : null;
+  if (state.sectors.length && (!sector || sector.ceilingHeight - sector.floorHeight < 56 ||
+    Math.abs(sector.floorHeight - floor) > 24)) {
+    entity.vx = 0; entity.vy = 0;
+    return;
+  }
+  entity.x = x; entity.y = y;
+  if (sector) entity.z = sector.floorHeight;
+  state.physics?.teleport(entity.id, x, y, sector?.floorHeight ?? entity.z);
 }
 
 /**

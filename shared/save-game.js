@@ -55,7 +55,7 @@ const optional = new Set(['areaEntries', 'intervals', 'decalCounter', 'lastShot'
   // both are carried rather than dropped — unlike the transients above.
   'bossDefeated', 'acsMessages',
   'scriptState', 'scriptWarning', 'damageAcc', 'musicRequest', 'skyRequest', 'gravity', 'airControl', 'scriptLog',
-  'messageCount', 'buttons', 'prevButtons', 'actorClock', 'weaponClock', 'weaponSlot', 'weaponReady', 'playerMorph', 'cameraTextures',
+  'messageCount', 'buttons', 'prevButtons', 'actorClock', 'thrustClock', 'weaponClock', 'weaponSlot', 'weaponReady', 'playerMorph', 'cameraTextures',
   // A script's screen fade and the things' fall clock outlive a single frame.
   'screenFade', 'screenFadeFrom', 'screenFadeNow', 'fadeClock',
   // Teleport lines are derived from the map, but they are cached on the state on first use.

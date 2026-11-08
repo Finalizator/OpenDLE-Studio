@@ -482,7 +482,10 @@ flight` (`homeMissile` at 16.875°), `Rocket: explodes` (`explodeArea` 128/128) 
 `BFGBall: sprays` (`bfgSpray` with the mod's ray and damage counts). Those three
 functions are no longer called by the missile's state machine for a translated missile.
 
-`explodeArea` (`damage`, `radius`), `homeMissile` (`turn`) and
+`explodeArea` (`damage`, `radius`) throws what it damages, the way Doom's
+`P_RadiusAttack` does — `damage * 12.5 / Mass` units a tic away from the blast, slid along the
+floor and slowed by friction — which is why a row of barrels scatters as it chain-reacts
+instead of exploding where it stands. `homeMissile` (`turn`) and
 `bfgSpray` are the missile functions as actions; `explodeArea` is the blast a missile's `Death` state performs, as an
 action: the rocket's own `A_Explode` frame and a rule that wants something to blow up call
 the same code, so a translated explosion cannot drift from a hand-written one.

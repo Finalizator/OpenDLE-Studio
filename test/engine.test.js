@@ -362,3 +362,36 @@ test('WAD record limits are checked before allocating record arrays', () => {
   view.setUint32(directory + 16 + 4, (LIMITS.entities + 1) * 10, true);
   assert.throws(() => importWadMap(readWad(oversized), 'MAP01'), /THINGS exceeds/);
 });
+
+test('a rule that names an archetype only visits that archetype', () => {
+  // An import writes one rule per archetype, each `forEachType: enemy` with an
+  // `entityActorName` condition. Walking every monster for each of those rules was tens of
+  // thousands of evaluations a frame on a full level — most of the frame's budget on MAP02.
+  const project = createProject();
+  project.events = [];
+  const sheet = { id: 'ai', name: 'AI', section: 'engine', enabled: true, phase: 'afterPhysics' };
+  project.eventSheets = [sheet];
+  project.variables.seen = 0;
+  project.map.entities.push(
+    { id: 'imp1', name: 'Imp', type: 'enemy', actorName: 'Imp', x: 100, y: 0, angle: 0, health: 60 },
+    { id: 'zomb1', name: 'Zombie', type: 'enemy', actorName: 'Zombie', x: 200, y: 0, angle: 0, health: 20 },
+    { id: 'zomb2', name: 'Zombie', type: 'enemy', actorName: 'Zombie', x: 300, y: 0, angle: 0, health: 20 });
+  project.events.push({
+    id: 'count_zombies', name: 'count zombies', sheetId: 'ai', enabled: true, once: false, forEachType: 'enemy',
+    condition: { type: 'entityActorName', entityId: '$self', actor: 'Zombie' }, conditions: [],
+    actions: [{ type: 'addVariable', variable: 'seen', value: 1 }],
+  });
+  validateProject(project);
+  const state = createRuntime(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.variables.seen, 2, 'only the two zombies ran the rule');
+  // A second rule that requires a different archetype leaves the first one's count alone.
+  project.events.push({
+    id: 'count_imps', name: 'count imps', sheetId: 'ai', enabled: true, once: false, forEachType: 'enemy',
+    condition: { type: 'entityActorName', entityId: '$self', actor: 'Imp' }, conditions: [],
+    actions: [{ type: 'addVariable', variable: 'seen', value: 10 }],
+  });
+  validateProject(project);
+  stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.variables.seen, 14, 'two more zombies plus one imp');
+});

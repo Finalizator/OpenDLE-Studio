@@ -8,7 +8,7 @@ import { acsVariableStore, readAcsArray, writeAcsArray } from './acs-state.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validateHUDProperty } from './hud.js';
 import { postFxParamDefault } from './post-fx.js';
-import { TIC_RATE, stepActors, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
+import { TIC_RATE, stepActors, advanceThrusts, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
   setActorState, explodeAt, homeMissile, bfgSpray, projectileActor, labelIndex } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, ZERO_MOMENTUM, advanceMomentum, bamPerDegreePerSecond, bobFor,
@@ -99,6 +99,38 @@ export function pickedInstances(state, picks, type) {
   const chosen = picks?.get(type);
   if (chosen) return (state.entities || []).filter(entity => entity.type === type && chosen.has(entity.id));
   return entityLookup(state).byType.get(type) || [];
+}
+
+/**
+ * What a for-each rule iterates: the instances it is about.
+ *
+ * An imported enemy is one rule per archetype, and each of those rules is `forEachType: enemy`
+ * with an `entityActorName` condition — so every one of them walked every monster in the level
+ * and threw away all but its own kind. With ~600 such rules and 91 monsters on Doom 2's MAP02
+ * that was tens of thousands of evaluations a frame, most of the frame's budget. A rule that
+ * *requires* an archetype can only ever match that archetype, so the index answers instead.
+ */
+function archetypeMatches(state, picks, source) {
+  const matching = pickedInstances(state, picks, source.forEachType);
+  const archetype = requiredArchetype(source);
+  if (!archetype) return matching;
+  const only = entityLookup(state).byActor?.get(archetype);
+  if (!only?.length) return [];
+  // A pick has already narrowed the type; intersect with it rather than walking everything.
+  const chosen = picks?.get(source.forEachType);
+  return chosen ? only.filter(entity => chosen.has(entity.id)) : only;
+}
+
+/** The archetype a rule requires of `$self`, when its conditions make that a certainty. */
+function requiredArchetype(source) {
+  if (source.conditionMode === 'or') return null;
+  for (const condition of [source.condition, ...(source.conditions || [])]) {
+    if (condition?.type !== 'entityActorName' || condition.inverted) continue;
+    if (condition.entityId !== '$self' && condition.entityId !== source.ownerId) continue;
+    if (typeof condition.actor !== 'string' || !condition.actor) continue;
+    return condition.actor.toLowerCase();
+  }
+  return null;
 }
 
 /** The pick a per-instance rule sees: the parent's, narrowed to the one instance it is about. */
@@ -526,12 +558,18 @@ export function entityLookup(state) {
   const last = entities[entities.length - 1];
   if (cache.entity && cache.entity.list === entities && cache.entity.count === entities.length &&
     cache.entity.last === last) return cache.entity;
-  const byId = new Map(), byType = new Map(), spawned = new Map();
+  const byId = new Map(), byType = new Map(), spawned = new Map(), byActor = new Map();
   for (const entity of entities) {
     byId.set(entity.id, entity);
     let list = byType.get(entity.type);
     if (!list) byType.set(entity.type, list = []);
     list.push(entity);
+    if (entity.actorName) {
+      const key = String(entity.actorName).toLowerCase();
+      let archetype = byActor.get(key);
+      if (!archetype) byActor.set(key, archetype = []);
+      archetype.push(entity);
+    }
     // What a rule about an imported actor also owns: leftovers it spawned. An imported
     // campaign has a rule per actor in every level, so looking this up by scanning the entity
     // list once per rule was the largest single cost of a frame.
@@ -541,7 +579,7 @@ export function entityLookup(state) {
       children.push(entity);
     }
   }
-  return (cache.entity = { list: entities, count: entities.length, last, byId, byType, spawned });
+  return (cache.entity = { list: entities, count: entities.length, last, byId, byType, spawned, byActor });
 }
 
 // Probing costs a dozen ray casts and a handful of objects per frame, so it only
@@ -1034,6 +1072,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // machines; they run at Doom's 35 Hz tic rate next to the frame update.
   if (project.actors?.length) {
     stepActors(project, state, dt);
+    // Blast momentum, on the same tic clock: a barrel a blast shoved travels before it goes off.
+    advanceThrusts(project, state, dt);
     // An actor whose state reached S_NULL is gone, not a frame held for ever: a destroyed
     // barrel leaves the level the way Doom's does.
     for (const entity of [...state.entities]) if (entity.actorState?.gone) removeEntityFromLevel(state, entity);
@@ -1125,7 +1165,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       // A for-each rule iterates what the event picked, not every instance of the type: that is
       // what makes "pick the enemies below 5 health, then for each one" mean what it reads as.
-      const matching = pickedInstances(state, picks, source.forEachType);
+      const matching = archetypeMatches(state, picks, source);
       if (!matching?.length) return;
       for (const entity of matching) {
         const event = instanceFor(source, entity.id);
