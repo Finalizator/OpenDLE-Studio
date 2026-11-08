@@ -59,10 +59,11 @@ function syncActorSprite(project, state, entity, actor, runtime) {
   // a sprite that is deliberately never drawn — and a barrel's blast ends on one while it waits
   // out the respawn clock. Falling back to the last picture instead is what left a spent barrel
   // standing on the last frame of its own explosion.
-  if (entity.spriteStates) {
-    const names = spriteAssetNames(project), sprite = String(frame?.sprite || '').toUpperCase();
-    const asset = frame?.kind === 'frame' && sprite
-      ? names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`) || null : null;
+  // Only frames are pictures: a `goto`/`loop`/`stop` record carries none, and it is passed
+  // through on the same tic, so hiding the actor there would blink it off and forget its clip.
+  if (entity.spriteStates && frame?.kind === 'frame') {
+    const names = spriteAssetNames(project), sprite = String(frame.sprite || '').toUpperCase();
+    const asset = sprite ? names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`) || null : null;
     if (!asset) {
       state.spriteAnimations.delete(entity.id);
       entity.spriteAsset = null;

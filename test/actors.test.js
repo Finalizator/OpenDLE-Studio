@@ -734,6 +734,43 @@ test('a monster\'s sprite follows its machine out of pain and through death', ()
   assert.equal(clip(), 'death', 'a fatal hit shows the death clip');
 });
 
+test('a monster keeps its clip while the machine passes a loop record', () => {
+  // The clip is asked for on every tic now, and a tic that lands on a `loop` (or a `goto`) record
+  // has no picture of its own. Reading that as "this frame draws nothing" hid the actor and forgot
+  // its clip, so every monster stopped animating — and stopped showing pain — the moment its
+  // state looped.
+  const project = createProject();
+  project.assets = ['BOSSA0', 'BOSSB0', 'BOSSC0'].map(spriteAsset);
+  project.events = [];
+  project.actors = [{
+    id: 'actor_imp', name: 'Imp', flags: { MONSTER: true }, doomedNum: 3001, health: 40,
+    states: { labels: { Spawn: 0, See: 1 }, frames: [
+      { kind: 'frame', sprite: 'BOSS', letter: 'A', duration: -1, actions: [], label: 'Spawn' },
+      { kind: 'frame', sprite: 'BOSS', letter: 'B', duration: 2, actions: [], label: 'See' },
+      { kind: 'frame', sprite: 'BOSS', letter: 'C', duration: 2, actions: [], label: 'See' },
+      { kind: 'loop', label: 'See' },
+    ] },
+  }];
+  project.spriteClips = [
+    { id: 'clip_stand', name: 'Imp / stand', frames: ['asset_BOSSA0'], seconds: .1, loop: true },
+    { id: 'clip_walk', name: 'Imp / walk', frames: ['asset_BOSSB0', 'asset_BOSSC0'], seconds: .2, loop: true },
+  ];
+  project.map.entities.push({ id: 'imp1', name: 'Imp', type: 'enemy', doomType: 3001, x: 0, y: 0, angle: 0, health: 40,
+    spriteStates: { stand: 'clip_stand', walk: 'clip_walk' } });
+  validateProject(project);
+  const state = createRuntime(project);
+  const imp = state.entities.find(entity => entity.id === 'imp1');
+  const tick = () => stepRuntime(project, state, 1 / 35, new Set());
+  tick();
+  assert.equal(state.spriteAnimations.get(imp.id)?.name, 'stand', 'the spawn frame stands for ever');
+  setActorState(project, imp, 'See');
+  for (let i = 0; i < 12; i++) {
+    tick();
+    assert.equal(state.spriteAnimations.get(imp.id)?.name, 'walk', `tic ${i} keeps the walking clip`);
+    assert.ok(imp.spriteAsset, `tic ${i} still draws the monster`);
+  }
+});
+
 test('an actor whose spawn frame never ends still explodes when it dies', () => {
   // A barrel's Spawn is one frame with no duration (`BAR1 A -1`): it stands for ever. Its Death
   // is a run of ordinary frames, and the clip for them used to be set by the `goto` that enters
