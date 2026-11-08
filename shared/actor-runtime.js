@@ -122,6 +122,21 @@ export function actorOf(project, entity) {
     actorForThing(index, entity.doomType, entity.actorName) || null;
 }
 
+/**
+ * The states nothing may cut short.
+ *
+ * Doom runs Pain to completion — six tics for a zombieman — and the death states never give way
+ * to anything. A translated monster's AI is a rule that says "be in See" or "be in Missile" every
+ * frame, so without this a hit's pain state was replaced on the very next frame, before one of its
+ * frames could run, and an imported monster never appeared to flinch at all.
+ */
+const UNINTERRUPTIBLE_STATES = new Set(['pain', 'death', 'xdeath']);
+
+/** Whether an actor is in a state a rule may not pull it out of (a flinch, a death throe). */
+export function actorStateBusy(entity) {
+  return UNINTERRUPTIBLE_STATES.has(String(entity?.stateLabel || '').toLowerCase());
+}
+
 /** Places an entity's state machine at a label (Spawn for new monsters). */
 export function setActorState(project, entity, label, { restart = false, ifDifferent = false } = {}) {
   const actor = actorOf(project, entity);
@@ -130,8 +145,12 @@ export function setActorState(project, entity, label, { restart = false, ifDiffe
   const target = labelIndex(actor, label);
   if (target === null) return false;
   // A rule that says "be in this state" every frame must not restart the animation each
-  // time; the machine's own state changes keep their restart behaviour.
-  if (ifDifferent && state.index !== null && entity.stateLabel === String(label)) return true;
+  // time; the machine's own state changes keep their restart behaviour. It must not end a
+  // flinch either: the rule is the translation of A_Chase/A_Look, which run *inside* a state.
+  if (ifDifferent) {
+    if (state.index !== null && entity.stateLabel === String(label)) return true;
+    if (actorStateBusy(entity)) return true;
+  }
   if (!restart && state.index === target) return true;
   state.index = target;
   state.tics = 0;

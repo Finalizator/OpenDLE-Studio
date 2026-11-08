@@ -78,6 +78,66 @@ test('a translated monster wakes, walks and fires from its states', () => {
   assert.ok(fired, 'the imp attacked through its own Missile state');
 });
 
+test('a monster flinches for its whole pain state before its own AI takes it back', () => {
+  // The AI a translated monster runs is a rule that says "be in See" every frame. It ran during
+  // the pain state too, so a hit's flinch was replaced on the very next frame - before one pain
+  // frame had run - and an imported monster never appeared to react to being shot at all.
+  const project = imported();
+  const state = createRuntime(project);
+  state.hasGame = true;
+  const player = state.entities.find(entity => entity.type === 'player');
+  const enemy = { id: 'imp1', type: 'enemy', name: 'Imp', actorName: 'DoomImp', doomType: 3001,
+    x: player.x + 160, y: player.y, z: 0, elevation: 0, health: 400, radius: 20, height: 56, angle: 180, solid: true,
+    spriteStates: { stand: 'clip_imp_stand', walk: 'clip_imp_walk', attack: 'clip_imp_attack',
+      pain: 'clip_imp_pain', death: 'clip_imp_death' } };
+  state.entities.push(enemy);
+  // Let it wake up first, so the flinch interrupts a state the AI is actively driving.
+  for (let tic = 0; tic < 30 && enemy.stateLabel === 'Spawn'; tic++) stepRuntime(project, state, 1 / 35, new Set());
+  assert.notEqual(enemy.stateLabel, 'Spawn', 'the imp noticed the player');
+  // A pain chance of 255 means every hit flinches; the hit is what the player's shot does.
+  hurtActor(project, state, enemy, 1, null);
+  assert.equal(enemy.stateLabel, 'Pain');
+  const painFrames = [];
+  for (let tic = 0; tic < 12; tic++) {
+    stepRuntime(project, state, 1 / 35, new Set());
+    painFrames.push(enemy.stateLabel);
+  }
+  const flinched = painFrames.filter(label => /^pain$/i.test(label)).length;
+  assert.ok(flinched >= 3, `the flinch ran for its own frames, saw ${painFrames.join(',')}`);
+  assert.ok(/^(see|missile|melee)$/i.test(painFrames[painFrames.length - 1]),
+    `and then handed the monster back to its AI, saw ${painFrames.join(',')}`);
+});
+
+test('a rule may not pull a flinching or dying monster into another state', () => {
+  const project = imported();
+  const state = createRuntime(project);
+  state.hasGame = true;
+  const player = state.entities.find(entity => entity.type === 'player');
+  const enemy = { id: 'imp1', type: 'enemy', name: 'Imp', actorName: 'DoomImp', doomType: 3001,
+    x: player.x + 160, y: player.y, z: 0, elevation: 0, health: 400, radius: 20, height: 56, angle: 180, solid: true };
+  state.entities.push(enemy);
+  hurtActor(project, state, enemy, 1, null);
+  assert.equal(enemy.stateLabel, 'Pain');
+  assert.equal(setActorState(project, enemy, 'See', { ifDifferent: true }), true, 'the request is accepted as a no-op');
+  assert.equal(enemy.stateLabel, 'Pain', 'but the flinch is not interrupted');
+  // A death state is not interrupted either.
+  setActorState(project, enemy, 'Death');
+  setActorState(project, enemy, 'See', { ifDifferent: true });
+  assert.equal(enemy.stateLabel, 'Death');
+});
+
+test('the translated AI stands down in Pain and in the death states', () => {
+  const project = imported();
+  const events = enemyScriptRules(project).events;
+  for (const name of ['chases', 'attacks', 'notices the player']) {
+    const rule = events.find(event => event.name.endsWith(name));
+    assert.ok(rule, `${name} is generated`);
+    const stopped = (rule.conditions || []).filter(condition => condition.type === 'actorState' && condition.inverted)
+      .map(condition => condition.state);
+    for (const state of ['Pain', 'Death', 'XDeath']) assert.ok(stopped.includes(state), `${name} stands down in ${state}`);
+  }
+});
+
 test('a monster with nothing to attack with keeps its machine and is reported', () => {
   const project = { actors: [{ name: 'Statue', flags: { MONSTER: true }, states: { labels: { Spawn: 0 }, frames: [] }, health: 10 }],
     events: [], eventSheets: [], eventGroups: [], variables: {}, map: { entities: [] }, assets: [] };

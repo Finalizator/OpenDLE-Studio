@@ -181,11 +181,14 @@ export function enemyScriptRules(project, { sheetId, groupId, id = uniqueId(proj
       enemyActor: plan.name, comment: `Imported from the ${plan.name} actor's DECORATE states. `
         + 'This decides when it notices, walks and attacks; the states still animate it and fire the attack.' };
     // `playActorState` only enters a state the actor is not already in, so a rule may say
-    // "be in See" every frame without restarting the animation under it. Walking and
-    // looking aside while an attack state plays would cut the attack short, so those two
-    // rules stand down until the states are back in See.
+    // "be in See" every frame without restarting the animation under it. Walking, looking and
+    // attacking all stand down while the actor is in its attack states, in Pain or in a death
+    // state — everything Doom plays to completion.
     const attacking = plan.melee && !plan.missile ? ['Melee'] : ['Missile'];
-    const notAttacking = ['Melee', 'Missile'].map(state =>
+    // The states this AI stands down in: its own attacks (so an attack cannot restart itself)
+    // and the states Doom runs to completion. Without `Pain` the chase rule pulled a flinching
+    // monster straight back into See on the frame after the hit, before one pain frame ran.
+    const notAttacking = ['Melee', 'Missile', 'Pain', 'Death', 'XDeath'].map(state =>
       ({ type: 'actorState', entityId: '$self', state, inverted: true }));
     // Notice: the player in sight wakes it into See, where its own look sound plays.
     events.push({ id: id(`enemy_${suffix}_notice`), name: `${plan.name}: notices the player`,

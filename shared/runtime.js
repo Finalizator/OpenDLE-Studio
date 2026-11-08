@@ -10,7 +10,7 @@ import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validat
 import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, advanceThrusts, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
-  setActorState, explodeAt, homeMissile, bfgSpray, projectileActor, labelIndex } from './actor-runtime.js';
+  setActorState, actorStateBusy, explodeAt, homeMissile, bfgSpray, projectileActor, labelIndex } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, ZERO_MOMENTUM, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
 import { HL2_MOVEMENT, clampHorizontal, horizontalStep, measuredVelocity } from './source-motion.js';
@@ -2302,12 +2302,17 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             // attack function live — a translated monster's rule says *when*, the state says how.
             case 'playActorState': {
               const entity = findTarget(action.entityId);
-              if (entity && entity.health > 0) setActorState(project, entity, action.state, { ifDifferent: true });
+              // A rule that says "be in this state" is the translation of A_Chase/A_Look, and
+              // those run inside a state: a monster that is flinching keeps flinching until its
+              // pain frames are done, which is what makes a hit visible.
+              if (entity && entity.health > 0 && !actorStateBusy(entity)) {
+                setActorState(project, entity, action.state, { ifDifferent: true });
+              }
               break;
             }
             case 'moveEnemy': {
               const entity = findTarget(action.entityId);
-              if (entity) moveEnemy(state, entity, action.speed, frame.dt);
+              if (entity && !actorStateBusy(entity)) moveEnemy(state, entity, action.speed, frame.dt);
               break;
             }
             case 'enemyHitscan': {
