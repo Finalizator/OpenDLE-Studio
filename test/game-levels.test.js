@@ -210,6 +210,24 @@ test('a level loads the artwork its sprite clips animate', () => {
     'projectile artwork is referenced from its clip, so the level has to carry it');
 });
 
+test('a level ships the artwork of the items its monsters drop', () => {
+  const a = level();
+  const sprite = (id, name) => ({ id, name, kind: 'sprite', width: 1, height: 1, offsetX: 0, offsetY: 1,
+    src: 'data:image/png;base64,iVBORw0KGgo=' });
+  a.assets.push(sprite('asset_CLIPA0', 'CLIPA0'), sprite('asset_MEGAA0', 'MEGAA0'));
+  // Neither picture is used by an entity, a wall or a clip: only the clip's owner names it.
+  a.actors = [
+    { name: 'ZombieMan', type: 'enemy', drops: [{ item: 'Clip', chance: 255 }] },
+    { name: 'Clip', type: 'item', states: { frames: [{ kind: 'frame', sprite: 'CLIP', letter: 'A' }] } },
+    { name: 'Medikit', type: 'item', states: { frames: [{ kind: 'frame', sprite: 'MEGA', letter: 'A' }] } },
+  ];
+  const p = assembleGameLevels([{ id: 'MAP01', project: a }], 'MAP01', 'Drops').project;
+  const ids = gameLevelAssetIds(p);
+  assert.ok(ids.includes('asset_CLIPA0'),
+    'a zombieman leaves a clip wherever he dies, so a level that places no clip still needs its picture');
+  assert.equal(ids.includes('asset_MEGAA0'), false, 'an item nothing drops and nothing places is not shipped');
+});
+
 test('switching on a level-switch copy leaves the undo snapshot untouched', () => {
   // The editor switches levels on a copy of the project so undo can go back to the level that was
   // being edited. That copy only has to be private in the game container and the two levels

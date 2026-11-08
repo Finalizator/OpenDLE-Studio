@@ -3975,6 +3975,13 @@ function reportPlaytestFailures(session) {
       details: { count: spriteReport.hiddenWithoutArtwork, objects: spriteReport.withoutArtwork,
         hostileInvisible: threats.map(entry => ({ id: entry.id, name: entry.name })) } });
   }
+  if (spriteReport?.missingPictures?.length) {
+    // A thing that appeared after the level loaded named a picture the preview never shipped.
+    // It is drawn as nothing rather than ending the game, but the gap is real and worth reporting.
+    playtestLog.once('render:missing-picture', { severity: 'warning', category: 'render',
+      message: `${spriteReport.missingPictures.length} sprite picture(s) were not loaded and their things are invisible: ${spriteReport.missingPictures.join(', ')}.`,
+      details: { pictures: spriteReport.missingPictures } });
+  }
   if (session.groundCorrections?.first) {
     // An actor below its sector floor is drawn buried in it; the runtime snaps it back
     // up, and the log names which actor and by how much so the cause can be fixed.

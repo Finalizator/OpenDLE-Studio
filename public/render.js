@@ -121,6 +121,24 @@ export async function createPreview(canvas, project, state, { editor = false, on
     if (!result) throw new Error(`Preview image ${assetMap.get(id)?.name || id} (${id}) was not loaded`);
     return result;
   }
+  /**
+   * A picture that may legitimately be missing.
+   *
+   * Everything the level itself needs is loaded before the first frame, and a gap there is a real
+   * import fault worth failing loudly. A *thing* can appear later than that — a monster's dropped
+   * clip, an item a script spawns — and one absent picture must not end the game, which is what
+   * "Preview failed: Preview image CLIPA0 was not loaded" did to a run that had just killed a
+   * zombieman. Such a thing is drawn as nothing and reported once.
+   */
+  const missingPictures = new Set();
+  function spriteTexture(id) {
+    if (!id) return null;
+    if (id.startsWith('builtin:')) return builtinTexture(id);
+    const result = textures.get(id);
+    if (result) return result;
+    missingPictures.add(id);
+    return null;
+  }
   const materials = new Set(), geometries = new Set();
   // Which wall textures are see-through, and how. Doom draws a picture's transparent pixels as
   // holes (alpha test), while a texture that is *partly* transparent everywhere — Lullaby's sky
@@ -2178,7 +2196,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
         const scale = `${scaleX}:${scaleY}`;
         if (record.frame !== assetId || record.flip !== flip || record.scale !== scale) {
           const asset = assetMap.get(assetId);
-          if (record.frame !== assetId) sprite.material.map = assetId ? imageTexture(assetId) : null;
+          if (record.frame !== assetId) sprite.material.map = spriteTexture(assetId);
           // The artwork's own left/top offsets place it: the sprite quad is kept centred on its
           // position and the offsets are applied to that position instead of to `sprite.center`.
           // Center-based offsets are a shader feature, and a sprite that silently falls back to
@@ -2188,6 +2206,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
           sprite.userData.frame = assetId; sprite.userData.flip = flip;
           record.frame = assetId; record.flip = flip; record.scale = scale;
         }
+        // A card with no picture is not drawn at all: a white quad where an item should be is
+        // worse than an item that is briefly invisible.
+        sprite.visible = Boolean(sprite.material.map);
         // Size and place the card from the one shared rule, so the box the editor draws around an
         // object is the card that is actually drawn.
         const sector = sectorOf(entity);
@@ -2465,7 +2486,8 @@ export async function createPreview(canvas, project, state, { editor = false, on
         ...record, sector: sectorIndex.at(record.x, record.y)?.id ?? null })),
       spriteReport: () => ({ player: { x: Math.round(state.player.x), y: Math.round(state.player.y),
         z: Math.round((state.player.z ?? 0) * 10) / 10, pitch: Math.round((state.player.pitch || 0) * 1000) / 1000 },
-      sprites: report.slice(), withoutArtwork: withoutArtwork.slice(), hiddenWithoutArtwork: unrenderable.size }),
+      sprites: report.slice(), withoutArtwork: withoutArtwork.slice(), hiddenWithoutArtwork: unrenderable.size,
+      missingPictures: [...missingPictures] }),
       perf: () => ({ ...frameStats.summary(), slowFrame }) };
   } catch (error) {
     dispose();

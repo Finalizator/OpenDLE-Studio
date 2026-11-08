@@ -56,13 +56,25 @@ export function gameLevelAssetIds(project) {
   // same way a clip's frames do: without them the first shot throws
   // "Preview image PISFA0 was not loaded".
   const spriteNames = spriteAssetNames(project);
-  for (const actor of project.actors || []) {
-    if (!actor?.flags?.WEAPON) continue;
-    for (const frame of actor.states?.frames || []) {
+  const everyFrame = actor => {
+    for (const frame of actor?.states?.frames || []) {
       if (frame.kind !== 'frame' || !frame.sprite) continue;
       const sprite = String(frame.sprite).toUpperCase();
       const id = spriteNames.get(`${sprite}${frame.letter}0`) || spriteNames.get(`${sprite}${frame.letter}1`);
       if (id) references.add(id);
+    }
+  };
+  for (const actor of project.actors || []) if (actor?.flags?.WEAPON) everyFrame(actor);
+  // A monster leaves items the level may never place — Doom's zombieman drops his clip wherever
+  // he dies — so their pictures have to travel too. Without this the first drop threw
+  // "Preview image CLIPA0 was not loaded" and stopped the game.
+  for (const actor of project.actors || []) {
+    for (const drop of actor.drops || []) {
+      if (!drop?.item) continue;
+      const item = (project.actors || []).find(candidate => String(candidate.name).toLowerCase() === String(drop.item).toLowerCase());
+      if (!item) continue;
+      everyFrame(item);
+      if (item.spawnFrame) everyFrame({ states: { frames: [item.spawnFrame] } });
     }
   }
   // Skies travel with every level: a script can ChangeSky to one no map thing names.
