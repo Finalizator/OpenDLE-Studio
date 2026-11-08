@@ -1,11 +1,12 @@
 import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, canSeeTarget, randomDamage, enemyHitscan, moveEnemy, geometryDistance,
   entityDistance, projectileSource } from './combat.js';
-import { actorIndex, actorForThing, NATIVE_EFFECT_ACTORS } from './actors.js';
-import { actorProjectileClips, actorEffectClip, setSpriteState, spriteAssetNames } from './sprite-animation.js';
+import { actorIndex, actorForThing, NATIVE_EFFECT_ACTORS, dropItemNumber } from './actors.js';
+import { actorProjectileClips, actorEffectClip, setSpriteState, spriteAssetNames, applyActorSpriteStates } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 import { actorFunctionSource, runActorFunction } from './actor-functions.js';
 import { floorHeightAt } from './three-d-floors.js';
+import { doomThings } from './doom-assets.js';
 
 /**
  * Actor runtime.
@@ -855,6 +856,82 @@ function actorFlag(actor, name, entity) {
  * Applies damage the way Doom does: health, the pain roll, and — when a monster
  * hurt another monster — a target switch, which is what makes infighting happen.
  */
+/**
+ * The item a monster leaves behind, as an object the runtime can clone.
+ *
+ * Drops are a table on the actor (`DropItem "Clip"`) and the import has always read it, but
+ * nothing ever looked at the table again: a zombieman died without its clip, a shotgun guy
+ * without his shotgun. A placed item of the same kind is the best template — it already carries
+ * its artwork and its editor number — and a level that places none gets one built from the item's
+ * own actor, which is what a save validates a dropped object against.
+ */
+function dropTemplate(project, itemName) {
+  const actor = projectActorIndex(project).byName.get(String(itemName).toLowerCase()) || null;
+  // A project with an imported actor table names the item itself; one built on the classic
+  // table has no actor records for its items at all, and Doom's editor numbers answer instead.
+  const number = actor?.doomedNum ?? dropItemNumber(project, itemName);
+  if (number === undefined || number === null) return null;
+  const entities = project.map.entities || (project.map.entities = []);
+  const placed = entities.find(entity => entity.type === 'pickup' && entity.doomType === number) ||
+    entities.find(entity => entity.doomType === number);
+  if (placed) return placed;
+  const id = `drop_template_${String(actor?.name || itemName).toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+  const existing = entities.find(entity => entity.id === id);
+  if (existing) return existing;
+  const template = { id, name: actor?.name || String(itemName), type: 'pickup', doomType: number, x: 0, y: 0, angle: 0 };
+  if (actor) {
+    template.actorName = actor.name;
+    applyActorSpriteStates(project, template, actor);
+  } else {
+    // The classic table still knows the item's sprite prefix, so it can at least be drawn.
+    const prefix = doomThings[number]?.[0];
+    const stand = prefix ? spriteAssetNames(project).get(`${prefix}A0`) : null;
+    if (stand) template.spriteAsset = stand;
+  }
+  // A template only ever exists to be cloned; the level it belongs to never shows it.
+  entities.push(template);
+  return template;
+}
+
+/** Doom's death drops, spawned where the monster fell. */
+export function dropItems(project, state, entity, actor) {
+  if (entity.itemsDropped) return 0;
+  entity.itemsDropped = true;
+  if (!actor?.drops?.length) return 0;
+  let spawned = 0;
+  for (const drop of actor.drops) {
+    // `DropItem "Clip", 200` is a chance out of 256, as Doom rolls it.
+    const chance = Math.max(0, Math.min(256, Number(drop.chance ?? 256)));
+    if (!(chance > 0)) continue;
+    if (chance < 256 && randomDamage(state, 1, 256) > chance) continue;
+    const template = dropTemplate(project, drop.item);
+    if (!template) continue;
+    // A third number is how many of that item the whole level may drop (`DropItem "Clip", 256, 5`).
+    const limit = Number(drop.amount ?? -1);
+    if (limit > 0) {
+      const counts = state.droppedItems ||= new Map();
+      const key = template.doomType ?? template.name;
+      const dropped = counts.get(key) || 0;
+      if (dropped >= limit) continue;
+      counts.set(key, dropped + 1);
+    }
+    if (state.entities.length >= 900) break;
+    let id;
+    do {
+      state.spawnSequence = (state.spawnSequence || 0) + 1;
+      id = `drop_${state.spawnSequence}`;
+    } while (state.entities.some(candidate => candidate.id === id));
+    // The spread keeps the template's own fields, and `variables` is what the runtime gives every
+    // object it holds — a save checks each live object against that shape.
+    const dropped = { ...structuredClone(template), id, x: entity.x, y: entity.y, z: floorAt(state, entity),
+      elevation: 0, spawnedFrom: template.id, variables: { ...(template.variables || {}) } };
+    state.entities.push(dropped);
+    state.worldRevision++;
+    spawned++;
+  }
+  return spawned;
+}
+
 export function hurtActor(project, state, entity, amount, source = null, damageType = null) {
   if (!entity || entity.type !== 'enemy' || (entity.health ?? 0) <= 0 || !(amount > 0)) return false;
   const actor = actorOf(project, entity);
@@ -876,6 +953,8 @@ export function hurtActor(project, state, entity, amount, source = null, damageT
     // The Death state runs from stepActors; the body stops blocking immediately.
     entity.solid = false;
     state.physics?.remove(entity.id);
+    // Doom drops a monster's items the moment it dies, not when the corpse settles.
+    dropItems(project, state, entity, actor);
     return true;
   }
   const typeChance = damageType ? (actor?.painChances?.[damageType] ?? actor?.painChances?.[String(damageType).toLowerCase()]) : undefined;

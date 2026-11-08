@@ -7,6 +7,9 @@ import { parseZScript, parseActorDefinitions } from '../shared/zscript.js';
 import { parseDehacked, dehackedChanges, mergeDehackedPatches, thingName } from '../shared/dehacked.js';
 import { buildVanillaActors, importActors, applyDehacked, actorIndex, parseEditorNumbers } from '../shared/actors.js';
 import * as spriteAnimations from '../shared/sprite-animation.js';
+import { installEngineScripts } from '../shared/engine-script.js';
+import { installDoomInventoryScripts } from '../shared/doom-hud.js';
+import { captureGameSave, restoreGameSave, gameSaveIdentity } from '../shared/save-game.js';
 import * as actorTables from '../shared/actors.js';
 import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile, hurtActor, beginWeapon, weaponTic,
   unsupportedActorActions, actionSupported, WEAPON_ACTION_NAMES } from '../shared/actor-runtime.js';
@@ -769,6 +772,90 @@ test('a monster keeps its clip while the machine passes a loop record', () => {
     assert.equal(state.spriteAnimations.get(imp.id)?.name, 'walk', `tic ${i} keeps the walking clip`);
     assert.ok(imp.spriteAsset, `tic ${i} still draws the monster`);
   }
+});
+
+test('a monster leaves behind the item its actor table names', () => {
+  // Doom's `DropItem "Clip"` is a table on the actor and the import has always read it, but the
+  // runtime never looked at it again: a zombieman died without his clip, a shotgun guy without
+  // his shotgun.
+  const project = createProject();
+  project.events = [];
+  project.actors = buildVanillaActors();
+  const zombie = project.actors.find(actor => actor.name === 'ZombieMan');
+  assert.deepEqual(zombie.drops, [{ item: 'Clip', chance: 256, amount: 5 }],
+    'vanilla Doom drops at most five clips from zombiemen in a level');
+  project.map.entities.push({ id: 'zombie1', name: 'ZombieMan', type: 'enemy', doomType: 3004, x: 40, y: 64, angle: 0, health: 20 });
+  validateProject(project);
+  const state = createRuntime(project);
+  const monster = state.entities.find(entity => entity.id === 'zombie1');
+  hurtActor(project, state, monster, 100, null);
+  const dropped = state.entities.filter(entity => String(entity.id).startsWith('drop_'));
+  assert.equal(dropped.length, 1, 'one clip for one zombieman');
+  assert.equal(dropped[0].name, 'Clip');
+  assert.equal(dropped[0].type, 'pickup');
+  assert.equal(dropped[0].doomType, 2007, 'the item the pickup rules know by its editor number');
+  assert.deepEqual([dropped[0].x, dropped[0].y], [40, 64], 'where the monster fell');
+  assert.ok(dropped[0].spawnedFrom, 'a dropped object names the template a save checks it against');
+  // A second death of the same monster drops nothing more, and a monster with no table drops nothing.
+  hurtActor(project, state, monster, 100, null);
+  assert.equal(state.entities.filter(entity => String(entity.id).startsWith('drop_')).length, 1);
+  const imp = { id: 'imp1', name: 'DoomImp', type: 'enemy', doomType: 3001, x: 0, y: 0, angle: 0, health: 60 };
+  state.entities.push(imp);
+  hurtActor(project, state, imp, 100, null);
+  assert.equal(state.entities.filter(entity => String(entity.id).startsWith('drop_')).length, 1, 'the imp has no drops');
+});
+
+test('a save taken while a dropped item lies on the floor loads again', async () => {
+  // Every live object is checked against a template on save, and a dropped pickup built from a
+  // monster's own shape would fail that check - a save the player is told worked and cannot load
+  // is the worst failure this format has. The drop names its item's template instead.
+  const project = createProject();
+  project.events = [];
+  project.actors = buildVanillaActors();
+  installEngineScripts(project, { includeHUD: false });
+  installDoomInventoryScripts(project);
+  project.map.entities.push({ id: 'zombie1', name: 'ZombieMan', type: 'enemy', doomType: 3004, x: 0, y: 0, angle: 0, health: 20 });
+  validateProject(project);
+  const state = createRuntime(project);
+  state.hasGame = true;
+  const identity = await gameSaveIdentity(project);
+  const monster = state.entities.find(entity => entity.id === 'zombie1');
+  hurtActor(project, state, monster, 100, null);
+  const drop = state.entities.find(entity => String(entity.id).startsWith('drop_'));
+  assert.ok(drop, 'a clip is on the floor');
+  const saved = captureGameSave(project, state, identity);
+  const restored = restoreGameSave(project, JSON.parse(JSON.stringify(saved)), identity).runtime;
+  const copy = restored.entities.find(entity => entity.id === drop.id);
+  assert.ok(copy, 'the dropped item came back');
+  assert.equal(copy.doomType, 2007);
+  assert.equal(copy.spawnedFrom, drop.spawnedFrom);
+});
+
+test('a dropped item can be taken on a level that never places one', () => {
+  // Pickup rules are generated from the items a level *places*, so a clip dropped on a level
+  // with no clip of its own was there but could not be picked up.
+  const project = createProject();
+  project.events = [];
+  project.actors = buildVanillaActors();
+  assert.equal(project.map.entities.some(entity => entity.doomType === 2007), false, 'this level places no clip');
+  installEngineScripts(project, { includeHUD: false });
+  installDoomInventoryScripts(project);
+  const clipRule = project.events.find(event => event.condition?.type === 'entityDoomType' && event.condition.doomType === 2007);
+  assert.ok(clipRule, 'the rules cover an item only a monster drops');
+  project.map.entities.push({ id: 'zombie1', name: 'ZombieMan', type: 'enemy', doomType: 3004, x: 0, y: 0, angle: 0, health: 20 });
+  validateProject(project);
+  const state = createRuntime(project);
+  state.hasGame = true;
+  const monster = state.entities.find(entity => entity.id === 'zombie1');
+  hurtActor(project, state, monster, 100, null);
+  const drop = state.entities.find(entity => String(entity.id).startsWith('drop_'));
+  assert.ok(drop);
+  const floor = state.sectors.find(sector => sector.id === drop.sector)?.floorHeight ?? 0;
+  Object.assign(drop, { x: state.player.x, y: state.player.y, z: floor, elevation: 0 });
+  const before = state.playerStats.bullets;
+  for (let tick = 0; tick < 6; tick++) stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(state.entities.some(entity => entity.id === drop.id), false, 'the item was taken');
+  assert.ok(state.playerStats.bullets > before, `bullets ${before} -> ${state.playerStats.bullets}`);
 });
 
 test('an actor whose spawn frame never ends still explodes when it dies', () => {

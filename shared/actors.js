@@ -1,6 +1,6 @@
 import { compileActorStates, frameBodyActions, actorSpritePrefixes, replacementMap } from './decorate.js';
 import { parseActorDefinitions } from './zscript.js';
-import { mergeDehackedPatches, parseDehacked, thingName } from './dehacked.js';
+import { mergeDehackedPatches, parseDehacked, thingName, VANILLA_THINGS } from './dehacked.js';
 import { VANILLA_ANIMATIONS } from './vanilla-animations.js';
 
 /**
@@ -49,6 +49,24 @@ function damageRules(properties) {
     }
   }
   return { factors, painChances };
+}
+
+const CLASSIC_ITEM_NUMBERS = new Map(Object.entries(VANILLA_THINGS)
+  .map(([number, name]) => [String(name).toLowerCase(), Number(number)]));
+
+/**
+ * The editor number a `DropItem` name names.
+ *
+ * A project with an imported actor table names the item itself. One built on the classic table
+ * has no actor record for its items at all, and Doom's own thing names answer instead — without
+ * this a zombieman's clip had no number, so there was nothing to drop.
+ */
+export function dropItemNumber(project, itemName) {
+  const name = String(itemName || '').toLowerCase();
+  if (!name) return null;
+  const actor = (project?.actors || []).find(candidate => String(candidate.name).toLowerCase() === name);
+  if (actor?.doomedNum !== undefined && actor.doomedNum !== null) return actor.doomedNum;
+  return CLASSIC_ITEM_NUMBERS.get(name) ?? null;
 }
 
 /** `DropItem "Clip", 1, 5` becomes an explicit drop table. */

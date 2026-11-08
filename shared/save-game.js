@@ -49,7 +49,10 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   'speed',
   // The frame a rule reads (frame delta, held keys, the signal being dispatched) and the runners
   // cached against each rule are rebuilt by the next step, so neither is part of the game.
-  'frame', 'eventRunners']);
+  'frame', 'eventRunners',
+  // How many of an item a level has dropped so far (`DropItem "Clip", 256, 5`); a save without it
+  // is a save taken before anything died, which is no drop history at all.
+  'droppedItems']);
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.

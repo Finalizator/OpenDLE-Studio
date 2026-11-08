@@ -61,7 +61,7 @@ import { createAddonHost } from './addons-host.js';
 import { alignModelToRoute, driveRouteTimesheet } from '/shared/timesheet-recipe.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
-import { upgradePickupReach } from '/shared/doom-hud.js';
+import { upgradePickupReach, installDroppedPickupRules } from '/shared/doom-hud.js';
 import { suggestedArea, ZONE_AREA } from '/shared/areas.js';
 import { captureScene, placeSceneInstance, sceneIsEmpty, newScene } from '/shared/scenes.js';
 import { layoutEntityIds, layoutSelection, sceneInstanceOf, upgradeSceneInstances } from '/shared/entity-groups.js';
@@ -4237,6 +4237,10 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     if (snapshot.game && !savedGame) selectGameLevel(snapshot, playing);
     const restored = savedGame ? restoreGameSave(snapshot, savedGame, identity) : null;
     installIntermission(snapshot);
+    // A project imported before monsters dropped anything has pickup rules for the items its
+    // levels place and nothing else, so the clip a zombieman leaves could not be taken. The
+    // snapshot is throwaway, so this only has to happen for the level being played.
+    installDroppedPickupRules(snapshot);
     // A preview only ever plays the active level, and a level change builds a fresh
     // snapshot from the editor project, so the other levels' data is dead weight here:
     // on an imported game it is tens of megabytes of duplicated map data that the

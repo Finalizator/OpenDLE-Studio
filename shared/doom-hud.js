@@ -1,4 +1,5 @@
 import { hudElement, installDefaultHUD } from './hud.js';
+import { dropItemNumber } from './actors.js';
 import { AMMO_TYPES, ammoMaximum, WEAPON_SPRITES } from './player-state.js';
 
 // Classic status-bar coordinates are authored in the 320x200 Doom screen space.
@@ -190,30 +191,15 @@ export function upgradePickupReach(project) {
   return upgraded;
 }
 
-export function installDoomInventoryScripts(project) {
-  const sheet = name => project.eventSheets.find(sheet => sheet.name === name).id;
-  const groups = new Map();
-  let sequence = 0;
-  const rule = (section, name, condition, actions, conditions = [], extra = {}) => {
-    if (!groups.has(section)) {
-      const group = { id: `wad_inventory_group_${section}`, name: section === 'Input' ? 'Owned weapon selection' : 'Doom inventory pickups',
-        sheetId: sheet(section), enabled: true, description: 'Imported editable inventory rules. Full Doom weapon/power-up behavior is not implemented.' };
-      project.eventGroups.push(group); groups.set(section, group.id);
-    }
-    project.events.push({ id: `wad_inventory_${sequence++}`, name, sheetId: sheet(section), groupId: groups.get(section),
-      enabled: true, once: false, condition, conditions, actions, ...extra });
-  };
-  for (const [key, weapon] of [['Digit1', 'fist'], ['Digit2', 'pistol'], ['Digit3', 'shotgun'], ['Digit4', 'chaingun'],
-    ['Digit5', 'rocketLauncher'], ['Digit6', 'plasmaRifle'], ['Digit7', 'bfg'], ['Digit8', 'chainsaw'], ['Digit9', 'superShotgun']]) {
-    if (project.events.some(event => event.condition.type === 'keyPressed' && event.condition.key === key &&
-      event.actions.some(action => action.type === 'selectWeapon' && action.weapon === weapon))) continue;
-    rule('Input', `Select ${weapon}`, { type: 'keyPressed', key }, [{ type: 'selectWeapon', weapon }], [{ type: 'weaponOwned', weapon }]);
-  }
-  const ammo = (ammo, amount) => ({ type: 'addAmmo', ammo, amount });
-  const stat = (stat, value) => ({ type: 'setPlayerStat', stat, value });
-  const capped = (stat, value, maximum) => ({ type: 'addPlayerStat', stat, value, maximum });
-  const below = (stat, value) => ({ type: 'playerStat', stat, operator: '<', value });
-  const pickups = [
+const ammoAction = (ammo, amount) => ({ type: 'addAmmo', ammo, amount });
+const statAction = (stat, value) => ({ type: 'setPlayerStat', stat, value });
+const cappedAction = (stat, value, maximum) => ({ type: 'addPlayerStat', stat, value, maximum });
+const belowCondition = (stat, value) => ({ type: 'playerStat', stat, operator: '<', value });
+
+/** Every Doom item as a rule: `[doomType, actions, conditions the player must meet]`. */
+export function doomPickups() {
+  const ammo = ammoAction, stat = statAction, capped = cappedAction, below = belowCondition;
+  return [
     ...[[2007, 'bullets', 10], [2048, 'bullets', 50], [2008, 'shells', 4], [2049, 'shells', 20],
       [2010, 'rockets', 1], [2046, 'rockets', 5], [2047, 'cells', 20], [17, 'cells', 100]]
       .map(([type, kind, amount]) => [type, [ammo(kind, amount)], [{ type: 'ammoBelowCapacity', ammo: kind }]]),
@@ -235,7 +221,80 @@ export function installDoomInventoryScripts(project) {
     [8, [{ type: 'giveBackpack' }, ammo('bullets', 10), ammo('shells', 4), ammo('rockets', 1), ammo('cells', 20)],
       [{ type: 'backpackOwned', inverted: true }, ...AMMO_TYPES.map(ammo => ({ type: 'ammoBelowCapacity', ammo }))]],
   ];
-  const present = new Set(project.map.entities.filter(entity => entity.type === 'pickup').map(entity => entity.doomType));
+}
+/** The item kinds a level can hold: the ones it places, and the ones its monsters leave behind. */
+export function pickupKinds(project) {
+  const kinds = new Set((project.map.entities || []).filter(entity => entity.type === 'pickup').map(entity => entity.doomType));
+  for (const actor of project.actors || []) {
+    for (const drop of actor.drops || []) {
+      const number = dropItemNumber(project, drop.item);
+      if (number !== null) kinds.add(number);
+    }
+  }
+  return kinds;
+}
+
+/**
+ * Adds the pickup rules a project is missing, for the items only a monster drops.
+ *
+ * A project imported before drops existed carries rules for the items its levels place and
+ * nothing else, so the clip a zombieman leaves could not be picked up. Idempotent — a kind that
+ * already has a rule is left alone — so it is safe to run on every preview.
+ */
+export function installDroppedPickupRules(project) {
+  const known = new Set((project.events || []).filter(event => event.condition?.type === 'entityDoomType' &&
+    event.forEachType === 'pickup').map(event => event.condition.doomType));
+  const missing = doomPickups().filter(([type]) => pickupKinds(project).has(type) && !known.has(type));
+  if (!missing.length) return 0;
+  const sheet = (project.eventSheets || []).find(candidate => candidate.name === 'Pickups');
+  if (!sheet) return 0;
+  let group = (project.eventGroups || []).find(candidate => candidate.name === 'Doom inventory pickups');
+  if (!group) {
+    group = { id: 'wad_inventory_group_Pickups', name: 'Doom inventory pickups', sheetId: sheet.id, enabled: true,
+      description: 'Imported editable inventory rules. Full Doom weapon/power-up behavior is not implemented.' };
+    project.eventGroups.push(group);
+  }
+  for (const [type, actions, needs] of missing) {
+    // The same two rules the importer writes: the parent decides the player is close enough, the
+    // child takes the item and is the one that carries the "only if it does something" test.
+    const parentId = `wad_inventory_drop_${type}`;
+    project.events.push({ id: parentId, name: `Doom pickup ${type} / proximity`, sheetId: sheet.id, groupId: group.id,
+      enabled: true, once: false, forEachType: 'pickup',
+      condition: { type: 'entityDoomType', entityId: '$self', doomType: type },
+      conditions: [{ type: 'playerReachesEntity', entityId: '$self', distance: 36, height: 112, below: 32, reachOverSteps: 'yes' },
+        { type: 'playerStat', stat: 'health', operator: '>', value: 0 }],
+      actions: [] });
+    project.events.push({ id: `${parentId}_collect`, name: `Doom pickup ${type} / collect`, sheetId: sheet.id,
+      groupId: group.id, enabled: true, once: false, forEachType: 'pickup', parentId, conditionMode: 'or',
+      condition: needs[0] || { type: 'always' }, conditions: needs.slice(1),
+      actions: [...actions, { type: 'playSound', sound: 'DSITEMUP', volume: .7 }, { type: 'removeEntity', entityId: '$self' }] });
+  }
+  return missing.length;
+}
+
+export function installDoomInventoryScripts(project) {
+  const sheet = name => project.eventSheets.find(sheet => sheet.name === name).id;
+  const groups = new Map();
+  let sequence = 0;
+  const rule = (section, name, condition, actions, conditions = [], extra = {}) => {
+    if (!groups.has(section)) {
+      const group = { id: `wad_inventory_group_${section}`, name: section === 'Input' ? 'Owned weapon selection' : 'Doom inventory pickups',
+        sheetId: sheet(section), enabled: true, description: 'Imported editable inventory rules. Full Doom weapon/power-up behavior is not implemented.' };
+      project.eventGroups.push(group); groups.set(section, group.id);
+    }
+    project.events.push({ id: `wad_inventory_${sequence++}`, name, sheetId: sheet(section), groupId: groups.get(section),
+      enabled: true, once: false, condition, conditions, actions, ...extra });
+  };
+  for (const [key, weapon] of [['Digit1', 'fist'], ['Digit2', 'pistol'], ['Digit3', 'shotgun'], ['Digit4', 'chaingun'],
+    ['Digit5', 'rocketLauncher'], ['Digit6', 'plasmaRifle'], ['Digit7', 'bfg'], ['Digit8', 'chainsaw'], ['Digit9', 'superShotgun']]) {
+    if (project.events.some(event => event.condition.type === 'keyPressed' && event.condition.key === key &&
+      event.actions.some(action => action.type === 'selectWeapon' && action.weapon === weapon))) continue;
+    rule('Input', `Select ${weapon}`, { type: 'keyPressed', key }, [{ type: 'selectWeapon', weapon }], [{ type: 'weaponOwned', weapon }]);
+  }
+  const pickups = doomPickups();
+  // A monster leaves items the level never places — Doom's zombieman drops his clip wherever he
+  // dies — so the rules cover every droppable item, not only the ones the map placed.
+  const present = pickupKinds(project);
   for (const [type, actions, needs] of pickups) {
     if (!present.has(type)) continue;
     const parentId = `wad_inventory_${sequence}`;
