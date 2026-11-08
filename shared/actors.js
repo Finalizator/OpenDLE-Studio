@@ -487,6 +487,9 @@ function classicStates(weapon, { lightDone = false } = {}) {
     }
     if (/^loop$/i.test(line)) { entries.push({ kind: 'loop', target: label, label }); continue; }
     if (/^stop$/i.test(line)) { entries.push({ kind: 'stop', target: null, label }); continue; }
+    // `null` is not a DECORATE keyword: it is this table's way of writing Doom's S_NULL, the
+    // state that takes the thing out of the level rather than holding a frame.
+    if (/^null$/i.test(line)) { entries.push({ kind: 'null', target: null, label }); continue; }
     const jump = /^goto\s+(\w+)$/i.exec(line);
     if (jump) { entries.push({ kind: 'goto', target: jump[1], label }); continue; }
     entries.push(...classicFrames(weapon, line));
@@ -576,8 +579,12 @@ export const CLASSIC_EFFECTS = [
 export const CLASSIC_PROPS = [
   { name: 'ExplosiveBarrel', doomedNum: 2035, sprite: 'BAR1', health: 20, radius: 10, height: 32,
     flags: ['SOLID', 'SHOOTABLE', 'NOBLOOD'],
-    states: ['Spawn: BAR1 A -1', 'Death: BEXP A 5', 'BEXP B 5 A_Scream', 'BEXP C 5 A_Explode',
-      'BEXP D 5', 'BEXP E 5 A_NoBlocking', 'BEXP F -1', 'stop'] },
+    // Doom's barrel explodes and is gone: `BEXP A`–`E` are the five frames of the blast, and
+    // the state then reaches S_NULL, which removes the thing. It used to end on a sixth frame
+    // that holds for ever — a letter the artwork does not even have — so a destroyed barrel
+    // stayed in the level showing the last picture of the explosion.
+    states: ['Spawn: BAR1 AB 6', 'loop', 'Death: BEXP A 5 Bright', 'BEXP B 5 Bright A_Scream',
+      'BEXP C 5 Bright', 'BEXP D 10 Bright A_Explode', 'BEXP E 10 Bright A_NoBlocking', 'null'] },
 ];
 
 /** Actors the native action functions spawn by name, so their clips are pre-built. */
@@ -848,4 +855,34 @@ export function actorForThing(index, doomType, name) {
   if (name && index.byName.has(String(name).toLowerCase())) return index.byName.get(String(name).toLowerCase());
   if (doomType !== undefined && index.byDoomed.has(doomType)) return index.byDoomed.get(doomType);
   return null;
+}
+
+/** The barrel tail this build used to generate: a held frame whose sprite letter has no artwork. */
+const HELD_EXPLOSION_TAIL = [
+  { kind: 'frame', sprite: 'BEXP', letter: 'F', duration: -1 },
+  { kind: 'stop' },
+];
+
+/**
+ * Replaces the barrel's held last frame with Doom's S_NULL in a project saved before that
+ * state was fixed.
+ *
+ * A destroyed barrel used to stay in the level showing the last picture of its explosion,
+ * because the generated table ended on a frame with no artwork that never advanced. The shape
+ * is the bug — a frame that holds for ever and names artwork nothing has — so any actor ending
+ * exactly that way is fixed, and every other state, and the rest of the project, is untouched.
+ */
+export function migratePropDeathStates(project) {
+  for (const actor of project?.actors || []) {
+    const frames = actor?.states?.frames;
+    if (!Array.isArray(frames) || frames.length < HELD_EXPLOSION_TAIL.length) continue;
+    const tail = frames.slice(-HELD_EXPLOSION_TAIL.length);
+    const matches = tail.every((frame, index) => HELD_EXPLOSION_TAIL[index].kind === frame.kind
+      && (index === 1 || (frame.sprite === HELD_EXPLOSION_TAIL[0].sprite && frame.letter === HELD_EXPLOSION_TAIL[0].letter
+        && frame.duration === HELD_EXPLOSION_TAIL[0].duration)));
+    if (!matches) continue;
+    frames.splice(frames.length - HELD_EXPLOSION_TAIL.length, HELD_EXPLOSION_TAIL.length,
+      { kind: 'null', target: null, label: tail[0].label ?? 'Death' });
+  }
+  return project;
 }

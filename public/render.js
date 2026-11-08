@@ -1406,8 +1406,14 @@ export async function createPreview(canvas, project, state, { editor = false, on
     const weaponIds = new Set([project.environment.weaponAsset, ...Object.values(project.environment.weaponAssets || {}),
       ...project.events.flatMap(event => event.actions.filter(action => action.type === 'playWeaponClip')
         .flatMap(action => project.spriteClips?.find(clip => clip.id === action.clipId)?.frames || []))].filter(Boolean));
-    for (const weaponId of editor ? [] : weaponIds) {
+    // One psprite plane per asset. A weapon's muzzle flash is a separate psprite of its own
+    // (Doom's `Flash` state), so it gets a plain of its own from the same code and the same
+    // offsets, which is what puts it over the barrel of the gun.
+    const overlayFor = weaponId => {
+      const existing = weaponOverlays.get(weaponId);
+      if (existing) return existing;
       const weapon = assetMap.get(weaponId);
+      if (!weapon) return null;
       const mat = new THREE.MeshBasicMaterial({ map: imageTexture(weapon.id), transparent: true, depthTest: false, depthWrite: false });
       const overlay = mesh(new THREE.PlaneGeometry(weapon.width, weapon.height), mat, overlayScene);
       const left = weapon.offsetX === undefined ? 160 - weapon.width / 2 : -weapon.offsetX;
@@ -1420,8 +1426,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // of its own is anchored the same way, to the bottom of the 200.
       const top = weapon.offsetY === undefined ? 200 - weapon.height : 32 - weapon.offsetY;
       overlay.position.set(left + weapon.width / 2, 200 - top - weapon.height / 2, 0);
+      overlay.userData.restX = overlay.position.x;
+      overlay.userData.restY = overlay.position.y;
       weaponOverlays.set(weaponId, overlay);
-    }
+      return overlay;
+    };
+    for (const weaponId of editor ? [] : weaponIds) overlayFor(weaponId);
     const baseColors = new Map(project.map.entities.filter(entity => editor || entity.type !== 'player')
       .map(entity => [entity.id, new THREE.Color(entity.spriteAsset ? '#ffffff' : entityColors[entity.type])]));
     function baseColorFor(entity) {
@@ -1914,7 +1924,15 @@ export async function createPreview(canvas, project, state, { editor = false, on
           : '');
         // The gun is the player's, and a paused or title screen has no player to draw it for.
         const showWeapon = state.gameScreen === 'playing' && state.playerStats.health > 0;
-        for (const [id, overlay] of weaponOverlays) overlay.visible = showWeapon && id === selected;
+        // Doom's muzzle flash is the weapon's `Flash` psprite, drawn over the gun for the few
+        // tics it lasts; `state.weaponFlashAsset` is the picture it is on this frame.
+        const flashId = showWeapon ? state.weaponFlashAsset : null;
+        // The flash draws above the gun: Doom's two psprite layers are the gun under the flash,
+        // and the flash artwork is the small muzzle bloom that sits over its barrel.
+        const flashOverlay = flashId ? overlayFor(flashId) : null;
+        if (flashOverlay) flashOverlay.renderOrder = 1;
+        for (const [id, overlay] of weaponOverlays) overlay.visible = showWeapon && (id === selected || id === flashId);
+        writeDataset('weaponFlash', flashId || '');
         const recoil = state.lastShot && state.time - state.lastShot.time < .12 ? 6 * (1 - (state.time - state.lastShot.time) / .12) : 0;
         // Doom swings the weapon with the player's speed: x on a cosine and y on a sine of the
         // bob timer, in psprite pixels, so a walk rocks the gun the way GZDoom's does.

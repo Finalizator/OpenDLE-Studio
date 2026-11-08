@@ -2,7 +2,7 @@ import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, canSeeTarget, randomDamage, enemyHitscan, moveEnemy, geometryDistance,
   entityDistance, projectileSource } from './combat.js';
 import { actorIndex, actorForThing, NATIVE_EFFECT_ACTORS } from './actors.js';
-import { actorProjectileClips, actorEffectClip, setSpriteState } from './sprite-animation.js';
+import { actorProjectileClips, actorEffectClip, setSpriteState, spriteAssetNames } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 import { actorFunctionSource, runActorFunction } from './actor-functions.js';
 import { floorHeightAt } from './three-d-floors.js';
@@ -55,6 +55,21 @@ const SPRITE_STATE_BY_LABEL = { spawn: 'stand', see: 'walk', missile: 'attack', 
  */
 function syncActorSprite(project, state, entity, actor, runtime) {
   const frame = actor.states.frames[runtime.index];
+  // A frame whose picture does not exist draws nothing at all. Doom's `TNT1` is exactly that —
+  // a sprite that is deliberately never drawn — and a barrel's blast ends on one while it waits
+  // out the respawn clock. Falling back to the last picture instead is what left a spent barrel
+  // standing on the last frame of its own explosion.
+  if (entity.spriteStates) {
+    const names = spriteAssetNames(project), sprite = String(frame?.sprite || '').toUpperCase();
+    const asset = frame?.kind === 'frame' && sprite
+      ? names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`) || null : null;
+    if (!asset) {
+      state.spriteAnimations.delete(entity.id);
+      entity.spriteAsset = null;
+      return;
+    }
+    entity.spriteAsset = asset;
+  }
   const name = SPRITE_STATE_BY_LABEL[String(frame?.label || '').toLowerCase()];
   if (!name || !entity.spriteStates?.[name]) return;
   // A pain clip is restarted when the actor *enters* Pain, not on every tic it stays there:
@@ -177,6 +192,10 @@ export function actorTic(project, state, entity, moveTarget = true) {
   // Non-frame records immediately move the machine.
   runtime.entered = false;
   if (frame.kind === 'stop') { runtime.index = null; runtime.stopped = true; return; }
+  // Doom's S_NULL: the state does not hold a frame, the thing leaves the level. A barrel's
+  // blast ends this way, which is why a destroyed barrel is gone rather than standing on the
+  // last picture of its own explosion.
+  if (frame.kind === 'null') { runtime.index = null; runtime.stopped = true; runtime.gone = true; return; }
   if (frame.kind === 'goto' || frame.kind === 'loop') {
     const target = frame.kind === 'loop' ? frame.label : frame.target;
     const resolved = labelIndex(actor, target);
@@ -928,6 +947,33 @@ export const ACTIONS = {
       if (!setActorState(ctx.project, other, 'See')) continue;
     }
   },
+  // `A_BarrelDestroy`: a barrel's blast ends by taking it out of the level. GZDoom keeps it
+  // invisible instead when `sv_barrelrespawn` is on, which is off by default — the same
+  // default this engine ships with.
+  A_BarrelDestroy(ctx) {
+    if (ctx.state.settings?.barrelRespawn) {
+      ctx.entity.solid = false;
+      ctx.entity.noBlockmap = true;
+      ctx.state.physics?.remove(ctx.entity.id);
+      return;
+    }
+    actorStateOf(ctx.entity).gone = true;
+    actorStateOf(ctx.entity).index = null;
+    actorStateOf(ctx.entity).stopped = true;
+  },
+  // `A_Respawn`: a dead thing stands up again, whole. Doom's own barrel reaches this only with
+  // respawning barrels turned on.
+  A_Respawn(ctx) {
+    const { project, state, entity, actor } = ctx;
+    entity.health = actor.health ?? entity.health;
+    entity.solid = true;
+    entity.noBlockmap = false;
+    const runtime = actorStateOf(entity);
+    runtime.gone = false; runtime.stopped = false;
+    entity.actorDeadHandled = true;
+    setActorState(project, entity, 'Spawn', { restart: true });
+    state.worldRevision++;
+  },
   A_NoBlocking(ctx) {
     ctx.entity.solid = false;
     ctx.entity.noBlockmap = true;
@@ -1511,6 +1557,8 @@ export function beginWeapon(project, state, slot) {
 export function weaponTic(project, state, attackHeld, { presentation = false } = {}) {
   const runtime = state.weaponActor;
   if (!runtime?.actor) return;
+  // The flash runs on its own clock, beside whatever the gun is doing.
+  flashTic(project, state);
   const actor = runtime.actor;
   const frames = actor.states.frames;
   const frame = frames[runtime.index];
@@ -1678,11 +1726,10 @@ function runWeaponAction(ctx, action) {
     case 'A_CheckReload':
       if (!weaponHasAmmo(state, actor)) teleportWeapon(runtime, actor, 'Ready');
       return;
-    case 'A_GunFlash': {
-      const flash = labelIndex(actor, 'Flash');
-      if (flash !== null) state.weaponFlash = { index: flash, tics: 0, entered: false };
+    case 'A_GunFlash':
+      // `A_GunFlash("KickSetup")` puts the flash psprite into that state instead of `Flash`.
+      startWeaponFlash(ctx.project, state, typeof ctx.args?.[0] === 'string' ? ctx.args[0] : 'Flash');
       return;
-    }
     case 'A_Light0': state.weaponLight = 0; return;
     case 'A_Light1': state.weaponLight = 1; return;
     case 'A_Light2': state.weaponLight = 2; return;
@@ -1715,6 +1762,72 @@ function runWeaponAction(ctx, action) {
       // Animation-only weapon actions (bobbing, offsets) need no simulation.
       return;
   }
+}
+
+/**
+ * The muzzle flash, as Doom draws it: a second psprite that runs the weapon's `Flash` state.
+ *
+ * The flash is not part of the gun's own animation — `A_FirePistol` and friends call
+ * `A_GunFlash`, which puts the *flash* psprite into `Flash` while the gun keeps running its
+ * `Fire` state underneath. Its frames carry `A_Light1`/`A_Light0`, so the picture and the
+ * light it throws both come from the actor's own states.
+ */
+function startWeaponFlash(project, state, label = 'Flash') {
+  const actor = state.weaponActor?.actor;
+  const index = actor ? labelIndex(actor, label) : null;
+  if (index === null) return false;
+  state.weaponFlash = { index, tics: 0, entered: false, seen: new Set([index]) };
+  state.weaponFlashAsset = null;
+  // The first frame is shown on the tic the shot happens, as Doom's flash sprite is.
+  enterFlashFrame(project, state, actor.states.frames[index]);
+  return true;
+}
+
+/** Shows one frame of the flash: its picture, and the light its own action asks for. */
+function enterFlashFrame(project, state, frame) {
+  state.weaponFlash.entered = true;
+  for (const action of frame.actions || []) {
+    if (action.name === 'A_Light0') state.weaponLight = 0;
+    else if (action.name === 'A_Light1') state.weaponLight = 1;
+    else if (action.name === 'A_Light2') state.weaponLight = 2;
+  }
+  const names = spriteAssetNames(project), sprite = String(frame.sprite).toUpperCase();
+  state.weaponFlashAsset = names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`) || null;
+}
+
+/** Advances the muzzle flash one weapon tic; where the drawn flash frame is read at render time. */
+function flashTic(project, state) {
+  const flash = state.weaponFlash, actor = state.weaponActor?.actor;
+  if (!flash || !actor) { state.weaponFlash = null; state.weaponFlashAsset = null; return; }
+  const frames = actor.states.frames;
+  for (let guard = 0; guard < 32; guard++) {
+    const frame = frames[flash.index];
+    if (!frame) break;
+    if (frame.kind !== 'frame') {
+      if (frame.kind === 'goto' || frame.kind === 'loop') {
+        const target = labelIndex(actor, frame.kind === 'loop' ? frame.label : frame.target);
+        if (target === null || target === flash.index) break;
+        flash.index = target; flash.tics = 0; flash.entered = false;
+        continue;
+      }
+      // `stop` — the state the flash runs into when it is done (Doom's own is `LightDone`).
+      break;
+    }
+    if (!flash.entered) {
+      // A flash that comes back to a frame it already showed has shown all it has. Ending it
+      // is what the psprite's author meant: the alternative is a full-bright frame (and the
+      // light it throws) held for the rest of the level, which is how a `Flash` state written
+      // as `PISF A 7; Goto Flash` used to leave a muzzle glowing for ever.
+      if (flash.seen?.has(flash.index)) break;
+      flash.seen?.add(flash.index);
+      enterFlashFrame(project, state, frame);
+    }
+    if (frame.duration < 0) return;
+    flash.tics++;
+    if (flash.tics < frame.duration) return;
+    flash.tics = 0; flash.entered = false; flash.index++;
+  }
+  state.weaponFlash = null; state.weaponFlashAsset = null; state.weaponLight = 0;
 }
 
 /** Puts the drawn weapon into a named state, for a rule that animates the imported weapon. */
@@ -1830,6 +1943,10 @@ function fireWeapon(ctx, actionName) {
     state.playerStats[type] -= use;
   }
   if (FIRE_SOUNDS[actionName]) saySound(state, FIRE_SOUNDS[actionName], null, 127);
+  // GZDoom's own fire functions call `A_GunFlash` themselves, which is why a weapon whose
+  // states never say `A_GunFlash` still throws a muzzle flash. A rule-driven weapon only
+  // *presents* its Fire state, so the flash is started here, on the same tic and either way.
+  startWeaponFlash(ctx.project, state);
   if (ctx.presentation) return;
   const shot = weaponAttackFor(ctx.project, actionName, ctx.args || [], ctx.named || {});
   if (shot.missing) {

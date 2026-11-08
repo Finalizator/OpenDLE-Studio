@@ -447,6 +447,17 @@ function reportAddonFailure(state, type, error) {
 /** Failures nothing listened for, so a test or a headless run can still see them. */
 export const addonFailures = [];
 
+/** Takes one object out of the level, with everything the runtime kept about it. */
+function removeEntityFromLevel(state, entity) {
+  if (!entity) return;
+  recordRemovedEntity(state, entity);
+  state.physics?.remove(entity.id);
+  state.animations.delete(entity.id);
+  state.spriteAnimations.delete(entity.id);
+  forgetEntity(state, entity.id);
+  state.entities = state.entities.filter(item => item.id !== entity.id);
+}
+
 /**
  * Drops everything the runtime remembered about an object that no longer exists.
  *
@@ -1023,6 +1034,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // machines; they run at Doom's 35 Hz tic rate next to the frame update.
   if (project.actors?.length) {
     stepActors(project, state, dt);
+    // An actor whose state reached S_NULL is gone, not a frame held for ever: a destroyed
+    // barrel leaves the level the way Doom's does.
+    for (const entity of [...state.entities]) if (entity.actorState?.gone) removeEntityFromLevel(state, entity);
     const armed = !hud.cursor && state.playerStats.health > 0;
     if (!state.worldTerminalActive) stepWeapon(project, state, dt, armed && keys.has('Mouse0'), armed && keys.has('Mouse2'));
     else { state.weaponTriggerHeld = false; state.weaponAltHeld = false; state.weaponAttack = null; }
@@ -2256,11 +2270,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           break;
         case 'removeEntity': {
           const id = resolveEntityId(event, action.entityId);
-          recordRemovedEntity(state, state.entities.find(item => item.id === id));
-          state.physics?.remove(id); state.animations.delete(id);
-          state.spriteAnimations.delete(id);
-          forgetEntity(state, id);
-          state.entities = state.entities.filter(item => item.id !== id);
+          removeEntityFromLevel(state, state.entities.find(item => item.id === id));
           break;
         }
         case 'setEntityPosition': {

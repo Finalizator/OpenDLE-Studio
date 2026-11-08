@@ -148,7 +148,7 @@ export function actorSpriteCells(actor) {
 }
 
 /** Sprite asset name to asset id, so an actor's state frames can name their images. */
-function spriteAssetNames(project) {
+export function spriteAssetNames(project) {
   let names = nameCache.get(project);
   if (names) return names;
   names = new Map();

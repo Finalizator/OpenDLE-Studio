@@ -23,7 +23,7 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // fact, not game state, so it must not leak into a save (a field the loader does not know).
   'controllerStatus',
   'worldTerminalActive', 'worldTerminalId',
-  'actorUnsupported', 'weaponActor', 'weaponFlash', 'missileGaps', 'surfaces',
+  'actorUnsupported', 'weaponActor', 'weaponFlash', 'weaponFlashAsset', 'missileGaps', 'surfaces',
   // Diagnostics describe the session, not the game; they are rebuilt on load. Leaving
   // them in the payload made restoring any save written after a decal or a grounded
   // actor fail with "unknown runtime field".

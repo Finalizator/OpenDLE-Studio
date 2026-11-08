@@ -7,7 +7,8 @@ import { parseZScript, parseActorDefinitions } from '../shared/zscript.js';
 import { parseDehacked, dehackedChanges, mergeDehackedPatches, thingName } from '../shared/dehacked.js';
 import { buildVanillaActors, importActors, applyDehacked, actorIndex, parseEditorNumbers } from '../shared/actors.js';
 import * as spriteAnimations from '../shared/sprite-animation.js';
-import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile, hurtActor,
+import * as actorTables from '../shared/actors.js';
+import { actorOf, actorStateOf, actorTic, setActorState, labelIndex, initialiseActorEntities, stepActors, spawnActorProjectile, hurtActor, beginWeapon, weaponTic,
   unsupportedActorActions, actionSupported, WEAPON_ACTION_NAMES } from '../shared/actor-runtime.js';
 import { actorProjectileClips, installActorSpriteStates } from '../shared/sprite-animation.js';
 import { importActorSprites, importWadMap, readWad } from '../shared/wad.js';
@@ -791,4 +792,162 @@ test('the generated enemy sprite rules are dropped from a project its actors ani
   project.actors = [{ id: 'actor_x', name: 'X', states: { frames: [], labels: {} } }];
   migrateEnemySpriteRules(project);
   assert.deepEqual(project.events.map(event => event.id), ['mine'], 'the generated rules go, the authored one stays');
+});
+
+test('firing shows the weapon\'s own muzzle flash, and the flash turns the light off again', () => {
+  // Doom's muzzle flash is not part of the gun's animation: `A_FirePistol` calls `A_GunFlash`,
+  // which puts a *second* psprite into the weapon's `Flash` state while the gun keeps running
+  // its `Fire` state underneath. A weapon whose firing is an event rule only *presents* its
+  // states, so the flash has to be started from the shot itself or it never appears.
+  const { actors } = importActors({ sources: [{ name: 'w.zs', text: `
+class Pistol : Weapon
+{
+  Default { Weapon.AmmoType "Clip"; Weapon.AmmoUse 1; }
+  States {
+    Ready: PISG A 1 A_WeaponReady; Loop;
+    Fire: PISG A 4; PISG B 6 A_FirePistol; PISG C 4; PISG B 5 A_ReFire; Goto Ready;
+    Flash: PISF A 7 A_Light1; Goto LightDone;
+    LightDone: SHTG E 0 A_Light0; Stop;
+  }
+}` }], warnings: [] });
+  const project = createProject();
+  project.assets = ['PISGA0', 'PISGB0', 'PISGC0', 'PISFA0', 'SHTGE0'].map(spriteAsset);
+  project.actors = actors;
+  project.events = [];
+  const state = createRuntime(project);
+  state.inventory.weapons.add('pistol');
+  state.inventory.selectedWeapon = 'pistol';
+  state.playerStats.bullets = 50;
+  beginWeapon(project, state, 'pistol');
+  assert.ok(!state.weaponFlashAsset, 'nothing is drawn before the shot');
+  state.weaponTriggerHeld = true;
+  const shown = [];
+  for (let tic = 0; tic < 20; tic++) {
+    weaponTic(project, state, true);
+    shown.push(state.weaponFlashAsset ? String(state.weaponFlashAsset).replace('asset_', '') : '-');
+  }
+  assert.ok(shown.includes('PISFA0'), `the flash is drawn: ${shown.join(' ')}`);
+  assert.equal(state.weaponLight, 0, 'and the light is turned off when its own state ends');
+  assert.equal(state.weaponFlash, null, 'the flash is over');
+  assert.equal(state.weaponFlashAsset, null);
+});
+
+test('a barrel that finishes exploding leaves the level instead of holding its last frame', () => {
+  // Doom's barrel blast ends at S_NULL: the thing is gone. The generated table ended on a
+  // sixth frame that holds for ever — a letter the artwork does not even have — so a
+  // destroyed barrel stood in the level showing the last picture of its own explosion.
+  const barrel = buildVanillaActors().find(actor => actor.name === 'ExplosiveBarrel');
+  assert.ok(barrel, 'the classic barrel is in the table');
+  const tail = barrel.states.frames.slice(-2);
+  assert.deepEqual(tail.map(frame => frame.kind), ['frame', 'null']);
+  assert.equal(tail[0].sprite, 'BEXP');
+  assert.equal(tail[0].letter, 'E');
+  // Run it: the blast plays its frames and the barrel is then removed from the level.
+  const project = createProject();
+  project.events = [];
+  project.actors = [barrel];
+  project.map.entities.push({ id: 'barrel1', name: 'ExplosiveBarrel', type: 'enemy', doomType: 2035, x: 0, y: 0, angle: 0, health: 20 });
+  validateProject(project);
+  const state = createRuntime(project);
+  const entity = state.entities.find(item => item.id === 'barrel1');
+  const tick = () => stepRuntime(project, state, 1 / 35, new Set());
+  tick();
+  hurtActor(project, state, entity, 100, null);
+  for (let i = 0; i < 34; i++) tick();
+  assert.ok(state.entities.includes(entity), 'the explosion is still playing');
+  assert.equal(entity.stateLabel, 'Death');
+  for (let i = 0; i < 3; i++) tick();
+  assert.equal(state.entities.includes(entity), false, 'and the barrel is gone when it ends');
+});
+
+test('a project saved with the old held barrel frame is migrated when it is opened', () => {
+  // The generated table that held a frame for ever is in every project imported before this
+  // fix. Only that exact tail is replaced — a project's own barrel states are its own.
+  const { migratePropDeathStates } = actorTables;
+  const project = { actors: [
+    { name: 'ExplosiveBarrel', states: { frames: [
+      { kind: 'frame', sprite: 'BEXP', letter: 'A', duration: 5, label: 'Death' },
+      { kind: 'frame', sprite: 'BEXP', letter: 'F', duration: -1, label: 'Death' },
+      { kind: 'stop' },
+    ] } },
+    { name: 'CustomBarrel', states: { frames: [
+      { kind: 'frame', sprite: 'BEXP', letter: 'F', duration: -1, label: 'Death' },
+      { kind: 'stop' },
+    ] } },
+  ] };
+  migratePropDeathStates(project);
+  assert.equal(project.actors[0].states.frames.at(-1).kind, 'null', 'the held frame becomes S_NULL');
+  assert.equal(project.actors[0].states.frames.at(-1).label, 'Death');
+  // The shape *is* the bug — a frame that holds for ever and names artwork nothing has — so any
+  // actor ending that way is fixed, whatever it is called.
+  assert.equal(project.actors[1].states.frames.at(-1).kind, 'null');
+});
+
+test('a flash state that loops back on itself ends instead of glowing for ever', () => {
+  // Zandronum's own pistol declares `Flash: PISF A 7 A_Light1; Goto LightDone;` twice, and an
+  // old import of it resolved both gotos to `Goto Flash` — a flash psprite that never leaves its
+  // own first frame. A flash that comes back to a picture it already showed has shown all it has.
+  const { actors } = importActors({ sources: [{ name: 'w.zs', text: `
+class Pistol : Weapon
+{
+  Default { Weapon.AmmoType "Clip"; Weapon.AmmoUse 1; }
+  States {
+    Ready: PISG A 1 A_WeaponReady; Loop;
+    Fire: PISG A 4; PISG B 6 A_FirePistol; PISG C 4; Goto Ready;
+    Flash: PISF A 7 A_Light1; Goto Flash;
+  }
+}` }], warnings: [] });
+  const project = createProject();
+  project.assets = ['PISGA0', 'PISGB0', 'PISGC0', 'PISFA0'].map(spriteAsset);
+  project.actors = actors;
+  project.events = [];
+  const state = createRuntime(project);
+  state.inventory.weapons.add('pistol');
+  state.inventory.selectedWeapon = 'pistol';
+  state.playerStats.bullets = 20;
+  beginWeapon(project, state, 'pistol');
+  state.weaponTriggerHeld = true;
+  for (let tic = 0; tic < 30; tic++) weaponTic(project, state, true);
+  assert.equal(state.weaponFlash, null, 'the looping flash gives up rather than holding');
+  assert.equal(state.weaponLight, 0, 'and the light it threw is put out');
+});
+
+test('a barrel whose blast ends on an invisible frame leaves the level, and a frame with no art draws nothing', () => {
+  // GZDoom's own barrel explodes on `BEXP A`–`E`, then waits out its respawn clock on `TNT1`
+  // — a sprite that is deliberately never drawn — calling `A_BarrelDestroy`, which removes it
+  // when respawning barrels are off. Holding the last picture instead left a spent barrel
+  // standing on the final frame of its own explosion.
+  const project = createProject();
+  project.assets = ['BARA0', 'BEXPA0', 'BEXPB0'].map(spriteAsset);
+  project.events = [];
+  project.actors = [{
+    id: 'actor_barrel', name: 'Barrel', flags: { SHOOTABLE: true }, doomedNum: 2035, health: 20,
+    states: { labels: { Spawn: 0, Death: 2 }, frames: [
+      { kind: 'frame', sprite: 'BAR', letter: 'A', duration: -1, actions: [], label: 'Spawn' },
+      { kind: 'stop', label: 'Spawn' },
+      { kind: 'frame', sprite: 'BEXP', letter: 'A', duration: 2, actions: [], label: 'Death' },
+      { kind: 'frame', sprite: 'BEXP', letter: 'B', duration: 2, actions: [], label: 'Death' },
+      { kind: 'frame', sprite: 'TNT1', letter: 'A', duration: 5,
+        actions: [{ name: 'A_BarrelDestroy', args: [], named: {} }], label: 'Death' },
+      { kind: 'wait', label: 'Death' },
+    ] },
+  }];
+  project.map.entities.push({ id: 'barrel1', name: 'Barrel', type: 'enemy', doomType: 2035, x: 0, y: 0, angle: 0, health: 20,
+    spriteStates: { stand: 'clip_stand', death: 'clip_death' } });
+  project.spriteClips = [
+    { id: 'clip_stand', name: 'Barrel / stand', frames: ['asset_BARA0'], seconds: .1, loop: true },
+    { id: 'clip_death', name: 'Barrel / death', frames: ['asset_BEXPA0', 'asset_BEXPB0'], seconds: .1, loop: false },
+  ];
+  validateProject(project);
+  const state = createRuntime(project);
+  const barrel = state.entities.find(entity => entity.id === 'barrel1');
+  const tick = () => stepRuntime(project, state, 1 / 35, new Set());
+  tick();
+  assert.ok(barrel.spriteAsset, 'the standing barrel has a picture');
+  hurtActor(project, state, barrel, 100, null);
+  for (let i = 0; i < 3; i++) tick();
+  assert.ok(state.entities.includes(barrel), 'the explosion is still playing');
+  assert.ok(String(barrel.spriteAsset).includes('BEXP'), `and it is drawing explosion frames (${barrel.spriteAsset})`);
+  for (let i = 0; i < 3; i++) tick();
+  assert.equal(state.entities.includes(barrel), false, 'the invisible frame destroys it, as A_BarrelDestroy does');
 });

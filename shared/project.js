@@ -1512,7 +1512,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       }
       for (const frame of actor.states.frames) {
         object(frame, 'Actor frame');
-        assert(['frame', 'goto', 'loop', 'stop', 'wait', 'fail'].includes(frame.kind), 'Invalid actor frame kind');
+        assert(['frame', 'goto', 'loop', 'stop', 'wait', 'fail', 'null'].includes(frame.kind), 'Invalid actor frame kind');
         if (frame.kind !== 'frame') continue;
         if (frame.sprite !== undefined) assert(typeof frame.sprite === 'string' && /^[A-Za-z0-9_#-]{1,8}$/.test(frame.sprite), 'Invalid frame sprite');
         if (frame.letter !== undefined) assert(typeof frame.letter === 'string' && /^[A-Za-z0-9#]$/.test(frame.letter), 'Invalid frame letter');

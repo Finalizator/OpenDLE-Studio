@@ -3,6 +3,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { ASSET_DIRECTORY, PROJECT_FILE, documentBytes, isFolderDocument, packProject, readFolderFile, unpackProject } from './project-folder.js';
 import { migrateModelFacing } from '../shared/entity-visuals.js';
 import { migrateEnemySpriteRules } from '../shared/sprite-animation.js';
+import { migratePropDeathStates } from '../shared/actors.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { upgradePickupReach } from '../shared/doom-hud.js';
@@ -83,14 +84,14 @@ function unusedProjectId(title, index) {
 function readSaved(file) {
   const saved = JSON.parse(readFileSync(file, 'utf8'));
   // Version 1 files are a bare project from the first saved format.
-  if (saved.version === 1) return { project: migrateEnemySpriteRules(migrateModelFacing(saved)), revision: 0 };
+  if (saved.version === 1) return { project: migratePropDeathStates(migrateEnemySpriteRules(migrateModelFacing(saved))), revision: 0 };
   if (isFolderDocument(saved)) {
     const directory = dirname(file);
     const unpacked = unpackProject(saved, path => readFolderFile(directory, path));
-    return { ...unpacked, project: migrateEnemySpriteRules(migrateModelFacing(unpacked.project)) };
+    return { ...unpacked, project: migratePropDeathStates(migrateEnemySpriteRules(migrateModelFacing(unpacked.project))) };
   }
   if (!Number.isSafeInteger(saved.revision) || saved.revision < 0) throw new Error('Saved project revision is invalid');
-  return { project: migrateEnemySpriteRules(migrateModelFacing(saved.project)), revision: saved.revision };
+  return { project: migratePropDeathStates(migrateEnemySpriteRules(migrateModelFacing(saved.project))), revision: saved.revision };
 }
 
 /**

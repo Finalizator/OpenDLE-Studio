@@ -3,6 +3,7 @@ import { cloneProjectForEdit } from './project.js';
 import { resolveMusicAsset, musicReport } from './music.js';
 import { resolveString } from './language.js';
 import { engineCommand } from './engine-script.js';
+import { spriteAssetNames } from './sprite-animation.js';
 
 // `actors` describes the game as a whole (monster and weapon state machines),
 // so it is stored once instead of being duplicated into every level.
@@ -49,6 +50,19 @@ export function gameLevelAssetIds(project) {
   for (const clip of project.spriteClips || []) for (const id of clip.frames || []) references.add(id);
   for (const mapping of project.materialAnimations || []) {
     references.add(mapping.assetId);
+  }
+  // A weapon's muzzle flash is drawn from its `Flash` state, which no clip names, so its
+  // pictures have to travel with every level the same way a clip's frames do — otherwise the
+  // first shot of the first game throws "Preview image PISFA0 was not loaded".
+  const spriteNames = spriteAssetNames(project);
+  for (const actor of project.actors || []) {
+    if (!actor?.flags?.WEAPON) continue;
+    for (const frame of actor.states?.frames || []) {
+      if (frame.kind !== 'frame' || String(frame.label) !== 'Flash') continue;
+      const sprite = String(frame.sprite || '').toUpperCase();
+      const id = spriteNames.get(`${sprite}${frame.letter}0`) || spriteNames.get(`${sprite}${frame.letter}1`);
+      if (id) references.add(id);
+    }
   }
   // Skies travel with every level: a script can ChangeSky to one no map thing names.
   return project.assets.filter(asset => ['sound', 'music', 'sky'].includes(asset.kind) || references.has(asset.id)).map(asset => asset.id);
