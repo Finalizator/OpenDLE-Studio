@@ -5,7 +5,7 @@ import { compileGLSLEffect } from './shader-effects.js';
 import { createPostFxStack, toDisplaySpace } from './post-fx-pass.js';
 import { LUT_SIZE, lutTableBytes, postFxParamDefault, postFxSignature } from '/shared/post-fx.js';
 import { validateShaders } from '/shared/shaders.js';
-import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, surfaceMaterials } from '/shared/sectors.js';
+import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, sectorSurfaces, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv } from '/shared/uv.js';
 import { wallScroll, TICRATE } from '/shared/scrollers.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
@@ -731,9 +731,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
       if (controlSectors.has(sector.id)) continue;
       seen.add(`sector:${sector.id}`);
       worldPart(`sector:${sector.id}`, [sector.id], sectorSignature(sector), () => {
-        if (sector.ceilingHeight <= sector.floorHeight) return;
-        plane(sector, sector.floorHeight, sector.floorAsset, false);
-        if (!sector.sky) plane(sector, sector.ceilingHeight, sector.ceilingAsset, true);
+        const planes = sectorSurfaces(sector);
+        if (planes.floor) plane(sector, sector.floorHeight, sector.floorAsset, false);
+        if (planes.ceiling) plane(sector, sector.ceilingHeight, sector.ceilingAsset, true);
         // A 3D floor is two planes and an edge band copied from its control sector. They are
         // drawn as ordinary two-sided surfaces rather than as ceilings, because the alpha
         // test that hides a ceiling above the camera would cut a platform away as you walk

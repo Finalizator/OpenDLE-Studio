@@ -28,7 +28,11 @@ export function sectorGeometry(project) {
   }
   return (project.map.sectors || []).map(sector => {
     const distinct = new Map((edges.get(sector.id) || []).map(edge => [`${edge.a}/${edge.b}`, edge]));
-    const pending = new Set(sector.wallsOnly ? [] : distinct.values());
+    // `wallsOnly` records that the importer found no clean polygon, but the ring builder below
+    // closes a gap instead of dropping the sector, so it is asked for the shape either way: the
+    // flag must not keep a floor and a ceiling out of a project that was imported before the
+    // builder could draw them.
+    const pending = new Set(distinct.values());
     const outgoing = new Map();
     for (const edge of pending) {
       if (!outgoing.has(edge.a)) outgoing.set(edge.a, []);
@@ -36,7 +40,13 @@ export function sectorGeometry(project) {
     }
     const rings = [];
     while (pending.size) {
-      const first = pending.values().next().value;
+      // Start at the head of an open chain so a gap in the outline is walked in one pass;
+      // starting in the middle would stop at the first dead end and leave a stub instead of
+      // the sector's floor and ceiling.
+      let first = pending.values().next().value;
+      for (const edge of pending) {
+        if (![...pending].some(other => other !== edge && other.b === edge.a)) { first = edge; break; }
+      }
       let edge = first;
       const ring = [];
       do {
@@ -44,7 +54,12 @@ export function sectorGeometry(project) {
         ring.push(vertices.get(edge.a));
         if (edge.b === first.a) break;
         const choices = (outgoing.get(edge.b) || []).filter(candidate => pending.has(candidate));
-        if (!choices.length) throw new Error(`Sector ${sector.id} has an open boundary at ${edge.b}`);
+        // A map can ship a sector whose boundary does not close — one Furdoom monitor niche
+        // has an eight-unit gap between two of its lines. Doom still draws that sector's
+        // floor and ceiling, because subsectors come from the node builder rather than from a
+        // closed loop; dropping the ring instead left a hole in the level that showed
+        // whatever was behind it. The ring is closed across the gap and drawn.
+        if (!choices.length) break;
         const a = vertices.get(edge.a), b = vertices.get(edge.b);
         const incoming = Math.atan2(b.y - a.y, b.x - a.x);
         // Follow the nearest left turn at touching loops rather than joining islands.
@@ -54,13 +69,27 @@ export function sectorGeometry(project) {
         };
         edge = choices.sort((a, b) => turn(a) - turn(b))[0];
       } while (edge !== first);
-      if (ring.length < 3) throw new Error(`Sector ${sector.id} has a degenerate boundary`);
-      rings.push(ring);
+      // Two points are a line, not a surface: a sector with nothing to draw keeps no ring,
+      // which is what marks it unusable for the editor's cut tools as well.
+      if (ring.length >= 3) rings.push(ring);
     }
     const xs = rings.flatMap(ring => ring.map(vertex => vertex.x));
     const ys = rings.flatMap(ring => ring.map(vertex => vertex.y));
     return { ...sector, rings, bounds: { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) } };
   });
+}
+
+/**
+ * Which of a sector's two planes have to be drawn.
+ *
+ * A sector whose floor and ceiling meet is closed rather than empty: Doom draws it, and drawing
+ * nothing leaves a hole you see the rest of the level through. One plane is enough there — the
+ * two would be coplanar and fight for depth — and the floor is the one Doom shows from outside.
+ * A sky ceiling is drawn by the sky pass instead of as a flat.
+ */
+export function sectorSurfaces(sector) {
+  const closed = (sector.ceilingHeight ?? 0) <= (sector.floorHeight ?? 0);
+  return { floor: true, ceiling: !closed && !sector.sky };
 }
 
 export function sectorAt(sectors, x, y) {

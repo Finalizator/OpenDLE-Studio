@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import { ShapeUtils, Vector2 } from 'three';
 import { decodePatch, decodeFlat, patchNames, textureDefinitions, composeTexture } from '../shared/doom-assets.js';
-import { sectorGeometry, sectorAt, sectorShapes, containsPoint } from '../shared/sectors.js';
+import { sectorGeometry, sectorAt, sectorShapes, sectorSurfaces, containsPoint } from '../shared/sectors.js';
 import { cloneProjectForEdit, createProject, updateAsset, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { applyTool, jsonSchemaForTool, toolDefinitions } from '../server/tools.js';
@@ -118,7 +118,7 @@ test('visual validation rejects missing references, unsafe sources, invalid dime
     light: { color: '#ffffff', radius: 128, intensity: 1 } });
   assert.throws(() => validateProject(project), /16 dynamic/);
 });
-test('sector boundaries deduplicate coincident vertices/edges but reject new open boundaries', () => {
+test('sector boundaries deduplicate coincident vertices/edges and close a gap in the outline', () => {
   const project = createProject();
   const [sector] = sectorGeometry(project);
   assert.equal(sector.rings[0].length, 4);
@@ -128,9 +128,31 @@ test('sector boundaries deduplicate coincident vertices/edges but reject new ope
   project.map.walls[0].a = 'duplicate';
   project.map.walls.push({ ...structuredClone(project.map.walls[0]), id: 'duplicateWall' });
   assert.equal(sectorGeometry(project)[0].rings[0].length, 4);
-  project.map.walls = project.map.walls.filter(wall => wall.id !== 'w3');
-  assert.throws(() => sectorGeometry(project), /open boundary/);
+  // A map can ship a sector whose outline has a gap — one Furdoom niche is missing eight
+  // units of one side. Doom still draws its floor and ceiling, so the ring is closed across
+  // the gap instead of the sector being dropped and leaving a hole in the level.
+  const gapped = createProject();
+  gapped.map.walls = gapped.map.walls.filter(wall => wall.id !== 'w3');
+  const closed = sectorGeometry(gapped)[0];
+  assert.equal(closed.rings.length, 1, 'the sector still has a surface');
+  assert.ok(closed.rings[0].length >= 3, 'with a usable outline');
+  // A sector with one line is a wall and has nothing to draw.
+  const line = createProject();
+  line.map.walls = line.map.walls.filter(wall => wall.id === 'w0');
+  assert.deepEqual(sectorGeometry(line)[0].rings, []);
 });
+test('a closed sector still draws a surface instead of a hole', () => {
+  // A sector whose floor and ceiling meet is common in imported maps — 591 of them in the
+  // Furdoom campaign. Doom draws them; drawing nothing left black holes you saw the rest of
+  // the level through, which is what "invisible textures, like holes" was.
+  assert.deepEqual(sectorSurfaces({ floorHeight: 0, ceilingHeight: 0 }), { floor: true, ceiling: false },
+    'one plane is drawn, not two coplanar ones');
+  assert.deepEqual(sectorSurfaces({ floorHeight: -24, ceilingHeight: -24 }), { floor: true, ceiling: false });
+  assert.deepEqual(sectorSurfaces({ floorHeight: 0, ceilingHeight: 96 }), { floor: true, ceiling: true });
+  // A sky ceiling is drawn by the sky pass, so it is not a flat.
+  assert.deepEqual(sectorSurfaces({ floorHeight: 0, ceilingHeight: 96, sky: true }), { floor: true, ceiling: false });
+});
+
 test('sector floor triangulation preserves holes and disjoint islands', () => {
   const ring = (x, y, size) => [{ x, y }, { x: x + size, y }, { x: x + size, y: y + size }, { x, y: y + size }];
   const rings = [ring(0, 0, 100), ring(25, 25, 50), ring(200, 200, 20)];

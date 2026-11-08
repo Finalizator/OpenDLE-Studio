@@ -585,9 +585,14 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
       balance.set(from, (balance.get(from) || 0) + 1);
       balance.set(to, (balance.get(to) || 0) - 1);
     }
-    if (boundaries.length > 0 && (directed.size < 3 || [...balance.values()].some(value => value !== 0))) {
+    if (boundaries.length > 0 && directed.size < 3) {
       sector.wallsOnly = true;
-      warnings.push(`${sector.id} has an open or non-polygon boundary (${boundaries.length} lines); retained its walls and metadata but omitted floor/ceiling surfaces.`);
+      warnings.push(`${sector.id} has ${boundaries.length} boundary line(s) and no polygon to draw; retained its walls and metadata but omitted floor/ceiling surfaces.`);
+    } else if (boundaries.length > 0 && [...balance.values()].some(value => value !== 0)) {
+      // A ring that does not quite close still has a floor and a ceiling in Doom — the node
+      // builder makes subsectors from the segs, not from a closed loop — so it is drawn with
+      // the ring closed across the gap rather than being left as a hole in the level.
+      warnings.push(`${sector.id} has an unclosed boundary (${boundaries.length} lines); its floor and ceiling are drawn with the ring closed across the gap.`);
     }
   }
   if (assets) {
