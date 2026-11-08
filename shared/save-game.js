@@ -46,7 +46,10 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   'sightMemo',
   // The speed the player is travelling at is read off the momentum every tic, so it is derived
   // rather than part of the game state.
-  'speed']);
+  'speed',
+  // The frame a rule reads (frame delta, held keys, the signal being dispatched) and the runners
+  // cached against each rule are rebuilt by the next step, so neither is part of the game.
+  'frame', 'eventRunners']);
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.

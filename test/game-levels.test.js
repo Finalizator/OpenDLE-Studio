@@ -7,7 +7,7 @@ import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { installAddon, removeAddon } from '../shared/addons.js';
 import { installGameMenu } from '../shared/game-menu.js';
-import { assembleGameLevels, selectGameLevel, nextGameLevel, parseLevelRoutes, gameLevelAssetIds, cloneForLevelSwitch } from '../shared/game-levels.js';
+import { assembleGameLevels, selectGameLevel, nextGameLevel, parseLevelRoutes, gameLevelAssetIds, cloneForLevelSwitch, stripInactiveLevels } from '../shared/game-levels.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { continueIntermission } from '../shared/intermission.js';
 import { importWad } from '../server/import.js';
@@ -266,4 +266,25 @@ test('an installed addon belongs to the game, so switching levels keeps it and i
   assert.deepEqual(p.addons, [], 'the list is empty, so no addon is installed on any level');
   assert.equal(p.events.some(event => event.actions.some(action => action.type === 'sparkle:burst')), false);
   validateProject(p);
+});
+
+test('a preview clone carries only the level it is about to play', () => {
+  // The snapshot the preview starts from used to be a clone of the whole project, so an imported
+  // campaign copied all thirty-two maps and the code then blanked thirty-one of them. The copy of
+  // the blanked maps was hundreds of megabytes of garbage the browser collected while the level
+  // ran - one of the long stalls the player reported.
+  const project = createProject();
+  project.game = { version: 1, entry: 'MAP01', active: 'MAP01', levels: [
+    { id: 'MAP01', name: 'MAP01', data: { map: { walls: [{ id: 'w1' }] } }, assetIds: ['asset_a'] },
+    { id: 'MAP02', name: 'MAP02', data: { map: { walls: [{ id: 'w2' }] } }, assetIds: ['asset_b'] },
+  ] };
+  const stripped = stripInactiveLevels(project, 'MAP02');
+  assert.deepEqual(stripped.game.levels.find(level => level.id === 'MAP02').data, { map: { walls: [{ id: 'w2' }] } },
+    'the level being played keeps its map');
+  assert.deepEqual(stripped.game.levels.find(level => level.id === 'MAP01').data, {});
+  assert.deepEqual(stripped.game.levels.find(level => level.id === 'MAP01').assetIds, []);
+  // The editor's own project is untouched: the preview must never strip what is being edited.
+  assert.deepEqual(project.game.levels[1].data, { map: { walls: [{ id: 'w2' }] } });
+  assert.equal(stripInactiveLevels(createProject(), 'MAP01').game, undefined,
+    'a single-level project has no level list to strip');
 });

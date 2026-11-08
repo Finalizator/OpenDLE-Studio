@@ -81,7 +81,7 @@ import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGame
 import { gamepadLook, playRumble, readGamepads, rumbleEffect } from '/shared/gamepad.js';
 import { statusBarHidden } from '/shared/game-view.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
-import { cloneForLevelSwitch, selectGameLevel } from '/shared/game-levels.js';
+import { cloneForLevelSwitch, selectGameLevel, stripInactiveLevels } from '/shared/game-levels.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
 import { weaponScriptRules } from '/shared/weapon-script.js';
@@ -4222,8 +4222,12 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     const identity = await saveIdentityPromise;
     if (generation !== previewGeneration) throw new Error('Preview was stopped while loading.');
     if (version !== editVersion) throw new Error('Project changed while preview loaded. Play again.');
-    const snapshot = structuredClone(project);
-    if (snapshot.game && !savedGame) selectGameLevel(snapshot, levelId || (gameMode ? snapshot.game.entry : snapshot.game.active));
+    // Only the level about to be played is cloned: the other thirty-one maps of an imported
+    // campaign are hundreds of megabytes that the clone copied and the lines below then threw
+    // away, which the browser had to collect while the level ran.
+    const playing = levelId || (gameMode ? project.game?.entry : project.game?.active);
+    const snapshot = structuredClone(stripInactiveLevels(project, playing));
+    if (snapshot.game && !savedGame) selectGameLevel(snapshot, playing);
     const restored = savedGame ? restoreGameSave(snapshot, savedGame, identity) : null;
     installIntermission(snapshot);
     // A preview only ever plays the active level, and a level change builds a fresh

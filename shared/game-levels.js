@@ -87,6 +87,27 @@ export function cloneForLevelSwitch(project) {
   return next;
 }
 
+/**
+ * The project with every level but one emptied, ready to be cloned for a preview.
+ *
+ * A preview plays one level at a time, but the clone it starts from carried all of an imported
+ * campaign's maps: on the Furdoom import that is thirty-one maps of vertices, walls and things
+ * copied only to be thrown away a moment later. The copy was a few hundred megabytes of garbage
+ * that the browser then had to collect while the level ran, which is one of the stalls the
+ * player saw right after loading. Only the level about to be played is kept.
+ */
+export function stripInactiveLevels(project, keepId) {
+  if (!project.game) return project;
+  const keep = keepId || project.game.active;
+  return {
+    ...project,
+    game: {
+      ...project.game,
+      levels: project.game.levels.map(level => level.id === keep ? level : { ...level, data: {}, assetIds: [] }),
+    },
+  };
+}
+
 export function selectGameLevel(project, id) {
   const game = project.game;
   if (!game) throw new Error('This project contains only one level. Reimport the full game to select other levels.');

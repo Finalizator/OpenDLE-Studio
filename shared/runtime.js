@@ -72,6 +72,37 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 
 const PICK_CONDITIONS = new Set(['pickAll', 'pickByProperty', 'pickByVariable', 'pickNearest', 'pickRandom']);
 const PICK_ACTIONS = new Set(['setPickedVariable', 'addPickedVariable', 'setPickedPosition', 'movePicked',
   'setPickedAngle', 'scalePicked', 'setPickedSpriteState', 'removePicked']);
+// Written as sets rather than array literals: each of these is asked once per condition of every
+// rule of every frame, and an array literal there was a fresh array per question.
+const SCALAR_TYPES = new Set(['number', 'string', 'boolean']);
+const EQUALITY_OPERATORS = new Set(['=', '!=']);
+const RESOLVED_PICK_CONDITIONS = new Set(['pickByProperty', 'pickByVariable']);
+const AREA_CONDITIONS = new Set(['playerInArea', 'playerEnteredArea', 'playerInZone', 'playerEnteredZone']);
+const COLLISION_CONDITIONS = new Set(['collisionStarted', 'collisionEnded', 'isTouching']);
+const EDGE_CONDITIONS = new Set(['everySeconds', 'playerEnteredArea', 'playerEnteredZone', 'entityDamaged', 'hudStatChanged']);
+const DOUBLE_AMMO_DIFFICULTIES = new Set([1, 5]);
+
+/** Whether a command can narrow the rule's pick, and so needs a pick map to narrow. */
+function narrowsPick(command) {
+  return Boolean(command) && (PICK_CONDITIONS.has(command.type) || PICK_ACTIONS.has(command.type) ||
+    command.type === 'spawn' || command.type === 'spawnCamera');
+}
+
+/**
+ * Whether a rule can narrow its pick at all.
+ *
+ * A rule that cannot leaves the parent's selection exactly as it found it, so its branch needs no
+ * copy of the map. Almost every rule of an imported campaign is one of those, and a map per rule
+ * per pass was a large share of the frame's garbage.
+ */
+function mayPick(event) {
+  if (narrowsPick(event.condition)) return true;
+  const conditions = event.conditions;
+  if (conditions) for (let index = 0; index < conditions.length; index++) if (narrowsPick(conditions[index])) return true;
+  const actions = event.actions;
+  if (actions) for (let index = 0; index < actions.length; index++) if (narrowsPick(actions[index])) return true;
+  return false;
+}
 
 function setVisualScale(entity, scale) {
   entity.spriteScale = scale;
@@ -137,7 +168,7 @@ function requiredArchetype(source) {
 function ownPick(picks, type, id) {
   // Narrowing a set to a single member is that member, so the filter this used to run is
   // only work: this is on the path of every action of every object rule of every frame.
-  const own = picks.size ? new Map(picks) : new Map();
+  const own = picks?.size ? new Map(picks) : new Map();
   own.set(type, ONE_MEMBER.get(id) || newSingleMember(id));
   return own;
 }
@@ -153,6 +184,8 @@ function newSingleMember(id) {
 
 /** Applies a picked set back into the pick map, keeping the map immutable between events. */
 function withPick(picks, type, ids) {
+  // No pick map yet means nothing was narrowed, so this is the first narrowing of the rule.
+  if (!picks) return new Map([[type, ids]]);
   picks.set(type, ids);
   return picks;
 }
@@ -817,8 +850,19 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   let stepMark = stepStarted;
   const stage = name => { const now = performance.now(); stepParts[name] = now - stepMark; stepMark = now; };
   const player = state.player, hud = state.hudState;
-  const shotTriggers = state.worldTriggers.shoot;
-  let currentSignal = null;
+  // What a rule reads that changes from frame to frame. A rule's machinery is built once and
+  // kept (see `makeRunner`), so these are read through this record at call time instead of
+  // being captured by the step that happened to build the runner.
+  const frame = state.frame ||= { dt: 0, keys: null, pressed: null, player: state.player, currentSignal: null };
+  frame.dt = dt;
+  frame.keys = keys;
+  frame.pressed = pressed;
+  frame.player = player;
+  frame.currentSignal = null;
+  // The trigger sets are replaced part-way through the step, so they are read when a rule asks.
+  frame.shotTriggers = state.worldTriggers.shoot;
+  // A rule's machinery is built once and kept for as long as this state lives.
+  const eventRunners = state.eventRunners ||= new WeakMap();
   const deliveredSignals = new Set();
   state.sounds.length = 0;
   state.rumbles.length = 0;
@@ -1105,11 +1149,11 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       for (const signal of batch) {
         deliveredSignals.add(signal);
         if (deliveredSignals.size > SIGNAL_LIMIT) throw new Error(`Signal dispatch exceeded ${SIGNAL_LIMIT} emissions in one tick; check for a signal loop`);
-        currentSignal = signal;
+        frame.currentSignal = signal;
         runRules(phase, true);
       }
     }
-    currentSignal = null;
+    frame.currentSignal = null;
   }
   function runRules(phase, signalDispatch = false) {
     const tree = ruleTree(project), roots = tree.phases.get(phase);
@@ -1140,13 +1184,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (source.groupId && !state.groups.get(source.groupId)) return;
       // Each branch owns its narrowing; siblings start again from the parent's selection.
       // The root of a branch has none of its own to own, so its map is made once, here.
-      picks = picks ? new Map(picks) : new Map();
+      picks = picks?.size ? new Map(picks) : mayPick(source) ? new Map() : null;
       const owner = entityLookup(state).byId.get(ownerId || source.ownerId);
       if (owner && !ownerId) picks = ownPick(picks, owner.type, owner.id);
       if (ownerId) {
         if (!runEvent(instanceFor(source, ownerId), Boolean(source.forEachType || ownerId !== source.ownerId), phase, picks)) return;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
-        for (const child of tree.children.get(source.id) || []) {
+        const children = tree.children.get(source.id);
+        if (children) for (const child of children) {
           visit(child, ownerId, picks);
           if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         }
@@ -1157,7 +1202,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         // Sub-events inherit the owner of the rule that ran them, so "this object" in a
         // child of an object script still means that object.
-        for (const child of tree.children.get(source.id) || []) {
+        const children = tree.children.get(source.id);
+        if (children) for (const child of children) {
           visit(child, source.ownerId, picks);
           if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         }
@@ -1174,7 +1220,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         const own = ownPick(picks, source.forEachType, entity.id);
         if (!runEvent(event, true, phase, own)) continue;
         if (phase !== 'interface' && state.gameScreen !== 'playing') return;
-        for (const child of tree.children.get(source.id) || []) {
+        const children = tree.children.get(source.id);
+        if (children) for (const child of children) {
           visit(child, event.ownerId, own);
           if (phase !== 'interface' && state.gameScreen !== 'playing') return;
         }
@@ -1226,15 +1273,34 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     state.picks = picks;
     try { return runEventBody(event, perInstance, phase, picks); } finally { state.picks = outer; }
   }
-  function runEventBody(event, perInstance, phase, picks) {
+  /**
+   * One rule's machinery, built once per rule rather than once per visit.
+   *
+   * Everything below closes over the rule and over this visit's picks. Rebuilding a dozen
+   * closures for every visit cost about 1.6 KB of garbage per rule of every frame - on an
+   * imported campaign that is over a thousand rules, tens of megabytes a second, which is what
+   * made the browser player collect its whole heap every few seconds and stall for a second at
+   * a time. The rule object is the key, so an edit that replaces the rule makes a new runner.
+   *
+   * A value that changes between frames is read through `state.frame` at call time rather than
+   * captured, because a cached runner outlives the step that built it.
+   */
+  function runnerFor(event) {
+    const cached = eventRunners.get(event);
+    if (cached?.project === project) return cached.run;
+    const run = makeRunner(event);
+    eventRunners.set(event, { project, run });
+    return run;
+  }
+  function makeRunner(event) {
+    let perInstance = false, phase = '', picks = null, eventKey = null, context = null, statChanges = null;
+    // A condition or action an addon owns can call back into the rules; that nested visit gets a
+    // runner of its own rather than sharing this one's state.
+    let busy = false;
     // The key is a string per rule and per owner, so building it for every rule of
     // every frame is one of the largest garbage sources in the simulation. Only the
     // conditions that sample state and the one-shot bookkeeping need it.
-    let eventKey = null;
     const keyOf = () => eventKey ??= perInstance ? `${event.id}:${event.ownerId}` : event.id;
-    if (!event.enabled || (event.once && state.fired.has(keyOf()))) return;
-    const lookup = entityLookup(state);
-    if (event.ownerId && !lookup.byId.has(event.ownerId)) return;
     // A missile id resolves too: a rule about a projectile ("for each projectile" or a
     // sub-event of one) needs `$self` to mean the missile it is about.
     const findTarget = id => {
@@ -1243,8 +1309,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         (state.projectiles || []).find(projectile => String(projectile.id) === String(resolved)) || undefined;
     };
     // The expression context (which builds closures and lookups) is only needed when a
-    // command actually contains an expression, so it is built on first use.
-    let context = null;
+    // command actually contains an expression, so it is built on first use, per visit.
     const resolveCommand = command => {
       if (expressionFree.has(command)) return command;
       let resolved = command, found = false;
@@ -1253,7 +1318,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         if (!isExpression(value)) continue;
         found = true;
         if (resolved === command) resolved = { ...command };
-        context ||= expressionContext(project, event, state, dt, { selection: picks });
+        context ||= expressionContext(project, event, state, frame.dt, { selection: picks });
         resolved[key] = resolveExpression(command, key, value, context, project, event);
       }
       // Commands are immutable between edits (an edit replaces the project), so a
@@ -1280,7 +1345,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       record[name] = scalar(add ? Math.max(-limit, Math.min(limit, record[name] + value)) : value);
     }
     function compare(a, operator, b) {
-      if (typeof a !== typeof b || !['number', 'string', 'boolean'].includes(typeof a) || typeof a === 'boolean' && !['=', '!='].includes(operator)) throw new Error(`Event "${event.name || event.id}": incompatible comparison types`);
+      if (typeof a !== typeof b || !SCALAR_TYPES.has(typeof a) || typeof a === 'boolean' && !EQUALITY_OPERATORS.has(operator)) throw new Error(`Event "${event.name || event.id}": incompatible comparison types`);
       return compareValues(a, operator, b);
     }
     function hasWallActivationParent() {
@@ -1291,25 +1356,24 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       return false;
     }
-    let statChanges = null;
     const matchOne = (condition, index) => {
       const candidates = condition.inverted && PICK_CONDITIONS.has(condition.type)
         ? pickedInstances(state, picks, condition.objectType) : null;
       const matched = Boolean(matchCondition(condition, index));
       if (candidates) {
-        const chosen = picks.get(condition.objectType);
+        const chosen = picks?.get(condition.objectType);
         const remaining = candidates.filter(entity => !chosen?.has(entity.id));
-        withPick(picks, condition.objectType, new Set(remaining.map(entity => entity.id)));
+        picks = withPick(picks, condition.objectType, new Set(remaining.map(entity => entity.id)));
         return remaining.length > 0;
       }
       return condition.inverted ? !matched : matched;
     };
     function matchCondition(condition, index) {
-      if (!['pickByProperty', 'pickByVariable'].includes(condition.type)) condition = resolveCommand(condition);
-      if (condition.type === 'onSignal') return currentSignal &&
-        currentSignal.entityId === resolveEntityId(event, condition.entityId) && currentSignal.signal === condition.signal;
-      if (condition.type === 'signalValueCompare') return currentSignal &&
-        typeof currentSignal.value === typeof condition.value && compare(currentSignal.value, condition.operator, condition.value);
+      if (!RESOLVED_PICK_CONDITIONS.has(condition.type)) condition = resolveCommand(condition);
+      if (condition.type === 'onSignal') return frame.currentSignal &&
+        frame.currentSignal.entityId === resolveEntityId(event, condition.entityId) && frame.currentSignal.signal === condition.signal;
+      if (condition.type === 'signalValueCompare') return frame.currentSignal &&
+        typeof frame.currentSignal.value === typeof condition.value && compare(frame.currentSignal.value, condition.operator, condition.value);
       if (condition.type === 'interactingWithScreen') return Boolean(state.worldTerminalActive);
       if (condition.type === 'gameScreen') return state.gameScreen === condition.screen;
       if (condition.type === 'shaderEnabled') return state.shaderEnabled;
@@ -1355,14 +1419,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       // A pick narrows the event's own instance set. It answers true when it selected something:
       // false would stop the rule, which is what "there are no enemies left to act on" means.
       if (condition.type === 'pickAll') {
-        withPick(picks, condition.objectType, new Set(pickedInstances(state, null, condition.objectType).map(entity => entity.id)));
+        picks = withPick(picks, condition.objectType, new Set(pickedInstances(state, null, condition.objectType).map(entity => entity.id)));
         return true;
       }
       if (condition.type === 'pickByProperty') {
         const chosen = pickedInstances(state, picks, condition.objectType)
           .filter(entity => resolveForInstance(condition, entity, (target, resolved) =>
             compareInstanceProperty(project, state, target, resolved.property, resolved.operator, resolved.value)));
-        withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
+        picks = withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
         return chosen.length > 0;
       }
       if (condition.type === 'pickByVariable') {
@@ -1373,22 +1437,22 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           .filter(entity => Object.hasOwn(entity.variables || {}, condition.variable)
             && resolveForInstance(condition, entity, (target, resolved) =>
               compare(target.variables[resolved.variable], resolved.operator, resolved.value)));
-        withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
+        picks = withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
         return chosen.length > 0;
       }
       if (condition.type === 'pickNearest') {
         // Measured from the player unless another object is named, which is the reference a
         // creator means nine times in ten ("the nearest health pickup to me").
         const from = !condition.to || condition.to === '$player'
-          ? player
-          : findTarget(condition.to)?.type === 'player' ? player : findTarget(condition.to);
+          ? frame.player
+          : findTarget(condition.to)?.type === 'player' ? frame.player : findTarget(condition.to);
         if (!from) throw new Error(`Event "${event.name || event.id}" picks the nearest ${condition.objectType} to "${condition.to}", which is not in this level`);
         const chosen = pickedInstances(state, picks, condition.objectType)
           .map(entity => ({ entity, distance: Math.hypot((entity.x ?? 0) - from.x, (entity.y ?? 0) - from.y) }))
           .sort((a, b) => (condition.order === 'furthest' ? b.distance - a.distance : a.distance - b.distance))
           .slice(0, Math.max(1, Math.round(condition.count) || 1))
           .map(entry => entry.entity);
-        withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
+        picks = withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
         return chosen.length > 0;
       }
       if (condition.type === 'pickRandom') {
@@ -1399,7 +1463,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         while (chosen.length < wanted && candidates.length) {
           chosen.push(candidates.splice(Math.floor(nextRandom(state) * candidates.length), 1)[0]);
         }
-        withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
+        picks = withPick(picks, condition.objectType, new Set(chosen.map(entity => entity.id)));
         return chosen.length > 0;
       }
       if (condition.type === 'pickedCount') {
@@ -1426,7 +1490,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         if (!state.physics) return condition.state !== 'airborne';
         return condition.state === 'airborne' ? !state.physics.grounded : state.physics.grounded;
       }
-      if (['playerInArea', 'playerEnteredArea', 'playerInZone', 'playerEnteredZone'].includes(condition.type)) {
+      if (AREA_CONDITIONS.has(condition.type)) {
         // A zone is found by its own id field; the older area conditions name any object. Both
         // end in the same volume test, because a zone is only an object whose whole purpose is
         // its volume — the difference is the picker and the message when it is misconfigured.
@@ -1482,7 +1546,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // A use press activates both the nearest wall (for hand-written rules) and the
         // nearest wall with a special (for the generated door, lift and exit rules).
         if (condition.mode === 'use') return state.worldTriggers.use === condition.wallId || state.worldTriggers.useSpecial === condition.wallId;
-        if (condition.mode === 'shoot') return (state.gameScreen === 'playing' || state.ambientWorld) && shotTriggers.has(condition.wallId);
+        if (condition.mode === 'shoot') return (state.gameScreen === 'playing' || state.ambientWorld) && frame.shotTriggers.has(condition.wallId);
         return state.worldTriggers[condition.mode].has(condition.wallId);
       }
       if (condition.type === 'sectorMoving') return state.sectorMotions.has(`${condition.sectorId}:${condition.surface}`);
@@ -1556,8 +1620,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       if (condition.type === 'onStart') return phase === 'interface' ? !state.interfaceStarted : !state.started;
       if (condition.type === 'always') return true;
-      if (condition.type === 'keyPressed') return (phase === 'interface' || condition.key === 'Tab' || !hud.cursor) && pressed.has(condition.key);
-      if (condition.type === 'keyHeld') return !hud.cursor && keys.has(condition.key);
+      if (condition.type === 'keyPressed') return (phase === 'interface' || condition.key === 'Tab' || !hud.cursor) && frame.pressed.has(condition.key);
+      if (condition.type === 'keyHeld') return !hud.cursor && frame.keys.has(condition.key);
       if (condition.type === 'mouseMoved') return !hud.cursor && (state.input.mouseX !== 0 || state.input.mouseY !== 0);
       if (condition.type === 'playerStat') return compareValues(state.playerStats[condition.stat], condition.operator, condition.value);
       if (condition.type === 'entityHealth') {
@@ -1575,7 +1639,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           ? state.entities.find(entity => entity.type === 'player')?.id
           : condition.otherId === '$self' ? event.ownerId : condition.otherId;
         const right = reference ? findTarget(reference) : null;
-        const a = left?.type === 'player' ? player : left, b = right?.type === 'player' ? player : right;
+        const a = left?.type === 'player' ? frame.player : left, b = right?.type === 'player' ? frame.player : right;
         if (a && b) return compareValues(Math.hypot(a.x - b.x, a.y - b.y), condition.operator, condition.distance);
         return false;
       }
@@ -1590,7 +1654,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         return state.physics.grounded;
       }
       if (condition.type === 'animationFinished') return state.animationFinished.has(resolveEntityId(event, condition.entityId));
-      if (['collisionStarted', 'collisionEnded', 'isTouching'].includes(condition.type)) {
+      if (COLLISION_CONDITIONS.has(condition.type)) {
         if (!state.physics) throw new Error('Collision conditions require an initialized Rapier world');
         const set = condition.type === 'collisionStarted' ? state.physics.started : condition.type === 'collisionEnded' ? state.physics.ended : state.physics.contacts;
         return set.has(pairKey(resolveEntityId(event, condition.entityId), resolveEntityId(event, condition.otherId)));
@@ -1598,783 +1662,799 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       // A condition an addon declared: its implementation decides. An addon that is installed but
       // not running leaves the rule false rather than throwing, so a project still plays without it.
       const custom = addonHooks(state)?.conditions?.get(condition.type);
-      if (custom) return Boolean(runAddon(custom, addonContext({ project, state, event, command: condition, findTarget, player }), condition));
+      if (custom) return Boolean(runAddon(custom, addonContext({ project, state, event, command: condition, findTarget, player: frame.player }), condition));
       const entity = findTarget(condition.entityId);
-      const position = entity?.type === 'player' ? player : entity;
-      return position && Math.hypot(position.x - player.x, position.y - player.y) <= condition.distance;
+      const position = entity?.type === 'player' ? frame.player : entity;
+      return position && Math.hypot(position.x - frame.player.x, position.y - frame.player.y) <= condition.distance;
     }
-    // Evaluating the condition list without building it: `eventConditions` allocated a
-    // fresh array for every rule on every frame.
-    const or = event.conditionMode === 'or';
-    let matches = !or;
-    const incoming = or ? new Map(picks) : null, branches = [];
-    for (let index = 0; index <= (event.conditions?.length || 0); index++) {
-      const condition = index === 0 ? event.condition : event.conditions[index - 1];
-      // Edge samplers must observe the frame even when another predicate decides the result.
-      if (!or && !matches && !['everySeconds', 'playerEnteredArea', 'playerEnteredZone', 'entityDamaged', 'hudStatChanged'].includes(condition.type)) continue;
-      if (or) { picks.clear(); for (const [type, ids] of incoming) picks.set(type, ids); }
-      const matched = matchOne(condition, index);
-      if (or && matched) branches.push(new Map(picks));
-      matches = or ? matches || matched : matches && matched;
-    }
-    if (or && matches) {
-      const types = new Set(branches.flatMap(branch => [...branch.keys()]));
-      picks.clear();
-      for (const type of types) {
-        const ids = new Set();
-        for (const branch of branches) for (const entity of pickedInstances(state, branch, type)) ids.add(entity.id);
-        picks.set(type, ids);
-      }
-    }
-    if (!matches) return;
-    if (event.once) state.fired.add(keyOf());
-    // A rule that performs one of a decompiled script's own builtins uses the interpreter's
-    // host function, so the level changes exactly as it did when the script ran as bytecode.
-    const hostFor = action => {
-      const host = state.scripts?.host;
-      if (!host) throw new Error(`Event "${event.name || event.id}": ${action.type} needs a level with compiled scripts`);
-      return host;
-    };
-    for (const sourceAction of event.actions) {
-      const action = PICK_ACTIONS.has(sourceAction.type) ? sourceAction : resolveCommand(sourceAction);
-      switch (action.type) {
-        case 'emitSignal': emitSignal(state, resolveEntityId(event, action.entityId), action.signal, action.value); break;
-        case 'saveGame':
-          if (!state.hasGame || state.intermission || state.playerStats.health <= 0) {
-            state.saveStatus = 'Start or resume a living game before saving.'; break;
+    return function run(perInstanceArg, phaseArg, picksArg) {
+      if (busy) return makeRunner(event)(perInstanceArg, phaseArg, picksArg);
+      perInstance = perInstanceArg; phase = phaseArg; picks = picksArg;
+      eventKey = null; context = null; statChanges = null;
+      busy = true;
+      try {
+        if (!event.enabled || (event.once && state.fired.has(keyOf()))) return;
+        const lookup = entityLookup(state);
+        if (event.ownerId && !lookup.byId.has(event.ownerId)) return;
+        // Evaluating the condition list without building it: `eventConditions` allocated a
+        // fresh array for every rule on every frame.
+        const or = event.conditionMode === 'or';
+        let matches = !or;
+        const incoming = or ? new Map(picks || []) : null;
+        if (or && !picks) picks = new Map();
+        let branches = null;
+        for (let index = 0; index <= (event.conditions?.length || 0); index++) {
+          const condition = index === 0 ? event.condition : event.conditions[index - 1];
+          // Edge samplers must observe the frame even when another predicate decides the result.
+          if (!or && !matches && !EDGE_CONDITIONS.has(condition.type)) continue;
+          if (or) { picks.clear(); for (const [type, ids] of incoming) picks.set(type, ids); }
+          const matched = matchOne(condition, index);
+          if (or && matched) (branches ||= []).push(picks ? new Map(picks) : null);
+          matches = or ? matches || matched : matches && matched;
+        }
+        if (or && matches) {
+          const types = new Set(branches.flatMap(branch => [...(branch?.keys() || [])]));
+          picks.clear();
+          for (const type of types) {
+            const ids = new Set();
+            for (const branch of branches) for (const entity of pickedInstances(state, branch, type)) ids.add(entity.id);
+            picks.set(type, ids);
           }
-          if (state.saveSlots[action.slot - 1]) {
-            state.pendingSaveSlot = action.slot; setGameScreen(state, 'save_confirm');
-          } else state.menuRequests.push({ type: 'save', slot: action.slot });
-          break;
-        case 'confirmSaveGame':
-          if (state.pendingSaveSlot && state.hasGame && !state.intermission && state.playerStats.health > 0) {
-            state.menuRequests.push({ type: 'save', slot: state.pendingSaveSlot });
-            state.pendingSaveSlot = null;
-          }
-          break;
-        case 'loadGame':
-          if (!state.saveSlots[action.slot - 1]) { state.saveStatus = 'This save slot is empty.'; break; }
-          state.menuRequests.push({ type: 'load', slot: action.slot }); break;
-        // Save files. The host owns the storage, and every one of them reports through
-        // `saveStatus`/`saveFileError`; a rule can then branch on `saveFileFailed`.
-        // Variables travel through the host's store *now*, not as a request handled after the
-        // frame: a rule that loads and then reads (or saves) in the same event must see the loaded
-        // values, and a save after a load must not store the state the load replaced.
-        case 'saveVariables':
-          try {
-            const values = variableSnapshot(project, state, action.variables);
-            const host = state.saveFileHost;
-            if (!host?.write) throw new Error('save files are not available in this context');
-            const document = saveFileDocument({ kind: 'variables', name: action.file, identity: host.identity || null,
-              levelId: project.game?.active ?? null, variables: values });
-            host.write(action.file, serializeSaveFile(document));
-            state.saveFiles.add(saveFileName(action.file));
-            state.saveFileError = '';
-            state.saveStatus = `Saved ${Object.keys(values).length} variable(s) to the save file ${action.file}.`;
-          } catch (error) { state.saveFileError = error.message; state.saveStatus = `Save failed: ${error.message}`; }
-          break;
-        case 'loadVariables':
-          try {
-            const host = state.saveFileHost;
-            if (!host?.read) throw new Error('save files are not available in this context');
-            const text = host.read(action.file);
-            if (text === null || text === undefined) throw new Error(`there is no save file named ${action.file}`);
-            const document = parseSaveFile(text);
-            if (document.kind !== 'variables') throw new Error(`${action.file} holds a whole game, not variables`);
-            if (document.identity && host.identity && document.identity !== host.identity) {
-              throw new Error(`${action.file} was saved by a different game`);
-            }
-            const { applied, skipped } = applyVariableSave(project, state, document);
-            state.saveFileError = '';
-            state.saveStatus = `Loaded ${applied.length} variable(s) from the save file ${action.file}.` +
-              (skipped.length ? ` Skipped: ${skipped.join(', ')}.` : '');
-          } catch (error) { state.saveFileError = error.message; state.saveStatus = `Load failed: ${error.message}`; }
-          break;
-        case 'saveGameState':
-          if (!state.hasGame || state.intermission || state.playerStats.health <= 0) {
-            state.saveStatus = 'Start or resume a living game before saving.'; break;
-          }
-          // No menu and no confirmation: a checkpoint written by a rule overwrites itself.
-          state.menuRequests.push({ type: 'save-file', kind: 'game', file: action.file }); break;
-        case 'loadGameState':
-          if (!state.saveFiles?.has(String(action.file ?? '').trim())) {
-            state.saveStatus = `There is no save file named ${action.file}.`; state.saveFileError = 'missing'; break;
-          }
-          state.menuRequests.push({ type: 'load-file', kind: 'game', file: action.file }); break;
-        case 'setGameScreen': setGameScreen(state, action.screen); break;
-        case 'selectGameEpisode':
-          if (!project.game?.levels.some(level => level.id === action.levelId)) throw new Error(`Unknown game level ${action.levelId}`);
-          state.newGameLevel = action.levelId; break;
-        case 'startGame': state.menuRequests.push(state.newGameLevel ? { type: 'start', levelId: state.newGameLevel } : 'start'); break;
-        case 'loadGameLevel':
-          if (!project.game?.levels.some(level => level.id === action.levelId)) throw new Error(`Unknown game level ${action.levelId}`);
-          state.menuRequests.push({ type: 'level', levelId: action.levelId, carryProgress: false }); break;
-        case 'finishLevel': beginIntermission(project, state, action.exit === 'secret'); break;
-        case 'continueIntermission': continueIntermission(state); break;
-        case 'quitGame': state.menuRequests.push('quit'); break;
-        case 'requestFullscreen': state.menuRequests.push('fullscreen'); break;
-        case 'captureGameBinding': state.bindingKey = action.key; break;
-        case 'setGameSetting': changeSetting(state, action.setting, action.value); break;
-        case 'adjustGameSetting': changeSetting(state, action.setting, action.amount, true); break;
-        case 'toggleGameSetting': changeSetting(state, action.setting, !state.settings[action.setting]); break;
-        case 'resetGameSettings': state.settings = gameSettings({ jumping: state.settings.jumping }); state.settingsRevision++; break;
-        case 'setShaderEnabled': state.shaderEnabled = action.enabled === 'yes'; break;
-        case 'setShaderUniform': state.shaderUniforms.set(action.uniform, action.value); break;
-        case 'setPostFxStack': state.postFx.stackEnabled = action.enabled === 'yes'; break;
-        case 'setPostFxPass': state.postFx.disabled.set(action.kind, action.enabled !== 'yes'); break;
-        case 'setPostFxParam': state.postFx.values.set(`${action.kind}.${action.param}`, action.value); break;
-        // ---- Instances: acting on the picked set ------------------------------------------
-        // One action, every instance the event picked. This is GDevelop's and Construct's central
-        // idea — "Add 1 to Enemy.score" with no loop written — and it is why the picking
-        // conditions above exist: they are how you say *which* enemies.
-        case 'setPickedVariable':
-        case 'addPickedVariable': {
-          // Like `pickByVariable`, an instance that does not carry the variable is skipped rather
-          // than stopping the game: the editor allows a type-level variable action as long as one
-          // instance carries it, so the rest of the picked set must be left alone.
-          forPicked(action, (entity, resolved) => {
-            if (!Object.hasOwn(entity.variables || {}, resolved.variable)) return;
-            assignVariable(entity.variables, resolved.variable, resolved.value, resolved.type === 'addPickedVariable');
-          });
-          break;
         }
-        case 'setPickedPosition': {
-          forPicked(action, (entity, resolved) => {
-            entity.x = resolved.x;
-            entity.y = resolved.y;
-            const floor = sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0;
-            entity.z = resolved.z ?? floor + (entity.elevation || 0);
-            entity.elevation = entity.z - floor;
-            state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
-          });
-          state.worldRevision++;
-          break;
-        }
-        case 'movePicked': {
-          forPicked(action, (entity, resolved) => {
-            const floor = sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0;
-            const z = entity.z ?? floor + (entity.elevation || 0);
-            entity.x += resolved.dx;
-            entity.y += resolved.dy;
-            entity.z = z + (resolved.dz ?? 0);
-            entity.elevation = entity.z - (sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0);
-            state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
-          });
-          state.worldRevision++;
-          break;
-        }
-        case 'setPickedAngle': {
-          forPicked(action, (entity, resolved) => {
-            entity.angle = resolved.angle;
-            state.physics?.rotate(entity.id, entity.angle);
-          });
-          state.worldRevision++;
-          break;
-        }
-        case 'scalePicked': {
-          forPicked(action, (entity, resolved) => setVisualScale(entity, resolved.scale));
-          state.worldRevision++;
-          break;
-        }
-        case 'setPickedSpriteState': {
-          forPicked(action, (entity, resolved) =>
-            setSpriteState(project, state, entity, resolved.state, resolved.restart === 'yes'));
-          break;
-        }
-        case 'removePicked': {
-          // The picked set is already the answer to "which ones", so it is walked directly; each
-          // removal does everything removing one object does, or the renderer and the statistics
-          // would keep drawing something that is no longer in the level.
-          const doomed = pickedInstances(state, picks, action.objectType);
-          if (!doomed.length) break;
-          const doomedIds = new Set(doomed.map(entity => entity.id));
-          for (const entity of doomed) {
-            recordRemovedEntity(state, entity);
-            state.physics?.remove(entity.id);
-            state.animations.delete(entity.id);
-            state.spriteAnimations.delete(entity.id);
-            forgetEntity(state, entity.id);
-          }
-          state.entities = state.entities.filter(entity => !doomedIds.has(entity.id));
-          state.worldRevision++;
-          break;
-        }
-        case 'setObjectVariable': case 'addObjectVariable': {
-          const entity = findTarget(action.entityId);
-          if (entity) assignVariable(entity.variables, action.variable, action.value, action.type === 'addObjectVariable');
-          break;
-        }
-        case 'setSpriteState': {
-          const entity = findTarget(action.entityId);
-          if (entity) setSpriteState(project, state, entity, action.state, action.restart === 'yes');
-          break;
-        }
-        case 'playWeaponClip': state.weaponAnimations.set(action.weapon, { clipId: action.clipId, start: state.time }); break;
-        case 'spawnEntity': {
-          const template = project.map.entities.find(entity => entity.id === action.templateId);
-          if (!template) throw new Error(`Unknown spawn template ${action.templateId}`);
-          state.spawnSequence = (state.spawnSequence || 0) + 1;
-          let id = `spawn_${action.templateId}_${state.spawnSequence}`;
-          while (state.entities.some(entity => entity.id === id)) id += '_';
-          const spawned = structuredClone(template);
-          Object.assign(spawned, { id, x: action.x, y: action.y, spawnedFrom: action.templateId,
-            variables: { ...(template.variables || {}) } });
-          if (action.z !== undefined) spawned.z = action.z;
-          spawned.z ??= floorHeightAt(sectorAt(state.sectors, spawned.x, spawned.y), spawned.z) + (spawned.elevation || 0);
-          spawned.elevation = spawned.z - floorHeightAt(sectorAt(state.sectors, spawned.x, spawned.y), spawned.z);
-          if (action.angle !== undefined) spawned.angle = action.angle;
-          if (action.name) spawned.name = action.name.slice(0, 100);
-          // A spawned enemy gets the same actor fields its authored copy has, or the save written
-          // while it is alive would not load: the runtime shape is checked against the template.
-          initialiseActorEntities(project, [spawned]);
-          state.entities.push(spawned);
-          if (spawned.animation?.autoPlay) state.animations.set(spawned.id,
-            { ...spawned.animation, playing: true, revision: 0 });
-          // The body the authored copy would have had: a spawned crate is solid, a spawned monster
-          // blocks the player. Without this one the player walks through everything it makes.
-          state.physics?.add?.(spawned.id);
-          // What was just made replaces the pick, so a sub-event can act on it the way GDevelop's
-          // "Create object" leaves the new instance picked.
-          withPick(picks, spawned.type, new Set([spawned.id]));
-          state.worldRevision++;
-          break;
-        }
-        case 'rotateEntityBy': {
-          const entity = findTarget(action.entityId);
-          if (entity) {
-            entity.angle = (Number(entity.angle) || 0) + action.angle;
-            if (entity.type === 'player') player.angle += action.angle * Math.PI / 180;
-            state.physics?.rotate(entity.id, entity.angle);
-          }
-          break;
-        }
-        case 'setEntityTilt': {
-          const entity = findTarget(action.entityId);
-          if (entity) {
-            if (!action.pitch && !action.roll) delete entity.modelTilt;
-            else entity.modelTilt = { pitch: action.pitch, roll: action.roll };
-          }
-          break;
-        }
-        case 'setPlayerPitch':
-          player.pitch = action.pitch * Math.PI / 180;
-          break;
-        case 'rumbleController':
-          // Kept as a request for the frame rather than played here: the runtime has no access to
-          // a controller, and the page that does drains this after the step.
-          if (state.settings.gamepadEnabled !== false && state.settings.gamepadRumble !== false) {
-            state.rumbles.push({ strength: action.strength, seconds: action.seconds });
-          }
-          break;
-        // ---- Cameras ---------------------------------------------------------------------
-        case 'createCamera': {
-          // A camera made during play is a real object, like a spawned one: it can be found by
-          // name in the next rule, follows, glides and is saved with the level.
-          const seq = (state.cameraSequence = (state.cameraSequence || 0) + 1);
-          let id = `camera_${seq}`;
-          while (state.entities.some(entity => entity.id === id)) id += '_';
-          const name = String(action.name || `Camera ${seq}`).slice(0, 100);
-          const camera = buildCamera({ id, name, x: action.x, y: action.y, z: action.z,
-            angle: action.angle, pitch: action.pitch, fov: action.fov });
-          state.entities.push(camera);
-          withPick(picks, 'camera', new Set([camera.id]));
-          state.worldRevision++;
-          if (action.activate === 'yes') switchView(state, camera);
-          break;
-        }
-        case 'switchCamera': {
-          if (action.camera === PLAYER_VIEW || !action.camera ||
-            action.camera === ACTIVE_VIEW && !activeCamera(state)) { switchView(state, null); break; }
-          switchView(state, requireCamera(state, action.camera, event));
-          break;
-        }
-        case 'setCameraPosition':
-        case 'setCameraAngle':
-        case 'setCameraFov': {
-          // `$active` names the view actually in use. When that is the player's own eyes there
-          // is no camera object to move, so the command addresses the player view instead of
-          // naming a camera that is not in the level and stopping the game.
-          const view = (action.camera === ACTIVE_VIEW || !action.camera) && !activeCamera(state)
-            ? PLAYER_VIEW : action.camera;
-          // `$player` is the player's own view: its field of view is the game's setting, which is
-          // what a zoom rule means when no camera is filming.
-          if (view === PLAYER_VIEW) {
-            // The player's view is the game setting, whose own bounds are 50..130; clamping to
-            // the camera range here wrote 170 into a setting the loader then refused.
-            if (action.type === 'setCameraFov') state.settings.fov = clamp(action.fov, 50, 130);
-            else if (action.type === 'setCameraAngle') {
-              player.angle = action.angle * Math.PI / 180;
-              player.pitch = clamp(action.pitch, -89, 89) * Math.PI / 180;
-            } else {
-              const target = state.entities.find(entity => entity.type === 'player');
-              const floor = floorHeightAt(sectorAt(state.sectors, action.x, action.y), action.z);
-              const z = action.z ?? floor + (target.elevation || 0);
-              Object.assign(target, { x: action.x, y: action.y, z, elevation: z - floor });
-              Object.assign(player, { x: action.x, y: action.y, z });
-              resetMomentum(state);
-              state.physics?.teleport(target.id, action.x, action.y, z);
-            }
-            break;
-          }
-          const camera = requireCamera(state, view, event);
-          if (action.type === 'setCameraPosition') {
-            camera.x = action.x;
-            camera.y = action.y;
-            if (action.z !== undefined && action.z !== null) camera.z = action.z;
-          } else if (action.type === 'setCameraAngle') {
-            camera.angle = action.angle;
-            camera.cameraPitch = clamp(action.pitch, -89, 89);
-          } else {
-            camera.cameraFov = clamp(action.fov, 10, 170);
-          }
-          state.worldRevision++;
-          break;
-        }
-        case 'moveCamera': {
-          if (action.camera === PLAYER_VIEW ||
-            (action.camera === ACTIVE_VIEW || !action.camera) && !activeCamera(state)) {
-            // The player cannot be scripted to fly; move the view means moving the player.
-            break;
-          }
-          const camera = requireCamera(state, action.camera, event);
-          const to = { x: action.x, y: action.y, z: action.z, angle: action.angle, pitch: action.pitch };
-          startCameraMove(state, camera, to, { seconds: action.seconds, easing: action.easing });
-          state.worldRevision++;
-          break;
-        }
-        case 'followCamera': {
-          // There is no camera object to make follow anything while the player view is active.
-          if ((action.camera === ACTIVE_VIEW || !action.camera) && !activeCamera(state)) break;
-          const camera = requireCamera(state, action.camera, event);
-          const target = action.target === PLAYER_VIEW ? PLAYER_VIEW : String(action.target || PLAYER_VIEW);
-          if (target !== PLAYER_VIEW && !state.entities.some(entity => entity.id === target || entity.name === target)) {
-            throw new Error(`Event "${event.name || event.id}" makes a camera follow "${target}", which is not in this level`);
-          }
-          camera.cameraFollow = target;
-          camera.cameraFollowAngle = action.copyAngle !== 'no';
-          break;
-        }
-        case 'sprayImage': {
-          // A spray is a wall decal: it lives in the impact list so saves keep it and
-          // the renderer draws it flat on the wall instead of as a billboard. An
-          // unconfigured spray must never stop the game: it explains itself once and
-          // does nothing until the event names an image asset.
-          const asset = project.assets.find(item => item.id === action.assetId);
-          if (!asset) {
-            state.message = action.assetId
-              ? `Spray image ${action.assetId} is not in this project's asset library.`
-              : 'Choose an image asset in the spray event.';
-            state.messageTime = 3;
-            break;
-          }
-          const target = sprayTarget(state, action.distance);
-          if (!target) break;
-          const size = action.size > 0 ? action.size : 40;
-          const height = size * (asset.height || 1) / (asset.width || 1);
-          // Clip to the wall face so the artwork cannot spill past the wall into the
-          // room: only the part of the decal that is on the wall is kept, cropped.
-          const face = clipDecalToFace(target, { width: size, height });
-          if (!face) break;
-          const decal = { id: `decal_${state.decalCounter++}`, x: target.x, y: target.y, z: target.z,
-            clipId: '', start: state.time,
-            decal: { assetId: asset.id, corners: face.corners, uv: face.uv } };
-          if (action.duration > 0) decal.until = state.time + action.duration;
-          state.impacts.push(decal);
-          // Oldest sprays fade out first so a long session cannot grow without bound.
-          const decals = state.impacts.filter(effect => effect.decal);
-          if (decals.length > 64) state.impacts.splice(state.impacts.indexOf(decals[0]), 1);
-          break;
-        }
-        case 'setEntityScale': {
-          const entity = findTarget(action.entityId);
-          if (entity) setVisualScale(entity, action.scale);
-          break;
-        }
-        case 'setGravityScale':
-          state.physics?.gravityScale(resolveEntityId(event, action.entityId), action.scale); break;
-        case 'setDamping':
-          state.physics?.damping(resolveEntityId(event, action.entityId), action.damping); break;
-        case 'moveSector': {
-          const sector = state.sectors.find(sector => sector.id === action.sectorId), door = sector?.door;
-          const authoredDoor = door?.activation === 'event-only' && !hasWallActivationParent();
-          const authoredElevator = sector?.elevator?.activation === 'event-only' && !hasWallActivationParent();
-          moveSector(state, action, { authoredDoor, authoredElevator });
-          break;
-        }
-        case 'raiseSectorElevator': operateSectorElevator(project, state, action.sectorId, 'raise'); break;
-        case 'lowerSectorElevator': operateSectorElevator(project, state, action.sectorId, 'lower'); break;
-        case 'toggleSectorElevator': operateSectorElevator(project, state, action.sectorId, 'toggle'); break;
-        case 'openSectorDoor': operateSectorDoor(project, state, action.sectorId, 'open'); break;
-        case 'closeSectorDoor': operateSectorDoor(project, state, action.sectorId, 'close'); break;
-        case 'toggleSectorDoor': operateSectorDoor(project, state, action.sectorId, 'toggle'); break;
-        case 'setWeaponOwned': {
-          if (action.owned === 'yes') {
-            if (!state.inventory.weapons.has(action.weapon)) state.feedback.weaponPickupTime = state.time;
-            state.inventory.weapons.add(action.weapon);
-          } else {
-            if (action.weapon === state.inventory.selectedWeapon) throw new Error('Select another owned weapon before removing the current weapon');
-            state.inventory.weapons.delete(action.weapon);
-          }
-          break;
-        }
-        case 'selectWeapon':
-          if (!state.inventory.weapons.has(action.weapon)) throw new Error(`Cannot select unowned weapon: ${action.weapon}`);
-          state.inventory.selectedWeapon = action.weapon; break;
-        // Runs the imported weapon's own state, for its sounds and its flash. The damage,
-        // ammo and rate a translated rule writes live in the rule itself.
-        case 'weaponAnimation':
-          if (action.weapon === state.inventory.selectedWeapon) playWeaponState(project, state, action.state);
-          break;
-        // Holds the imported weapon's trigger for this frame. The weapon's own states still
-        // decide the rate and everything else; a rule decides *when* the trigger is down, and
-        // a weapon with such a rule stops reading the mouse (see `stepWeapon`).
-        case 'weaponTrigger':
-          if (action.weapon === state.inventory.selectedWeapon) {
-            if (action.trigger === 'alt') state.weaponAltRequest = true; else state.weaponTriggerRequest = true;
-          }
-          break;
-        case 'setKeyOwned':
-          if (action.owned === 'yes') state.inventory.keys.add(action.key); else state.inventory.keys.delete(action.key);
-          break;
-        case 'addAmmo': addAmmo(state, action.ammo, action.amount > 0 && [1, 5].includes(state.settings.difficulty) ? action.amount * 2 : action.amount); break;
-        case 'giveBackpack':
-          if (!state.inventory.backpack) {
-            for (const ammo of ['bullets', 'shells', 'rockets', 'cells']) state.playerStats[ammoMaximum(ammo)] *= 2;
-            state.inventory.backpack = true;
-          }
-          break;
-        case 'setPlayerFace': state.face = action.expression; break;
-        case 'setGroupActive': state.groups.set(action.groupId, action.active === 'yes'); break;
-        case 'movePlayer': state.input.forward += action.forward; state.input.strafe += action.strafe; break;
-        // Recorded rather than applied: the player turns on the tic clock, where a held
-        // turn can ramp the way Doom's does (`shared/player-motion.js`).
-        case 'turnPlayer': state.turnRequest = (state.turnRequest || 0) + action.speed; break;
-        case 'mouseLook':
-          player.angle += state.input.mouseX * action.sensitivity;
-          if (action.vertical === 'enabled') player.pitch = Math.max(-85 * Math.PI / 180, Math.min(85 * Math.PI / 180, player.pitch - state.input.mouseY * action.sensitivity));
-          break;
-        case 'jumpPlayer':
-          state.input.jump = true; break;
-        case 'setMotionModel':
-          // Switching a project's movement model. Doom's momentum is kept as it is, so a
-          // switch back mid-game does not teleport the player, and the Source velocity starts
-          // from however fast the player was already going.
-          if (action.model === 'source') {
-            state.motionModel = 'source';
-            state.motionSettings = { ...state.motionSettings, ...Object.fromEntries(Object.entries(action)
-              .filter(([key]) => ['gravity', 'jumpSpeed', 'maxSpeed', 'accelerate', 'airAccelerate', 'friction',
-                'stopSpeed', 'airSpeedCap'].includes(key))) };
-            state.motion = { x: (state.momentum?.x || 0) * 35, y: (state.momentum?.y || 0) * 35, z: 0 };
-          } else {
-            state.motionModel = 'doom';
-            state.momentum = { x: (state.motion?.x || 0) / 35, y: (state.motion?.y || 0) / 35, z: 0 };
-          }
-          break;
-        case 'setPlayerGravity':
-          setPlayerGravity(state, action.mode, action.reach); break;
-        case 'setPlayerStat':
-          if (action.stat === 'health') recordDamage(state, state.playerStats.health - action.value);
-          state.playerStats[action.stat] = action.value; break;
-        case 'addPlayerStat': {
-          const value = Math.max(0, Math.min(action.maximum, state.playerStats[action.stat] + action.value));
-          if (action.stat === 'health') recordDamage(state, state.playerStats.health - value);
-          state.playerStats[action.stat] = value; break;
-        }
-        case 'damagePlayer': damagePlayer(state, action.damage, action.direction); break;
-        case 'playSound': soundEvent(state, action.sound, action.volume, event.ownerId ? findTarget(event.ownerId) : undefined); break;
-        case 'playAssetSound': {
-          // The audio player looks sounds up by name, and decodes whatever the browser can —
-          // MP3, Ogg Vorbis, Opus, FLAC and WAV all arrive here as one asset kind.
-          const asset = (project.assets || []).find(item => item.id === action.assetId);
-          if (asset?.src) soundEvent(state, asset.name, action.volume);
-          break;
-        }
-        case 'startTimesheet': {
-          const loop = action.loop === 'yes' ? true : action.loop === 'no' ? false : null;
-          startTimesheetRun(project, state, action.timesheetId, { restart: action.restart !== 'no', loop });
-          break;
-        }
-        case 'stopTimesheet':
-          stopTimesheetRun(state, action.all === 'yes' ? 'all' : action.timesheetId);
-          break;
-        case 'setTimesheetPaused':
-          setTimesheetPaused(state, action.timesheetId, action.paused === 'yes');
-          break;
-        case 'followPath': {
-          const path = (project.paths || []).find(item => item.id === action.pathId);
-          const target = findTarget(action.entityId);
-          // A cue that names a route which has been deleted leaves the object alone rather than
-          // moving it to the origin, the same rule the path followers follow.
-          if (path && target && target.type !== 'player')
-            startPathTween(state, { entityId: target.id, pathId: path.id, fromPoint: action.fromPoint,
-              toPoint: action.toPoint, seconds: action.seconds, easing: action.easing,
-              faceDirection: action.faceDirection !== 'no', yawOffset: action.yawOffset,
-              useModelFacing: action.useModelFacing !== 'no' });
-          break;
-        }
-        case 'facePlayer': {
-          const entity = findTarget(action.entityId);
-          if (entity) entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;
-          break;
-        }
-        // A line's special, executed from a rule: the same table the engine uses when a
-        // UDMF line activates natively, so the two cannot drift.
-        case 'runLineSpecial':
-          if (!state.worldTerminalActive) {
-            executeSpecial(project, state, action.special,
-              [action.arg1, action.arg2, action.arg3, action.arg4, action.arg5], { scripts: state.scripts, format: 'zdoom' });
-          }
-          break;
-        // A decompiled script's own builtins — `ChangeFloor(tag, "HEX01")`, `SetLineSpecial`,
-        // `SetLineBlocking` — run through the interpreter's host functions, so the rule and a
-        // script that was not decompiled change the level the same way.
-        case 'showHudMessage':
-          hostFor(action).hudMessage({ text: String(action.text ?? ''), type: Number(action.messageType) || 0,
-            id: Number.isFinite(action.id) ? action.id : -1, color: Number(action.color) || 0,
-            x: Number(action.x) || 0, y: Number(action.y) || 0, holdTime: Number(action.holdTime) || 0,
-            fade: Number(action.fade) || 0, width: Number(action.hudWidth) || 0,
-            height: Number(action.hudHeight) || 0, font: action.font || null });
-          break;
-        case 'fadeRange':
-          hostFor(action).fadeRange({
-            from: { red: Number(action.redFrom) || 0, green: Number(action.greenFrom) || 0,
-              blue: Number(action.blueFrom) || 0, amount: Number(action.amountFrom) || 0 },
-            to: { red: Number(action.red) || 0, green: Number(action.green) || 0,
-              blue: Number(action.blue) || 0, amount: Number(action.amount) || 0 },
-            seconds: Number(action.seconds) || 0 });
-          break;
-        case 'fadeTo':
-          hostFor(action).fadeTo({ red: Number(action.red) || 0, green: Number(action.green) || 0,
-            blue: Number(action.blue) || 0, amount: Number(action.amount) || 0,
-            seconds: Number(action.seconds) || 0 });
-          break;
-        case 'setActorPosition':
-          hostFor(action).setActorPosition(Number(action.tid) || 0, Number(action.x) || 0,
-            Number(action.y) || 0, Number(action.z) || 0, Number(action.fog) || 0, 'player');
-          break;
-        case 'giveInventory':
-          hostFor(action).giveInventory(String(action.item ?? ''), Number(action.amount) || 0, 'player');
-          break;
-        case 'takeInventory':
-          hostFor(action).takeInventory(String(action.item ?? ''), Number(action.amount) || 0, 'player');
-          break;
-        case 'damageThing':
-          hostFor(action).damageThing(Number(action.tid) || 0, Number(action.amount) || 0,
-            String(action.kind ?? ''), 'player');
-          break;
-        case 'sectorDamage':
-          hostFor(action).sectorDamage(Number(action.tag) || 0, Number(action.amount) || 0,
-            String(action.kind ?? ''), String(action.protection ?? ''), 0);
-          break;
-        case 'setSectorFlat': {
-          hostFor(action).changeFlat(Number(action.tag) || 0, String(action.flat ?? ''), action.surface === 'ceiling');
-          break;
-        }
-        case 'setLineTexture': {
-          hostFor(action).setLineTexture(Number(action.line) || 0, Number(action.side) || 0,
-            Number(action.part) || 0, String(action.texture ?? ''));
-          break;
-        }
-        case 'replaceTextures': {
-          // `ReplaceTextures(from, to, flags)`: the same host function the interpreter calls,
-          // so a translated script and a bytecode one swap the same surfaces.
-          hostFor(action).replaceTextures(String(action.from ?? ''), String(action.to ?? ''), Number(action.flags) || 0);
-          break;
-        }
-        case 'setLineBlocking': {
-          hostFor(action).setLineBlocking(Number(action.tag) || 0, action.blocking === 'no' ? 0 : 1);
-          break;
-        }
-        case 'setLineMonsterBlocking': {
-          hostFor(action).setLineMonsterBlocking(Number(action.tag) || 0, action.monsters === 'yes');
-          break;
-        }
-        case 'setLineSpecial': {
-          hostFor(action).setLineSpecial(Number(action.tag) || 0, Number(action.special) || 0,
-            [action.arg1 ?? 0, action.arg2 ?? 0, action.arg3 ?? 0, action.arg4 ?? 0, action.arg5 ?? 0]);
-          break;
-        }
-        // Starts a compiled ACS script from a rule — the trigger is in the sheet, the body
-        // is the module the WAD shipped, shown disassembled in the Scripts tab.
-        case 'runScript': {
-          const selector = /^-?\d+$/.test(String(action.script)) ? Number(action.script) : String(action.script);
-          state.scripts?.execute(selector, [action.arg1 ?? 0, action.arg2 ?? 0, action.arg3 ?? 0, action.arg4 ?? 0]);
-          break;
-        }
-        case 'setEntitySolid': {
-          const entity = findTarget(action.entityId);
-          if (entity) { entity.solid = action.solid === 'yes'; if (!entity.solid) state.physics?.remove(entity.id); }
-          break;
-        }
-        case 'homeMissile': {
-          const missile = findTarget(action.entityId);
-          if (missile) homeMissile(project, state, missile, { turn: action.turn });
-          break;
-        }
-        case 'bfgSpray': {
-          const source = findTarget(action.entityId);
-          if (source) bfgSpray(project, state, source, action);
-          break;
-        }
-        // The blast a missile's Death state would perform, as an action a rule can take.
-        case 'explodeArea': {
-          const entity = findTarget(action.entityId);
-          if (entity) explodeAt(project, state, entity, action.damage, action.radius);
-          break;
-        }
-        // Runs an imported actor's own state, which is where its frames, sounds and its
-        // attack function live — a translated monster's rule says *when*, the state says how.
-        case 'playActorState': {
-          const entity = findTarget(action.entityId);
-          if (entity && entity.health > 0) setActorState(project, entity, action.state, { ifDifferent: true });
-          break;
-        }
-        case 'moveEnemy': {
-          const entity = findTarget(action.entityId);
-          if (entity) moveEnemy(state, entity, action.speed, dt);
-          break;
-        }
-        case 'enemyHitscan': {
-          const entity = findTarget(action.entityId);
-          if (entity) enemyHitscan(state, entity, action);
-          break;
-        }
-        case 'launchProjectile':
-          // An `missile` names an imported actor class, so a translated weapon fires the
-          // mod's own projectile — flight clip, explosion and all — instead of a lookalike.
-          if (!state.worldTerminalActive) launchProjectile(state, missileShot(project, action));
-          break;
-        case 'enemyProjectile': {
-          const entity = findTarget(action.entityId);
-          if (entity && entity.health > 0 && canSeePlayer(state, entity, 65536)) launchProjectile(state, action, entity);
-          break;
-        }
-        case 'setEntityHealth': {
-          const target = findTarget(action.entityId);
-          if (target) target.health = action.health;
-          break;
-        }
-        case 'hitscan':
-          if (!state.worldTerminalActive) {
-            fireHitscan(project, state, action);
-            // A weapon whose own states play a hit sound (the chainsaw) keeps it.
-            if (action.hitSound && state.lastShot?.hits.length) saySound(state, action.hitSound, null, 127);
-          }
-          break;
-        case 'startTimer': state.timers.set(`${event.ownerId || '$scene'}:${action.timer}`, state.time + action.seconds); break;
-        case 'clearTimer': state.timers.delete(`${event.ownerId || '$scene'}:${action.timer}`); break;
-        case 'showPlayerHUD': state.hud = action.visible === 'yes'; break;
-        case 'setHUDCursor': hud.cursor = action.mode === 'toggle' ? !hud.cursor : action.mode === 'cursor'; break;
-        case 'setHUDVisible': hud.elements.get(action.elementId).visible = action.visible === 'yes'; break;
-        case 'setHUDText': Object.assign(hud.elements.get(action.elementId), { text: action.text, binding: '' }); break;
-        case 'setHUDBinding': hud.elements.get(action.elementId).binding = action.binding; break;
-        case 'setHUDProperty': hud.elements.get(action.elementId)[action.property] = action.value; break;
-        case 'playHUDAnimation': playHUDAnimation(project, hud, action.animationId); break;
-        case 'stopHUDAnimation': hud.playing.delete(action.animationId); break;
-        case 'showMessage': state.message = action.message; state.messageTime = 6; break;
-        case 'setVariable': assignVariable(state.variables, action.variable, action.value, false); break;
-        case 'addVariable': assignVariable(state.variables, action.variable, action.value, true); break;
-        case 'setAcsVariable': {
-          // The store a decompiled script writes is the interpreter's own, so the rest of the
-          // level sees the change exactly as it did when the script ran as bytecode.
-          const store = acsVariableStore(state, action.scope, action.module);
-          if (!store) throw new Error(`Event "${event.name || event.id}": the level has no ACS variables`);
-          const index = Number(action.index) || 0;
-          const value = Number(action.value) || 0;
-          store[index] = (action.mode === 'add' ? (store[index] | 0) + value : value) | 0;
-          break;
-        }
-        case 'setAcsArray': {
-          // A decompiled script's arrays are the level's own stores, so a script that was not
-          // translated and a rule that was read the same elements.
-          const stored = writeAcsArray(state, action.scope, action.id, action.index,
-            action.mode === 'add' ? readAcsArray(state, action.scope, action.id, action.index, action.module) + (Number(action.value) || 0)
-              : Number(action.value) || 0, action.module);
-          if (!stored) throw new Error(`Event "${event.name || event.id}": the level has no ACS arrays`);
-          break;
-        }
-        case 'teleport':
-          player.x = action.x; player.y = action.y;
-          if (!state.physics) {
-            const entity = state.entities.find(item => item.type === 'player');
-            const floor = sectorAt(state.sectors, action.x, action.y)?.floorHeight ?? 0;
-            const z = action.z ?? floor + (entity.elevation || 0);
-            Object.assign(entity, { x: action.x, y: action.y, z, elevation: z - floor });
-            player.z = z;
-          }
-          // Doom drops the player's momentum when it teleports them.
-          resetMomentum(state);
-          if (action.angle !== undefined) player.angle = action.angle * Math.PI / 180;
-          state.physics?.teleport(state.entities.find(entity => entity.type === 'player').id, action.x, action.y, action.z);
-          break;
-        case 'removeEntity': {
-          const id = resolveEntityId(event, action.entityId);
-          removeEntityFromLevel(state, state.entities.find(item => item.id === id));
-          break;
-        }
-        case 'setEntityPosition': {
-          const target = findTarget(action.entityId);
-          if (target) {
-            target.x = action.x; target.y = action.y;
-            if (target.type === 'player') {
-              player.x = action.x; player.y = action.y;
-              if (!state.physics) {
-                const floor = sectorAt(state.sectors, action.x, action.y)?.floorHeight ?? 0;
-                player.z = target.z = action.z ?? floor + (target.elevation || 0);
-                target.elevation = target.z - floor;
+        if (!matches) return;
+        if (event.once) state.fired.add(keyOf());
+        // A rule that performs one of a decompiled script's own builtins uses the interpreter's
+        // host function, so the level changes exactly as it did when the script ran as bytecode.
+        const hostFor = action => {
+          const host = state.scripts?.host;
+          if (!host) throw new Error(`Event "${event.name || event.id}": ${action.type} needs a level with compiled scripts`);
+          return host;
+        };
+        for (const sourceAction of event.actions) {
+          const action = PICK_ACTIONS.has(sourceAction.type) ? sourceAction : resolveCommand(sourceAction);
+          switch (action.type) {
+            case 'emitSignal': emitSignal(state, resolveEntityId(event, action.entityId), action.signal, action.value); break;
+            case 'saveGame':
+              if (!state.hasGame || state.intermission || state.playerStats.health <= 0) {
+                state.saveStatus = 'Start or resume a living game before saving.'; break;
               }
+              if (state.saveSlots[action.slot - 1]) {
+                state.pendingSaveSlot = action.slot; setGameScreen(state, 'save_confirm');
+              } else state.menuRequests.push({ type: 'save', slot: action.slot });
+              break;
+            case 'confirmSaveGame':
+              if (state.pendingSaveSlot && state.hasGame && !state.intermission && state.playerStats.health > 0) {
+                state.menuRequests.push({ type: 'save', slot: state.pendingSaveSlot });
+                state.pendingSaveSlot = null;
+              }
+              break;
+            case 'loadGame':
+              if (!state.saveSlots[action.slot - 1]) { state.saveStatus = 'This save slot is empty.'; break; }
+              state.menuRequests.push({ type: 'load', slot: action.slot }); break;
+            // Save files. The host owns the storage, and every one of them reports through
+            // `saveStatus`/`saveFileError`; a rule can then branch on `saveFileFailed`.
+            // Variables travel through the host's store *now*, not as a request handled after the
+            // frame: a rule that loads and then reads (or saves) in the same event must see the loaded
+            // values, and a save after a load must not store the state the load replaced.
+            case 'saveVariables':
+              try {
+                const values = variableSnapshot(project, state, action.variables);
+                const host = state.saveFileHost;
+                if (!host?.write) throw new Error('save files are not available in this context');
+                const document = saveFileDocument({ kind: 'variables', name: action.file, identity: host.identity || null,
+                  levelId: project.game?.active ?? null, variables: values });
+                host.write(action.file, serializeSaveFile(document));
+                state.saveFiles.add(saveFileName(action.file));
+                state.saveFileError = '';
+                state.saveStatus = `Saved ${Object.keys(values).length} variable(s) to the save file ${action.file}.`;
+              } catch (error) { state.saveFileError = error.message; state.saveStatus = `Save failed: ${error.message}`; }
+              break;
+            case 'loadVariables':
+              try {
+                const host = state.saveFileHost;
+                if (!host?.read) throw new Error('save files are not available in this context');
+                const text = host.read(action.file);
+                if (text === null || text === undefined) throw new Error(`there is no save file named ${action.file}`);
+                const document = parseSaveFile(text);
+                if (document.kind !== 'variables') throw new Error(`${action.file} holds a whole game, not variables`);
+                if (document.identity && host.identity && document.identity !== host.identity) {
+                  throw new Error(`${action.file} was saved by a different game`);
+                }
+                const { applied, skipped } = applyVariableSave(project, state, document);
+                state.saveFileError = '';
+                state.saveStatus = `Loaded ${applied.length} variable(s) from the save file ${action.file}.` +
+                  (skipped.length ? ` Skipped: ${skipped.join(', ')}.` : '');
+              } catch (error) { state.saveFileError = error.message; state.saveStatus = `Load failed: ${error.message}`; }
+              break;
+            case 'saveGameState':
+              if (!state.hasGame || state.intermission || state.playerStats.health <= 0) {
+                state.saveStatus = 'Start or resume a living game before saving.'; break;
+              }
+              // No menu and no confirmation: a checkpoint written by a rule overwrites itself.
+              state.menuRequests.push({ type: 'save-file', kind: 'game', file: action.file }); break;
+            case 'loadGameState':
+              if (!state.saveFiles?.has(String(action.file ?? '').trim())) {
+                state.saveStatus = `There is no save file named ${action.file}.`; state.saveFileError = 'missing'; break;
+              }
+              state.menuRequests.push({ type: 'load-file', kind: 'game', file: action.file }); break;
+            case 'setGameScreen': setGameScreen(state, action.screen); break;
+            case 'selectGameEpisode':
+              if (!project.game?.levels.some(level => level.id === action.levelId)) throw new Error(`Unknown game level ${action.levelId}`);
+              state.newGameLevel = action.levelId; break;
+            case 'startGame': state.menuRequests.push(state.newGameLevel ? { type: 'start', levelId: state.newGameLevel } : 'start'); break;
+            case 'loadGameLevel':
+              if (!project.game?.levels.some(level => level.id === action.levelId)) throw new Error(`Unknown game level ${action.levelId}`);
+              state.menuRequests.push({ type: 'level', levelId: action.levelId, carryProgress: false }); break;
+            case 'finishLevel': beginIntermission(project, state, action.exit === 'secret'); break;
+            case 'continueIntermission': continueIntermission(state); break;
+            case 'quitGame': state.menuRequests.push('quit'); break;
+            case 'requestFullscreen': state.menuRequests.push('fullscreen'); break;
+            case 'captureGameBinding': state.bindingKey = action.key; break;
+            case 'setGameSetting': changeSetting(state, action.setting, action.value); break;
+            case 'adjustGameSetting': changeSetting(state, action.setting, action.amount, true); break;
+            case 'toggleGameSetting': changeSetting(state, action.setting, !state.settings[action.setting]); break;
+            case 'resetGameSettings': state.settings = gameSettings({ jumping: state.settings.jumping }); state.settingsRevision++; break;
+            case 'setShaderEnabled': state.shaderEnabled = action.enabled === 'yes'; break;
+            case 'setShaderUniform': state.shaderUniforms.set(action.uniform, action.value); break;
+            case 'setPostFxStack': state.postFx.stackEnabled = action.enabled === 'yes'; break;
+            case 'setPostFxPass': state.postFx.disabled.set(action.kind, action.enabled !== 'yes'); break;
+            case 'setPostFxParam': state.postFx.values.set(`${action.kind}.${action.param}`, action.value); break;
+            // ---- Instances: acting on the picked set ------------------------------------------
+            // One action, every instance the event picked. This is GDevelop's and Construct's central
+            // idea — "Add 1 to Enemy.score" with no loop written — and it is why the picking
+            // conditions above exist: they are how you say *which* enemies.
+            case 'setPickedVariable':
+            case 'addPickedVariable': {
+              // Like `pickByVariable`, an instance that does not carry the variable is skipped rather
+              // than stopping the game: the editor allows a type-level variable action as long as one
+              // instance carries it, so the rest of the picked set must be left alone.
+              forPicked(action, (entity, resolved) => {
+                if (!Object.hasOwn(entity.variables || {}, resolved.variable)) return;
+                assignVariable(entity.variables, resolved.variable, resolved.value, resolved.type === 'addPickedVariable');
+              });
+              break;
             }
-            if (action.z !== undefined) target.z = action.z;
-            const floor = floorHeightAt(sectorAt(state.sectors, target.x, target.y), target.z);
-            if (!state.physics) {
-              target.z = action.z ?? floor + (target.elevation || 0);
-              if (target.type === 'player') player.z = target.z;
+            case 'setPickedPosition': {
+              forPicked(action, (entity, resolved) => {
+                entity.x = resolved.x;
+                entity.y = resolved.y;
+                const floor = sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0;
+                entity.z = resolved.z ?? floor + (entity.elevation || 0);
+                entity.elevation = entity.z - floor;
+                state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
+              });
+              state.worldRevision++;
+              break;
             }
-            target.elevation = (target.z ?? floor) - floor;
-            state.physics?.teleport(target.id, action.x, action.y, action.z);
+            case 'movePicked': {
+              forPicked(action, (entity, resolved) => {
+                const floor = sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0;
+                const z = entity.z ?? floor + (entity.elevation || 0);
+                entity.x += resolved.dx;
+                entity.y += resolved.dy;
+                entity.z = z + (resolved.dz ?? 0);
+                entity.elevation = entity.z - (sectorAt(state.sectors, entity.x, entity.y)?.floorHeight ?? 0);
+                state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
+              });
+              state.worldRevision++;
+              break;
+            }
+            case 'setPickedAngle': {
+              forPicked(action, (entity, resolved) => {
+                entity.angle = resolved.angle;
+                state.physics?.rotate(entity.id, entity.angle);
+              });
+              state.worldRevision++;
+              break;
+            }
+            case 'scalePicked': {
+              forPicked(action, (entity, resolved) => setVisualScale(entity, resolved.scale));
+              state.worldRevision++;
+              break;
+            }
+            case 'setPickedSpriteState': {
+              forPicked(action, (entity, resolved) =>
+                setSpriteState(project, state, entity, resolved.state, resolved.restart === 'yes'));
+              break;
+            }
+            case 'removePicked': {
+              // The picked set is already the answer to "which ones", so it is walked directly; each
+              // removal does everything removing one object does, or the renderer and the statistics
+              // would keep drawing something that is no longer in the level.
+              const doomed = pickedInstances(state, picks, action.objectType);
+              if (!doomed.length) break;
+              const doomedIds = new Set(doomed.map(entity => entity.id));
+              for (const entity of doomed) {
+                recordRemovedEntity(state, entity);
+                state.physics?.remove(entity.id);
+                state.animations.delete(entity.id);
+                state.spriteAnimations.delete(entity.id);
+                forgetEntity(state, entity.id);
+              }
+              state.entities = state.entities.filter(entity => !doomedIds.has(entity.id));
+              state.worldRevision++;
+              break;
+            }
+            case 'setObjectVariable': case 'addObjectVariable': {
+              const entity = findTarget(action.entityId);
+              if (entity) assignVariable(entity.variables, action.variable, action.value, action.type === 'addObjectVariable');
+              break;
+            }
+            case 'setSpriteState': {
+              const entity = findTarget(action.entityId);
+              if (entity) setSpriteState(project, state, entity, action.state, action.restart === 'yes');
+              break;
+            }
+            case 'playWeaponClip': state.weaponAnimations.set(action.weapon, { clipId: action.clipId, start: state.time }); break;
+            case 'spawnEntity': {
+              const template = project.map.entities.find(entity => entity.id === action.templateId);
+              if (!template) throw new Error(`Unknown spawn template ${action.templateId}`);
+              state.spawnSequence = (state.spawnSequence || 0) + 1;
+              let id = `spawn_${action.templateId}_${state.spawnSequence}`;
+              while (state.entities.some(entity => entity.id === id)) id += '_';
+              const spawned = structuredClone(template);
+              Object.assign(spawned, { id, x: action.x, y: action.y, spawnedFrom: action.templateId,
+                variables: { ...(template.variables || {}) } });
+              if (action.z !== undefined) spawned.z = action.z;
+              spawned.z ??= floorHeightAt(sectorAt(state.sectors, spawned.x, spawned.y), spawned.z) + (spawned.elevation || 0);
+              spawned.elevation = spawned.z - floorHeightAt(sectorAt(state.sectors, spawned.x, spawned.y), spawned.z);
+              if (action.angle !== undefined) spawned.angle = action.angle;
+              if (action.name) spawned.name = action.name.slice(0, 100);
+              // A spawned enemy gets the same actor fields its authored copy has, or the save written
+              // while it is alive would not load: the runtime shape is checked against the template.
+              initialiseActorEntities(project, [spawned]);
+              state.entities.push(spawned);
+              if (spawned.animation?.autoPlay) state.animations.set(spawned.id,
+                { ...spawned.animation, playing: true, revision: 0 });
+              // The body the authored copy would have had: a spawned crate is solid, a spawned monster
+              // blocks the player. Without this one the player walks through everything it makes.
+              state.physics?.add?.(spawned.id);
+              // What was just made replaces the pick, so a sub-event can act on it the way GDevelop's
+              // "Create object" leaves the new instance picked.
+              picks = withPick(picks, spawned.type, new Set([spawned.id]));
+              state.worldRevision++;
+              break;
+            }
+            case 'rotateEntityBy': {
+              const entity = findTarget(action.entityId);
+              if (entity) {
+                entity.angle = (Number(entity.angle) || 0) + action.angle;
+                if (entity.type === 'player') frame.player.angle += action.angle * Math.PI / 180;
+                state.physics?.rotate(entity.id, entity.angle);
+              }
+              break;
+            }
+            case 'setEntityTilt': {
+              const entity = findTarget(action.entityId);
+              if (entity) {
+                if (!action.pitch && !action.roll) delete entity.modelTilt;
+                else entity.modelTilt = { pitch: action.pitch, roll: action.roll };
+              }
+              break;
+            }
+            case 'setPlayerPitch':
+              frame.player.pitch = action.pitch * Math.PI / 180;
+              break;
+            case 'rumbleController':
+              // Kept as a request for the frame rather than played here: the runtime has no access to
+              // a controller, and the page that does drains this after the step.
+              if (state.settings.gamepadEnabled !== false && state.settings.gamepadRumble !== false) {
+                state.rumbles.push({ strength: action.strength, seconds: action.seconds });
+              }
+              break;
+            // ---- Cameras ---------------------------------------------------------------------
+            case 'createCamera': {
+              // A camera made during play is a real object, like a spawned one: it can be found by
+              // name in the next rule, follows, glides and is saved with the level.
+              const seq = (state.cameraSequence = (state.cameraSequence || 0) + 1);
+              let id = `camera_${seq}`;
+              while (state.entities.some(entity => entity.id === id)) id += '_';
+              const name = String(action.name || `Camera ${seq}`).slice(0, 100);
+              const camera = buildCamera({ id, name, x: action.x, y: action.y, z: action.z,
+                angle: action.angle, pitch: action.pitch, fov: action.fov });
+              state.entities.push(camera);
+              picks = withPick(picks, 'camera', new Set([camera.id]));
+              state.worldRevision++;
+              if (action.activate === 'yes') switchView(state, camera);
+              break;
+            }
+            case 'switchCamera': {
+              if (action.camera === PLAYER_VIEW || !action.camera ||
+                action.camera === ACTIVE_VIEW && !activeCamera(state)) { switchView(state, null); break; }
+              switchView(state, requireCamera(state, action.camera, event));
+              break;
+            }
+            case 'setCameraPosition':
+            case 'setCameraAngle':
+            case 'setCameraFov': {
+              // `$active` names the view actually in use. When that is the player's own eyes there
+              // is no camera object to move, so the command addresses the player view instead of
+              // naming a camera that is not in the level and stopping the game.
+              const view = (action.camera === ACTIVE_VIEW || !action.camera) && !activeCamera(state)
+                ? PLAYER_VIEW : action.camera;
+              // `$player` is the player's own view: its field of view is the game's setting, which is
+              // what a zoom rule means when no camera is filming.
+              if (view === PLAYER_VIEW) {
+                // The player's view is the game setting, whose own bounds are 50..130; clamping to
+                // the camera range here wrote 170 into a setting the loader then refused.
+                if (action.type === 'setCameraFov') state.settings.fov = clamp(action.fov, 50, 130);
+                else if (action.type === 'setCameraAngle') {
+                  frame.player.angle = action.angle * Math.PI / 180;
+                  frame.player.pitch = clamp(action.pitch, -89, 89) * Math.PI / 180;
+                } else {
+                  const target = state.entities.find(entity => entity.type === 'player');
+                  const floor = floorHeightAt(sectorAt(state.sectors, action.x, action.y), action.z);
+                  const z = action.z ?? floor + (target.elevation || 0);
+                  Object.assign(target, { x: action.x, y: action.y, z, elevation: z - floor });
+                  Object.assign(frame.player, { x: action.x, y: action.y, z });
+                  resetMomentum(state);
+                  state.physics?.teleport(target.id, action.x, action.y, z);
+                }
+                break;
+              }
+              const camera = requireCamera(state, view, event);
+              if (action.type === 'setCameraPosition') {
+                camera.x = action.x;
+                camera.y = action.y;
+                if (action.z !== undefined && action.z !== null) camera.z = action.z;
+              } else if (action.type === 'setCameraAngle') {
+                camera.angle = action.angle;
+                camera.cameraPitch = clamp(action.pitch, -89, 89);
+              } else {
+                camera.cameraFov = clamp(action.fov, 10, 170);
+              }
+              state.worldRevision++;
+              break;
+            }
+            case 'moveCamera': {
+              if (action.camera === PLAYER_VIEW ||
+                (action.camera === ACTIVE_VIEW || !action.camera) && !activeCamera(state)) {
+                // The player cannot be scripted to fly; move the view means moving the player.
+                break;
+              }
+              const camera = requireCamera(state, action.camera, event);
+              const to = { x: action.x, y: action.y, z: action.z, angle: action.angle, pitch: action.pitch };
+              startCameraMove(state, camera, to, { seconds: action.seconds, easing: action.easing });
+              state.worldRevision++;
+              break;
+            }
+            case 'followCamera': {
+              // There is no camera object to make follow anything while the player view is active.
+              if ((action.camera === ACTIVE_VIEW || !action.camera) && !activeCamera(state)) break;
+              const camera = requireCamera(state, action.camera, event);
+              const target = action.target === PLAYER_VIEW ? PLAYER_VIEW : String(action.target || PLAYER_VIEW);
+              if (target !== PLAYER_VIEW && !state.entities.some(entity => entity.id === target || entity.name === target)) {
+                throw new Error(`Event "${event.name || event.id}" makes a camera follow "${target}", which is not in this level`);
+              }
+              camera.cameraFollow = target;
+              camera.cameraFollowAngle = action.copyAngle !== 'no';
+              break;
+            }
+            case 'sprayImage': {
+              // A spray is a wall decal: it lives in the impact list so saves keep it and
+              // the renderer draws it flat on the wall instead of as a billboard. An
+              // unconfigured spray must never stop the game: it explains itself once and
+              // does nothing until the event names an image asset.
+              const asset = project.assets.find(item => item.id === action.assetId);
+              if (!asset) {
+                state.message = action.assetId
+                  ? `Spray image ${action.assetId} is not in this project's asset library.`
+                  : 'Choose an image asset in the spray event.';
+                state.messageTime = 3;
+                break;
+              }
+              const target = sprayTarget(state, action.distance);
+              if (!target) break;
+              const size = action.size > 0 ? action.size : 40;
+              const height = size * (asset.height || 1) / (asset.width || 1);
+              // Clip to the wall face so the artwork cannot spill past the wall into the
+              // room: only the part of the decal that is on the wall is kept, cropped.
+              const face = clipDecalToFace(target, { width: size, height });
+              if (!face) break;
+              const decal = { id: `decal_${state.decalCounter++}`, x: target.x, y: target.y, z: target.z,
+                clipId: '', start: state.time,
+                decal: { assetId: asset.id, corners: face.corners, uv: face.uv } };
+              if (action.duration > 0) decal.until = state.time + action.duration;
+              state.impacts.push(decal);
+              // Oldest sprays fade out first so a long session cannot grow without bound.
+              const decals = state.impacts.filter(effect => effect.decal);
+              if (decals.length > 64) state.impacts.splice(state.impacts.indexOf(decals[0]), 1);
+              break;
+            }
+            case 'setEntityScale': {
+              const entity = findTarget(action.entityId);
+              if (entity) setVisualScale(entity, action.scale);
+              break;
+            }
+            case 'setGravityScale':
+              state.physics?.gravityScale(resolveEntityId(event, action.entityId), action.scale); break;
+            case 'setDamping':
+              state.physics?.damping(resolveEntityId(event, action.entityId), action.damping); break;
+            case 'moveSector': {
+              const sector = state.sectors.find(sector => sector.id === action.sectorId), door = sector?.door;
+              const authoredDoor = door?.activation === 'event-only' && !hasWallActivationParent();
+              const authoredElevator = sector?.elevator?.activation === 'event-only' && !hasWallActivationParent();
+              moveSector(state, action, { authoredDoor, authoredElevator });
+              break;
+            }
+            case 'raiseSectorElevator': operateSectorElevator(project, state, action.sectorId, 'raise'); break;
+            case 'lowerSectorElevator': operateSectorElevator(project, state, action.sectorId, 'lower'); break;
+            case 'toggleSectorElevator': operateSectorElevator(project, state, action.sectorId, 'toggle'); break;
+            case 'openSectorDoor': operateSectorDoor(project, state, action.sectorId, 'open'); break;
+            case 'closeSectorDoor': operateSectorDoor(project, state, action.sectorId, 'close'); break;
+            case 'toggleSectorDoor': operateSectorDoor(project, state, action.sectorId, 'toggle'); break;
+            case 'setWeaponOwned': {
+              if (action.owned === 'yes') {
+                if (!state.inventory.weapons.has(action.weapon)) state.feedback.weaponPickupTime = state.time;
+                state.inventory.weapons.add(action.weapon);
+              } else {
+                if (action.weapon === state.inventory.selectedWeapon) throw new Error('Select another owned weapon before removing the current weapon');
+                state.inventory.weapons.delete(action.weapon);
+              }
+              break;
+            }
+            case 'selectWeapon':
+              if (!state.inventory.weapons.has(action.weapon)) throw new Error(`Cannot select unowned weapon: ${action.weapon}`);
+              state.inventory.selectedWeapon = action.weapon; break;
+            // Runs the imported weapon's own state, for its sounds and its flash. The damage,
+            // ammo and rate a translated rule writes live in the rule itself.
+            case 'weaponAnimation':
+              if (action.weapon === state.inventory.selectedWeapon) playWeaponState(project, state, action.state);
+              break;
+            // Holds the imported weapon's trigger for this frame. The weapon's own states still
+            // decide the rate and everything else; a rule decides *when* the trigger is down, and
+            // a weapon with such a rule stops reading the mouse (see `stepWeapon`).
+            case 'weaponTrigger':
+              if (action.weapon === state.inventory.selectedWeapon) {
+                if (action.trigger === 'alt') state.weaponAltRequest = true; else state.weaponTriggerRequest = true;
+              }
+              break;
+            case 'setKeyOwned':
+              if (action.owned === 'yes') state.inventory.keys.add(action.key); else state.inventory.keys.delete(action.key);
+              break;
+            case 'addAmmo': addAmmo(state, action.ammo, action.amount > 0 && DOUBLE_AMMO_DIFFICULTIES.has(state.settings.difficulty) ? action.amount * 2 : action.amount); break;
+            case 'giveBackpack':
+              if (!state.inventory.backpack) {
+                for (const ammo of ['bullets', 'shells', 'rockets', 'cells']) state.playerStats[ammoMaximum(ammo)] *= 2;
+                state.inventory.backpack = true;
+              }
+              break;
+            case 'setPlayerFace': state.face = action.expression; break;
+            case 'setGroupActive': state.groups.set(action.groupId, action.active === 'yes'); break;
+            case 'movePlayer': state.input.forward += action.forward; state.input.strafe += action.strafe; break;
+            // Recorded rather than applied: the player turns on the tic clock, where a held
+            // turn can ramp the way Doom's does (`shared/player-motion.js`).
+            case 'turnPlayer': state.turnRequest = (state.turnRequest || 0) + action.speed; break;
+            case 'mouseLook':
+              frame.player.angle += state.input.mouseX * action.sensitivity;
+              if (action.vertical === 'enabled') frame.player.pitch = Math.max(-85 * Math.PI / 180, Math.min(85 * Math.PI / 180, frame.player.pitch - state.input.mouseY * action.sensitivity));
+              break;
+            case 'jumpPlayer':
+              state.input.jump = true; break;
+            case 'setMotionModel':
+              // Switching a project's movement model. Doom's momentum is kept as it is, so a
+              // switch back mid-game does not teleport the player, and the Source velocity starts
+              // from however fast the player was already going.
+              if (action.model === 'source') {
+                state.motionModel = 'source';
+                state.motionSettings = { ...state.motionSettings, ...Object.fromEntries(Object.entries(action)
+                  .filter(([key]) => ['gravity', 'jumpSpeed', 'maxSpeed', 'accelerate', 'airAccelerate', 'friction',
+                    'stopSpeed', 'airSpeedCap'].includes(key))) };
+                state.motion = { x: (state.momentum?.x || 0) * 35, y: (state.momentum?.y || 0) * 35, z: 0 };
+              } else {
+                state.motionModel = 'doom';
+                state.momentum = { x: (state.motion?.x || 0) / 35, y: (state.motion?.y || 0) / 35, z: 0 };
+              }
+              break;
+            case 'setPlayerGravity':
+              setPlayerGravity(state, action.mode, action.reach); break;
+            case 'setPlayerStat':
+              if (action.stat === 'health') recordDamage(state, state.playerStats.health - action.value);
+              state.playerStats[action.stat] = action.value; break;
+            case 'addPlayerStat': {
+              const value = Math.max(0, Math.min(action.maximum, state.playerStats[action.stat] + action.value));
+              if (action.stat === 'health') recordDamage(state, state.playerStats.health - value);
+              state.playerStats[action.stat] = value; break;
+            }
+            case 'damagePlayer': damagePlayer(state, action.damage, action.direction); break;
+            case 'playSound': soundEvent(state, action.sound, action.volume, event.ownerId ? findTarget(event.ownerId) : undefined); break;
+            case 'playAssetSound': {
+              // The audio player looks sounds up by name, and decodes whatever the browser can —
+              // MP3, Ogg Vorbis, Opus, FLAC and WAV all arrive here as one asset kind.
+              const asset = (project.assets || []).find(item => item.id === action.assetId);
+              if (asset?.src) soundEvent(state, asset.name, action.volume);
+              break;
+            }
+            case 'startTimesheet': {
+              const loop = action.loop === 'yes' ? true : action.loop === 'no' ? false : null;
+              startTimesheetRun(project, state, action.timesheetId, { restart: action.restart !== 'no', loop });
+              break;
+            }
+            case 'stopTimesheet':
+              stopTimesheetRun(state, action.all === 'yes' ? 'all' : action.timesheetId);
+              break;
+            case 'setTimesheetPaused':
+              setTimesheetPaused(state, action.timesheetId, action.paused === 'yes');
+              break;
+            case 'followPath': {
+              const path = (project.paths || []).find(item => item.id === action.pathId);
+              const target = findTarget(action.entityId);
+              // A cue that names a route which has been deleted leaves the object alone rather than
+              // moving it to the origin, the same rule the path followers follow.
+              if (path && target && target.type !== 'player')
+                startPathTween(state, { entityId: target.id, pathId: path.id, fromPoint: action.fromPoint,
+                  toPoint: action.toPoint, seconds: action.seconds, easing: action.easing,
+                  faceDirection: action.faceDirection !== 'no', yawOffset: action.yawOffset,
+                  useModelFacing: action.useModelFacing !== 'no' });
+              break;
+            }
+            case 'facePlayer': {
+              const entity = findTarget(action.entityId);
+              if (entity) entity.angle = Math.atan2(state.player.y - entity.y, state.player.x - entity.x) * 180 / Math.PI;
+              break;
+            }
+            // A line's special, executed from a rule: the same table the engine uses when a
+            // UDMF line activates natively, so the two cannot drift.
+            case 'runLineSpecial':
+              if (!state.worldTerminalActive) {
+                executeSpecial(project, state, action.special,
+                  [action.arg1, action.arg2, action.arg3, action.arg4, action.arg5], { scripts: state.scripts, format: 'zdoom' });
+              }
+              break;
+            // A decompiled script's own builtins — `ChangeFloor(tag, "HEX01")`, `SetLineSpecial`,
+            // `SetLineBlocking` — run through the interpreter's host functions, so the rule and a
+            // script that was not decompiled change the level the same way.
+            case 'showHudMessage':
+              hostFor(action).hudMessage({ text: String(action.text ?? ''), type: Number(action.messageType) || 0,
+                id: Number.isFinite(action.id) ? action.id : -1, color: Number(action.color) || 0,
+                x: Number(action.x) || 0, y: Number(action.y) || 0, holdTime: Number(action.holdTime) || 0,
+                fade: Number(action.fade) || 0, width: Number(action.hudWidth) || 0,
+                height: Number(action.hudHeight) || 0, font: action.font || null });
+              break;
+            case 'fadeRange':
+              hostFor(action).fadeRange({
+                from: { red: Number(action.redFrom) || 0, green: Number(action.greenFrom) || 0,
+                  blue: Number(action.blueFrom) || 0, amount: Number(action.amountFrom) || 0 },
+                to: { red: Number(action.red) || 0, green: Number(action.green) || 0,
+                  blue: Number(action.blue) || 0, amount: Number(action.amount) || 0 },
+                seconds: Number(action.seconds) || 0 });
+              break;
+            case 'fadeTo':
+              hostFor(action).fadeTo({ red: Number(action.red) || 0, green: Number(action.green) || 0,
+                blue: Number(action.blue) || 0, amount: Number(action.amount) || 0,
+                seconds: Number(action.seconds) || 0 });
+              break;
+            case 'setActorPosition':
+              hostFor(action).setActorPosition(Number(action.tid) || 0, Number(action.x) || 0,
+                Number(action.y) || 0, Number(action.z) || 0, Number(action.fog) || 0, 'player');
+              break;
+            case 'giveInventory':
+              hostFor(action).giveInventory(String(action.item ?? ''), Number(action.amount) || 0, 'player');
+              break;
+            case 'takeInventory':
+              hostFor(action).takeInventory(String(action.item ?? ''), Number(action.amount) || 0, 'player');
+              break;
+            case 'damageThing':
+              hostFor(action).damageThing(Number(action.tid) || 0, Number(action.amount) || 0,
+                String(action.kind ?? ''), 'player');
+              break;
+            case 'sectorDamage':
+              hostFor(action).sectorDamage(Number(action.tag) || 0, Number(action.amount) || 0,
+                String(action.kind ?? ''), String(action.protection ?? ''), 0);
+              break;
+            case 'setSectorFlat': {
+              hostFor(action).changeFlat(Number(action.tag) || 0, String(action.flat ?? ''), action.surface === 'ceiling');
+              break;
+            }
+            case 'setLineTexture': {
+              hostFor(action).setLineTexture(Number(action.line) || 0, Number(action.side) || 0,
+                Number(action.part) || 0, String(action.texture ?? ''));
+              break;
+            }
+            case 'replaceTextures': {
+              // `ReplaceTextures(from, to, flags)`: the same host function the interpreter calls,
+              // so a translated script and a bytecode one swap the same surfaces.
+              hostFor(action).replaceTextures(String(action.from ?? ''), String(action.to ?? ''), Number(action.flags) || 0);
+              break;
+            }
+            case 'setLineBlocking': {
+              hostFor(action).setLineBlocking(Number(action.tag) || 0, action.blocking === 'no' ? 0 : 1);
+              break;
+            }
+            case 'setLineMonsterBlocking': {
+              hostFor(action).setLineMonsterBlocking(Number(action.tag) || 0, action.monsters === 'yes');
+              break;
+            }
+            case 'setLineSpecial': {
+              hostFor(action).setLineSpecial(Number(action.tag) || 0, Number(action.special) || 0,
+                [action.arg1 ?? 0, action.arg2 ?? 0, action.arg3 ?? 0, action.arg4 ?? 0, action.arg5 ?? 0]);
+              break;
+            }
+            // Starts a compiled ACS script from a rule — the trigger is in the sheet, the body
+            // is the module the WAD shipped, shown disassembled in the Scripts tab.
+            case 'runScript': {
+              const selector = /^-?\d+$/.test(String(action.script)) ? Number(action.script) : String(action.script);
+              state.scripts?.execute(selector, [action.arg1 ?? 0, action.arg2 ?? 0, action.arg3 ?? 0, action.arg4 ?? 0]);
+              break;
+            }
+            case 'setEntitySolid': {
+              const entity = findTarget(action.entityId);
+              if (entity) { entity.solid = action.solid === 'yes'; if (!entity.solid) state.physics?.remove(entity.id); }
+              break;
+            }
+            case 'homeMissile': {
+              const missile = findTarget(action.entityId);
+              if (missile) homeMissile(project, state, missile, { turn: action.turn });
+              break;
+            }
+            case 'bfgSpray': {
+              const source = findTarget(action.entityId);
+              if (source) bfgSpray(project, state, source, action);
+              break;
+            }
+            // The blast a missile's Death state would perform, as an action a rule can take.
+            case 'explodeArea': {
+              const entity = findTarget(action.entityId);
+              if (entity) explodeAt(project, state, entity, action.damage, action.radius);
+              break;
+            }
+            // Runs an imported actor's own state, which is where its frames, sounds and its
+            // attack function live — a translated monster's rule says *when*, the state says how.
+            case 'playActorState': {
+              const entity = findTarget(action.entityId);
+              if (entity && entity.health > 0) setActorState(project, entity, action.state, { ifDifferent: true });
+              break;
+            }
+            case 'moveEnemy': {
+              const entity = findTarget(action.entityId);
+              if (entity) moveEnemy(state, entity, action.speed, frame.dt);
+              break;
+            }
+            case 'enemyHitscan': {
+              const entity = findTarget(action.entityId);
+              if (entity) enemyHitscan(state, entity, action);
+              break;
+            }
+            case 'launchProjectile':
+              // An `missile` names an imported actor class, so a translated weapon fires the
+              // mod's own projectile — flight clip, explosion and all — instead of a lookalike.
+              if (!state.worldTerminalActive) launchProjectile(state, missileShot(project, action));
+              break;
+            case 'enemyProjectile': {
+              const entity = findTarget(action.entityId);
+              if (entity && entity.health > 0 && canSeePlayer(state, entity, 65536)) launchProjectile(state, action, entity);
+              break;
+            }
+            case 'setEntityHealth': {
+              const target = findTarget(action.entityId);
+              if (target) target.health = action.health;
+              break;
+            }
+            case 'hitscan':
+              if (!state.worldTerminalActive) {
+                fireHitscan(project, state, action);
+                // A weapon whose own states play a hit sound (the chainsaw) keeps it.
+                if (action.hitSound && state.lastShot?.hits.length) saySound(state, action.hitSound, null, 127);
+              }
+              break;
+            case 'startTimer': state.timers.set(`${event.ownerId || '$scene'}:${action.timer}`, state.time + action.seconds); break;
+            case 'clearTimer': state.timers.delete(`${event.ownerId || '$scene'}:${action.timer}`); break;
+            case 'showPlayerHUD': state.hud = action.visible === 'yes'; break;
+            case 'setHUDCursor': hud.cursor = action.mode === 'toggle' ? !hud.cursor : action.mode === 'cursor'; break;
+            case 'setHUDVisible': hud.elements.get(action.elementId).visible = action.visible === 'yes'; break;
+            case 'setHUDText': Object.assign(hud.elements.get(action.elementId), { text: action.text, binding: '' }); break;
+            case 'setHUDBinding': hud.elements.get(action.elementId).binding = action.binding; break;
+            case 'setHUDProperty': hud.elements.get(action.elementId)[action.property] = action.value; break;
+            case 'playHUDAnimation': playHUDAnimation(project, hud, action.animationId); break;
+            case 'stopHUDAnimation': hud.playing.delete(action.animationId); break;
+            case 'showMessage': state.message = action.message; state.messageTime = 6; break;
+            case 'setVariable': assignVariable(state.variables, action.variable, action.value, false); break;
+            case 'addVariable': assignVariable(state.variables, action.variable, action.value, true); break;
+            case 'setAcsVariable': {
+              // The store a decompiled script writes is the interpreter's own, so the rest of the
+              // level sees the change exactly as it did when the script ran as bytecode.
+              const store = acsVariableStore(state, action.scope, action.module);
+              if (!store) throw new Error(`Event "${event.name || event.id}": the level has no ACS variables`);
+              const index = Number(action.index) || 0;
+              const value = Number(action.value) || 0;
+              store[index] = (action.mode === 'add' ? (store[index] | 0) + value : value) | 0;
+              break;
+            }
+            case 'setAcsArray': {
+              // A decompiled script's arrays are the level's own stores, so a script that was not
+              // translated and a rule that was read the same elements.
+              const stored = writeAcsArray(state, action.scope, action.id, action.index,
+                action.mode === 'add' ? readAcsArray(state, action.scope, action.id, action.index, action.module) + (Number(action.value) || 0)
+                  : Number(action.value) || 0, action.module);
+              if (!stored) throw new Error(`Event "${event.name || event.id}": the level has no ACS arrays`);
+              break;
+            }
+            case 'teleport':
+              frame.player.x = action.x; frame.player.y = action.y;
+              if (!state.physics) {
+                const entity = state.entities.find(item => item.type === 'player');
+                const floor = sectorAt(state.sectors, action.x, action.y)?.floorHeight ?? 0;
+                const z = action.z ?? floor + (entity.elevation || 0);
+                Object.assign(entity, { x: action.x, y: action.y, z, elevation: z - floor });
+                frame.player.z = z;
+              }
+              // Doom drops the player's momentum when it teleports them.
+              resetMomentum(state);
+              if (action.angle !== undefined) frame.player.angle = action.angle * Math.PI / 180;
+              state.physics?.teleport(state.entities.find(entity => entity.type === 'player').id, action.x, action.y, action.z);
+              break;
+            case 'removeEntity': {
+              const id = resolveEntityId(event, action.entityId);
+              removeEntityFromLevel(state, state.entities.find(item => item.id === id));
+              break;
+            }
+            case 'setEntityPosition': {
+              const target = findTarget(action.entityId);
+              if (target) {
+                target.x = action.x; target.y = action.y;
+                if (target.type === 'player') {
+                  frame.player.x = action.x; frame.player.y = action.y;
+                  if (!state.physics) {
+                    const floor = sectorAt(state.sectors, action.x, action.y)?.floorHeight ?? 0;
+                    frame.player.z = target.z = action.z ?? floor + (target.elevation || 0);
+                    target.elevation = target.z - floor;
+                  }
+                }
+                if (action.z !== undefined) target.z = action.z;
+                const floor = floorHeightAt(sectorAt(state.sectors, target.x, target.y), target.z);
+                if (!state.physics) {
+                  target.z = action.z ?? floor + (target.elevation || 0);
+                  if (target.type === 'player') frame.player.z = target.z;
+                }
+                target.elevation = (target.z ?? floor) - floor;
+                state.physics?.teleport(target.id, action.x, action.y, action.z);
+              }
+              break;
+            }
+            case 'rotateEntity': {
+              const target = findTarget(action.entityId);
+              if (target) {
+                target.angle = action.angle;
+                if (target.type === 'player') frame.player.angle = action.angle * Math.PI / 180;
+                state.physics?.rotate(target.id, action.angle);
+              }
+              break;
+            }
+            case 'applyImpulse': case 'applyForce': case 'setVelocity': {
+              const target = findTarget(action.entityId);
+              if (!target) break;
+              if (!state.physics) throw new Error('Physics actions require an initialized Rapier world');
+              const method = action.type === 'applyImpulse' ? 'impulse' : action.type === 'applyForce' ? 'force' : 'velocity';
+              state.physics[method](target.id, action);
+              break;
+            }
+            case 'playAnimation':
+              if (findTarget(action.entityId)) {
+                const id = resolveEntityId(event, action.entityId);
+                state.animations.set(id, { clip: action.clip, speed: action.speed, loop: action.loop, playing: true, revision: (state.animations.get(id)?.revision || 0) + 1 });
+              }
+              break;
+            case 'stopAnimation': {
+              const animation = state.animations.get(resolveEntityId(event, action.entityId));
+              if (animation) { animation.playing = false; animation.revision++; }
+              break;
+            }
+            default: {
+              // An action an addon declared: its implementation does whatever it does, with the game
+              // state in hand. Anything else unknown stays the no-op it always was.
+              const custom = addonHooks(state)?.actions?.get(action.type);
+              if (custom) runAddon(custom, addonContext({ project, state, event, command: action, findTarget, player: frame.player }), action);
+              break;
+            }
           }
-          break;
+          if (phase !== 'interface' && state.gameScreen !== 'playing') return true;
         }
-        case 'rotateEntity': {
-          const target = findTarget(action.entityId);
-          if (target) {
-            target.angle = action.angle;
-            if (target.type === 'player') player.angle = action.angle * Math.PI / 180;
-            state.physics?.rotate(target.id, action.angle);
-          }
-          break;
-        }
-        case 'applyImpulse': case 'applyForce': case 'setVelocity': {
-          const target = findTarget(action.entityId);
-          if (!target) break;
-          if (!state.physics) throw new Error('Physics actions require an initialized Rapier world');
-          const method = action.type === 'applyImpulse' ? 'impulse' : action.type === 'applyForce' ? 'force' : 'velocity';
-          state.physics[method](target.id, action);
-          break;
-        }
-        case 'playAnimation':
-          if (findTarget(action.entityId)) {
-            const id = resolveEntityId(event, action.entityId);
-            state.animations.set(id, { clip: action.clip, speed: action.speed, loop: action.loop, playing: true, revision: (state.animations.get(id)?.revision || 0) + 1 });
-          }
-          break;
-        case 'stopAnimation': {
-          const animation = state.animations.get(resolveEntityId(event, action.entityId));
-          if (animation) { animation.playing = false; animation.revision++; }
-          break;
-        }
-        default: {
-          // An action an addon declared: its implementation does whatever it does, with the game
-          // state in hand. Anything else unknown stays the no-op it always was.
-          const custom = addonHooks(state)?.actions?.get(action.type);
-          if (custom) runAddon(custom, addonContext({ project, state, event, command: action, findTarget, player }), action);
-          break;
-        }
-      }
-      if (phase !== 'interface' && state.gameScreen !== 'playing') return true;
-    }
-    return true;
+        return true;
+      } finally { busy = false; }
+    };
+  }
+  function runEventBody(event, perInstance, phase, picks) {
+    return runnerFor(event)(perInstance, phase, picks);
   }
 }
 
