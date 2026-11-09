@@ -1,4 +1,5 @@
 # OpenDLE: Studio
+Ver 0.5 goal = Doom 2 fully playable and completable inside of OpenDLE: Studio
 
 **Build worlds. Script visually. Make them playable in your browser.**
 
