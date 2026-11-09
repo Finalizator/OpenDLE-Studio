@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import R from '@dimforge/rapier3d-compat';
 import { ShapeUtils, Vector2 } from 'three';
 import {
-  AIR_SPEED_CAP, HL2_MOVEMENT, SOURCE_JUMP_SPEED, STANDABLE_NORMAL_Z, accelerate, airAccelerate,
-  clipVelocity, friction, horizontalStep, measuredVelocity, standable, tiltedUpNormal, wishFromInput,
+  AIR_SPEED_CAP, HL2_MOVEMENT, SOURCE_JUMP_SPEED, STANDABLE_NORMAL_Z, SURF_AIRACCELERATE, SV_ACCELERATE,
+  SV_AIRACCELERATE, accelerate, airAccelerate, clipVelocity, friction, horizontalStep, measuredVelocity,
+  standable, tiltedUpNormal, upgradeSurfAirAccelerate, wishFromInput,
 } from '../shared/source-motion.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
@@ -104,7 +105,9 @@ test('the scriptlet installs editable rules and surf ramps that can be removed a
   assert.equal(movement.type, 'setMotionModel');
   assert.equal(movement.model, 'source');
   assert.equal(movement.airSpeedCap, AIR_SPEED_CAP);
-  assert.equal(movement.airAccelerate, 10);
+  // A surf scriptlet installs the surf-server value: at Half-Life's single-player 10 a ramp
+  // cannot be held at all, which is what "it does not feel like Half-Life surf" was.
+  assert.equal(movement.airAccelerate, SURF_AIRACCELERATE);
   // "Add to project" installs the rules only: ramps belong to the map-building action, because
   // dropping them into an imported WAD puts them against whatever geometry is already there.
   assert.equal(project.map.entities.length, before, 'adding rules does not move anything');
@@ -365,4 +368,48 @@ test('measured velocity is the speed the world actually moved the player at', ()
   // Pressed against a wall the displacement is nothing, so the speed is nothing.
   assert.deepEqual(measuredVelocity({ x: 5, y: 5 }, { x: 5, y: 5 }, .5), { x: 0, y: 0, z: 0 });
   assert.equal(SOURCE_JUMP_SPEED, 268.3281572999747);
+});
+
+test('the surf scriptlet installs the surf-server air acceleration, not Half-Life’s single-player one', () => {
+  const project = createProject();
+  project.events = [];
+  installSourceMovementScriptlet(project);
+  const action = project.events.flatMap(event => event.actions || []).find(action => action.type === 'setMotionModel');
+  assert.ok(action, 'the movement rule is installed');
+  assert.equal(action.model, 'source');
+  assert.equal(action.airAccelerate, SURF_AIRACCELERATE, 'a surf scriptlet with 10 cannot be steered on a ramp');
+  assert.equal(SURF_AIRACCELERATE, 100, 'which is the classic surf-server value');
+  assert.equal(action.accelerate, SV_ACCELERATE, 'ground acceleration stays Half-Life’s');
+  assert.equal(action.airSpeedCap, AIR_SPEED_CAP, 'and so does the 30 unit shortfall cap');
+});
+
+test('a project installed before the surf value keeps its own number, and only an untouched default is raised', () => {
+  const project = createProject();
+  project.events = [];
+  installSourceMovementScriptlet(project);
+  const action = project.events.flatMap(event => event.actions || []).find(candidate => candidate.type === 'setMotionModel');
+  // What the old scriptlet wrote.
+  action.airAccelerate = SV_AIRACCELERATE;
+  assert.equal(upgradeSurfAirAccelerate(project), 1, 'the untouched default is raised');
+  assert.equal(action.airAccelerate, SURF_AIRACCELERATE);
+  assert.equal(upgradeSurfAirAccelerate(project), 0, 'and running it again changes nothing');
+
+  // A mapper who chose a value keeps it.
+  action.airAccelerate = 1500;
+  assert.equal(upgradeSurfAirAccelerate(project), 0, 'a chosen value is left alone');
+  assert.equal(action.airAccelerate, 1500);
+
+  // A missing value is the default, so it is raised.
+  delete action.airAccelerate;
+  assert.equal(upgradeSurfAirAccelerate(project), 1);
+  assert.equal(action.airAccelerate, SURF_AIRACCELERATE);
+});
+
+test('the upgrade only touches the source movement rule of a project that has one', () => {
+  const project = createProject();
+  project.events = [{ id: 'other', enabled: true, condition: { type: 'onStart' }, actions: [
+    { type: 'setMotionModel', model: 'doom' },
+    { type: 'showMessage', message: 'keep me' }] }];
+  assert.equal(upgradeSurfAirAccelerate(project), 0, 'a Doom project has nothing to raise');
+  assert.deepEqual(project.events[0].actions[1], { type: 'showMessage', message: 'keep me' });
 });

@@ -4779,7 +4779,7 @@ heading, so the total grows.
 | `sv_friction` | 4 | `movevars_shared.cpp` |
 | `sv_stopspeed` | 100 | the floor friction bleeds at, so a player stops instead of creeping |
 | `sv_accelerate` | 10 | ground acceleration |
-| `sv_airaccelerate` | 10 | **surf servers raise this to 100–1500** |
+| `sv_airaccelerate` | 10 | **the surf scriptlet installs 100**; surf servers use 100–1500 |
 | `sv_maxspeed` | 320 | the wish speed the input is clamped to |
 | `sv_gravity` | 600 (Unit) / 800 | Half-Life 2 runs at 600 |
 | jump | 160 (Unit) / 268.33 | `sqrt(2 * gravity * height)` |
@@ -4795,6 +4795,17 @@ player is permanently airborne and frictionless; gravity keeps pulling them into
 acceleration adds speed along the direction being held. Downward speed becomes speed along the
 ramp, and then speed back up it. That is the whole trick, and it is why raising
 `sv_airaccelerate` is what turns a slide into a surf.
+
+**The scriptlet sets up surf, it does not leave it to the reader.** Half-Life's own
+`sv_airaccelerate` is 10, which allows drifting but not steering: a line down a ramp cannot be
+held, so speed cannot be built by turning into the surface. The `source_movement` rule the surf
+scriptlet writes therefore carries `airAccelerate: SURF_AIRACCELERATE` (**100**, the classic
+surf-server value) rather than `SV_AIRACCELERATE`, and every other field stays Half-Life's. A
+project set up before this keeps 10, so `upgradeSurfAirAccelerate` runs when a project is opened:
+it raises a rule that is **still at the untouched default** and leaves any value a mapper chose
+(10 by hand, 800, 1500) alone, marks the project dirty and says so. Install
+[the scriptlet] to a fresh project and the number is right from the start; open an old one and it
+is corrected on load.
 
 **What OpenDLE does differently, and why.** The collision world is Rapier's character
 controller, not Source's four-trace swept move, so the division of labour is: the model owns

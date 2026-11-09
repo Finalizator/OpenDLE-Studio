@@ -1,5 +1,5 @@
 import { installEngineScripts, addSurfRamp, surfRampGeometry, surfRampSurface } from '../shared/engine-script.js';
-import { AIR_SPEED_CAP, HL2_GRAVITY, SV_ACCELERATE, SV_AIRACCELERATE, SV_FRICTION, SV_STOPSPEED } from '../shared/source-motion.js';
+import { AIR_SPEED_CAP, HL2_GRAVITY, SURF_AIRACCELERATE, SV_ACCELERATE, SV_FRICTION, SV_STOPSPEED } from '../shared/source-motion.js';
 import { sectorGeometry } from '../shared/sectors.js';
 import { createProject, removeEntities } from '../shared/project.js';
 import { findScriptletSheet, installScriptletRules, removeScriptletSheet, scriptletRuleCount } from '../shared/scriptlets.js';
@@ -26,10 +26,13 @@ export function installSourceMovementScriptlet(project, { ramps = 0 } = {}) {
     throw new Error(`Source movement ramp count must be a nonnegative integer within the ${LIMITS.entities}-entity map limit`);
   }
 
+  // The movement values are part of what the scriptlet installs, not something the mapper has to
+  // discover: Half-Life's own `sv_airaccelerate` of 10 cannot hold a line down a ramp, so a
+  // scriptlet whose whole point is surfing installs the surf-server value of 100.
   const movement = {
     type: 'setMotionModel', model: 'source',
     gravity: HL2_GRAVITY, jumpSpeed: 160, maxSpeed: 320,
-    accelerate: SV_ACCELERATE, airAccelerate: SV_AIRACCELERATE, friction: SV_FRICTION,
+    accelerate: SV_ACCELERATE, airAccelerate: SURF_AIRACCELERATE, friction: SV_FRICTION,
     stopSpeed: SV_STOPSPEED, airSpeedCap: AIR_SPEED_CAP,
   };
   const sheetId = installScriptletRules(project, { id: ID, name: SOURCE_MOVEMENT_SHEET,
@@ -172,9 +175,10 @@ export default {
     + 'hopping work. A surface steeper than 45.6 degrees cannot be stood on, so it has no friction '
     + 'and the player slides along it — that is a surf ramp, and the map builder adds ramps as '
     + 'scene objects of their own type with an angle, length, width and height you can edit. '
-    + 'Every constant is a field on the '
-    + '"source_movement" rule: gravity, jump speed, run speed, accelerate, airaccelerate, friction, '
-    + 'stop speed and the air speed cap. Raise airaccelerate to 100 for the feel of a surf server.',
+    + 'Every constant is a field on the "source_movement" rule: gravity, jump speed, run speed, '
+    + 'accelerate, airaccelerate, friction, stop speed and the air speed cap. Airaccelerate is '
+    + 'installed at 100, the surf-server value, because Half-Life\'s single-player 10 leaves no '
+    + 'air control to hold a line down a ramp with. Raise it further (up to 1500) for tighter surf.',
   rules: 2,
   install(project) { return installSourceMovementScriptlet(project); },
   // A second action: build a whole new map to surf in, rather than adding ramps to whatever

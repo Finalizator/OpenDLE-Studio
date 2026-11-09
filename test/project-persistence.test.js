@@ -49,7 +49,7 @@ function fixture(api = async () => {}) {
     api, validateProject, draftProject, recoverProject, writeProjectDraft, upgradeSceneInstances, confirm: () => true,
     draftTooLarge: () => (context.project.assets?.length || 0) > 300 || (context.project.game?.levels.length || 0) > 4,
     historyLimit: () => 10, syncRampModels() {}, render() {}, clearDraft() {}, fitMap() {}, renderSceneObjectTabs() {},
-    upgradePickupReach: () => false, upgradeCrusherRules: () => 0, refreshProjects: async () => {}, badgeText: () => context.dirty ? 'Unsaved' : 'Saved',
+    upgradePickupReach: () => false, upgradeCrusherRules: () => 0, upgradeSurfAirAccelerate: () => 0, refreshProjects: async () => {}, badgeText: () => context.dirty ? 'Unsaved' : 'Saved',
     createProjectAutosave: options => createProjectAutosave({ ...options,
       setTimer: callback => { timers.set(++timerId, callback); return timerId; },
       clearTimer: id => timers.delete(id) }),

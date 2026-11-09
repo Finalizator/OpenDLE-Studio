@@ -63,6 +63,7 @@ import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD } from '/shared/hud.js';
 import { upgradePickupReach, installDroppedPickupRules } from '/shared/doom-hud.js';
 import { upgradeCrusherRules } from '/shared/doom-specials.js';
+import { upgradeSurfAirAccelerate } from '/shared/source-motion.js';
 import { suggestedArea, ZONE_AREA } from '/shared/areas.js';
 import { captureScene, placeSceneInstance, sceneIsEmpty, newScene } from '/shared/scenes.js';
 import { layoutEntityIds, layoutSelection, sceneInstanceOf, upgradeSceneInstances } from '/shared/entity-groups.js';
@@ -3927,6 +3928,12 @@ async function reloadProject(initial = false) {
     // four-unit twitch on this map. Repair it in the project itself, not only in the throwaway
     // play snapshot, so the editor's own numbers are the ones that run.
     if (upgradeCrusherRules(project)) { dirty = true; status('Crush-and-raise pistons now travel to the floor and back; save to keep it.'); }
+    // A project set up for surfing before the scriptlet installed the surf-server air acceleration
+    // is set up to fail: at Half-Life's single-player 10 there is no steering on a ramp at all.
+    if (upgradeSurfAirAccelerate(project)) {
+      dirty = true;
+      status('Surf movement now uses airaccelerate 100, the surf-server value; save to keep it.');
+    }
     if (upgradeSceneInstances(project)) { dirty = true; status('Scene instances restored as single layout objects; save to keep it.'); }
     // Ramps saved before they were meshes get the model their numbers describe, so an old map
     // opens with the ramps drawn and collided the way the tool now builds them.

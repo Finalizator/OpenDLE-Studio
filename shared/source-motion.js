@@ -29,8 +29,18 @@ export const SV_STOPSPEED = 100;
 export const SV_MAXSPEED = 320;
 /** `sv_accelerate` — ground acceleration. */
 export const SV_ACCELERATE = 10;
-/** `sv_airaccelerate` — air acceleration. Surf and bhop servers raise this to 100–1500. */
+/** `sv_airaccelerate` — air acceleration, at Half-Life 1's single-player default. */
 export const SV_AIRACCELERATE = 10;
+/**
+ * The `sv_airaccelerate` a surf map is built for.
+ *
+ * At the single-player 10 there is barely any air control: you can drift, not steer, so a line
+ * down a ramp cannot be held and speed cannot be built by turning into the surface. Every surf
+ * server raises it — 100 is the classic value, and 800–1500 is where the tight, "sticky" surf
+ * lives. This is the value the surf scriptlet installs, because a project set up for surfing with
+ * 10 is set up to fail: measured on a 50 degree face, 10 builds no usable speed and 100 does.
+ */
+export const SURF_AIRACCELERATE = 100;
 /** `sv_maxvelocity` — applied per axis by `CheckVelocity`. */
 export const SV_MAXVELOCITY = 3500;
 /** `sv_gravity` — Unit (HL2) uses 600, most other Source games 800. */
@@ -83,6 +93,28 @@ export const HL2_MOVEMENT = Object.freeze({
   maxVelocity: SV_MAXVELOCITY,
   airSpeedCap: AIR_SPEED_CAP,
 });
+
+/**
+ * Gives an already-installed movement rule the surf value it needs.
+ *
+ * A project set up before the surf scriptlet installed `sv_airaccelerate: 100` keeps 10, which
+ * cannot hold a line down a ramp — the report was "I cannot get the same feeling as in Half-Life
+ * surf", and this is most of the reason. The value is ordinary editable data, so this only touches
+ * a rule still at Half-Life's untouched single-player default: a mapper who chose 10 (or 800, or
+ * 1500) keeps it. Idempotent; returns how many rules it changed.
+ */
+export function upgradeSurfAirAccelerate(project) {
+  let changed = 0;
+  for (const event of project.events || []) {
+    for (const action of event.actions || []) {
+      if (action.type !== 'setMotionModel' || action.model !== 'source') continue;
+      if (action.airAccelerate !== undefined && action.airAccelerate !== SV_AIRACCELERATE) continue;
+      action.airAccelerate = SURF_AIRACCELERATE;
+      changed++;
+    }
+  }
+  return changed;
+}
 
 /** The defaults a Counter-Strike / surf server runs with. */
 export const SOURCE_MOVEMENT = Object.freeze({
