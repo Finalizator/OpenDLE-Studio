@@ -358,6 +358,87 @@ test('a standable slope is walked on with friction instead of surfed', async t =
   assert.ok(Math.hypot(state.motion.x, state.motion.y) < 30, `held still: ${Math.hypot(state.motion.x, state.motion.y)}`);
 });
 
+/**
+ * A ramp of `slope` degrees, with the player standing a little way down it and looking along the
+ * wall — so `KeyA` strafes *along* the face. That is how a surf map is played: nobody surfs by
+ * holding forward, because forward walks you down the slope.
+ */
+async function onRamp(t, slope, { keys = ['KeyA'], entry = 0, tics = 24 } = {}) {
+  const project = createProject();
+  project.events = [];
+  project.map.sectors[0].ceilingHeight = 2048;
+  const geometry = surfRampGeometry({ slope, facing: 'right', width: 1200, depth: 1200, thickness: 500 });
+  project.map.entities.push({ id: 'ramp', name: 'Ramp', type: 'decoration', x: 0, y: 0, angle: 0,
+    elevation: geometry.elevation, modelTilt: { pitch: 0, roll: geometry.roll },
+    physics: { body: 'fixed', shape: 'box', width: geometry.width, height: geometry.thickness,
+      depth: geometry.depth, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true } });
+  validateProject(project);
+  const state = createRuntime(project, { screen: 'playing', gameMode: true });
+  state.motionModel = 'source';
+  state.motionSettings = { ...state.motionSettings, airAccelerate: 100 };
+  state.physics = createPhysics(project, state, R, triangulate);
+  t.after(() => state.physics.dispose());
+  const surface = surfRampSurface(project.map.entities.find(entity => entity.id === 'ramp'));
+  const x = surface.highEdgeX + 40;
+  state.physics.teleport('player', x, 0, surface.heightAt(x) + 4);
+  state.player.angle = Math.PI / 2;
+  // An entry speed along the face, the way a player arrives from the previous ramp.
+  const phi = slope * Math.PI / 180;
+  state.motion = { x: entry * Math.cos(phi), y: 0, z: -entry * Math.sin(phi) };
+  const speeds = [];
+  let grounded = 0;
+  for (let tic = 0; tic < tics; tic++) {
+    stepRuntime(project, state, 1 / 35, new Set(keys));
+    if (state.physics.grounded) grounded++;
+    speeds.push(Math.hypot(state.motion.x, state.motion.y, state.motion.z));
+  }
+  const finite = [state.player.x, state.player.y, state.player.z, state.motion.x, state.motion.y, state.motion.z]
+    .every(Number.isFinite);
+  return { speeds, grounded, tics, finite };
+}
+
+test('a slope below 45.573 degrees is walked, however it is held, and above it is surfed', async t => {
+  // This is the whole reason a ramp has a slope: `CategorizePosition` calls a surface ground at
+  // `normal.z >= 0.7`, which is 45.573 degrees. Under it the player has friction and ground
+  // acceleration and simply walks at the run speed; over it there is no friction at all and the
+  // face becomes a surf ramp. Measured here rather than assumed, because a mapper's 40 degree
+  // "surf ramp" is not one — in Half-Life it is a walkable slope and always was.
+  const what = slope => {
+    const normalZ = Math.cos(slope * Math.PI / 180);
+    return `${slope} degrees (normal.z ${normalZ.toFixed(3)})`;
+  };
+  const steep = await onRamp(t, 50, { entry: 200 });
+  assert.equal(steep.grounded, 0, `a 50 degree face is never ground — ${what(50)}`);
+  assert.ok(steep.finite, 'and moving on it stays finite');
+  assert.ok(steep.speeds.at(-1) > 300, `a surfer strafing it builds speed: ${steep.speeds.at(-1).toFixed(0)}`);
+  const shallow = await onRamp(t, 40, { entry: 200 });
+  assert.equal(shallow.grounded, shallow.tics, `a 40 degree face is ground the whole way — ${what(40)}`);
+  // Walked, so friction applies: the speed settles to the run speed instead of building.
+  assert.ok(shallow.speeds.at(-1) <= 320.5,
+    `and friction caps it at the run speed: ${shallow.speeds.at(-1).toFixed(0)}`);
+  const justUnder = await onRamp(t, 45, { entry: 200 });
+  assert.equal(justUnder.grounded, justUnder.tics, '45 degrees is still walkable');
+  const justOver = await onRamp(t, 46, { entry: 200 });
+  assert.equal(justOver.grounded, 0, '46 degrees is not, which is where surf begins');
+});
+
+test('strafing is what carries a surfer along the face, and it never leaves the ground behind', async t => {
+  // Holding forward on a ramp walks down it; holding a strafe key with the view along the wall is
+  // how the face is used. Both are checked, because a test that holds forward proves nothing.
+  const strafing = await onRamp(t, 50, { keys: ['KeyA'], entry: 200 });
+  const forward = await onRamp(t, 50, { keys: ['KeyW'], entry: 200 });
+  assert.ok(strafing.speeds.every(Number.isFinite), 'strafing stays finite');
+  assert.ok(forward.speeds.every(Number.isFinite), 'and so does holding forward');
+  // Both keep every unit they had and gain more: the ramp is a surface to travel along, not a wall.
+  for (const [label, result] of [['strafe', strafing], ['forward', forward]]) {
+    assert.ok(result.speeds.at(-1) > 200, `${label} keeps and builds speed: ${result.speeds.at(-1).toFixed(0)}`);
+    assert.ok(Math.min(...result.speeds) > 150, `${label} never stalls: slowest ${Math.min(...result.speeds).toFixed(0)}`);
+  }
+  // Strafing across the face and running down it are different lines, so they cannot be identical.
+  assert.ok(Math.abs(strafing.speeds[5] - forward.speeds[5]) > 1,
+    `the two inputs steer differently (${strafing.speeds[5].toFixed(1)} against ${forward.speeds[5].toFixed(1)})`);
+});
+
 test('walking under Half-Life movement reaches the run speed and stops with friction', async t => {
   const project = createProject();
   project.events = [];

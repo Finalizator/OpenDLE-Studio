@@ -10,6 +10,7 @@ import { entityOrigin, hasModelFacing, noseAngle } from '/shared/entity-visuals.
 import { doorHeights } from '/shared/doors.js';
 import { elevatorHeights, sectorMover, sectorMovers } from '/shared/sector-movers.js';
 import { addRamp, bindRampPath, normalizeRamp, syncRampModels, RAMP_DEFAULTS } from '/shared/ramp.js';
+import { STANDABLE_NORMAL_Z } from '/shared/source-motion.js';
 import { createRampProfileEditor } from './ramp-profile-editor.js';
 import { geometryEdges, snapGeometryPoint, snapGeometrySurface, cutLevelGeometry } from '/shared/geometry-cut.js';
 import { createGeometryCutTool } from './geometry-cut-tool.js';
@@ -1628,6 +1629,15 @@ function renderInspector() {
           if (!ramp.pathId) field(parent, 'Width (across)', input(ramp.width, 'number', value => changeRamp({ width: value })));
           if (ramp.profile !== 'custom') {
             field(parent, 'Angle (degrees)', input(ramp.slope, 'number', value => changeRamp({ slope: value })));
+            // Surf is not a setting: it is what a surface steeper than `CategorizePosition`'s 45.573
+            // degrees does, because the player stops being on ground and loses friction. A ramp
+            // shallower than that is a walkable slope, so saying so here is the difference between
+            // "surf is broken" and "this ramp is not a surf ramp".
+            const surfDegrees = (Math.acos(STANDABLE_NORMAL_Z) * 180 / Math.PI);
+            if (ramp.profile !== 'custom' && Number(ramp.slope) <= surfDegrees)
+              parent.append(make('p', `Walkable slope: ${Number(ramp.slope).toFixed(1)}° is under the ` +
+                `${surfDegrees.toFixed(1)}° surf limit, so the player walks it with friction and it never surfs. ` +
+                `Raise the angle above ${(surfDegrees + .5).toFixed(1)}° to surf it.`, 'muted'));
             field(parent, ramp.pathId ? 'Cross-slope run' : 'Length (ground it covers)', input(ramp.length, 'number', value => changeRamp({ length: value })));
             field(parent, 'Height (before edge trimming)', input(height, 'number', value => changeRamp({ height: value })));
             if (ramp.profile !== 'ridge') field(parent, 'Falls towards', select([['right', '+X (right)'], ['left', '-X (left)']], ramp.facing,

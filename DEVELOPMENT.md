@@ -4807,6 +4807,26 @@ it raises a rule that is **still at the untouched default** and leaves any value
 [the scriptlet] to a fresh project and the number is right from the start; open an old one and it
 is corrected on load.
 
+**Surf is a slope, not a switch — 45.573 degrees.** `CategorizePosition` calls a surface ground
+when its normal's z is at least **0.7**, which is the steepest a player can stand on. Under that
+the player has friction and ground acceleration and is simply walking up or down a hill; over it
+there is no friction at all and the face is a surf ramp. Measured on the same ramp at seven angles:
+30/40/44/45° are ground on 24 of 24 tics and the speed settles at the 320 run speed; 46/50/60° are
+ground on **0** of 24 tics and a surfer strafing the face with a 200-unit entry reaches 317, 334 and
+371. A mapper's 40 degree "surf ramp" is therefore a walkable slope, and was in Half-Life too — the
+ramp properties panel now says so in as many words under the angle field rather than leaving it to
+a footnote.
+
+**Holding forward is not surfing; strafing is.** On a steep face the input that matters is the one
+that runs *along* the wall: the view is turned so that `A`/`D` points down the ramp. Both lines were
+measured (and are now covered by `test/source-motion.test.js`): a strafing surfer keeps every unit
+and gains speed, holding forward runs down the fall line and also keeps its speed, and the two steer
+measurably differently. Holding the key that points *up* the face is what kills a run — the wish
+direction is then up-slope, `AirAccelerate` can add as much as `wishspd - currentspeed` (which is
+large when the velocity points away from the wish direction), and the part pointing into the face is
+discarded by `ClipVelocity`. That is the same in Source, and it is why surfers talk about holding
+the right key.
+
 **The move is Source's own, run on the tic clock.** Rapier's character controller is a good
 general slide solver but it is not `TryPlayerMove`: it refuses to move along a surface steeper
 than its own slope limit, it reports the *distance* it managed rather than the velocity, and it
