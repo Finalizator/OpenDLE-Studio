@@ -3891,6 +3891,10 @@ async function reloadProject(initial = false) {
     // Drafts and older imports can still carry the narrow pickup reach that made an
     // item on a ledge impossible to take.
     if (upgradePickupReach(project)) { dirty = true; status('Pickup reach widened so items on ledges can be collected; save to keep it.'); }
+    // A crush-and-raise piston imported before the height rule was right was baked as a
+    // four-unit twitch on this map. Repair it in the project itself, not only in the throwaway
+    // play snapshot, so the editor's own numbers are the ones that run.
+    if (upgradeCrusherRules(project)) { dirty = true; status('Crush-and-raise pistons now travel to the floor and back; save to keep it.'); }
     if (upgradeSceneInstances(project)) { dirty = true; status('Scene instances restored as single layout objects; save to keep it.'); }
     // Ramps saved before they were meshes get the model their numbers describe, so an old map
     // opens with the ramps drawn and collided the way the tool now builds them.
