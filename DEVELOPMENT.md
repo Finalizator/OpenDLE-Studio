@@ -4815,6 +4815,32 @@ this compares the distance travelled, not the reported speed — the reported sp
 of the last sub-step that ran, so at a high frame rate it is up to two frames stale and reads low
 while accelerating.
 
+**Two known gaps, measured, that keep it from feeling like a surf server.**
+
+*The vertical velocity is not carried.* The model's velocity is x and y only: the vertical axis
+belongs to the collision world's own `verticalSpeed`, and after every step the model adopts the
+measured horizontal speed with `z` set to 0. Source's `TryPlayerMove` instead carries
+`velocity[2]` through every collision, which is what lets a fall become speed along a ramp and
+then speed back up it. Measured on a 50° face: the speed does climb, 0 → 50 → 99 → 148 → 201 →
+252 over 24 tics, and then it **collapses to 30 and to 0** the moment the ramp's bottom is
+reached and the floor is touched.
+
+*The velocity is replaced by the capsule's displacement.* `playerVelocity` is the distance the
+collision solve managed, which is not the same quantity as `ClipVelocity(velocity, plane)`: on a
+collision the capsule can be given less than it asked for, and adopting that throws away speed
+that should have been kept. This is what ends a run on any flat landing.
+
+`shared/try-player-move.js` is the faithful replacement — `tryPlayerMove`, `categorizePosition`,
+`stepMove`, `stayOnGround` and `playerMove`, written from the GoldSrc/Source source and covered
+by `test/try-player-move.test.js` (eight tests: a fall turning into motion along a face with the
+exact projection and no other loss, a landing keeping every unit of horizontal speed, the four
+bump limit keeping velocity instead of stopping dead, sliding along a crease, the 0.7 ground
+rule, a stair climbed and a 40-unit wall refused, and a whole tick keeping the speed it built).
+It is **not wired in yet**: driving it from Rapier's `world.castShape` did not sweep reliably in
+this build (the same cast answered differently for identical inputs), and the first attempt at
+wiring it regressed the measured surf from 252 units/s to 9. Wiring it needs a sweep that reports
+a fraction reliably; the algorithm itself is finished and tested.
+
 There is a third case, and it was the worst of the three. The controller only runs a substep
 once its 1/60 s accumulator fills, so at 174 frames a second **most frames simulate nothing**.
 A frame that simulated nothing has no speed to report, and saying "zero" there made the model

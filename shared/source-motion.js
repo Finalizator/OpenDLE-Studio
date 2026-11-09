@@ -168,6 +168,42 @@ export function clipVelocity(velocity, normal, overbounce = 1) {
   return out;
 }
 
+/**
+ * The velocity `TryPlayerMove` leaves behind after sliding along the surfaces it hit.
+ *
+ * Source's loop is: move as far as the tick allows, and when a plane is hit, project the
+ * **whole** velocity — vertical component included — onto that plane and carry on with the
+ * remaining time. The player therefore keeps every unit of speed that lies *along* the surface
+ * and loses only what pointed into it. This is the difference between surfing and sliding: on a
+ * 50 degree face the vertical velocity gravity added is not deleted, it is turned into motion
+ * along the face, and on landing on a floor the whole horizontal velocity survives untouched.
+ *
+ * `normals` are the contact normals from the collision solve, in map space with +z up. A normal
+ * the velocity is already leaving is skipped, exactly as `ClipVelocity`'s re-test does.
+ */
+export function slideVelocity(velocity, normals, overbounce = 1) {
+  let out = { x: velocity.x, y: velocity.y, z: velocity.z };
+  for (const normal of normals || []) {
+    const into = out.x * normal.x + out.y * normal.y + out.z * normal.z;
+    if (into >= 0) continue;              // already moving away from this plane
+    out = clipVelocity(out, normal, overbounce);
+  }
+  return out;
+}
+
+/**
+ * Whether a set of contact normals offers anything to stand on.
+ *
+ * `CategorizePosition` grounds the player only on a surface whose normal has a z component of at
+ * least 0.7 — 45.573 degrees. A steeper face is a surf ramp: never ground, so never friction,
+ * and full air control while you slide down it.
+ */
+export function groundNormal(normals, threshold = STANDABLE_NORMAL_Z) {
+  let best = null;
+  for (const normal of normals || []) if (normal.z >= threshold && (!best || normal.z > best.z)) best = normal;
+  return best;
+}
+
 /** `CGameMovement::CheckVelocity` — the per-axis clamp. */
 export function checkVelocity(velocity, settings = HL2_MOVEMENT) {
   const limit = settings.maxVelocity;
@@ -223,13 +259,17 @@ export function wishFromInput({ forward = 0, side = 0, angle = 0, maxSpeed = HL2
  */
 export function horizontalStep(velocity, { grounded, forward = 0, side = 0, angle = 0, dt,
   surfaceFriction = 1, settings = HL2_MOVEMENT } = {}) {
-  let v = { x: velocity.x, y: velocity.y, z: 0 };
+  // Friction and both accelerations only ever touch x and y, so the vertical velocity is
+  // carried through untouched. Dropping it here zeroed the fall the model had just added,
+  // which left a player hovering wherever a ramp caught them.
+  const z = Number(velocity.z) || 0;
+  let v = { x: velocity.x, y: velocity.y, z };
   v = friction(v, dt, { onGround: grounded, surfaceFriction, settings });
   const wish = wishFromInput({ forward, side, angle, maxSpeed: settings.maxSpeed });
-  if (!wish.speed) return { x: v.x, y: v.y, z: 0 };
+  if (!wish.speed) return { x: v.x, y: v.y, z };
   const next = grounded ? accelerate(v, wish.dir, wish.speed, dt, { surfaceFriction, settings })
     : airAccelerate(v, wish.dir, wish.speed, dt, { surfaceFriction, settings });
-  return { x: next.x, y: next.y, z: 0 };
+  return { x: next.x, y: next.y, z };
 }
 
 /**
@@ -250,7 +290,7 @@ export function clampHorizontal(velocity, settings = HL2_MOVEMENT) {
   const speed = Math.hypot(velocity.x, velocity.y);
   if (speed <= settings.maxVelocity) return velocity;
   const scale = settings.maxVelocity / speed;
-  return { x: velocity.x * scale, y: velocity.y * scale, z: 0 };
+  return { x: velocity.x * scale, y: velocity.y * scale, z: velocity.z || 0 };
 }
 
 /**
