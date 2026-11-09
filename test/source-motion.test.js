@@ -197,38 +197,46 @@ test('sliding from the built map ridge reaches full speed and lands on the floor
 });
 
 test('the run speed does not depend on the frame rate the game is drawn at', async t => {
-  // A frame that ran no physics substep has nothing to measure, so the movement model must keep
-  // its own velocity instead of being told it is standing still. Reporting 0 there made the
-  // player crawl: at 174 frames a second most frames run no substep, and each one wiped the
-  // speed the previous tic had built.
+  // The move runs once per player tic, on that tic's velocity, which is what makes the frame rate
+  // irrelevant: a frame that runs no tic has nothing to move and is left alone. Moving once per
+  // drawn frame instead made the same ramp give 50 units of travel per half second at 35 fps and
+  // 40 at 174, because how often a velocity is clipped against the ramp *is* how a surfer gains
+  // speed.
   const run = framesPerSecond => {
     const project = buildSurfTestMap(createProject());
     const state = createRuntime(project, { screen: 'playing', gameMode: true });
     state.physics = createPhysics(project, state, R, triangulate);
     const clear = () => state.physics.dispose();
     const frame = 1 / framesPerSecond;
-    stepRuntime(project, state, frame, new Set());
+    // Two tics of settling, asked for in tic time rather than in frames: a single *frame* at
+    // 174 fps is shorter than a tic, so settling that way would leave the slow run grounded a tic
+    // earlier than the fast one and the two would start from different states.
+    stepRuntime(project, state, 2 / 35, new Set());
     let fastest = 0;
-    const startX = state.player.x;
-    // Half a second, which is long enough to reach top speed and still be on the platform.
-    for (let drawn = 0; drawn < Math.round(framesPerSecond / 2); drawn++) {
+    const startX = state.player.x, startZ = state.player.z;
+    // One whole second, so both frame rates are asked to simulate exactly the same span of time
+    // and cannot differ merely by where their frames happened to land.
+    for (let drawn = 0; drawn < framesPerSecond; drawn++) {
       stepRuntime(project, state, frame, new Set(['KeyW']));
-      fastest = Math.max(fastest, Math.hypot(state.motion.x, state.motion.y));
+      fastest = Math.max(fastest, Math.hypot(state.motion.x, state.motion.y, state.motion.z));
     }
-    const travelled = state.player.x - startX;
+    const travelled = state.player.x - startX, descended = state.player.z - startZ;
     clear();
-    return { fastest, travelled };
+    return { fastest, travelled, descended };
   };
   const slow = run(35), fast = run(174);
   for (const [label, result] of [['35 fps', slow], ['174 fps', fast]]) {
-    assert.ok(result.fastest > 200, `reached ${result.fastest.toFixed(0)} units a second at ${label}`);
-    assert.ok(result.travelled > 60, `covered ${result.travelled.toFixed(0)} units in half a second at ${label}`);
+    // 415 units a second is a second of gravity down a 50 degree ramp, redirected along it.
+    assert.ok(result.fastest > 300, `reached ${result.fastest.toFixed(0)} units a second at ${label}`);
+    assert.ok(result.travelled > 60, `covered ${result.travelled.toFixed(0)} units in a second at ${label}`);
   }
-  // And the two agree on where the player went, which is the ground truth. The reported speed
-  // is not compared: it is the velocity of the last substep that ran, so at a high frame rate it
-  // is up to two frames stale and reads low while accelerating.
-  assert.ok(Math.abs(slow.travelled - fast.travelled) < 8,
+  // The two agree on where the player went. They cannot agree exactly — a frame boundary can leave
+  // one run a tic behind the other, and a tic at this speed is a few units — so the tolerance is
+  // one tic of travel.
+  assert.ok(Math.abs(slow.travelled - fast.travelled) < 12,
     `travelled ${slow.travelled.toFixed(0)} against ${fast.travelled.toFixed(0)}`);
+  assert.ok(Math.abs(slow.descended - fast.descended) < 12,
+    `descended ${slow.descended.toFixed(0)} against ${fast.descended.toFixed(0)}`);
 });
 
 test('a frame without a physics substep reports no measured velocity', async t => {
@@ -295,9 +303,11 @@ test('a surf ramp redirects a fall into speed along the ramp, and the player nev
   // A 50 degree ramp of this size is 216 units tall, so the default 128 unit ceiling would
   // have it through the roof and the player teleported into the ceiling.
   project.map.sectors[0].ceilingHeight = 384;
-  const geometry = surfRampGeometry({ roll: 50 });
+  // Facing right, which is the way a player at angle 0 faces: the fixture presses forward into
+  // the slope on purpose, because that is what a surfer does.
+  const geometry = surfRampGeometry({ slope: 50, facing: 'right' });
   project.map.entities.push({ id: 'ramp', name: 'Surf ramp', type: 'decoration', x: 40, y: 0, angle: 0,
-    elevation: geometry.elevation, modelTilt: { pitch: 0, roll: 50 },
+    elevation: geometry.elevation, modelTilt: { pitch: 0, roll: geometry.roll },
     physics: { body: 'fixed', shape: 'box', width: geometry.width, height: geometry.thickness,
       depth: geometry.depth, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true } });
   validateProject(project);
@@ -326,9 +336,9 @@ test('a standable slope is walked on with friction instead of surfed', async t =
   const project = createProject();
   project.events = [];
   project.map.sectors[0].ceilingHeight = 384;
-  const geometry = surfRampGeometry({ roll: 30 });
+  const geometry = surfRampGeometry({ slope: 30, facing: 'right' });
   project.map.entities.push({ id: 'ramp', name: 'Gentle ramp', type: 'decoration', x: 40, y: 0, angle: 0,
-    elevation: geometry.elevation, modelTilt: { pitch: 0, roll: 30 },
+    elevation: geometry.elevation, modelTilt: { pitch: 0, roll: geometry.roll },
     physics: { body: 'fixed', shape: 'box', width: geometry.width, height: geometry.thickness,
       depth: geometry.depth, radius: 8, mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true } });
   validateProject(project);

@@ -1002,6 +1002,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.playerClock -= wholeTics;
   // A project can run Half-Life's movement instead of Doom's; see shared/source-motion.js.
   const sourceModel = state.motionModel === 'source' ? state.motionSettings : null;
+  if (sourceModel) state.physics?.beginPlayerFrame?.();
   for (let tic = 0; tic < tics; tic++) {
     if (turnBam) {
       const radians = state.scriptedInput
@@ -1015,13 +1016,34 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     const axisForward = state.scriptedInput ? (hud.cursor ? 0 : state.input.forward) / 160 : forwardAxis;
     const axisSide = state.scriptedInput ? (hud.cursor ? 0 : state.input.strafe) / 160 : sideAxis;
     if (sourceModel) {
-      // One Source player tic of horizontal movement. The vertical axis is the collision
-      // world's: it integrates gravity and slides the capsule, and `measuredVelocity` below
-      // adopts whatever the slide achieved, so a surf ramp hands its speed to the model.
+      // One Source player tic. The model owns the **whole** velocity, vertical component
+      // included: `TryPlayerMove` carries it through every collision, and that is what turns a
+      // fall into speed along a surf ramp and back into height again. Handing the vertical axis
+      // to the collision world instead reset it every tic, so nothing could ride up a ramp and
+      // nothing could fly off the end of one.
       state.motion ||= { x: 0, y: 0, z: 0 };
+      const tick = 1 / TIC_RATE;
+      // `CheckJumpButton`, once: `jumpHeld` is the press edge, not the held key.
+      if (grounded && jumpHeld) {
+        state.motion = { x: state.motion.x, y: state.motion.y, z: sourceModel.jumpSpeed };
+        state.sourceGrounded = false;
+      }
+      // `StartGravity`/`FinishGravity` add `sv_gravity` over the tic.
+      state.motion = { x: state.motion.x, y: state.motion.y, z: state.motion.z - sourceModel.gravity * tick };
       state.motion = clampHorizontal(horizontalStep(state.motion, {
-        grounded, forward: axisForward, side: axisSide, angle: player.angle, dt: 1 / TIC_RATE,
+        grounded, forward: axisForward, side: axisSide, angle: player.angle, dt: tick,
         settings: sourceModel }), sourceModel);
+      state.motion.z = Math.max(-sourceModel.maxVelocity, Math.min(sourceModel.maxVelocity, state.motion.z));
+      // The move happens on this tic too, not once per drawn frame. A frame is not a tic: how far
+      // apart they fall decides how often a velocity is clipped against a ramp, and gaining speed
+      // on a ramp *is* that clipping. Moving per frame made the same ramp cover 173 units in a
+      // second at 35 frames and 210 at 174. Source moves in `PM_PlayerMove` once per tick with that
+      // tick's velocity, and so does this.
+      const moved = state.physics?.movePlayer(tick, state.motion);
+      if (moved) {
+        state.motion = moved.velocity;
+        state.sourceGrounded = moved.grounded;
+      }
       state.momentum = { x: state.motion.x / TIC_RATE, y: state.motion.y / TIC_RATE, z: 0 };
       continue;
     }
@@ -1062,11 +1084,13 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   const velocity = sourceModel ? { ...state.motion } : momentumSpeed(state.momentum);
   const dx = velocity.x * dt, dy = velocity.y * dt, dz = velocity.z * dt;
   state.physics?.syncWorld();
-  if (state.physics) {
-    state.physics.step(dt, { x: velocity.x, y: velocity.y, z: velocity.z, jump: jumpHeld, up: player.up,
-      // A movement model can ask for its own gravity: Half-Life runs at 600 units/s² where
-      // Doom's is 1225, so the fall has to be the model's, not this engine's.
-      ...(sourceModel ? { gravity: sourceModel.gravity, jumpSpeed: sourceModel.jumpSpeed } : {}) });
+  if (state.physics && sourceModel) {
+    // The Source model already moved, on each tic it ran. A frame that ran none has nothing to
+    // move and is left alone; the surfaces are still read, because a condition can ask about them
+    // on any frame.
+    if (projectUsesSurfaces(project)) state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
+  } else if (state.physics) {
+    state.physics.step(dt, { x: velocity.x, y: velocity.y, z: velocity.z, jump: jumpHeld, up: player.up });
     // Surfaces the capsule touches, for the wall-walking events and conditions.
     if (projectUsesSurfaces(project)) state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
   }
@@ -1075,21 +1099,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     if (canMove(player.x + dx, player.y, currentFloor)) player.x += dx;
     if (canMove(player.x, player.y + dy, currentFloor)) player.y += dy;
   }
-  if (sourceModel) {
-    // Adopt the speed the player really travelled at: pressed against a wall that is zero,
-    // and sliding down a surf ramp it is the speed along the ramp, which is the whole point.
-    // The physics world measures it, over the substeps it really ran. When it ran none — most
-    // frames at a high frame rate — it has nothing to say, and the model keeps its own velocity
-    // rather than being told it is standing still.
-    //
-    // This is deliberately not gated on a player tic having run: the world's sub-steps and the
-    // tics are on different clocks, and waiting for both to land in the same frame meant the
-    // movement was corrected far less often at a high frame rate — which made the player
-    // accelerate measurably slower the faster the game was drawn.
-    // Without a collision world the movement itself only happens on a tic, so there is nothing
-    // to measure on a frame that ran none.
-    const measured = state.physics ? state.physics.playerVelocity
-      : (tics ? measuredVelocity({ x: previousPosition.x, y: previousPosition.y }, { x: player.x, y: player.y }, (tics / TIC_RATE)) : null);
+  if (sourceModel && !state.physics && tics) {
+    // Without a collision world nothing clips the velocity, so falling back to the distance the
+    // player really travelled is the only thing that keeps a wall from banking speed. With one,
+    // `movePlayer` has already answered exactly this, tic by tic.
+    const measured = measuredVelocity({ x: previousPosition.x, y: previousPosition.y },
+      { x: player.x, y: player.y }, (tics / TIC_RATE));
     if (measured) {
       state.motion = clampHorizontal({ x: measured.x, y: measured.y, z: 0 }, sourceModel);
       state.momentum = { x: state.motion.x / TIC_RATE, y: state.motion.y / TIC_RATE, z: 0 };

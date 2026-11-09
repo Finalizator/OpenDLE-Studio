@@ -97,9 +97,31 @@ test('categorizePosition refuses to ground a player on a surf ramp, so friction 
   const flat = planeWorld([], { floor: 0 });
   assert.equal(categorizePosition({ x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: -1 }, flat).grounded, true);
   const ramp = planeWorld([RAMP]);
-  const state = categorizePosition({ x: 0, y: 0, z: 5 }, { x: 0, y: 0, z: -1 }, ramp);
+  const state = categorizePosition({ x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: -1 }, ramp);
   assert.ok(Math.abs(state.ground.normal.z - RAMP.normal.z) < 1e-9, 'the ramp is what is below');
   assert.equal(state.grounded, false, 'and it is not ground');
+});
+
+test('a player who is rising is never grounded, so a jump leaves the floor', () => {
+  const trace = planeWorld([], { floor: 0 });
+  // A hair off the floor, as a player is on the tic they jump: the floor is well inside any probe,
+  // so without the rise rule they would still be standing and `StayOnGround` would pull them back.
+  const origin = { x: 0, y: 0, z: 1 };
+  assert.equal(categorizePosition(origin, null, trace, { velocity: { x: 0, y: 0, z: 0 } }).grounded, true,
+    'standing still on the floor is ground');
+  assert.equal(categorizePosition(origin, null, trace, { velocity: { x: 0, y: 0, z: 160 } }).grounded, false,
+    'rising at jump speed is not');
+  // 140 is Source's own threshold: a walkable slope never pushes a player up that fast.
+  assert.equal(categorizePosition(origin, null, trace, { velocity: { x: 0, y: 0, z: 139 } }).grounded, true,
+    'and 139 units a second up is still standing');
+});
+
+test('the ground probe is 2 units, as CategorizePosition says, so a jump is not caught mid-rise', () => {
+  const trace = planeWorld([], { floor: 0 });
+  assert.equal(categorizePosition({ x: 0, y: 0, z: 1 }, null, trace).grounded, true, 'touching the floor');
+  assert.equal(categorizePosition({ x: 0, y: 0, z: 5 }, null, trace).grounded, false,
+    '3 units clear of it is not standing — a probe of `sv_stepsize` would have said it was, which is '
+    + 'how a jump of 2.7 units was re-grounded before it started');
 });
 
 test('a stair is climbed by the step move, and a wall is not', () => {

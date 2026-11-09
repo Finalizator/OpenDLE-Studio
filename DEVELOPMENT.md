@@ -4807,61 +4807,59 @@ it raises a rule that is **still at the untouched default** and leaves any value
 [the scriptlet] to a fresh project and the number is right from the start; open an old one and it
 is corrected on load.
 
-**What OpenDLE does differently, and why.** The collision world is Rapier's character
-controller, not Source's four-trace swept move, so the division of labour is: the model owns
-*how fast a player may go and in what direction* (friction, accelerate, air accelerate, the
-caps), and the controller owns *the movement itself* (gravity, sliding along surfaces, steps,
-ceilings). After each step the model adopts the speed the world actually moved the player at —
-`physics.playerVelocity`, measured over the substeps that really ran. Pressed against a wall
-that is zero; sliding down a surf ramp it is the speed along the ramp, which is exactly the
-quantity surf is built on. Measuring over the frame time instead of the simulated time made
-walking measure 1.17× too fast, which is the kind of error that only shows up as "it feels
-wrong".
+**The move is Source's own, run on the tic clock.** Rapier's character controller is a good
+general slide solver but it is not `TryPlayerMove`: it refuses to move along a surface steeper
+than its own slope limit, it reports the *distance* it managed rather than the velocity, and it
+owns a vertical axis the movement model cannot see. Surfing needs all three the other way round,
+so the Source model does not use it. `shared/try-player-move.js` is a translation of the
+algorithm — `tryPlayerMove`, `categorizePosition`, `stepMove`, `stayOnGround`, `playerMove`,
+covered by `test/try-player-move.test.js` — and `shared/physics.js:movePlayer` is the `trace` it
+sweeps with.
 
-The correction is also deliberately **not** gated on a player tic having run in the same frame.
-Tics are on a 35 Hz clock and the collision world's sub-steps on a 60 Hz one, so waiting for both
-to land in one frame meant the movement was corrected far less often at a high frame rate: the
-same half second of the same ramp covered 85 units at 35 fps and 70 at 174. The test that covers
-this compares the distance travelled, not the reported speed — the reported speed is the velocity
-of the last sub-step that ran, so at a high frame rate it is up to two frames stale and reads low
-while accelerating.
+*The model owns the whole velocity, `z` included.* `TryPlayerMove` carries `velocity[2]` through
+every collision and **projects it onto each surface it meets**, which is what turns a fall into
+speed along a ramp and that speed back into height. Giving the vertical axis to the collision
+world instead reset it every tic, so a run died the moment a ramp handed the player onto a floor.
+Gravity and the jump button are applied by the model, once per tic, before the move.
 
-**Two known gaps, measured, that keep it from feeling like a surf server.**
+*One `TryPlayerMove` per tic, and nothing else decides how many.* Every collision clips the
+velocity, so splitting a tic into substeps clips more often and a ramp hands back a different
+speed. Splitting the move on the *frame's* length made the same ramp cover 173 units in a second
+at 35 frames and 210 at 174 — the frame rate silently changing how fast a surfer accelerates.
+`state.physics.movePlayer(dt)` is now called once per player tic with `dt = 1/35`, and the world's
+own bodies still advance on their own 1/60 clock inside it. `the run speed does not depend on the
+frame rate the game is drawn at` drives one second of the same run at 35 and at 174 fps and
+requires the two to land within a tic of travel of each other.
 
-*The vertical velocity is not carried.* The model's velocity is x and y only: the vertical axis
-belongs to the collision world's own `verticalSpeed`, and after every step the model adopts the
-measured horizontal speed with `z` set to 0. Source's `TryPlayerMove` instead carries
-`velocity[2]` through every collision, which is what lets a fall become speed along a ramp and
-then speed back up it. Measured on a 50° face: the speed does climb, 0 → 50 → 99 → 148 → 201 →
-252 over 24 tics, and then it **collapses to 30 and to 0** the moment the ramp's bottom is
-reached and the floor is touched.
+*Sweeping from rays, because the shape cast is not trustworthy here.* `world.castShape` answered
+the same question differently from call to call in this build, while `castRayAndGetNormal` is the
+call the engine already trusts for bullets and ground checks. A capsule is a row of spheres, and a
+sphere's contact with a plane is exact: a ray travels `t` to the plane, the centre stops a radius
+short of it, and because the distance falls linearly along the ray that is
+`t - r / (n · -dir)`. Two details make it usable at speed: the ray is cast **past** the move
+(`SWEEP_REACH`), because a sphere touches a surface before its centre covers the distance to it —
+casting only as far as the move is why a player crossing a surf ramp at speed went straight
+through it — and every trace **stops `DIST_EPSILON` short** (1/32), because stopping exactly on a
+surface leaves the next trace starting inside it, where a ray along the surface answers as a hit
+at zero distance and every move is refused.
 
-*The velocity is replaced by the capsule's displacement.* `playerVelocity` is the distance the
-collision solve managed, which is not the same quantity as `ClipVelocity(velocity, plane)`: on a
-collision the capsule can be given less than it asked for, and adopting that throws away speed
-that should have been kept. This is what ends a run on any flat landing.
+*Ground is asked about through the hull.* A capsule's footprint is its centre line, so a player
+standing beside a 16-unit step would find only the floor under them and never step up — it walked
+into the step and stopped. Source traces the **player hull** for `CategorizePosition`, `StepMove`
+and `StayOnGround`, and a hull is four corners, so those three traces also cast from the four
+corners of the hull's base (`{ footprint: true }`). That is what makes stairs walkable again:
+measured on three 16-unit steps, the player climbs to the top one and crosses it. `tryPlayerMove`
+itself keeps the capsule, because a capsule rests *on* a slope instead of cutting into it and a
+box footprint cannot — an axis-aligned box on a 50° face is buried in the ramp up to its own
+width.
 
-`shared/try-player-move.js` is the faithful replacement — `tryPlayerMove`, `categorizePosition`,
-`stepMove`, `stayOnGround` and `playerMove`, written from the GoldSrc/Source source and covered
-by `test/try-player-move.test.js` (eight tests: a fall turning into motion along a face with the
-exact projection and no other loss, a landing keeping every unit of horizontal speed, the four
-bump limit keeping velocity instead of stopping dead, sliding along a crease, the 0.7 ground
-rule, a stair climbed and a 40-unit wall refused, and a whole tick keeping the speed it built).
-It is **not wired in yet**: driving it from Rapier's `world.castShape` did not sweep reliably in
-this build (the same cast answered differently for identical inputs), and the first attempt at
-wiring it regressed the measured surf from 252 units/s to 9. Wiring it needs a sweep that reports
-a fraction reliably; the algorithm itself is finished and tested.
-
-There is a third case, and it was the worst of the three. The controller only runs a substep
-once its 1/60 s accumulator fills, so at 174 frames a second **most frames simulate nothing**.
-A frame that simulated nothing has no speed to report, and saying "zero" there made the model
-adopt zero: every quiet frame wiped the speed the previous tic had built, and the player crawled
-at a fraction of the run speed no matter what was held. `physics.playerVelocity` is therefore
-**`null`** on such a frame and the model keeps its own velocity. The bug is invisible at a fixed
-35 fps and obvious at a real frame rate, so the test that covers it
-(`the run speed does not depend on the frame rate the game is drawn at`) drives the same run at
-35 and at 174 fps and requires both to reach the 320 unit cap.
-
+*Jumping out of a newly-found floor.* Source refuses to call a player grounded when
+`velocity[2] > 140`, and the ground probe is 2 units, not `sv_stepsize`: with a deeper probe a
+player who had jumped was re-grounded a frame later, `StayOnGround` pulled the capsule back and
+the jump rose 4 units. A standable floor also holds the player up — the fall gravity asked for is
+answered by the floor rather than added to a slide down it, or every walkable slope becomes a
+chute that friction cannot offset, because the downward velocity only becomes downhill speed
+*after* friction has run.
 
 **Ramps.** A surf ramp is a box rotated about a horizontal axis, which needed one engine
 change: a collider now follows `modelTilt`, so the thing you collide with and the thing you
@@ -4872,15 +4870,13 @@ it, and the width defaults to 128 rather than a surf map's 256 because a 50° ra
 reaches outside the room is one the player stands on the ceiling next to, which is exactly the
 bug the first version had.
 
-**Jumping is the character controller's snap-to-ground, and Half-Life's jump is small enough to
-lose to it.** Snap-to-ground holds a walking player to a step-down instead of letting them bounce
-off it, by pulling them back down over up to `GROUND_SNAP` (4 units). Half-Life's jump is
-`sv_jumpvelocity` 160, which rises 2.7 units in the first 1/60 s sub-step — less than the snap —
-so the snap cancelled it, and the ground test then still reported the player as standing, which
-reset gravity. Jumping did nothing at all under the Source model while Doom's 4.7-unit first step
-worked, which is exactly the report "jump no longer works" after the surf scriptlet was installed.
-Two changes fix it: the snap is disabled for any sub-step where the player is rising, and a player
-with positive vertical speed is never considered grounded whatever the contact rays say.
+**Jumping.** The history is worth keeping because it was reported as "jump no longer works"
+after the surf scriptlet was installed: Half-Life's `sv_jumpvelocity` is 160, which rises 2.7
+units in one sub-step, and the character controller's snap-to-ground (`GROUND_SNAP`, 4 units)
+pulled the player straight back down while the ground test still said they were standing, which
+reset gravity. The controller is no longer in the Source model's path at all, so the snap cannot
+eat a jump; what remains is the two rules above — a rising player is never grounded
+(`velocity[2] > 140`) and the ground probe is 2 units.
 
 ### Ramps are their own kind of object
 

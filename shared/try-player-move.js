@@ -33,6 +33,10 @@
 
 import { clipVelocity, STANDABLE_NORMAL_Z } from './source-motion.js';
 
+/** `CategorizePosition`'s `velocity[2] > 140`: rising faster than any slope pushes, so a jump. */
+export const JUMP_RISE_LIMIT = 140;
+/** `CategorizePosition`'s ground probe: how far below the feet still counts as touching. */
+export const GROUND_PROBE = 2;
 /** `MAX_CLIP_PLANES`, the surfaces remembered in one move. */
 export const MAX_CLIP_PLANES = 5;
 /** `MAX_BUMPS`: how many collisions `TryPlayerMove` resolves per call. */
@@ -107,13 +111,22 @@ export function isStandable(normal, threshold = STANDABLE_NORMAL_Z) {
 /**
  * `CategorizePosition`: is the player standing on something standable?
  *
- * A `down` trace of `sv_stepsize` finds the floor the player would land on. A surface steeper
- * than 45.573 degrees is deliberately **not** ground: that is what keeps a surf ramp frictionless
- * and gives the player air control while sliding down it.
+ * The probe is 2 units, as in Source (`point[2] -= 2`): this asks "am I touching the floor", not
+ * "is there floor nearby", and the difference is whether a jump leaves the ground. A surface
+ * steeper than 45.573 degrees is deliberately **not** ground: that is what keeps a surf ramp
+ * frictionless and gives the player air control while sliding down it.
+ *
+ * A player who is rising is never on the ground, however close the floor is. Source states this
+ * as `if (velocity[2] > 140) onground = false` — the threshold is above any walkable slope's
+ * updrift, so it only ever catches a jump. Without it a jump is over the frame it starts: the
+ * down trace still finds the floor a few units below, the position is re-categorised as standing,
+ * `StayOnGround` snaps the capsule back and the player never leaves.
  */
-export function categorizePosition(origin, down, trace, { stepSize = SV_STEPSIZE, downReach = 0 } = {}) {
-  const to = { x: origin.x, y: origin.y, z: origin.z - (stepSize + downReach) };
-  const hit = trace(origin, to);
+export function categorizePosition(origin, down, trace,
+  { probe = GROUND_PROBE, downReach = 0, velocity = null } = {}) {
+  if (velocity && velocity.z > JUMP_RISE_LIMIT) return { grounded: false, ground: null };
+  const to = { x: origin.x, y: origin.y, z: origin.z - (probe + downReach) };
+  const hit = trace(origin, to, { footprint: true });
   const ground = hit && !hit.startSolid && hit.fraction < 1 ? hit : null;
   return { grounded: Boolean(ground && isStandable(ground.normal)), ground };
 }
@@ -135,7 +148,8 @@ export function stepMove(origin, velocity, dt, trace, { stepSize = SV_STEPSIZE, 
   const forward = trace(raised, { x: raised.x + flat.x, y: raised.y + flat.y, z: raised.z });
   if (forward.fraction <= 0) return null;
   const moved = { x: raised.x + flat.x * forward.fraction, y: raised.y + flat.y * forward.fraction, z: raised.z };
-  const down = trace(moved, { x: moved.x, y: moved.y, z: moved.z - (stepSize + 1 + downReach) });
+  const down = trace(moved, { x: moved.x, y: moved.y, z: moved.z - (stepSize + 1 + downReach) },
+    { footprint: true });
   if (down.startSolid || down.fraction >= 1) return null;                 // nothing to stand on
   if (!isStandable(down.normal)) return null;                            // a slope, not a step
   const landing = { x: moved.x, y: moved.y, z: moved.z - (stepSize + 1 + downReach) * down.fraction };
@@ -147,7 +161,7 @@ export function stepMove(origin, velocity, dt, trace, { stepSize = SV_STEPSIZE, 
 /** `StayOnGround`: stick to a step-down instead of stepping off it and falling. */
 export function stayOnGround(origin, trace, { stepSize = SV_STEPSIZE, downReach = 0 } = {}) {
   const to = { x: origin.x, y: origin.y, z: origin.z - (stepSize + downReach) };
-  const hit = trace(origin, to);
+  const hit = trace(origin, to, { footprint: true });
   if (hit.startSolid || hit.fraction >= 1 || !isStandable(hit.normal)) return origin;
   return { x: origin.x, y: origin.y, z: origin.z - (stepSize + downReach) * hit.fraction };
 }

@@ -6,6 +6,7 @@ import {
 import { actorOf } from './actor-runtime.js';
 import { tiltQuaternion } from './source-motion.js';
 import { wedgeCorners } from './ramp.js';
+import { SV_STEPSIZE, categorizePosition, playerMove } from './try-player-move.js';
 import { modelAssetTriangles } from './model-geometry.js';
 
 export const PHYSICS_SCALE = 64;
@@ -21,10 +22,18 @@ export const FIXED_STEP = 1 / 60;
  */
 export const DOOM_GRAVITY = 35 * 35;
 
+/** `DIST_EPSILON`: how far short of a surface a sweep is allowed to stop. */
+const DIST_EPSILON = 1 / 32;
 /** A move shorter than this, in world units, is the controller declining to move at all. */
 const BLOCK_TOLERANCE = 1 / PHYSICS_SCALE;
 /** Moving less than this share of what was asked for is being stopped, not merely slowed. */
 const BLOCK_FRACTION = 0.25;
+/**
+ * How much further than `move + radius` a player sweep ray is cast, as a fraction: 0.15 reaches a
+ * surface 81 degrees to the move. Only the ray has to be this generous — its hit is then tested
+ * against what the sphere can actually touch, so a longer cast cannot invent a collision.
+ */
+const SWEEP_REACH = .15;
 /** Vertical movement above this means the capsule climbed a step rather than hitting a wall. */
 const STEP_TOLERANCE = 1 / PHYSICS_SCALE;
 
@@ -411,6 +420,99 @@ export function createPhysics(project, state, R, triangulate) {
       kind: surfaceKind(normal) };
   }
   /**
+   * How far the player's capsule can travel along a straight line before it touches something.
+   *
+   * This is the `trace` that `shared/try-player-move.js` sweeps with, and it is built from **rays**
+   * rather than from Rapier's shape cast: the shape cast in this build answered the same question
+   * differently from call to call, which is no foundation for a movement solve, while
+   * `castRayAndGetNormal` is the call this engine already trusts for bullets and for the ground
+   * check.
+   *
+   * A capsule is the set of spheres whose centres run along its axis, so sweeping a capsule is
+   * sweeping a row of spheres. For a sphere the contact is exact and needs no iteration: a ray from
+   * the centre travels `t` to the plane, the centre stops when it is `r` short of it, and because
+   * the distance to the plane falls linearly along the ray that is `t - r / (n · -dir)`. Both ends
+   * and the middle cover a 56-unit body; `footprint` adds the four corners of the hull's base for
+   * the traces that ask about ground.
+   */
+  function sweepPlayer(from, to, options = {}) {
+    const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+    const distance = Math.hypot(dx, dy, dz);
+    if (!(distance > 1e-9)) return { fraction: 1, normal: null, startSolid: false };
+    const dir = [dx / distance, dy / distance, dz / distance];
+    const radius = PLAYER_CYLINDER.radius;
+    const axisLength = PLAYER_CYLINDER.halfHeight - radius;
+    const up = upVector(upMap);
+    const playerCollider = colliders.get(playerId), rayDir = toRapier(dir);
+    const reach = (distance + radius) / SWEEP_REACH / PHYSICS_SCALE;
+    let nearest = distance, normal = null;
+    /** One ray, and what it says the capsule's centre can travel before touching something. */
+    const cast = (origin, pad) => {
+      contactRay.origin = toRapierPoint(origin);
+      contactRay.dir = rayDir;
+      // Far enough to reach the *plane*, not just the contact. A sphere touches a surface before
+      // its centre covers the distance to it, so a ray cast only as far as the move gets to the
+      // plane too late — and the faster the player falls, the further short it lands, which is why
+      // a player crossing a surf ramp at speed went straight through it. `SWEEP_REACH` casts out
+      // to a grazing angle and the checks below throw away anything the capsule cannot reach.
+      const hit = world.castRayAndGetNormal(contactRay, reach, true,
+        R.QueryFilterFlags.EXCLUDE_SENSORS, undefined, playerCollider);
+      if (!hit) return;
+      const mapped = toMap(hit.normal);
+      const length = Math.hypot(mapped[0], mapped[1], mapped[2]);
+      if (!(length > 1e-6)) return;
+      const surface = { x: mapped[0] / length, y: mapped[1] / length, z: mapped[2] / length };
+      const approach = -(surface.x * dir[0] + surface.y * dir[1] + surface.z * dir[2]);
+      // A surface the capsule is moving *along* — not into — is not an obstacle. Without this a
+      // resting contact registers as a hit on every trace: the sphere is already a radius away
+      // from the plane, so any approach at all computes a stop behind the start, the move is
+      // refused, and the player sits on the ramp instead of sliding down it. `ClipVelocity` has
+      // already taken the component that pointed into the surface away, so by the next bump the
+      // approach is this small and the surface is simply something to slide over.
+      if (approach <= 1e-3) return;
+      const travelled = hit.timeOfImpact * PHYSICS_SCALE;
+      // A surface the capsule can reach within this move: `travelled * approach` is how far the
+      // centre still is from the plane, and anything further is something the player runs past.
+      if (travelled * approach > radius + distance * approach + .5) return;
+      const stop = pad ? travelled : travelled - radius / approach;
+      if (stop < nearest) { nearest = stop; normal = surface; }
+    };
+    // The capsule's own axis: a sphere's contact is exact, needs no iteration, and — unlike a box
+    // — a capsule rests *on* a slope instead of cutting into it, which is what a surf ramp needs.
+    for (let index = 0; index < 3; index++) {
+      const along = (index / 2) * 2 - 1;
+      cast([from.x + up[0] * axisLength * along, from.y + up[1] * axisLength * along,
+        from.z + up[2] * axisLength * along], false);
+    }
+    // Ground is asked about through the **hull** instead: a capsule's own footprint is its centre
+    // line, so a player standing beside a 16-unit step would find only the floor under them and
+    // never step up. Source traces the player hull for this, and a hull is four corners: casting
+    // from them asks "is there ground under my feet", which is the question `CategorizePosition`,
+    // `StepMove` and `StayOnGround` are all really asking.
+    if (options.footprint && -dir[0] * up[0] - dir[1] * up[1] - dir[2] * up[2] > .2) {
+      const across = Math.abs(up[0]) > .9 ? [0, 1, 0] : [1, 0, 0];
+      const depthAxis = [up[1] * across[2] - up[2] * across[1], up[2] * across[0] - up[0] * across[2],
+        up[0] * across[1] - up[1] * across[0]];
+      const depthLength = Math.hypot(depthAxis[0], depthAxis[1], depthAxis[2]) || 1;
+      const depth = [depthAxis[0] / depthLength, depthAxis[1] / depthLength, depthAxis[2] / depthLength];
+      const feet = [from.x - up[0] * PLAYER_CYLINDER.halfHeight, from.y - up[1] * PLAYER_CYLINDER.halfHeight,
+        from.z - up[2] * PLAYER_CYLINDER.halfHeight];
+      for (const side of [1, -1]) for (const other of [1, -1]) {
+        cast([feet[0] + across[0] * radius * side + depth[0] * radius * other,
+          feet[1] + across[1] * radius * side + depth[1] * radius * other,
+          feet[2] + across[2] * radius * side + depth[2] * radius * other], true);
+      }
+    }
+    if (!normal) return { fraction: 1, normal: null, startSolid: false };
+    // Stop a hair short, as Source's traces do (`DIST_EPSILON`, 1/32 of a unit). Stopping exactly
+    // on the surface leaves the next trace starting *in* it, where a ray along the surface is
+    // answered as a hit at zero distance and the player is refused every move.
+    const clear = nearest - DIST_EPSILON;
+    if (clear <= 1e-4) return { fraction: 0, normal, startSolid: false };
+    return { fraction: Math.min(1, clear / distance), normal, startSolid: false };
+  }
+
+  /**
    * The collider for a mesh, built from the mesh itself.
    *
    * A ramp, a wall cut in Blockbench, anything whose solid shape is its own artwork: the model's
@@ -703,9 +805,44 @@ export function createPhysics(project, state, R, triangulate) {
     }
     return found.sort((a, b) => a.distance - b.distance);
   }
+  /**
+   * One `PM_PlayerMove` substep at a fixed length.
+   *
+   * A trace moves the whole capsule, so its length is how far the *feet* travel: the samples along
+   * the axis and the sphere radius already account for the body's height. Nothing is added on for
+   * the half-height here — doing that once made a 2-unit ground probe reach 30 units down, and a
+   * player who had just jumped was grounded again before rising a foot.
+   */
+  function moveStep(dt, velocity) {
+    const body = bodies.get(playerId);
+    if (!body) return null;
+    const position = body.translation();
+    const centre = { x: position.x * PHYSICS_SCALE, y: position.z * PHYSICS_SCALE, z: position.y * PHYSICS_SCALE };
+    const ground = { stepSize: SV_STEPSIZE, velocity };
+    const standing = categorizePosition(centre, null, sweepPlayer, ground);
+    // Standing means the floor holds the player up: the fall that gravity asked for is answered
+    // by the floor, not added to a slide down it. Leaving it in turns a walkable slope into a
+    // chute that accelerates the player downhill, which no amount of friction offsets because
+    // the downward velocity only becomes downhill speed *after* friction has run.
+    const speed = { ...velocity };
+    if (standing.grounded && speed.z < 0) speed.z = 0;
+    const result = playerMove(centre, speed, dt, sweepPlayer,
+      { grounded: standing.grounded, stepSize: SV_STEPSIZE });
+    const next = { x: result.position.x / PHYSICS_SCALE, y: result.position.z / PHYSICS_SCALE,
+      z: result.position.y / PHYSICS_SCALE };
+    body.setTranslation(next, true);
+    if (body.isKinematic()) body.setNextKinematicTranslation(next);
+    world.propagateModifiedBodyPositionsToColliders();
+    grounded = result.stepped || categorizePosition(result.position, null, sweepPlayer,
+      { ...ground, velocity: result.velocity }).grounded;
+    return { velocity: { ...result.velocity }, grounded, stepped: result.stepped };
+  }
+
   const api = {
     world, bodies,
     syncWorld,
+    /** Starts a frame's worth of `collisionStarted`/`collisionEnded`, as `step` does per frame. */
+    beginPlayerFrame() { started = new Set(); ended = new Set(); },
     get contacts() { return contacts; }, get started() { return started; }, get ended() { return ended; }, get grounded() { return grounded; },
     /**
      * Consecutive substeps the player was stopped on, per map axis.
@@ -904,6 +1041,50 @@ export function createPhysics(project, state, R, triangulate) {
           z: (now.y - startBody.y) * PHYSICS_SCALE / seconds,
         };
       }
+    },
+
+    /**
+     * Moves the player with Half-Life's own algorithm instead of the character controller.
+     *
+     * The controller is a good general slide solver but it is not `TryPlayerMove`: it refuses to
+     * move along a surface steeper than its own slope limit, it reports the *distance* it managed
+     * rather than the velocity, and it owns a vertical axis the movement model cannot see. Surfing
+     * needs all three the other way round, so the Source movement model gets this instead.
+     *
+     * Returns `{ velocity, grounded }` — the velocity that survived the collisions, which is what
+     * the model keeps for the next tick.
+     */
+    movePlayer(dt, movement) {
+      const body = bodies.get(playerId), collider = colliders.get(playerId);
+      if (!body || !collider || !(dt > 0)) return null;
+      // **One** `TryPlayerMove` per call, over the whole tic. Source does exactly this, and the
+      // count is what matters: every collision clips the velocity, so splitting a tic into two
+      // substeps clips twice as often and a ramp hands back a different speed. Splitting on the
+      // frame's length instead made the same ramp give 173 units of travel per second at 35
+      // frames and 210 at 174, so the move is bound to the tic and nothing else.
+      const step = moveStep(dt, { x: movement.x || 0, y: movement.y || 0, z: movement.z || 0 });
+      if (!step) return null;
+      achievedVelocity = { ...step.velocity };
+      // The world itself still runs on its own fixed clock: the player is moved by the model, but
+      // everything else in the world has to advance in real time, whichever clock asked for it.
+      accumulator = Math.min(accumulator + dt, FIXED_STEP * 8);
+      while (accumulator + 1e-9 >= FIXED_STEP) {
+        world.step(events);
+        // The same contact bookkeeping `step` does, so `collisionStarted` and friends still answer
+        // under Half-Life movement: `tryPlayerMove` never asks the world which colliders it met.
+        events.drainCollisionEvents((a, b, begin) => {
+          const left = colliderIds.get(a), right = colliderIds.get(b);
+          if (!left || !right || left === right) return;
+          const key = pairKey(left, right);
+          if (begin) active.add(key); else active.delete(key);
+        });
+        accumulator -= FIXED_STEP;
+      }
+      for (const key of active) if (!contacts.has(key)) started.add(key);
+      for (const key of contacts) if (!active.has(key)) ended.add(key);
+      contacts = new Set(active);
+      sync();
+      return { velocity: { ...achievedVelocity }, grounded, stepped: step.stepped };
     },
     teleport(id, x, y, z) {
       const entity = state.entities.find(entity => entity.id === id);
