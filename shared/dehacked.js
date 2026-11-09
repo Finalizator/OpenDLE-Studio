@@ -306,7 +306,8 @@ export const VANILLA_THINGS = {
   2007: 'Clip', 2048: 'ClipBox', 2010: 'RocketAmmo', 2046: 'RocketBox', 2047: 'Cell', 17: 'CellPack',
   2008: 'Shell', 2049: 'ShellBox', 8: 'Backpack', 2011: 'Stimpack', 2012: 'Medikit', 2013: 'Soulsphere',
   2014: 'HealthBonus', 2015: 'ArmorBonus', 2018: 'GreenArmor', 2019: 'BlueArmor', 83: 'Megasphere',
-  2022: 'InvulnerabilitySphere', 2023: 'BlurSphere', 2024: 'Infrared', 2025: 'RadSuit', 2026: 'Allmap',
+  2022: 'InvulnerabilitySphere', 2023: 'Berserk', 2024: 'BlurSphere', 2025: 'RadSuit', 2026: 'Allmap',
+  2045: 'Infrared',
   5: 'BlueCard', 13: 'RedCard', 6: 'YellowCard', 40: 'BlueSkull', 38: 'RedSkull', 39: 'YellowSkull',
 };
 

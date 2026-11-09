@@ -32,13 +32,14 @@ const BLOCKED_STEP = 1;
  * staircase, and it never reached walking speed.
  */
 const WALL_SUBSTEPS = 3;
-import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum } from './player-state.js';
+import { initialPlayerStats, initialInventory, addAmmo, recordDamage, playerFeedback, ammoMaximum, advancePowerups, advanceDamage, advanceScreenFlash, startPickupFlash } from './player-state.js';
 import { areaContains, areaEntered, areaVolume } from './areas.js';
 import {
   PLAYER_CYLINDER, SURFACE_REACH, WORLD_UP, alignUp, dot as dotMap, eyePosition, playerBasis, playerCentre, viewDirection,
 } from './gravity.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
+import { advanceSwitches, pressSwitch, pressUsedSwitches, wallCanBeShot, wallSwitchRepeats } from './switches.js';
 import { advancePlaneMotion } from './plane-motion.js';
 import { advancePathMotion } from './path-motion.js';
 import {
@@ -300,7 +301,8 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     bob: 0, bobTimer: 0,
     playerStats, inventory, levelTransition: Boolean(progress),
     face: 'idle',
-    feedback: { damage: null, weaponPickupTime: -Infinity, attackTime: 0, health: playerStats.health },
+    feedback: { damage: null, damageCount: 0, weaponPickupTime: -Infinity, attackTime: 0, health: playerStats.health },
+    screenFlash: null,
     scriptedInput: project.playerControl === 'events',
     input: { mouseX: 0, mouseY: 0, forward: 0, strafe: 0, jump: false },
     time: 0,
@@ -326,6 +328,10 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     projectPostFx: project.postFx ? structuredClone(project.postFx) : null,
     shaderUniforms: new Map(Object.entries(project.shaders?.find(shader => shader.id === project.environment.shaderId)?.uniforms || {})),
     sectorMotions: new Map(),
+    // Switch pictures that come back a second after the press, and the one-shot switches that
+    // have already been used (Doom clears their special, so they cannot be pressed again).
+    switchReverts: [],
+    spentSwitches: new Set(),
     // How far each path follower has travelled: progress belongs to the run, not to the map.
     pathMotions: new Map(),
     // Running timelines, and the moves a cue asked an object to make along a route.
@@ -906,9 +912,18 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   state.feedback.attackTime = !hud.cursor && keys.has('Mouse0') ? state.feedback.attackTime + dt : 0;
   advanceHUD(project, hud, dt);
   stage('hud');
+  // Doom's power-ups are clocks: the sphere stops protecting the player when it runs out, and
+  // its screen tint goes with it.
+  advancePowerups(state, dt);
+  // The red a hit puts on the view drains the way Doom's `damagecount` does.
+  advanceDamage(state, dt);
+  // The colour an item flashed as it was taken, gone in a third of a second.
+  advanceScreenFlash(state, dt);
   updateProximityDoors(project, state);
   updateProximityElevators(project, state);
   advanceSectors(state, dt);
+  // A pressed switch shows its other picture for a second, then puts the old one back.
+  advanceSwitches(state, dt);
   // Waggling planes and the 3D floors built on them move every frame, not only on an event.
   advancePlaneMotion(state, dt);
   // Objects that follow a route move after the planes and before gravity: their height comes from
@@ -931,6 +946,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // The nearest line that actually carries a special, so a plain wall in front of a door
   // does not swallow the press.
   state.worldTriggers.useSpecial = usedWall?.special ?? null;
+  // Doom changes a switch's picture as the line is used, whatever the door behind it does.
+  if (manualUse) pressUsedSwitches(project, state, usedWall);
   // The weapon trigger is one bit a frame: a rule may hold it (`weaponTrigger`), and
   // without such a rule the mouse holds it (see `stepWeapon`). Clearing the requests here
   // means a rule that stops running lets go.
@@ -1590,7 +1607,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       }
       if (condition.type === 'enemyAttackChance') {
         const entity = findTarget(condition.entityId);
-        return entity && enemyAttackChance(state, entity);
+        // The generated rule carries what the actor's own states said: whether it has a missile
+        // state at all, and a melee one. Without them the Doom thing number decides.
+        return entity && enemyAttackChance(state, entity, { missile: condition.missile, melee: condition.melee });
       }
       if (condition.type === 'weaponOwned') return state.inventory.weapons.has(condition.weapon);
       if (condition.type === 'weaponSelected') return state.inventory.selectedWeapon === condition.weapon;
@@ -2400,7 +2419,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             }
             case 'removeEntity': {
               const id = resolveEntityId(event, action.entityId);
-              removeEntityFromLevel(state, state.entities.find(item => item.id === id));
+              const removed = state.entities.find(item => item.id === id);
+              // Taking an item is what flashes the view, so it happens where the item goes.
+              if (removed?.type === 'pickup') startPickupFlash(state, removed.doomType);
+              removeEntityFromLevel(state, removed);
               break;
             }
             case 'setEntityPosition': {
@@ -2662,7 +2684,14 @@ function fireHitscan(project, state, action) {
     }
     const damage = action.damage * (1 + Math.floor(random() * action.diceSides));
     if (!target) {
-      for (const id of shotWalls) state.worldTriggers.shoot.add(id);
+      for (const id of shotWalls) {
+        // Every pellet of one shot crosses the same lines; a switch is pressed once.
+        const fresh = !state.worldTriggers.shoot.has(id);
+        state.worldTriggers.shoot.add(id);
+        if (!fresh) continue;
+        const wall = state.walls.find(candidate => candidate.id === id);
+        if (wallCanBeShot(wall)) pressSwitch(project, state, wall, { repeat: wallSwitchRepeats(wall) });
+      }
       // A shot that hits nothing has hit the wall behind it, and GZDoom leaves a mark there.
       addBulletMark(state, eye, [dx, dy, dz], nearest);
     }

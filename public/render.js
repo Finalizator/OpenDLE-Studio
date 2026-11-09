@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { uniform, float, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, asin, cross, normalize, length, clamp, mix, fract } from 'three/tsl';
+import { uniform, float, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, asin, cross, normalize, length, clamp, mix, fract,
+  reference, materialRotation, modelWorldMatrix, cameraViewMatrix, cameraWorldMatrix, rotate } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { createPostFxStack, toDisplaySpace } from './post-fx-pass.js';
@@ -11,6 +12,8 @@ import { wallScroll, TICRATE } from '/shared/scrollers.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
 import { verticalFov } from '/shared/game-settings.js';
 import { wallSegments } from '/shared/runtime.js';
+import { switchPairs } from '/shared/switches.js';
+import { screenTint } from '/shared/player-state.js';
 import { GLTFLoader } from '/vendor/three-addons/loaders/GLTFLoader.js';
 import { clone as cloneModel } from '/vendor/three-addons/utils/SkeletonUtils.js';
 import { RoomEnvironment } from '/vendor/three-addons/environments/RoomEnvironment.js';
@@ -34,6 +37,38 @@ import { createSurfaceBatcher, mergePiece } from '/shared/surface-batch.js';
 import { viewBob, weaponBob } from '/shared/player-motion.js';
 import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 import { createWorldNodeObject, createWorldTerminalController, gameplayCrosshairVisible, setWorldNodePose } from './world-media.js';
+
+/**
+ * A sprite that stands up, the way every Doom sprite does.
+ *
+ * `THREE.Sprite` always squares its quad to the *whole* camera basis, pitch included, so pitching
+ * the view down laid the monsters and pickups flat on the floor as if the level were a sheet of
+ * paper cut-outs. Doom billboards about the vertical axis only: a sprite turns to face the viewer
+ * in yaw and stays standing, which is why a monster you look down on is a monster seen from above
+ * and not one lying on its back. This material does exactly that — the quad is placed in world
+ * space, its horizontal axis taken from the camera's own right vector flattened onto the floor
+ * (which is never a zero-length projection, whatever the pitch) and its vertical axis from the
+ * world's up. Everything else — `center`, `scale`, rotation, size attenuation — behaves as before.
+ */
+export class UprightSpriteMaterial extends THREE.SpriteNodeMaterial {
+  setupPositionView(builder) {
+    const { object } = builder;
+    const { positionNode, rotationNode, scaleNode, sizeAttenuation } = this;
+    const worldPosition = modelWorldMatrix.mul(vec4(positionNode || vec3(0), 1));
+    let scale = vec2(modelWorldMatrix[0].xyz.length(), modelWorldMatrix[1].xyz.length());
+    if (scaleNode !== null) scale = scale.mul(vec2(scaleNode));
+    let aligned = positionGeometry.xy;
+    if (object.center && object.center.isVector2 === true) {
+      aligned = aligned.sub(reference('center', 'vec2', object).sub(0.5));
+    }
+    aligned = rotate(aligned.mul(scale), float(rotationNode || materialRotation));
+    // Size attenuation that is off scales by the distance along the view axis, so the picture
+    // keeps one size on screen however far away it is.
+    if (builder.camera.isPerspectiveCamera && sizeAttenuation === false) aligned = aligned.mul(cameraViewMatrix.mul(worldPosition).z.negate());
+    const right = normalize(vec3(cameraWorldMatrix[0].x, 0, cameraWorldMatrix[0].z));
+    return cameraViewMatrix.mul(vec4(worldPosition.xyz.add(vec3(right.x.mul(aligned.x), aligned.y, right.z.mul(aligned.x))), 1));
+  }
+}
 
 /** A camera's own field of view, or null when it has none a projection can be built from. */
 function validFov(value) {
@@ -177,6 +212,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
     position: uniform(position), color: uniform(lightColors[index]), radius: uniform(0),
   }));
   const effectTime = uniform(0), effectEnabled = uniform(1);
+  // The light-amp visor lifts every surface to full brightness while its clock runs, which is the
+  // whole of what it does in Doom. Zero leaves the sector lighting exactly as it is.
+  const lightBoost = uniform(0);
   // The pictures a map's scrollers slide, each with the speed its line gives it. A scrolled
   // surface gets its own copy of the texture so its offset can move without dragging every
   // other surface that samples the same artwork along with it.
@@ -398,6 +436,16 @@ export async function createPreview(canvas, project, state, { editor = false, on
     const levelAssets = project.game ? new Set(gameLevelAssetIds(project)) : null;
     const assets = (project.assets || []).filter(asset => !['model', 'font', 'sound', 'music', 'video'].includes(asset.kind) &&
       (!levelAssets || levelAssets.has(asset.id)));
+    // A switch shows the other half of its pair only after it is pressed, so the level never
+    // names that picture. Decoding it now is what keeps the first press from failing to find
+    // the image; only the partners of pictures this level uses are loaded.
+    const loadedIds = new Set(assets.map(asset => asset.id));
+    for (const [off, on] of switchPairs(project).on) {
+      const partner = loadedIds.has(off) ? on : loadedIds.has(on) ? off : null;
+      const asset = partner && assetMap.get(partner);
+      if (!asset || loadedIds.has(asset.id)) continue;
+      loadedIds.add(asset.id); assets.push(asset);
+    }
     for (let offset = 0; offset < assets.length; offset += 16) await Promise.all(assets.slice(offset, offset + 16).map(async asset => {
       const texture = await loader.loadAsync(asset.src);
       if (texture.image.width !== asset.width || texture.image.height !== asset.height) {
@@ -610,7 +658,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
       }));
       result.userData.assetId = assetId;
       result.userData.batchKey = key;
-      let illumination = varying(attribute('surfaceLight', 'float')).max(.03);
+      let illumination = varying(attribute('surfaceLight', 'float')).max(lightBoost).max(.03);
       for (const light of lightNodes) {
         const falloff = positionWorld.distance(light.position).div(light.radius.max(1)).oneMinus().max(0);
         illumination = illumination.add(light.color.mul(falloff.mul(falloff)));
@@ -792,7 +840,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
         }
       }
     }
-    wallLines = wallSegments(project);
+    // While a level is playing its walls come from the runtime, which owns the sidedefs a
+    // switch press or a script's `ReplaceTextures` changes; the editor draws the project.
+    wallLines = editor || !state.walls?.length ? wallSegments(project) : state.walls;
     for (const wall of wallLines) {
     seen.add(`wall:${wall.id}`);
     worldPart(`wall:${wall.id}`, [wall.right?.sectorId, wall.left?.sectorId],
@@ -866,6 +916,18 @@ export async function createPreview(canvas, project, state, { editor = false, on
     }
     if (!editor) for (const surface of surfaceMaterials(geometry, wallLines, project.environment)) {
       warmMaterial(surface.assetId, surface.color, surface.masked);
+    }
+    // The picture a switch shows after it is pressed is not on any wall at load, so its
+    // pipeline would be compiled the moment someone uses one. It is warmed with the colour of
+    // the wall it will appear on, because the material cache is keyed by that too.
+    if (!editor) {
+      const pairs = switchPairs(project);
+      for (const wall of wallLines) {
+        for (const slot of ['upper', 'middle', 'lower']) {
+          const on = wall.right?.[slot] && pairs.on.get(wall.right[slot]);
+          if (on) warmMaterial(on, wall.color, true);
+        }
+      }
     }
     // The sky is rebuilt from the environment rather than set up inline, because a
     // script can change it while the level runs (ACS ChangeSky).
@@ -1008,8 +1070,8 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // A shadered sprite cannot share the pre-wrapped template material.
       const template = spriteTemplates.get(spriteMode);
       const material = entity.shaderId
-        ? withEffectFor(new THREE.SpriteNodeMaterial(style), entity)
-        : template ? template.clone() : withEffect(new THREE.SpriteNodeMaterial(style));
+        ? withEffectFor(new UprightSpriteMaterial(style), entity)
+        : template ? template.clone() : withEffect(new UprightSpriteMaterial(style));
       if (template) { material.map = map; material.color.set(color); }
       else if (!entity.shaderId) spriteTemplates.set(spriteMode, material);
       materials.add(material);
@@ -1475,7 +1537,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
     geometries.add(projectileGeometry); geometries.add(impactGeometry);
     const effectTexture = (project.assets || []).find(asset => textures.has(asset.id))?.id || null;
     const effectTemplates = {
-      sprite: withEffect(new THREE.SpriteNodeMaterial({ map: effectTexture ? imageTexture(effectTexture) : null,
+      sprite: withEffect(new UprightSpriteMaterial({ map: effectTexture ? imageTexture(effectTexture) : null,
         transparent: true, alphaTest: .1, depthWrite: false })),
       mesh: withEffect(new THREE.MeshBasicNodeMaterial({ color: '#ffffff' })),
     };
@@ -1503,6 +1565,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
     const heightKey = sector => `${sector.floorHeight}/${sector.ceilingHeight}` +
       (sector.threeDFloors || []).map(floor => `/${floor.top}/${floor.bottom}`).join('');
     let sectorHeights = new Map(geometry.map(sector => [sector.id, heightKey(sector)]));
+    // The pictures a wall's two sidedefs carry. A switch press or a script's `ReplaceTextures`
+    // changes one without moving a vertex or a plane, so this is what tells those walls that
+    // their part has to be built again.
+    const sidedefKey = wall => [wall.right, wall.left]
+      .map(side => (side ? `${side.upper || ''}/${side.middle || ''}/${side.lower || ''}` : '-')).join('|');
+    let wallSidedefs = new Map(wallLines.map(wall => [wall.id, sidedefKey(wall)]));
     let worldRevision = state.worldRevision, appliedResolution = '';
     // Everything below is scratch state reused by every frame: precomputed lookups,
     // pooled objects and cached DOM/style writes keep the loop allocation-light.
@@ -1883,6 +1951,13 @@ export async function createPreview(canvas, project, state, { editor = false, on
           if (sectorHeights.get(sector.id) !== key) { changed.add(sector.id); sectorHeights.set(sector.id, key); }
         }
         for (const entry of worldParts) if (entry.sectorIds.some(id => changed.has(id))) rebuildPart(entry);
+        for (const wall of wallLines) {
+          const key = sidedefKey(wall);
+          if (wallSidedefs.get(wall.id) === key) continue;
+          wallSidedefs.set(wall.id, key);
+          const part = worldPartKeys.get(`wall:${wall.id}`);
+          if (part) rebuildPart(part);
+        }
         flushBatches();
         worldRevision = state.worldRevision;
         lastRebuildMs = clock() - rebuildStarted; rebuilds++;
@@ -2391,8 +2466,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
           postHistoryReady.value = 1;
         }
       }
-      // The fade a script asked for, unless the editor is showing the level without a game.
-      const fade = editor ? null : state.screenFadeNow;
+      // The fade a script asked for, together with the tint a Doom power-up gives, unless the
+      // editor is showing the level without a game. They are mixed rather than one replacing
+      // the other: a script's fade is on top, and a level that left one hanging cannot hide an
+      // invulnerability sphere.
+      const fade = editor ? null
+        : screenTint(state.screenFadeNow, state.playerStats, state.time, state.feedback?.damageCount, state.screenFlash);
       const fadeVisible = Boolean(fade && fade.amount > 0.002);
       if (fadeMesh.visible !== fadeVisible) fadeMesh.visible = fadeVisible;
       if (fadeVisible) {
@@ -2402,6 +2481,16 @@ export async function createPreview(canvas, project, state, { editor = false, on
       updateScreenInteraction();
       crosshair.visible = !editor && gameplayCrosshairVisible(project, state);
       writeDataset('crosshair', state.worldTerminalActive ? 'screen' : crosshair.visible ? 'visible' : 'hidden');
+      // A playtest report can name the power-up clocks without a screenshot of the screen.
+      writeDataset('powerups', ['invulnerable', 'berserk', 'radiation', 'invisible', 'lightamp']
+        .filter(power => state.playerStats[power] > 0).map(power => `${power}=${state.playerStats[power].toFixed(1)}`).join(' ') || 'none');
+      // The colour an item flashed as it was taken, so a report can name it without a picture.
+      writeDataset('pickupFlash', state.screenFlash
+        ? `${state.screenFlash.red},${state.screenFlash.green},${state.screenFlash.blue} ${state.screenFlash.remaining.toFixed(2)}s`
+        : 'none');
+      // The visor lifts every surface to full brightness, as Doom's does.
+      const wantedBoost = !editor && state.playerStats?.lightamp > 0 ? 1 : 0;
+      if (lightBoost.value !== wantedBoost) lightBoost.value = wantedBoost;
       renderer.clearDepth(); renderer.render(overlayScene, overlayCamera);
       renderer.setScissorTest(false);
       if (shaderCompileError) throw new Error(`GPU shader compilation failed: ${shaderCompileError}`);
@@ -2479,6 +2568,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
       sectorIndex = createSectorIndex(geometry);
       spriteIndex = createSpriteIndex(project);
       sectorHeights = new Map(geometry.map(sector => [sector.id, heightKey(sector)]));
+      wallSidedefs = new Map(wallLines.map(wall => [wall.id, sidedefKey(wall)]));
       scene.background = new THREE.Color(project.environment.sky);
       // Objects that gained or lost their model swap representation, and new objects
       // appear without a reload. Runtime spawns are handled by the frame loop.

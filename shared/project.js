@@ -726,6 +726,16 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     assert(typeof clip.loop === 'boolean', 'Sprite loop flag must be boolean');
   }
   const clipRef = id => assert(spriteClips.some(clip => clip.id === id), 'Command references an unknown sprite clip');
+  // Switch pairs are picture names, not asset ids: a re-import may renumber the artwork, and a
+  // pair has to keep naming the two pictures it was declared with.
+  if (project.switches !== undefined) {
+    array(project.switches, 'Switch pairs', 512);
+    for (const pair of project.switches) {
+      object(pair, 'Switch pair');
+      text(pair.off, 'Switch picture name', 64);
+      text(pair.on, 'Switch picture name', 64);
+    }
+  }
   if (project.materialAnimations !== undefined) {
     array(project.materialAnimations, 'Material animation mappings', LIMITS.assets);
     for (const mapping of project.materialAnimations) {

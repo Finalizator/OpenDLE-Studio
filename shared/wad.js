@@ -95,16 +95,19 @@ function importScriptPictureFonts(assets, program, limit = 64) {
 }
 
 /**
- * Loads the artwork an ANIMDEFS animation names but the map does not place by itself.
+ * Loads the artwork an ANIMDEFS animation names but the map does not place by itself, and the
+ * second picture of every switch it declares: a wall only shows that one after it is pressed,
+ * so the map never names it.
  *
  * `assets.get` creates an asset for a picture the package ships; a name the package does not
- * have throws, and a range stepping past the shipped frames simply stops there.
+ * have throws, and a range stepping past the shipped frames simply stops there. Returns the
+ * switch pairs it declared, as picture names, for the project to keep.
  */
 function importSurfaceAnimationFrames(assets, sources, wad) {
   const texts = [...sources.map(source => (typeof source === 'string' ? source : source?.source ?? source?.text)).filter(Boolean),
     ...wad.lumps.filter(lump => lump.name === 'ANIMDEFS' && lump.size > 0 && lump.size <= 1024 * 1024)
       .map(lump => new TextDecoder('latin1').decode(new Uint8Array(wad.buffer, lump.start, lump.size)))];
-  if (!texts.length) return;
+  if (!texts.length) return [];
   const parsed = parseSurfaceAnimations(texts);
   for (const sequence of parsed.sequences) {
     const names = sequence.range ? rangeNames(sequence.range) : sequence.frames.map(frame => frame.name);
@@ -115,6 +118,34 @@ function importSurfaceAnimationFrames(assets, sources, wad) {
       }
     }
   }
+  for (const pair of parsed.switchPairs) {
+    for (const name of [pair.off, pair.on]) {
+      if (!assets.has(name)) continue;
+      for (const kind of ['texture', 'flat']) {
+        try { assets.get(name, kind); break; } catch { /* the other namespace may have it */ }
+      }
+    }
+  }
+  return parsed.switchPairs;
+}
+
+/**
+ * The switch pairs a Boom-era `SWITCHES` lump declares: 20-byte records of two 9-character
+ * picture names and two bytes of flags. It exists so a mod can pair pictures that do not follow
+ * Doom's `SW1…`/`SW2…` naming, which is the only way to know those pairs.
+ */
+export function switchesFromLump(wad) {
+  const lump = wad.lumps.find(candidate => candidate.name === 'SWITCHES' && candidate.size > 0 &&
+    candidate.size <= 64 * 1024 && candidate.size % 20 === 0);
+  if (!lump) return [];
+  const record = new Uint8Array(wad.buffer, lump.start, lump.size);
+  const name = offset => doomName(record.subarray(offset, offset + 9));
+  const pairs = [];
+  for (let offset = 0; offset + 20 <= record.length && pairs.length < 512; offset += 20) {
+    const off = name(offset), on = name(offset + 9);
+    if (off && on) pairs.push({ off, on });
+  }
+  return pairs;
 }
 
 /**
@@ -391,8 +422,12 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     { requirePalette: false, animationSources: animDefsSources }) : null;
   // An animated surface needs every frame, and a map usually references only the first one:
   // `TEALW1 Range TEALW4` puts three textures in the pack that nothing places. They are loaded
-  // here, the way an actor's own state frames are, so the animation has frames to show.
-  if (assets) importSurfaceAnimationFrames(assets, animDefsSources, wad);
+  // here, the way an actor's own state frames are, so the animation has frames to show. The
+  // switch pairs come back with them and travel with the level as picture *names*, because a
+  // re-import may renumber an asset and a pair has to keep naming the pictures it chose.
+  const switches = (assets ? importSurfaceAnimationFrames(assets, animDefsSources, wad) : [])
+    .concat(switchesFromLump(wad)).slice(0, 512)
+    .map(pair => ({ off: String(pair.off).toUpperCase(), on: String(pair.on).toUpperCase() }));
   // ACS: the compiled BEHAVIOR lump is executed natively at Doom's 35 Hz, together
   // with every LOADACS library the game ships.
   const behaviorLump = mapLumps.find(lump => lump.name === 'BEHAVIOR');
@@ -753,14 +788,18 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   const nonSolidFloors = threeDFloors.filter(floor => !floor.floor.solid).length;
   if (transparentFloors) warnings.push(`${transparentFloors} translucent 3D floor(s) are drawn opaque; translucency is not applied to 3D floor surfaces yet.`);
   if (nonSolidFloors) warnings.push(`${nonSolidFloors} 3D floor(s) are non-solid in the map: they are drawn as surfaces, but nothing stands on them.`);
+  // Every Doom power-up is a pickup rule with its own clock but one: the computer map has nothing
+  // to open, because this engine has no automap to fill in.
   const unsupported = [...new Set(project.map.entities.filter(entity => entity.type === 'pickup' &&
-    [2022, 2023, 2024, 2025, 2026, 2045].includes(entity.doomType)).map(entity => entity.doomType))];
-  if (unsupported.length) warnings.push(`Power-up effects are not imported for Doom thing types ${unsupported.join(', ')}; these objects remain visible until scripted.`);
+    entity.doomType === 2026).map(entity => entity.doomType))];
+  if (unsupported.length) warnings.push(`Power-up effects are not imported for Doom thing types ${unsupported.join(', ')} (computer map); these objects remain visible until scripted.`);
   // Actor action functions this runtime has no implementation for are skipped at
   // the frame that calls them, so the gap belongs in the import report.
   const actionGaps = unsupportedActorActions(project);
   // A game import reports the union once instead of repeating this per level.
   if (actionGaps.length && !deferActionGaps) warnings.push(describeActorActionGaps(actionGaps));
+  // Switch pairs are level data: a campaign keeps the list its own import declared.
+  if (switches.length) project.switches = switches;
   validateProject(project, { gameLevelIds: episodeInfo?.levelIds ? new Set(episodeInfo.levelIds) : undefined });
   return { project, warnings, ...(actionGaps.length ? { actionGaps } : {}) };
 }

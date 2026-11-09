@@ -138,19 +138,74 @@ export function geometryDistance(state, origin, direction, range, movement = fal
   return nearest;
 }
 /**
+ * How far Doom's `P_CheckSight` looks: as far as the level reaches.
+ *
+ * Doom has no sight radius at all — a monster notices a player across a courtyard as readily as
+ * one in the next room — and what keeps a monster's vision short is that every wall, step and
+ * shut door between the two blocks the trace. Range is therefore geometry, not a distance.
+ */
+export const SIGHT_RANGE = 1 << 24;
+
+/**
+ * Where a thing looks from and is looked at: Doom's `z + height - height/4`, three quarters of
+ * the way up its own body. Using it for both ends is what stops a monster on a floor below
+ * seeing the player's feet over the edge of a step.
+ */
+export function sightEyeHeight(state, thing) {
+  const height = entityHeight(thing) || 56;
+  return floorAt(state, thing) + height - (height >> 2);
+}
+
+/**
  * Doom's P_CheckSight: within range, inside the field of view, and not hidden
  * behind solid geometry. `target` is the player or another monster, which is what
  * lets monsters notice whoever is shooting at them.
+ *
+ * The trace runs from eye to eye, so a two-sided line only lets the sight through while the
+ * opening between the two sectors covers the height the sight line crosses it at: a shut door,
+ * a raised ledge and a lowered ceiling all hide what is behind them, and a wall between two
+ * rooms hides the player completely instead of being something to shoot at.
  */
-export function canSeeTarget(state, entity, target, range, fov = 360) {
+export function canSeeTarget(state, entity, target, range = SIGHT_RANGE, fov = 360) {
   if (!target) return false;
-  const origin = { x: entity.x, y: entity.y, z: floorAt(state, entity) + 36 };
-  const dx = target.x - origin.x, dy = target.y - origin.y, dz = floorAt(state, target) + 36 - origin.z;
-  const distance = Math.hypot(dx, dy, dz);
-  const facing = (entity.angle || 0) * Math.PI / 180;
-  const delta = Math.atan2(Math.sin(Math.atan2(dy, dx) - facing), Math.cos(Math.atan2(dy, dx) - facing));
-  if (Math.hypot(dx, dy) > 64 && Math.abs(delta) > fov * Math.PI / 360) return false;
-  return distance <= range && geometryDistance(state, origin, { x: dx / (distance || 1), y: dy / (distance || 1), z: dz / (distance || 1) }, distance + .01) >= distance;
+  const ox = entity.x, oy = entity.y, oz = sightEyeHeight(state, entity);
+  const dx = target.x - ox, dy = target.y - oy;
+  const horizontal = Math.hypot(dx, dy);
+  const dz = sightEyeHeight(state, target) - oz;
+  const distance = Math.hypot(horizontal, dz);
+  // Doom's `P_LookForPlayers` refuses a target behind the monster's back, except one close
+  // enough to touch: `dist > MELEERANGE` is what makes the angle matter at all.
+  if (fov < 360 && horizontal > 64) {
+    const facing = (entity.angle || 0) * Math.PI / 180;
+    const delta = Math.atan2(Math.sin(Math.atan2(dy, dx) - facing), Math.cos(Math.atan2(dy, dx) - facing));
+    if (Math.abs(delta) > fov * Math.PI / 360) return false;
+  }
+  if (!(distance <= range)) return false;
+  if (!(distance > 0)) return true;
+  return geometryDistance(state, { x: ox, y: oy, z: oz },
+    { x: dx / distance, y: dy / distance, z: dz / distance }, distance + .01) >= distance;
+}
+
+/** Who a monster is hunting: the thing that hurt it, or else the player. */
+function targetOf(state, entity) {
+  if (entity?.targetId && entity.targetId !== '$player') {
+    const other = state.entities.find(candidate => candidate.id === entity.targetId && (candidate.health ?? 0) > 0);
+    if (other) return other;
+  }
+  return state.player;
+}
+
+/**
+ * Doom's `P_CheckMeleeRange`: in reach **and** in sight.
+ *
+ * The sight test is the whole point of it. Without it a monster whose target stood on the other
+ * side of a wall walked into that wall and punched it for as long as the fight lasted.
+ */
+export function checkMeleeRange(state, entity, target = null, radius = null) {
+  const who = target || targetOf(state, entity);
+  if (!who) return false;
+  if (Math.hypot(who.x - entity.x, who.y - entity.y) >= 64 - 20 + (radius ?? entity.radius ?? 20)) return false;
+  return canSeeTarget(state, entity, who, SIGHT_RANGE);
 }
 export function canSeePlayer(state, entity, range, fov = 360) {
   // A monster's sight is asked about several times in one frame — the See rule, the alert
@@ -215,21 +270,58 @@ export function projectileSource(state, projectile) {
   return state.entities.find(entity => entity.id === projectile.ownerId) || null;
 }
 
-export function enemyAttackChance(state, entity) {
-  let distance = Math.max(0, Math.hypot(state.player.x - entity.x, state.player.y - entity.y) - 64);
-  if ([3002, 58].includes(entity.doomType)) return distance < 0.001;
-  if (![3001, 3003, 69, 66].includes(entity.doomType)) distance -= 128;
-  if ([16, 7, 3006].includes(entity.doomType)) distance /= 2;
-  return randomDamage(state, 1, 256) - 1 >= Math.min(200, Math.max(0, distance));
+// Doom's monster types, by the numbers its maps place them with, grouped by what
+// `P_CheckMissileRange` asks of each of them.
+const MELEE_MONSTERS = new Set([3002, 58, 3003, 69, 66]);   // demon, spectre, baron, hell knight, revenant
+const ARCHVILE = 64, REVENANT = 66, LOST_SOUL = 3006, CYBERDEMON = 16, SPIDER_MASTERMIND = 7;
+
+/**
+ * Doom's `P_CheckMissileRange`: whether a monster may fire this tic.
+ *
+ * It begins with `P_CheckSight`, and that is the whole reason a monster stops firing: a target
+ * it cannot see is a target it does not shoot at, so a wall between the two ends the attack
+ * instead of collecting hitscan after hitscan that never leaves the room.
+ *
+ * `missile`/`melee` come from the actor's own states when the rule was generated; without them
+ * the Doom thing number decides, which is what a campaign imported before the hints existed has.
+ */
+export function enemyAttackChance(state, entity, { missile = null, melee = null } = {}) {
+  const target = targetOf(state, entity);
+  if (!target) return false;
+  const meleeOnly = missile === false || (missile === null && [3002, 58].includes(entity.doomType));
+  // A monster with no missile state never rolls for one in Doom: its only attack is the melee,
+  // so the honest answer is whether it is in reach of one.
+  if (meleeOnly) return checkMeleeRange(state, entity, target);
+  if (!canSeeTarget(state, entity, target, SIGHT_RANGE)) return false;
+  // Doom's MF_JUSTHIT: a monster that was just hurt always fights back on its next chance.
+  if (entity.justHit) { entity.justHit = false; return true; }
+  let distance = Math.hypot(target.x - entity.x, target.y - entity.y) - 64;
+  const hasMelee = melee === null ? MELEE_MONSTERS.has(entity.doomType) : Boolean(melee);
+  if (!hasMelee) distance -= 128;
+  // The archvile works at a distance and gives up past 896 units; the revenant refuses to fire
+  // when it is close enough to punch instead.
+  if (entity.doomType === ARCHVILE && distance > 14 * 64) return false;
+  if (entity.doomType === REVENANT) {
+    if (distance < 196) return false;
+    distance = Math.floor(distance / 2);
+  }
+  if ([CYBERDEMON, SPIDER_MASTERMIND, LOST_SOUL].includes(entity.doomType)) distance = Math.floor(distance / 2);
+  if (distance > 200) distance = 200;
+  if (entity.doomType === CYBERDEMON && distance > 160) distance = 160;
+  // P_Random() < dist means "hold fire", so the nearer the target the likelier the shot.
+  return randomDamage(state, 1, 256) - 1 >= distance;
 }
 export function enemyHitscan(state, entity, action) {
   if (entity.health <= 0 || !canSeePlayer(state, entity, action.range)) return;
-  const origin = { x: entity.x, y: entity.y, z: floorAt(state, entity) + 36 };
+  const origin = { x: entity.x, y: entity.y, z: sightEyeHeight(state, entity) };
   const dx = state.player.x - entity.x, dy = state.player.y - entity.y;
   const angle = Math.atan2(dy, dx);
   const pitch = Math.atan2(floorAt(state, state.player) + 28 - origin.z, Math.hypot(dx, dy));
   for (let i = 0; i < (action.pellets ?? 1); i++) {
-    const offset = action.spread ? (randomDamage(state, 1, 256) - randomDamage(state, 1, 256)) * action.spread / 256 * Math.PI / 180 : 0;
+    // Doom's blur sphere: `P_LineAttack` fires a blurred target's attacker wide, which is what
+    // makes the player hard to hit while the sphere runs.
+    const blurred = state.playerStats.invisible > 0 ? (randomDamage(state, 1, 256) - randomDamage(state, 1, 256)) * 12 * Math.PI / 180 : 0;
+    const offset = blurred + (action.spread ? (randomDamage(state, 1, 256) - randomDamage(state, 1, 256)) * action.spread / 256 * Math.PI / 180 : 0);
     const direction = { x: Math.cos(angle + offset) * Math.cos(pitch), y: Math.sin(angle + offset) * Math.cos(pitch), z: Math.sin(pitch) };
     const limit = geometryDistance(state, origin, direction, action.range);
     const damage = randomDamage(state, action.damage, action.diceSides);
@@ -240,6 +332,47 @@ export function enemyHitscan(state, entity, action) {
 const ENEMY_DIRECTIONS = Array.from({ length: 8 }, (unused, index) => ({ x: Math.cos(index * Math.PI / 4), y: Math.sin(index * Math.PI / 4) }));
 const ENEMY_SEARCH = [0, 1, 7, 2, 6, 3, 5, 4];
 
+/** Doom's `FLOATSPEED`: four map units a tic, the rate a flying monster rises or sinks. */
+const FLOAT_SPEED = 4 * 35;
+
+/**
+ * Whether a monster flies: Doom's `MF_FLOAT`.
+ *
+ * A flying thing ignores floor steps when it moves (`P_TryMove` waives the 24-unit limit for
+ * `FLOAT`), needs only the air above it rather than a room it fits in, and hovers towards its
+ * target instead of standing on the floor. `A_ChangeFlag` overrides the actor's own flag.
+ */
+export function enemyFloats(entity) {
+  const overrides = entity?.actorFlags;
+  if (overrides) for (const name of Object.keys(overrides)) {
+    if (name.toLowerCase() === 'float') return Boolean(overrides[name]);
+  }
+  return entity?.floating === true;
+}
+
+/**
+ * Rises or sinks towards the target's middle, as `P_Move` does for a float monster.
+ *
+ * Doom only floats while the target is under it (`dist < delta*3`), which is why a Cacodemon
+ * closes in near the floor and lifts as it arrives. The floor under it and the ceiling above
+ * it stop it; a room with no ceiling above the thing's height leaves it where it is.
+ */
+function floatTowards(state, entity, target, distance, floor, dt) {
+  const sector = sectorAt(state.sectors, entity.x, entity.y);
+  const height = entity.height ?? 56;
+  const rate = FLOAT_SPEED * dt;
+  const delta = floorAt(state, target) + entityHeight(target) / 2 - floor;
+  let height2 = floor;
+  if (delta < 0 && distance < -delta * 3) height2 = Math.max(sector?.floorHeight ?? floor, floor - rate);
+  else if (delta > 0 && distance < delta * 3) {
+    const ceiling = sector ? sector.ceilingHeight : floor + height;
+    height2 = Math.min(Math.max(floor, ceiling - height), floor + rate);
+  }
+  if (height2 === entity.z) return false;
+  entity.z = height2;
+  return true;
+}
+
 export function moveEnemy(state, entity, speed, dt, target = state.player) {
   if (entity.health <= 0 || speed <= 0 || dt <= 0) return;
   const angle = Math.atan2(target.y - entity.y, target.x - entity.x);
@@ -248,8 +381,13 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
   if (!step) return;
   // Every monster is moved every frame, so this stays allocation-free apart from one
   // small origin object: no candidate arrays, no Sets and no sector scans per wall.
+  const flying = enemyFloats(entity);
+  if (flying && !Number.isFinite(entity.z)) entity.z = floorAt(state, entity);
   const entityFloor = floorAt(state, entity);
-  const origin = { x: entity.x, y: entity.y, z: entityFloor + 28 };
+  const hovered = flying && floatTowards(state, entity, target, distance, entityFloor, dt);
+  // A flyer's own height is what its body occupies; a walker's is the floor it stands on.
+  const floor = flying ? entity.z : entityFloor;
+  const origin = { x: entity.x, y: entity.y, z: floor + 28 };
   const previous = state.enemyMoves.get(entity.id);
   const toward = ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
   const reverse = previous ? (previous.direction + 4) % 8 : -1;
@@ -259,7 +397,13 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
     if (geometryDistance(state, origin, direction, step + 16, true) < step + 16) return false;
     const x = entity.x + direction.x * step, y = entity.y + direction.y * step;
     const sector = sectorAt(state.sectors, x, y);
-    if (state.sectors.length && (!sector || sector.ceilingHeight - sector.floorHeight < 56 || Math.abs(sector.floorHeight - entityFloor) > 24)) return false;
+    if (state.sectors.length) {
+      if (!sector) return false;
+      // A walker needs a room it fits in and no step it cannot climb. A flyer only needs the
+      // air it occupies: the pit under it and the floor on the far side are not in its way.
+      if (flying ? sector.ceilingHeight - floor < 56
+        : sector.ceilingHeight - sector.floorHeight < 56 || Math.abs(sector.floorHeight - entityFloor) > 24) return false;
+    }
     for (const other of state.entities) {
       if (other !== entity && other.type === 'enemy' && other.health > 0 && Math.hypot(other.x - x, other.y - y) < 32) return false;
     }
@@ -276,16 +420,24 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
         if (Math.sign(before) !== Math.sign(after) || Math.abs(after) < Math.abs(before)) return false;
       }
       const front = sectors.get(wall.right?.sectorId), back = sectors.get(wall.left?.sectorId);
-      if (!wall.solid && front && back && Math.min(front.ceilingHeight, back.ceilingHeight) - Math.max(front.floorHeight, back.floorHeight) >= 56 &&
-        Math.max(front.floorHeight, back.floorHeight) - entityFloor <= 24) continue;
+      if (!wall.solid && front && back && (flying
+        ? Math.min(front.ceilingHeight, back.ceilingHeight) - floor >= 56
+        : Math.min(front.ceilingHeight, back.ceilingHeight) - Math.max(front.floorHeight, back.floorHeight) >= 56 &&
+          Math.max(front.floorHeight, back.floorHeight) - entityFloor <= 24)) continue;
       if (!wall.solid && !front && !back) continue;
       return false;
     }
     entity.x = x; entity.y = y; entity.angle = index * 45;
     state.enemyMoves.set(entity.id, { direction: index, remaining: previous?.direction === index && previous.remaining > 0
       ? previous.remaining - step : speed * (4 / 35) * randomDamage(state, 1, 16) });
-    entity.z = sector?.floorHeight ?? entityFloor;
-    state.physics?.teleport(entity.id, x, y, sector?.floorHeight);
+    if (flying) {
+      // A flyer keeps its own height; teleporting it to the sector floor is what pinned it
+      // to the ground and made it walk through a level it was supposed to fly over.
+      state.physics?.teleport(entity.id, x, y, entity.z);
+    } else {
+      entity.z = sector?.floorHeight ?? entityFloor;
+      state.physics?.teleport(entity.id, x, y, sector?.floorHeight);
+    }
     return true;
   };
   // Keep a direction that still has ground to cover, otherwise search from the way the
@@ -297,6 +449,9 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
     if (walkable(index)) return;
   }
   if (reverse >= 0) walkable(reverse);
+  // A flyer that is boxed in still hovers towards its target, which is what lifts a Cacodemon
+  // over the ledge it cannot climb.
+  if (hovered) state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
 }
 export function launchProjectile(state, action, owner) {
   if (state.projectiles.length >= 256) throw new Error('Projectile limit exceeded');

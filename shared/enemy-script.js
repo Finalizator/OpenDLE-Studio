@@ -209,8 +209,12 @@ export function enemyScriptRules(project, { sheetId, groupId, id = uniqueId(proj
     // took a step again.
     events.push({ id: id(`enemy_${suffix}_attack`), name: `${plan.name}: attacks`,
       ...base, condition: { type: 'enemyAlert', entityId: '$self' },
+      // `missile` and `melee` tell the rule what the actor's own states said, so the decision
+      // does not have to guess from the thing number: a monster with no missile state never
+      // rolls for one, and a monster that cannot melee does not get the closer-fire bonus.
       conditions: [...living(plan), ...notAttacking, { type: 'oncePerTic' },
-        { type: 'enemyAttackChance', entityId: '$self' }, { type: 'timerReady', timer }],
+        { type: 'enemyAttackChance', entityId: '$self', missile: Boolean(plan.missile), melee: Boolean(plan.melee) },
+        { type: 'timerReady', timer }],
       actions: [{ type: 'facePlayer', entityId: '$self' },
         { type: 'playActorState', entityId: '$self', state: attacking[0] },
         { type: 'startTimer', timer, seconds: plan.attackSeconds }] });

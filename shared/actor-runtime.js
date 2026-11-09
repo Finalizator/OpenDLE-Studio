@@ -1,6 +1,6 @@
 import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, canSeeTarget, randomDamage, enemyHitscan, moveEnemy, geometryDistance,
-  entityDistance, projectileSource } from './combat.js';
+  entityDistance, projectileSource, canHearPlayer, checkMeleeRange, sightEyeHeight, SIGHT_RANGE } from './combat.js';
 import { actorIndex, actorForThing, NATIVE_EFFECT_ACTORS, dropItemNumber } from './actors.js';
 import { actorProjectileClips, actorEffectClip, setSpriteState, spriteAssetNames, applyActorSpriteStates } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
@@ -793,12 +793,10 @@ export function spawnActorProjectile(project, state, owner, projectileName, { sp
  * starts a monster even when it cannot see the player.
  */
 function hearsPlayer(state, entity) {
-  const noise = state.playerNoise;
-  if (!noise) return false;
-  if (!state.sectors?.length) return false;
-  const distance = Math.hypot(noise.x - entity.x, noise.y - entity.y);
-  if (distance > 2048) return false;
-  return canSeePlayer(state, entity, 2048) || distance < 1024;
+  // Doom's `P_RecursiveSound`: a noise spreads to every sector reachable through an opening,
+  // however far away, and stops at a shut door. A plain radius woke monsters through any
+  // number of walls and had them hunting a player they had never laid eyes on.
+  return canHearPlayer(state, entity);
 }
 
 const meleeRange = 64;
@@ -943,6 +941,9 @@ export function hurtActor(project, state, entity, amount, source = null, damageT
     if (!(amount > 0)) return false;
   }
   entity.health = Math.max(0, entity.health - amount);
+  // Doom's `MF_JUSTHIT`: a monster that has just been hurt answers with an attack the next time
+  // it is allowed to make one, whatever the distance roll would have said.
+  entity.justHit = true;
   if (source && source !== state.player && source !== entity && !actorFlag(actor, 'NOINFIGHTING', entity)) {
     // A monster remembers who shot it, so it fights back against its own kind.
     entity.targetId = source.id;
@@ -976,9 +977,11 @@ function monsterHitscan(ctx, damage, diceSides, spread = 0) {
   const { state, entity } = ctx;
   if (entity.health <= 0) return;
   const target = targetPosition(state, entity);
-  const origin = { x: entity.x, y: entity.y, z: floorAt(state, entity) + 36 };
+  const origin = { x: entity.x, y: entity.y, z: sightEyeHeight(state, entity) };
   const aim = Math.atan2(target.y - entity.y, target.x - entity.x);
-  const reach = canSeeTarget(state, entity, target, 2048) ? 2048 : 0;
+  // Doom's MISSILERANGE: a shot travels 2048 units, but what it may be fired at is only
+  // limited by sight.
+  const reach = canSeeTarget(state, entity, target, SIGHT_RANGE) ? 2048 : 0;
   if (!reach) return;
   const offset = spread ? (randomDamage(state, 1, 256) - randomDamage(state, 1, 256)) * spread / 256 * Math.PI / 180 : 0;
   const direction = { x: Math.cos(aim + offset), y: Math.sin(aim + offset), z: 0 };
@@ -1030,7 +1033,7 @@ export const ACTIONS = {
     // actor has LOOKALLAROUND, and wakes on gunfire through P_RecursiveSound. An
     // AMBUSH monster ignores the sound and only reacts to what it can see.
     const fov = actorFlag(actor, 'LOOKALLAROUND', entity) ? 360 : 180;
-    const seen = canSeePlayer(state, entity, 2048, fov);
+    const seen = canSeePlayer(state, entity, SIGHT_RANGE, fov);
     if (!seen && (actorFlag(actor, 'AMBUSH', entity) || entity.ambush || !hearsPlayer(state, entity))) return;
     setActorTarget(entity, state.player);
     saySound(state, actor.sounds?.see, entity);
@@ -1045,7 +1048,7 @@ export const ACTIONS = {
     const minSeed = numArg(ctx, 1, 0);
     const maxSeed = numArg(ctx, 2, 0);
     const fov = numArg(ctx, 4, 0) || 180;
-    if (!canSeePlayer(state, entity, maxSeed > 0 ? maxSeed : 2048, fov)) return;
+    if (!canSeePlayer(state, entity, maxSeed > 0 ? maxSeed : SIGHT_RANGE, fov)) return;
     if (minSeed > 0 && targetDistance(state, entity) <= minSeed) return;
     saySound(state, actor.sounds?.see, entity);
     setActorState(ctx.project, entity, arg(ctx, 5) || 'See');
@@ -1063,16 +1066,17 @@ export const ACTIONS = {
     const meleeLabel = arg(ctx, 1) || 'Melee';
     const target = targetPosition(state, entity);
     const distance = Math.hypot(target.x - entity.x, target.y - entity.y);
-    // P_CheckMeleeRange: MELEERANGE - 20 + the monster's radius.
-    if (distance <= 64 - 20 + (actor.radius || 20)) {
+    // P_CheckMeleeRange: MELEERANGE - 20 + the monster's radius, and in sight — a monster
+    // cannot punch what is on the other side of a wall.
+    if (checkMeleeRange(state, entity, target, actor.radius)) {
       if (setActorState(ctx.project, entity, meleeLabel)) {
         runtime.reactionTime = actor.reactionTime || 8;
         return;
       }
     }
-    // P_CheckMissileRange: closer monsters are far more likely to shoot, and the
-    // MISSILEMORE flags bias that roll the way Doom does.
-    if (!canSeeTarget(state, entity, target, 2048)) return;
+    // P_CheckMissileRange: a target that is not in sight is not shot at, and closer monsters
+    // are far more likely to shoot; the MISSILEMORE flags bias that roll the way Doom does.
+    if (!canSeeTarget(state, entity, target, SIGHT_RANGE)) return;
     let reach = Math.max(0, distance - 64) - 128;
     if (actorFlag(actor, 'MISSILEMORE', entity)) reach += 100;
     if (actorFlag(actor, 'MISSILEEVENMORE', entity)) reach += 200;
@@ -1081,7 +1085,7 @@ export const ACTIONS = {
   },
   A_Wander(ctx) {
     const { state, entity, actor } = ctx;
-    if (canSeePlayer(state, entity, 2048)) { setActorState(ctx.project, entity, 'See'); return; }
+    if (canSeePlayer(state, entity, SIGHT_RANGE)) { setActorState(ctx.project, entity, 'See'); return; }
     moveEnemy(state, entity, (actor.speed || 8) * TIC_RATE * .5, 1 / TIC_RATE);
   },
   A_FaceTarget(ctx) {
@@ -1181,7 +1185,7 @@ export const ACTIONS = {
   },
   A_HeadAttack(ctx) {
     const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, 2048)) return;
+    if (!canSeePlayer(state, entity, SIGHT_RANGE)) return;
     spawnActorProjectile(ctx.project, state, entity, actorMissile(ctx, 'CacodemonBall'));
     saySound(state, 'DSCACATT', entity);
   },
@@ -1237,7 +1241,7 @@ export const ACTIONS = {
   },
   A_VileAttack(ctx) {
     const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, 2048)) return;
+    if (!canSeePlayer(state, entity, SIGHT_RANGE)) return;
     monsterHitscan(ctx, 20, 8);
     saySound(state, 'DSVILATK', entity);
   },
@@ -1656,6 +1660,9 @@ export function initialiseActorEntities(project, entities) {
     if (!actor) continue;
     entity.actorId = actor.id;
     entity.actorName = actor.name;
+    // `MF_FLOAT` is what makes a Cacodemon or a Lost Soul fly: the movement path reads this
+    // rather than the actor table, which combat.js cannot import without a cycle.
+    entity.floating = actorFlag(actor, 'FLOAT', entity);
     if (entity.health === undefined) entity.health = Math.max(1, actor.health || 20);
     entity.maxHealth = entity.health;
     entity.radius ??= actor.radius;

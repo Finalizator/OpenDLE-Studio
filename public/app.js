@@ -6875,6 +6875,14 @@ installContextMenus();
  * for browser storage is deliberately not copied into a draft, and a dialog that promised a
  * draft kept it would be lying about work about to be lost.
  */
+/**
+ * The running game's state, for checking a report about something on screen.
+ *
+ * A playtest report that says "the tint does not work" needs the numbers, not another guess:
+ * `opendlePreviewState().playerStats.invulnerable = 30` or
+ * `opendlePreviewState().feedback.damageCount = 40` puts the effect on screen at once.
+ */
+window.opendlePreviewState = () => runtime;
 window.opendleUnsavedEditsAreBackedUp = () => {
   if (!project) return true;
   if (draftTooLarge()) return false;

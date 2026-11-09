@@ -563,7 +563,7 @@ provider credits or network access are required for tests.
   right-drag looks in event-driven projects; legacy projects use left-drag.
   WASD movement, arrow-key turning, wall collision, colored
   or textured sector geometry, floors/ceilings, two-sided openings, masked
-  midtextures, animated billboard sprites, weapon overlay, sector light
+  midtextures, animated upright billboard sprites, weapon overlay, sector light
   and up to 16 colored point lights without shadows. Movement checks 56-unit
   headroom and at most 24-unit upward steps. Preview state resets each session.
 - **Rapier 3D:** fixed-step sector collision, a gravity-driven capsule player
@@ -954,13 +954,30 @@ runtime says which event is wrong rather than quietly never firing.
   selection's bounds, which is the same shape only for an object — a diagonal wall got a box the
   size of the room, and a room with a bay in it got a box that covered the bay.
 - **A sprite's box is its footprint and height, not its card.** A billboard always faces the
-  camera, so its own world box is flat, leans with the view, and is the unit box until the first
-  frame has placed it — a selected monster used to get a slanted sheet instead of a box around it.
+  camera in yaw (see `UprightSpriteMaterial` below), but its card is a flat sheet in world space,
+  so its own box is flat and is the unit box until the first frame has placed it — a selected
+  monster used to get a slanted sheet instead of a box around it.
   `spritePlacement` (in `shared/entity-visuals.js`) says where the card is drawn and how big it is,
   from the entity and the artwork, and both the renderer's per-frame placement and
   `boundsOfEntity` use it, so the box is right the moment an object is selected and stands still
   while the camera turns. `canvas.dataset.outlineBox` publishes the highlighted box's size
   (`41x55x41` for an imported ZombieMan: width, height, and a depth equal to the width).
+- **A sprite stands up; it does not lie on the screen.** `THREE.Sprite` squares its quad to the
+  whole camera basis, pitch included, so pitching the view down laid every monster and pickup flat
+  as if the level were a sheet of cut-outs — the reported "everything looks like it is lying down".
+  `UprightSpriteMaterial` (in `public/render.js`, the only sprite material the renderer builds)
+  instead places the quad in world space: its horizontal axis is the camera's own right vector
+  flattened onto the floor, its vertical axis is the world's up. The picture therefore faces the
+  viewer in **yaw only** and stays standing, exactly as Doom and GZDoom draw it, so a monster seen
+  from above is a monster seen from above. Flattening the camera's right vector can never be a
+  zero-length projection, so the basis holds up even looking straight down, where a
+  towards-the-target basis would degenerate. Measured on the class against the stock material with
+  the sprite 300 units away and 233 below the eye: identical at level (`66x130` both) and in yaw
+  (`86x172` both), and at 57 degrees down `66x95` standing against `56x110` lying, at 74 degrees
+  `48x57` against `44x85`. The standing quad is also a trapezoid — wider at the top, because its
+  top edge is nearer the pitched camera — which is what makes it read as vertical.
+  `center`, `scale`, `rotationNode`, `sizeAttenuation` and the pooled effect sprites all behave as
+  before; the weapon overlay is a mesh, not a sprite, and is untouched.
 - **Rotation** turns the volume: containment rotates the player offset into the zone's own frame,
   and the box in the 3D view and the plate in the 2D view turn with it, so what you see is what
   fires. Round shapes on the ground are unaffected.
@@ -1545,6 +1562,13 @@ remain native engine primitives.
   compare project variables. Damage absorbs `floor(damage / armorDivisor)`
   armor points, limited by remaining armor; the rest reduces health.
   Divisor 3 represents green armor, 2 blue armor. Pickup rules can change it.
+  `invulnerable`, `berserk`, `radiation` and `invisible` are **clocks in seconds**,
+  not flags: `advancePowerups` counts them down every frame, `invulnerable > 0`
+  blocks damage and shows the god face, `invisible > 0` makes monster hitscans fire
+  wide, and `powerupTint` turns the first three into the view tint. A rule that sets
+  one is asking for that many seconds of it. Being hurt is the red of
+  `feedback.damageCount` (`damageTint`), which `recordDamage` raises and
+  `advanceDamage` drains.
 - **Weapons (starter projects only):** nine firing rules check selected/owned weapon, held left mouse,
   positive health, sufficient ammo and a shared refire timer. Fist/chainsaw use
   short-range traces; pistol/chaingun trace bullets; shotguns fire 7/20 pellets.
@@ -1589,8 +1613,10 @@ remain native engine primitives.
   follows actual movement, while `facePlayer` turns toward the player for attacks.
   Imported speeds and walking-frame durations follow classic actor chase cadence
   (for example, the zombie's 8 units per 4 tics becomes 70 units/second).
-  Closed doors block sight. Attack decisions use a Doom-style distance/random
-  check, evaluated every 8 tics rather than every rendered frame.
+  Closed doors and ledges block sight, at eye height, and an attack needs sight
+  before its distance/random check is even rolled — a monster no longer fires at a
+  wall it cannot see through. Attack decisions are evaluated every 8 tics rather
+  than every rendered frame.
   Separate decision, wind-up and fire sub-events expose reaction delay,
   attack-pose movement pauses and recovery timers. Cover reached during wind-up
   prevents a hitscan hit or missile launch. Hitscan attacks trace real scattered
@@ -2363,14 +2389,38 @@ action functions and the decisions around them. `shared/actor-runtime.js` and
 - **Pain.** Damage rolls the actor's `PainChance` (0-256) and enters its `Pain`
   state, playing the pain sound and clearing `ReactionTime` so the monster can
   answer at once. A corpse never flinches, and a killing blow removes the body.
-- **Sight.** `A_Look` looks for a player only, inside a 180-degree cone, unless
-  the actor has `LOOKALLAROUND`; `AMBUSH` monsters ignore gunfire and wake only
-  on sight. `canSeeTarget` shared by every check does the range, cone and
-  line-of-sight test, so a box can no longer notice you through a wall.
-- **Chase decisions.** `A_Chase` keeps Doom's ordering — move, then melee range
-  (`64 - 20 + radius`), then the missile-range roll modified by
-  `MISSILEMORE`/`MISSILEEVENMORE` — and a blocked monster turns through the eight
-  compass directions before reversing, which is what makes it round corners.
+- **Sight.** `P_CheckSight` is a trace from eye to eye — Doom's eye is
+  `z + height - height/4`, so a monster on a lower floor sees over a step only when
+  the sight line clears its top. Doom has **no sight radius at all**: a monument
+  notices a player across a courtyard as readily as one in the next room, and what
+  keeps a monster's vision short is that every wall, ledge and shut door between
+  them blocks the trace. The two-sided line is what does the work: the sight only
+  passes while the opening between the two sectors covers the height at which the
+  trace crosses it, which is why a shut door, a raised step and a lowered ceiling all
+  hide what is behind them. `A_Look` looks for a player only, inside a 180-degree
+  cone, unless the actor has `LOOKALLAROUND` (or the target is within `MELEERANGE`);
+  `AMBUSH` monsters ignore gunfire and wake only on sight. A noise reaches a monster
+  through the sector flood `P_RecursiveSound` describes — any distance through an
+  opening, stopped by a shut door — not through a radius.
+- **Chase decisions.** `A_Chase` keeps Doom's ordering — move, then
+  `P_CheckMeleeRange` (`64 - 20 + radius` **and** line of sight), then
+  `P_CheckMissileRange` (sight first, then the distance roll, with the archvile's
+  896-unit limit, the revenant's refusal to fire up close, and the cyberdemon,
+  spider and lost soul halving the distance) — so a monster with a target it can no
+  longer see stops firing instead of emptying its attack states into the wall in
+  front of it. A blocked monster turns through the eight compass directions before
+  reversing, which is what makes it round corners. `MF_JUSTHIT` makes a monster that
+  was just hurt answer with an attack whatever the roll says.
+- **Flying monsters.** `MF_FLOAT` is read off the actor when the object is resolved
+  (`entity.floating`, overridden by any `A_ChangeFlag` override on the instance), and
+  `moveEnemy` treats those things the way `P_Move` does: they ignore the 24-unit floor
+  step in both directions, need only the air they occupy rather than a room they fit
+  in, and are never snapped to the sector floor — the teleport that pinned them to the
+  ground was why a Cacodemon walked instead of flying. While the target is under them
+  (`dist < delta*3`) they rise or sink at Doom's `FLOATSPEED` (4 units a tic) towards
+  its middle, stopping at the floor under them and at the ceiling above them, which is
+  what makes them lift over the ledge they are chasing you across. A monster whose
+  actor has `NOGRAVITY` but not `FLOAT` still hangs where it was placed, as in Doom.
 - **Same damage rules everywhere.** Player hitscan, monster hitscan, projectiles,
   explosions, radius damage and the BFG spray all go through `hurtActor`, so
   infighting, pain and death behave identically whoever caused them. Specials and
@@ -2699,6 +2749,12 @@ is a constant table, the rule key is built on demand and only one-shot rules are
 as fired. On Doom II MAP02 that is 86 -> 64 collections and a 159 -> 121 MiB heap over 3600
 steps, and 11% less simulation time.
 
+A running game's state is reachable from the page as `opendlePreviewState()`, so a report
+about something on screen can be checked instead of guessed at —
+`opendlePreviewState().playerStats.invulnerable = 30` puts the sphere's tint on screen,
+`opendlePreviewState().feedback.damageCount = 40` puts the red of a hit on it, and
+`canvas.dataset.powerups` names the clocks that are running.
+
 Opt-in counters (`canvas.dataset.perfCounters = 'on'`) expose `frameMs`,
 `frameMaxMs`, `frameStalls`, `worldRebuildMs`, `worldRebuilds`, `playerPosition` and
 `playerSpeed`; `preview.perf()`
@@ -2870,7 +2926,7 @@ toward the requested Doom II/GZDoom target, not an accurate replica yet.
 Movement still uses Rapier and render-frame timing, not Doom's 35-tic
 momentum/friction/step semantics. Hitscan uses a deterministic prototype RNG,
 not Doom's random table, autoaim, refire spread or weapon-state machine.
-Not implemented: complete weapon state machines and power-ups,
+Not implemented: complete weapon state machines, the computer map,
 full monster states/pathfinding/special attacks, music, gibs,
 full Doom-specific pickup behavior, difficulty rules, generalized locked switches,
 crushers and remaining linedef/sector specials, complete hazards/secrets/exits,
@@ -2950,6 +3006,29 @@ blocking line in front of a door no longer swallows the press, and a door beside
 player no longer needs a perfect aim. Both ids reach the runtime as
 `state.worldTriggers.use` and `state.worldTriggers.useSpecial`, and the `wallActivated`
 "use" condition matches either, so imported door rules and authored ones keep working.
+
+A switch line also changes the picture it shows. `shared/switches.js` flips the
+*front* sidedef of the line the press reached — Doom's `P_ChangeSwitchTexture` —
+before the door or lift behind it does anything, plays `switches/normbutn`
+(`DSSWTCHN`) and, for a line Doom lets run again (the SR/WR/DR/GR forms), puts the
+picture back after `BUTTONTIME` (35 tics) with `switches/exitbutn` (`DSSWTCHX`). A
+once-only line keeps its on picture and ignores a second press, exactly as Doom
+clears the line's special when it is used. Only a line whose type is pressed or
+shot changes (`wallCanBePressed`/`wallCanBeShot` read the `W/S/D/G` and `1/R` prefix
+of the canonical name), and a line with no special never does. A shot flips a
+shootable line the same way, once per shot rather than once per pellet.
+
+The pair is the `SW1…`/`SW2…` picture pair of Doom's own table. Doom's switch list
+is compiled into the executable and the IWADs here carry no Boom `SWITCHES` lump,
+so the import reads the `switch` declarations of the ANIMDEFS files a package ships
+(zandronum.pk3 declares all 121 Doom switches) and any `SWITCHES` lump, stores the
+pairs by picture *name* in `project.switches`, and imports the *second* picture of
+every pair: a map only ever names the one it shows, so without this the on picture
+was never part of the imported artwork and pressing a switch had nothing to show.
+An older import animates only the pairs whose on picture it already had — reimport
+the game to get the rest. The renderer draws walls from `state.walls` while a level
+plays and rebuilds a wall's part when its sidedefs' pictures change, which is also
+what finally made ACS `ReplaceTextures`/`SetLineTexture` visible in the preview.
 
 `shared/sector-movers.js` derives doors and elevators from format-aware native
 linedefs and `moveSector` events without changing the saved map. Classic recognition
@@ -4473,10 +4552,45 @@ editable project content, saved/exported with the scene.
   megaspheres and backpacks. Consumed instances are removed. Health/ammo pickups
   at their caps remain, and a backpack doubles capacities only on first pickup.
   These are editable prototype rules, not skill-scaled/network-compatible Doom
-  pickup semantics. Power-up effects (invulnerability, berserk, invisibility,
-  suit, automap, light goggles) remain unimplemented and are reported in import
-  notes when present. Granting `invulnerable` through scripts displays the god
-  face and bypasses the damage action.
+  pickup semantics. Every item says what it was, the way Doom prints its `GOT*`
+  pickup message: each collect rule starts with a `showMessage` action ("Picked
+  up the armor.", "You got the shotgun!"), and `upgradePickupMessages` adds them
+  to a campaign imported before they existed. **Every item also flashes the view
+  as it is taken** — `startPickupFlash` runs a third of a second wash in the
+  colour `PICKUP_FLASHES` gives its family (green for health, blue for armor,
+  yellow for ammo, white for weapons, the key's own colour for keys, lilac for
+  the blur sphere), started where the item is removed and composed into
+  `screenTint` beside the power-up tints and the red of a hit. Vanilla Doom shows
+  nothing on screen for those items at all, only a sound and a face blink, which
+  reads as a pickup that did nothing; the flash is the acknowledgement. A
+  power-up keeps its own long tint instead. The invulnerability sphere,
+  berserk, the radiation suit, the blur sphere and the light-amplification
+  visor are picked up as well: they start a clock in `playerStats`
+  (`invulnerable`, `berserk`, `radiation`, `invisible`, `lightamp`, in seconds) that
+  `advancePowerups` counts down, and the view is tinted from that clock by
+  `powerupTint` — white and strobing for the sphere, red fading with the
+  strength, green for the suit — so the picture ends exactly when the power-up
+  does and a save carries how long is left. A script's own fade and a power-up's
+  tint are mixed by `screenTint` rather than one replacing the other, so a level
+  that left a fade hanging can no longer hide a power-up. Berserk sets health to
+  100 when it is lower (`max(player("health"), 100)`) and never lowers it; its
+  punch-damage bonus is not modelled. The blur sphere has no tint in Doom either:
+  it makes `enemyHitscan` fire wide while its clock runs, which is what makes the
+  player hard to hit. **Being hit reddens the view**, the way `ST_doPaletteStuff`
+  does it: `recordDamage` adds to Doom's `damagecount` (capped at 100),
+  `advanceDamage` drips it away a tic at a time, and `damageTint` maps the count onto
+  Doom's eight red palettes — so a 20-point hit is a light red for half a second and a
+  rocket is a strong one for three. It is drawn over a power-up's tint and under a
+  script's fade by `screenTint`. The light-amplification visor brightens the view instead of
+  tinting it: its clock drives the `lightBoost` uniform the surface shader takes the maximum
+  of with each surface's sector light, so everything is drawn at full brightness for its two
+  minutes, which is the whole of what the visor does. Only the computer map is left
+  unimplemented — there is no automap for it to fill in — and it is reported in import notes
+  when a level places one. `Powerup.Color` is
+  not imported, so the tints are Doom's own (`InverseMap` white for the sphere, the
+  berserk palette red, green for the suit); a mod that asks for `GoldMap` gets the
+  Doom look instead. Granting `invulnerable` through scripts displays the god face
+  and bypasses the damage action.
 - **Engine / Input** has owned-weapon selection events. Initial inventory is
   fists/pistol, 50 bullets, zero other ammo/keys, with capacities 200/50/50/300.
   `setWeaponOwned`, `selectWeapon`, `setKeyOwned`, `addAmmo`, `giveBackpack`,

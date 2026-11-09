@@ -1,6 +1,6 @@
 import { hudElement, installDefaultHUD } from './hud.js';
 import { dropItemNumber } from './actors.js';
-import { AMMO_TYPES, ammoMaximum, WEAPON_SPRITES } from './player-state.js';
+import { AMMO_TYPES, ammoMaximum, WEAPON_SPRITES, POWERUP_SECONDS } from './player-state.js';
 
 // Classic status-bar coordinates are authored in the 320x200 Doom screen space.
 export function importDoomHUD(project, assets) {
@@ -191,6 +191,29 @@ export function upgradePickupReach(project) {
   return upgraded;
 }
 
+/**
+ * Doom's own pickup messages (the `GOT*` strings of its LANGUAGE lump), so a pickup says what it
+ * was the way the original does. Vanilla prints one for every item, power-ups included, which is
+ * how the player sees that a power-up was taken even when it does not tint the screen.
+ */
+const PICKUP_MESSAGES = new Map([
+  [2007, 'Picked up a clip.'], [2048, 'Picked up a box of bullets.'],
+  [2008, 'Picked up 4 shotgun shells.'], [2049, 'Picked up a box of shotgun shells.'],
+  [2010, 'Picked up a rocket.'], [2046, 'Picked up a box of rockets.'],
+  [2047, 'Picked up an energy cell.'], [17, 'Picked up an energy cell pack.'],
+  [2001, 'You got the shotgun!'], [82, 'You got the super shotgun!'], [2002, 'You got the chaingun!'],
+  [2003, 'You got the rocket launcher!'], [2004, 'You got the plasma gun!'], [2006, 'You got the BFG9000!'],
+  [2005, 'A chainsaw! Find some meat!'],
+  [5, 'Picked up a blue keycard.'], [6, 'Picked up a yellow keycard.'], [13, 'Picked up a red keycard.'],
+  [40, 'Picked up a blue skull key.'], [39, 'Picked up a yellow skull key.'], [38, 'Picked up a red skull key.'],
+  [2011, 'Picked up a health bonus.'], [2012, 'Picked up a stimpack.'], [2013, 'Supercharge!'],
+  [2014, 'Picked up a medikit.'], [2015, 'Picked up an armor bonus.'],
+  [2018, 'Picked up the armor.'], [2019, 'Picked up the MegaArmor!'], [83, 'Megasphere!'],
+  [2022, 'Invulnerability!'], [2023, 'Berserk!'], [2024, 'Partial Invisibility'],
+  [2025, 'Radiation Shielding Suit'], [2045, 'Light Amplification Visor'],
+  [8, 'Picked up a backpack full of ammo!'],
+]);
+
 const ammoAction = (ammo, amount) => ({ type: 'addAmmo', ammo, amount });
 const statAction = (stat, value) => ({ type: 'setPlayerStat', stat, value });
 const cappedAction = (stat, value, maximum) => ({ type: 'addPlayerStat', stat, value, maximum });
@@ -199,7 +222,7 @@ const belowCondition = (stat, value) => ({ type: 'playerStat', stat, operator: '
 /** Every Doom item as a rule: `[doomType, actions, conditions the player must meet]`. */
 export function doomPickups() {
   const ammo = ammoAction, stat = statAction, capped = cappedAction, below = belowCondition;
-  return [
+  return withMessages([
     ...[[2007, 'bullets', 10], [2048, 'bullets', 50], [2008, 'shells', 4], [2049, 'shells', 20],
       [2010, 'rockets', 1], [2046, 'rockets', 5], [2047, 'cells', 20], [17, 'cells', 100]]
       .map(([type, kind, amount]) => [type, [ammo(kind, amount)], [{ type: 'ammoBelowCapacity', ammo: kind }]]),
@@ -218,9 +241,30 @@ export function doomPickups() {
     [2018, [stat('armor', 100), stat('armorDivisor', 3)], [below('armor', 100)]],
     [2019, [stat('armor', 200), stat('armorDivisor', 2)], [below('armor', 200)]],
     [83, [stat('health', 200), stat('armor', 200), stat('armorDivisor', 2)], [below('health', 200), below('armor', 200)]],
+    // Doom's power-ups are always picked up: touching one refreshes it while it runs, so no
+    // condition holds it on the floor. Each clock is the power-up, and the screen tint is drawn
+    // from that clock (`powerupTint`), so the picture reddens, greens or whitens for exactly as
+    // long as the power-up lasts.
+    [2022, [stat('invulnerable', POWERUP_SECONDS.invulnerable)], []],
+    // Berserk raises health to 100 when it is lower — never lowers it — and always starts the
+    // strength. Doom's punch damage bonus is not modelled yet.
+    [2023, [{ type: 'setPlayerStat', stat: 'health', value: { expr: 'max(player("health"), 100)' } },
+      stat('berserk', POWERUP_SECONDS.berserk)], []],
+    [2025, [stat('radiation', POWERUP_SECONDS.radiation)], []],
+    // The blur sphere has no tint in Doom: it makes the player hard to hit, which `enemyHitscan`
+    // honours while the clock runs.
+    [2024, [stat('invisible', POWERUP_SECONDS.invisible)], []],
+    // The light-amp visor brightens the view while it runs (`lightBoost` in the renderer), which
+    // is the whole of its effect in Doom.
+    [2045, [stat('lightamp', POWERUP_SECONDS.lightamp)], []],
     [8, [{ type: 'giveBackpack' }, ammo('bullets', 10), ammo('shells', 4), ammo('rockets', 1), ammo('cells', 20)],
       [{ type: 'backpackOwned', inverted: true }, ...AMMO_TYPES.map(ammo => ({ type: 'ammoBelowCapacity', ammo }))]],
-  ];
+  ]);
+}
+/** Puts Doom's pickup message in front of each item's actions. */
+function withMessages(items) {
+  return items.map(([type, actions, needs]) => [type,
+    PICKUP_MESSAGES.has(type) ? [{ type: 'showMessage', message: PICKUP_MESSAGES.get(type) }, ...actions] : actions, needs]);
 }
 /** The item kinds a level can hold: the ones it places, and the ones its monsters leave behind. */
 export function pickupKinds(project) {
@@ -235,15 +279,41 @@ export function pickupKinds(project) {
 }
 
 /**
- * Adds the pickup rules a project is missing, for the items only a monster drops.
+ * Adds the pickup rules a project is missing: the items a monster drops, and the kinds this
+ * table has learned since the project was imported (the power-ups, for a campaign imported
+ * before they ran).
  *
  * A project imported before drops existed carries rules for the items its levels place and
  * nothing else, so the clip a zombieman leaves could not be picked up. Idempotent — a kind that
  * already has a rule is left alone — so it is safe to run on every preview.
  */
+/**
+ * Adds Doom's pickup message to the collect rules a project already has, so a campaign imported
+ * before the messages existed announces its items without being imported again. Idempotent.
+ */
+export function upgradePickupMessages(project) {
+  const byId = new Map((project.events || []).map(event => [event.id, event]));
+  const doomTypeOf = event => {
+    if (event.condition?.type === 'entityDoomType') return event.condition.doomType;
+    return byId.get(event.parentId)?.condition?.doomType ?? null;
+  };
+  let upgraded = 0;
+  for (const event of project.events || []) {
+    if (event.forEachType !== 'pickup') continue;
+    if (!(event.actions || []).some(action => action.type === 'removeEntity' && action.entityId === '$self')) continue;
+    if (event.actions.some(action => action.type === 'showMessage')) continue;
+    const message = PICKUP_MESSAGES.get(doomTypeOf(event));
+    if (!message) continue;
+    event.actions = [{ type: 'showMessage', message }, ...event.actions];
+    upgraded++;
+  }
+  return upgraded;
+}
+
 export function installDroppedPickupRules(project) {
   const known = new Set((project.events || []).filter(event => event.condition?.type === 'entityDoomType' &&
     event.forEachType === 'pickup').map(event => event.condition.doomType));
+  upgradePickupMessages(project);
   const missing = doomPickups().filter(([type]) => pickupKinds(project).has(type) && !known.has(type));
   if (!missing.length) return 0;
   const sheet = (project.eventSheets || []).find(candidate => candidate.name === 'Pickups');
@@ -251,7 +321,7 @@ export function installDroppedPickupRules(project) {
   let group = (project.eventGroups || []).find(candidate => candidate.name === 'Doom inventory pickups');
   if (!group) {
     group = { id: 'wad_inventory_group_Pickups', name: 'Doom inventory pickups', sheetId: sheet.id, enabled: true,
-      description: 'Imported editable inventory rules. Full Doom weapon/power-up behavior is not implemented.' };
+      description: 'Imported editable inventory rules. Power-up clocks and their screen tints run natively; Doom\'s computer map is not implemented.' };
     project.eventGroups.push(group);
   }
   for (const [type, actions, needs] of missing) {
@@ -279,7 +349,7 @@ export function installDoomInventoryScripts(project) {
   const rule = (section, name, condition, actions, conditions = [], extra = {}) => {
     if (!groups.has(section)) {
       const group = { id: `wad_inventory_group_${section}`, name: section === 'Input' ? 'Owned weapon selection' : 'Doom inventory pickups',
-        sheetId: sheet(section), enabled: true, description: 'Imported editable inventory rules. Full Doom weapon/power-up behavior is not implemented.' };
+        sheetId: sheet(section), enabled: true, description: 'Imported editable inventory rules. Power-up clocks and their screen tints run natively; Doom\'s computer map is not implemented.' };
       project.eventGroups.push(group); groups.set(section, group.id);
     }
     project.events.push({ id: `wad_inventory_${sequence++}`, name, sheetId: sheet(section), groupId: groups.get(section),

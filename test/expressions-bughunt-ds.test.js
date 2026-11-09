@@ -12,7 +12,7 @@ test('player() rejects power-up stats the runtime does not expose, instead of va
   p.variables = { score: 0 };
   const event = {};
   const context = expressionContext(p, event);
-  for (const stat of ['berserk', 'invisible', 'radiationSuit', 'lightAmp']) {
+  for (const stat of ['radiationSuit', 'lightAmp', 'allmap']) {
     const source = `player("${stat}")`;
     assert.throws(() => validateExpression(expr(source), context), /Unknown player expression stat/, source);
   }
@@ -23,18 +23,23 @@ test('player() rejects power-up stats the runtime does not expose, instead of va
   assert.equal(evaluateExpression(expr('player("health")'), live), 100);
   assert.equal(evaluateExpression(expr('player("armor")'), live), 0);
   assert.equal(evaluateExpression(expr('player("invulnerable")'), live), 0);
+  // The power-up clocks the pickup rules set are readable too.
+  assert.equal(evaluateExpression(expr('player("berserk")'), live), 0);
+  assert.equal(evaluateExpression(expr('player("radiation")'), live), 0);
+  assert.equal(evaluateExpression(expr('player("invisible")'), live), 0);
+  assert.equal(evaluateExpression(expr('player("lightamp")'), live), 0);
 });
 
-test('a rule reading player("berserk") is rejected at authoring time with a clear error', () => {
+test('a rule reading a stat the runtime does not expose is rejected at authoring time', () => {
   const p = createProject();
   p.events = [];
   p.variables = { score: 0 };
   p.events.push({
-    id: 'berserk_rule', enabled: true, once: true,
+    id: 'megasphere_rule', enabled: true, once: true,
     condition: { type: 'always' },
-    actions: [{ type: 'setVariable', variable: 'score', value: expr('player("berserk")') }],
+    actions: [{ type: 'setVariable', variable: 'score', value: expr('player("megasphere")') }],
   });
-  assert.throws(() => validateProject(p), /Unknown player expression stat: berserk/);
+  assert.throws(() => validateProject(p), /Unknown player expression stat: megasphere/);
 });
 
 test('number() reports non-numeric text as such instead of a misleading finite-number error', () => {

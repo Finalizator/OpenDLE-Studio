@@ -13,6 +13,7 @@
 
 const MAX_SOURCES = 32;
 const MAX_SEQUENCES = 256;
+const MAX_SWITCHES = 512;
 const MAX_FRAMES = 4096;
 const DEFAULT_TICS = 8;
 
@@ -45,13 +46,14 @@ function tokenize(text) {
 /**
  * Reads one or more ANIMDEFS sources.
  *
- * Returns `{ sequences, effects, switches }`: `sequences` in declaration order, each
- * `{ kind, frames: [{ name, tics }] }`; `effects` the shader animations that were named;
- * `switches` how many switch definitions were seen (a switch is not an animation).
+ * Returns `{ sequences, effects, switches, switchPairs }`: `sequences` in declaration order,
+ * each `{ kind, frames: [{ name, tics }] }`; `effects` the shader animations that were named;
+ * `switchPairs` the switch declarations as `{ off, on }` picture names, and `switches` how many
+ * there were (a switch is not an animation — it changes when a line is used).
  */
 export function parseSurfaceAnimations(sources = [], { warn } = {}) {
-  const sequences = [], effects = new Set();
-  let switches = 0, framesSeen = 0;
+  const sequences = [], effects = new Set(), switchPairs = [];
+  let framesSeen = 0;
   for (const source of sources.slice(0, MAX_SOURCES)) {
     if (!source) continue;
     const tokens = tokenize(String(source));
@@ -102,11 +104,18 @@ export function parseSurfaceAnimations(sources = [], { warn } = {}) {
         if (target) effects.add(target);
         index += 2;
       } else if (keyword === 'switch') {
-        switches++;
-        // Consume until the next top-level keyword so the switch's `on pic` is not read as
-        // an animation frame.
-        let cursor = index + 1;
-        while (cursor < tokens.length && !/^(switch|flat|texture|warp|warp2|fbm|noise|stripe)$/i.test(tokens[cursor])) cursor++;
+        // `Switch Doom 1 SW1COMP On Pic SW2COMP Tics 0`, or `Switch Texture X On Pic Y`: the
+        // picture before `On Pic` is the one a wall shows, the one after it the pressed one.
+        // The declaration is consumed whole so its pictures are not read as animation frames.
+        let cursor = index + 1, off = null, on = null;
+        while (cursor < tokens.length && !/^(switch|flat|texture|warp|warp2|fbm|noise|stripe)$/i.test(tokens[cursor])) {
+          if (!off && (tokens[cursor] || '').toLowerCase() === 'on' && (tokens[cursor + 1] || '').toLowerCase() === 'pic') {
+            off = tokens[cursor - 1] || null;
+            on = tokens[cursor + 2] || null;
+          }
+          cursor++;
+        }
+        if (off && on && switchPairs.length < MAX_SWITCHES) switchPairs.push({ off, on });
         index = cursor - 1;
       } else if (keyword === 'cameratexture' || keyword === 'animateddoor') {
         // Read elsewhere; skipping the line keeps the parser from mistaking their names for
@@ -116,5 +125,5 @@ export function parseSurfaceAnimations(sources = [], { warn } = {}) {
     }
   }
   if (effects.size && warn) warn(`${effects.size} surface animation(s) use GZDoom's shader effects (warp/fbm/noise/stripe), which are drawn as still frames: ${[...effects].slice(0, 6).join(', ')}${effects.size > 6 ? ', ...' : ''}.`);
-  return { sequences, effects: [...effects], switches };
+  return { sequences, effects: [...effects], switches: switchPairs.length, switchPairs };
 }

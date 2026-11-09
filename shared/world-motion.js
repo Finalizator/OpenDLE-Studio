@@ -169,7 +169,46 @@ const doors = new Map([
 const lifts = new Map([[10, 'cross'], [21, 'use'], [62, 'use'], [88, 'cross'], [120, 'cross'], [121, 'cross'], [122, 'use'], [123, 'use']]);
 const floorLower = new Map([[19, 'cross'], [23, 'use'], [36, 'cross'], [37, 'cross'], [38, 'cross'], [45, 'use'], [60, 'use'], [70, 'use'], [71, 'use'], [82, 'cross'], [83, 'cross'], [84, 'cross'], [98, 'cross'], [102, 'use']]);
 const floorRaise = new Map([[5, 'cross'], [18, 'use'], [24, 'shoot'], [30, 'cross'], [56, 'cross'], [58, 'cross'], [59, 'cross'], [64, 'use'], [65, 'use'], [69, 'use'], [91, 'cross'], [92, 'cross'], [93, 'cross'], [94, 'cross'], [96, 'cross'], [101, 'use'], [119, 'cross'], [128, 'cross'], [129, 'cross'], [130, 'cross'], [131, 'use'], [132, 'use']]);
-const repeatable = new Set([1, 26, 27, 28, 42, 45, 46, 60, 61, 62, 63, 64, 65, 69, 70, 75, 76, 82, 83, 84, 86, 88, 90, 91, 92, 93, 94, 96, 98, 105, 106, 107, 114, 115, 116, 117, 120, 123, 128, 129, 132]);
+const repeatable = new Set([1, 26, 27, 28, 42, 45, 46, 60, 61, 62, 63, 64, 65, 69, 70, 75, 76, 82, 83, 84, 86, 88, 90, 91, 92, 93, 94, 96, 98, 105, 106, 107, 114, 115, 116, 117, 120, 123, 128, 129, 132, 197]);
+
+/**
+ * Doom's line type as its own name spells it out: `W` walk-over, `S` press, `D` press, `G` shot,
+ * and `1`/`R` for whether it can run again.
+ *
+ * `DOOM_SPECIAL_NAMES` carries the canonical name, which is also how Doom's own
+ * `P_CrossSpecialLine`, `P_UseSpecialLine` and `P_ShootSpecialLine` dispatch, so the trigger and
+ * its repeatability are read from the table rather than guessed from the height rules.
+ */
+function classicTrigger(special) {
+  const match = /^([WSDG])([1R])\s/.exec(doomSpecialName(special) || '');
+  if (!match) return null;
+  return { mode: { W: 'cross', S: 'use', D: 'use', G: 'shoot' }[match[1]], repeat: match[2] === 'R' };
+}
+
+/**
+ * Whether a classic line type can be triggered again — the `useAgain` Doom hands
+ * `P_ChangeSwitchTexture`: the SR/WR/DR/GR forms repeat, the once-only forms are cleared.
+ */
+export function classicSpecialRepeats(special) {
+  const trigger = classicTrigger(special);
+  if (trigger) return trigger.repeat;
+  const behaviour = doomSpecialBehaviour(special);
+  return behaviour ? !behaviour.once : repeatable.has(special);
+}
+
+/** Whether a classic line type reacts to being pressed, which is what flips its switch. */
+export function classicSpecialUses(special) {
+  const trigger = classicTrigger(special);
+  return trigger ? trigger.mode === 'use' : manual.has(special);
+}
+
+/** Whether a classic line type reacts to being shot. */
+export function classicSpecialShoots(special) {
+  const trigger = classicTrigger(special);
+  if (trigger) return trigger.mode === 'shoot';
+  // Boom's shot-activated exits (197 WR, 198 G1) are not in the classic name table.
+  return special === 197 || special === 198;
+}
 
 export function classicSectorMover(special) {
   const effect = doomSpecialBehaviour(special)?.effect;
