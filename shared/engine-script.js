@@ -239,6 +239,7 @@ export const ENGINE_ACTIONS = [
     choice('surface', 'ceilingHeight', ['ceilingHeight', 'floorHeight']), numeric('height', 128, -32768, 32767),
     numeric('speed', 70, .1, 4096), numeric('wait', 4, 0, 3600), choice('returnMode', 'return', ['stay', 'return', 'cycle']),
     { ...numeric('returnHeight', undefined, -32768, 32767), optional: true },
+    { ...numeric('bottomWait', undefined, 0, 3600), optional: true },
     { name: 'sound', value: 'DSDOROPN', kind: 'string', optional: true },
   ] },
   { type: 'openSectorDoor', label: 'Door: open', sector: true, door: true, fields: [] },

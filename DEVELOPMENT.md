@@ -1662,10 +1662,23 @@ remain native engine primitives.
   report by name, since they need thing-crossing, surface UV animation or a Boom
   interpreter rather than a rule. Optional
   `returnHeight` sets a distinct upper endpoint for perpetual platforms instead
-  of returning to their initial height. Closing
+  of returning to their initial height, and the optional `bottomWait` is the pause at
+  the end of the first stroke — a crush-and-raise piston sets it to `0` because Doom
+  reverses the instant the ceiling touches the floor. Closing
   doors reverse on occupants; raising floors stop rather than crush. Platforms
   carry grounded players and objects. Changed surfaces and adjoining walls update
   in the renderer and Rapier collision, without changing the authored project.
+  **A crush-and-raise piston travels all the way to the sector floor** — `6`, `25`,
+  `49`, `73`, `77` and the silent `141` all come from `EV_DoCeiling`'s
+  crush-and-raise cycle, so the ceiling closes onto the floor, reverses at once,
+  rises back to the height it started at, rests Doom's `CEILWAIT` of 150 tics and
+  comes down again for as long as the level runs. It was baked to the lowest
+  neighbouring ceiling less four instead, which on a 48-unit doorway is a four-unit
+  twitch — why a level's pistons looked static — and its wait was written in tics
+  where the stepper counts seconds. `upgradeCrusherRules` repairs the rules of a
+  campaign imported before this on the preview snapshot, so a playtest sees the
+  piston without a re-import. A piston closing on a player or a monster reverses on
+  it, which is the "does not fully close" of a crusher you are standing under.
   Other specials are reported by number; stairs, crushers, exits/level changes,
   teleports and generalized Boom/ZDoom actions are not translated yet. UDMF action
   numbers/arguments are preserved but not misinterpreted as classic Doom numbers.

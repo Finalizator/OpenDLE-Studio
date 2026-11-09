@@ -149,8 +149,10 @@ export function advanceSectors(state, dt) {
       }
     }
     if (next !== target) continue;
+    // `bottomWait` is the pause at the end of the first stroke, where a crush-and-raise piston
+    // reverses the instant it touches the floor; without it the two ends share one `wait`.
     if (motion.direction === 'out' && motion.returnMode !== 'stay') {
-      motion.direction = 'return'; motion.waiting = motion.wait;
+      motion.direction = 'return'; motion.waiting = motion.bottomWait ?? motion.wait;
     } else if (motion.returnMode === 'cycle') {
       motion.direction = 'out'; motion.waiting = motion.wait;
     } else state.sectorMotions.delete(key);
@@ -445,6 +447,7 @@ function classicActions(project, wall, behaviour, targets, warnings) {
       actions.push({ type: 'moveSector', sectorId: sector.id, surface: 'ceilingHeight', height: target,
         speed: effect.speed || 70, wait: effect.wait || 0, returnMode: effect.cycle ? 'cycle' : 'stay',
         ...(effect.cycle ? { returnHeight: Math.max(sector.ceilingHeight, ...heights.map(s => s.ceilingHeight)) } : {}),
+        ...(effect.bottomWait !== undefined ? { bottomWait: effect.bottomWait } : {}),
         sound: 'DSDOROPN' });
     }
     if (effect.kind === 'floor' || effect.kind === 'ceilingThenFloor') {

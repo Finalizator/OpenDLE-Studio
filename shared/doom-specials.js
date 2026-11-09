@@ -68,9 +68,26 @@ export const DOOM_SPECIAL_NAMES = new Map([
   [140, 'S1 Raise Floor 512'], [141, 'W1 Silent Ceiling Crush and Raise'],
 ]);
 
+/** Doom's tic rate: its waits are counted in tics and the plane stepper counts seconds. */
+const TIC = 35;
 const blazingDoor = (key, once) => ({ mode: 'use', once, effect: { kind: 'door', key, speed: 280 } });
+/**
+ * Doom's `CEILWAIT`: how long a crush-and-raise piston rests at the top before it comes down
+ * again. 150 tics, stored here in the seconds the plane stepper counts in.
+ */
+const CEIL_WAIT = 150 / TIC;
+/**
+ * `EV_DoCeiling`'s crush-and-raise cycle.
+ *
+ * The piston travels all the way down to the sector's **floor** — that is what makes it a
+ * crusher, and it is why the walls of a doorway under one visibly rise and fall. It only stops
+ * short when something is inside: `T_MoveCeiling` reverses the moment the descending ceiling
+ * would touch a thing, which is the "does not fully close" a piston shows while you stand under
+ * it. It then rises back to the ceiling it started at, waits `CEILWAIT`, and comes down again,
+ * forever.
+ */
 const crushAndRaise = (mode, once, speed) => ({ mode, once,
-  effect: { kind: 'ceiling', target: 'surrounding', speed, wait: 4, cycle: true } });
+  effect: { kind: 'ceiling', target: 'floor', speed, wait: CEIL_WAIT, bottomWait: 0, cycle: true } });
 
 /**
  * Specials this runtime performs, as data instead of a switch. `mode` is the
@@ -110,4 +127,37 @@ export function doomSpecialName(special) {
 
 export function doomSpecialBehaviour(special) {
   return DOOM_SPECIAL_BEHAVIOUR.get(special) || null;
+}
+
+/** Doom line types that run `EV_DoCeiling`'s crush-and-raise cycle. */
+const CRUSH_AND_RAISE = new Set([6, 25, 49, 73, 77, 141]);
+
+/**
+ * Rewrites the crusher rules a campaign imported before they were right.
+ *
+ * A crush-and-raise piston used to be baked to the height of the lowest neighbouring ceiling
+ * minus four, which for a 48-unit doorway is a four-unit twitch — effectively the static wall the
+ * playtest reported. It was also given a four-second wait written in tics. The rule is fixed
+ * where it is generated; this repairs the copy in an imported project, so a playtest sees the
+ * piston without a re-import. Idempotent: a rule that already travels to the floor is left alone.
+ */
+export function upgradeCrusherRules(project) {
+  const walls = new Map((project.map?.walls || []).map(wall => [wall.id, wall]));
+  const sectors = new Map((project.map?.sectors || []).map(sector => [sector.id, sector]));
+  let upgraded = 0;
+  for (const event of project.events || []) {
+    const wall = walls.get(event.condition?.type === 'wallActivated' ? event.condition.wallId : null);
+    if (!wall || !CRUSH_AND_RAISE.has(wall.special)) continue;
+    for (const action of event.actions || []) {
+      const sector = action.type === 'moveSector' ? sectors.get(action.sectorId) : null;
+      if (!sector || action.surface !== 'ceilingHeight' || action.height === sector.floorHeight) continue;
+      action.height = sector.floorHeight;
+      action.wait = CEIL_WAIT;
+      action.bottomWait = 0;
+      action.returnMode = 'cycle';
+      action.returnHeight ??= sector.ceilingHeight;
+      upgraded++;
+    }
+  }
+  return upgraded;
 }
