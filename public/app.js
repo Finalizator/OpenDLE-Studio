@@ -727,21 +727,43 @@ function editHistoryLimit(candidate, deepGame) {
  * pointer move instead of on release. A drag is one undo step, so the project
  * is snapshotted once when the drag starts and the intermediate states are
  * replaced as the pointer moves.
+ *
+ * The working copy is made **once per drag** and reused. Copying the whole project per
+ * pointer move measured 28 ms and 37 MB on an imported campaign, so a second of dragging
+ * allocated about a gigabyte: the browser had to collect it while the pointer moved, and
+ * inside the VS Code window that took the whole editor down with it. Every live edit is
+ * `dragSelection(project, baseline, …)`, which reads the drag's own baseline and writes
+ * absolute values, so re-running it on the same copy lands on the same result instead of
+ * compounding — exactly as its own comments describe.
  */
 let liveEditState = null;
 function liveBegin() {
   if (liveEditState) return;
-  liveEditState = { baseline: project, snapshot: historySnapshot(), changed: false, wasDirty: dirty };
+  liveEditState = { baseline: project, snapshot: historySnapshot(), changed: false, wasDirty: dirty, draft: null };
 }
 function liveApply(fn, message) {
   liveBegin();
-  const next = cloneProjectForEdit(project);
+  const state = liveEditState;
+  const first = !state.draft;
+  const next = state.draft ||= cloneProjectForEdit(state.baseline);
   try {
     fn(next);
     syncRampModels(next);
-    validateProject(next, { fast: true });
-  } catch (error) { status(error.message, true); return; }
-  project = next; dirty = true; editVersion++; liveEditState.changed = true;
+    // Checked once per drag instead of on every move; the state the drag ends on is checked
+    // by `liveFinish`.
+    if (first) validateProject(next, { fast: true });
+  } catch (error) {
+    // A move the engine refuses leaves nothing behind: drop the working copy, put the project
+    // back where the drag started and let the next pointer move build a fresh one.
+    status(error.message, true);
+    state.draft = null;
+    state.changed = false;
+    project = state.baseline;
+    editVersion++;
+    renderLive(message);
+    return;
+  }
+  project = next; dirty = true; editVersion++; state.changed = true;
   renderLive(message);
 }
 function liveFinish(message, { revert = false } = {}) {
@@ -751,6 +773,16 @@ function liveFinish(message, { revert = false } = {}) {
     if (active.changed) { project = active.baseline; dirty = active.wasDirty; editVersion++; }
     render();
     status(revert ? 'Edit cancelled' : 'No change');
+    return;
+  }
+  // The drag validated the state it started from, so the state it ended on is checked here —
+  // once, not on every pointer move.
+  try {
+    validateProject(project, { fast: true });
+  } catch (error) {
+    project = active.baseline; dirty = active.wasDirty; editVersion++;
+    render();
+    status(`Edit refused: ${error.message}`, true);
     return;
   }
   history.push(active.snapshot);

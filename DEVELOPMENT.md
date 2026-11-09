@@ -357,6 +357,16 @@ provider credits or network access are required for tests.
   box and the gizmo update every frame, and the whole drag is a single undo step.
   Cancelled, rejected or empty drags leave both the undo stack and the redo branch intact;
   history is recorded only when the drag is accepted. Undo/redo during a drag first cancels it.
+  A drag edits **one working copy of the project for the whole drag**: `liveApply` clones once
+  on the first pointer move and re-runs the same move on that copy afterwards, because
+  `dragSelection(project, baseline, …)` reads the baseline the drag started from and writes
+  absolute values, so repeating it lands on the same place instead of compounding. Cloning the
+  project per pointer move measured **28 ms and 78 MB** on an imported campaign — a second of
+  dragging allocated about five gigabytes, and inside the VS Code window the collector could
+  not keep up and the whole editor went down. With one copy per drag the same drag costs
+  **1.6 ms per move** and one copy in total. Validation runs once for the state the drag starts
+  from and once for the state it ends on, not sixty times in between; a move the engine refuses
+  drops the working copy and puts the project back where the drag started.
   Object sets preserve each member's world height when crossing different sector floors.
   Floors and ceilings can be raised and lowered in 3D with a live numeric readout
   (undone through the normal edit path), so imported geometry is movable

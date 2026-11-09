@@ -355,3 +355,40 @@ test('forming an elevated volume uses its actual world centre and moves explicit
   assert.equal(entity.z, 144);
   assert.equal(entity.elevation, 80);
 });
+
+test('a live drag may re-apply the same move on one working copy, because it is absolute', () => {
+  // The studio keeps ONE copy of the project for a whole drag and re-runs the drag on it for
+  // every pointer move, because copying the project per move cost 28 ms and 37 MB on an
+  // imported campaign and took the editor down. That is only sound if re-applying lands on the
+  // same place instead of compounding, so this is the invariant it relies on.
+  const project = createProject();
+  const entity = project.map.entities[1];
+  const zone = project.map.entities.find(candidate => candidate.type === 'zone');
+  entity.x = 64; entity.y = 32;
+  validateProject(project);
+  const moved = { kind: 'entity', id: entity.id };
+  const shift = delta({ x: 96, y: -48 });
+  const once = structuredClone(project);
+  dragSelection(once, project, moved, 'move', shift, 16);
+  const repeated = structuredClone(project);
+  for (let move = 0; move < 60; move++) dragSelection(repeated, project, moved, 'move', shift, 16);
+  assert.deepEqual(repeated.map.entities.find(item => item.id === entity.id),
+    once.map.entities.find(item => item.id === entity.id), 'sixty pointer moves land where one does');
+  assert.equal(entity.x, 64, 'and the state the drag started from is never written to');
+
+  const rotated = structuredClone(project);
+  dragSelection(rotated, project, moved, 'rotate', { angle: 45 }, 0);
+  const rotatedMany = structuredClone(project);
+  for (let move = 0; move < 30; move++) dragSelection(rotatedMany, project, moved, 'rotate', { angle: 45 }, 0);
+  assert.equal(rotatedMany.map.entities.find(item => item.id === entity.id).angle,
+    rotated.map.entities.find(item => item.id === entity.id).angle, 'a turn is absolute as well');
+
+  if (zone?.area) {
+    const scaled = structuredClone(project);
+    dragSelection(scaled, project, { kind: 'entity', id: zone.id }, 'scale', { scale: 2 }, 16);
+    const scaledMany = structuredClone(project);
+    for (let move = 0; move < 40; move++) dragSelection(scaledMany, project, { kind: 'entity', id: zone.id }, 'scale', { scale: 2 }, 16);
+    assert.deepEqual(scaledMany.map.entities.find(item => item.id === zone.id).area,
+      scaled.map.entities.find(item => item.id === zone.id).area, 'a resize is absolute too');
+  }
+});
