@@ -1,7 +1,11 @@
-import { hudViewport, hudRect, hudText, hudBinding, bitmapGlyph } from '/shared/hud.js';
+import { hudViewport, hudRect, hudText, hudBinding, bitmapGlyph, hudScreenOf, hudScreenShown } from '/shared/hud.js';
 
 let viewId = 0;
 export function createHUDView(host, project, { editor = false, select, click, error = console.error } = {}) {
+  // Which screen the *designer* is showing. A running game asks `state.hudState.screens` instead; the
+  // designer shows one screen at a time so an overlay's elements can be laid out over the game HUD
+  // without the rest of the HUD cluttering the canvas.
+  let editorScreen = null;
   const hud = project.hud;
   host.replaceChildren();
   if (!hud) return { update() {}, dispose() {} };
@@ -69,8 +73,9 @@ export function createHUDView(host, project, { editor = false, select, click, er
       });
     }
   }
-  function update(state, { selectedId, cursor = state.hudState.cursor } = {}) {
+  function update(state, { selectedId, cursor = state.hudState.cursor, screen } = {}) {
     currentState = state;
+    if (screen !== undefined) editorScreen = screen;
     anySelectorVisible = false;
     const width = host.clientWidth, height = host.clientHeight;
     if (!width || !height) return;
@@ -107,7 +112,11 @@ export function createHUDView(host, project, { editor = false, select, click, er
       // text. A title map IS the menu's backdrop — GZDoom shows it undimmed — so the panel
       // is skipped while that world is the one on screen.
       const dimsBackdrop = !state.ambientWorld || element.id !== backdropId;
-      const shown = (editor || !state.worldTerminalActive || source.name !== 'Crosshair') &&
+      // A screen is spawned or dismissed by one event, so every element on it follows that switch.
+      const onShownScreen = editor
+        ? (!editorScreen || editorScreen === hudScreenOf(source))
+        : hudScreenShown(state, hudScreenOf(source));
+      const shown = onShownScreen && (editor || !state.worldTerminalActive || source.name !== 'Crosshair') &&
         dimsBackdrop && (!element.parentId || visibility.get(element.parentId)) &&
         element.visible && boundVisibility && (editor || !element.statusbar || state.settings?.viewSize !== 11) && (!onMenu || menuElement) && (editor ||
         (element.display === 'always' || element.display === (cursor ? 'cursor' : 'game')));

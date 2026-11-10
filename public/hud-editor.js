@@ -1,4 +1,5 @@
-import { hudElement, hudViewport, createHUDState, advanceHUD, playHUDAnimation, HUD_PROPERTIES, installDefaultHUD, removeHUDElements, removeHUDAnimations } from '/shared/hud.js';
+import { hudElement, hudViewport, createHUDState, advanceHUD, playHUDAnimation, HUD_PROPERTIES, installDefaultHUD, removeHUDElements, removeHUDAnimations,
+  hudScreens, hudScreenOf, MAIN_HUD_SCREEN, MAX_HUD_SCREENS } from '/shared/hud.js';
 import { parseHUDCSS } from '/shared/hud-style.js';
 import { newId } from '/shared/project.js';
 import { HUD_PLAYER_BINDINGS } from '/shared/player-state.js';
@@ -17,6 +18,9 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
   let selectedId, clipId, view, state, current, stage, properties, animationPanel, drag, animationFrame;
   let previewAspect = '16 / 9';
   let previewScreen = 'playing';
+  // Which HUD screen is being laid out. The canvas is the same for all of them — one space, one set
+  // of fonts and CSS classes — so this only decides which elements are drawn and selected.
+  let previewHudScreen = MAIN_HUD_SCREEN;
   const safe = fn => (...args) => {
     try {
       const result = fn(...args);
@@ -80,7 +84,9 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
     stepRuntime({ ...current, events: current.events.filter(event => current.eventSheets.find(sheet => sheet.id === event.sheetId)?.phase === 'interface') },
       state, 0, new Set());
     for (const type of ['text', 'panel', 'image', 'bar', 'button']) toolbar.append(button(`+ ${type}`, () => update((hud, next) => {
-      const element = hudElement(newId('hud'), type); hud.elements.push(element); selectedId = element.id;
+      const element = hudElement(newId('hud'), type);
+      if (previewHudScreen !== MAIN_HUD_SCREEN) element.screenId = previewHudScreen;
+      hud.elements.push(element); selectedId = element.id;
       if (previewScreen !== 'playing') attachMenuElement(next, element, previewScreen);
     })));
     toolbar.append(button('Import Canva / image', () => importImage()), button('Import web font', () => importWebFont()),
@@ -94,8 +100,44 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
       [['fit', 'Fit / responsive anchors'], ['stretch', 'Stretch X/Y'], ['integer', 'Integer / pixel art']]);
     field(settings, 'Reserve view bottom', current.hud.reserveBottom || 0, value => update(hud => { hud.reserveBottom = value; }));
     check(settings, 'Pixelated images', Boolean(current.hud.pixelated), value => update(hud => { hud.pixelated = value; }));
-    field(settings, 'Preview aspect', previewAspect, value => { previewAspect = value; sizeStage(); view.update(state, { selectedId }); },
+    field(settings, 'Preview aspect', previewAspect, value => { previewAspect = value; sizeStage(); view.update(state, { selectedId, screen: previewHudScreen }); },
       ['16 / 9', '4 / 3', '9 / 16', '21 / 9']);
+    // Screens are the HUD's scenes: a named group of elements an event spawns or dismisses with one
+    // action. Everything here shares this one canvas, so an overlay lines up with the game HUD.
+    const screens = hudScreens(current.hud);
+    field(settings, 'HUD screen', previewHudScreen, value => { previewHudScreen = value; selectedId = null; render(); },
+      screens.map(screen => [screen.id, screen.name]));
+    const screen = screens.find(item => item.id === previewHudScreen);
+    const screenRow = node('div', null, 'hud-toolbar');
+    screenRow.append(
+      button('+ Screen', () => update(hud => {
+        if ((hud.screens || []).length >= MAX_HUD_SCREENS) throw new Error(`A HUD holds at most ${MAX_HUD_SCREENS} extra screens`);
+        const used = new Set(hudScreens(hud).map(item => item.id));
+        let index = (hud.screens || []).length + 1, id = `hud_screen_${index}`;
+        while (used.has(id)) id = `hud_screen_${++index}`;
+        (hud.screens ||= []).push({ id, name: `Screen ${index}` });
+        previewHudScreen = id; selectedId = null;
+      })),
+      button('Rename screen', () => {
+        if (!screen || screen.id === MAIN_HUD_SCREEN) throw new Error('The main HUD screen cannot be renamed; it is the game HUD');
+        const name = prompt('Screen name', screen.name);
+        if (name) update(hud => { hud.screens.find(item => item.id === screen.id).name = name.slice(0, 100); });
+      }),
+      button('Delete screen', () => {
+        if (!screen || screen.id === MAIN_HUD_SCREEN) throw new Error('The main HUD screen cannot be deleted');
+        const members = current.hud.elements.filter(element => hudScreenOf(element) === screen.id);
+        if (members.length) throw new Error(`Move or delete the ${members.length} element(s) on this screen first`);
+        update(hud => { hud.screens = hud.screens.filter(item => item.id !== screen.id); });
+        previewHudScreen = MAIN_HUD_SCREEN; selectedId = null;
+      }),
+      button(screen?.visible === true ? 'Starts shown' : 'Starts hidden',
+        () => { if (!screen || screen.id === MAIN_HUD_SCREEN) return; update(hud => {
+          const item = hud.screens.find(item => item.id === screen.id);
+          if (item.visible === true) delete item.visible; else item.visible = true;
+        }); }));
+    settings.append(screenRow, node('p', screen?.id === MAIN_HUD_SCREEN
+      ? 'The main HUD is always on. Add a screen and a "HUD: show / hide a HUD screen" event spawns it.'
+      : 'This screen starts hidden and appears when an event shows it. Elements share the canvas above.', 'muted'));
     if (current.gameMenus) field(settings, 'Game / menu screen', previewScreen, value => {
       previewScreen = value; selectedId = null; render();
     }, ['playing', ...current.gameMenus.screens]);
@@ -103,8 +145,9 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
     sizeStage();
     workspace.append(settings, stage, node('p', 'Drag to move; drag the cyan corner to resize. Coordinates use anchors and pivot. Tab switches game/cursor mode in Play.', 'muted'));
     list.append(node('h3', 'HUD elements'));
-    for (const element of current.hud.elements.filter(element => previewScreen === 'playing'
-      ? !current.gameMenus?.elementIds.includes(element.id) : state.hudState.elements.get(element.id).visible)) {
+    for (const element of current.hud.elements.filter(element => hudScreenOf(element) === previewHudScreen &&
+      (previewScreen === 'playing'
+        ? !current.gameMenus?.elementIds.includes(element.id) : state.hudState.elements.get(element.id).visible))) {
       const item = button(`${element.parentId ? '  ' : ''}${element.name}${element.visible ? '' : ' (hidden)'}`, () => { selectedId = element.id; render(); });
       item.classList.toggle('selected', selectedId === element.id); list.append(item);
     }
@@ -116,7 +159,7 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
     list.append(node('p', 'Canva PNG/JPG exports become image elements, not editable Canva layers. Export with transparency for overlays.', 'muted'));
     layout.append(list, workspace, properties); host.append(layout);
     view = createHUDView(stage, current, { editor: true, select: safe(beginMove), error });
-    view.update(state, { selectedId });
+    view.update(state, { selectedId, screen: previewHudScreen });
     for (const [id, { node: element }] of view.nodes) if (id === selectedId) {
       const handle = node('span', null, 'hud-resize'); handle.setAttribute('aria-label', 'Resize HUD element');
       handle.addEventListener('pointerdown', event => { event.stopPropagation(); startDrag(id, event, true); }); element.append(handle);
@@ -131,7 +174,7 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
     host.append(fontPanel);
   }
   function beginMove(id, event) {
-    if (selectedId !== id) { selectedId = id; renderProperties(); view.update(state, { selectedId }); }
+    if (selectedId !== id) { selectedId = id; renderProperties(); view.update(state, { selectedId, screen: previewHudScreen }); }
     startDrag(id, event, false);
   }
   function startDrag(id, event, resize) {
@@ -157,7 +200,7 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
       element.height = Math.max(element.anchors.top === element.anchors.bottom ? 1 : -16384, drag.element.height + dy);
     }
     else { element.x = Math.round(drag.element.x + dx); element.y = Math.round(drag.element.y + dy); }
-    view.update(state, { selectedId });
+    view.update(state, { selectedId, screen: previewHudScreen });
   }));
   host.addEventListener('pointerup', safe(event => {
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -176,6 +219,10 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
     for (const key of ['name', 'text', 'x', 'y', 'width', 'height', 'pivotX', 'pivotY', 'z', 'opacity', 'scale', 'rotation', 'fontSize', 'color', 'background']) {
       field(properties, key, element[key], value => updateElement(key, value));
     }
+    field(properties, 'HUD screen', hudScreenOf(element), value => update(hud => {
+      const item = hud.elements.find(item => item.id === element.id);
+      if (value === MAIN_HUD_SCREEN) delete item.screenId; else item.screenId = value;
+    }), hudScreens(current.hud).map(item => [item.id, item.name]));
     field(properties, 'Parent', element.parentId || '', value => update(hud => {
       const item = hud.elements.find(item => item.id === element.id);
       if (value) item.parentId = value; else delete item.parentId;
@@ -280,11 +327,11 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
       let previous = performance.now();
       const frame = now => {
         advanceHUD(current, state.hudState, Math.min(.1, (now - previous) / 1000), clip.phase || 'game'); previous = now;
-        view.update(state, { selectedId });
+        view.update(state, { selectedId, screen: previewHudScreen });
         if (state.hudState.playing.size) animationFrame = requestAnimationFrame(frame);
       };
       animationFrame = requestAnimationFrame(frame);
-    }), button('Reset preview', () => { cancelAnimationFrame(animationFrame); state.hudState = createHUDState(current); view.update(state, { selectedId }); }),
+    }), button('Reset preview', () => { cancelAnimationFrame(animationFrame); state.hudState = createHUDState(current); view.update(state, { selectedId, screen: previewHudScreen }); }),
     button('+ Track for selected element', () => {
       const element = selected();
       if (!element) throw new Error('Select a HUD element first');
@@ -429,7 +476,7 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
       body.append(text);
     }, () => applyCSS(text.value, true));
   }
-  const observer = new ResizeObserver(() => { if (view && state) view.update(state, { selectedId }); }); observer.observe(host);
+  const observer = new ResizeObserver(() => { if (view && state) view.update(state, { selectedId, screen: previewHudScreen }); }); observer.observe(host);
   return { render, stopPreview() { cancelAnimationFrame(animationFrame); },
     dispose() { observer.disconnect(); cancelAnimationFrame(animationFrame); view?.dispose(); } };
 }

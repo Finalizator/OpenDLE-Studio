@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
-import { hudElement, hudViewport, hudRect, createHUDState, advanceHUD, hudText, installDefaultHUD, removeHUDElements, removeHUDAnimations } from '../shared/hud.js';
+import { hudElement, hudViewport, hudRect, createHUDState, advanceHUD, hudText, installDefaultHUD, removeHUDElements, removeHUDAnimations,
+  hudScreens, hudScreenOf, hudScreenShown, MAIN_HUD_SCREEN, MAX_HUD_SCREENS } from '../shared/hud.js';
 import { parseHUDCSS } from '../shared/hud-style.js';
 import { createRuntime, stepRuntime, lookPlayer } from '../shared/runtime.js';
 import { applyTool } from '../server/tools.js';
@@ -27,6 +28,69 @@ test('HUD is opt-in for old projects, default for new stores and never overwrite
   validateProject(installEngineScripts(collision));
   assert.notEqual(collision.hud.elements.find(element => element.name === 'Crosshair').id, 'hud_Crosshair');
 });
+test('a HUD holds several screens, and one action spawns or dismisses a whole one', () => {
+  // Screens are the HUD's scenes: a named group of elements sharing one canvas, fonts and CSS
+  // classes, switched on as a unit. An element without a screen is on the game's own `main` screen,
+  // which is not stored — a HUD written before screens existed keeps drawing exactly as it did.
+  const project = installDefaultHUD(createProject());
+  const element = hudElement('vn_line', 'text', 'Line');
+  element.screenId = 'vn_intro';
+  project.hud.elements.push(element);
+  project.hud.screens = [{ id: 'vn_intro', name: 'Visual novel' }];
+  validateProject(project);
+
+  assert.deepEqual(hudScreens(project.hud).map(screen => screen.id), [MAIN_HUD_SCREEN, 'vn_intro'],
+    'the main screen is implicit and always first');
+  assert.equal(hudScreenOf(project.hud.elements[0]), MAIN_HUD_SCREEN, 'an element that names no screen is on main');
+  assert.equal(hudScreenOf(element), 'vn_intro');
+
+  const state = createRuntime(project, { screen: 'playing', gameMode: true });
+  assert.equal(hudScreenShown(state, MAIN_HUD_SCREEN), true, 'the game HUD is up from the start');
+  assert.equal(hudScreenShown(state, 'vn_intro'), false, 'an authored screen waits for an event');
+
+  const run = action => {
+    rule(project, { type: 'always' }, [action], { once: true });
+    stepRuntime(project, state, 1 / 35, new Set());
+  };
+  run({ type: 'showHudScreen', screen: 'vn_intro', mode: 'show' });
+  assert.equal(hudScreenShown(state, 'vn_intro'), true, 'the event spawned the screen');
+  run({ type: 'showHudScreen', screen: 'vn_intro', mode: 'toggle' });
+  assert.equal(hudScreenShown(state, 'vn_intro'), false, 'toggle dismisses it again');
+  run({ type: 'showHudScreen', screen: 'vn_intro', mode: 'toggle' });
+  assert.equal(hudScreenShown(state, 'vn_intro'), true);
+  run({ type: 'showHudScreen', screen: 'vn_intro', mode: 'hide' });
+  assert.equal(hudScreenShown(state, 'vn_intro'), false, 'and hide is not a toggle');
+  assert.equal(hudScreenShown(state, MAIN_HUD_SCREEN), true, 'hiding one screen leaves the others alone');
+});
+
+test('a screen may start shown, and the HUD refuses screens that cannot be addressed', () => {
+  const project = installDefaultHUD(createProject());
+  project.hud.screens = [{ id: 'shop', name: 'Shop', visible: true }];
+  validateProject(project);
+  const state = createRuntime(project, { screen: 'playing', gameMode: true });
+  assert.equal(hudScreenShown(state, 'shop'), true, '`visible: true` is on from the first frame');
+
+  const broken = structuredClone(project);
+  broken.hud.screens = [{ id: 'shop', name: 'Shop' }, { id: 'shop', name: 'Another shop' }];
+  assert.throws(() => validateProject(broken), /Duplicate HUD screen id/);
+  const unnamed = structuredClone(project);
+  unnamed.hud.screens = [{ id: 'shop', name: 'Shop' }, { id: 'other', name: 'Shop' }];
+  assert.throws(() => validateProject(unnamed), /Duplicate HUD screen name/);
+  const redeclared = structuredClone(project);
+  redeclared.hud.screens = [{ id: MAIN_HUD_SCREEN, name: 'Main again' }];
+  assert.throws(() => validateProject(redeclared), /cannot be redeclared/);
+  const orphan = structuredClone(project);
+  orphan.hud.elements[0].screenId = 'nowhere';
+  assert.throws(() => validateProject(orphan), /unknown screen/);
+  const command = structuredClone(project);
+  rule(command, { type: 'always' }, [{ type: 'showHudScreen', screen: 'missing', mode: 'show' }]);
+  assert.throws(() => validateProject(command), /unknown HUD screen/);
+  // A HUD may not hold an unbounded list of screens either.
+  const many = structuredClone(project);
+  many.hud.screens = Array.from({ length: MAX_HUD_SCREENS + 1 }, (_, index) => ({ id: `s${index}`, name: `Screen ${index}` }));
+  assert.throws(() => validateProject(many), /at most/);
+});
+
 test('HUD layouts use responsive anchors, pivots and separate scale modes at exact sizes', () => {
   const hud = fixture().hud, element = hudElement('test');
   element.anchors = { left: 1, right: 1, top: 1, bottom: 1 };

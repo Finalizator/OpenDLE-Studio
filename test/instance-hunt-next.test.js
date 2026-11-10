@@ -403,6 +403,8 @@ test('next 38: for-each self targets offer common local variables, signals and m
   const context = runInNewContext(`(${lists})('$type:enemy')`, {
     project, entityOptions: () => [], imageAssetOptions: () => [], sectorMover: () => null,
     nodeSignals: entity => entity.signals || [],
+    // The HUD catalogue is listed for the "show a HUD screen" action, so the harness needs it.
+    hudScreens: () => [{ id: 'main', name: 'Main HUD' }],
   });
   assert.deepEqual([...context.entityVariableNames('$self')], ['score']);
   assert.deepEqual([...context.entitySignalNames('$self')], ['hit']);

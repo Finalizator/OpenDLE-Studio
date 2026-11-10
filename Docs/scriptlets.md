@@ -40,6 +40,7 @@ Do not treat scriptlets downloaded from strangers as harmless project data.
 | [`wall-walking.js`](../scriptlets/wall-walking.js) | Adds five gravity/surface rules | Jump at a wall or ceiling; hold F to return to world gravity |
 | [`spray.js`](../scriptlets/spray.js) | Adds one key-pressed spray rule | Import image artwork; default key is T (`KeyT`) |
 | [`source-movement.js`](../scriptlets/source-movement.js) | Adds two Half-Life/Source movement rules | Inspect `source_movement` constants; normal install does not add ramps |
+| [`visual-novel.js`](../scriptlets/visual-novel.js) | Adds two HUD screens, a zone and three rules | Walk into the zone it places near the player start; **Continue** and **Leave** drive the dialogue |
 
 **Half-Life movement and surf** additionally offers **Build a new empty surf
 map**. This replaces the whole document with a demo room, surf ramp, return ramp
@@ -48,6 +49,14 @@ imported map. Undo restores the previous document.
 
 Spray requires an image such as a sprite, texture, flat, sky or weapon artwork;
 audio, font, model and video assets do not count as artwork.
+
+**Visual novel** installs the editable game HUD if the project has none, then adds two HUD screens
+(a dim, a dialogue box, a speaker, a line and a button each), a zone object in front of the player
+start, and one engine sheet with three rules. The mechanism it demonstrates is one action —
+`showHudScreen` — so the same approach builds a shop, a cutscene letterbox or any other interface that
+takes over the screen: lay the elements out on their own screen in the HUD designer, then show and
+hide that screen from the event sheet. Reinstalling replaces the screens, elements, zone and rules it
+made; removing it deletes all of them and leaves the game HUD alone.
 
 ## Reinstall, remove, update and undo
 

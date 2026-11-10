@@ -471,6 +471,10 @@ export const ENGINE_ACTIONS = [
   { type: 'giveBackpack', label: 'Inventory: give backpack (double capacities once)', fields: [] },
   { type: 'setPlayerFace', label: 'Player: set face expression', fields: [choice('expression', 'idle', FACE_EXPRESSIONS)] },
   { type: 'setHUDCursor', label: 'HUD: set cursor / game input mode', fields: [choice('mode', 'cursor', ['cursor', 'game', 'toggle'])] },
+  // A screen is a named group of HUD elements (the game's own HUD is `main`), so one action brings a
+  // visual-novel overlay, a shop or a letterbox on and off instead of one action per element.
+  { type: 'showHudScreen', label: 'HUD: show / hide a HUD screen',
+    fields: [choice('mode', 'show', ['show', 'hide', 'toggle'])], hudScreen: true },
   { type: 'setHUDVisible', label: 'HUD: set element visible', fields: [choice('visible', 'yes', ['yes', 'no'])], hudElement: true },
   { type: 'setHUDText', label: 'HUD: set text (clears binding)', fields: [{ name: 'text', value: 'Text', kind: 'string' }], hudElement: true },
   { type: 'setHUDBinding', label: 'HUD: bind text / bar to engine value', fields: [{ name: 'binding', value: 'health', kind: 'string' }], hudElement: true },

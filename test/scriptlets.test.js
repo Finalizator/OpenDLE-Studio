@@ -5,6 +5,8 @@ import vm from 'node:vm';
 import { cloneProjectData, cloneProjectForEdit, createProject, validateProject } from '../shared/project.js';
 import { ENGINE_SCRIPTLETS, installScriptlet, removeScriptlet, scriptletById } from './scriptlet-library.js';
 import { buildSurfTestMap, installSourceMovementScriptlet } from '../scriptlets/source-movement.js';
+import { hudScreenShown, installDefaultHUD } from '../shared/hud.js';
+import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { newScene, addSceneObject } from '../shared/scenes.js';
 import { newJoint } from '../shared/joints.js';
 import { createCue, createTimesheet } from '../shared/timesheet.js';
@@ -387,6 +389,69 @@ test('refusing Source scriptlet removal also preserves its ramps and metadata', 
   const before = structuredClone(project);
   assert.throws(() => removeScriptlet(project, 'source-movement'), /groups referenced/);
   assert.deepEqual(project, before);
+});
+
+test('the visual novel scriptlet installs two HUD screens a zone spawns, and removes all of it', () => {
+  // The point of the scriptlet is the mechanism: entering a zone swaps the whole game HUD for one
+  // HUD screen, a button swaps that screen for another, and the last button puts the game back.
+  assert.ok(ENGINE_SCRIPTLETS.some(scriptlet => scriptlet.id === 'visual-novel'), 'the scriptlet is registered');
+  const project = installDefaultHUD(createProject());
+  validateProject(project);
+  installScriptlet(project, 'visual-novel');
+  validateProject(project);
+
+  const screens = project.hud.screens.map(screen => screen.id);
+  assert.equal(screens.length, 2, 'two screens, so a dialogue can move from one to the other');
+  const elements = project.hud.elements.filter(element => element.screenId);
+  assert.equal(elements.length, 10, 'a dim, a box, a speaker, a line and a button on each');
+  assert.equal(elements.filter(element => element.type === 'button').length, 2);
+  const sheet = project.eventSheets.find(sheet => sheet.scriptletId === 'visual-novel');
+  const rules = project.events.filter(event => event.sheetId === sheet.id);
+  assert.deepEqual(rules.map(event => event.name), ['visual_novel_enter', 'visual_novel_continue', 'visual_novel_leave']);
+
+  const zone = project.map.entities.find(entity => entity.id === project.visualNovelZone);
+  assert.equal(zone.type, 'zone', 'a plain zone object, movable like any other');
+  const start = project.map.entities.find(entity => entity.type === 'player');
+  assert.ok(Math.hypot(zone.x - start.x, zone.y - start.y) > 64, 'placed away from the start, so the player walks into it');
+
+  const state = createRuntime(project, { screen: 'playing', gameMode: true });
+  const shown = id => hudScreenShown(state, id);
+  assert.equal(shown('main'), true);
+  assert.equal(shown(screens[0]), false, 'the dialogue waits for the player');
+
+  state.player.x = zone.x; state.player.y = zone.y;
+  for (let tic = 0; tic < 3; tic++) stepRuntime(project, state, 1 / 35, new Set());
+  assert.equal(shown('main'), false, 'entering the zone takes the game HUD down');
+  assert.equal(shown(screens[0]), true, 'and brings the first screen up');
+  assert.equal(state.hudState.cursor, true, 'with the cursor, because the screen has a button');
+
+  const buttons = elements.filter(element => element.type === 'button');
+  state.hudState.clicked.add(buttons[0].id);
+  stepRuntime(project, state, 1 / 35, new Set());
+  state.hudState.clicked.clear();
+  assert.equal(shown(screens[0]), false, 'Continue dismisses the first screen');
+  assert.equal(shown(screens[1]), true, 'and spawns the other — the whole feature in one click');
+
+  state.hudState.clicked.add(buttons[1].id);
+  stepRuntime(project, state, 1 / 35, new Set());
+  state.hudState.clicked.clear();
+  assert.equal(shown(screens[1]), false);
+  assert.equal(shown('main'), true, 'Leave restores the game HUD');
+  assert.equal(state.hudState.cursor, false, 'and hands the mouse back to the game');
+
+  // Reinstalling must replace rather than duplicate, and removing must leave nothing behind.
+  installScriptlet(project, 'visual-novel');
+  validateProject(project);
+  assert.equal(project.hud.screens.length, 2);
+  assert.equal(project.hud.elements.filter(element => element.screenId).length, 10);
+  removeScriptlet(project, 'visual-novel');
+  validateProject(project);
+  assert.equal((project.hud.screens || []).length, 0, 'the screens go with it');
+  assert.equal(project.hud.elements.filter(element => element.screenId).length, 0, 'and so do their elements');
+  assert.equal(project.map.entities.some(entity => entity.type === 'zone'), false, 'and the zone');
+  assert.equal(project.events.filter(event => event.sheetId === sheet.id).length, 0, 'and the rules');
+  // The game HUD itself is not the scriptlet's to remove.
+  assert.ok(project.hud.elements.some(element => element.name === 'Crosshair'));
 });
 
 test('the scriptlets live in their own editor tab, not in the event sheet tree', () => {

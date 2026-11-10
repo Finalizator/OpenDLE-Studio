@@ -8,7 +8,7 @@ import { MODEL_FACING_SEMANTICS } from './entity-visuals.js';
 import { INSTANCE_PICKABLE_TYPES, FOR_EACH_TYPES, INSTANCE_PROPERTY_NAMES, INSTANCE_TYPES, compareInstanceProperty } from './instance-properties.js';
 export { CAMERA_DEFAULTS } from './instance-properties.js';
 import { ADDON_LIMITS, ADDON_VERSION, declaredAddonTypes, setProjectValidator, validateAddonManifest } from './addons.js';
-import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS } from './hud.js';
+import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS, MAIN_HUD_SCREEN } from './hud.js';
 import { WEAPONS } from './player-state.js';
 import { isExpression, validateExpression, validateVariables, scalar, expressionContext } from './expressions.js';
 import { validateShaders } from './shaders.js';
@@ -1362,6 +1362,11 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         }
       }
       if (definition.hudAnimation) assert(project.hud?.animations.some(clip => clip.id === command.animationId), 'Command references an unknown HUD animation');
+      if (definition.hudScreen) {
+        const screen = command.screen || MAIN_HUD_SCREEN;
+        assert(screen === MAIN_HUD_SCREEN || project.hud?.screens?.some(item => item.id === screen),
+          `Command references an unknown HUD screen "${screen}"`);
+      }
       if (command.type === 'playSound' || ['launchProjectile', 'enemyProjectile', 'moveSector'].includes(command.type) && command.sound !== undefined) {
         assert(assets.some(asset => asset.kind === 'sound' && asset.name === command.sound), 'Sound command references an unknown sound name');
       }

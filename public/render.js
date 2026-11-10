@@ -2253,7 +2253,8 @@ export async function createPreview(canvas, project, state, { editor = false, on
         entry.mesh.visible = Boolean(entity);
         if (!entity) continue;
         const box = solidBoxFor(entity);
-        const floor = sectorOf(entity)?.floorHeight || 0;
+        const sector = sectorOf(entity);
+        const floor = sector?.floorHeight || 0;
         const bottom = entity.z ?? floor + (entity.elevation || 0);
         entry.mesh.position.set(entity.x, box.wedge ? bottom : bottom + box.height / 2, entity.y);
         // The collider's own orientation, tilt included, so the slope drawn is the slope

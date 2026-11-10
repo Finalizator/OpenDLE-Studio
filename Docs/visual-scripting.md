@@ -907,6 +907,7 @@ keep their existing global-variable output.
 | give backpack (double capacities once) | `giveBackpack` | — | — |
 | set face expression | `setPlayerFace` | — | expression |
 | set cursor / game input mode | `setHUDCursor` | — | mode |
+| show / hide a HUD screen | `showHudScreen` | — | mode, screen |
 | set element visible | `setHUDVisible` | yes | visible |
 | set text (clears binding) | `setHUDText` | yes | text |
 | bind text / bar to engine value | `setHUDBinding` | yes | binding |

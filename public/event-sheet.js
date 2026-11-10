@@ -53,7 +53,7 @@ export function commandRow(command, labels, objectName, open, { inverted = false
   return row;
 }
 
-export function openCommandDialog({ kind, labels, command, defaults, entities, zones = [], cameras = [], objectTypes = [], playerId, variables, groups, clips, walls = [], sectors = [], doorSectors = sectors, elevatorSectors = sectors, spriteClips = [], images = [], hudElements = [], hudAnimations = [],
+export function openCommandDialog({ kind, labels, command, defaults, entities, zones = [], cameras = [], objectTypes = [], playerId, variables, groups, clips, walls = [], sectors = [], doorSectors = sectors, elevatorSectors = sectors, spriteClips = [], images = [], hudElements = [], hudAnimations = [], hudScreens = [],
   // Project data the newer commands point at: timelines, routes and imported sounds.
   timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [],
   // Engine commands plus the ones addons add; the parameter stage is built from this list.
@@ -96,7 +96,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
     } else {
       const label = document.createElement('h3'); label.textContent = labels.find(([type]) => type === draft.type)?.[1] || draft.type;
       content.append(label);
-      for (const field of commandFields(draft, { entities, zones, cameras, objectTypes, playerId, variables, groups, clips, walls, sectors, doorSectors, elevatorSectors, spriteClips, images, hudElements, hudAnimations, timesheets, paths, sounds, pathPoints, entityVariableNames, entitySignalNames, commands })) {
+      for (const field of commandFields(draft, { entities, zones, cameras, objectTypes, playerId, variables, groups, clips, walls, sectors, doorSectors, elevatorSectors, spriteClips, images, hudElements, hudAnimations, hudScreens, timesheets, paths, sounds, pathPoints, entityVariableNames, entitySignalNames, commands })) {
         const label = document.createElement('label'); label.textContent = field.label || field.name;
         const valueType = field.value ? isExpression(draft[field.name]) ? 'expression' : typeof draft[field.name] : null;
         if (field.value) {

@@ -61,7 +61,7 @@ import { createShaderEnginePanel } from './shader-engine-panel.js';
 import { createAddonHost } from './addons-host.js';
 import { alignModelToRoute, driveRouteTimesheet } from '/shared/timesheet-recipe.js';
 import { installGameMenu } from '/shared/game-menu.js';
-import { installDefaultHUD } from '/shared/hud.js';
+import { installDefaultHUD, hudScreens, MAIN_HUD_SCREEN } from '/shared/hud.js';
 import { upgradePickupReach, installDroppedPickupRules } from '/shared/doom-hud.js';
 import { upgradeCrusherRules } from '/shared/doom-specials.js';
 import { upgradeSurfAirAccelerate } from '/shared/source-motion.js';
@@ -2333,6 +2333,7 @@ function defaultHUDTarget(command) {
     command.animationId = project.hud?.animations[0]?.id;
     if (!command.animationId) throw new Error('Create a HUD animation first');
   }
+  if (definition.hudScreen) command.screen = MAIN_HUD_SCREEN;
 }
 function openHUDScript(elementId) {
   let sheet = project.eventSheets?.find(sheet => sheet.name === 'HUD');
@@ -2538,8 +2539,13 @@ function commandLists(ownerId) {
     elevatorSectors: (project.map.sectors || []).filter(sector => sectorMover(project, sector)?.kind === 'elevator').map(sector => [sector.id, sector.id]),
     spriteClips: (project.spriteClips || []).map(clip => [clip.id, clip.name]),
     images: imageAssetOptions(),
-    hudElements: (project.hud?.elements || []).map(element => [element.id, element.name]),
+    hudElements: (project.hud?.elements || []).map(element => [element.id,
+      // A screen's own name in front of the element, so two "Dialogue" texts on different screens
+      // can be told apart in a picker.
+      (project.hud.screens || []).some(screen => screen.id === element.screenId && screen.id !== MAIN_HUD_SCREEN)
+        ? `${project.hud.screens.find(screen => screen.id === element.screenId).name} / ${element.name}` : element.name]),
     hudAnimations: (project.hud?.animations || []).map(clip => [clip.id, clip.name]),
+    hudScreens: hudScreens(project.hud).map(screen => [screen.id, screen.name]),
     timesheets: (project.timesheets || []).map(sheet => [sheet.id, sheet.name]),
     paths: (project.paths || []).map(path => [path.id, path.name || path.id]),
     // A route action's waypoints are picked by name, so the dialog needs the route itself.

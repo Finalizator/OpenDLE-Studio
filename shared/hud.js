@@ -8,6 +8,17 @@ import { projectIds } from './project-ids.js';
 export const HUD_PROPERTIES = ['x', 'y', 'width', 'height', 'opacity', 'scale', 'rotation', 'value', 'frame', 'fontSize'];
 export const HUD_STATS = ['health', 'armor', 'bullets'];
 export const MAX_HUD_ELEMENTS = 512;
+/**
+ * The screen every HUD has, always, and the one the game itself draws.
+ *
+ * A *screen* is a named group of elements sharing this HUD's canvas, fonts and CSS classes — one
+ * unified space, switched on and off as a whole. That is what makes a visual-novel overlay, a
+ * cutscene letterbox or a shop practical: an event shows the screen and the elements that belong
+ * to it appear, instead of one action per element. Elements without a `screenId` are on `main`, so
+ * every HUD authored before screens existed keeps drawing exactly as it did.
+ */
+export const MAIN_HUD_SCREEN = 'main';
+export const MAX_HUD_SCREENS = 32;
 const limits = {
   x: [-16384, 16384], y: [-16384, 16384], width: [-16384, 16384], height: [-16384, 16384],
   opacity: [0, 1], scale: [.01, 20], rotation: [-3600, 3600], value: [-1e9, 1e9],
@@ -148,6 +159,20 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
     assert(size <= LIMITS.textBytes, `HUD imported sources exceed ${LIMITS.textBytes / 1024 / 1024} MiB`);
   }
   list(hud.fonts, 64, 'fonts'); list(hud.elements, MAX_HUD_ELEMENTS, 'elements'); list(hud.animations, 128, 'animations');
+  const screenIds = new Set([MAIN_HUD_SCREEN]), screenNames = new Set(['Main HUD']);
+  if (hud.screens !== undefined) {
+    list(hud.screens, MAX_HUD_SCREENS, 'screens');
+    for (const screen of hud.screens) {
+      obj(screen, 'HUD screen');
+      assert(typeof screen.id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(screen.id),
+        'HUD screen id must be 1-80 letters, digits, - or _');
+      assert(screen.id !== MAIN_HUD_SCREEN, `"${MAIN_HUD_SCREEN}" is the HUD's own screen and cannot be redeclared`);
+      assert(!screenIds.has(screen.id), 'Duplicate HUD screen id'); screenIds.add(screen.id);
+      text(screen.name, 100, 'screen name');
+      assert(!screenNames.has(screen.name), 'Duplicate HUD screen name'); screenNames.add(screen.name);
+      if (screen.visible !== undefined) assert(typeof screen.visible === 'boolean', 'HUD screen visible must be boolean');
+    }
+  }
   if (hud.styles !== undefined) {
     list(hud.styles, 128, 'CSS classes');
     const names = new Set();
@@ -180,6 +205,8 @@ export function validateHUD(hud, { unique, assets, variables, assert }) {
   const seen = new Set();
   for (const element of hud.elements) {
     unique(element, 'HUD element'); text(element.name, 100, 'element name');
+    if (element.screenId !== undefined)
+      assert(screenIds.has(element.screenId), `HUD element ${element.name} is on unknown screen "${element.screenId}"`);
     assert(['panel', 'text', 'image', 'bar', 'button'].includes(element.type), 'Unknown HUD element type');
     if (element.parentId !== undefined) assert(seen.has(element.parentId), 'HUD parent must precede its children');
     seen.add(element.id);
@@ -284,6 +311,29 @@ export function hudElement(id, type = 'text', name = type) {
     background: type === 'panel' || type === 'button' ? '#252a30ee' : '#00000000' };
 }
 
+/**
+ * Every screen of a HUD, `main` first.
+ *
+ * `main` is implicit rather than stored: it is what a HUD's own elements are, and writing it into
+ * the project would make every hand-written `{ width, height, elements }` invalid.
+ */
+export function hudScreens(hud) {
+  return [{ id: MAIN_HUD_SCREEN, name: 'Main HUD', visible: true }, ...(hud?.screens || []).map(screen => ({ ...screen }))];
+}
+
+/** The screen an element belongs to; an element that names none is on the game's own HUD. */
+export function hudScreenOf(element) {
+  return element?.screenId || MAIN_HUD_SCREEN;
+}
+
+/** Whether a screen is switched on in a running game. Unknown screens are off, not an error. */
+export function hudScreenShown(state, screenId) {
+  const id = screenId || MAIN_HUD_SCREEN;
+  const screens = state?.hudState?.screens;
+  if (!screens) return id === MAIN_HUD_SCREEN;
+  return screens instanceof Map ? screens.get(id) === true : Boolean(screens[id]);
+}
+
 export function hudViewport(hud, width, height) {
   let sx = width / hud.width, sy = height / hud.height;
   if (hud.scaleMode !== 'stretch') {
@@ -332,6 +382,10 @@ export function bitmapGlyph(font, char) {
 
 export function createHUDState(project, initialStats = initialPlayerStats()) {
   const hud = { elements: new Map((project.hud?.elements || []).map(element => [element.id, structuredClone(element)])),
+    // Which screens are on. `main` is on from the start — it is the game's own HUD — and an authored
+    // screen starts off unless it says `visible: true`, so a visual-novel overlay waits for the
+    // event that shows it rather than covering the game from the first frame.
+    screens: new Map(hudScreens(project.hud).map(screen => [screen.id, screen.visible === true])),
     playing: new Map(),
     finished: new Set(), clicked: new Set(), cursor: false, initialStats: { ...initialStats }, statSamples: new Map() };
   for (const clip of project.hud?.animations || []) if (clip.autoPlay) playHUDAnimation(project, hud, clip.id);

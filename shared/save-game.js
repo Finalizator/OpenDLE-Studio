@@ -5,6 +5,7 @@ import { HL2_MOVEMENT } from './source-motion.js';
 import { selectGameLevel, levelData } from './game-levels.js';
 import { validatePhysicsState, physicsEntityIds } from './physics.js';
 import { gameSettings } from './game-settings.js';
+import { MAIN_HUD_SCREEN } from './hud.js';
 import { KEYS, WEAPONS } from './player-state.js';
 import { WORLD_UP } from './gravity.js';
 
@@ -345,6 +346,14 @@ function validateRuntime(project, state, baseline) {
   for (const [id, element] of state.hudState.elements) {
     if (!baseline.hudState.elements.has(id)) fail('unknown HUD element');
     matchShape(element, baseline.hudState.elements.get(id), `HUD ${id}`);
+  }
+  // Which HUD screens were on. A save written before screens existed has none, and restoring it
+  // must leave the game HUD up rather than fail, so the map is optional.
+  if (state.hudState.screens !== undefined) {
+    const screenIds = new Set([MAIN_HUD_SCREEN, ...(project.hud?.screens || []).map(screen => screen.id)]);
+    if (!(state.hudState.screens instanceof Map)) fail('invalid HUD screens');
+    for (const [id, shown] of state.hudState.screens)
+      if (typeof id !== 'string' || typeof shown !== 'boolean' || !screenIds.has(id)) fail('invalid HUD screen');
   }
   const hudClips = new Set((project.hud?.animations || []).map(clip => clip.id));
   objectMap(state.hudState.playing, hudClips, { time: 'number' }, 'HUD animations');

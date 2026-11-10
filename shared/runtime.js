@@ -6,7 +6,7 @@ import { pairKey } from './physics.js';
 import { compareValues, engineCommand } from './engine-script.js';
 import { acsVariableStore, readAcsArray, writeAcsArray } from './acs-state.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
-import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validateHUDProperty } from './hud.js';
+import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validateHUDProperty, hudScreenShown, MAIN_HUD_SCREEN } from './hud.js';
 import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, advanceThrusts, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
@@ -2379,6 +2379,18 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             case 'startTimer': state.timers.set(`${event.ownerId || '$scene'}:${action.timer}`, state.time + action.seconds); break;
             case 'clearTimer': state.timers.delete(`${event.ownerId || '$scene'}:${action.timer}`); break;
             case 'showPlayerHUD': state.hud = action.visible === 'yes'; break;
+            case 'showHudScreen': {
+              // Switches a whole named group of elements — a visual-novel overlay, a shop, a
+              // letterbox — on or off with one action. `hud.screens` is created with the HUD and
+              // validated when the project is, so an unknown screen here is a project that was
+              // edited outside the editor; it is reported rather than silently doing nothing.
+              const screen = action.screen || MAIN_HUD_SCREEN;
+              if (screen !== MAIN_HUD_SCREEN && !project.hud?.screens?.some(item => item.id === screen))
+                throw new Error(`Event "${event.name || event.id}": the HUD has no screen "${screen}"`);
+              const shown = hudScreenShown(state, screen);
+              hud.screens.set(screen, action.mode === 'toggle' ? !shown : action.mode !== 'hide');
+              break;
+            }
             case 'setHUDCursor': hud.cursor = action.mode === 'toggle' ? !hud.cursor : action.mode === 'cursor'; break;
             case 'setHUDVisible': hud.elements.get(action.elementId).visible = action.visible === 'yes'; break;
             case 'setHUDText': Object.assign(hud.elements.get(action.elementId), { text: action.text, binding: '' }); break;

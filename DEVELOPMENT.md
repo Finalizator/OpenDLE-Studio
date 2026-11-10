@@ -665,6 +665,27 @@ Animation completion remains observable across the game and interface clock phas
   clip is applied last. Image tiling, skeletal UI animation and rich-text/font
   shaping for bitmap atlases are not implemented.
 
+**Screens are the HUD's scenes.** A HUD is one canvas with one set of fonts and CSS classes, and a
+*named screen* is a group of its elements that switches on and off as a unit — the HUD equivalent of
+a scene you spawn. **HUD screen** in the designer's settings picks which one you are laying out; the
+canvas, the element list and the properties panel then show only that screen's elements, stacked over
+the same design resolution, so an overlay lines up with the game HUD rather than drifting away from
+it. **+ Screen / Rename screen / Delete screen** manage them (a screen with elements cannot be
+deleted: move or delete its elements first), and **Starts hidden / Starts shown** sets whether it is
+up from the first frame. The game's own HUD is the screen `main`, which is implicit rather than
+stored — an element that names no screen is on it — so every HUD authored before screens existed
+draws exactly as it did. An element's **HUD screen** property moves it between them.
+
+The action that spawns one is `showHudScreen(screen, mode: show|hide|toggle)`: one event brings a
+whole dialogue, shop or cutscene up, and one brings it down. `main` may be hidden too, which is how
+a full-screen interface takes the game HUD's place and gives it back afterwards. Screens are
+validated as part of the HUD (ids unique and not `main`, names unique, at most 32, and every
+element's screen must exist), a save stores which ones were up, and the event dialog offers them in
+its own picker. The **Visual novel (dialogue screens)** scriptlet is the worked example: two screens,
+a zone in front of the player, and three editable rules — entering the zone hides `main` and shows
+the first screen and the cursor, **Continue** swaps one screen for the other, **Leave** restores the
+game HUD and gameplay input.
+
 **Bindings and visual scripts:** text accepts `{health}`, `{armor}`, `{bullets}`,
 `{message}` and `{var:score}` (replace `score` with an existing variable). The
 Binding property can bind a whole text/bar directly to one engine value; bars
