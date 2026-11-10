@@ -2,12 +2,13 @@ import { GAME_SETTINGS } from './game-settings.js';
 import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTY_NAMES, readInstanceProperty } from './instance-properties.js';
 import { PLAYER_STATS } from './player-state.js';
 import { readAcsVariable, readAcsString, readAcsArray } from './acs-state.js';
+import { arrayShape, readArrayCell } from './arrays.js';
 
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 /** The actor values `acsactor(tid, "…")` can read: the ones the ACS opcodes read. */
 export const ACTOR_VALUE_KINDS = ['x', 'y', 'z', 'floorZ', 'ceilingZ', 'angle', 'pitch', 'light'];
 
-export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), property("enemy","health"), count("enemy"), player("health"), acsvar("map", 2), acsarray("script", 1, 0), acsflat("map", 3), acsactor(3, "z"), acsactorproperty(3, 0), acssectorz(7, 0, 0, "floor"), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
+export const EXPRESSION_HELP = 'Use = before an expression in event fields. References: global("score"), local("speed"), object("id","name"), property("$self","x"), property("enemy","health"), count("enemy"), player("health"), acsvar("map", 2), acsarray("script", 1, 0), array("grid", 2, 1), arrayrows("grid"), arraycolumns("grid"), acsflat("map", 3), acsactor(3, "z"), acsactorproperty(3, 0), acssectorz(7, 0, 0, "floor"), time, dt, pi. Math: abs, min, max, clamp, lerp, floor, ceil, round, sqrt, pow, sin, cos, tan, atan2, distance, random. Text: str, number, concat, upper, lower, trim, len, left, right, mid, replace, contains, find. Operators: + - * / % ^ & == != < <= > >= && || ! and condition ? yes : no. Trigonometry uses radians; text indexes start at zero.';
 export const isExpression = value => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && typeof value.expr === 'string';
 
 export function scalar(value) {
@@ -119,7 +120,10 @@ const textFunctions = {
   find: [2, 2, (s, needle) => text(s).indexOf(text(needle))],
 };
 // `acsvar("map", 2)` reads a compiled script's variable: the level's own store, not a copy.
-const references = { global: 1, local: 1, object: 2, property: 2, player: 1, setting: 1, count: 1, acsvar: 2, acsflat: 2, acsarray: 3 };
+const references = { global: 1, local: 1, object: 2, property: 2, player: 1, setting: 1, count: 1, acsvar: 2, acsflat: 2, acsarray: 3,
+  // A project array: named like a variable, indexed by row and column. `arrayrows`/`arraycolumns`
+  // give its size, so a loop over a grid can ask instead of hard-coding the numbers.
+  array: 3, arrayrows: 1, arraycolumns: 1 };
 /**
  * Reads that ask the running level a question, the way a compiled script's `GetActorZ`,
  * `GetActorProperty` and `GetSectorFloorZ` do. Their name argument is a literal (a property,
@@ -185,6 +189,14 @@ export function expressionContext(project, event, state, dt = 0, { selection } =
       if (kind === 'acsvar') return readAcsVariable(state, args[0], Number(args[1]) || 0);
       if (kind === 'acsflat') return readAcsString(state, args[0], Number(args[1]) || 0);
       if (kind === 'acsarray') return readAcsArray(state, args[0], Number(args[1]) || 0, Number(args[2]) || 0);
+      // The live arrays when a game is running, the authored grid otherwise: the designer's preview
+      // reads real values before Play has started.
+      if (kind === 'array') return readArrayCell(state?.arrays ?? project.arrays, args[0],
+        Number(args[1]) || 0, Number(args[2]) || 0);
+      if (kind === 'arrayrows' || kind === 'arraycolumns') {
+        const shape = arrayShape(state?.arrays ?? project.arrays, args[0]);
+        return kind === 'arrayrows' ? shape.rows : shape.columns;
+      }
       if (kind === 'global') return variable(state?.variables || project.variables, args[0]);
       if (kind === 'player') {
         if (!playerStats.has(args[0])) throw new Error(`Unknown player expression stat: ${args[0]}`);
@@ -249,6 +261,13 @@ function checkCall(node) {
     if (id?.op !== 'literal' || typeof id.value !== 'number')
       throw new Error('acsarray requires a literal array number');
     if (!index) throw new Error('acsarray requires an element index');
+    return;
+  }
+  // An array is named literally, but its row and column may be computed: walking a grid with a
+  // counter is the point of having one, so only the name is required to be a literal.
+  if (node.name === 'array') {
+    if (node.args[0]?.op !== 'literal' || typeof node.args[0].value !== 'string')
+      throw new Error('array needs a literal quoted array name');
     return;
   }
   if (count && node.args.some(arg => arg.op !== 'literal' || typeof arg.value !== 'string')) throw new Error(`${node.name} references require literal quoted names`);

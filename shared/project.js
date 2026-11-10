@@ -11,6 +11,7 @@ import { ADDON_LIMITS, ADDON_VERSION, declaredAddonTypes, setProjectValidator, v
 import { validateHUD, validateHUDProperty, MAX_HUD_ELEMENTS, MAIN_HUD_SCREEN } from './hud.js';
 import { WEAPONS } from './player-state.js';
 import { isExpression, validateExpression, validateVariables, scalar, expressionContext } from './expressions.js';
+import { validateArrays, arrayShape } from './arrays.js';
 import { validateShaders } from './shaders.js';
 import { POST_FX_BY_KIND, validatePostFx } from './post-fx.js';
 import { AREA_SHAPES } from './areas.js';
@@ -1052,6 +1053,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   }
   if (sectors.length) sectorGeometry(project);
   validateVariables(project.variables);
+  validateArrays(project.arrays, assert);
   if (project.playerControl !== undefined) assert(['legacy', 'events'].includes(project.playerControl), 'Unknown player control mode');
   // Addons before the rules: an event may name a command an addon adds, and a manifest this build
   // cannot read has to be reported before anything tries to resolve one.
@@ -1448,6 +1450,27 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           assert(typeof action.value === typeof project.variables[action.variable], 'Variable assignment must preserve its type');
         }
         if (action.type === 'addVariable') assert(typeof project.variables[action.variable] === 'number', 'Only numeric variables can be added');
+      }
+      if (engineCommand(action.type, project)?.array) {
+        const array = project.arrays?.[action.array];
+        assert(array, 'Action references an unknown array');
+        const { rows, columns, type } = arrayShape(project.arrays, action.array);
+        const within = (value, limit, label) => {
+          if (isExpression(value)) return expression(value);
+          assert(Number.isInteger(value) && value >= 0 && value < limit,
+            `Array row/column must be a whole number inside the ${label} (${limit})`);
+        };
+        within(action.row, rows, `${rows}-row grid`);
+        within(action.column, columns, `${columns}-column grid`);
+        if (action.type === 'addToArrayCell') {
+          assert(type === 'number', 'Only numeric arrays can be added to');
+          if (isExpression(action.value)) expression(action.value);
+          else assert(typeof action.value === 'number' && Number.isFinite(action.value), 'Array cell addition needs a number');
+        } else if (isExpression(action.value)) expression(action.value);
+        else {
+          scalar(action.value);
+          assert(typeof action.value === type, `Array "${action.array}" holds ${type}s`);
+        }
       }
       if (action.type === 'teleport') {
         numberOrExpression(action.x, 'Teleport X');

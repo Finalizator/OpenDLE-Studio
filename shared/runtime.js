@@ -7,6 +7,7 @@ import { compareValues, engineCommand } from './engine-script.js';
 import { acsVariableStore, readAcsArray, writeAcsArray } from './acs-state.js';
 import { isExpression, evaluateExpression, expressionContext, scalar } from './expressions.js';
 import { createHUDState, advanceHUD, playHUDAnimation, clearFinishedHUD, validateHUDProperty, hudScreenShown, MAIN_HUD_SCREEN } from './hud.js';
+import { createArrayState } from './arrays.js';
 import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, advanceThrusts, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
@@ -356,6 +357,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     // player does not act.
     ambientWorld: screen !== 'playing' && /^TITLEMAP$/i.test(String(project.game?.active || '')),
     variables: { ...project.variables },
+    // The live grids. A rule that writes a cell changes this copy, not the project, so Play
+    // restarts from what the designer authored — the same contract `variables` has.
+    arrays: createArrayState(project),
     entities,
     levelStatistics: createLevelStatistics(entities, project.map.sectors || []),
     intermission: null,
@@ -2401,6 +2405,32 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             case 'showMessage': state.message = action.message; state.messageTime = 6; break;
             case 'setVariable': assignVariable(state.variables, action.variable, action.value, false); break;
             case 'addVariable': assignVariable(state.variables, action.variable, action.value, true); break;
+            case 'setArrayCell': {
+              // A cell is written where the rule runs, so a computed row/column walks the grid.
+              const array = state.arrays[action.array];
+              if (!array) throw new Error(`Event "${event.name || event.id}" writes array "${action.array}", which the project no longer has`);
+              const row = Math.trunc(Number(action.row));
+              const column = Math.trunc(Number(action.column));
+              if (!array[row] || column < 0 || column >= array[row].length)
+                throw new Error(`Event "${event.name || event.id}": array "${action.array}" has no cell at row ${row}, column ${column}`);
+              if (typeof action.value !== typeof array[row][column])
+                throw new Error(`Event "${event.name || event.id}": array "${action.array}" holds values of one type only`);
+              array[row][column] = scalar(action.value);
+              break;
+            }
+            case 'addToArrayCell': {
+              const array = state.arrays[action.array];
+              if (!array) throw new Error(`Event "${event.name || event.id}" adds to array "${action.array}", which the project no longer has`);
+              const row = Math.trunc(Number(action.row));
+              const column = Math.trunc(Number(action.column));
+              if (!array[row] || column < 0 || column >= array[row].length)
+                throw new Error(`Event "${event.name || event.id}": array "${action.array}" has no cell at row ${row}, column ${column}`);
+              const value = Number(action.value) || 0;
+              // The same saturation a variable counter has: a grid that reaches the scalar limit
+              // stops rather than throwing and halting the game.
+              array[row][column] = scalar(Math.max(-1e12, Math.min(1e12, (array[row][column] || 0) + value)));
+              break;
+            }
             case 'setAcsVariable': {
               // The store a decompiled script writes is the interpreter's own, so the rest of the
               // level sees the change exactly as it did when the script ran as bytecode.

@@ -355,6 +355,24 @@ function validateRuntime(project, state, baseline) {
     for (const [id, shown] of state.hudState.screens)
       if (typeof id !== 'string' || typeof shown !== 'boolean' || !screenIds.has(id)) fail('invalid HUD screen');
   }
+  // The live arrays. A save written before arrays existed has none, and restoring it must leave the
+  // authored grids in place rather than fail, so the record is optional and checked cell by cell.
+  if (state.arrays !== undefined) {
+    if (!plain(state.arrays)) fail('invalid arrays');
+    for (const [name, array] of Object.entries(state.arrays)) {
+      const authored = project.arrays?.[name];
+      if (!authored) fail(`save has an array the project does not: ${name}`);
+      if (!Array.isArray(array) || array.length !== authored.cells.length) fail(`invalid array ${name}`);
+      for (const row of array) {
+        if (!Array.isArray(row) || row.length !== authored.cells[0].length) fail(`invalid array ${name}`);
+        for (const cell of row) {
+          if (typeof cell !== authored.type) fail(`invalid array ${name} cell`);
+          if (authored.type === 'number' && (!Number.isFinite(cell) || Math.abs(cell) > 1e12)) fail(`invalid array ${name} cell`);
+          if (authored.type === 'string' && cell.length > 4096) fail(`invalid array ${name} cell`);
+        }
+      }
+    }
+  }
   const hudClips = new Set((project.hud?.animations || []).map(clip => clip.id));
   objectMap(state.hudState.playing, hudClips, { time: 'number' }, 'HUD animations');
   stringSet(state.hudState.finished, hudClips, 'finished HUD animations');

@@ -726,6 +726,39 @@ plus the usual validated event-sheet/rule tools. HUD font records, CSS classes,
 bindings and animation tracks are portable JSON in `project.hud`; embedded font
 files join images/models in `project.assets`. No JavaScript is stored in HUDs.
 
+### Arrays
+
+A project can hold **arrays**: named two-dimensional grids of values, edited cell by cell in the
+**Environment** tab and read by rules. They exist because the alternative — packing two indexes into
+one integer variable — is the thing creators actually did, and it made a board or a table unreadable
+in the editor.
+
+`shared/arrays.js` owns them. An array is `{ type: 'number' | 'string', cells: [[…]] }` stored in
+`project.arrays`, so `cells[row][column]` is the shape the designer draws and the engine reads; a
+save is a plain copy. `setArray` derives the whole grid from a name, a size and a type, and re-derives
+it on a resize while keeping the cells that still fit — there is no second place to keep in step.
+Limits: 32 arrays, 256 rows, 256 columns, 16384 cells, one scalar type per grid.
+
+**Reading.** An expression reads a cell with `array("grid", row, column)`, and `arrayrows` /
+`arraycolumns` give its size so a loop can ask instead of hard-coding numbers. The name must be a
+literal — a rule that names its grid by expression could not be validated — while the row and column
+may be any expression. Validation reads the cell, so `array("grid", 0, 99)` on an 4-column grid is
+refused while the rule is being written, with the grid's real size in the message. Because these are
+ordinary expressions they work everywhere one does: `setVariable`, `showMessage`, HUD text,
+`expressionCompare` (which is how a rule branches on a cell).
+
+**Writing.** `setArrayCell(array, row, column, value)` and `addToArrayCell(…)` are ordinary event
+actions with an array picker; the value accepts `=…`, so `=array("grid", 0, 0) + 1` is a cell update
+computed from another cell. `addToArrayCell` saturates at the scalar limit instead of throwing, the
+same rule a variable counter follows, because a rule that throws stops the game. The live grids live
+in `state.arrays` and start as a deep copy of the authored ones, so Play never edits the project and
+restarting a level restores the grid — the contract `variables` already had. A save stores them and
+validates every cell against the authored shape and type.
+
+Deleting an array that a rule still names is refused: `arrayReferences` counts both the picker
+(`command.array`) and `array("name", …)` inside expressions across events and scenes, and the
+designer reports the count rather than leaving a project that no longer validates.
+
 ### World workflow
 
 1. Open the editor and click **Play world** to try the starter scene. Walk to the

@@ -481,6 +481,14 @@ export const ENGINE_ACTIONS = [
   { type: 'setHUDProperty', label: 'HUD: set numeric property', fields: [choice('property', 'opacity', HUD_PROPERTIES), numeric('value', 1, -1e9, 1e9)], hudElement: true },
   { type: 'playHUDAnimation', label: 'HUD: play / restart animation', fields: [], hudAnimation: true },
   { type: 'stopHUDAnimation', label: 'HUD: stop animation (hold pose)', fields: [], hudAnimation: true },
+  // Arrays are project-owned 2D grids; a rule reads a cell with the expression
+  // `array("grid", row, column)` and writes one here. The designer in the Environment tab draws the
+  // grid itself, so the two indexes a creator has to think about are the row and the column they
+  // can see.
+  { type: 'setArrayCell', label: 'Array: set a cell', array: true,
+    fields: [numeric('row', 0, 0, 255), numeric('column', 0, 0, 255), { name: 'value', value: 0, kind: 'value', expression: true }] },
+  { type: 'addToArrayCell', label: 'Array: add to a cell (numeric arrays)', array: true,
+    fields: [numeric('row', 0, 0, 255), numeric('column', 0, 0, 255), { name: 'value', value: 1, kind: 'value', expression: true }] },
   { type: 'setGroupActive', label: 'System: set group active', fields: [choice('active', 'yes', ['yes', 'no'])], group: true },
   { type: 'movePlayer', label: 'Player: add local movement', fields: [numeric('forward', PLAYER_SPEED.walk, -4096, 4096), numeric('strafe', 0, -4096, 4096)] },
   { type: 'turnPlayer', label: 'Player: turn (degrees / second)', fields: [numeric('speed', DOOM_TURN_SPEED, -3600, 3600)] },

@@ -147,6 +147,14 @@ test('every Engine command has shared editor defaults and validates after adding
       project.assets.push({ id: 'sound_test', name: 'TESTSND', kind: 'sound', src: 'data:audio/wav;base64,AAAA' });
       value.assetId = 'sound_test';
     }
+    // An array action needs a grid to act on, the same way a HUD action needs an element.
+    if (command.array) {
+      project.arrays = { test_grid: { type: 'number', cells: [[0, 0], [0, 0]] } };
+      value.array = 'test_grid';
+      value.row = 0;
+      value.column = 0;
+      if (value.value === undefined) value.value = 0;
+    }
     // An area condition is about an interaction volume, so the fixture gives its target one —
     // the same thing a creator does before writing the rule.
     if (['playerInArea', 'playerEnteredArea'].includes(command.type)) {

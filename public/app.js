@@ -62,6 +62,7 @@ import { createAddonHost } from './addons-host.js';
 import { alignModelToRoute, driveRouteTimesheet } from '/shared/timesheet-recipe.js';
 import { installGameMenu } from '/shared/game-menu.js';
 import { installDefaultHUD, hudScreens, MAIN_HUD_SCREEN } from '/shared/hud.js';
+import { MAX_ARRAYS, MAX_ARRAY_CELLS, arrayReferences, removeArray, setArray } from '/shared/arrays.js';
 import { upgradePickupReach, installDroppedPickupRules } from '/shared/doom-hud.js';
 import { upgradeCrusherRules } from '/shared/doom-specials.js';
 import { upgradeSurfAirAccelerate } from '/shared/source-motion.js';
@@ -2334,6 +2335,14 @@ function defaultHUDTarget(command) {
     if (!command.animationId) throw new Error('Create a HUD animation first');
   }
   if (definition.hudScreen) command.screen = MAIN_HUD_SCREEN;
+  if (definition.array) {
+    const name = Object.keys(project.arrays || {})[0];
+    if (!name) throw new Error('Create an array in the Environment tab first');
+    command.array = name;
+    if (command.row === undefined) command.row = 0;
+    if (command.column === undefined) command.column = 0;
+    if (command.value === undefined) command.value = project.arrays[name].type === 'string' ? '' : 1;
+  }
 }
 function openHUDScript(elementId) {
   let sheet = project.eventSheets?.find(sheet => sheet.name === 'HUD');
@@ -2546,6 +2555,7 @@ function commandLists(ownerId) {
         ? `${project.hud.screens.find(screen => screen.id === element.screenId).name} / ${element.name}` : element.name]),
     hudAnimations: (project.hud?.animations || []).map(clip => [clip.id, clip.name]),
     hudScreens: hudScreens(project.hud).map(screen => [screen.id, screen.name]),
+    arrays: Object.keys(project.arrays || {}).map(name => [name, name]),
     timesheets: (project.timesheets || []).map(sheet => [sheet.id, sheet.name]),
     paths: (project.paths || []).map(path => [path.id, path.name || path.id]),
     // A route action's waypoints are picked by name, so the dialog needs the route itself.
@@ -2983,7 +2993,7 @@ function assetListSignature() {
 }
 function renderEnvironment() {
   const parent = $('environment-form');
-  if (panelUnchanged('environment', JSON.stringify([project.environment, project.variables, project.shaders, assetListSignature()]), parent)) return;
+  if (panelUnchanged('environment', JSON.stringify([project.environment, project.variables, project.arrays, project.shaders, assetListSignature()]), parent)) return;
   parent.replaceChildren();
   parent.append(make('h2', 'Renderer and GLSL effects'), make('p',
     'WebGPU is preferred when available; WebGL2 is the explicit fallback. Browsers do not expose native Vulkan. The preview reports its actual API. GLSL effects run on both backends using the portable effect function below.', 'muted'));
@@ -3068,6 +3078,8 @@ function renderEnvironment() {
   parent.append(cube, make('p', 'Sky is visible through sky-enabled ceilings and outside geometry. Sector lights multiply materials; point lights add colored illumination without shadows (maximum 16). Weapon images are visual overlays; separate hitscan event actions implement prototype firing and damage.', 'muted'));
   parent.append(make('h2', 'Global variables'));
   renderVariables(parent, project.variables, variables => edit(next => { next.variables = variables; }));
+  parent.append(make('h2', 'Arrays'));
+  renderArrays(parent);
 }
 
 function renderVariables(parent, variables, change) {
@@ -3092,6 +3104,82 @@ function renderVariables(parent, variables, change) {
     change(next);
   }));
   parent.append(row, make('p', 'Number, text and boolean values reset on Play. Object variables are per instance. Expressions use global("name"), local("name") for the event owner, or object("id","name"). Referenced variables cannot be deleted.', 'muted'));
+}
+
+/**
+ * The arrays section of the Environment tab: one row per array, with the 2D grid designer under it.
+ *
+ * The designer is a table of the cells themselves, because a two-dimensional array is the one shape
+ * a creator has to *see*: typing `cells[2][1]` into a box is how this went wrong before. Every edit
+ * is a normal project edit, so undo, autosave and validation cover it.
+ */
+function renderArrays(parent) {
+  const arrays = project.arrays || {};
+  const names = Object.keys(arrays);
+  if (!names.length) parent.append(make('p', 'No arrays yet. An array is a grid of values a rule can read with array("name", row, column) and write with the Array actions.', 'muted'));
+  for (const name of names) {
+    const array = arrays[name];
+    const rows = array.cells.length, columns = array.cells[0]?.length || 0;
+    const box = make('details', undefined, 'array-box');
+    const summary = make('summary', `${name} — ${rows} × ${columns} ${array.type}`);
+    box.append(summary);
+    const toolbar = make('div', undefined, 'array-toolbar');
+    const editArray = (change, message) => edit(next => { setArray(next, name, change); }, message || `Array ${name} updated`);
+    toolbar.append(
+      button('+ Row', () => editArray({ rows: rows + 1 })),
+      button('− Row', () => editArray({ rows: Math.max(1, rows - 1) })),
+      button('+ Column', () => editArray({ columns: columns + 1 })),
+      button('− Column', () => editArray({ columns: Math.max(1, columns - 1) })),
+      button(array.type === 'number' ? 'Type: number' : 'Type: text', () => editArray({ type: array.type === 'number' ? 'string' : 'number' })),
+      button('Delete array', () => {
+        // A rule that still names it would be a project that no longer validates, so the delete is
+        // refused while anything reads it — the same contract deleting a referenced variable has.
+        const references = arrayReferences(project, name);
+        if (references) throw new Error(`${references} rule(s) still use "${name}"; change them first`);
+        if (!confirm(`Delete the array "${name}" and its ${rows * columns} cells? Undo restores it.`)) return;
+        edit(next => { removeArray(next, name); }, `Array ${name} deleted`);
+      }));
+    box.append(toolbar);
+    if (rows * columns > MAX_ARRAY_CELLS) box.append(make('p', `An array holds at most ${MAX_ARRAY_CELLS} cells; delete a row or column.`, 'muted'));
+    const grid = make('div', undefined, 'array-grid');
+    grid.style.gridTemplateColumns = `28px repeat(${columns}, minmax(46px, 1fr))`;
+    // The header names the columns; without it a wide grid is a wall of identical boxes.
+    grid.append(make('div', '#', 'array-head'));
+    for (let column = 0; column < columns; column++) grid.append(make('div', String(column), 'array-head'));
+    for (let row = 0; row < rows; row++) {
+      grid.append(make('div', String(row), 'array-head'));
+      for (let column = 0; column < columns; column++) {
+        // `input`'s own change handler is the write: it reports the cell's value, and only that
+        // cell is set on the next project, so the grid is not rebuilt under the pointer.
+        const cell = input(array.cells[row][column], array.type === 'number' ? 'number' : 'text', value => {
+          if (array.type === 'number' && !Number.isFinite(value)) throw new Error('A number cell needs a number');
+          edit(next => {
+            const target = next.arrays?.[name];
+            if (!target) throw new Error(`Array ${name} no longer exists`);
+            target.cells[row][column] = value;
+          }, `Array ${name} cell ${row},${column} set`);
+        }, `${name} row ${row} column ${column}`);
+        cell.classList.add('array-cell');
+        grid.append(cell);
+      }
+    }
+    box.append(grid);
+    box.append(make('p', `Read a cell with =array("${name}", row, column); its size is arrayrows("${name}") by arraycolumns("${name}").`, 'muted'));
+    parent.append(box);
+    if (names[0] === name) summary.open = names.length === 1;
+  }
+
+  const row = make('div', undefined, 'variable-row');
+  const nameInput = input('', 'text', () => {}, 'New array name');
+  nameInput.placeholder = 'Array name';
+  const typeSelect = select(['number', 'string'], 'number', () => {}, 'Array cell type');
+  row.append(nameInput, typeSelect, button('+ Array', () => {
+    if (Object.keys(project.arrays || {}).length >= MAX_ARRAYS) throw new Error(`A project holds at most ${MAX_ARRAYS} arrays`);
+    if (!nameInput.value.trim()) throw new Error('Give the array a name');
+    if (Object.hasOwn(project.arrays || {}, nameInput.value)) throw new Error('That array already exists');
+    edit(next => { setArray(next, nameInput.value, { rows: 4, columns: 4, type: typeSelect.value }); }, `Array ${nameInput.value} created`);
+  }));
+  parent.append(row, make('p', 'Arrays reset on Play. Every cell holds one value of the array type, so a number grid cannot be given text. Deleting an array that a rule still reads is refused.', 'muted'));
 }
 
 function assetSelect(value, fn, kinds) {

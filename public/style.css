@@ -341,6 +341,13 @@ body.row-dragging .drag-grip { cursor: grabbing; }
 .variable-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 .variable-row span { flex: 1; }
 .variable-row input { width: 120px; }
+/* The 2D array designer: the cells themselves, in the shape the engine indexes them. */
+.array-box { margin: 10px 0; border: 1px solid #4a4a4a; border-radius: 3px; padding: 6px 8px; }
+.array-box summary { cursor: pointer; }
+.array-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.array-grid { display: grid; gap: 4px; align-items: center; margin: 8px 0; overflow-x: auto; }
+.array-head { color: var(--muted); font-size: 10px; text-align: center; }
+.array-grid .array-cell { width: 100%; min-width: 44px; margin: 0; padding: 3px 4px; }
 #engine-setting-fields label { margin: 10px 0; }
 #engine-setting-fields .setting-readout { display: block; margin-top: 3px; color: var(--text); font-size: 10px; }
 footer { grid-column: 1 / -1; grid-row: 3; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 3px 8px; background: #3b3b3b; color: var(--muted); font-size: 9px; }

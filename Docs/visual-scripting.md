@@ -253,6 +253,17 @@ Expressions can read project variables (`score`), object variables
 (`$self.health` style accessors where available), player stats (`health`,
 `armor`, `bullets`), settings and time. See `shared/expressions.js` for the exact
 supported grammar.
+
+**Arrays** are 2D grids owned by the project, drawn cell by cell in the
+**Environment** tab. A rule reads a cell with
+`array("grid", row, column)` — both indexes count from zero, first is the row —
+and asks a grid its size with `arrayrows("grid")` and `arraycolumns("grid")`.
+The name is always literal; the row and column may be any expression, so a
+counter can walk a grid. `setArrayCell` writes a cell (its value may be
+`=…`, so `=array("grid", 0, 0) + 1` copies a cell upwards), `addToArrayCell`
+adds to a numeric cell, and `expressionCompare` branches on one. Every array
+holds one type of value — numbers or text — and a row or column outside the grid
+is refused while the rule is being written rather than when it runs.
 Exponentiation precedes a leading sign (`-2 ^ 2` is `-4`). Text slice counts
 and offsets truncate fractional values; replacement text is literal, including `$`.
 
@@ -914,6 +925,8 @@ keep their existing global-variable output.
 | set numeric property | `setHUDProperty` | yes | property, value |
 | play / restart animation | `playHUDAnimation` | — | — |
 | stop animation (hold pose) | `stopHUDAnimation` | — | — |
+| set a cell in an array | `setArrayCell` | — | array, row, column, value |
+| add to a cell in an array | `addToArrayCell` | — | array, row, column, value |
 | set group active | `setGroupActive` | — | active |
 | add local movement | `movePlayer` | — | forward, strafe |
 | turn (degrees / second) | `turnPlayer` | — | speed |

@@ -39,7 +39,7 @@ function instanceVariableNames(types, type) {
   return entry?.[2] || [];
 }
 
-export function commandFields(command, { entities, zones = [], cameras = [], objectTypes = [], playerId, variables, groups, clips, walls, sectors, doorSectors = sectors, elevatorSectors = sectors, spriteClips, images = [], hudElements, hudAnimations, hudScreens = [], timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [], commands = null }) {
+export function commandFields(command, { entities, zones = [], cameras = [], objectTypes = [], playerId, variables, groups, clips, walls, sectors, doorSectors = sectors, elevatorSectors = sectors, spriteClips, images = [], hudElements, hudAnimations, hudScreens = [], arrays = [], timesheets = [], paths = [], sounds = [], pathPoints = () => null, entityVariableNames = () => [], entitySignalNames = () => [], commands = null }) {
   // `commands` is the project's whole catalogue, engine commands first and addon commands after it,
   // so an addon's fields are drawn by the same code as the engine's.
   const definition = (commands ? commands.find(entry => entry.type === command.type) : null) || engineCommand(command.type);
@@ -58,6 +58,7 @@ export function commandFields(command, { entities, zones = [], cameras = [], obj
       ...(definition.target ? [{ name: 'entityId', label: 'Object', options: [...OBJECT_VARIABLE_COMMANDS, 'onSignal', 'emitSignal', 'distanceBetween'].includes(command.type) ? entities : entities.filter(([id]) => id !== playerId) }] : []),
       ...(definition.variable ? [{ name: 'variable', options: variables }] : []),
       ...(definition.group ? [{ name: 'groupId', label: 'Group', options: groups }] : []),
+      ...(definition.array ? [{ name: 'array', label: 'Array', options: arrays }] : []),
       ...(definition.hudScreen ? [{ name: 'screen', label: 'HUD screen', options: hudScreens }] : []),
       ...(definition.hudElement ? [{ name: 'elementId', label: 'HUD element', options: hudElements }] : []),
       ...(definition.hudAnimation ? [{ name: 'animationId', label: 'HUD animation', options: hudAnimations }] : []),
