@@ -8097,13 +8097,29 @@ window.opendleUnsavedEditsAreBackedUp = () => {
   if (draftTooLarge()) return false;
   try { return Boolean(localStorage.getItem('opendle-draft')); } catch { return false; }
 };
+/**
+ * Saves the document because the window is closing, and answers whether that worked.
+ *
+ * The answer has a deadline: a save that never settles — a server that stopped answering, a body
+ * the service refuses — must not leave the window waiting on it. `false` is what makes the shell
+ * offer the honest "close without saving", and the shell has its own, longer deadline in case this
+ * function itself cannot answer.
+ */
+/** How long the editor waits for its own close-save before telling the shell it did not finish. */
+const CLOSE_SAVE_DEADLINE_MS = 20000;
 window.opendleSaveBeforeClose = async () => {
   if (!project) return true;
   const shell = $('editor-shell'), wasInert = shell.inert;
   document.activeElement?.blur();
   shell.inert = true;
-  try { await savePendingProject(); return !dirty; }
-  finally { shell.inert = wasInert; }
+  let deadline = 0;
+  try {
+    const saved = await Promise.race([
+      savePendingProject().then(() => (dirty ? false : true)),
+      new Promise(done => { deadline = setTimeout(() => done(false), CLOSE_SAVE_DEADLINE_MS); }),
+    ]);
+    return saved === true;
+  } finally { clearTimeout(deadline); shell.inert = wasInert; }
 };
 window.addEventListener('beforeunload', event => {
   // The desktop shell sets this when the person chose to close without saving: the shell has

@@ -34,7 +34,7 @@ function fixture(t) {
     }
     async loadURL(url) { this.url = url; this.loads = (this.loads || 0) + 1; this.emit('ready-to-show'); }
     isDestroyed() { return this.closed; }
-    destroy() { this.emit('closed'); }
+    destroy() { this.closed = true; this.emit('closed'); }
     close() {
       let prevented = false;
       this.emit('close', { preventDefault: () => { prevented = true; } });
@@ -128,16 +128,17 @@ test('desktop navigation keeps remote pages out of the shell and grants only loc
   assert.equal(f.session.check(null, 'pointerLock', 'http://127.0.0.1:3456'), false);
 });
 
-test('desktop close respects unsaved document cancellation and explicit discard', async t => {
+test('the page is not asked a second time after the shell has already decided', async t => {
   const f = fixture(t);
   await startStudioDesktop(f.electron, f.args);
-  let allowed = 0;
+  let allowed = 0, asked = 0;
+  f.electron.dialog.showMessageBoxSync = () => { asked++; return 0; };
   const event = { preventDefault: () => { allowed++; } };
+  // A close that reaches the page's own `beforeunload` has already been decided by the shell: the
+  // second question used to appear on top of the first one.
   f.windows[0].webContents.emit('will-prevent-unload', event);
-  assert.equal(allowed, 0, 'default is Keep editing');
-  f.electron.dialog.choice = 1;
-  f.windows[0].webContents.emit('will-prevent-unload', event);
-  assert.equal(allowed, 1, 'Electron preventDefault here explicitly permits discarding and closing');
+  assert.equal(allowed, 1, 'the unload is allowed');
+  assert.equal(asked, 0, 'and nothing asks again');
 });
 
 test('native close waits for the renderer to finish saving and coalesces repeated close requests', async t => {
@@ -152,10 +153,33 @@ test('native close waits for the renderer to finish saving and coalesces repeate
   };
   window.close(); window.close();
   assert.equal(window.closed, false);
-  assert.equal(requests, 1);
+  assert.equal(requests, 1, 'a second click does not start a second save');
   saved.resolve(true);
   await setImmediate();
-  assert.equal(window.closed, true);
+  assert.equal(window.closed, true, 'a saved project closes');
+});
+
+test('a cancelled close does not wedge the window, and the next attempt closes it', async t => {
+  const f = fixture(t);
+  await startStudioDesktop(f.electron, f.args);
+  const window = f.windows[0], dialogs = [];
+  f.electron.dialog.showMessageBoxSync = function (_window, options) { dialogs.push(options); return this.choice; };
+  window.webContents.executeJavaScript = async () => false;
+
+  // Keep editing: the window stays, and the guard is ready for another attempt.
+  f.electron.dialog.choice = 0;
+  window.close();
+  await setImmediate();
+  assert.equal(window.closed, false);
+  assert.equal(dialogs.length, 1);
+
+  // This is the bug that made the window impossible to close: the second attempt used to be
+  // swallowed by a flag that only cleared on a successful close.
+  f.electron.dialog.choice = 1;
+  window.close();
+  await setImmediate();
+  assert.equal(window.closed, true, 'the second attempt is decided again and closes');
+  assert.equal(dialogs.length, 2);
 });
 
 test('native close keeps Studio open when the save fails, and offers to close without losing the draft', async t => {
@@ -172,18 +196,19 @@ test('native close keeps Studio open when the save fails, and offers to close wi
   await setImmediate();
   assert.equal(window.closed, false, 'Keep editing is the default');
   assert.equal(dialogs.length, 1);
-  assert.match(dialogs[0].message, /could not be saved, so Studio was kept open/);
+  assert.match(dialogs[0].message, /could not be saved/);
   assert.match(dialogs[0].detail, /Disk full/);
   assert.match(dialogs[0].detail, /browser draft/, 'the offer says what happens to the unsaved edits');
   assert.deepEqual(dialogs[0].buttons, ['Keep editing', 'Close without saving']);
-  assert.equal(scripts.some(script => script.includes('opendleCloseWithoutSaving')), false);
 
-  // Choosing to close anyway closes, and the renderer is told not to ask the same question again.
+  // Choosing to close anyway closes. `destroy` is what does it, so the renderer is never asked
+  // anything else — a page that cannot answer must not keep the window alive.
   f.electron.dialog.choice = 1;
   window.close();
   await setImmediate();
   assert.equal(window.closed, true);
-  assert.ok(scripts.some(script => script.includes('window.opendleCloseWithoutSaving = true')));
+  assert.equal(scripts.some(script => script.includes('opendleCloseWithoutSaving')), false,
+    'closing no longer depends on the page setting a flag');
 
   // A save that works needs no dialog at all.
   const clean = fixture(t);

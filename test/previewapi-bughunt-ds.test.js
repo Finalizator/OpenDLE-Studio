@@ -52,6 +52,8 @@ function fixture(api = async () => {}) {
     document: { activeElement: null, addEventListener: () => {} },
     window: { addEventListener: () => {} },
     guard: fn => fn,
+    // The close-save deadline: the browser has these, the fixture has to provide them.
+    setTimeout, clearTimeout, CLOSE_SAVE_DEADLINE_MS: 20000,
   });
   vm.runInContext([
     between('const projectAutosave =', '// The Project tree').replace('const projectAutosave =', 'projectAutosave ='),

@@ -17,6 +17,7 @@ const scenarios = {
   menus: () => import('./scenarios/menus.mjs'),
   maps: () => import('./scenarios/maps.mjs'),
   game: () => import('./scenarios/game.mjs'),
+  close: () => import('./scenarios/close.mjs'),
 };
 
 const load = scenarios[name];

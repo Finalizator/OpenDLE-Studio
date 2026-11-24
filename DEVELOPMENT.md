@@ -181,9 +181,16 @@ during unload.
 **Closing never traps the editor.** The native window's close saves first; if that save cannot
 land — a full disk, a service that stopped answering, a document that is still dirty — the
 window offers **Keep editing** or **Close without saving** instead of refusing to close, and the
-unsaved edits stay in the browser draft, which the next start offers back. Choosing to close
-sets `window.opendleCloseWithoutSaving` so the page's own `beforeunload` does not ask the same
-question twice.
+unsaved edits stay in the browser draft, which the next start offers back.
+
+The decision is bounded on both sides ([server/close-guard.js](./server/close-guard.js)): the page
+answers `opendleSaveBeforeClose` within 20 s (`CLOSE_SAVE_DEADLINE_MS`, returning `false` if the
+save has not settled), and the shell gives up waiting at 25 s. A save that never settles — the case
+that used to make the window impossible to close, because the guard flag only cleared when the save
+did — now ends in the same honest offer. **Close without saving** calls `window.destroy()`, which
+skips unload handlers on purpose: a renderer that cannot answer must not keep the window alive.
+Repeating the offer, cancelling it and trying again all work, and `test/close-guard.test.js` plus
+`npm run automation:close` cover both layers.
 
 Studio requires Node.js 22.12 or newer and npm (the desktop runtime's minimum).
 Portable exported games still require Node.js 22+ and do not bundle Electron.
