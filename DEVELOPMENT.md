@@ -6268,6 +6268,12 @@ receives none at all, and the menus are drawn from that loop, so a 200 ms timer 
 frames stop arriving. An occluded game window still has a working menu, and when frames resume the
 loop carries on (the timestep comes from timestamps, so nothing runs twice as fast).
 
+**The pointer never owns the keyboard.** Taking or losing pointer lock drops the mouse buttons and
+nothing else: the lock can swallow a button's release, but a held movement key is still held, and
+clearing the whole key set there stopped a running player dead the first time a click grabbed the
+pointer. The same rule applies to the editor's playtest view, and `npm run automation:game` holds `W`
+through a shot to prove it.
+
 Input is the engine's: `Escape` in play opens the project's pause screen (`gameScreen = 'pause'`),
 `Escape` in a menu goes back (`setGameScreen(runtime, 'return')`), arrow keys and `Enter` move
 through rows the way a Doom menu does, and the game's own options screens change `runtime.settings`,

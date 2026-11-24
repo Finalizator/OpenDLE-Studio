@@ -204,6 +204,23 @@ async function scenario(_context, steps) {
       .catch(() => null);
     const playState = await page.evaluate('window.__game.status()');
     check('the level starts', playing === true, playState);
+
+    // Firing must not cost the player their movement. The trigger is a mouse button and mouse look
+    // is pointer lock, and taking the lock used to clear *every* held key — so a player running at
+    // the moment they fired stopped dead until they let go of W and pressed it again.
+    const held = () => page.send('Input.dispatchKeyEvent', { type: 'keyDown', code: 'KeyW', key: 'w', windowsVirtualKeyCode: 87 });
+    const released = () => page.send('Input.dispatchKeyEvent', { type: 'keyUp', code: 'KeyW', key: 'w', windowsVirtualKeyCode: 87 });
+    await held();
+    const pressed = await page.waitFor(`window.__game.status().keys.includes('KeyW') ? window.__game.status().keys : null`,
+      { timeout: 3000, label: 'the held key to reach the game' });
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, x: 400, y: 300 });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, x: 400, y: 300 });
+    await page.evaluate(`document.dispatchEvent(new Event('pointerlockchange'))`);
+    await wait(200);
+    const afterShot = await page.evaluate('window.__game.status()');
+    await released();
+    check('a shot keeps the keys the player is holding', afterShot.keys.includes('KeyW'), { pressed, afterShot });
+    check('a shot leaves the trigger in the game', afterShot.keys.includes('Mouse0') || afterShot.screen === 'playing', afterShot);
     // The bottom of the screen is the part a player notices missing first. Two checks, because the
     // two kinds of HUD answer differently: an imported campaign has classic `statusbar` elements,
     // an authored one draws its own bottom panel with ordinary elements.
@@ -224,7 +241,7 @@ async function scenario(_context, steps) {
     const errors = (page.events || []).filter(event => event.method === 'Runtime.exceptionThrown');
     check('the game booted without a page exception', errors.length === 0,
       errors.slice(0, 2).map(event => event.params?.exceptionDetails?.exception?.description));
-    return { source, menuRows: menu.rows, labels: menu.labels, focused, classicBar, bottom };
+    return { source, menuRows: menu.rows, labels: menu.labels, focused, classicBar, bottom, keysAfterShot: afterShot.keys };
   } finally {
     player.stop();
     rmSync(scratch, { recursive: true, force: true });

@@ -5721,7 +5721,10 @@ for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) $('prev
   lookDrag = null; keys.delete('Mouse0'); keys.delete('Mouse2');
 });
 document.addEventListener('pointerlockchange', () => {
-  lookDrag = null; keys.clear(); pressed.clear();
+  // Only the buttons: the lock can swallow their release, but the keyboard is not the pointer's
+  // business, and clearing it here stopped a running player the first time a click took the lock.
+  lookDrag = null;
+  for (const code of ['Mouse0', 'Mouse2']) { keys.delete(code); pressed.delete(code); }
   if (!runtime && document.pointerLockElement === $('preview')) { document.exitPointerLock(); return; }
   if (runtime && document.pointerLockElement === $('preview')) $('preview').focus();
   if (runtime) mouseStatus(document.pointerLockElement === $('preview')

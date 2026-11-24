@@ -547,7 +547,12 @@ document.addEventListener('mousemove', event => {
   if (!runtime || !playing() || runtime.hudState.cursor) return;
   if (document.pointerLockElement === canvas) lookPlayer(runtime, event.movementX, event.movementY);
 });
-document.addEventListener('pointerlockchange', () => { game.keys.clear(); game.pressed.clear(); });
+document.addEventListener('pointerlockchange', () => {
+  // Losing the lock can swallow the button release, so the trigger is dropped — but the keyboard
+  // has nothing to do with the pointer. Clearing it here is why a player who was running stopped
+  // dead the moment a click grabbed the pointer: the `W` never came back until it was re-pressed.
+  for (const code of ['Mouse0', 'Mouse2']) { game.keys.delete(code); game.pressed.delete(code); }
+});
 
 // ---------------------------------------------------------------------------------------------------
 // The frame loop: the same calls the editor's playtest makes, minus the editor
@@ -610,6 +615,10 @@ window.__game = {
       rows: rows.length, shown: rows.filter(row => !row.hidden).length,
       selectable: rows.filter(row => row.tabIndex === 0).length,
       level: game.engine?.levelId ?? null,
+      // What the frame was actually given, and how fast the world says the player is going: the
+      // pair that answers "did my input reach the game?" without guessing.
+      keys: [...game.keys].sort(),
+      speed: Math.round(runtime?.speed ?? 0),
       viewSize: game.engine?.runtime?.settings?.viewSize ?? null,
       statusBar: (() => {
         const elements = [...(game.engine?.runtime?.hudState?.elements?.values?.() || [])].filter(element => element.statusbar);
