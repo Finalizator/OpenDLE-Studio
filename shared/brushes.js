@@ -484,11 +484,19 @@ export function hollowBrush(project, brushId, thickness) {
 }
 
 /** Apply a texture (or the editor's white filler) and its UV settings to one face. */
+/** UV fields an imported face keeps a basis instead of. Editing one replaces the basis with it. */
+const PARAXIAL_KEYS = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation'];
+
 export function setBrushFaceMaterial(project, brushId, faceIndex, patch) {
   const brush = findBrush(project, brushId);
   const faces = facesOf(brush);
   if (!faces[faceIndex]) throw new Error('That face no longer exists');
-  faces[faceIndex] = { ...faces[faceIndex], ...patch };
+  const changed = { ...faces[faceIndex], ...patch };
+  // A Quake 3 brush primitive's basis cannot always be written as offset + rotation + scale, so it
+  // is kept as a basis. Asking for a specific offset or scale means the mapper wants the paraxial
+  // form, and leaving the basis in place would make their edit do nothing.
+  if (changed.uvBasis && PARAXIAL_KEYS.some(key => key in patch)) delete changed.uvBasis;
+  faces[faceIndex] = changed;
   return commit(project, brush, faces);
 }
 

@@ -53,7 +53,22 @@ export async function createBrowserRenderer(WebGPURenderer, canvas, environment)
     contextRestorations.delete(canvas);
     if (error) throw error;
   }
-  const selection = selectRendererBackend(environment);
+  let selection = selectRendererBackend(environment);
+  // A browser can expose WebGPU and still hand back no adapter — no usable GPU, or every device in
+  // the session is busy. Three then waits for a device that never arrives, which left the 3D view on
+  // its loading state forever. One probe decides it, and WebGL 2 needs no adapter.
+  const gpu = environment?.gpu ?? globalThis.navigator?.gpu;
+  if (selection.backend === 'webgpu' && typeof gpu?.requestAdapter === 'function') {
+    // Three still decides for itself when the browser has no `requestAdapter` at all; the probe only
+    // covers the case a real browser can be in — the API is there and hands back no adapter.
+    const adapter = await Promise.resolve()
+      .then(() => gpu.requestAdapter({ powerPreference: 'high-performance' }))
+      .catch(() => null);
+    if (!adapter) {
+      selection = { ...selection, backend: 'webgl2',
+        fallbackReason: 'WebGPU is available but exposed no adapter, so the preview uses WebGL 2.' };
+    }
+  }
   const renderer = new WebGPURenderer({ canvas, antialias: false, alpha: false, forceWebGL: selection.backend === 'webgl2',
     powerPreference: 'high-performance' });
   try {

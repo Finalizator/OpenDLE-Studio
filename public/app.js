@@ -1510,6 +1510,9 @@ function renderBrushFaceInspector(parent, brush) {
   field(parent, 'X scale', input(face.scaleX ?? 1, 'number', value => change({ scaleX: value })));
   field(parent, 'Y scale', input(face.scaleY ?? 1, 'number', value => change({ scaleY: value })));
   field(parent, 'Rotation', input(face.rotation ?? 0, 'number', value => change({ rotation: value })));
+  if (face.uvBasis) {
+    parent.append(make('p', 'This face keeps the texture basis from the imported .map. Changing an offset, scale or rotation replaces it with the value you type.', 'muted'));
+  }
   field(parent, 'Push along normal', input(0, 'number', value => edit(next => {
     moveBrushFace(next, brush.id, selection.face, value);
   }, 'Face pushed')));
@@ -8151,7 +8154,12 @@ async function start() {
 /** Import `.map` text as the file picker would, for automation and scenario tests. */
 async function automationImportMap(text, { name = 'automation.map', mode = 'layout' } = {}) {
   await importMapFile({ name, text: async () => text }, mode);
-  return { layouts: (project.game?.levels || []).map(level => level.id), active: project.game?.active || null };
+  return {
+    layouts: (project.game?.levels || []).map(level => level.id),
+    active: project.game?.active || null,
+    counts: { brushes: (project.map.brushes || []).length, walls: project.map.walls.length,
+      entities: project.map.entities.length },
+  };
 }
 /** The project's layouts, including each dormant level's size. */
 function automationLayouts() {
@@ -8181,6 +8189,8 @@ function installAutomation() {
         faceList = brushGeometry(brush).faces.filter(face => face.points.length >= 3).map(face => ({
           index: face.index,
           normal: face.plane.normal.map(value => Math.round(value * 1000) / 1000),
+          // An imported Quake 3 face keeps the texture basis from the file.
+          basis: Boolean(brush.faces?.[face.index]?.uvBasis),
           centroid: face.points.reduce((sum, point) => [
             sum[0] + point[0] / face.points.length,
             sum[1] + point[1] / face.points.length,
@@ -8189,6 +8199,8 @@ function installAutomation() {
       } catch { faceList = []; }
       return {
         id: brush.id, name: brush.name, faces: facesOf(brush).length,
+        // How many faces keep an imported texture basis (`uvBasis`).
+        bases: facesOf(brush).filter(face => face?.uvBasis).length,
         locked: Boolean(brush.locked), bounds: brushBounds(brush), faceList,
       };
     }),

@@ -734,6 +734,16 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       for (const key of ['offsetX', 'offsetY']) if (face[key] !== undefined) number(face[key], `Brush face ${key}`);
       for (const key of ['scaleX', 'scaleY']) if (face[key] !== undefined) assertTextureScale(face[key], `Brush face ${key}`);
       if (face.rotation !== undefined) number(face.rotation, 'Brush face rotation', -360, 360);
+      // A face read from a Quake 3 brush primitive keeps the texture basis the file gave it: three
+      // axis components, optionally a fourth carrying a shift in texels.
+      if (face.uvBasis !== undefined) {
+        object(face.uvBasis, 'Brush face texture basis');
+        for (const key of ['u', 'v']) {
+          array(face.uvBasis[key], `Brush face texture basis ${key}`, 4);
+          assert(face.uvBasis[key].length >= 3 && face.uvBasis[key].every(Number.isFinite),
+            'A brush face texture basis needs three finite axis components');
+        }
+      }
     }
   }
   for (const asset of assets) if (asset.rotations !== undefined) {

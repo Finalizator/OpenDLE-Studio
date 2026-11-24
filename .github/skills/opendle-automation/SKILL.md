@@ -92,6 +92,10 @@ step and prints the trail.
   multiple, not an exact pixel ratio.
 - **Licence gate**: the text is fetched, so `#license-accept` can stay disabled for many seconds on
   a cold profile. `studio.mjs` allows 45 s; do not shorten it.
+- **No GPU adapter**: `navigator.gpu` can exist while `requestAdapter()` returns null. The backend
+  falls back to WebGL 2, but if the scene still cannot be built `state().sceneReady` stays false and
+  every 3D step times out. Read `canvas#scene-3d.dataset.rendererBackend` and `dataset.rendererFallback`
+  before suspecting the code you just changed.
 - **Layout data**: an imported layout may not nest `version`/`title`/`assets`/`game` in its `data`.
   If `importMap` throws "must not nest shared game fields", that is why.
 - **A face pointing at the camera** cannot be dragged in that 2D view (the drag has no direction).

@@ -7,17 +7,21 @@
 //     { "classname" "info_player_start" "origin" "0 0 32" }
 //   }
 //
-// Three dialects matter and all three are read here:
+// Every face form Quad-era mappers write is read here:
 //   * Standard (Quake 1)   — texture, then offset/rotate/scale numbers.
 //   * Valve 220            — the same, followed by two explicit texture axes.
-//   * Quake 3              — brush primitives, with the texture matrix in parentheses.
+//   * Quake 2 / Hexen 2    — the Standard form plus a contents/flags/value triplet.
+//   * Quake 3 legacy       — Quake 2's face text; Quake 3 Valve is Valve 220's.
+//   * Quake 3 brush primitive (`brushDef`) — three plane points, then the face's texture basis in
+//     parentheses. TrenchBroom parses these and drops the brush (its TODO 2427); here they are kept.
 //
 // The geometry TrenchBroom edits *is* these faces, so a parsed face maps onto our brush model one
 // to one: three plane points plus a texture frame. Nothing is triangulated on the way in, which is
 // what lets an imported brush be clipped, retextured and CSG'd like one drawn in the editor.
 
-import { newId } from './project.js';
-import { brushBounds, brushVertices } from './brushes.js';
+import { newId, MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE } from './project.js';
+import { brushBounds, brushVertices, facePlane } from './brushes.js';
+import { brushUvAxes, BRUSH_TEXTURE_SIZE } from './uv.js';
 
 const NUMBER = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
 
@@ -109,8 +113,9 @@ function readPoint(io) {
 /**
  * A texture axis pair: `[ ux uy uz uoffset ] [ vx vy vz voffset ]`.
  *
- * This is how Valve 220 and TrenchBroom's Quake 3 output write the texture frame, and it is the
- * only face form in these games that carries real UV axes instead of offset/rotate/scale shorthand.
+ * This is how Valve 220 and TrenchBroom's Quake 3 output write the texture frame. Unlike a brush
+ * primitive's basis it keeps the offset/rotate/scale shorthand and only adds the axes, so the face
+ * converts to our fields exactly.
  */
 function readAxes(io) {
   const groups = [];
@@ -120,6 +125,41 @@ function readAxes(io) {
     io.expect(']');
   }
   return { u: groups[0], v: groups[1] };
+}
+
+/** `( x y z [shift] )` — one axis of a Quake 3 texture basis, shift in texels when present. */
+function readAxisVector(io) {
+  io.expect('(');
+  const axis = [];
+  while (io.peek()?.type === 'number' && axis.length < 4) axis.push(io.number());
+  io.expect(')');
+  return axis;
+}
+
+/**
+ * One Quake 3 brush-primitive face:
+ *
+ *   `( p ) ( p ) ( p ) ( ( ux uy uz [shift] ) ( vx vy vz [shift] ) ) material [contents flags value]`
+ *
+ * The three points are ordinary plane points — often nowhere near the brush — so the geometry is
+ * read exactly like any other face. The bracketed pair is the whole texture projection: `s` is
+ * `dot(p, u)` and `t` is `dot(p, v)` in texture repeats, with the axis length carrying the scale
+ * (0.015625 is one repeat per 64 units, the same as scale 1) and its direction carrying the
+ * rotation. The basis is kept on the face as `uvBasis`, because offset/rotation/scale cannot express
+ * every basis; the inspector's numbers are derived from it once the outward normal is known.
+ */
+function readPrimitiveFace(io) {
+  const points = [readPoint(io), readPoint(io), readPoint(io)];
+  io.expect('(');
+  const u = readAxisVector(io);
+  const v = readAxisVector(io);
+  io.expect(')');
+  const texture = io.word();
+  // Quake 3's surface triplet. Nothing in the editor reads it yet, but dropping it would lose
+  // `SURF_NODRAW` and friends, so it is carried on the face as written.
+  const surface = [];
+  while (io.peek()?.type === 'number' && surface.length < 3) surface.push(io.number());
+  return { points, texture, uvBasis: { u, v }, ...(surface.length ? { surface } : {}) };
 }
 
 /**
@@ -177,14 +217,22 @@ function readBrush(io) {
       else while (!io.eof() && !(io.peek().type === 'punct' && io.peek().value === '}')) io.next();
       continue;
     }
-    // Quake 3 brush primitives carry a texture matrix instead of plane points. TrenchBroom does not
-    // read them either ("Skipping brush primitive: currently not supported"), so they are skipped
-    // with a warning rather than guessed at — a wrong plane would silently deform the map.
-    if (token?.type === 'word' && /^brushDef[23x]?$/i.test(token.value)) {
+    // Quake 3 writes a brush as `brushDef { … }`, with each face carrying a texture basis instead of
+    // offset/rotate/scale. Doom 3 and Quake 4 use the same word for a plane pair rather than three
+    // points, which is a different format and is refused rather than misread.
+    if (token?.type === 'word' && /^brushDef\d*$/i.test(token.value)) {
       io.next();
+      if (io.peek()?.value !== '{') io.fail(io.peek(), `"{" after ${token.value}`);
+      // A Quake 3 face opens `( x y z )`, a Doom 3 one `( ( nx ny nz ) ( distance ) )`.
+      const doomPlane = io.peek(2)?.type === 'punct' && io.peek(2).value === '(';
+      if (doomPlane) {
+        skipBlock(io);
+        primitive = { kind: token.value, reason: `${token.value} plane form (Doom 3 / Quake 4) is not a Quake 3 brush primitive` };
+        continue;
+      }
+      io.expect('{');
+      while (!io.eof() && !io.accept('}')) faces.push(readPrimitiveFace(io));
       primitive = { kind: token.value };
-      if (io.peek()?.value === '{') skipBlock(io);
-      else while (!io.eof() && !(io.peek().type === 'punct' && io.peek().value === '}')) io.next();
       continue;
     }
     faces.push(readFace(io));
@@ -222,10 +270,13 @@ export function parseIdTechMap(text, { name = 'map' } = {}) {
       if (token.type === 'punct' && token.value === '{') {
         const brush = readBrush(io);
         if (brush.patch) { entity.patches++; warnings.push(`${name}: ${brush.patch.kind} patch skipped (patches are Quake 3 curve surfaces)`); }
-        else if (brush.primitive) {
+        else if (brush.faces.length) {
+          entity.brushes.push(brush);
+          if (brush.primitive) entity.primitives = (entity.primitives || 0) + 1;
+        } else if (brush.primitive) {
           entity.primitives = (entity.primitives || 0) + 1;
-          warnings.push(`${name}: ${brush.primitive.kind} brush primitive skipped (no plane points to read)`);
-        } else if (brush.faces.length) entity.brushes.push(brush);
+          warnings.push(`${name}: ${brush.primitive.reason || `${brush.primitive.kind} brush has no faces and was skipped`}`);
+        }
         continue;
       }
       if (token.type === 'string' || token.type === 'word') {
@@ -242,16 +293,22 @@ export function parseIdTechMap(text, { name = 'map' } = {}) {
   if (!entities.length) throw new Error(`${name}: no entities found`);
   const worldspawn = entities.find(entity => entity.properties.classname === 'worldspawn');
   const formats = new Set();
-  let faceCount = 0, brushCount = 0;
-  for (const entity of entities) for (const brush of entity.brushes) {
-    brushCount++;
-    for (const face of brush.faces) { faceCount++; formats.add(face.axes ? 'valve' : 'standard'); }
+  let faceCount = 0, brushCount = 0, primitiveCount = 0;
+  for (const entity of entities) {
+    primitiveCount += entity.primitives || 0;
+    for (const brush of entity.brushes) {
+      brushCount++;
+      for (const face of brush.faces) {
+        faceCount++;
+        formats.add(face.uvBasis ? 'primitive' : face.axes ? 'valve' : 'standard');
+      }
+    }
   }
   if (!worldspawn) warnings.push(`${name}: no worldspawn entity; the map may be malformed`);
   return {
     name, entities, warnings,
-    stats: { entities: entities.length, brushes: brushCount, faces: faceCount },
-    format: formats.has('valve') ? (formats.size > 1 ? 'mixed' : 'valve') : 'standard',
+    stats: { entities: entities.length, brushes: brushCount, faces: faceCount, primitives: primitiveCount },
+    format: formats.size === 1 ? [...formats][0] : formats.size ? 'mixed' : 'standard',
   };
 }
 
@@ -302,6 +359,46 @@ function readVector(value, fallback = [0, 0, 0]) {
   return parts.length === 3 && parts.every(Number.isFinite) ? parts : fallback;
 }
 
+const clampTextureScale = value => {
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  return Math.min(Math.max(value, MIN_TEXTURE_SCALE), MAX_TEXTURE_SCALE);
+};
+
+/**
+ * The offset / rotation / scale a basis looks like in the face inspector.
+ *
+ * Faces keep their basis (see `brushFaceUv`), which is what keeps the projection exact; these
+ * numbers are the equivalent the panel shows, and what takes over if a mapper edits them.
+ */
+export function paraxialFromBasis(basis, normal) {
+  const frame = brushUvAxes(normal);
+  const alpha = dot(basis.u, frame.u), beta = dot(basis.u, frame.v);
+  const gamma = dot(basis.v, frame.u), delta = dot(basis.v, frame.v);
+  const uLength = Math.hypot(alpha, gamma), vLength = Math.hypot(beta, delta);
+  const usable = uLength > 1e-9 && vLength > 1e-9;
+  return {
+    rotation: usable ? Math.atan2(gamma, alpha) * 180 / Math.PI : 0,
+    scaleX: clampTextureScale(usable ? 1 / (BRUSH_TEXTURE_SIZE * uLength) : 1),
+    scaleY: clampTextureScale(usable ? 1 / (BRUSH_TEXTURE_SIZE * vLength) : 1),
+    offsetX: (Number(basis.u?.[3]) || 0) * BRUSH_TEXTURE_SIZE,
+    offsetY: (Number(basis.v?.[3]) || 0) * BRUSH_TEXTURE_SIZE,
+  };
+}
+
+/**
+ * Fill the inspector's numbers for every face that arrived as a basis.
+ *
+ * The normal is only final after `convertBrush` has decided the winding, and the frame depends on
+ * the normal, so this runs last. The basis itself stays on the face untouched, because it is the
+ * projection that is actually drawn.
+ */
+function materialiseUv(faces) {
+  return faces.map(face => {
+    if (!face.uvBasis) return face;
+    return { ...face, ...paraxialFromBasis(face.uvBasis, facePlane(face).normal) };
+  });
+}
+
 /**
  * Turn one parsed brush into our brush, or explain why it cannot be one.
  *
@@ -330,6 +427,8 @@ function convertBrush(brush, index, warnings, fileName) {
       scaleY: face.scaleY || 1,
       rotation: face.rotation || 0,
       ...(face.axes ? { axes: face.axes } : {}),
+      ...(face.uvBasis ? { uvBasis: face.uvBasis } : {}),
+      ...(face.surface ? { surface: face.surface } : {}),
     });
   }
   if (faces.length < 4) return { error: 'fewer than four faces' };
@@ -342,6 +441,7 @@ function convertBrush(brush, index, warnings, fileName) {
     if (brushVertices(flipped).length >= 4) { candidate.faces = flipped.faces; vertices = brushVertices(candidate); }
   }
   if (vertices.length < 4) return { error: 'its faces do not enclose a volume' };
+  if (candidate.faces.some(face => face.uvBasis)) candidate.faces = materialiseUv(candidate.faces);
   candidate.bounds = brushBounds(candidate);
   return { brush: candidate };
 }

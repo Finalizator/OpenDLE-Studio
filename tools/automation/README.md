@@ -37,7 +37,7 @@ Output is one JSON line. A failure exits non-zero and names the failing step:
 | --- | --- |
 | `ready()` / `status()` | whether the editor booted, plus the current view/selection |
 | `state()` | counts, selection, projection, brush mode, `view`, `zoom`, `sceneReady` |
-| `brushes()` | per brush: `bounds`, face count, and each face's `normal` + `centroid` |
+| `brushes()` | per brush: `bounds`, face count, `bases` (faces keeping an imported texture basis), and each face's `normal`, `centroid`, `basis` |
 | `selection()` | current selection object |
 | `errors()` | page errors collected since load (assert this is empty) |
 | `lastDrag()` | the last completed 2D drag (from/to in view coordinates) |
@@ -96,6 +96,9 @@ Register it in `run.mjs`, then `node tools/automation/run.mjs <name>`.
 
 `scenarios/maps.mjs` is the model for the map importer: it drives `importMap` in both modes,
 then reads `getLayouts()` to prove the Layouts list and the dormant level agree with the import.
+It also imports a Quake 3 brush primitive and checks that its six faces all kept a basis and all
+have a polygon to draw — a fixture generated from `createBoxBrush`, because a hand-written "cube"
+whose planes do not really enclose a volume imports as degenerate polygons and hides bugs.
 
 ## Traps
 
@@ -107,6 +110,10 @@ then reads `getLayouts()` to prove the Layouts list and the dormant level agree 
   press away from its centre — a face centroid, for example.
 - A 2D drag snaps its *end* to the grid, so the travelled distance is a grid multiple, not an exact
   pixel ratio.
+- The 3D view needs a GPU adapter. A machine can expose `navigator.gpu` and still return no adapter;
+  `public/renderer-backend.js` probes for one and falls back to WebGL 2, but if neither backend can
+  build the scene, `sceneReady` stays false and every 3D step times out. Check
+  `canvas#scene-3d.dataset.rendererBackend` before blaming a scenario.
 - An imported layout must not nest the shared project fields (`version`, `title`, `assets`, `game`)
   inside its `data`; the layout's name belongs in `level.name`.
 - The licence dialog is fetched text: on a slow first load its Accept button stays disabled for a

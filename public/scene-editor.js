@@ -1,6 +1,7 @@
 import * as THREE from '/vendor/three/three.module.js';
 import { createPreview } from './render.js';
 import { selectionAtTriangle } from '/shared/surface-batch.js';
+import { brushFaceUv } from '/shared/uv.js';
 import { createRuntime, runtimeEntities } from '/shared/runtime.js';
 import { newId } from '/shared/project.js';
 import { containsPoint, sectorAt, sectorGeometry } from '/shared/sectors.js';
@@ -455,24 +456,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     if (polygon.length < 3) return null;
     const positions = [], uvs = [];
     const plane = entry.plane;
-    const normal = new THREE.Vector3(...plane.normal);
-    const basis = Math.abs(plane.normal[0]) < .9
-      ? new THREE.Vector3().crossVectors(normal, new THREE.Vector3(1, 0, 0)).normalize()
-      : new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0, 1, 0)).normalize();
-    const bitangent = new THREE.Vector3().crossVectors(normal, basis).normalize();
     const face = brush.faces?.[entry.index] || {};
-    const scaleX = Math.abs(Number(face.scaleX)) || 1, scaleY = Math.abs(Number(face.scaleY)) || 1;
-    const offsetX = Number(face.offsetX) || 0, offsetY = Number(face.offsetY) || 0;
-    // Texture rotation turns the UV frame, not the face, which is what TrenchBroom's face
-    // inspector does with its rotation field.
-    const turn = (Number(face.rotation) || 0) * Math.PI / 180;
-    const cosTurn = Math.cos(turn), sinTurn = Math.sin(turn);
+    // The frame (and the rotation, scale and offset on top of it) is shared with the play view and
+    // the `.map` importer, so a texture projects the same everywhere.
     const push = point => {
       positions.push(point[0], point[2], point[1]);
-      const u = point[0] * basis.x + point[2] * basis.y + point[1] * basis.z;
-      const v = point[0] * bitangent.x + point[2] * bitangent.y + point[1] * bitangent.z;
-      const su = u / (64 * scaleX), sv = v / (64 * scaleY);
-      uvs.push(su * cosTurn - sv * sinTurn + offsetX / 64, su * sinTurn + sv * cosTurn + offsetY / 64);
+      uvs.push(...brushFaceUv(face, plane.normal, point));
     };
     for (let index = 1; index < polygon.length - 1; index++) {
       push(polygon[0]); push(polygon[index]); push(polygon[index + 1]);

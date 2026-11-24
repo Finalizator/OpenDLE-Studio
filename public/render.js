@@ -7,7 +7,7 @@ import { createPostFxStack, toDisplaySpace } from './post-fx-pass.js';
 import { LUT_SIZE, lutTableBytes, postFxParamDefault, postFxSignature } from '/shared/post-fx.js';
 import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, sectorSurfaces, surfaceMaterials } from '/shared/sectors.js';
-import { wallQuadUv, flatUv } from '/shared/uv.js';
+import { wallQuadUv, flatUv, brushFaceUv } from '/shared/uv.js';
 import { brushGeometry } from '/shared/brushes.js';
 import { wallScroll, TICRATE } from '/shared/scrollers.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
@@ -940,23 +940,11 @@ export async function createPreview(canvas, project, state, { editor = false, on
           if (entry.points.length < 3) continue;
           const face = brush.faces?.[entry.index] || {};
           const positions = [], uvs = [];
-          const normal = entry.plane.normal;
-          const axis = Math.abs(normal[0]) > Math.abs(normal[1])
-            ? (Math.abs(normal[0]) > Math.abs(normal[2]) ? 0 : 2)
-            : (Math.abs(normal[1]) > Math.abs(normal[2]) ? 1 : 2);
-          const scaleX = Number(face.scaleX) || 1, scaleY = Number(face.scaleY) || 1;
-          const offsetX = Number(face.offsetX) || 0, offsetY = Number(face.offsetY) || 0;
-          const turn = (Number(face.rotation) || 0) * Math.PI / 180;
-          const cosTurn = Math.cos(turn), sinTurn = Math.sin(turn);
-          const uvOf = point => {
-            const u = axis === 0 ? point[1] : point[0];
-            const v = axis === 2 ? point[1] : point[2];
-            const su = u / (64 * scaleX), sv = v / (64 * scaleY);
-            return [su * cosTurn - sv * sinTurn + offsetX / 64, su * sinTurn + sv * cosTurn + offsetY / 64];
-          };
+          // Same frame as the editor and the `.map` importer (`/shared/uv.js`), so a brush's
+          // texture is not projected one way while it is edited and another way while it plays.
           const push = point => {
             positions.push(point[0], point[2], point[1]);
-            uvs.push(...uvOf(point));
+            uvs.push(...brushFaceUv(face, entry.plane.normal, point));
           };
           for (let index = 1; index < entry.points.length - 1; index++) {
             push(entry.points[0]); push(entry.points[index]); push(entry.points[index + 1]);

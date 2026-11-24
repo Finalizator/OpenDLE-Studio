@@ -1,26 +1,32 @@
 // Importing Quake-family `.map` files, in the real editor window.
 //
-// Two promises are checked, because they are two different features:
+// Three promises are checked, because they are three different features:
 //   1. a map can become a clean project (title from worldspawn, brushes editable, no leftovers);
-//   2. a map can be added beside the open document and is listed in Layouts as its own level.
+//   2. a map can be added beside the open document and is listed in Layouts as its own level;
+//   3. a Quake 3 brush primitive keeps its brushes and their texture bases.
 //
-// The fixture is the same cube TrenchBroom writes: six faces, plane points clockwise seen from
-// outside, a texture name and its offset/scale shorthand.
+// Both fixtures are the same cube, generated from the editor's own box so its six planes really
+// enclose a volume — a hand-written cube that only *looks* like one imports as degenerate polygons,
+// which is exactly the kind of fixture that hides bugs. The legacy form carries a texture name and
+// its offset/scale shorthand; the primitive form carries a per-face basis instead.
+
+import { createBoxBrush, brushGeometry } from '../../../shared/brushes.js';
 
 const wait = ms => new Promise(done => setTimeout(done, ms));
 
-const CUBE = `// entity 0
-{
+const BOX = (() => {
+  const brush = createBoxBrush({ map: { brushes: [] } }, { x: 0, y: 0, z: 0, width: 64, depth: 64, height: 64 });
+  return brushGeometry(brush).faces
+    .map(face => ({ points: face.points.slice(0, 3), normal: face.plane.normal, index: face.index }));
+})();
+const TEXTURES = ['brick1', 'brick1', 'floor1', 'ceiling1', 'brick1', 'brick1'];
+const points = index => BOX[index].points.map(point => `( ${point.join(' ')} )`).join(' ');
+
+const CUBE = `{
 "classname" "worldspawn"
 "message" "Imported Hall"
-// brush 0
 {
-( 0 0 0 ) ( 0 64 0 ) ( 0 64 64 ) brick1 0 0 0 1 1
-( 64 0 64 ) ( 64 64 64 ) ( 64 64 0 ) brick1 0 0 0 1 1
-( 0 0 0 ) ( 64 0 0 ) ( 64 64 0 ) floor1 0 0 0 1 1
-( 0 64 64 ) ( 64 64 64 ) ( 64 0 64 ) ceiling1 0 0 0 1 1
-( 0 0 0 ) ( 64 0 0 ) ( 64 0 64 ) brick1 0 0 0 1 1
-( 0 64 0 ) ( 64 64 0 ) ( 64 64 64 ) brick1 0 0 0 1 1
+${BOX.map(face => `${points(face.index)} ${TEXTURES[face.index]} 0 0 0 1 1`).join('\n')}
 }
 }
 {
@@ -32,6 +38,39 @@ const CUBE = `// entity 0
 "classname" "monster_army"
 "origin" "16 16 16"
 }`;
+
+// The Quake 3 brush-primitive form: the same points, then each face's texture basis — turned away
+// from the paraxial frame and with unequal U/V lengths, so an importer that guessed scale and
+// rotation instead of keeping the basis would fail this.
+const BRUSH_PRIMITIVE = (() => {
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const normalize = a => { const length = Math.hypot(...a) || 1; return a.map(value => value / length); };
+  const add = (a, b) => a.map((value, index) => value + b[index]);
+  const scale = (a, factor) => a.map(value => value * factor);
+  const theta = 30 * Math.PI / 180;
+  const lines = BOX.map(({ points: corners, normal, index }) => {
+    const basisU = normalize(Math.abs(normal[0]) < .9 ? cross(normal, [1, 0, 0]) : cross(normal, [0, 1, 0]));
+    const basisV = normalize(cross(normal, basisU));
+    const axisU = add(scale(basisU, Math.cos(theta) / 32), scale(basisV, Math.sin(theta) / 32));
+    const axisV = add(scale(basisU, -Math.sin(theta) / 128), scale(basisV, Math.cos(theta) / 128));
+    return `${corners.map(point => `( ${point.join(' ')} )`).join(' ')} ( ( ${axisU.join(' ')} ) ( ${axisV.join(' ')} ) ) ${TEXTURES[index]} 0 0 0`;
+  });
+  return `{
+"classname" "worldspawn"
+"message" "Imported Primitive"
+{
+brushDef
+{
+${lines.join('\n')}
+}
+}
+}
+{
+"classname" "info_player_start"
+"origin" "32 32 24"
+}`;
+})();
 
 export async function run({ page }) {
   const steps = [];
@@ -98,6 +137,21 @@ export async function run({ page }) {
   check('the clean project has a player start', doc.entities === 2, doc.entities);
 
   const errors = await page.evaluate('window.__opendle.errors()');
+  // ---- 4. A Quake 3 brush primitive keeps its brushes and their texture bases.
+  const primitive = await page.evaluate(
+    `window.__opendle.importMap(${JSON.stringify(BRUSH_PRIMITIVE)}, { name: 'primitive.map', mode: 'project' })`);
+  check('a brush primitive imports as a brush', primitive.counts?.brushes === 1, primitive);
+  const primitiveDoc = await page.evaluate('window.__opendle.state()');
+  check('the primitive brush is in the document', primitiveDoc.brushes === 1, primitiveDoc);
+  const primitiveBrush = await page.evaluate('window.__opendle.brushes()[0]');
+  check('the primitive brush has six faces', primitiveBrush?.faces === 6, primitiveBrush?.faces);
+  const bases = await page.evaluate('window.__opendle.brushes()[0].bases');
+  check('every face kept its imported basis', bases === 6, bases);
+  const listedBases = await page.evaluate('window.__opendle.brushes()[0].faceList.filter(face => face.basis).length');
+  check('the face list reports them too', listedBases === 6, listedBases);
+  const drawn = await page.evaluate('window.__opendle.brushes()[0].faceList.length');
+  check('all six faces have a polygon to draw', drawn === 6, drawn);
+
   check('the page logged no errors', errors.length === 0, errors.slice(0, 3));
   return { ok: true, steps: steps.length, title: doc.title };
 }
