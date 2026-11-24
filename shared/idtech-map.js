@@ -205,10 +205,13 @@ const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
  * `}` behind and the rest of the file was then read as entities.
  */
 function readBrush(io) {
+  const opening = io.peek();
   io.expect('{');
   const faces = [];
   let patch = null, primitive = null;
-  while (!io.eof() && !io.accept('}')) {
+  while (true) {
+    if (io.accept('}')) break;
+    if (io.eof()) io.fail(opening, `"}" to close the brush opened on line ${opening.line}`);
     const token = io.peek();
     if (token?.type === 'word' && /^patchDef[23]$/i.test(token.value)) {
       io.next();
@@ -230,8 +233,12 @@ function readBrush(io) {
         primitive = { kind: token.value, reason: `${token.value} plane form (Doom 3 / Quake 4) is not a Quake 3 brush primitive` };
         continue;
       }
+      const primitiveStart = io.peek();
       io.expect('{');
-      while (!io.eof() && !io.accept('}')) faces.push(readPrimitiveFace(io));
+      while (!io.accept('}')) {
+        if (io.eof()) io.fail(primitiveStart, `"}" to close the ${token.value} opened on line ${primitiveStart.line}`);
+        faces.push(readPrimitiveFace(io));
+      }
       primitive = { kind: token.value };
       continue;
     }
@@ -241,9 +248,11 @@ function readBrush(io) {
 }
 
 function skipBlock(io) {
+  const opening = io.peek();
   io.expect('{');
   let depth = 1;
-  while (!io.eof() && depth > 0) {
+  while (depth > 0) {
+    if (io.eof()) io.fail(opening, `"}" to close the block opened on line ${opening.line}`);
     const token = io.next();
     if (token.type === 'punct' && token.value === '{') depth++;
     if (token.type === 'punct' && token.value === '}') depth--;
@@ -263,9 +272,14 @@ export function parseIdTechMap(text, { name = 'map' } = {}) {
   const warnings = [];
   while (!io.eof()) {
     if (!io.peek() || io.peek().type !== 'punct' || io.peek().value !== '{') io.fail(io.peek(), 'an entity "{"');
+    const opening = io.peek();
     io.expect('{');
     const entity = { properties: {}, brushes: [], patches: 0 };
-    while (!io.eof() && !io.accept('}')) {
+    while (true) {
+      if (io.accept('}')) break;
+      // A file that ends here is a truncated download or a bad edit, not a complete map. Ending the
+      // loop at end-of-file used to accept half an entity — and half a level — as if it were whole.
+      if (io.eof()) io.fail(opening, `"}" to close the entity opened on line ${opening.line}`);
       const token = io.peek();
       if (token.type === 'punct' && token.value === '{') {
         const brush = readBrush(io);

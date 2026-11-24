@@ -34,6 +34,12 @@ Output is one JSON line. A failure exits non-zero and names the failing step:
   profile closes the dialog by itself and leaves the accept button disabled on purpose, so the
   helper waits for *closed or enabled* — waiting on the button alone hangs on every run after the
   first.
+- `OPENDLE_AUTOMATION_ELECTRON_ARGS` adds Chromium switches to every window the harness opens —
+  they go **before** the app path, because everything after it belongs to the app's own parser. It
+  exists for a Wayland session that stops handing new Electron windows a connection (then
+  `app.whenReady()` never settles and every scenario reports "No DevTools endpoint" while the
+  desktop looks fine): `OPENDLE_AUTOMATION_ELECTRON_ARGS=--ozone-platform=x11` runs the same
+  window on XWayland.
 - A scenario that exports `needsStudio = false` is run **without** the studio window (`run.mjs`
   passes `{}` instead of a page). `game` does that: it builds a bundled export of the campaign in
   the editor's library, starts the build's own Electron (`main.js --automation-port <port>`), and

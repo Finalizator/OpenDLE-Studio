@@ -50,7 +50,11 @@ export function setGameScreen(state, target) {
   if (state.intermission && !state.intermission.confirmed && target !== 'intermission') return;
   const history = state.menuHistory ||= [];
   let screen = target;
-  if (target === 'return') screen = history.pop() || (state.hasGame ? 'pause' : 'title');
+  // `return` goes back where the menu chain came from. Entering the pause screen clears the chain
+  // — a pause is not part of a submenu — so the last step has to be put back explicitly: leaving it
+  // to `history.pop()` alone made Escape in the pause menu land on the pause screen again, and the
+  // key that opened it could never close it.
+  if (target === 'return') screen = history.pop() || (state.gameScreen === 'pause' ? 'playing' : state.hasGame ? 'pause' : 'title');
   else if (screen !== state.gameScreen) {
     if (['playing', 'title', 'pause'].includes(screen)) history.length = 0;
     else if (history.at(-1) === screen) history.pop();

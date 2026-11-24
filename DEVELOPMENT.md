@@ -6254,10 +6254,16 @@ all; it answers what the runtime asks for through `menuRequests`:
 | --- | --- |
 | `start`, `{ type: 'start', levelId }` | builds the level's runtime at `playing` and creates the renderer |
 | `{ type: 'level', levelId, carryProgress }` | same, carrying the stats and inventory into the next level |
-| `{ type: 'save-file' }` / `load-file` | writes a checkpoint document into `localStorage` (the engine's format) |
+| `{ type: 'save-file' }` / `load-file` | writes a checkpoint document into `localStorage` (`shared/game-checkpoint.js`) |
 | `{ type: 'save' }` / `load` (slots) | reports that slots belong to the studio, in `saveStatus` |
 | `quit` | closes the window |
 | `fullscreen` | toggles fullscreen |
+
+A save file is `shared/game-checkpoint.js`: the player's position, stats, **inventory** (its two Sets
+travel as arrays, because JSON turns a Set into `{}`), the live `arrays` grids, the rule variables
+and the physics state — and a load re-enters the weapon machine instead of finishing an animation
+that was half-played when the file was written. It is deliberately not the studio's
+`shared/save-game.js`, which validates a whole runtime against a project.
 
 **The menu does not wait for the GPU.** The renderer is created when a level starts, not when the
 game opens: the menu is DOM, so a game boots in a moment and a machine without a usable adapter can

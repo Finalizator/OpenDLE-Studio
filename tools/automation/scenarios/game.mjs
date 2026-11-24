@@ -20,7 +20,7 @@ import { installGameMenu } from '../../../shared/game-menu.js';
 import { createPortableBuild } from '../../../server/export-build.js';
 import { resolveDist } from '../../../server/electron-runtime.js';
 import { connect } from '../cdp.mjs';
-import { freePort } from '../studio.mjs';
+import { extraElectronArgs, freePort } from '../studio.mjs';
 
 export const needsStudio = false;
 
@@ -75,7 +75,8 @@ async function launchPlayer(appDir, executable) {
   delete env.ELECTRON_RUN_AS_NODE;
   const binary = executable;
   chmodSync(binary, 0o755);
-  const child = spawn(binary, ['--automation-port', String(port)], { cwd: appDir, stdio: ['ignore', 'pipe', 'pipe'], env });
+  const child = spawn(binary, ['--automation-port', String(port), ...extraElectronArgs()],
+    { cwd: appDir, stdio: ['ignore', 'pipe', 'pipe'], env });
   const log = [];
   child.stdout?.on('data', chunk => log.push(String(chunk).trim()));
   child.stderr?.on('data', chunk => log.push(String(chunk).trim()));

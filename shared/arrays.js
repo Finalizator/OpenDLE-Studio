@@ -18,6 +18,9 @@ export const MAX_ARRAY_ROWS = 256;
 export const MAX_ARRAY_COLUMNS = 256;
 export const MAX_ARRAY_CELLS = 16384;
 export const ARRAY_CELL_TYPES = ['number', 'string'];
+/** What one cell may hold, the same bounds `validateArrays` enforces on a saved project. */
+export const MAX_CELL_NUMBER = 1e12;
+export const MAX_CELL_TEXT = 4096;
 
 /** Array names are variable names: letters, digits, `-` and `_`, and never a prototype key. */
 const NAME = /^[a-zA-Z0-9_-]{1,80}$/;
@@ -58,12 +61,22 @@ export function setArray(project, name, change = {}) {
   return project.arrays[name];
 }
 
-/** Sets one cell, refusing a value of the wrong type for the grid it lands in. */
+/**
+ * Sets one cell, refusing a value the grid cannot hold.
+ *
+ * A number grid takes only finite numbers inside the same +/-1e12 `validateArrays` allows: `NaN`
+ * used to be accepted because `typeof NaN === 'number'`, and a rule that divided by zero wrote one
+ * into the running game, where every later read saw a value no save could be written from.
+ */
 export function setArrayCell(project, name, row, column, value) {
   const array = project.arrays?.[name];
   if (!array) throw new Error(`Unknown array: ${name}`);
   checkIndex(array, row, column, name);
   if (typeof value !== array.type) throw new Error(`Array "${name}" holds ${array.type}s, not ${typeof value}`);
+  if (array.type === 'number' && (!Number.isFinite(value) || Math.abs(value) > MAX_CELL_NUMBER))
+    throw new Error(`Array "${name}" holds finite numbers within +/-${MAX_CELL_NUMBER}`);
+  if (array.type === 'string' && value.length > MAX_CELL_TEXT)
+    throw new Error(`Array "${name}" text cells hold at most ${MAX_CELL_TEXT} characters`);
   array.cells[row][column] = value;
 }
 
@@ -102,10 +115,24 @@ export function readArrayCell(arrays, name, row, column) {
   const array = arrays?.[name];
   if (!array) throw new Error(`Unknown array: ${name}`);
   const table = Array.isArray(array) ? array : array.cells;
-  const r = Math.trunc(Number(row)) || 0, c = Math.trunc(Number(column)) || 0;
+  const r = cellIndex(row, name, 'row'), c = cellIndex(column, name, 'column');
   if (!table[r] || c < 0 || c >= table[r].length || r < 0)
     throw new Error(`Array "${name}" has no cell at row ${r}, column ${c}`);
   return table[r][c];
+}
+
+/**
+ * A row or column read off a rule's expression, truncated the way an index is.
+ *
+ * Anything that is not a number is refused instead of becoming row 0: `Math.trunc(Number(row)) || 0`
+ * turned a misspelled variable, an empty expression and the string "abc" into a silent read of the
+ * first cell, which is a wrong answer where the caller could have been told.
+ */
+function cellIndex(value, name, label) {
+  const number = typeof value === 'number' ? value
+    : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+  if (!Number.isFinite(number)) throw new Error(`Array "${name}" needs a numeric ${label}, not ${JSON.stringify(value)}`);
+  return Math.trunc(number);
 }
 
 export function arrayShape(arrays, name) {
@@ -157,9 +184,9 @@ export function validateArrays(arrays, assert) {
       assert(Array.isArray(row) && row.length === columns, `Array ${name} rows must all be ${columns} cells wide`);
       for (const cell of row) {
         assert(typeof cell === array.type, `Array ${name} cells must be ${array.type}s`);
-        if (array.type === 'number') assert(Number.isFinite(cell) && Math.abs(cell) <= 1e12,
-          `Array ${name} numbers must be finite and within +/-1e12`);
-        else assert(cell.length <= 4096, `Array ${name} text cells hold at most 4096 characters`);
+        if (array.type === 'number') assert(Number.isFinite(cell) && Math.abs(cell) <= MAX_CELL_NUMBER,
+          `Array ${name} numbers must be finite and within +/-${MAX_CELL_NUMBER}`);
+        else assert(cell.length <= MAX_CELL_TEXT, `Array ${name} text cells hold at most ${MAX_CELL_TEXT} characters`);
       }
     }
   }

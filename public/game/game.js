@@ -20,6 +20,7 @@ import { installDroppedPickupRules } from '/shared/doom-hud.js';
 import { upgradeCrusherRules } from '/shared/doom-specials.js';
 import { installGameDefaults } from './defaults.js';
 import { hydrateAssets } from './assets.js';
+import { checkpointDocument, applyCheckpoint } from '/shared/game-checkpoint.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('view'), hudHost = $('hud');
@@ -457,26 +458,6 @@ function handleRequests(runtime) {
       runtime.saveStatus = 'Save slots belong to the studio; this build saves through the game\'s own save files.';
     }
   }
-}
-
-/** What a checkpoint keeps: where the player is and everything that would be lost on a reload. */
-function checkpointDocument(runtime, levelId) {
-  return {
-    version: 1, kind: 'opendle-checkpoint', levelId: levelId || null,
-    player: { ...runtime.player },
-    playerStats: structuredClone(runtime.playerStats),
-    inventory: structuredClone(runtime.inventory),
-    variables: { ...runtime.variables },
-    physics: runtime.physics?.saveState?.() ?? null,
-  };
-}
-
-function applyCheckpoint(runtime, saved) {
-  if (!saved || saved.kind !== 'opendle-checkpoint') throw new Error('that file is not a checkpoint of this game');
-  Object.assign(runtime.player, saved.player || {});
-  if (saved.playerStats) Object.assign(runtime.playerStats, saved.playerStats);
-  if (saved.variables) Object.assign(runtime.variables, saved.variables);
-  if (saved.physics) runtime.physics?.restoreState?.(saved.physics);
 }
 
 // ---------------------------------------------------------------------------------------------------

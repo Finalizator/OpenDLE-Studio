@@ -50,6 +50,18 @@ async function ensureServer(port) {
   throw new Error(`The studio server never became ready on ${url}`);
 }
 
+/**
+ * Extra Chromium switches for the window, from `OPENDLE_AUTOMATION_ELECTRON_ARGS`.
+ *
+ * A Wayland session can stop handing new Electron windows a connection at all — `app.whenReady()`
+ * then never settles and every scenario fails with "No DevTools endpoint" while the desktop itself
+ * looks healthy. `OPENDLE_AUTOMATION_ELECTRON_ARGS=--ozone-platform=x11` runs the same window on
+ * XWayland, which is the recovery that was measured when it happened.
+ */
+export function extraElectronArgs() {
+  return String(process.env.OPENDLE_AUTOMATION_ELECTRON_ARGS || '').split(/\s+/).filter(Boolean);
+}
+
 export async function electronBinary() {
   const imported = await import('electron');
   const binary = imported.default;
@@ -72,7 +84,10 @@ export async function launchStudio({ port = Number(process.env.PORT || 3000), ti
   const env = { ...process.env };
   // VS Code exports this; the desktop shell has to run as Electron, not as plain Node.
   delete env.ELECTRON_RUN_AS_NODE;
+  // Chromium switches go before the app path: everything after it belongs to the app's own parser,
+  // which refuses switches it does not know.
   const child = spawn(binary, [
+    ...extraElectronArgs(),
     join(root, 'scripts', 'studio-desktop.js'),
     '--url', url, '--profile', profile, '--automation-port', String(cdpPort),
   ], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env });

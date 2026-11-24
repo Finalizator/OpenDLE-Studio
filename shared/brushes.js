@@ -470,9 +470,15 @@ export function hollowBrush(project, brushId, thickness) {
   if (!(thickness > 0)) throw new Error('Wall thickness must be positive');
   const walls = [];
   const faces = facesOf(brush);
+  const vertices = brushVertices(brush);
   for (let index = 0; index < faces.length; index++) {
     const plane = facePlane(faces[index]);
     const inner = faceFromPlane(mul(plane.normal, -1), -(plane.distance - thickness));
+    // The inner plane has to cut the brush. A thickness as wide as the brush puts that plane on — or
+    // past — the far side, and the "wall" it makes is the whole brush again: hollowing a 64 unit box
+    // 200 units deep used to replace it with six solid copies stacked on top of each other instead
+    // of refusing, so the level silently grew five overlapping walls nobody could see.
+    if (!vertices.some(vertex => faceDistance(inner, vertex) > EPS)) continue;
     const slab = freshBrush(brush, [...facesOf(brush).map(copyFace), inner]);
     if (brushVertices(slab).length >= 4) walls.push({ ...slab, name: `${brush.name} wall ${index + 1}` });
   }
