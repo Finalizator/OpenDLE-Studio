@@ -221,6 +221,18 @@ async function scenario(_context, steps) {
     await released();
     check('a shot keeps the keys the player is holding', afterShot.keys.includes('KeyW'), { pressed, afterShot });
     check('a shot leaves the trigger in the game', afterShot.keys.includes('Mouse0') || afterShot.screen === 'playing', afterShot);
+    const captured = await page.waitFor(`window.__game.status().pointer.locked`, { timeout: 5000, label: 'the pointer to be captured' })
+      .catch(() => false);
+    check('a click captures the mouse', captured === true, await page.evaluate('window.__game.status()'));
+
+    // Completing a level must not hand the player a free cursor. The next level rebuilds the runtime
+    // and the renderer, and the pointer has to survive that — it belongs to the game, not the level.
+    await page.evaluate('window.__game.start()');
+    const nextLevel = await page.waitFor(`window.__game.status().screen === 'playing' && window.__game.status().level`,
+      { timeout: 30000, label: 'the next level' }).catch(() => null);
+    await wait(500);
+    const afterLevel = await page.evaluate('window.__game.status()');
+    check('a level change keeps the mouse captured', afterLevel.pointer.locked === true, { nextLevel, afterLevel });
     // The bottom of the screen is the part a player notices missing first. Two checks, because the
     // two kinds of HUD answer differently: an imported campaign has classic `statusbar` elements,
     // an authored one draws its own bottom panel with ordinary elements.
@@ -241,7 +253,8 @@ async function scenario(_context, steps) {
     const errors = (page.events || []).filter(event => event.method === 'Runtime.exceptionThrown');
     check('the game booted without a page exception', errors.length === 0,
       errors.slice(0, 2).map(event => event.params?.exceptionDetails?.exception?.description));
-    return { source, menuRows: menu.rows, labels: menu.labels, focused, classicBar, bottom, keysAfterShot: afterShot.keys };
+    return { source, menuRows: menu.rows, labels: menu.labels, focused, classicBar, bottom, keysAfterShot: afterShot.keys,
+      pointer: { captured, afterLevel: afterLevel.pointer } };
   } finally {
     player.stop();
     rmSync(scratch, { recursive: true, force: true });

@@ -6274,6 +6274,14 @@ clearing the whole key set there stopped a running player dead the first time a 
 pointer. The same rule applies to the editor's playtest view, and `npm run automation:game` holds `W`
 through a shot to prove it.
 
+**The captured mouse belongs to the game, not to a level.** Only a screen the player has to point at
+releases it — the game's own menu, or quitting; `disposeEngine({ releasePointer })` is where that
+decision lives. A level change tears the runtime and the renderer down but keeps the capture, the
+intermission is a scoreboard rather than a menu, and the next level re-takes the pointer if the
+browser dropped it on the way through (`game.pointerHeld`, reported by
+`__game.status().pointer`). The editor's playtest follows the same rule through `lockWanted` and
+`syncHUDCursor`. Before this, finishing a level handed the player a free cursor mid-game.
+
 Input is the engine's: `Escape` in play opens the project's pause screen (`gameScreen = 'pause'`),
 `Escape` in a menu goes back (`setGameScreen(runtime, 'return')`), arrow keys and `Enter` move
 through rows the way a Doom menu does, and the game's own options screens change `runtime.settings`,

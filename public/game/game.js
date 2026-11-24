@@ -26,7 +26,7 @@ const canvas = $('view'), hudHost = $('hud');
 
 const game = {
   project: null, settings: null, engine: null, busy: false, hydrated: false, toastTimer: 0,
-  keys: new Set(), pressed: new Set(), audioContext: null, fullscreenAsked: false,
+  keys: new Set(), pressed: new Set(), audioContext: null, fullscreenAsked: false, pointerHeld: false,
 };
 let lookDrag = null, lastSettingsRevision = -1, frameCount = 0, lastFrameError = '', lastTick = 0;
 /** Bumped by every start: a load that finishes after the player gave up is thrown away. */
@@ -237,8 +237,37 @@ function buildRuntime({ levelId = null, screen = 'playing', progress = null } = 
   return { snapshot, runtime, levelId: playing };
 }
 
-function disposeEngine() {
-  if (!game.engine) return;
+/**
+ * Takes the pointer back whenever the game is at play without it.
+ *
+ * Only for a player who had it: the intent is remembered across a level change, the intermission and
+ * a pause, because each of those is the game deciding, not the player. A player who never captured
+ * the mouse is never grabbed, and a browser refusing the re-capture only rejects the promise, which
+ * leaves the click-to-look and click-to-fire paths in charge.
+ */
+let pointerWatch = { runtime: null, screen: null };
+function watchPointerCapture(runtime) {
+  const screen = runtime?.gameScreen || null;
+  if (runtime === pointerWatch.runtime && screen === pointerWatch.screen) return;
+  pointerWatch = { runtime, screen };
+  if (screen !== 'playing' || !game.pointerHeld || document.pointerLockElement === canvas) return;
+  canvas.requestPointerLock?.()?.catch?.(() => {});
+}
+
+/**
+ * Tears the running level down.
+ *
+ * The captured mouse is not part of what a level owns: `releasePointer` is for the caller that is
+ * opening a screen the player has to point at (the game's menu, quitting). A level change kept
+ * releasing it, so finishing a level handed the player a free cursor in the middle of the game.
+ */
+function disposeEngine({ releasePointer = false } = {}) {
+  // The player is done with the mouse capture when the game goes back to its own menu.
+  if (releasePointer) game.pointerHeld = false;
+  if (!game.engine) {
+    if (releasePointer) document.exitPointerLock?.();
+    return;
+  }
   const { preview, hud, audio } = game.engine;
   game.engine = null;
   try { audio?.dispose(); } catch { /* already gone */ }
@@ -246,7 +275,7 @@ function disposeEngine() {
   try { preview?.dispose(); } catch { /* already gone */ }
   hudHost.replaceChildren();
   $('message').hidden = true;
-  document.exitPointerLock?.();
+  if (releasePointer) document.exitPointerLock?.();
 }
 
 function attachHud(engine) {
@@ -265,7 +294,7 @@ function attachHud(engine) {
  * building a 3D scene to show a list of words would only make the game slower to open.
  */
 async function openMenu() {
-  disposeEngine();
+  disposeEngine({ releasePointer: true });
   setLoading('Loading the game…');
   try {
     if (!game.hydrated) {
@@ -370,7 +399,7 @@ function quitToMenu() {
 }
 
 function quitGame() {
-  disposeEngine();
+  disposeEngine({ releasePointer: true });
   window.close();
   // A browser window that was not opened by a script cannot be closed, so say what to do instead.
   $('fatal-title').textContent = 'Thanks for playing';
@@ -552,6 +581,10 @@ document.addEventListener('pointerlockchange', () => {
   // has nothing to do with the pointer. Clearing it here is why a player who was running stopped
   // dead the moment a click grabbed the pointer: the `W` never came back until it was re-pressed.
   for (const code of ['Mouse0', 'Mouse2']) { game.keys.delete(code); game.pressed.delete(code); }
+  // The captured mouse belongs to the game, not to a level, and the intent is the player's: it is
+  // set when they take the pointer and dropped only when the game goes back to its own menu. So a
+  // level change, the intermission, or a pause and resume does not hand them a free cursor.
+  if (document.pointerLockElement === canvas) game.pointerHeld = true;
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -574,6 +607,7 @@ function frame(now) {
     stepRuntime(engine.snapshot, runtime, dt, held, pressed);
     game.pressed.clear();
     handleRequests(runtime);
+    if (game.engine) watchPointerCapture(runtime);
     if (!game.engine) return;
     if (runtime.settingsRevision !== lastSettingsRevision) {
       lastSettingsRevision = runtime.settingsRevision;
@@ -619,6 +653,7 @@ window.__game = {
       // pair that answers "did my input reach the game?" without guessing.
       keys: [...game.keys].sort(),
       speed: Math.round(runtime?.speed ?? 0),
+      pointer: { locked: document.pointerLockElement === canvas, held: game.pointerHeld },
       viewSize: game.engine?.runtime?.settings?.viewSize ?? null,
       statusBar: (() => {
         const elements = [...(game.engine?.runtime?.hudState?.elements?.values?.() || [])].filter(element => element.statusbar);

@@ -258,6 +258,8 @@ let previewGeneration = 0;
 let audioPlayer = null, audioContext = null, hudWarningShown = false, musicReported = false;
 let settingsRevision = -1, settingsStorageKey = '';
 let hudView = null, acsHud = null, acsHost = null, previewProject = null, hudCursorActive = false;
+/** Whether the playtest owns the mouse: the capture survives a level change, as in the game. */
+let lockWanted = false;
 let saveIdentityVersion = -1, saveIdentityPromise = null, previewSaveIdentity = '', saveBusy = false;
 /** Saves run one at a time; a rule that asks for two of them gets both, in order. */
 let saveQueue = Promise.resolve();
@@ -5197,7 +5199,7 @@ function stopPreview() {
   stopLongTasks();
   playtestLog.flush().catch(() => {});
   audioPlayer?.dispose(); audioPlayer = null;
-  lookDrag = null; draggedLook = false;
+  lookDrag = null; draggedLook = false; lockWanted = false;
   if (document.pointerLockElement === $('preview')) document.exitPointerLock();
   flushPlaceholders('game', true);
   $('play-dialog').close(); runtime = null; previewRenderer?.dispose(); previewRenderer = null; keys.clear(); pressed.clear();
@@ -5221,6 +5223,7 @@ function mouseStatus(message, error = false) {
 function captureMouse() {
   if (!runtime || runtime.gameScreen !== 'playing') return;
   audioPlayer?.resume();
+  lockWanted = true;
   runtime.hudState.cursor = false; syncHUDCursor();
   const session = runtime;
   requestMouseLock(document, $('preview'), (message, error) => {
@@ -5232,7 +5235,11 @@ function syncHUDCursor() {
   hudCursorActive = runtime.hudState.cursor;
   lookDrag = null; keys.clear(); pressed.clear();
   runtime.input.mouseX = 0; runtime.input.mouseY = 0;
-  if (hudCursorActive && document.pointerLockElement === $('preview')) document.exitPointerLock();
+  // The intermission is a scoreboard, not a menu: nothing on it is pointed at, and handing the
+  // cursor back the moment a level ends is what "completing a level unlocks the mouse" looked like.
+  const scoreboard = runtime.gameScreen === 'intermission';
+  if (hudCursorActive && !scoreboard && document.pointerLockElement === $('preview')) document.exitPointerLock();
+  if (!hudCursorActive && lockWanted) requestMouseLock(document, $('preview'), () => {});
   $('hud-cursor').setAttribute('aria-pressed', String(hudCursorActive));
   if (!hudCursorActive) $('preview').focus();
   mouseStatus(runtime.gameScreen !== 'playing' ? 'Game menu active. Gameplay is paused. Use the mouse or Up/Down and Enter; Escape goes back.'
@@ -5725,6 +5732,7 @@ document.addEventListener('pointerlockchange', () => {
   // business, and clearing it here stopped a running player the first time a click took the lock.
   lookDrag = null;
   for (const code of ['Mouse0', 'Mouse2']) { keys.delete(code); pressed.delete(code); }
+  if (document.pointerLockElement === $('preview')) lockWanted = true;
   if (!runtime && document.pointerLockElement === $('preview')) { document.exitPointerLock(); return; }
   if (runtime && document.pointerLockElement === $('preview')) $('preview').focus();
   if (runtime) mouseStatus(document.pointerLockElement === $('preview')
