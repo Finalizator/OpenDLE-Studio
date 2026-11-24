@@ -6274,13 +6274,18 @@ clearing the whole key set there stopped a running player dead the first time a 
 pointer. The same rule applies to the editor's playtest view, and `npm run automation:game` holds `W`
 through a shot to prove it.
 
-**The captured mouse belongs to the game, not to a level.** Only a screen the player has to point at
-releases it — the game's own menu, or quitting; `disposeEngine({ releasePointer })` is where that
-decision lives. A level change tears the runtime and the renderer down but keeps the capture, the
-intermission is a scoreboard rather than a menu, and the next level re-takes the pointer if the
-browser dropped it on the way through (`game.pointerHeld`, reported by
-`__game.status().pointer`). The editor's playtest follows the same rule through `lockWanted` and
-`syncHUDCursor`. Before this, finishing a level handed the player a free cursor mid-game.
+**The captured mouse belongs to the game, not to a level.** Starting a level *is* the player saying
+they are playing, so `playLevel` sets `game.pointerHeld` and the capture is requested as the level
+comes up — the very first level of a session used to be the one screen that needed a click in the
+view, with the system's cursor sitting over the game. Only a screen the player has to point at
+releases it: the game's own menu, or quitting, where `disposeEngine({ releasePointer })` decides. A
+level change tears the runtime and the renderer down but keeps the capture, the intermission is a
+scoreboard rather than a menu, and `watchPointerCapture()` re-takes the pointer whenever play resumes
+without it (once per runtime or screen change; a browser that refuses only rejects the promise, and
+the game says so and leaves the click path in charge). `__game.status().pointer` reports
+`{ locked, held }`. The editor's playtest follows the same rule through `lockWanted` and
+`syncHUDCursor`, except that it deliberately starts with a free cursor — the play dialog's own
+controls are clicked while playing.
 
 Input is the engine's: `Escape` in play opens the project's pause screen (`gameScreen = 'pause'`),
 `Escape` in a menu goes back (`setGameScreen(runtime, 'return')`), arrow keys and `Enter` move

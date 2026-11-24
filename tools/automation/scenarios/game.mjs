@@ -205,6 +205,13 @@ async function scenario(_context, steps) {
     const playState = await page.evaluate('window.__game.status()');
     check('the level starts', playing === true, playState);
 
+    // The first level of a session used to need a click in the view before the mouse was captured:
+    // nothing had asked for it yet, so the pointer stayed the system's and the cursor sat over the
+    // game. Starting a level is the player saying they are playing.
+    const captured = await page.waitFor(`window.__game.status().pointer.locked`, { timeout: 5000, label: 'the pointer to be captured' })
+      .catch(() => false);
+    check('the first level captures the mouse without a click', captured === true, await page.evaluate('window.__game.status()'));
+
     // Firing must not cost the player their movement. The trigger is a mouse button and mouse look
     // is pointer lock, and taking the lock used to clear *every* held key — so a player running at
     // the moment they fired stopped dead until they let go of W and pressed it again.
@@ -221,10 +228,6 @@ async function scenario(_context, steps) {
     await released();
     check('a shot keeps the keys the player is holding', afterShot.keys.includes('KeyW'), { pressed, afterShot });
     check('a shot leaves the trigger in the game', afterShot.keys.includes('Mouse0') || afterShot.screen === 'playing', afterShot);
-    const captured = await page.waitFor(`window.__game.status().pointer.locked`, { timeout: 5000, label: 'the pointer to be captured' })
-      .catch(() => false);
-    check('a click captures the mouse', captured === true, await page.evaluate('window.__game.status()'));
-
     // Completing a level must not hand the player a free cursor. The next level rebuilds the runtime
     // and the renderer, and the pointer has to survive that — it belongs to the game, not the level.
     await page.evaluate('window.__game.start()');

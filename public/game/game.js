@@ -251,7 +251,12 @@ function watchPointerCapture(runtime) {
   if (runtime === pointerWatch.runtime && screen === pointerWatch.screen) return;
   pointerWatch = { runtime, screen };
   if (screen !== 'playing' || !game.pointerHeld || document.pointerLockElement === canvas) return;
-  canvas.requestPointerLock?.()?.catch?.(() => {});
+  canvas.requestPointerLock?.()?.catch?.(() => {
+    // A browser can refuse: the gesture that started the level may be too old, or its post-Escape
+    // cooldown may still be running. Clicking the view is the path that always works, so say so
+    // rather than leaving the player wondering why the cursor is still theirs.
+    showToast('The browser did not capture the mouse — click the view to take it.');
+  });
 }
 
 /**
@@ -335,6 +340,11 @@ async function playLevel(levelId, { progress = null } = {}) {
   if (game.busy) return;
   game.busy = true;
   const token = ++startToken;
+  // Starting a level is the player saying "I am playing", so the mouse is captured as the level comes
+  // up. Until this existed the first level of a session was the one screen that needed a click in the
+  // view to get the mouse back: nothing had asked for the capture yet, so the pointer stayed the
+  // system's and the cursor sat over the game.
+  game.pointerHeld = true;
   hideFatal();
   setLoading('Loading the level…');
   game.keys.clear(); game.pressed.clear();
