@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>OpenDLE game</title>
+<link rel="stylesheet" href="/hud.css">
+<link rel="stylesheet" href="./game.css">
+<!-- The engine modules import Three by bare name, exactly as the editor does. -->
+<script type="importmap">
+  {"imports":{"three":"/vendor/three/three.webgpu.js","three/webgpu":"/vendor/three/three.webgpu.js","three/tsl":"/vendor/three/three.tsl.js","three/addons/":"/vendor/three-addons/"}}
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="view" tabindex="0" aria-label="Game view"></canvas>
+  <div id="hud" aria-live="off"></div>
+  <p id="message" hidden></p>
+
+  <div id="menu" hidden>
+    <div class="menu-frame" role="dialog" aria-labelledby="game-title">
+      <p class="menu-kicker">OpenDLE</p>
+      <h1 id="game-title">Loading…</h1>
+      <p id="game-subtitle"></p>
+      <div id="menu-buttons" class="menu-buttons"></div>
+      <p id="menu-hint"></p>
+    </div>
+  </div>
+
+  <div id="panel" hidden>
+    <div class="panel-frame" role="dialog" aria-labelledby="panel-title">
+      <h2 id="panel-title"></h2>
+      <p id="panel-lede" class="lede"></p>
+      <div id="panel-body"></div>
+      <div class="panel-actions" id="panel-actions"></div>
+    </div>
+  </div>
+
+  <div id="pause" hidden></div>
+  <div id="loading"><div><span id="loading-text">Loading the game…</span><div class="bar"><i></i></div></div></div>
+  <p id="toast" role="status" hidden></p>
+</div>
+<!-- Where the project data lives, relative to this page. The build writes this file; the studio
+     development server serves the same layout. -->
+<script type="application/json" id="game-config">{"data":"data/"}</script>
+<script type="module" src="./game.js"></script>
+</body>
+</html>

@@ -82,6 +82,12 @@ Put it in `tools/automation/scenarios/<name>.mjs` exporting `run({ page })`, reg
 `run.mjs`, and use the `check(name, ok, detail)` pattern from `brushes.mjs` so a failure names the
 step and prints the trail.
 
+`scenarios/maps.mjs` is the model for the map importer: it drives `importMap` in both modes,
+then reads `getLayouts()` to prove the Layouts list and the dormant level agree with the import.
+`scenarios/game.mjs` shows the other pattern: a scenario that does its own work outside the page
+(build an export, spawn `server/game-serve.js`), then points the window at it with
+`page.send('Page.navigate', { url })` and reads the exported game's DOM.
+
 ## Traps that produced false results before
 
 - **Canvas not settled**: coordinates computed before layout finishes are wrong by tens of pixels.

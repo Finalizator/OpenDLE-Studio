@@ -22,7 +22,8 @@
     "automation": "node tools/automation/run.mjs",
     "automation:brushes": "node tools/automation/run.mjs brushes",
     "automation:menus": "node tools/automation/run.mjs menus",
-    "automation:maps": "node tools/automation/run.mjs maps"
+    "automation:maps": "node tools/automation/run.mjs maps",
+    "automation:game": "node tools/automation/run.mjs game"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.0",

@@ -6173,8 +6173,8 @@ async function exportBuild(runtime, platform = exportPlatform()) {
   }
   const query = `platform=${encodeURIComponent(platform)}&runtime=${encodeURIComponent(runtime)}`;
   status(runtime === 'bundled'
-    ? 'Packaging a standalone build with its own runtime (engine, project and Electron). The first export for a platform downloads that runtime once.'
-    : 'Packaging a portable build (engine files, project data and launch scripts)...');
+    ? 'Packaging the game with its own runtime (player, data and Electron — no editor). The first export for a platform downloads that runtime once.'
+    : 'Packaging the game (player, engine modules it needs, and the project split into files)...');
   const { response } = await requestWithSession(`/api/export/build?${query}`, {
     method: 'POST', body: JSON.stringify({ project }),
   }, token);
@@ -6186,8 +6186,8 @@ async function exportBuild(runtime, platform = exportPlatform()) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
   const size = `${(blob.size / 1048576).toFixed(1)} MiB`;
   status(runtime === 'bundled'
-    ? `Standalone build downloaded: ${name} (${size}). Unzip it and run the game; nothing has to be installed.`
-    : `Build downloaded: ${name} (${size}). Unzip it and run the launch script; it needs Node.js 22+ and a Chromium-based browser for app-window mode.`);
+    ? `Game downloaded: ${name} (${size}). Unzip it and run it fullscreen; nothing has to be installed.`
+    : `Game downloaded: ${name} (${size}). Unzip it and run the launch script; it opens on the main menu and needs Node.js 22+ and a browser.`);
 }
 
 $('export-build').addEventListener('click', guard(async event => {
@@ -6195,9 +6195,9 @@ $('export-build').addEventListener('click', guard(async event => {
     // The primary choice: a folder that plays on a machine with nothing installed.
     { label: 'Runs on any computer', hint: 'About 150 MB: carries its own browser engine, so nothing is installed.',
       submenu: bundledTargetItems() },
-    { label: 'Small build', hint: 'About 25 MB. The computer needs Node.js 22.2+ and a Chromium-based browser.',
+    { label: 'Small build', hint: 'A few MB plus your assets. The computer needs Node.js 22.2+ and a browser.',
       run: guard(async () => { $('export-build').disabled = true; try { await exportBuild('portable'); } finally { $('export-build').disabled = false; } }) },
-  ], { label: 'Export playable app' });
+  ], { label: 'Export playable app — the game only, no editor' });
   return menu;
 }));
 $('open').addEventListener('click', () => $('project-file').click());

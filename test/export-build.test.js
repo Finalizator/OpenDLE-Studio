@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import yauzl from 'yauzl';
@@ -114,9 +114,10 @@ test('manifest records engine version, project title, export date and every bund
   assert.deepEqual(manifest.launchers, {
     windows: 'my-first-opendle-world/launch.cmd', unix: 'my-first-opendle-world/launch.sh',
   });
-  assert.equal(manifest.entry.page, 'my-first-opendle-world/public/index.html');
-  assert.equal(manifest.entry.server, 'my-first-opendle-world/server/export-launcher.js');
+  assert.equal(manifest.entry.page, 'my-first-opendle-world/index.html', 'the game page, not the editor page');
+  assert.equal(manifest.entry.server, 'my-first-opendle-world/server/game-serve.js');
   assert.equal(manifest.entry.data, 'my-first-opendle-world/data/project.json');
+  assert.equal(manifest.game.editor, false, 'a game build carries no editor');
   assert.match(manifest.requirements.node, />=22/);
 
   const listed = manifest.files.map(file => file.path);
@@ -150,7 +151,13 @@ test('HTTP build export packages current editor edits without changing the saved
   assert.equal(response.status, 200, await response.clone().text());
   const files = await readZip(Buffer.from(await response.arrayBuffer()));
   const bundled = JSON.parse(files.get('current-editor-build/data/project.json').data.toString('utf8'));
-  assert.deepEqual(bundled.project, edited);
+  assert.equal(bundled.project.title, 'Current editor build', 'the document is the edited project');
+  assert.equal(bundled.project.variables.score, 81);
+  assert.equal(bundled.project.map.entities.find(entity => entity.id === 'pickup').x, 321);
+  // The build's document names payload files instead of carrying them, so it is a *runtime*
+  // document: the studio validates the project before splitting it, which is what the export did.
+  assert.equal(bundled.format, 'project-folder');
+  for (const asset of bundled.project.assets || []) assert.doesNotMatch(String(asset.src), /^data:/);
   assert.deepEqual(store.snapshot(), saved, 'export does not save or switch the project');
   assert.equal((await fetch(url, { method: 'POST', headers, body: '{}' })).status, 400);
   assert.equal((await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -158,38 +165,64 @@ test('HTTP build export packages current editor edits without changing the saved
   const legacy = await fetch(url, { headers });
   assert.equal(legacy.status, 200);
   const oldFiles = await readZip(Buffer.from(await legacy.arrayBuffer()));
-  assert.deepEqual(JSON.parse(oldFiles.get('my-first-opendle-world/data/project.json').data.toString('utf8')).project, saved.project,
-    'GET remains an export of the saved server snapshot');
+  const savedDocument = JSON.parse(oldFiles.get('my-first-opendle-world/data/project.json').data.toString('utf8')).project;
+  assert.equal(savedDocument.title, saved.project.title, 'GET remains an export of the saved server snapshot');
+  assert.equal(savedDocument.map.entities.find(entity => entity.id === 'pickup').x,
+    saved.project.map.entities.find(entity => entity.id === 'pickup').x);
 });
 
-test('build ships launch scripts, license, runtime modules and the exported project', async () => {
+test('a build is the game and its data, with no editor in it', async () => {
   const result = await build();
   const entries = await readZip(result.bytes);
   const slug = 'my-first-opendle-world';
   for (const required of ['launch.cmd', 'launch.sh', 'README.md', 'LICENSE', 'version.ini', 'build.json',
     'data/project.json', 'licenses/three-LICENSE.txt', 'licenses/THIRD-PARTY-NOTICES.txt',
-    'server/export-launcher.js', 'server/store.js', 'server/version.js', 'server/browser.js',
-    'public/index.html', 'public/app.js', 'public/render.js', 'public/style.css', 'shared/project.js',
-    'shared/runtime.js', 'public/vendor/three/three.webgpu.js', 'public/vendor/three/three.core.js',
-    'public/vendor/three/three.module.js', 'public/vendor/rapier/rapier.mjs',
-    'public/vendor/three-addons/loaders/GLTFLoader.js', 'public/vendor/three-addons/transpiler/Transpiler.js']) {
+    'index.html', 'game.js', 'game.css', 'menu.js', 'server/game-serve.js',
+    'render.js', 'audio.js', 'hud-view.js', 'renderer-backend.js',
+    'shared/project.js', 'shared/runtime.js', 'shared/game-levels.js', 'shared/game-settings.js',
+    'vendor/three/three.webgpu.js', 'vendor/three/three.core.js', 'vendor/three/three.module.js',
+    'vendor/rapier/rapier.mjs', 'vendor/three-addons/transpiler/Transpiler.js']) {
     assert.ok(entries.has(`${slug}/${required}`), `build contains ${required}`);
+  }
+  // The editor is not part of a game: no editor page, no editor client, no studio server.
+  for (const editorOnly of ['public/', 'app.js', 'style.css', 'scene-editor.js', 'project-autosave.js',
+    'playtest-log.js', 'hud-editor.js', 'actors-panel.js', 'server/export-launcher.js', 'server/store.js',
+    'server/index.js', 'server/addons.js']) {
+    const found = [...entries.keys()].filter(name => name.startsWith(`${slug}/${editorOnly}`));
+    assert.equal(found.length, 0, `${editorOnly} is an editor file and must not ship: ${found.slice(0, 3).join(', ')}`);
+  }
+  // Nothing the page cannot reach is shipped either: the file list is the import closure.
+  const shipped = new Set([...entries.keys()].map(name => name.slice(slug.length + 1)));
+  for (const name of shipped) {
+    if (!name.endsWith('.js')) continue;
+    if (name.startsWith('vendor/') || name === 'server/game-serve.js' || name === 'main.js') continue;
+    const source = entries.get(`${slug}/${name}`).data.toString('utf8');
+    for (const spec of [...source.matchAll(/^\s*import\s+(?:[^'";]*?\s+from\s+)?['"]([^'"\n]+)['"]/gm)].map(match => match[1])) {
+      if (spec.startsWith('node:') || ['three', 'three/webgpu', 'three/tsl'].includes(spec)) continue;
+      if (spec.startsWith('three/addons/')) {
+        assert.ok(shipped.has(`vendor/three-addons/${spec.slice('three/addons/'.length)}`), `${spec} is in the build`);
+        continue;
+      }
+      const target = new URL(spec, `http://game.invalid/${name}`).pathname.slice(1);
+      assert.ok(shipped.has(target), `${name} imports ${spec}, which the build does not contain`);
+    }
   }
 
   const windows = entries.get(`${slug}/launch.cmd`).data.toString('utf8');
   assert.match(windows, /cd \/d "%~dp0"/);
-  assert.match(windows, /node "server\\export-launcher\.js"/);
+  assert.match(windows, /node "server\\game-serve\.js"/);
   assert.match(windows, /Node\.js 22 or newer/);
   const unix = entries.get(`${slug}/launch.sh`).data.toString('utf8');
   assert.match(unix, /^#!\/bin\/sh\n/);
   assert.match(unix, /cd "\$\(dirname "\$0"\)"/);
-  assert.match(unix, /exec node server\/export-launcher\.js/);
+  assert.match(unix, /exec node server\/game-serve\.js/);
   assert.equal(entries.get(`${slug}/launch.sh`).mode, 0o755);
   assert.equal(entries.get(`${slug}/launch.cmd`).mode, 0o644);
 
   const readme = entries.get(`${slug}/README.md`).data.toString('utf8');
   assert.match(readme, /Node\.js 22 or newer/);
   assert.match(readme, /## Play/);
+  assert.match(readme, /data\/assets\//);
   assert.match(readme, /Limitations/);
 
   assert.deepEqual(entries.get(`${slug}/LICENSE`).data, readFileSync(resolve(root, 'LICENSE')));
@@ -197,18 +230,12 @@ test('build ships launch scripts, license, runtime modules and the exported proj
   assert.equal(document.revision, 0);
   validateProject(document.project);
   assert.equal(document.project.title, 'My first OpenDLE world');
+  assert.equal(document.format, 'project-folder', 'the game reads the same split document the studio writes');
   assert.equal(entries.get(`${slug}/version.ini`).data.toString('utf8'), '[engine]\nversion=0.0.7\n');
 
   const names = [...entries.keys()];
   assert.equal(names.filter(name => name.includes('node_modules')).length, 0, 'no npm dependencies are copied');
-  for (const desktopOnly of ['scripts/studio-desktop.js', 'server/studio-launcher.js', 'server/studio-window.js']) {
-    assert.equal(entries.has(`${slug}/${desktopOnly}`), false, `${desktopOnly} is desktop-only`);
-  }
-  assert.doesNotMatch(entries.get(`${slug}/server/browser.js`).data.toString('utf8'), /['"]electron['"]/,
-    'shared launch helpers cannot depend on the Electron runtime');
   assert.equal(names.filter(name => !name.startsWith(`${slug}/`)).length, 0, 'every entry lives under the build folder');
-  const sharedFiles = readdirSync(resolve(root, 'shared')).filter(name => name.endsWith('.js'));
-  for (const name of sharedFiles) assert.ok(entries.has(`${slug}/shared/${name}`), `shared/${name} is bundled`);
 });
 
 test('playable builds ship media helpers and preserve imported video descriptors through saves', async () => {
@@ -239,15 +266,21 @@ test('playable builds ship media helpers and preserve imported video descriptors
   const result = await build({ project: restored.project });
   const entries = await readZip(result.bytes);
   const slug = 'my-first-opendle-world';
-  for (const required of ['public/world-media.js', 'shared/media-nodes.js', 'shared/media-assets.js']) {
+  for (const required of ['world-media.js', 'shared/media-nodes.js', 'shared/media-assets.js']) {
     assert.ok(entries.has(`${slug}/${required}`), `playable build contains ${required}`);
     assert.ok(result.manifest.files.some(fileEntry => fileEntry.path === `${slug}/${required}`),
       `${required} is listed in the build manifest`);
   }
   const bundled = JSON.parse(entries.get(`${slug}/data/project.json`).data.toString('utf8')).project;
-  assert.equal(bundled.assets.find(asset => asset.id === importedVideo.id).src, importedVideo.src);
+  const video = bundled.assets.find(asset => asset.id === importedVideo.id);
+  // The payload is a file beside the document, and the document names it as a URL the page fetches:
+  // this is what keeps a hundred megabytes of artwork out of the JSON.
+  assert.match(video.src, /^data\/assets\/local-screen-[0-9a-f]{8}\.webm$/);
+  assert.equal(video.file, undefined, 'the folder-only field does not reach the game');
+  assert.deepEqual(entries.get(`${slug}/${video.src}`).data, Buffer.from([0, 1, 2, 3]));
   assert.equal(bundled.map.entities[1].projector.assetId, importedVideo.id);
-  validateProject(bundled);
+  assert.doesNotMatch(entries.get(`${slug}/data/project.json`).data.toString('utf8'), /data:video/,
+    'the document names the payload instead of carrying it');
 });
 
 test('zip round-trips through the studio package reader with matching contents', async () => {
@@ -392,92 +425,81 @@ test('read-only installs keep saves in a user data directory', async t => {
 });
 
 test('an extracted build serves the game with Node.js only', async t => {
-  const result = await build();
+  const project = createProject();
+  // One small payload, so the split can be observed end to end: the document must name it, and the
+  // archive must carry it as a file.
+  project.assets = [{ id: 'asset_png', name: 'Brick', kind: 'texture', width: 1, height: 1,
+    src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==' }];
+  validateProject(project);
+  const result = await build({ project });
   const scratch = mkdtempSync(join(process.cwd(), '.export-build-'));
   t.after(() => rmSync(scratch, { recursive: true, force: true }));
   await extract(result.bytes, scratch);
   const gameRoot = join(scratch, 'my-first-opendle-world');
   assert.equal(existsSync(join(gameRoot, 'node_modules')), false);
+  assert.equal(existsSync(join(gameRoot, 'app.js')), false, 'the editor is not in the build');
 
-  const child = spawn(process.execPath, ['server/export-launcher.js'], {
+  const child = spawn(process.execPath, ['server/game-serve.js'], {
     cwd: gameRoot, env: { ...process.env, PORT: '0', OPENDLE_NO_BROWSER: '1' },
   });
   t.after(() => child.kill('SIGKILL'));
   const output = { text: '' };
   const url = await new Promise((resolveUrl, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Launcher did not start: ${output.text}`)), 20000);
+    const timer = setTimeout(() => reject(new Error(`The game server did not start: ${output.text}`)), 20000);
     const inspect = () => {
-      const match = /OpenDLE game: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(output.text);
+      const match = /Game ready at (http:\/\/127\.0\.0\.1:\d+\/)/.exec(output.text);
       if (!match) return;
       clearTimeout(timer);
       resolveUrl(match[1]);
     };
     child.stdout.on('data', chunk => { output.text += chunk; inspect(); });
     child.stderr.on('data', chunk => { output.text += chunk; });
-    child.once('exit', code => { clearTimeout(timer); reject(new Error(`Launcher exited with ${code}: ${output.text}`)); });
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`The game server exited with ${code}: ${output.text}`)); });
   });
 
-  const session = await (await fetch(`${url}api/session`)).json();
-  assert.equal(typeof session.token, 'string');
-  assert.ok(session.token.length >= 32);
-  assert.equal(session.deepseekConfigured, false);
-  const health = await (await fetch(`${url}api/health`)).json();
-  assert.deepEqual(health, { service: 'OpenDLE', version: '0.0.7' });
-  const license = await (await fetch(`${url}api/license`)).json();
-  assert.equal(license.text, readFileSync(resolve(root, 'LICENSE'), 'utf8'));
-  assert.equal(license.sha256, createHash('sha256').update(license.text).digest('hex'));
-
-  assert.equal((await fetch(`${url}api/project`)).status, 401, 'project reads need the session token');
-  const authorized = { headers: { Authorization: `Bearer ${session.token}` } };
-  const snapshot = await (await fetch(`${url}api/project`, authorized)).json();
-  assert.equal(snapshot.project.title, 'My first OpenDLE world');
-  assert.equal(snapshot.revision, 0);
-  const saved = await (await fetch(`${url}api/project`, {
-    method: 'PUT', headers: { ...authorized.headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project: { ...snapshot.project, title: 'Saved in the build' }, revision: 0, projectId: snapshot.projectId }),
-  })).json();
-  assert.equal(saved.revision, 1);
-  // A save in the build writes a project folder (document plus asset files), the same format the
-  // studio writes, so the entry's own file is where the saved title lives.
-  const index = JSON.parse(readFileSync(join(gameRoot, 'data', 'projects.json'), 'utf8'));
-  const entry = index.projects.find(candidate => candidate.id === saved.projectId);
-  const document = JSON.parse(readFileSync(join(gameRoot, 'data', entry.file), 'utf8'));
-  assert.equal(document.project.title, 'Saved in the build');
-  assert.equal(document.format, 'project-folder');
-
+  // The page a player opens is the game's, and it boots on a menu rather than an editor shell.
   const page = await fetch(url);
   assert.equal(page.status, 200);
-  assert.match(page.headers.get('content-security-policy'), /sha256-/);
-  assert.match(await page.text(), /<script type="importmap">/);
-  const module = await fetch(`${url}shared/project.js`);
+  const html = await page.text();
+  assert.match(html, /<script type="importmap">/);
+  assert.match(html, /id="menu"/);
+  assert.match(html, /game\.js/);
+  assert.doesNotMatch(html, /id="editor-shell"/);
+  assert.doesNotMatch(html, /license-dialog/);
+
+  const documentResponse = await fetch(`${url}data/project.json`);
+  assert.equal(documentResponse.status, 200);
+  const document = await documentResponse.json();
+  assert.equal(document.project.title, 'My first OpenDLE world');
+  const asset = document.project.assets.find(entry => entry.id === 'asset_png');
+  assert.match(asset.src, /^data\/assets\//, 'the asset is addressed as a URL beside the document');
+  const payload = await fetch(`${url}${asset.src}`);
+  assert.equal(payload.status, 200);
+  assert.equal(payload.headers.get('content-type'), 'image/png');
+  const png = Buffer.from(await payload.arrayBuffer());
+  assert.deepEqual([...png.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], 'the file is the PNG the project embedded');
+
+  // The engine modules the page needs are served; the studio's own API is not there at all.
+  const module = await fetch(`${url}shared/runtime.js`);
   assert.equal(module.status, 200);
   assert.match(module.headers.get('content-type'), /text\/javascript/);
-  const addon = await fetch(`${url}vendor/three-addons/loaders/GLTFLoader.js`);
-  assert.equal(addon.status, 200);
-  assert.match(await addon.text(), /from '\/vendor\/three\/three\.module\.js'/);
-  const vendor = await fetch(`${url}vendor/three/three.core.js`);
-  assert.equal(vendor.status, 200);
-  assert.equal(Number(vendor.headers.get('content-length')), result.files.find(file => file.path.endsWith('three.core.js')).size);
+  assert.equal((await fetch(`${url}render.js`)).status, 200);
+  assert.equal((await fetch(`${url}vendor/three/three.core.js`)).status, 200);
+  for (const studioOnly of ['app.js', 'api/health', 'api/project', 'server/store.js', 'style.css']) {
+    assert.equal((await fetch(`${url}${studioOnly}`)).status, 404, `${studioOnly} is not part of the game`);
+  }
+  for (const escaped of ['%2e%2e/outside.txt', '..%2foutside.txt']) {
+    assert.ok([403, 404].includes((await fetch(`${url}${escaped}`)).status), 'a path outside the build is not served');
+  }
+  // The server guards the path itself, not just the URL a browser happens to normalise.
+  const { resolveGameFile } = await import('../server/game-serve.js');
+  assert.equal(resolveGameFile(gameRoot, '/../outside.txt'), null);
+  assert.equal(resolveGameFile(gameRoot, '/data/../../outside.txt'), null);
 
-  assert.equal((await fetch(`${url}%2e%2e/README.md`)).status, 404, 'encoded traversal outside public is not served');
-  assert.equal((await fetch(`${url}api/unknown`, authorized)).status, 404);
-  // An addon's script has to load without a token (`import()` cannot send one), and it comes from the
-  // project, so a game exported with an addon still runs it.
-  const withAddon = structuredClone(saved.project);
-  installAddon(withAddon, { manifest: { format: 'opendle-addon', version: 1, id: 'sparkle', name: 'Sparkle', entry: 'addon.js',
-    provides: { actions: [{ type: 'sparkle:burst', label: 'Burst', fields: [] }] } },
-  files: { 'addon.js': 'export default () => {};', 'style.css': 'body{}', 'notes.bin': 'x' } }, { engineTypes: new Set([...CONDITIONS, ...ACTIONS]) });
-  const put = await fetch(`${url}api/project`, { method: 'PUT', headers: { ...authorized.headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project: withAddon, revision: saved.revision, projectId: saved.projectId }) });
-  assert.equal(put.status, 200, `saving a project with an addon succeeds: ${await put.clone?.().text?.() ?? ''}`);
-  const script = await fetch(`${url}api/addons/sparkle/addon.js`);
-  assert.equal(script.status, 200, 'the addon script is served in the portable build');
-  assert.match(script.headers.get('content-type'), /text\/javascript/);
-  assert.equal(await script.text(), 'export default () => {};');
-  const style = await fetch(`${url}api/addons/sparkle/style.css`);
-  assert.match(style.headers.get('content-type'), /text\/css/);
-  assert.equal((await fetch(`${url}api/addons/sparkle/missing.js`)).status, 404);
-  assert.equal((await fetch(`${url}api/addons/sparkle/notes.bin`)).status, 415, 'only the kinds the studio serves');
+  // A range request is how a browser seeks inside a video; the server answers it.
+  const ranged = await fetch(`${url}vendor/three/three.core.js`, { headers: { Range: 'bytes=0-9' } });
+  assert.equal(ranged.status, 206);
+  assert.equal((await ranged.arrayBuffer()).byteLength, 10);
 });
 
 test('a bundled build carries its own runtime, so a clean machine installs nothing', async t => {
@@ -495,14 +517,17 @@ test('a bundled build carries its own runtime, so a clean machine installs nothi
   assert.equal(manifest.requirements.node, undefined, 'nothing has to be installed, so nothing is required');
 
   // Electron looks for the app in resources/app beside its own executable.
-  assert.equal(manifest.entry.page, `${slug}/resources/app/public/index.html`);
-  assert.equal(manifest.entry.server, `${slug}/resources/app/server/export-launcher.js`);
+  assert.equal(manifest.entry.page, `${slug}/resources/app/index.html`);
+  assert.equal(manifest.entry.server, `${slug}/resources/app/server/game-serve.js`);
   assert.equal(manifest.entry.data, `${slug}/resources/app/data/project.json`);
 
-  for (const required of ['main.js', 'package.json', 'server/export-launcher.js', 'shared/project.js',
-    'public/index.html', 'data/project.json', 'LICENSE', 'version.ini',
-    'public/vendor/three/three.webgpu.js', 'public/vendor/rapier/rapier.mjs']) {
+  for (const required of ['main.js', 'package.json', 'server/game-serve.js', 'shared/project.js',
+    'index.html', 'game.js', 'data/project.json', 'LICENSE', 'version.ini',
+    'vendor/three/three.webgpu.js', 'vendor/rapier/rapier.mjs']) {
     assert.ok(entries.has(`${slug}/resources/app/${required}`), `app contains ${required}`);
+  }
+  for (const editorOnly of ['app.js', 'style.css', 'scene-editor.js', 'server/store.js', 'public/index.html']) {
+    assert.equal(entries.has(`${slug}/resources/app/${editorOnly}`), false, `${editorOnly} is an editor file`);
   }
   // The runtime itself, at the top level, with the executable renamed to the game.
   for (const runtimeFile of ['My first OpenDLE world', 'chrome-sandbox', 'icudtl.dat', 'resources.pak', 'locales/en-US.pak']) {
@@ -523,14 +548,14 @@ test('a bundled build carries its own runtime, so a clean machine installs nothi
   assert.equal(app.productName, 'My first OpenDLE world');
   const main = entries.get(`${slug}/resources/app/main.js`).data.toString('utf8');
   assert.match(main, /from 'electron'/, 'the entry point is the electron shell');
-  assert.match(main, /startGame/, 'it starts the same game server a portable build starts');
-  assert.match(main, /OPENDLE_NO_BROWSER/, 'it must not hand the game to an outside browser');
-  assert.match(main, /opendleSaveBeforeClose/, 'closing saves through the page');
+  assert.match(main, /startGameServer/, 'it starts the same small server a portable build starts');
+  assert.match(main, /open: false/, 'it must not hand the game to an outside browser');
+  assert.match(main, /fullscreen: true/, 'a game opens fullscreen');
   assert.match(main, /requestSingleInstanceLock/, 'a second double-click focuses the running game');
 
   const readme = entries.get(`${slug}/README.md`).data.toString('utf8');
   assert.match(readme, /Nothing has to be installed/);
-  assert.match(readme, /\/\.config\/my-first-opendle-world\/data\/project\.json/);
+  assert.match(readme, /data\/assets\//);
   assert.doesNotMatch(readme, /Node\.js 22 or newer/);
 
   const listed = manifest.files.map(file => file.path);
@@ -593,8 +618,9 @@ test('the generated entry point boots the game server and hands the window its a
   const page = await fetch(url);
   assert.equal(page.status, 200);
   assert.match(await page.text(), /<script type="importmap">/);
-  const health = await (await fetch(`${url}api/health`)).json();
-  assert.equal(health.service, 'OpenDLE');
+  const data = await (await fetch(`${url}data/project.json`)).json();
+  assert.equal(data.project.title, 'My first OpenDLE world');
+  assert.equal((await fetch(`${url}api/health`)).status, 404, 'the studio API is not in a game');
   // The game is served from the app folder inside the build, not from the export machine.
   assert.match(await (await fetch(`${url}shared/project.js`)).text(), /export function createProject/);
 });

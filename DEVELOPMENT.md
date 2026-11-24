@@ -6192,23 +6192,64 @@ Visual scripting reference: [Docs/visual-scripting.md](Docs/visual-scripting.md)
 
 ### Standalone playable export
 
-**Export playable app** builds a self-contained ZIP (`server/export-build.js`)
-containing first-party engine files, the browser assets the studio serves from
-`node_modules` (Three.js build, Rapier WASM loader, GLTF loader closure), the
-exported project under `data/project.json`, this LICENSE, a build manifest and
-both `launch.sh` and `launch.cmd`. No `node_modules` tree is copied: a
-dependency-free `server/export-launcher.js` serves the bundle, and the launch
-script opens an installed Chromium-based browser in `--app` window mode so the
-game looks like a native window, falling back to the default browser with a
-message. Requirements: Node.js 22+ and a Chromium-based browser. The bundle is
-bounded (128 MiB, 10,000 files), uses safe relative paths only, and writes a
-zip that the project's own archive reader accepts. A 68 MB Freedoom campaign
-exports to a 23 MB zip that boots and serves its health endpoint from the
-extracted folder.
+**Export playable app** produces the finished game, not the studio: a ZIP built by
+[server/export-build.js](./server/export-build.js) out of the player page, the engine
+modules that page actually imports, the renderer libraries it loads, and the project
+data split into files. The editor is not in it — `public/app.js`, the panels, the
+scene editor and the studio's HTTP API are all absent, because the payload is the
+**import closure** of `public/game/index.html` rather than a copy of `public/`.
 
-This is a *portable* build, not a signed installer: there is no embedded browser
-runtime (an embedded WebView would add a licence and a 100+ MB runtime per
-platform) and GPU support is whatever the user's browser provides.
+The exported folder boots to a **main menu** and plays fullscreen, the way a game
+build does:
+
+| Path | What it is |
+| --- | --- |
+| `index.html`, `game.js`, `menu.js`, `game.css` | the player: main menu, options, level picker, pause, input |
+| `render.js`, `audio.js`, `hud-view.js`, `shader-effects.js`, … | engine modules the player imports, and only those |
+| `shared/` | engine rules: runtime, physics, actors, ACS, events, sectors, HUD, menus |
+| `vendor/three/`, `vendor/three-addons/`, `vendor/rapier/` | the renderer and physics libraries, ready to load |
+| `server/game-serve.js` | a dependency-free static server (with range requests) and browser launcher |
+| `data/project.json` | a small document: title, map, objects, rules, HUD |
+| `data/game.json`, `data/actors.json` | the campaign and the actor table, in their own files |
+| `data/assets/` | one file per texture, flat, sprite, sound, model and video |
+| `build.json` | manifest: engine version, title, export date, every file and its SHA-256 |
+
+#### Data: split on disk, joined at load
+
+The document is written with `packProject` from
+[server/project-folder.js](./server/project-folder.js) — the same split the studio uses
+for `data/projects/<id>/` — and each asset's `src` is rewritten to the URL of its file
+(`data/assets/brick-1a2b3c4d.png`). That is what turns a 100 MB `project.json` into a
+document a person can read plus a folder of real files, like Unity's `Assets/` or
+Godot's project directory.
+
+The engine still wants bytes in hand — it decodes a model while it builds the scene —
+so `public/game/assets.js` fetches the files once, right before a level starts, and
+turns them back into the data URLs the rest of the engine already understands. Only the
+level being played is cloned into the runtime, so a campaign costs disk rather than RAM.
+`test/game-assets.test.js` covers the join, including a missing file naming the asset it
+could not load.
+
+#### The player
+
+`public/game/game.js` is the whole application: it loads `data/project.json` and the
+sections it names, installs the menus and HUD a project is expected to have **in
+memory only**, then asks the same questions the editor's playtest asks —
+`createRuntime`, `createPreview`, `createHUDView`, `createAudioPlayer` — and runs the
+same frame loop (`stepRuntime` → audio → `render` → HUD). Input, pointer lock, the
+runtime's own pause menu (`gameScreen`), level changes (`menuRequests`) and campaign
+progress (`localStorage`) are handled here.
+
+The menu model lives in `public/game/menu.js`, which is pure data and is covered by
+`test/game-menu.test.js`: which buttons a title shows, when *Continue* appears, the
+level list, the campaign chain, and the options rows built from `GAME_SETTINGS`.
+`npm run automation:game` builds a real game, serves it with its own server, opens it
+in the studio's throwaway window and checks the menu, the options panel and that
+pressing Play hands the screen to the engine.
+
+Requirements for the portable build: Node.js 22+ and a browser. The bundle is bounded
+(128 MiB, 10,000 files), uses safe relative paths only, and writes a zip the project's
+own archive reader accepts.
 
 #### The bundled runtime: nothing to install
 
@@ -6216,41 +6257,41 @@ platform) and GPU support is whatever the user's browser provides.
 
 | | Small build (`runtime=portable`) | Runs on any computer (`runtime=bundled`) |
 | --- | --- | --- |
-| Size | about 25 MB | about 120 MB empty, 150-180 MB with an imported game's artwork |
-| Needs on the player's machine | Node.js 22.2+ and a Chromium browser | nothing |
+| Size | a few MB plus the game's assets | about 120 MB empty, 150-180 MB with an imported game's artwork |
+| Needs on the player's machine | Node.js 22.2+ and a browser | nothing |
 | Runs by | `launch.cmd` / `launch.sh` | double-clicking the game |
 | macOS | supported | not supported (see below) |
 
-The bundled build copies Electron into the zip: the game's own Node.js and Chromium, which is
-what makes a clean machine work. Nothing is rebuilt or patched — the runtime is the version the
-studio itself runs on, so the renderer behaves the same in the editor and in the shipped game.
-`server/electron-runtime.js` resolves it: the studio's own `node_modules/electron/dist` when the
-target is this machine, otherwise the release zip from `@electron/get`, unpacked once into
-`data/.electron-runtimes/v<version>-<platform>-<arch>/` (gitignored) and reused offline after
-that. A half-finished unpack never looks complete: it happens under a `.partial` name and is
-renamed when the archive is fully out.
+The bundled build copies Electron into the zip: the game's own Node.js and Chromium,
+which is what makes a clean machine work. Nothing is rebuilt or patched — the runtime is
+the version the studio itself runs on, so the renderer behaves the same in the editor and
+in the shipped game. `server/electron-runtime.js` resolves it: the studio's own
+`node_modules/electron/dist` when the target is this machine, otherwise the release zip
+from `@electron/get`, unpacked once into
+`data/.electron-runtimes/v<version>-<platform>-<arch>/` (gitignored) and reused offline
+after that. A half-finished unpack never looks complete: it happens under a `.partial`
+name and is renamed when the archive is fully out.
 
-The layout is Electron's, unchanged: the runtime sits at the top of the folder and the game is
-`resources/app` beside it, where Electron looks for it. `main.js` (generated per build,
-[server/export-build.js](./server/export-build.js)) starts the **same** game server a portable
-build starts — `startGame` from `export-launcher.js`, so the token, CSP, addon serving and save
-format are shared code — and shows it in a `BrowserWindow` instead of an outside browser. It
-grants only the permissions a game needs (pointer lock, fullscreen), refuses remote navigation,
-and wires closing the way the studio's own window does: save through the page, and if that fails
-offer to close anyway while saying whether the edits survive. Saves go to
-`<appData>/<slug>/data/project.json`, not into the unzipped folder, so replacing the game with a
-newer build keeps progress and a read-only install still saves.
+The layout is Electron's, unchanged: the runtime sits at the top of the folder and the game
+is `resources/app` beside it, where Electron looks for it. `main.js` (generated per build,
+[server/export-build.js](./server/export-build.js)) starts the same
+`startGameServer` from `server/game-serve.js` a portable build's launcher starts, and opens
+it in a `BrowserWindow` created with **`fullscreen: true`** — a game boots, not a website.
+It grants only the permissions a game needs (pointer lock, fullscreen), refuses remote
+navigation, and keeps `F11` as a fullscreen toggle. There is no project store and no studio
+API behind it: the window can reach the game folder and nothing else.
 
-The executable is renamed to the project title (minus what a file system refuses) so the folder
-reads as a game rather than as a browser; `resources/default_app.asar` is dropped because it is
-only Electron's placeholder app. Copied files keep just two modes — `0755` for anything that was
-executable, `0644` for the rest — because source distributions are often `0777` and shipping that
-would hand every player a world-writable game folder.
+The executable is renamed to the project title (minus what a file system refuses) so the
+folder reads as a game rather than as a browser; `resources/default_app.asar` is dropped
+because it is only Electron's placeholder app. Copied files keep just two modes — `0755`
+for anything that was executable, `0644` for the rest — because source distributions are
+often `0777` and shipping that would hand every player a world-writable game folder.
 
-**macOS is deliberately not a bundled target.** An `Electron.app` survives a zip only if its
-framework symlinks do, and it has to be signed before a machine that did not build it will open
-it; an unsigned copy is an app the Finder refuses to launch. A macOS export therefore uses the
-portable build, and the UI says so instead of producing a bundle that will not open.
+**macOS is deliberately not a bundled target.** An `Electron.app` survives a zip only if
+its framework symlinks do, and it has to be signed before a machine that did not build it
+will open it; an unsigned copy is an app the Finder refuses to launch. A macOS export
+therefore uses the portable build, and the UI says so instead of producing a bundle that
+will not open.
 
 ## License and references
 
