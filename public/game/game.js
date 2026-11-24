@@ -582,8 +582,24 @@ document.addEventListener('pointerlockchange', () => {
 // The frame loop: the same calls the editor's playtest makes, minus the editor
 // ---------------------------------------------------------------------------------------------------
 
+/**
+ * The frame loop, scheduled exactly once.
+ *
+ * `frame` is called both by animation frames and by the fallback timer below, and it used to
+ * register a new animation frame on every call. A window the browser occludes runs the timer for
+ * every tick while animation frames are stopped, so each tick left one more callback pending: when
+ * the window came back, hundreds of them fired for the same frame, each stepping the runtime and
+ * drawing the scene, and the game never recovered its frame time.
+ */
+let frameScheduled = false;
+function scheduleFrame() {
+  if (frameScheduled) return;
+  frameScheduled = true;
+  requestAnimationFrame(now => { frameScheduled = false; frame(now); });
+}
+
 function frame(now) {
-  requestAnimationFrame(frame);
+  scheduleFrame();
   frameCount++;
   lastTick = now;
   const engine = game.engine;
@@ -666,7 +682,7 @@ window.__game = {
   },
 };
 window.addEventListener('beforeunload', () => disposeEngine());
-requestAnimationFrame(frame);
+scheduleFrame();
 // A window the browser considers hidden — occluded behind another window, or on a machine whose
 // compositor never presents it — receives no animation frames at all, and the game's menus are drawn
 // from this loop, so they would simply never appear. A slow timer keeps the simulation alive when

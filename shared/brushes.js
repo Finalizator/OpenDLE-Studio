@@ -235,6 +235,11 @@ function findBrush(project, id) {
 }
 
 function commit(project, brush, faces) {
+  // Every geometry edit lands here, so this is the one place that can refuse a brush with no
+  // volume left: a grip dragged past the opposite edge, a scale factor of zero or a face pushed
+  // through the far side used to be stored as a brush with no corners at all — invisible,
+  // unselectable, saved into the map and unsalvageable without undo.
+  if (!brushVertices({ faces }).length) throw new Error('That edit would flatten the brush to nothing');
   brush.faces = faces;
   delete brush.planes;
   brush.bounds = brushBounds(brush);
@@ -260,8 +265,13 @@ export function moveBrushFace(project, brushId, faceIndex, distance) {
   const face = faces[faceIndex];
   if (!face) throw new Error('That face no longer exists');
   const plane = facePlane(face);
-  faces[faceIndex] = { ...face, points: face.points.map(point => add(point, mul(plane.normal, distance))) };
-  return commit(project, brush, faces);
+  // A new array, not an edit of `brush.faces`: `commit` refuses an edit that would flatten the
+  // brush, and a refusal has to leave the brush it refused untouched. Passing the live array here
+  // meant the failed move had already been written into the brush.
+  const next = faces.map((entry, index) => index === faceIndex
+    ? { ...entry, points: entry.points.map(point => add(point, mul(plane.normal, distance))) }
+    : entry);
+  return commit(project, brush, next);
 }
 
 /**
@@ -356,8 +366,12 @@ export function splitBrush(brush, plane) {
   if (!vertices.length) return { front: null, back: null, untouched: true };
   const distances = vertices.map(point => dot(plane.normal, point) - plane.distance);
   const maxDistance = Math.max(...distances), minDistance = Math.min(...distances);
-  if (minDistance >= -EPS) return { front: null, back: brush, untouched: true };
-  if (maxDistance <= EPS) return { front: brush, back: null, untouched: true };
+  // `front` is the half the normal points at, which is what the general case below builds. These
+  // two early answers used to name the halves the other way round, and `subtractBrush` reads them
+  // as they are named: a cutter that shaved a face off a brush therefore put the whole brush on the
+  // "outside" pile and subtract appeared to do nothing at all.
+  if (minDistance >= -EPS) return { front: brush, back: null, untouched: true };
+  if (maxDistance <= EPS) return { front: null, back: brush, untouched: true };
   const normal = normalize(plane.normal);
   const front = freshBrush(brush, [...facesOf(brush).map(copyFace), faceFromPlane(mul(normal, -1), -plane.distance)]);
   const back = freshBrush(brush, [...facesOf(brush).map(copyFace), faceFromPlane(normal, plane.distance)]);
@@ -561,6 +575,12 @@ export function setBrushFacePosition(project, brushId, axisIndex, side, value) {
   });
   if (best < 0) throw new Error('That brush has no face along this axis');
   const plane = facePlane(faces[best]);
+  // A grip stops one unit short of the opposite edge instead of collapsing the brush, the same
+  // limit the inspector's width/depth/height fields use. Dragging is continuous, so refusing the
+  // whole drag with an error would make the brush stop following the pointer.
+  const [min, max] = brushExtent(brush, axisIndex);
+  const limit = side > 0 ? min + 1 : max - 1;
+  value = side > 0 ? Math.max(value, limit) : Math.min(value, limit);
   const anchor = [0, 0, 0];
   anchor[axisIndex] = value;
   // Slide the plane along its own normal until it passes through the anchor: that keeps a
