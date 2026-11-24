@@ -84,11 +84,14 @@ step and prints the trail.
 
 `scenarios/maps.mjs` is the model for the map importer: it drives `importMap` in both modes,
 then reads `getLayouts()` to prove the Layouts list and the dormant level agree with the import.
-`scenarios/game.mjs` shows the other pattern: a scenario that does its own work outside the page
-(build an export, spawn `server/game-serve.js`), then points the window at it with
-`page.send('Page.navigate', { url })` and reads the exported game's DOM. The exported game draws its
-menu with the engine's HUD, so wait for `#hud [role="button"]` rows rather than a DOM menu — there
-is none.
+`scenarios/game.mjs` shows the other pattern: a scenario with `export const needsStudio = false`,
+which `run.mjs` runs with no studio window at all. It builds a bundled export of the campaign in the
+editor's library, starts the build's own Electron (`main.js --automation-port <port>`) and drives
+the player window, so the licence gate and the editor's storage cannot colour the result. The
+exported game draws its menu with the engine's HUD, so wait for `#hud [role="button"]` rows rather
+than a DOM menu — there is none — and start a level with `window.__game.start()` rather than
+clicking through Doom's multi-step menus (`window.__game.status()` reports `screen`, `frames` and the
+status bar's geometry).
 
 ## Traps that produced false results before
 

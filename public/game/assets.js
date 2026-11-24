@@ -9,22 +9,46 @@
 /**
  * Puts the payloads back into the document, in memory, right before a level starts.
  *
- * `report(index, total, asset)` is called as files arrive, so a big campaign can say what it is
- * doing; `fetchImpl` is the page's own `fetch` unless a caller (a test) supplies another.
+ * A campaign is thousands of files, so they are fetched a few at a time rather than one after
+ * another (2218 of them in sequence is a wait nobody would sit through), each with its own
+ * deadline: one stalled request must not become a game that never finishes loading.
+ *
+ * `report(index, total, asset)` says how far along it is; `fetchImpl` is the page's own `fetch`
+ * unless a caller (a test) supplies another. Files that cannot be read are reported rather than
+ * thrown: a missing texture should leave a hole, not cost the player the level.
  */
-export async function hydrateAssets(project, report = () => {}, fetchImpl = (...args) => fetch(...args)) {
+export async function hydrateAssets(project, report = () => {}, fetchImpl = (...args) => fetch(...args),
+  { concurrency = 8, timeout = 20000, onFailure = () => {} } = {}) {
   const network = (project.assets || []).filter(asset =>
     typeof asset?.src === 'string' && asset.src && !/^(data|blob|https?):/i.test(asset.src));
-  for (const [index, asset] of network.entries()) {
-    report(index, network.length, asset);
-    const response = await fetchImpl(asset.src);
-    if (!response.ok) throw new Error(`${asset.name || asset.id}: ${asset.src} could not be loaded (${response.status})`);
-    const buffer = new Uint8Array(await response.arrayBuffer());
-    const mime = asset.srcMime || response.headers.get('content-type')?.split(';')[0] || 'application/octet-stream';
-    asset.src = `data:${mime};base64,${toBase64(buffer)}`;
-    delete asset.srcMime;
-  }
-  report(network.length, network.length);
+  const queue = [...network];
+  const failures = [];
+  let done = 0;
+  report(0, network.length, null);
+  const worker = async () => {
+    while (queue.length) {
+      const asset = queue.shift();
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeout) : 0;
+      try {
+        const response = await fetchImpl(asset.src, controller ? { signal: controller.signal } : undefined);
+        if (!response.ok) throw new Error(`${asset.src} could not be loaded (${response.status})`);
+        const buffer = new Uint8Array(await response.arrayBuffer());
+        const mime = asset.srcMime || response.headers.get('content-type')?.split(';')[0] || 'application/octet-stream';
+        asset.src = `data:${mime};base64,${toBase64(buffer)}`;
+        delete asset.srcMime;
+      } catch (error) {
+        const reason = error?.name === 'AbortError' ? `${timeout} ms without an answer` : error.message;
+        failures.push({ asset, reason });
+        onFailure(asset, reason);
+      } finally {
+        if (timer) clearTimeout(timer);
+        report(++done, network.length, asset);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
+  return { loaded: network.length - failures.length, failed: failures };
 }
 
 /** Base64 without spreading a large buffer into an argument list. */
@@ -35,4 +59,3 @@ export function toBase64(bytes) {
   }
   return btoa(binary);
 }
-

@@ -8,7 +8,7 @@ few numbers, which is what keeps a long automation session cheap for this machin
 npm run automation:brushes     # draw, move (Top + Front), grip-resize, 3D move, 3D face drag
 npm run automation:menus       # the right-click menu carries the brush commands
 npm run automation:maps        # a Quake .map as a new project, and as a layout beside the open one
-npm run automation:game        # builds an export, serves it, and checks the game boots into its own menu
+npm run automation:game        # builds a bundled export and drives the real player window
 node tools/automation/run.mjs brushes --port 3000
 ```
 
@@ -30,7 +30,15 @@ Output is one JSON line. A failure exits non-zero and names the failing step:
 - `cdp.mjs` is a ~120-line CDP client built on Node's global `WebSocket` (`Runtime.evaluate`,
   `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`).
 - The licence dialog is accepted by clicking it, like a person does. The automation profile lives in
-  `data/automation-profile` (gitignored), so it is remembered between runs.
+  `data/automation-profile` (gitignored), so it is remembered between runs. An already-accepted
+  profile closes the dialog by itself and leaves the accept button disabled on purpose, so the
+  helper waits for *closed or enabled* — waiting on the button alone hangs on every run after the
+  first.
+- A scenario that exports `needsStudio = false` is run **without** the studio window (`run.mjs`
+  passes `{}` instead of a page). `game` does that: it builds a bundled export of the campaign in
+  the editor's library, starts the build's own Electron (`main.js --automation-port <port>`), and
+  drives the player window — so the licence gate, the studio window and the editor's storage cannot
+  colour the result. With an empty library it falls back to a small authored fixture.
 
 ## The page hooks (`window.__opendle`)
 

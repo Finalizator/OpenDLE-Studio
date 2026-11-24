@@ -27,13 +27,19 @@ if (!load) {
 }
 
 const started = Date.now();
+let desktop = () => '';
 try {
-  const { run } = await load();
-  const result = await withStudio({ port }, run);
+  const { run, needsStudio = true } = await load();
+  // A scenario that drives another window (the exported game, for one) says so, so the run is not
+  // held hostage by the editor's licence gate.
+  const result = needsStudio ? await withStudio({ port }, run, log => { desktop = log; }) : await run({});
   console.log(JSON.stringify({ ok: true, scenario: name, seconds: Math.round((Date.now() - started) / 100) / 10, result }));
 } catch (error) {
   const detail = String(error?.message || error).split('\n');
+  // The window's own output is the only evidence left when the desktop process dies mid-run.
+  const tail = desktop().split('\n').filter(Boolean).slice(-6);
+  if (tail.length) detail.push('--- desktop output ---', ...tail);
   console.log(JSON.stringify({ ok: false, scenario: name, seconds: Math.round((Date.now() - started) / 100) / 10,
-    error: detail[0], detail: detail.slice(1, 6) }));
+    error: detail[0], detail: detail.slice(1, 12) }));
   process.exitCode = 1;
 }

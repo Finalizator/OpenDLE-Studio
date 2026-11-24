@@ -13,6 +13,7 @@ import { createAudioPlayer } from '/audio.js';
 import { createHUDView } from '/hud-view.js';
 import { createRuntime, stepRuntime, lookPlayer } from '/shared/runtime.js';
 import { gameSettings, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
+import { statusBarHidden } from '/shared/game-view.js';
 import { selectGameLevel, stripInactiveLevels } from '/shared/game-levels.js';
 import { installIntermission } from '/shared/intermission.js';
 import { installDroppedPickupRules } from '/shared/doom-hud.js';
@@ -28,6 +29,14 @@ const game = {
   keys: new Set(), pressed: new Set(), audioContext: null, fullscreenAsked: false,
 };
 let lookDrag = null, lastSettingsRevision = -1, frameCount = 0, lastFrameError = '', lastTick = 0;
+/** Bumped by every start: a load that finishes after the player gave up is thrown away. */
+let startToken = 0;
+/** How long the 3D view may take to come up before the game goes on without it. */
+const PREVIEW_TIMEOUT = (() => {
+  // The build writes no timeout; a test can shorten it in the page's config block.
+  try { return Number(JSON.parse($('game-config').textContent || '{}').previewTimeout) || 45000; }
+  catch { return 45000; }
+})();
 
 // ---------------------------------------------------------------------------------------------------
 // Data
@@ -166,6 +175,21 @@ async function toggleFullscreen() {
   } catch (error) { showToast(`Fullscreen is not available: ${error.message}`, true); }
 }
 
+/**
+ * Waits for `promise`, but not forever.
+ *
+ * Returns `{ value }` when it settles, or `null` when the deadline passes first. A renderer that
+ * never comes up must not leave the player looking at a loading bar with the music playing.
+ */
+async function withDeadline(promise, ms) {
+  let timer = 0;
+  const deadline = new Promise(resolve => { timer = setTimeout(() => resolve(null), ms); });
+  try {
+    const settled = await Promise.race([promise.then(value => ({ value })), deadline]);
+    return settled;
+  } finally { clearTimeout(timer); }
+}
+
 /** The AudioContext has to be created inside a gesture, so it is made on the first one. */
 function primeAudio() {
   if (game.audioContext) { game.audioContext.resume?.().catch(() => {}); return game.audioContext; }
@@ -245,9 +269,7 @@ async function openMenu() {
   setLoading('Loading the game…');
   try {
     if (!game.hydrated) {
-      await hydrateAssets(game.project, (done, total) => {
-        if (total) setLoading(`Loading the artwork… ${Math.round((done / total) * 100)}%`);
-      });
+      await loadArtwork();
       game.hydrated = true;
     }
     const engine = buildRuntime({ screen: game.project.gameMenus?.entry || 'playing' });
@@ -262,25 +284,65 @@ async function openMenu() {
   }
 }
 
+/**
+ * Reads the split payloads with a running count, and reports what it could not read.
+ *
+ * The count matters: a campaign is thousands of files, and a bar that only says "loading" looks
+ * the same whether it is nearly done or wedged.
+ */
+async function loadArtwork() {
+  const failures = [];
+  const { loaded, failed } = await hydrateAssets(game.project, (done, total) => {
+    if (total) setLoading(`Loading the artwork… ${done} of ${total}`);
+  }, undefined, { concurrency: 8, timeout: 20000, onFailure: (asset, reason) => failures.push(`${asset.name || asset.id}: ${reason}`) });
+  if (failed.length) {
+    showToast(`${failed.length} of ${loaded + failed.length} artwork files could not be read — first: ${failures[0]}`, true);
+  }
+  return { loaded, failed };
+}
+
 /** Starts a level: the runtime is rebuilt at `playing` and the 3D view is created for it. */
 async function playLevel(levelId, { progress = null } = {}) {
   if (game.busy) return;
   game.busy = true;
+  const token = ++startToken;
   hideFatal();
   setLoading('Loading the level…');
   game.keys.clear(); game.pressed.clear();
   try {
     if (!game.hydrated) {
-      await hydrateAssets(game.project, (done, total) => {
-        if (total) setLoading(`Loading the artwork… ${Math.round((done / total) * 100)}%`);
-      });
+      await loadArtwork();
       game.hydrated = true;
+      if (token !== startToken) return;
     }
     const engine = buildRuntime({ levelId, screen: 'playing', progress });
+    // Screen size 11 is the fullscreen HUD, and it hides a classic status bar as a whole. A player
+    // who starts a game and finds no bar at the bottom cannot tell that from a broken build, so the
+    // bar wins over the screen size — but only for a project that has one.
+    if (statusBarHidden(engine.snapshot.hud, engine.runtime.settings)) {
+      engine.runtime.settings.viewSize = 10;
+      engine.runtime.settingsRevision++;
+      engine.runtime.message = 'Screen size 11 hides the whole status bar, so it was set back to 10.';
+      engine.runtime.messageTime = 6;
+    }
     disposeEngine();
     game.engine = { ...engine, preview: null, hud: null, audio: null, last: performance.now() };
-    const preview = await createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) });
-    if (game.engine?.runtime !== engine.runtime) { preview.dispose(); return; }
+    let preview = null;
+    setLoading('Starting the 3D view…');
+    const started = await withDeadline(
+      createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) })
+        .catch(error => { throw error; }), PREVIEW_TIMEOUT);
+    if (token !== startToken) {
+      // The player gave up on this level while the renderer was coming up: throw the late one away.
+      if (started?.value?.dispose) started.value.dispose();
+      return;
+    }
+    if (!started) {
+      showToast('The 3D view did not start in time, so the game continues without it.', true);
+    } else {
+      preview = started.value;
+    }
+    if (game.engine?.runtime !== engine.runtime) { preview?.dispose(); return; }
     game.engine.preview = preview;
     attachHud(game.engine);
     try {
@@ -418,6 +480,15 @@ function handleMenuKey(code) {
 window.addEventListener('keydown', event => {
   primeAudio();
   if (event.code === 'Escape') {
+    if (game.busy) {
+      // A start that is taking too long must be escapable: give up on it and go back to the menu.
+      event.preventDefault();
+      startToken++;
+      game.busy = false;
+      showToast('Level start cancelled.');
+      void openMenu();
+      return;
+    }
     const runtime = game.engine?.runtime;
     if (runtime?.gameScreen === 'playing') {
       event.preventDefault();
@@ -526,6 +597,8 @@ function frame(now) {
  * which screen the engine is on, whether the HUD cursor is active, and what the menu rows look like.
  */
 window.__game = {
+  /** Start a level without clicking through the menus; a test hook, and a way to reproduce a report. */
+  start: levelId => playLevel(levelId || game.project?.game?.entry || null),
   status: () => {
     const runtime = game.engine?.runtime;
     const rows = [...hudHost.querySelectorAll('[role="button"]')];
@@ -537,6 +610,21 @@ window.__game = {
       rows: rows.length, shown: rows.filter(row => !row.hidden).length,
       selectable: rows.filter(row => row.tabIndex === 0).length,
       level: game.engine?.levelId ?? null,
+      viewSize: game.engine?.runtime?.settings?.viewSize ?? null,
+      statusBar: (() => {
+        const elements = [...(game.engine?.runtime?.hudState?.elements?.values?.() || [])].filter(element => element.statusbar);
+        const nodes = elements.map(element => document.querySelector(`#hud [data-hud-id="${element.id}"]`)).filter(Boolean);
+        const first = nodes[0]?.getBoundingClientRect();
+        return {
+          elements: elements.length,
+          visibleFlags: elements.filter(element => element.visible).length,
+          displays: [...new Set(elements.map(element => element.display))],
+          nodes: nodes.length,
+          nodeHidden: nodes.filter(node => node.hidden).length,
+          window: [window.innerWidth, window.innerHeight],
+          rect: first ? [Math.round(first.x), Math.round(first.y), Math.round(first.width), Math.round(first.height)] : null,
+        };
+      })(),
       preview: Boolean(game.engine?.preview),
       frames: frameCount, lastError: lastFrameError,
     };

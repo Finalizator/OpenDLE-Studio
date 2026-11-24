@@ -1,20 +1,31 @@
 // The exported game, opened from the folder a player actually unzips.
 //
-// The build is made right here, extracted to a scratch folder and served by the game's own server,
-// then the window is pointed at it. What is checked is what a player sees first: a title, a menu,
-// and no editor anywhere.
+// The build is made right here, extracted to a scratch folder, and started the way its own launch
+// script starts it: Electron on the build's `main.js`, which serves the game on loopback. Nothing
+// of the editor is involved, so the licence gate and the studio window cannot colour the result.
+//
+// What is checked is what a player sees: the project's own main menu, the keyboard driving it, and
+// — after starting a level — a status bar on screen, even when the 3D view cannot come up.
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import yauzl from 'yauzl';
 import { createProject } from '../../../shared/project.js';
+import { ProjectStore } from '../../../server/store.js';
 import { installDefaultHUD } from '../../../shared/hud.js';
 import { installGameMenu } from '../../../shared/game-menu.js';
 import { createPortableBuild } from '../../../server/export-build.js';
+import { resolveDist } from '../../../server/electron-runtime.js';
+import { connect } from '../cdp.mjs';
+import { freePort } from '../studio.mjs';
+
+export const needsStudio = false;
 
 const wait = ms => new Promise(done => setTimeout(done, ms));
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 function unzip(buffer) {
   return new Promise((resolve, reject) => {
@@ -38,28 +49,70 @@ function unzip(buffer) {
   });
 }
 
-async function startGameServer(directory) {
-  const child = spawn(process.execPath, ['server/game-serve.js'], {
-    cwd: directory, env: { ...process.env, PORT: '0', OPENDLE_NO_BROWSER: '1' },
-  });
-  let text = '';
-  const url = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`The game server did not start: ${text}`)), 20000);
-    const inspect = () => {
-      const match = /Game ready at (http:\/\/127\.0\.0\.1:\d+\/)/.exec(text);
-      if (!match) return;
-      clearTimeout(timer);
-      resolve(match[1]);
-    };
-    child.stdout.on('data', chunk => { text += chunk; inspect(); });
-    child.stderr.on('data', chunk => { text += chunk; });
-    child.once('exit', code => { clearTimeout(timer); reject(new Error(`The game server exited with ${code}: ${text}`)); });
-  });
-  return { url, stop: () => { try { child.kill('SIGKILL'); } catch { /* gone */ } } };
+/** The campaign in the editor's library, or a small authored fixture when there is none. */
+async function testProject() {
+  try {
+    const store = new ProjectStore(join(root, 'data', 'projects.json'));
+    const project = store.snapshot().project;
+    const levels = project.game?.levels || [];
+    if (levels.length && (project.hud?.elements || []).length) return { project, source: 'library' };
+  } catch { /* no library on this machine */ }
+  const project = createProject();
+  project.title = 'Exported Hall';
+  // A project authored in the editor already has a HUD and menus. The first version of the player
+  // called `installDefaultHUD` unconditionally, and that refuses a project that has a HUD — so every
+  // real export failed with "HUD already exists". The fixture carries them for that reason.
+  installDefaultHUD(project);
+  installGameMenu(project);
+  return { project, source: 'fixture' };
 }
 
-export async function run({ page }) {
+/** Run the build's own Electron main, exactly as its launch script does. */
+async function launchPlayer(appDir, executable) {
+  const port = await freePort();
+  const env = { ...process.env };
+  // VS Code exports this; the game window has to run as Electron, not as plain Node.
+  delete env.ELECTRON_RUN_AS_NODE;
+  const binary = executable;
+  chmodSync(binary, 0o755);
+  const child = spawn(binary, ['--automation-port', String(port)], { cwd: appDir, stdio: ['ignore', 'pipe', 'pipe'], env });
+  const log = [];
+  child.stdout?.on('data', chunk => log.push(String(chunk).trim()));
+  child.stderr?.on('data', chunk => log.push(String(chunk).trim()));
+  const stop = () => { try { child.kill('SIGKILL'); } catch { /* already gone */ } };
+  try {
+    const page = await connect(port, { timeout: 60000 });
+    await page.send('Runtime.enable');
+    await page.send('Inspector.enable').catch(() => {});
+    await page.waitFor('typeof window.__game === "object"', { timeout: 60000, label: 'the game page' });
+    // The window is the only one on screen; a hidden one gets no animation frames at all.
+    await page.send('Page.bringToFront').catch(() => {});
+    return { page, stop, log: () => log.join('\n') };
+  } catch (error) {
+    error.message += `\n--- game output ---\n${log.join('\n').slice(-2000)}`;
+    stop();
+    throw error;
+  }
+}
+
+export async function run(context) {
   const steps = [];
+  try {
+    return await scenario(context, steps);
+  } catch (error) {
+    // A CDP-level failure ("the connection closed") otherwise arrives with no idea how far the run
+    // got, which is exactly the case where the trail matters.
+    const trail = steps.map(step => `${step.ok ? 'ok  ' : 'FAIL'} ${step.name}${step.detail === undefined ? '' : ` ${JSON.stringify(step.detail)}`}`);
+    const events = (context.page?.events || []).map(event => event.method).filter(method => /Inspector|Runtime|Log/.test(method));
+    const detached = (context.page?.events || []).filter(event => event.method === 'Inspector.detached');
+    error.message += `\n${trail.join('\n') || '(no step completed)'}`
+      + (detached.length ? `\ndetached: ${JSON.stringify(detached.map(event => event.params))}` : '')
+      + `\nevents: ${events.slice(-8).join(', ')}`;
+    throw error;
+  }
+}
+
+async function scenario(_context, steps) {
   const check = (name, ok, detail) => {
     steps.push({ name, ok: Boolean(ok), ...(detail === undefined ? {} : { detail }) });
     if (!ok) {
@@ -68,22 +121,29 @@ export async function run({ page }) {
     }
   };
 
-  const project = createProject();
-  project.title = 'Exported Hall';
-  // A project authored in the editor already has a HUD and menus. The first version of the player
-  // called `installDefaultHUD` unconditionally, and that refuses a project that has a HUD — so every
-  // real export failed with "HUD already exists". The fixture carries them for that reason.
-  installDefaultHUD(project);
-  installGameMenu(project);
-  const build = await createPortableBuild({ project, version: '0.0.1', platform: 'linux' });
+  // The campaign open in the editor is the one worth testing: its HUD is an imported status bar,
+  // its levels are real, and it is the project a bug report comes from. A machine with no library
+  // falls back to a small authored fixture that carries a HUD and menus of its own — a project
+  // without them never reached the export at all.
+  const { project, source } = await testProject();
+  const slug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'exported-hall';
+  const classicBar = (project.hud?.elements || []).some(element => element.statusbar);
+  // The finished game a person actually runs: its own Electron, its own server, no Node.js needed.
+  const dist = await resolveDist({ target: 'linux' });
+  const build = await createPortableBuild({ project, version: '0.0.1', platform: 'linux', runtime: 'bundled', electronDist: dist.directory, electronVersion: dist.version });
   const files = await unzip(build.bytes);
-  const slug = 'exported-hall';
-  check('the build has the game page', files.has(`${slug}/index.html`), [...files.keys()].slice(0, 5));
+  const appRoot = `${slug}/resources/app`;
+  check('the build has the game page', files.has(`${appRoot}/index.html`),
+    [...files.keys()].filter(name => name.endsWith('index.html')));
   check('the build has no editor', ![...files.keys()].some(name => /(^|\/)(app|style|scene-editor|project-autosave)\.(js|css)$/.test(name)),
     [...files.keys()].filter(name => name.endsWith('.js')).slice(0, 5));
-  check('the build has the game server', files.has(`${slug}/server/game-serve.js`));
-  check('the build has split data', files.has(`${slug}/data/project.json`));
-  const document = JSON.parse(files.get(`${slug}/data/project.json`).toString('utf8'));
+  check('the build has the game server', files.has(`${appRoot}/server/game-serve.js`),
+    [...files.keys()].filter(name => name.includes('game-serve.js')));
+  check('the build has split data', files.has(`${appRoot}/data/project.json`),
+    [...files.keys()].filter(name => name.includes('project.json')));
+  const manifest = JSON.parse(files.get(`${slug}/build.json`).toString('utf8'));
+  check('the manifest names the app it starts', files.has(manifest.runtime?.application), manifest.runtime);
+  const document = JSON.parse(files.get(`${appRoot}/data/project.json`).toString('utf8'));
   check('the document names its sections', typeof document.project === 'object' && document.format === 'project-folder', document.format);
 
   const scratch = mkdtempSync(join(tmpdir(), 'opendle-game-'));
@@ -92,14 +152,14 @@ export async function run({ page }) {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, data);
   }
-  const server = await startGameServer(join(scratch, slug));
+  // The renderer has no adapter here, so the start must give up quickly and carry on: this is the
+  // same path a player's machine takes when its GPU stalls, just with a shorter deadline.
+  const pageFile = join(scratch, appRoot, 'index.html');
+  writeFileSync(pageFile, readFileSync(pageFile, 'utf8')
+    .replace('{"data":"data/"}', '{"data":"data/","previewTimeout":4000}'));
+  const player = await launchPlayer(join(scratch, slug), join(scratch, manifest.runtime.executable));
+  const page = player.page;
   try {
-    await page.send('Runtime.enable');
-    await page.send('Page.navigate', { url: server.url });
-    // A hidden window has its animation frames throttled to zero, and the game's whole menu is
-    // drawn from its frame loop: the page has to be the one on screen.
-    await page.send('Page.bringToFront').catch(() => {});
-    await wait(600);
     // The game opens on **its own** main menu: the project's rows, drawn by the engine's HUD. There
     // is no player-made menu in the page, and no 3D renderer is needed to show the menu at all.
     const menu = await page.waitFor(`(() => {
@@ -137,12 +197,36 @@ export async function run({ page }) {
     check('arrow keys move through the menu', typeof focused === 'string' && focused.length > 0, { focused, status });
     check('the game loop is running', status.frames > 0, status);
 
+    // Start the entry level: the HUD, the rules and the status bar must all work even when the 3D
+    // view cannot come up, which is exactly what a stalled renderer leaves behind.
+    await page.evaluate('window.__game.start()');
+    const playing = await page.waitFor(`window.__game.status().screen === 'playing'`, { timeout: 30000, label: 'a running level' })
+      .catch(() => null);
+    const playState = await page.evaluate('window.__game.status()');
+    check('the level starts', playing === true, playState);
+    // The bottom of the screen is the part a player notices missing first. Two checks, because the
+    // two kinds of HUD answer differently: an imported campaign has classic `statusbar` elements,
+    // an authored one draws its own bottom panel with ordinary elements.
+    const bottom = await page.evaluate(`(() => {
+      const tall = innerHeight, wide = innerWidth;
+      const shown = [...document.querySelectorAll('#hud [data-hud-id]')].filter(node => !node.hidden)
+        .map(node => node.getBoundingClientRect())
+        .filter(rect => rect.height >= 12 && rect.width >= wide / 2 && rect.bottom >= tall - 8);
+      return { count: shown.length, rect: shown.length
+        ? [Math.round(shown[0].x), Math.round(shown[0].y), Math.round(shown[0].width), Math.round(shown[0].height)] : null };
+    })()`);
+    check('the bottom of the screen carries a bar', bottom.count > 0, { ...bottom, playState });
+    if (classicBar) {
+      check('the classic status bar is on screen', playState.statusBar.nodeHidden === 0 && (playState.statusBar.rect?.[3] ?? 0) > 0, playState.statusBar);
+      check('the status bar sits at the bottom', (playState.statusBar.rect?.[1] ?? 0) > playState.statusBar.window[1] / 2, playState.statusBar);
+    }
+
     const errors = (page.events || []).filter(event => event.method === 'Runtime.exceptionThrown');
     check('the game booted without a page exception', errors.length === 0,
       errors.slice(0, 2).map(event => event.params?.exceptionDetails?.exception?.description));
-    return { menuRows: menu.rows, labels: menu.labels, focused };
+    return { source, menuRows: menu.rows, labels: menu.labels, focused, classicBar, bottom };
   } finally {
-    server.stop();
+    player.stop();
     rmSync(scratch, { recursive: true, force: true });
   }
 }

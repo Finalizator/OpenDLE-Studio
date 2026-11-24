@@ -284,6 +284,11 @@ const permissions = new Set(['pointerLock', 'fullscreen', 'clipboard-sanitized-w
 app.setName(TITLE);
 app.setPath('userData', join(app.getPath('appData'), SLUG));
 
+// A player never passes this; a test harness does, so it can drive the real game window.
+const automationPort = process.argv.includes('--automation-port')
+  ? process.argv[process.argv.indexOf('--automation-port') + 1] : null;
+if (automationPort) app.commandLine.appendSwitch('remote-debugging-port', String(automationPort));
+
 let gameWindow = null;
 let server = null;
 

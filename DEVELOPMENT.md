@@ -6275,9 +6275,28 @@ which the shell persists on every `settingsRevision`. The first click or key ask
 creates the `AudioContext`, because both require a gesture.
 
 `public/game/assets.js` fetches the split payloads and puts them back as data URLs before a level
-starts — split on disk, joined at load, the studio's own deal. `npm run automation:game` builds a
-real export, serves it, opens it and checks the engine menu's rows appear and respond to the
-keyboard.
+starts — split on disk, joined at load, the studio's own deal. An imported campaign is thousands of
+files, so the fetch runs eight at a time with a 20 s deadline per file; a payload that never arrives
+is reported (and toasted) instead of hanging the start, and the level goes on with whatever did
+load.
+
+**Starting a level cannot hang.** Two deadlines bound it: `PREVIEW_TIMEOUT` (45 s, or the
+`previewTimeout` of the page's `#game-config` block, which the automation uses to fail fast) covers
+the renderer coming up, and a slow start can be cancelled with `Escape` back to the menu. A renderer
+that misses its deadline is not fatal — the level runs, the HUD and the menus work, and the reason is
+shown — because a stall in the 3D view must not cost the player their game.
+
+Screen size 11 hides a classic status bar as a whole (`shared/game-view.js: statusBarHidden`). The
+player keeps the bar: if the stored setting would hide a bar the project actually has, the start
+drops to 10 and says so in the game's message line. A player who finds no bar at the bottom cannot
+tell that from a broken build.
+
+`npm run automation:game` builds a **bundled** export from the campaign open in the editor (or a
+small authored fixture when the library is empty), starts it the way `launch.sh` does — the build's
+own Electron, its own server — and drives the real player window over CDP. It checks the engine
+menu's rows, the keyboard, and that starting a level reaches play with a bar at the bottom of the
+screen. The bundled `main.js` takes `--automation-port <port>` for exactly that; a player never
+passes it.
 
 Requirements for the portable build: Node.js 22+ and a browser. The bundle is bounded
 (128 MiB, 10,000 files), uses safe relative paths only, and writes a zip the project's

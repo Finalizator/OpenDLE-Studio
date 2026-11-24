@@ -282,6 +282,17 @@ test('desktop load failures reject startup and remove the failed hidden window',
   assert.equal(destroyed, true);
 });
 
+test('a load another navigation superseded keeps the window instead of closing the studio', async t => {
+  const f = fixture(t);
+  const aborted = Object.assign(new Error('ERR_ABORTED (-3) loading the editor'), { code: 'ERR_ABORTED' });
+  f.electron.BrowserWindow.prototype.loadURL = async () => { throw aborted; };
+  let destroyed = false;
+  f.electron.BrowserWindow.prototype.destroy = function () { destroyed = true; this.emit('closed'); };
+  await startStudioDesktop(f.electron, f.args);
+  assert.equal(destroyed, false, 'an aborted load is not a failed startup');
+  assert.equal(f.windows.length, 1);
+});
+
 test('desktop bootstrap does not block Electron readiness and accepts runtime switches before the entry path', async () => {
   const ready = Promise.withResolvers(), steps = [];
   const source = readFileSync(new URL('../scripts/studio-desktop.js', import.meta.url), 'utf8')

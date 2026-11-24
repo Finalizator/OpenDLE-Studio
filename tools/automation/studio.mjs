@@ -50,7 +50,7 @@ async function ensureServer(port) {
   throw new Error(`The studio server never became ready on ${url}`);
 }
 
-async function electronBinary() {
+export async function electronBinary() {
   const imported = await import('electron');
   const binary = imported.default;
   if (typeof binary !== 'string') throw new Error('The Electron runtime is unavailable; run npm ci');
@@ -90,8 +90,14 @@ export async function launchStudio({ port = Number(process.env.PORT || 3000), ti
     // the separate profile remembers it for the next scenario.
     const gated = await page.evaluate('Boolean(document.querySelector("#license-dialog[open]"))');
     if (gated) {
-      await page.waitFor('!document.getElementById("license-accept").disabled', { timeout: 45000, label: 'licence text' });
-      await page.evaluate('document.getElementById("license-accept").click()');
+      // An already-accepted profile closes the dialog by itself and leaves the accept button
+      // disabled on purpose, so waiting on that button alone hangs on every run after the first.
+      const outcome = await page.waitFor(`(() => {
+        const dialog = document.getElementById('license-dialog');
+        if (!dialog?.open) return 'closed';
+        return document.getElementById('license-accept').disabled ? null : 'open';
+      })()`, { timeout: 45000, label: 'the licence gate' });
+      if (outcome === 'open') await page.evaluate('document.getElementById("license-accept").click()');
     }
     await page.waitFor('window.__opendle.ready()', { timeout: 60000, label: 'the editor' });
     return { page, cdpPort, url, profile, stop, log: () => log.join('\n') };
@@ -103,8 +109,9 @@ export async function launchStudio({ port = Number(process.env.PORT || 3000), ti
 }
 
 /** Run `scenario(ctx)` against one window and always shut it down. */
-export async function withStudio(options, scenario) {
+export async function withStudio(options, scenario, announce = () => {}) {
   const studio = await launchStudio(options);
+  announce(studio.log ?? (() => ''));
   try {
     return await scenario(studio);
   } finally {

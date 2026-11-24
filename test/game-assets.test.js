@@ -42,10 +42,40 @@ test('the payload mime comes from the document when it knows better than the ser
   assert.equal(project.assets[0].srcMime, undefined, 'the field is consumed with the payload');
 });
 
-test('a missing payload fails with the asset that is missing, not a broken scene', async () => {
-  const project = { assets: [{ id: 'a', name: 'Brick', src: 'data/assets/gone.png' }] };
-  const { fetch } = fakeFetch(bytes, { status: 404 });
-  await assert.rejects(hydrateAssets(project, undefined, fetch), /Brick: data\/assets\/gone\.png could not be loaded \(404\)/);
+test('a missing payload is reported with the asset that is missing, and the rest still load', async () => {
+  // One absent texture must not cost the player the level: the failure names the file, the other
+  // assets load, and nothing throws.
+  const project = { assets: [
+    { id: 'a', name: 'Gone', src: 'data/assets/gone.png' },
+    { id: 'b', name: 'Brick', src: 'data/assets/brick.png' },
+  ] };
+  const attempted = [];
+  const fetch = async url => {
+    attempted.push(url);
+    if (url.endsWith('gone.png')) return { ok: false, status: 404 };
+    return { ok: true, status: 200, headers: { get: () => 'image/png' }, arrayBuffer: async () => bytes.buffer };
+  };
+  const failures = [];
+  const result = await hydrateAssets(project, undefined, fetch, { onFailure: (asset, reason) => failures.push(`${asset.name}: ${reason}`) });
+  assert.deepEqual(attempted.sort(), ['data/assets/brick.png', 'data/assets/gone.png']);
+  assert.equal(result.loaded, 1);
+  assert.equal(result.failed.length, 1);
+  assert.match(failures[0], /^Gone: data\/assets\/gone\.png could not be loaded \(404\)/);
+  assert.match(project.assets[1].src, /^data:image\/png;base64,/, 'the readable asset is inlined');
+  assert.equal(project.assets[0].src, 'data/assets/gone.png', 'the failed one is left as it was');
+});
+
+test('a stalled request is given up on instead of hanging the level', async () => {
+  const project = { assets: [{ id: 'a', name: 'Slow', src: 'data/assets/slow.png' }] };
+  const hanging = (url, options) => new Promise((resolve, reject) => {
+    options?.signal?.addEventListener('abort', () => {
+      const error = new Error('aborted'); error.name = 'AbortError'; reject(error);
+    });
+  });
+  const result = await hydrateAssets(project, undefined, hanging, { timeout: 20 });
+  assert.equal(result.loaded, 0);
+  assert.equal(result.failed.length, 1);
+  assert.match(result.failed[0].reason, /20 ms without an answer/);
 });
 
 test('progress is reported so a large campaign can show what it is doing', async () => {

@@ -130,7 +130,14 @@ export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, she
       trusted(contents) && URL.canParse(requestingOrigin) &&
       new URL(contents.getURL()).origin === new URL(requestingOrigin).origin && permissions.has(permission));
     try { await window.loadURL(url); }
-    catch (error) { window.destroy(); throw error; }
+    catch (error) {
+      // A load another navigation superseded — a redirect, or the page redirecting itself while it
+      // starts — reports ERR_ABORTED. The window is healthy and already showing something, so
+      // destroying it here turned an ordinary reload into "Studio could not start".
+      if (error?.code === 'ERR_ABORTED' || /ERR_ABORTED/.test(error?.message || '')) return window;
+      window.destroy();
+      throw error;
+    }
     return window;
   }
   app.on('second-instance', (_event, _argv, _cwd, data) => {
