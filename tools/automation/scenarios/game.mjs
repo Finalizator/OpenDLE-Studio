@@ -10,6 +10,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import yauzl from 'yauzl';
 import { createProject } from '../../../shared/project.js';
+import { installDefaultHUD } from '../../../shared/hud.js';
+import { installGameMenu } from '../../../shared/game-menu.js';
 import { createPortableBuild } from '../../../server/export-build.js';
 
 const wait = ms => new Promise(done => setTimeout(done, ms));
@@ -68,6 +70,11 @@ export async function run({ page }) {
 
   const project = createProject();
   project.title = 'Exported Hall';
+  // A project authored in the editor already has a HUD and menus. The first version of the player
+  // called `installDefaultHUD` unconditionally, and that refuses a project that has a HUD — so every
+  // real export failed with "HUD already exists". The fixture carries them for that reason.
+  installDefaultHUD(project);
+  installGameMenu(project);
   const build = await createPortableBuild({ project, version: '0.0.1', platform: 'linux' });
   const files = await unzip(build.bytes);
   const slug = 'exported-hall';
@@ -90,8 +97,10 @@ export async function run({ page }) {
     await page.send('Runtime.enable');
     await page.send('Page.navigate', { url: server.url });
     await wait(600);
-    const title = await page.waitFor('document.getElementById("game-title")?.textContent', { label: 'the game menu' });
-    check('the menu shows the game title', title === 'Exported Hall', title);
+    // "Loading…" is the placeholder, so wait for the title the game actually is.
+    const title = await page.waitFor('document.getElementById("game-title")?.textContent === "Exported Hall"',
+      { timeout: 20000, label: 'the game menu' });
+    check('the menu shows the game title', title === true, title);
 
     const chrome = await page.evaluate(`({
       editor: Boolean(document.getElementById('editor-shell')) || Boolean(document.getElementById('license-dialog')),

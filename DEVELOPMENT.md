@@ -6241,7 +6241,10 @@ could not load.
 
 `public/game/game.js` is the whole application: it loads `data/project.json` and the
 sections it names, installs the menus and HUD a project is expected to have **in
-memory only**, then asks the same questions the editor's playtest asks —
+memory only** — and only where they are missing
+([`defaults-model.js`](./public/game/defaults-model.js): `installDefaultHUD` refuses a project
+that has a HUD, so calling it unconditionally failed every real export with "HUD already
+exists") — then asks the same questions the editor's playtest asks —
 `createRuntime`, `createPreview`, `createHUDView`, `createAudioPlayer` — and runs the
 same frame loop (`stepRuntime` → audio → `render` → HUD). Input, pointer lock, the
 runtime's own pause menu (`gameScreen`), level changes (`menuRequests`) and campaign

@@ -10,8 +10,7 @@ import { createHUDView } from '/hud-view.js';
 import { createRuntime, stepRuntime, lookPlayer } from '/shared/runtime.js';
 import { gameSettings, mappedKeys, changeSetting, validBinding, setGameScreen, GAME_SETTINGS } from '/shared/game-settings.js';
 import { selectGameLevel, stripInactiveLevels } from '/shared/game-levels.js';
-import { installDefaultHUD } from '/shared/hud.js';
-import { installGameMenu } from '/shared/game-menu.js';
+import { installGameDefaults } from './defaults.js';
 import { installIntermission } from '/shared/intermission.js';
 import { installDroppedPickupRules } from '/shared/doom-hud.js';
 import { upgradeCrusherRules } from '/shared/doom-specials.js';
@@ -61,9 +60,9 @@ async function loadProject() {
   }
   if (!project.game) project.game = null;
   // A project that never went through the editor's playtest still gets the menus and HUD the engine
-  // expects, in memory only: the exported files are never written to.
-  installDefaultHUD(project);
-  installGameMenu(project);
+  // expects, in memory only — and a project that has them keeps them untouched.
+  try { installGameDefaults(project); }
+  catch (error) { showToast(`The game's menus could not be prepared: ${error.message}`, true); }
   return project;
 }
 
@@ -552,7 +551,11 @@ async function boot() {
     $('game-title').textContent = 'The game could not start';
     $('game-subtitle').textContent = error.message;
     $('menu-buttons').replaceChildren();
-    $('menu-hint').textContent = 'The exported data folder is missing or damaged. Re-export the game.';
+    // A missing or unreadable data folder is a different problem from a document the engine rejects,
+    // and only one of them is answered by exporting again.
+    $('menu-hint').textContent = /could not be loaded|JSON|fetch/i.test(error.message)
+      ? 'The exported data folder is missing or damaged. Re-export the game.'
+      : 'This build of the game is not usable. The message above names what to fix.';
   } finally {
     setLoading(null);
   }

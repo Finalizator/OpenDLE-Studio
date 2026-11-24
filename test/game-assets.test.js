@@ -64,3 +64,45 @@ test('base64 handles a payload larger than the argument limit', () => {
   assert.equal(encoded.length, Math.ceil(big.length / 3) * 4);
   assert.deepEqual(Buffer.from(encoded, 'base64'), Buffer.from(big));
 });
+
+// ---------------------------------------------------------------------------------------------------
+// The menus and HUD a project is played with
+// ---------------------------------------------------------------------------------------------------
+
+import { missingDefaults } from '../public/game/defaults-model.js';
+import { createProject } from '../shared/project.js';
+import { installDefaultHUD } from '../shared/hud.js';
+import { installGameMenu } from '../shared/game-menu.js';
+
+test('a project that already has a HUD and menus is left exactly as it is', () => {
+  // This is the bug that stopped every exported game before it drew a frame: the shell called
+  // `installDefaultHUD` unconditionally, and it refuses a project that has one.
+  const project = createProject();
+  installDefaultHUD(project);
+  installGameMenu(project);
+  assert.deepEqual(missingDefaults(project), { hud: false, menus: false });
+});
+
+test('a bare project is missing both, and a HUD-only project only its menus', () => {
+  const bare = createProject();
+  delete bare.hud;
+  delete bare.gameMenus;
+  assert.deepEqual(missingDefaults(bare), { hud: true, menus: true });
+
+  const hudOnly = createProject();
+  installDefaultHUD(hudOnly);
+  delete hudOnly.gameMenus;
+  assert.deepEqual(missingDefaults(hudOnly), { hud: false, menus: true });
+
+  const menusOnly = createProject();
+  installDefaultHUD(menusOnly);
+  installGameMenu(menusOnly);
+  delete menusOnly.hud;
+  assert.deepEqual(missingDefaults(menusOnly), { hud: true, menus: false });
+});
+
+test('a document that is not a project is refused by name', () => {
+  assert.throws(() => missingDefaults(null), /no project document/);
+  assert.throws(() => missingDefaults('nope'), /no project document/);
+  assert.throws(() => missingDefaults([]), /no project document/);
+});
