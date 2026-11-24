@@ -217,7 +217,8 @@ Set \`PORT\` to force a port, or \`OPENDLE_NO_BROWSER=1\` to start the server wi
 
 | Path | Contents |
 | --- | --- |
-| \`index.html\`, \`game.js\`, \`game.css\`, \`menu.js\` | The game: main menu, options, levels and the player |
+| \`index.html\`, \`game.js\`, \`game.css\` | The game: its own project menus, the player and the level loop |
+| \`assets.js\`, \`defaults.js\`, \`defaults-model.js\` | Split payloads back into memory, and the menus/HUD a project without them gets |
 | \`render.js\`, \`audio.js\`, \`hud-view.js\`, \`*.js\` | The engine modules this game imports, and only those |
 | \`shared/\` | Engine rules: runtime, physics, actors, ACS, events, sectors |
 | \`vendor/three/\`, \`vendor/three-addons/\`, \`vendor/rapier/\` | The renderer and physics libraries, ready to load |
@@ -254,15 +255,6 @@ function gameExecutableName(title, target) {
   return `${safe || 'OpenDLE game'}${target === 'windows' ? '.exe' : ''}`;
 }
 
-/**
- * The Electron entry point of a bundled build.
- *
- * It starts the very same game server a portable build's launcher starts — the handler,
- * the token, the CSP and the save format are shared code — and then shows it in a window
- * instead of an outside browser. Everything the studio's own desktop shell learned about
- * closing without losing edits applies here too: this window is the only place the game
- * can be saved, so it must not refuse to close and must not close silently.
- */
 /**
  * The Electron entry point of a bundled build.
  *
@@ -378,7 +370,9 @@ start "" "${executable}"
  */
 function bundledReadme({ title, slug, engineVersion, target, exportDate, executable }) {
   const windows = target === 'windows';
-  const savePath = windows ? `%APPDATA%\\${slug}\\data\\project.json` : `~/.config/${slug}/data/project.json`;
+  // The profile directory, not a file: the player keeps its saves in the browser storage that
+  // lives there (see `saveFileHost` in public/game/game.js), and no `data/project.json` is written.
+  const profilePath = windows ? `%APPDATA%\\${slug}` : `~/.config/${slug}`;
   return `# ${title}
 
 Standalone OpenDLE game. Exported ${exportDate} with OpenDLE: Studio ${engineVersion} for ${target}.
@@ -398,11 +392,11 @@ Nothing else in this folder has to be opened, moved or configured.
 
 ## Where the game is kept
 
-- **The game itself:** \`resources/app\` — the client, the engine modules and
-  \`data/project.json\` with every texture, sprite, sound and level inside it.
-- **Saves:** \`${savePath}\` — outside the unzipped folder, so replacing the game with a
-  newer build does not lose your progress, and the game still saves when it is installed
-  somewhere read-only.
+- **The game itself:** \`resources/app\` — the player, the engine modules it imports and
+  \`data/\` with the project, every level and one file per texture, sprite, sound and model.
+- **Saves:** in the browser storage of the app's own profile, \`${profilePath}\` — outside the
+  unzipped folder, so replacing the game with a newer build does not lose your progress, and the
+  game still saves when it is installed somewhere read-only.
 
 ## What is inside
 
@@ -421,13 +415,12 @@ Nothing else in this folder has to be opened, moved or configured.
 
 ## Limits
 
-- Single-player only. The local server listens on \`127.0.0.1\` with a fresh token on every
-  launch and rejects cross-origin requests; there is no network or multiplayer support.
-- AI assistance and MCP tooling are studio features and are absent here.
-- The window is the same client the studio uses, so the project can also be edited in this
-  build. Redistribution follows \`LICENSE\`: shipping the OpenDLE runtime with your game is
-  permitted and this license must travel with it; redistributing the build as an engine or
-  editor product is not.
+- Single-player only. The local server binds \`127.0.0.1\` on a free port and serves only this
+  folder; there is no network or multiplayer support.
+- The editor, its AI assistance and the MCP tooling are studio features and are absent here.
+  This build plays the game; it cannot edit it. Redistribution follows \`LICENSE\`: shipping
+  the OpenDLE runtime with your game is permitted and this license must travel with it;
+  redistributing the build as an engine or editor product is not.
 `;
 }
 
