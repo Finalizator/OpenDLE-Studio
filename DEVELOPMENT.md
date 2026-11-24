@@ -6239,23 +6239,45 @@ could not load.
 
 #### The player
 
-`public/game/game.js` is the whole application: it loads `data/project.json` and the
-sections it names, installs the menus and HUD a project is expected to have **in
-memory only** — and only where they are missing
-([`defaults-model.js`](./public/game/defaults-model.js): `installDefaultHUD` refuses a project
-that has a HUD, so calling it unconditionally failed every real export with "HUD already
-exists") — then asks the same questions the editor's playtest asks —
-`createRuntime`, `createPreview`, `createHUDView`, `createAudioPlayer` — and runs the
-same frame loop (`stepRuntime` → audio → `render` → HUD). Input, pointer lock, the
-runtime's own pause menu (`gameScreen`), level changes (`menuRequests`) and campaign
-progress (`localStorage`) are handled here.
+`public/game/game.js` is the whole application. It loads `data/project.json` and the sections it
+names, installs the menus and HUD a project is expected to have **in memory only** — and only
+where they are missing ([`defaults-model.js`](./public/game/defaults-model.js): `installDefaultHUD`
+refuses a project that has a HUD, so calling it unconditionally failed every real export with "HUD
+already exists") — and then boots into **the game's own main menu**.
 
-The menu model lives in `public/game/menu.js`, which is pure data and is covered by
-`test/game-menu.test.js`: which buttons a title shows, when *Continue* appears, the
-level list, the campaign chain, and the options rows built from `GAME_SETTINGS`.
-`npm run automation:game` builds a real game, serves it with its own server, opens it
-in the studio's throwaway window and checks the menu, the options panel and that
-pressing Play hands the screen to the engine.
+That menu is the project's, not the player's: the runtime is created at `gameMenus.entry` (usually
+the title screen) and `createHUDView` draws the authored rows — `New game`, `Options`, `Load game`,
+`Save game`, `Read this`, exactly what the studio's playtest shows. The shell has no menu markup at
+all; it answers what the runtime asks for through `menuRequests`:
+
+| Request | What the player does |
+| --- | --- |
+| `start`, `{ type: 'start', levelId }` | builds the level's runtime at `playing` and creates the renderer |
+| `{ type: 'level', levelId, carryProgress }` | same, carrying the stats and inventory into the next level |
+| `{ type: 'save-file' }` / `load-file` | writes a checkpoint document into `localStorage` (the engine's format) |
+| `{ type: 'save' }` / `load` (slots) | reports that slots belong to the studio, in `saveStatus` |
+| `quit` | closes the window |
+| `fullscreen` | toggles fullscreen |
+
+**The menu does not wait for the GPU.** The renderer is created when a level starts, not when the
+game opens: the menu is DOM, so a game boots in a moment and a machine without a usable adapter can
+still reach it. The 3D view appears on `start`.
+
+The loop is normally animation frames, with one guard: a window the browser treats as hidden
+receives none at all, and the menus are drawn from that loop, so a 200 ms timer steps the game when
+frames stop arriving. An occluded game window still has a working menu, and when frames resume the
+loop carries on (the timestep comes from timestamps, so nothing runs twice as fast).
+
+Input is the engine's: `Escape` in play opens the project's pause screen (`gameScreen = 'pause'`),
+`Escape` in a menu goes back (`setGameScreen(runtime, 'return')`), arrow keys and `Enter` move
+through rows the way a Doom menu does, and the game's own options screens change `runtime.settings`,
+which the shell persists on every `settingsRevision`. The first click or key asks for fullscreen and
+creates the `AudioContext`, because both require a gesture.
+
+`public/game/assets.js` fetches the split payloads and puts them back as data URLs before a level
+starts — split on disk, joined at load, the studio's own deal. `npm run automation:game` builds a
+real export, serves it, opens it and checks the engine menu's rows appear and respond to the
+keyboard.
 
 Requirements for the portable build: Node.js 22+ and a browser. The bundle is bounded
 (128 MiB, 10,000 files), uses safe relative paths only, and writes a zip the project's

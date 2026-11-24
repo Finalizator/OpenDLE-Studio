@@ -86,7 +86,9 @@ step and prints the trail.
 then reads `getLayouts()` to prove the Layouts list and the dormant level agree with the import.
 `scenarios/game.mjs` shows the other pattern: a scenario that does its own work outside the page
 (build an export, spawn `server/game-serve.js`), then points the window at it with
-`page.send('Page.navigate', { url })` and reads the exported game's DOM.
+`page.send('Page.navigate', { url })` and reads the exported game's DOM. The exported game draws its
+menu with the engine's HUD, so wait for `#hud [role="button"]` rows rather than a DOM menu — there
+is none.
 
 ## Traps that produced false results before
 

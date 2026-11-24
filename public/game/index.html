@@ -15,34 +15,22 @@
 <body>
 <div id="app">
   <canvas id="view" tabindex="0" aria-label="Game view"></canvas>
+  <!-- The game's own HUD and menus are drawn here, by the engine, from the project. -->
   <div id="hud" aria-live="off"></div>
   <p id="message" hidden></p>
 
-  <div id="menu" hidden>
-    <div class="menu-frame" role="dialog" aria-labelledby="game-title">
-      <p class="menu-kicker">OpenDLE</p>
-      <h1 id="game-title">Loading…</h1>
-      <p id="game-subtitle"></p>
-      <div id="menu-buttons" class="menu-buttons"></div>
-      <p id="menu-hint"></p>
-    </div>
-  </div>
-
-  <div id="panel" hidden>
-    <div class="panel-frame" role="dialog" aria-labelledby="panel-title">
-      <h2 id="panel-title"></h2>
-      <p id="panel-lede" class="lede"></p>
-      <div id="panel-body"></div>
-      <div class="panel-actions" id="panel-actions"></div>
-    </div>
-  </div>
-
-  <div id="pause" hidden></div>
   <div id="loading"><div><span id="loading-text">Loading the game…</span><div class="bar"><i></i></div></div></div>
+  <div id="fatal" hidden>
+    <div class="frame" role="alertdialog" aria-labelledby="fatal-title">
+      <p class="kicker">OpenDLE</p>
+      <h1 id="fatal-title">The game could not start</h1>
+      <p id="fatal-message"></p>
+      <p id="fatal-hint" class="hint"></p>
+    </div>
+  </div>
   <p id="toast" role="status" hidden></p>
 </div>
-<!-- Where the project data lives, relative to this page. The build writes this file; the studio
-     development server serves the same layout. -->
+<!-- Where the project data lives, relative to this page. The build writes this file. -->
 <script type="application/json" id="game-config">{"data":"data/"}</script>
 <script type="module" src="./game.js"></script>
 </body>

@@ -1,28 +1,33 @@
 // The exported game: data in, engine out, no editor anywhere.
 //
-// This file is the whole application a player runs. It boots to a main menu, starts the engine when
-// the player asks for a level, and keeps the loop the editor's playtest uses (runtime step, audio,
-// render, HUD) so a level plays the same here as it does in the studio.
+// The game boots into **its own main menu** — the one authored in the project and drawn by the
+// engine's HUD, the same screens the editor's playtest shows. There is no player-made menu here:
+// "New game", "Options", "Load", "Quit" are the project's rows, and the shell only answers what the
+// runtime asks for (`menuRequests`): start a level, change level, quit, fullscreen.
+//
+// The menu appears before the renderer is built, so a game opens instantly and a machine without a
+// GPU can still reach it; the 3D view is created when a level actually starts.
 
 import { createPreview } from '/render.js';
 import { createAudioPlayer } from '/audio.js';
 import { createHUDView } from '/hud-view.js';
 import { createRuntime, stepRuntime, lookPlayer } from '/shared/runtime.js';
-import { gameSettings, mappedKeys, changeSetting, validBinding, setGameScreen, GAME_SETTINGS } from '/shared/game-settings.js';
+import { gameSettings, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
 import { selectGameLevel, stripInactiveLevels } from '/shared/game-levels.js';
-import { installGameDefaults } from './defaults.js';
 import { installIntermission } from '/shared/intermission.js';
 import { installDroppedPickupRules } from '/shared/doom-hud.js';
 import { upgradeCrusherRules } from '/shared/doom-specials.js';
-import { mainMenu, levelEntries, optionRows, gameProgress, progressKey, skillLabel } from './menu.js';
+import { installGameDefaults } from './defaults.js';
 import { hydrateAssets } from './assets.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('view'), hudHost = $('hud');
 
 const game = {
-  project: null, settings: null, engine: null, progress: null, screen: 'loading', busy: false, toastTimer: 0,
+  project: null, settings: null, engine: null, busy: false, hydrated: false, toastTimer: 0,
+  keys: new Set(), pressed: new Set(), audioContext: null, fullscreenAsked: false,
 };
+let lookDrag = null, lastSettingsRevision = -1, frameCount = 0, lastFrameError = '', lastTick = 0;
 
 // ---------------------------------------------------------------------------------------------------
 // Data
@@ -46,8 +51,8 @@ async function readJson(url) {
 /**
  * The project as the build wrote it: a small document plus the files it names.
  *
- * Asset `src` values are URLs beside the document, so the renderer, the audio player and the model
- * loaders fetch them the same way they fetch a data URL — that is what keeps the game's JSON small.
+ * Asset `src` values are URLs beside the document, so nothing here knows about base64 until a level
+ * starts and the engine needs the bytes (see `assets.js`).
  */
 async function loadProject() {
   const root = dataRoot();
@@ -59,15 +64,19 @@ async function loadProject() {
     project[key] = await readJson(`${root}${file}`);
   }
   if (!project.game) project.game = null;
-  // A project that never went through the editor's playtest still gets the menus and HUD the engine
-  // expects, in memory only — and a project that has them keeps them untouched.
+  // A project that never went through the editor still gets the menus and HUD the engine expects, in
+  // memory only — and a project that has them keeps them untouched.
   try { installGameDefaults(project); }
   catch (error) { showToast(`The game's menus could not be prepared: ${error.message}`, true); }
   return project;
 }
 
+function identity() {
+  return String(game.project?.title || 'OpenDLE game');
+}
+
 function settingsKey() {
-  return `opendle-game-settings:${String(game.project?.title || 'game').slice(0, 80)}`;
+  return `opendle-game-settings:${identity().slice(0, 80)}`;
 }
 
 function loadSettings() {
@@ -80,20 +89,36 @@ function saveSettings() {
   try { localStorage.setItem(settingsKey(), JSON.stringify(game.settings)); } catch { /* storage is optional */ }
 }
 
-function loadProgress() {
-  try {
-    return gameProgress(game.project, JSON.parse(localStorage.getItem(progressKey(game.project?.title)) || 'null'));
-  } catch { return null; }
+/**
+ * The save files the engine's `saveVariables` and checkpoint rules write.
+ *
+ * The studio keeps them with the project; an exported game has nowhere but the browser, so they live
+ * in `localStorage` under the game's own name. The format belongs to the engine.
+ */
+function saveFileHost() {
+  const prefix = `opendle-game-save-file:${identity().slice(0, 80)}:`;
+  return {
+    identity: identity(),
+    read: name => { try { return localStorage.getItem(prefix + String(name)); } catch { return null; } },
+    write: (name, text) => {
+      try { localStorage.setItem(prefix + String(name), String(text)); }
+      catch (error) { throw new Error(`the game could not store ${name}: ${error.message}`); }
+    },
+    list: () => {
+      const names = [];
+      try {
+        for (let index = 0; index < localStorage.length; index++) {
+          const key = localStorage.key(index);
+          if (key?.startsWith(prefix)) names.push(key.slice(prefix.length));
+        }
+      } catch { /* storage is optional */ }
+      return names;
+    },
+  };
 }
-
-function rememberProgress(levelId) {
-  try { localStorage.setItem(progressKey(game.project?.title), JSON.stringify({ levelId, at: Date.now() })); } catch { /* optional */ }
-  game.progress = loadProgress();
-}
-
 
 // ---------------------------------------------------------------------------------------------------
-// Chrome: menu, panels, loading, messages
+// Chrome: loading, messages, fatal errors
 // ---------------------------------------------------------------------------------------------------
 
 function setLoading(text) {
@@ -107,177 +132,86 @@ function showToast(message, error = false) {
   node.classList.toggle('error', Boolean(error));
   node.hidden = !message;
   clearTimeout(game.toastTimer);
-  if (message) game.toastTimer = setTimeout(() => { node.hidden = true; }, 6000);
+  if (message) game.toastTimer = setTimeout(() => { node.hidden = true; }, 7000);
 }
 
-function hideOverlays() {
-  $('menu').hidden = true;
-  $('panel').hidden = true;
-  $('pause').hidden = true;
+/** A start that cannot happen at all: say why, and blame the right thing. */
+function showFatal(error) {
+  $('fatal-title').textContent = 'The game could not start';
+  $('fatal-message').textContent = error?.message || String(error);
+  $('fatal-hint').textContent = /could not be loaded|JSON|fetch/i.test(String(error?.message))
+    ? 'The exported data folder is missing or damaged. Re-export the game.'
+    : 'This build of the game is not usable. The message above names what to fix.';
+  $('fatal').hidden = false;
 }
 
-function showMenu() {
-  game.screen = 'menu';
-  hideOverlays();
-  document.exitPointerLock?.();
-  const model = mainMenu(game.project, { progress: game.progress });
-  document.title = model.title;
-  $('game-title').textContent = model.title;
-  $('game-subtitle').textContent = model.subtitle;
-  const buttons = $('menu-buttons');
-  buttons.replaceChildren(...model.actions.map((action, index) => menuButton(action, index)));
-  $('menu-hint').innerHTML = 'Enter or click to choose. <kbd>Escape</kbd> closes a panel or the game menu.';
-  $('menu').hidden = false;
-  buttons.firstElementChild?.focus();
-}
-
-function menuButton(action, index) {
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.dataset.action = action.id;
-  if (index === 0) button.className = 'primary';
-  const label = document.createElement('span'); label.className = 'label'; label.textContent = action.label;
-  const hint = document.createElement('span'); hint.className = 'hint'; hint.textContent = action.hint || '';
-  button.append(label, hint);
-  button.addEventListener('click', () => { action.run ? action.run() : chooseMenuAction(action.id); });
-  return button;
-}
-
-function chooseMenuAction(id) {
-  if (game.busy) return;
-  if (id === 'new') return void startLevel(game.project?.game?.entry || null);
-  if (id === 'continue') return void startLevel(game.progress?.levelId || game.project?.game?.entry || null);
-  if (id === 'levels') return showLevels();
-  if (id === 'options') return showOptions();
-  if (id === 'quit') return quitGame();
-  if (id === 'resume') return resumeGame();
-  if (id === 'menu') return quitToMenu();
-}
-
-function showPanel(title, lede, body, actions) {
-  game.screen = 'panel';
-  hideOverlays();
-  $('panel-title').textContent = title;
-  $('panel-lede').textContent = lede;
-  $('panel-body').replaceChildren(...body);
-  $('panel-actions').replaceChildren(...actions.map(action => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = action.label;
-    if (action.primary) button.className = 'primary';
-    button.addEventListener('click', action.run);
-    return button;
-  }));
-  $('panel').hidden = false;
-  $('panel-body').querySelector('button, input, select')?.focus();
-  return $('panel-actions').lastElementChild;
-}
-
-function showLevels() {
-  const entries = levelEntries(game.project, { progress: game.progress, current: game.engine?.levelId || null });
-  const list = document.createElement('div');
-  list.className = 'level-list';
-  for (const entry of entries) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    if (entry.current) button.className = 'current';
-    const label = document.createElement('span'); label.textContent = entry.label;
-    const hint = document.createElement('span'); hint.className = 'hint'; hint.textContent = entry.hint;
-    button.append(label, hint);
-    button.addEventListener('click', () => void startLevel(entry.id));
-    list.append(button);
-  }
-  showPanel('Levels', 'Pick a level to play. Progress through the campaign is remembered on this machine.',
-    [list], [{ label: 'Back', run: () => (game.engine ? resumeGame() : showMenu()) }]);
-}
-
-/** The options panel edits the same settings object the runtime uses, so a change is live. */
-function showOptions() {
-  const rows = optionRows(game.engine?.runtime.settings || game.settings, GAME_SETTINGS);
-  const list = document.createElement('div');
-  list.className = 'option-list';
-  for (const row of rows) list.append(optionRow(row));
-  showPanel('Options', 'Settings are saved on this machine and apply to the next start too.', [list], [
-    {
-      label: document.fullscreenElement ? 'Leave fullscreen' : 'Fullscreen',
-      run: () => toggleFullscreen().then(() => showOptions()).catch(error => showToast(error.message, true)),
-    },
-    { label: 'Back', primary: true, run: () => (game.engine ? resumeGame() : showMenu()) },
-  ]);
-}
-
-function optionRow(row) {
-  const line = document.createElement('label');
-  line.className = 'option-row';
-  const name = document.createElement('span');
-  name.className = 'name';
-  name.textContent = row.name === 'difficulty' ? 'skill' : row.name.replace(/([A-Z])/g, ' $1').toLowerCase();
-  line.append(name);
-  if (row.kind === 'toggle') {
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.checked = Boolean(row.value);
-    input.addEventListener('change', () => applySetting(row.name, input.checked));
-    const value = document.createElement('output');
-    value.textContent = row.value ? 'on' : 'off';
-    line.append(input, value);
-  } else if (row.kind === 'choice') {
-    const select = document.createElement('select');
-    for (const option of row.options) {
-      const node = document.createElement('option');
-      node.value = String(option); node.textContent = String(option);
-      if (String(option) === String(row.value)) node.selected = true;
-      select.append(node);
-    }
-    select.addEventListener('change', () => applySetting(row.name, select.value));
-    const value = document.createElement('output');
-    line.append(select, value);
-  } else {
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = String(row.min ?? 0); input.max = String(row.max ?? 1); input.step = String(row.step ?? .1);
-    input.value = String(row.value ?? 0);
-    const value = document.createElement('output');
-    const label = () => {
-      if (row.name === 'difficulty') return skillLabel(input.value);
-      if (row.name === 'viewSize') return String(Math.round(Number(input.value)));
-      return Number(input.value).toFixed(2).replace(/\.?0+$/, '');
-    };
-    value.textContent = label();
-    input.addEventListener('input', () => { value.textContent = label(); });
-    input.addEventListener('change', () => applySetting(row.name, Number(input.value)));
-    line.append(input, value);
-  }
-  return line;
-}
-
-function applySetting(name, value) {
-  try {
-    if (game.engine?.runtime) changeSetting(game.engine.runtime, name, value);
-    else game.settings[name] = value;
-    game.settings = game.engine?.runtime?.settings || game.settings;
-    saveSettings();
-  } catch (error) { showToast(error.message, true); }
+function hideFatal() {
+  $('fatal').hidden = true;
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Fullscreen
+// Fullscreen and sound, both of which need a user gesture
 // ---------------------------------------------------------------------------------------------------
 
 async function goFullscreen() {
   if (document.fullscreenElement) return;
   try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); }
-  catch { /* the browser can refuse outside a gesture; the game plays windowed */ }
+  catch { /* a browser can refuse; the game plays windowed */ }
 }
 
 async function toggleFullscreen() {
-  if (document.fullscreenElement) await document.exitFullscreen();
-  else await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+  } catch (error) { showToast(`Fullscreen is not available: ${error.message}`, true); }
+}
+
+/** The AudioContext has to be created inside a gesture, so it is made on the first one. */
+function primeAudio() {
+  if (game.audioContext) { game.audioContext.resume?.().catch(() => {}); return game.audioContext; }
+  const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!Context) return null;
+  try { game.audioContext = new Context(); game.audioContext.resume?.().catch(() => {}); }
+  catch { game.audioContext = null; }
+  return game.audioContext;
+}
+
+/** The first click or key asks for fullscreen, which is how a game starts without a launcher. */
+function maybeFullscreenOnGesture() {
+  if (game.fullscreenAsked) return;
+  game.fullscreenAsked = true;
+  void goFullscreen();
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Playing
+// The engine
 // ---------------------------------------------------------------------------------------------------
+
+/** The snapshot and runtime for one level, with this session's settings and save files. */
+function buildRuntime({ levelId = null, screen = 'playing', progress = null } = {}) {
+  const playing = levelId || game.project?.game?.entry || null;
+  const playable = playing ? stripInactiveLevels(game.project, playing) : game.project;
+  const snapshot = structuredClone(playable);
+  if (snapshot.game && playing) selectGameLevel(snapshot, playing);
+  installIntermission(snapshot);
+  installDroppedPickupRules(snapshot);
+  upgradeCrusherRules(snapshot);
+  // Only the level being played keeps its map: an imported campaign is hundreds of megabytes of
+  // level data, and the runtime never looks at the others.
+  for (const level of snapshot.game?.levels || []) {
+    if (level.id === snapshot.game.active) continue;
+    level.data = {}; level.assetIds = [];
+  }
+  const runtime = createRuntime(snapshot, {
+    settings: { ...(game.settings || {}) }, gameMode: Boolean(snapshot.game), screen, progress,
+    saveFiles: saveFileHost(),
+  });
+  // The editor's playtest does this the moment a runtime is built, and the menus depend on it: a
+  // menu row is only shown and made focusable while the HUD cursor is active, so without this the
+  // title screen was there in the DOM and invisible on the canvas.
+  runtime.hudState.cursor = runtime.gameScreen !== 'playing';
+  return { snapshot, runtime, levelId: playing };
+}
 
 function disposeEngine() {
   if (!game.engine) return;
@@ -288,147 +222,217 @@ function disposeEngine() {
   try { preview?.dispose(); } catch { /* already gone */ }
   hudHost.replaceChildren();
   $('message').hidden = true;
+  document.exitPointerLock?.();
+}
+
+function attachHud(engine) {
+  engine.hud = createHUDView(hudHost, engine.snapshot, {
+    click: id => { if (engine.runtime.hudState.cursor) engine.runtime.hudState.clicked.add(id); },
+    error: message => showToast(message, true),
+  });
+  engine.hud.update?.(engine.runtime);
 }
 
 /**
- * Builds the runtime for one level and starts drawing it.
+ * Opens the project's own main menu.
  *
- * Only the level being played keeps its map: an imported campaign is hundreds of megabytes of level
- * data, and cloning all of it to play the first one is what made starting a game slow in the editor
- * before it was fixed there.
+ * This is what the game starts on: the runtime is at `gameMenus.entry` (usually the title screen) and
+ * the HUD draws the authored menu rows over it. No renderer is built yet — the menu is DOM, and
+ * building a 3D scene to show a list of words would only make the game slower to open.
  */
-async function startLevel(levelId, { progress = null } = {}) {
-  if (game.busy) return;
-  game.busy = true;
-  hideOverlays();
-  setLoading('Loading the level…');
-  const keys = game.keys; keys?.clear(); game.pressed?.clear();
+async function openMenu() {
+  disposeEngine();
+  setLoading('Loading the game…');
   try {
-    const playing = levelId || game.project?.game?.entry || null;
-    setLoading('Loading the artwork…');
-    await hydrateAssets(game.project, (done, total) => {
-      if (total) setLoading(`Loading the artwork… ${Math.round((done / total) * 100)}%`);
-    });
-    setLoading('Loading the level…');
-    const playable = playing ? stripInactiveLevels(game.project, playing) : game.project;
-    const snapshot = structuredClone(playable);
-    if (snapshot.game && playing) selectGameLevel(snapshot, playing);
-    installIntermission(snapshot);
-    installDroppedPickupRules(snapshot);
-    upgradeCrusherRules(snapshot);
-    for (const level of snapshot.game?.levels || []) {
-      if (level.id === snapshot.game.active) continue;
-      level.data = {}; level.assetIds = [];
+    if (!game.hydrated) {
+      await hydrateAssets(game.project, (done, total) => {
+        if (total) setLoading(`Loading the artwork… ${Math.round((done / total) * 100)}%`);
+      });
+      game.hydrated = true;
     }
-    disposeEngine();
-    const runtime = createRuntime(snapshot, {
-      settings: { ...(game.settings || {}) }, gameMode: Boolean(snapshot.game), screen: 'playing', progress,
-    });
-    runtime.gameMode = Boolean(snapshot.game);
-    runtime.hudState.cursor = false;
-    game.engine = { snapshot, runtime, levelId: playing, preview: null, hud: null, audio: null, last: performance.now() };
-    const preview = await createPreview(canvas, snapshot, runtime, { onMediaError: message => showToast(message, true) });
-    if (game.engine?.runtime !== runtime) { preview.dispose(); return; }
-    game.engine.preview = preview;
-    game.engine.hud = createHUDView(hudHost, snapshot, {
-      click: id => { if (runtime.hudState.cursor) runtime.hudState.clicked.add(id); },
-      error: message => showToast(message, true),
-    });
-    try { game.engine.audio = createAudioPlayer(snapshot, message => showToast(message, true)); } catch (error) { showToast(`Sound is unavailable: ${error.message}`, true); }
-    game.engine.last = performance.now();
-    rememberProgress(playing);
-    game.screen = 'game';
-    await goFullscreen();
-    canvas.focus();
-    stepRuntime(snapshot, runtime, 0, new Set());
-    game.engine.hud.update?.(runtime);
-    if (runtime.saveStatus) showToast(runtime.saveStatus, true);
+    const engine = buildRuntime({ screen: game.project.gameMenus?.entry || 'playing' });
+    game.engine = { ...engine, preview: null, hud: null, audio: null, last: performance.now() };
+    attachHud(game.engine);
+    hideFatal();
   } catch (error) {
     disposeEngine();
+    showFatal(error);
+  } finally {
+    setLoading(null);
+  }
+}
+
+/** Starts a level: the runtime is rebuilt at `playing` and the 3D view is created for it. */
+async function playLevel(levelId, { progress = null } = {}) {
+  if (game.busy) return;
+  game.busy = true;
+  hideFatal();
+  setLoading('Loading the level…');
+  game.keys.clear(); game.pressed.clear();
+  try {
+    if (!game.hydrated) {
+      await hydrateAssets(game.project, (done, total) => {
+        if (total) setLoading(`Loading the artwork… ${Math.round((done / total) * 100)}%`);
+      });
+      game.hydrated = true;
+    }
+    const engine = buildRuntime({ levelId, screen: 'playing', progress });
+    disposeEngine();
+    game.engine = { ...engine, preview: null, hud: null, audio: null, last: performance.now() };
+    const preview = await createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) });
+    if (game.engine?.runtime !== engine.runtime) { preview.dispose(); return; }
+    game.engine.preview = preview;
+    attachHud(game.engine);
+    try {
+      game.engine.audio = createAudioPlayer(engine.snapshot, message => showToast(message, true), undefined, primeAudio() || undefined);
+    } catch (error) { showToast(`Sound is unavailable: ${error.message}`, true); }
+    game.engine.last = performance.now();
+    await goFullscreen();
+    canvas.focus();
+    stepRuntime(engine.snapshot, engine.runtime, 0, new Set());
+    game.engine.hud.update?.(engine.runtime);
+    if (engine.runtime.saveStatus) showToast(engine.runtime.saveStatus, true);
+  } catch (error) {
     showToast(`Could not start the level: ${error.message}`, true);
-    showMenu();
+    await openMenu();
   } finally {
     game.busy = false;
     setLoading(null);
   }
 }
 
-function pauseGame() {
-  const runtime = game.engine?.runtime;
-  if (!runtime || runtime.gameScreen !== 'playing') return;
-  document.exitPointerLock?.();
-  if (game.project?.gameMenus?.screens?.includes('pause')) {
-    setGameScreen(runtime, 'pause');
-    return;
-  }
-  game.screen = 'pause';
-  $('pause').hidden = false;
-  const frame = document.createElement('div');
-  frame.className = 'menu-frame';
-  const title = document.createElement('h1'); title.textContent = 'Paused';
-  const subtitle = document.createElement('p'); subtitle.id = 'game-subtitle';
-  subtitle.textContent = game.project?.title || '';
-  const buttons = document.createElement('div'); buttons.className = 'menu-buttons';
-  for (const action of [
-    { id: 'resume', label: 'Resume', hint: 'Back to the level' },
-    { id: 'levels', label: 'Levels', hint: 'Pick another level' },
-    { id: 'options', label: 'Options', hint: 'Video, sound and controls' },
-    { id: 'menu', label: 'Quit to menu', hint: 'Leave this level' },
-  ]) {
-    const button = menuButton({ ...action, run: () => { $('pause').hidden = true; chooseMenuAction(action.id); } });
-    buttons.append(button);
-  }
-  frame.append(title, subtitle, buttons);
-  $('pause').replaceChildren(frame);
-  buttons.firstElementChild?.focus();
-}
-
-function resumeGame() {
-  const runtime = game.engine?.runtime;
-  hideOverlays();
-  if (!runtime) return showMenu();
-  setGameScreen(runtime, 'playing');
-  game.screen = 'game';
-  canvas.focus();
-}
-
+/** Back to the game's own menu, from the pause screen or a finished campaign. */
 function quitToMenu() {
-  disposeEngine();
-  game.screen = 'menu';
-  showMenu();
+  game.keys.clear(); game.pressed.clear();
+  return openMenu();
 }
 
 function quitGame() {
   disposeEngine();
   window.close();
-  // A browser window that was not opened by a script cannot be closed; say so instead of hanging.
-  showMenu();
-  showToast('Close this tab to leave the game.');
+  // A browser window that was not opened by a script cannot be closed, so say what to do instead.
+  $('fatal-title').textContent = 'Thanks for playing';
+  $('fatal-message').textContent = identity();
+  $('fatal-hint').textContent = 'You can close this tab now.';
+  $('fatal').hidden = false;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// What the runtime asks for
+// ---------------------------------------------------------------------------------------------------
+
+function handleRequests(runtime) {
+  for (const request of runtime.menuRequests.splice(0)) {
+    if (request === 'quit') { quitGame(); return; }
+    if (request === 'fullscreen') { void toggleFullscreen(); continue; }
+    if (request === 'complete') { showToast('Campaign complete.'); continue; }
+    if (request === 'start' || request?.type === 'start') {
+      void playLevel(request?.levelId || game.project?.game?.entry || null);
+      return;
+    }
+    if (request?.type === 'level') {
+      const carried = request.carryProgress
+        ? { playerStats: runtime.playerStats, inventory: runtime.inventory } : null;
+      void playLevel(request.levelId, { progress: carried });
+      return;
+    }
+    // A rule-written save file: the host is `localStorage`, the document format is the engine's.
+    if (request?.type === 'save-file' || request?.type === 'load-file') {
+      const name = String(request.file ?? '').trim();
+      try {
+        if (request.type === 'save-file') {
+          saveFileHost().write(name, JSON.stringify(checkpointDocument(runtime, game.engine?.levelId)));
+          runtime.saveStatus = `Saved ${name}.`;
+        } else {
+          const text = saveFileHost().read(name);
+          if (text === null || text === undefined) throw new Error(`there is no save file named ${name}`);
+          applyCheckpoint(runtime, JSON.parse(text));
+          runtime.saveStatus = `Loaded ${name}.`;
+        }
+      } catch (error) { runtime.saveStatus = `Save file failed: ${error.message}`; }
+      continue;
+    }
+    if (request?.type === 'save' || request?.type === 'load') {
+      runtime.saveStatus = 'Save slots belong to the studio; this build saves through the game\'s own save files.';
+    }
+  }
+}
+
+/** What a checkpoint keeps: where the player is and everything that would be lost on a reload. */
+function checkpointDocument(runtime, levelId) {
+  return {
+    version: 1, kind: 'opendle-checkpoint', levelId: levelId || null,
+    player: { ...runtime.player },
+    playerStats: structuredClone(runtime.playerStats),
+    inventory: structuredClone(runtime.inventory),
+    variables: { ...runtime.variables },
+    physics: runtime.physics?.saveState?.() ?? null,
+  };
+}
+
+function applyCheckpoint(runtime, saved) {
+  if (!saved || saved.kind !== 'opendle-checkpoint') throw new Error('that file is not a checkpoint of this game');
+  Object.assign(runtime.player, saved.player || {});
+  if (saved.playerStats) Object.assign(runtime.playerStats, saved.playerStats);
+  if (saved.variables) Object.assign(runtime.variables, saved.variables);
+  if (saved.physics) runtime.physics?.restoreState?.(saved.physics);
 }
 
 // ---------------------------------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------------------------------
 
-game.keys = new Set();
-game.pressed = new Set();
-let lookDrag = null;
-
 function playing() {
   const runtime = game.engine?.runtime;
-  return Boolean(runtime) && game.screen === 'game' && runtime.gameScreen === 'playing';
+  return Boolean(runtime) && runtime.gameScreen === 'playing';
+}
+
+function onMenu() {
+  const runtime = game.engine?.runtime;
+  return Boolean(runtime) && runtime.gameScreen !== 'playing';
+}
+
+/** The engine's menu screens are keyboard driven: arrows move between rows, Enter clicks one. */
+function handleMenuKey(code) {
+  const runtime = game.engine?.runtime;
+  if (!runtime || runtime.gameScreen === 'playing') return false;
+  if (code === 'Escape') { setGameScreen(runtime, 'return'); return true; }
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(code)) return false;
+  if (code === 'ArrowLeft' || code === 'ArrowRight') {
+    if (!game.keys.has(code)) game.pressed.add(code);
+    game.keys.add(code);
+    return true;
+  }
+  const rows = [...hudHost.querySelectorAll('[role="button"]')]
+    .filter(node => node.tabIndex === 0 && node.dataset.menuSelectable !== 'false');
+  if (!rows.length) return false;
+  const focused = rows.findIndex(node => node.dataset.hudId === runtime.hudState.focused);
+  if (code === 'Enter') { (rows[focused < 0 ? 0 : focused])?.click(); return true; }
+  const next = focused < 0
+    ? (code === 'ArrowDown' ? 0 : rows.length - 1)
+    : (focused + (code === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+  rows[next]?.focus();
+  return true;
 }
 
 window.addEventListener('keydown', event => {
-  if (!game.engine) return;
+  primeAudio();
   if (event.code === 'Escape') {
-    const runtime = game.engine.runtime;
-    if (runtime.gameScreen === 'playing') { event.preventDefault(); pauseGame(); }
-    else if (runtime.gameScreen === 'pause') { event.preventDefault(); resumeGame(); }
-    else if (game.screen === 'pause') { event.preventDefault(); resumeGame(); }
+    const runtime = game.engine?.runtime;
+    if (runtime?.gameScreen === 'playing') {
+      event.preventDefault();
+      setGameScreen(runtime, 'pause');
+      game.keys.clear(); game.pressed.clear();
+    } else if (onMenu() && handleMenuKey('Escape')) event.preventDefault();
     return;
   }
-  if (!playing() || runtime()?.hudState.cursor) return;
+  if (!game.engine) return;
+  maybeFullscreenOnGesture();
+  if (onMenu()) {
+    if (handleMenuKey(event.code)) { event.preventDefault(); event.stopPropagation(); }
+    return;
+  }
+  if (!playing() || game.engine.runtime.hudState.cursor) return;
   if (validBinding(event.code) || ['Tab', 'Space', 'Enter'].includes(event.code)) event.preventDefault();
   if (!game.keys.has(event.code)) game.pressed.add(event.code);
   game.keys.add(event.code);
@@ -436,17 +440,15 @@ window.addEventListener('keydown', event => {
 window.addEventListener('keyup', event => game.keys.delete(event.code));
 window.addEventListener('blur', () => { game.keys.clear(); game.pressed.clear(); });
 
-function runtime() { return game.engine?.runtime || null; }
-
 canvas.addEventListener('pointerdown', event => {
-  const state = runtime();
-  if (!state || !playing() || state.hudState.cursor) return;
+  const runtime = game.engine?.runtime;
+  primeAudio();
+  maybeFullscreenOnGesture();
+  if (!runtime || !playing() || runtime.hudState.cursor) return;
   if (![0, 2].includes(event.button)) return;
   const code = `Mouse${event.button}`;
-  // A Doom project fires with the left button and looks with the right one; anything else looks
-  // with the left button, exactly as the editor's playtest does.
-  const fire = state.scriptedInput && event.button === 0;
-  if (state.scriptedInput) {
+  const fire = runtime.scriptedInput && event.button === 0;
+  if (runtime.scriptedInput) {
     if (!game.keys.has(code)) game.pressed.add(code);
     game.keys.add(code);
   }
@@ -457,12 +459,12 @@ canvas.addEventListener('pointerdown', event => {
   }
 });
 canvas.addEventListener('pointermove', event => {
-  const state = runtime();
-  if (!state || !playing() || state.hudState.cursor) return;
-  if (document.pointerLockElement === canvas) return; // pointerlock contributes via mousemove
+  const runtime = game.engine?.runtime;
+  if (!runtime || !playing() || runtime.hudState.cursor) return;
+  if (document.pointerLockElement === canvas) return;
   if (!lookDrag || event.pointerId !== lookDrag.id) return;
   const dx = event.clientX - lookDrag.x, dy = event.clientY - lookDrag.y;
-  if (dx || dy) lookPlayer(state, dx, dy);
+  if (dx || dy) lookPlayer(runtime, dx, dy);
   lookDrag = { ...lookDrag, x: event.clientX, y: event.clientY };
 });
 for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
@@ -470,67 +472,48 @@ for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
 }
 canvas.addEventListener('contextmenu', event => event.preventDefault());
 document.addEventListener('mousemove', event => {
-  const state = runtime();
-  if (!state || !playing() || state.hudState.cursor) return;
-  if (document.pointerLockElement === canvas) lookPlayer(state, event.movementX, event.movementY);
+  const runtime = game.engine?.runtime;
+  if (!runtime || !playing() || runtime.hudState.cursor) return;
+  if (document.pointerLockElement === canvas) lookPlayer(runtime, event.movementX, event.movementY);
 });
-document.addEventListener('pointerlockchange', () => {
-  game.keys.clear(); game.pressed.clear();
-  if (game.engine && !document.pointerLockElement) game.pressed.clear();
-});
+document.addEventListener('pointerlockchange', () => { game.keys.clear(); game.pressed.clear(); });
 
 // ---------------------------------------------------------------------------------------------------
-// The frame loop: the same five calls the editor's playtest makes.
+// The frame loop: the same calls the editor's playtest makes, minus the editor
 // ---------------------------------------------------------------------------------------------------
-
-function handleRequests(runtime) {
-  const requests = runtime.menuRequests.splice(0);
-  for (const request of requests) {
-    if (request === 'quit') { quitToMenu(); return; }
-    if (request === 'fullscreen') { toggleFullscreen().catch(error => showToast(error.message, true)); continue; }
-    if (request === 'complete') { showToast('Campaign complete.'); continue; }
-    const start = request?.type === 'start' ? request : null;
-    if (start || request === 'start') {
-      void startLevel(start?.levelId || game.project?.game?.entry || null);
-      return;
-    }
-    if (request?.type === 'level') {
-      const carried = request.carryProgress && runtime
-        ? { playerStats: runtime.playerStats, inventory: runtime.inventory } : null;
-      void startLevel(request.levelId, { progress: carried });
-      return;
-    }
-    if (['save', 'load', 'save-file', 'load-file'].includes(request?.type)) {
-      showToast('Saving inside the game menu is not part of this build yet.', true);
-    }
-  }
-}
 
 function frame(now) {
   requestAnimationFrame(frame);
+  frameCount++;
+  lastTick = now;
   const engine = game.engine;
-  if (!engine || !engine.preview) return;
+  if (!engine) return;
   const dt = Math.min(.1, Math.max(0, (now - engine.last) / 1000));
   engine.last = now;
   const runtime = engine.runtime;
   try {
-    const onMenu = runtime.gameScreen !== 'playing';
-    const held = mappedKeys(game.keys, runtime.settings);
-    const pressed = mappedKeys(game.pressed, runtime.settings);
-    stepRuntime(engine.snapshot, runtime, dt, onMenu ? game.keys : held, onMenu ? game.pressed : pressed);
+    const menu = runtime.gameScreen !== 'playing';
+    const held = menu ? game.keys : mappedKeys(game.keys, runtime.settings);
+    const pressed = menu ? game.pressed : mappedKeys(game.pressed, runtime.settings);
+    stepRuntime(engine.snapshot, runtime, dt, held, pressed);
     game.pressed.clear();
     handleRequests(runtime);
     if (!game.engine) return;
+    if (runtime.settingsRevision !== lastSettingsRevision) {
+      lastSettingsRevision = runtime.settingsRevision;
+      game.settings = runtime.settings;
+      saveSettings();
+    }
     engine.audio?.update(runtime);
-    engine.preview.render(runtime, runtime.gameScreen === 'playing' || runtime.ambientWorld ? dt : 0);
+    engine.preview?.render(runtime, runtime.gameScreen === 'playing' || runtime.ambientWorld ? dt : 0);
     engine.hud?.update(runtime);
-    const message = $('message');
     const text = !engine.snapshot.hud && runtime.messageTime > 0 ? String(runtime.message || '') : '';
-    message.textContent = text;
-    message.hidden = !text;
+    $('message').textContent = text;
+    $('message').hidden = !text;
   } catch (error) {
+    lastFrameError = error?.message || String(error);
     showToast(`The game stopped: ${error.message}`, true);
-    quitToMenu();
+    void quitToMenu();
   }
 }
 
@@ -538,29 +521,42 @@ function frame(now) {
 // Boot
 // ---------------------------------------------------------------------------------------------------
 
-async function boot() {
-  setLoading('Loading the game…');
-  try {
-    game.project = await loadProject();
-    game.settings = loadSettings();
-    game.progress = loadProgress();
-    document.title = game.project.title || 'OpenDLE game';
-    showMenu();
-  } catch (error) {
-    $('menu').hidden = false;
-    $('game-title').textContent = 'The game could not start';
-    $('game-subtitle').textContent = error.message;
-    $('menu-buttons').replaceChildren();
-    // A missing or unreadable data folder is a different problem from a document the engine rejects,
-    // and only one of them is answered by exporting again.
-    $('menu-hint').textContent = /could not be loaded|JSON|fetch/i.test(error.message)
-      ? 'The exported data folder is missing or damaged. Re-export the game.'
-      : 'This build of the game is not usable. The message above names what to fix.';
-  } finally {
-    setLoading(null);
-  }
-}
-
+/**
+ * A small read-only window into the running game, for the automation scenario and for a bug report:
+ * which screen the engine is on, whether the HUD cursor is active, and what the menu rows look like.
+ */
+window.__game = {
+  status: () => {
+    const runtime = game.engine?.runtime;
+    const rows = [...hudHost.querySelectorAll('[role="button"]')];
+    return {
+      screen: runtime?.gameScreen ?? null,
+      cursor: Boolean(runtime?.hudState?.cursor),
+      hud: Boolean(runtime?.hud),
+      screens: [...(runtime?.hudState?.screens || [])].map(([id, shown]) => `${id}:${shown ? 'on' : 'off'}`).slice(0, 12),
+      rows: rows.length, shown: rows.filter(row => !row.hidden).length,
+      selectable: rows.filter(row => row.tabIndex === 0).length,
+      level: game.engine?.levelId ?? null,
+      preview: Boolean(game.engine?.preview),
+      frames: frameCount, lastError: lastFrameError,
+    };
+  },
+};
 window.addEventListener('beforeunload', () => disposeEngine());
 requestAnimationFrame(frame);
-boot();
+// A window the browser considers hidden — occluded behind another window, or on a machine whose
+// compositor never presents it — receives no animation frames at all, and the game's menus are drawn
+// from this loop, so they would simply never appear. A slow timer keeps the simulation alive when
+// frames stop arriving; when they resume, the loop simply carries on.
+setInterval(() => {
+  if (performance.now() - lastTick < 250) return;
+  frame(performance.now());
+}, 200);
+loadProject()
+  .then(project => {
+    game.project = project;
+    game.settings = loadSettings();
+    document.title = identity();
+    return openMenu();
+  })
+  .catch(showFatal);

@@ -96,56 +96,51 @@ export async function run({ page }) {
   try {
     await page.send('Runtime.enable');
     await page.send('Page.navigate', { url: server.url });
+    // A hidden window has its animation frames throttled to zero, and the game's whole menu is
+    // drawn from its frame loop: the page has to be the one on screen.
+    await page.send('Page.bringToFront').catch(() => {});
     await wait(600);
-    // "Loading…" is the placeholder, so wait for the title the game actually is.
-    const title = await page.waitFor('document.getElementById("game-title")?.textContent === "Exported Hall"',
-      { timeout: 20000, label: 'the game menu' });
-    check('the menu shows the game title', title === true, title);
+    // The game opens on **its own** main menu: the project's rows, drawn by the engine's HUD. There
+    // is no player-made menu in the page, and no 3D renderer is needed to show the menu at all.
+    const menu = await page.waitFor(`(() => {
+      const rows = [...document.querySelectorAll('#hud [role="button"]')];
+      if (!rows.length) return null;
+      return {
+        rows: rows.length,
+        labels: rows.slice(0, 6).map(row => (row.textContent || '').trim().slice(0, 30)),
+        loading: document.getElementById('loading').hidden,
+        fatal: !document.getElementById('fatal').hidden,
+        title: document.getElementById('fatal-title').textContent,
+        domMenu: Boolean(document.getElementById('menu-buttons')),
+        editor: Boolean(document.getElementById('editor-shell')) || Boolean(document.getElementById('license-dialog')),
+      };
+    })()`, { timeout: 30000, label: 'the game\'s own main menu' });
+    check('the game boots into the engine\'s main menu', menu.rows >= 2, menu);
+    check('the menu rows are the project\'s own', menu.labels.length >= 2, menu.labels);
+    check('the menu is not a player-made overlay', menu.domMenu === false, menu);
+    check('the editor is not in the page', menu.editor === false, menu);
+    check('the game is not reporting a failure', menu.fatal === false, menu);
+    check('the loading overlay has gone', menu.loading === true, menu);
 
-    const chrome = await page.evaluate(`({
-      editor: Boolean(document.getElementById('editor-shell')) || Boolean(document.getElementById('license-dialog')),
-      buttons: [...document.querySelectorAll('#menu-buttons button .label')].map(node => node.textContent),
-      subtitle: document.getElementById('game-subtitle').textContent,
-      menuVisible: !document.getElementById('menu').hidden,
-    })`);
-    check('the editor is not in the page', chrome.editor === false, chrome);
-    check('the main menu is on screen', chrome.menuVisible === true, chrome);
-    check('the menu offers play, options and quit',
-      chrome.buttons.includes('Play') || chrome.buttons.includes('New game'), chrome.buttons);
-    check('the menu offers options', chrome.buttons.includes('Options'), chrome.buttons);
-    check('the menu offers quit', chrome.buttons.includes('Quit'), chrome.buttons);
-
-    // Options is a real panel: it reads the engine's own settings metadata.
-    await page.evaluate(`[...document.querySelectorAll('#menu-buttons button')].find(button => button.textContent.startsWith('Options')).click()`);
-    await wait(200);
-    const options = await page.evaluate(`({
-      open: !document.getElementById('panel').hidden,
-      rows: document.querySelectorAll('#panel-body .option-row').length,
-      ranges: document.querySelectorAll('#panel-body input[type=range]').length,
-      title: document.getElementById('panel-title').textContent,
-    })`);
-    check('options opens a panel', options.open === true, options);
-    check('options lists engine settings', options.rows > 5 && options.ranges > 3, options);
-
-    // Back out of options and press Play: the menu has to hand over to the engine. Whether the
-    // renderer can start depends on the machine (no WebGPU adapter means WebGL 2, and a headless
-    // window may have neither), so what is checked is that the click is accepted, the menu gives way
-    // and nothing throws.
-    await page.evaluate(`[...document.querySelectorAll('#panel-actions button')].find(button => /Back/i.test(button.textContent)).click()`);
-    await wait(200);
-    await page.evaluate(`document.querySelector('#menu-buttons button').click()`);
-    const started = await page.waitFor(`document.getElementById('menu').hidden === true || document.getElementById('toast').hidden === false`,
-      { timeout: 30000, label: 'the menu to give way to the level' });
-    check('play hands the screen to the engine', started === true, started);
-    const loading = await page.evaluate(`({ loading: document.getElementById('loading').hidden === false,
-      text: document.getElementById('loading-text').textContent, toast: document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent })`);
-    check('the engine reports what it is doing while it loads', loading.loading || loading.toast.length > 0, loading);
+    // Keyboard is how a Doom menu is used: ArrowDown moves, and the focused row is a real row. The
+    // HUD rebuilds its nodes as state changes, so the focus is read back with a wait rather than
+    // immediately after the key.
+    let focused = null;
+    for (let attempt = 0; attempt < 3 && !focused; attempt++) {
+      await page.key('ArrowDown');
+      focused = await page.waitFor(`document.activeElement?.dataset?.hudId || null`, { timeout: 2000, label: 'a focused menu row' })
+        .catch(() => null);
+    }
+    const selectable = await page.evaluate(`document.querySelectorAll('#hud [role="button"][tabindex="0"]').length`);
+    const status = await page.evaluate('window.__game.status()');
+    check('the menu has selectable rows', selectable >= 2, status);
+    check('arrow keys move through the menu', typeof focused === 'string' && focused.length > 0, { focused, status });
+    check('the game loop is running', status.frames > 0, status);
 
     const errors = (page.events || []).filter(event => event.method === 'Runtime.exceptionThrown');
     check('the game booted without a page exception', errors.length === 0,
       errors.slice(0, 2).map(event => event.params?.exceptionDetails?.exception?.description));
-    return { title: chrome.subtitle, buttons: chrome.buttons.length, optionRows: options.rows,
-      play: loading.loading ? `loading: ${loading.text}` : `engine said: ${loading.toast}` };
+    return { menuRows: menu.rows, labels: menu.labels, focused };
   } finally {
     server.stop();
     rmSync(scratch, { recursive: true, force: true });

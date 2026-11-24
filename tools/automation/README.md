@@ -8,7 +8,7 @@ few numbers, which is what keeps a long automation session cheap for this machin
 npm run automation:brushes     # draw, move (Top + Front), grip-resize, 3D move, 3D face drag
 npm run automation:menus       # the right-click menu carries the brush commands
 npm run automation:maps        # a Quake .map as a new project, and as a layout beside the open one
-npm run automation:game        # builds an export, serves it, and checks the game's main menu
+npm run automation:game        # builds an export, serves it, and checks the game boots into its own menu
 node tools/automation/run.mjs brushes --port 3000
 ```
 

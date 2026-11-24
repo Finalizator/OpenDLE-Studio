@@ -177,7 +177,7 @@ test('a build is the game and its data, with no editor in it', async () => {
   const slug = 'my-first-opendle-world';
   for (const required of ['launch.cmd', 'launch.sh', 'README.md', 'LICENSE', 'version.ini', 'build.json',
     'data/project.json', 'licenses/three-LICENSE.txt', 'licenses/THIRD-PARTY-NOTICES.txt',
-    'index.html', 'game.js', 'game.css', 'menu.js', 'server/game-serve.js',
+    'index.html', 'game.js', 'game.css', 'assets.js', 'defaults.js', 'defaults-model.js', 'server/game-serve.js',
     'render.js', 'audio.js', 'hud-view.js', 'renderer-backend.js',
     'shared/project.js', 'shared/runtime.js', 'shared/game-levels.js', 'shared/game-settings.js',
     'vendor/three/three.webgpu.js', 'vendor/three/three.core.js', 'vendor/three/three.module.js',
@@ -207,6 +207,11 @@ test('a build is the game and its data, with no editor in it', async () => {
       assert.ok(shipped.has(target), `${name} imports ${spec}, which the build does not contain`);
     }
   }
+
+  const page = entries.get(`${slug}/index.html`).data.toString('utf8');
+  assert.match(page, /id="hud"/, 'the engine draws the HUD and the menus');
+  assert.doesNotMatch(page, /id="menu-buttons"/, 'the player has no menu of its own');
+  assert.doesNotMatch(page, /id="panel"/);
 
   const windows = entries.get(`${slug}/launch.cmd`).data.toString('utf8');
   assert.match(windows, /cd \/d "%~dp0"/);
@@ -462,7 +467,8 @@ test('an extracted build serves the game with Node.js only', async t => {
   assert.equal(page.status, 200);
   const html = await page.text();
   assert.match(html, /<script type="importmap">/);
-  assert.match(html, /id="menu"/);
+  assert.match(html, /id="hud"/, 'the engine draws the game menu into the HUD');
+  assert.doesNotMatch(html, /id="menu-buttons"/, 'the player has no menu of its own');
   assert.match(html, /game\.js/);
   assert.doesNotMatch(html, /id="editor-shell"/);
   assert.doesNotMatch(html, /license-dialog/);
