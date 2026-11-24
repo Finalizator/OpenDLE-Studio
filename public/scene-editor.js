@@ -21,6 +21,7 @@ import {
 } from '/shared/gizmo-math.js';
 import { buildFaceArrows, buildGizmo, disposeHandles, handleKey, paintHandles } from './gizmo.js';
 import { geometryEdges, geometrySurfaceEdges, MAX_CUT_POINTS } from '/shared/geometry-cut.js';
+import { brushGeometry, brushBounds, brushVertices, brushDragSelection, facePlane } from '/shared/brushes.js';
 
 const SELECT_COLOR = '#ffd34d', DROP_COLOR = '#7fe6ff';
 /** How long a gizmo arm should be on screen, as a share of the viewport's shorter side. */
@@ -41,6 +42,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   // clickable part of a path would be its waypoint cubes.
   ray.params.Line.threshold = 12;
   const handles = new THREE.Group(), helperGroup = new THREE.Group(), vertexGroup = new THREE.Group();
+  const brushGroup = new THREE.Group();
+  brushGroup.name = 'TrenchBroom brushes';
   // Form resizes a volume by its own faces, which live at the volume's edges rather than on the
   // object's origin, and are the volume's real size rather than a fixed screen size — so they are
   // not part of the scaled `handles` group.
@@ -51,7 +54,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   const pathGroup = new THREE.Group();
   // Where the routes are, so the pick radius for a line can follow the viewing distance.
   const pathCentre = new THREE.Vector3();
-  scene.add(handles, helperGroup, vertexGroup, pathGroup, faceGroup);
+  scene.add(handles, helperGroup, vertexGroup, pathGroup, faceGroup, brushGroup);
   const resources = [], keys = new Set(), listeners = [];
   const own = resource => { resources.push(resource); return resource; };
   let cutEdges = null, cutSignature = '';
@@ -391,9 +394,162 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         // The static world is drawn from merged buffers, so a world mesh names the wall
         // or sector it belongs to per triangle instead of holding one selection itself.
         if (!object.userData.selection && !object.userData.selectionRanges?.length) return;
+        // Corner handles are only clickable in corner mode, like TrenchBroom's vertex tool.
+        if (object.userData.brushVertex && (callbacks.brushMode?.() || 'object') !== 'vertex') return;
         pickables.push(object);
       });
     }
+  }
+  // TrenchBroom's default material for a brush that has no texture yet: white with a light
+  // checker and a unit grid, so a face with no artwork still reads as a surface and its scale
+  // is visible.
+  const brushFill = (() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64; canvas.height = 64;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff'; context.fillRect(0, 0, 64, 64);
+    context.fillStyle = '#e6e6e6';
+    context.fillRect(0, 0, 32, 32); context.fillRect(32, 32, 32, 32);
+    context.strokeStyle = '#d0d0d0'; context.lineWidth = 1;
+    context.strokeRect(.5, .5, 63, 63);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  })();
+  const brushFillMaterial = new THREE.MeshBasicMaterial({ map: brushFill, color: '#ffffff', side: THREE.DoubleSide });
+  const brushFaceMaterial = new THREE.MeshBasicMaterial({ color: '#ffe08a', side: THREE.DoubleSide,
+    transparent: true, opacity: .55, depthTest: false });
+  const brushEdgeMaterial = new THREE.LineBasicMaterial({ color: '#3c3c3c', transparent: true, opacity: .85 });
+  // One sphere and one material for every corner of every brush: a drag rebuilds this list many
+  // times a second, and a fresh sphere per corner per rebuild is how a brush editor exhausts the
+  // window's memory.
+  const brushCornerGeometry = new THREE.SphereGeometry(2.4, 8, 6);
+  const brushCornerMaterial = new THREE.MeshBasicMaterial({ color: '#ffffff', depthTest: false });
+  const brushMaterials = new Map();
+  /**
+   * Per-rebuild disposable resources. Everything a rebuild allocates goes in here and is freed by
+   * the next rebuild — these are GPU buffers, so leaving them to the garbage collector is not
+   * enough.
+   */
+  let brushResources = [];
+  let brushSignature = '';
+  function brushTextureFor(assetId) {
+    if (!assetId) return brushFillMaterial;
+    if (brushMaterials.has(assetId)) return brushMaterials.get(assetId);
+    const asset = (project.assets || []).find(item => item.id === assetId);
+    if (!asset?.src) return brushFillMaterial;
+    const texture = new THREE.TextureLoader().load(asset.src);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
+    brushMaterials.set(assetId, material);
+    return material;
+  }
+  /**
+   * Triangulates one face as a fan and gives it planar UVs along its own axes, so a texture on
+   * a slanted face does not stretch and the white filler tiles at a readable world scale.
+   */
+  function brushFaceMesh(brush, entry) {
+    const polygon = entry.points;
+    if (polygon.length < 3) return null;
+    const positions = [], uvs = [];
+    const plane = entry.plane;
+    const normal = new THREE.Vector3(...plane.normal);
+    const basis = Math.abs(plane.normal[0]) < .9
+      ? new THREE.Vector3().crossVectors(normal, new THREE.Vector3(1, 0, 0)).normalize()
+      : new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0, 1, 0)).normalize();
+    const bitangent = new THREE.Vector3().crossVectors(normal, basis).normalize();
+    const face = brush.faces?.[entry.index] || {};
+    const scaleX = Math.abs(Number(face.scaleX)) || 1, scaleY = Math.abs(Number(face.scaleY)) || 1;
+    const offsetX = Number(face.offsetX) || 0, offsetY = Number(face.offsetY) || 0;
+    // Texture rotation turns the UV frame, not the face, which is what TrenchBroom's face
+    // inspector does with its rotation field.
+    const turn = (Number(face.rotation) || 0) * Math.PI / 180;
+    const cosTurn = Math.cos(turn), sinTurn = Math.sin(turn);
+    const push = point => {
+      positions.push(point[0], point[2], point[1]);
+      const u = point[0] * basis.x + point[2] * basis.y + point[1] * basis.z;
+      const v = point[0] * bitangent.x + point[2] * bitangent.y + point[1] * bitangent.z;
+      const su = u / (64 * scaleX), sv = v / (64 * scaleY);
+      uvs.push(su * cosTurn - sv * sinTurn + offsetX / 64, su * sinTurn + sv * cosTurn + offsetY / 64);
+    };
+    for (let index = 1; index < polygon.length - 1; index++) {
+      push(polygon[0]); push(polygon[index]); push(polygon[index + 1]);
+    }
+    const geometry = new THREE.BufferGeometry();
+    brushResources.push(geometry);
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.computeVertexNormals();
+    const material = brushTextureFor(face.texture);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.userData.selection = { kind: 'brush', id: brush.id };
+    mesh.userData.brushFace = entry.index;
+    mesh.userData.brushId = brush.id;
+    mesh.userData.baseMaterial = material;
+    return mesh;
+  }
+  /** A cheap fingerprint of every brush, so a drag on an object does not rebuild brush meshes. */
+  function brushFingerprint() {
+    const list = project.map.brushes || [];
+    let text = String(list.length);
+    for (const brush of list) {
+      text += `|${brush.id}:${brush.visible === false ? 0 : 1}:${brush.faces?.length || 0}`;
+      for (const face of brush.faces || []) {
+        text += `:${face.texture || ''}/${face.offsetX || 0}/${face.offsetY || 0}/${face.scaleX || 1}/${face.scaleY || 1}`;
+        for (const point of face.points || []) text += `@${point[0].toFixed(3)},${point[1].toFixed(3)},${point[2].toFixed(3)}`;
+      }
+    }
+    return text;
+  }
+  function rebuildBrushes({ force = false } = {}) {
+    const nextSignature = brushFingerprint();
+    if (!force && nextSignature === brushSignature) {
+      // Only the handle visibility can change without the geometry changing.
+      const cornerVisible = (callbacks.brushMode?.() || 'object') === 'vertex';
+      brushGroup.traverse(object => { if (object.userData.brushVertex) object.visible = cornerVisible; });
+      collectSceneHandles();
+      return;
+    }
+    brushSignature = nextSignature;
+    for (const child of [...brushGroup.children]) brushGroup.remove(child);
+    for (const resource of brushResources) resource.dispose?.();
+    brushResources = [];
+    const cornerVisible = (callbacks.brushMode?.() || 'object') === 'vertex';
+    for (const brush of (project.map.brushes || [])) {
+      if (brush.visible === false) continue;
+      let geometry;
+      try { geometry = brushGeometry(brush); } catch { continue; }
+      const group = new THREE.Group();
+      group.userData.selection = { kind: 'brush', id: brush.id };
+      for (const entry of geometry.faces) {
+        const mesh = brushFaceMesh(brush, entry);
+        if (mesh) group.add(mesh);
+      }
+      const edges = [];
+      for (const [a, b] of geometry.edges) edges.push(a[0], a[2], a[1], b[0], b[2], b[1]);
+      if (edges.length) {
+        const buffer = new THREE.BufferGeometry();
+        brushResources.push(buffer);
+        buffer.setAttribute('position', new THREE.Float32BufferAttribute(edges, 3));
+        const line = new THREE.LineSegments(buffer, brushEdgeMaterial);
+        line.userData.selection = { kind: 'brush', id: brush.id };
+        group.add(line);
+      }
+      // Corner handles are shared geometry and material; only their visibility changes per mode.
+      geometry.vertices.forEach((vertex, index) => {
+        const marker = new THREE.Mesh(brushCornerGeometry, brushCornerMaterial);
+        marker.position.set(vertex[0], vertex[2], vertex[1]);
+        marker.renderOrder = 220;
+        marker.userData.selection = { kind: 'brushVertex', id: brush.id, index };
+        marker.userData.brushVertex = true;
+        marker.visible = cornerVisible;
+        group.add(marker);
+      });
+      brushGroup.add(group);
+    }
+    collectSceneHandles();
   }
   /**
    * After a live edit the derived lookups (sector geometry, vertices, walls,
@@ -410,6 +566,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     vertexHeights = collectVertexHeights();
     collectSceneHandles();
     rebuildPaths();
+    rebuildBrushes();
   }
   vertexHeights = collectVertexHeights();
   collectSceneHandles();
@@ -529,6 +686,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     // A ceiling cut away by the shader is still geometry to a raycast, so a click where
     // the room is open must fall through to whatever is under it.
     if (selection?.kind === 'sector' && selection.surface === 'ceilingHeight' && !ceilingDrawn(selection.id)) return null;
+    // Which part of a brush a click means depends on the brush tool: object, one face, or one
+    // corner. The geometry is the same; only the tool decides.
+    const brushTool = callbacks.brushMode?.() || 'object';
+    if (selection?.kind === 'brushVertex') return brushTool === 'vertex' ? selection : null;
+    if (selection?.kind === 'brush' && object.userData.brushFace !== undefined && brushTool === 'face')
+      return { kind: 'brushFace', id: selection.id, face: object.userData.brushFace };
     return layoutSelection(project, selection);
   }
   function parentSelection(object) {
@@ -681,6 +844,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
             const a = ring[index], b = ring[(index + 1) % ring.length];
             pushSegment(points, new THREE.Vector3(a.x, height, a.y), new THREE.Vector3(b.x, height, b.y));
           }
+        }
+      }
+    } else if (selection.kind === 'brush' || selection.kind === 'brushFace' || selection.kind === 'brushVertex') {
+      const brush = (project.map.brushes || []).find(item => item.id === selection.id);
+      if (brush) {
+        const geometry = brushGeometry(brush);
+        for (const [a, b] of geometry.edges) {
+          pushSegment(points, new THREE.Vector3(a[0], a[2], a[1]), new THREE.Vector3(b[0], b[2], b[1]));
         }
       }
     } else {
@@ -959,6 +1130,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const wall = wallById.get(id), a = vertexById.get(wall?.a), b = vertexById.get(wall?.b);
       if (!a || !b) { clearHandles(); return; }
       position = new THREE.Vector3((a.x + b.x) / 2, 32, (a.y + b.y) / 2);
+    } else if (kind === 'brush' || kind === 'brushFace' || kind === 'brushVertex') {
+      const brush = (project.map.brushes || []).find(item => item.id === id);
+      if (!brush) { clearHandles(); return; }
+      const box = brushBounds(brush);
+      position = new THREE.Vector3(box.x + box.width / 2, box.z + box.height / 2, box.y + box.depth / 2);
+      canvas.dataset.brushBounds = `${Math.round(box.width)}x${Math.round(box.depth)}x${Math.round(box.height)}`;
     } else {
       const sector = sectorById.get(id);
       if (!sector || !Number.isFinite(sector.bounds.minX)) { clearHandles(); return; }
@@ -973,7 +1150,17 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     const signature = `${mode}/${axes.join()}`;
     const missing = axes.length > 0 && handles.children.length === 0;
     if (rebuildHandles || missing || signature !== handleSignature) { handleSignature = signature; buildHandles(axes); }
+    paintBrushSelection();
     canvas.dataset.sceneSelection = `${kind}:${id}${selected.surface ? `:${selected.surface}` : ''}`;
+  }
+  /** Paints the selected brush face, or clears the paint when the selection is elsewhere. */
+  function paintBrushSelection() {
+    brushGroup.traverse(object => {
+      if (object.userData.brushFace === undefined || !object.userData.baseMaterial) return;
+      const active = selected?.kind === 'brushFace' && selected.id === object.userData.brushId
+        && selected.face === object.userData.brushFace;
+      object.material = active ? brushFaceMaterial : object.userData.baseMaterial;
+    });
   }
   /**
    * One side of the selected object's volume, in map units.
@@ -1033,6 +1220,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    * nothing draws nothing, rather than an arrow that turns out to be inert.
    */
   function axesFor(kind) {
+    if (kind === 'brush') return mode === 'move' ? ['x', 'y', 'z'] : [];
+    if (kind === 'brushFace' || kind === 'brushVertex') return [];
     if (kind === 'entity' && sceneInstanceOf(project, selected.id) && mode === 'form') return [];
     if (kind === 'pathPoint' || kind === 'path') return mode === 'move' ? ['x', 'y', 'z'] : [];
     if (kind === 'sector') return mode === 'move' ? ['y'] : [];
@@ -1113,7 +1302,10 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   // Vertical editing moves whole sector surfaces. Per-vertex (sloped floor/ceiling) heights are
   // intentionally not supported yet: the project model stores one height per sector.
   function liveDrag(selection, baseline, mode, delta, message, grid = callbacks.grid()) {
-    callbacks.live(next => dragSelection(next, baseline, selection, mode, delta, grid), message);
+    callbacks.live(next => {
+      if (selection?.kind?.startsWith('brush')) brushDragSelection(next, baseline, selection, mode, delta, grid);
+      else dragSelection(next, baseline, selection, mode, delta, grid);
+    }, message);
   }
 
   function surfaceTargetFor(selection, point) {
@@ -1406,6 +1598,38 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const path = (project.paths || []).find(item => item.id === selection.id);
       if (path) selection.at = pathFraction(path, hit.point);
     }
+    // A brush face drags along its normal, and a brush corner drags on the plane through it
+    // that faces the camera. Both are live, so the brush reshapes under the pointer.
+    if (selection?.kind === 'brushFace') {
+      const brush = (project.map.brushes || []).find(item => item.id === selection.id);
+      const entry = brush && brushGeometry(brush).faces[selection.face];
+      if (!entry || !hit?.point) { callbacks.select(selection); return; }
+      callbacks.select(selection);
+      action = { kind: 'brushFace', selection: { ...selection }, normal: new THREE.Vector3(...entry.plane.normal),
+        origin: hit.point.clone(), press: hit.point.clone(), x: event.clientX, y: event.clientY,
+        distance: 0, baseline: project, moved: false };
+      return;
+    }
+    if (selection?.kind === 'brushVertex') {
+      const brush = (project.map.brushes || []).find(item => item.id === selection.id);
+      const vertex = brush && brushVertices(brush)[selection.index];
+      if (!vertex) { callbacks.select(selection); return; }
+      callbacks.select(selection);
+      action = { kind: 'brushVertex', selection: { ...selection }, start: new THREE.Vector3(vertex[0], vertex[2], vertex[1]),
+        press: new THREE.Vector3(vertex[0], vertex[2], vertex[1]), x: event.clientX, y: event.clientY,
+        baseline: project, moved: false };
+      return;
+    }
+    // Dragging a brush body moves it, the way grabbing a brush in TrenchBroom does; the arrows
+    // on the selection are for constraining a move to one axis.
+    if (selection?.kind === 'brush') {
+      callbacks.select(selection, { additive: Boolean(event.ctrlKey || event.metaKey) });
+      if (mode === 'move' && hit?.point) {
+        action = { kind: 'brushMove', selection: { ...selection }, origin: hit.point.clone(),
+          x: event.clientX, y: event.clientY, baseline: project, moved: false };
+      }
+      return;
+    }
     if (selection?.kind === 'sector') {
       selection.surface = selectionOf(hit)?.surface || callbacks.surface();
       callbacks.select(selection);
@@ -1469,6 +1693,44 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // Apply as the pointer moves: the world is rebuilt incrementally, so the
       // geometry follows the cursor instead of snapping when the button is released.
       liveDrag(action.selection, action.baseline, 'move', { x: 0, y: 0, z: height - action.startHeight }, `3D ${name.toLowerCase()} height ${height}`, event.altKey ? 0 : callbacks.grid());
+      return;
+    }
+    if (action.kind === 'brushMove') {
+      if (!action.moved && Math.hypot(event.clientX - action.x, event.clientY - action.y) < 3) return;
+      action.moved = true;
+      const facing = camera.getWorldDirection(new THREE.Vector3()).negate();
+      const point = rayPlaneHit(action.origin.toArray(), facing.toArray(), ray.ray.origin.toArray(), ray.ray.direction.toArray());
+      if (!point) return;
+      const grid = event.altKey ? 0 : callbacks.grid();
+      let dx = point[0] - action.origin.x, dz = point[2] - action.origin.z;
+      if (grid) { dx = Math.round(dx / grid) * grid; dz = Math.round(dz / grid) * grid; }
+      showReadout(`${Math.round(dx)}, ${Math.round(dz)}`);
+      liveDrag(action.selection, action.baseline, 'move', { x: dx, y: 0, z: dz }, '3D brush moved', 0);
+      return;
+    }
+    if (action.kind === 'brushFace' || action.kind === 'brushVertex') {
+      if (!action.moved && Math.hypot(event.clientX - action.x, event.clientY - action.y) < 2) return;
+      action.moved = true;
+      // The pointer is followed on a plane through the grabbed point that faces the camera; the
+      // travel along the face normal (or the corner's own plane) is the edit.
+      const facing = camera.getWorldDirection(new THREE.Vector3()).negate();
+      const point = rayPlaneHit(action.press.toArray(), facing.toArray(), ray.ray.origin.toArray(), ray.ray.direction.toArray());
+      if (!point) return;
+      const moved = new THREE.Vector3(point[0], point[1], point[2]).sub(action.press);
+      const grid = event.altKey ? 0 : callbacks.grid();
+      if (action.kind === 'brushFace') {
+        let distance = moved.dot(action.normal);
+        if (grid) distance = Math.round(distance / grid) * grid;
+        action.selection.distance = distance;
+        showReadout(`Face ${distance >= 0 ? '+' : '\u2212'}${Math.abs(Math.round(distance * 10) / 10)}`);
+        liveDrag(action.selection, action.baseline, 'move', { distance }, `3D face ${Math.round(distance)}`, 0);
+        return;
+      }
+      const target = action.start.clone().add(moved);
+      if (grid) target.set(snapValue(target.x, grid), snapValue(target.y, grid), snapValue(target.z, grid));
+      action.selection.target = [target.x, target.y, target.z];
+      showReadout(`Corner ${Math.round(target.x)}, ${Math.round(target.z)}, ${Math.round(target.y)}`);
+      liveDrag(action.selection, action.baseline, 'move', { x: 0, y: 0, z: 0 }, '3D corner', 0);
       return;
     }
     if (!action.moved && Math.hypot(event.clientX - action.x, event.clientY - action.y) < 2) return;
@@ -1555,6 +1817,27 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       hideReadout();
       if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
       callbacks.liveFinish(`3D waypoint moved to ${Math.round(completed.end.x)}, ${Math.round(completed.end.z)}`);
+      return;
+    }
+    if (completed.kind === 'brushMove') {
+      hideReadout();
+      if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
+      callbacks.liveFinish('3D brush moved');
+      select(callbacks.selection());
+      return;
+    }
+    if (completed.kind === 'brushFace') {
+      hideReadout();
+      if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
+      callbacks.liveFinish(`3D face ${Math.round(completed.selection.distance || 0)}`);
+      select(callbacks.selection());
+      return;
+    }
+    if (completed.kind === 'brushVertex') {
+      hideReadout();
+      if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
+      callbacks.liveFinish('3D brush corner moved');
+      select(callbacks.selection());
       return;
     }
     if (!completed.moved) { callbacks.liveFinish(null); select(callbacks.selection()); return; }
@@ -1729,6 +2012,32 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     areas(visible) { showAreas = Boolean(visible); rebuildOverlays(); },
     /** Wireframe rigid-body colliders, so physics volumes are visible while editing. */
     physicsOverlay(visible) { showPhysics = Boolean(visible); rebuildOverlays(); },
+    /** Rebuild brush geometry after an edit; the fingerprint makes a no-op call free. */
+    refreshBrushes(options) { rebuildBrushes(options); },
+    /**
+     * Put the camera a fixed distance from a point, looking at it. Used by automation so a view
+     * is reproducible; it is also the natural action behind "frame this object".
+     */
+    focus(target, { distance = 384, angle } = {}) {
+      if (Number.isFinite(angle)) yaw = angle;
+      const focusPoint = new THREE.Vector3(target.x, target.z, target.y);
+      const forward = direction(new THREE.Vector3());
+      camera.position.copy(focusPoint).addScaledVector(forward, -distance);
+      lookTarget.copy(focusPoint);
+      camera.lookAt(lookTarget);
+      camera.updateMatrixWorld();
+      return { position: camera.position.toArray(), yaw, pitch };
+    },
+    /** World point to CSS pixels, for automation driving this view with real mouse events. */
+    worldToScreen(x, y, z = 0) {
+      const rect = canvas.getBoundingClientRect();
+      const point = new THREE.Vector3(x, z, y).project(camera);
+      return {
+        x: rect.left + (point.x * .5 + .5) * rect.width,
+        y: rect.top + (-.5 * point.y + .5) * rect.height,
+        visible: point.z > -1 && point.z < 1,
+      };
+    },
     /** The floor point under the pointer, so a pasted copy lands where the user is looking. */
     pointUnderPointer,
     /** Frame the whole room, for when the camera has been flown somewhere unhelpful. */
@@ -1737,7 +2046,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     placeholderReport: () => view.placeholderReport?.() || [],
     dispose() {
       endExternalDrag();
-      listeners.forEach(remove => remove()); clearHandles(); resources.forEach(resource => resource.dispose()); view.dispose();
+      listeners.forEach(remove => remove()); clearHandles(); resources.forEach(resource => resource.dispose());
+      for (const resource of brushResources) resource.dispose?.(); brushResources = [];
+      brushCornerGeometry.dispose(); brushEdgeMaterial.dispose(); brushCornerMaterial.dispose();
+      for (const material of brushMaterials.values()) { material.map?.dispose(); material.dispose(); }
+      brushMaterials.clear(); brushFillMaterial.dispose(); brushFaceMaterial.dispose(); brushFill.dispose();
+      view.dispose();
     },
   };
 }

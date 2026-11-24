@@ -638,6 +638,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     assert(scripts.data !== undefined || scripts.libraries?.length, 'Map scripts need a module or a library');
   }
   const { vertices, walls, entities } = project.map;
+  const brushes = project.map.brushes || [];
   array(vertices, 'Vertices', LIMITS.vertices);
   array(walls, 'Walls', LIMITS.walls);
   array(entities, 'Entities', LIMITS.entities);
@@ -708,6 +709,30 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       if (label !== 'Model')       assert(!['model', 'font', 'sound', 'music', 'video'].includes(assetById.get(id)?.kind), `${label} requires an image`);
     }
   };
+
+  array(brushes, 'Brushes', 4096);
+  for (const brush of brushes) {
+    object(brush, 'Brush');
+    identifier(brush.id, 'Brush ID');
+    assert(typeof brush.name === 'string' && brush.name.length <= 100, 'Brush name must contain at most 100 characters');
+    assert(brush.faces === undefined || brush.planes === undefined, 'A brush stores faces or planes, never both');
+    const faces = brush.faces || [];
+    if (brush.planes !== undefined) array(brush.planes, 'Brush planes', 64);
+    else {
+      array(faces, 'Brush faces', 64);
+      if (faces.length < 4) assert(false, 'A brush needs at least four faces');
+    }
+    for (const face of faces) {
+      object(face, 'Brush face');
+      array(face.points, 'Brush face points', 3);
+      assert(face.points.length === 3 && face.points.every(point =>
+        Array.isArray(point) && point.length === 3 && point.every(Number.isFinite)), 'A brush face needs three finite points');
+      if (face.texture !== undefined && face.texture !== null) assetRef(face.texture, 'Brush face texture');
+      for (const key of ['offsetX', 'offsetY']) if (face[key] !== undefined) number(face[key], `Brush face ${key}`);
+      for (const key of ['scaleX', 'scaleY']) if (face[key] !== undefined) assertTextureScale(face[key], `Brush face ${key}`);
+      if (face.rotation !== undefined) number(face.rotation, 'Brush face rotation', -360, 360);
+    }
+  }
   for (const asset of assets) if (asset.rotations !== undefined) {
     assert(asset.kind === 'sprite' || asset.kind === 'weapon', 'Directional views require a sprite');
     array(asset.rotations, 'Sprite rotations', 8);
@@ -1626,6 +1651,7 @@ export function createProject() {
     modelFacingSemantics: MODEL_FACING_SEMANTICS,
     title: 'My first OpenDLE world',
     map: {
+      brushes: [],
       vertices: [
         { id: 'v1', x: -384, y: -256 }, { id: 'v2', x: 384, y: -256 },
         { id: 'v3', x: 384, y: 256 }, { id: 'v4', x: -384, y: 256 },

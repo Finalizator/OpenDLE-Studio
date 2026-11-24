@@ -1,0 +1,103 @@
+# Automating OpenDLE
+
+Drives **OpenDLE's own desktop window** — the same Electron/Chromium page a person uses — over the
+Chrome DevTools Protocol. No Playwright, no extra browser, no page snapshots: every step returns a
+few numbers, which is what keeps a long automation session cheap for this machine.
+
+```sh
+npm run automation:brushes     # draw, move (Top + Front), grip-resize, 3D move, 3D face drag
+npm run automation:menus       # the right-click menu carries the brush commands
+node tools/automation/run.mjs brushes --port 3000
+```
+
+Output is one JSON line. A failure exits non-zero and names the failing step:
+
+```json
+{"ok":true,"scenario":"brushes","seconds":4.7,"result":{"ok":true,"steps":15,"view":"3d"}}
+```
+
+## How it works
+
+- `studio.mjs` starts the studio server if nothing is listening, picks a free DevTools port, and
+  launches `scripts/studio-desktop.js` with `--automation-port`. The window is **killed** when the
+  scenario ends: its close handler would otherwise save, and an automation run must never write into
+  the author's project library.
+- `--automation-port` makes the shell add `?automation=1`, which installs `window.__opendle`
+  (`public/automation.js`). In that mode the editor also opens a **blank** project instead of the
+  stored campaign and disables autosave.
+- `cdp.mjs` is a ~120-line CDP client built on Node's global `WebSocket` (`Runtime.evaluate`,
+  `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`).
+- The licence dialog is accepted by clicking it, like a person does. The automation profile lives in
+  `data/automation-profile` (gitignored), so it is remembered between runs.
+
+## The page hooks (`window.__opendle`)
+
+| Hook | Returns |
+| --- | --- |
+| `ready()` / `status()` | whether the editor booted, plus the current view/selection |
+| `state()` | counts, selection, projection, brush mode, `view`, `zoom`, `sceneReady` |
+| `brushes()` | per brush: `bounds`, face count, and each face's `normal` + `centroid` |
+| `selection()` | current selection object |
+| `errors()` | page errors collected since load (assert this is empty) |
+| `lastDrag()` | the last completed 2D drag (from/to in view coordinates) |
+| `worldToScreen(x, y, z)` | CSS pixels for the visible view (2D or 3D) |
+| `screenToWorld(x, y)` | the inverse, in the current 2D view |
+| `tool(name)`, `brushMode(mode)`, `projection(mode)`, `view('2d' \| '3d')` | editor commands |
+| `focus(point, { distance, angle })` | places the 3D camera for a reproducible drag |
+| `newDocument()` | a blank project |
+
+## Ad-hoc driving: `drive.mjs`
+
+One line does one investigation, with no new file:
+
+```sh
+node tools/automation/drive.mjs 'eval:__opendle.state()' layout
+node tools/automation/drive.mjs 'new' 'tool:room' 'drag:w:-160,-96|w:96,96' 'eval:__opendle.state().brushes'
+node tools/automation/drive.mjs 'right-click:w:0,0' menu
+node tools/automation/drive.mjs 'click:#environment' 'ui:#environment-panel h1' shot:/tmp/env.png
+```
+
+Drags and right clicks accept **world** coordinates (`w:x,y`), which the page converts, so no
+pixel maths is needed. `--attach <cdpPort>` reuses a window started with `--keep`.
+
+## The universal UI driver: `__opendle.ui`
+
+| Call | Purpose |
+| --- | --- |
+| `describe(selector, { within, limit, hidden })` | `{ count, items: [{ ref, tag, id, name, text, value, checked, options, disabled, rect }] }` |
+| `find(text, { selector, within })` | the ref of the first element whose text/label/value matches |
+| `click(refOrSelector)` | a DOM click, focused first |
+| `set(refOrSelector, value)` | input/select value plus `input` and `change` events |
+| `check(refOrSelector, bool)` | checkbox/radio |
+| `press(code)` | synthetic key press on the focused element |
+| `text`, `exists`, `count` | small reads |
+| `menu()` / `dialogs()` / `layout()` | the open context menu, open dialogs, the chrome with refs |
+
+Refs (`r12`) are written as `data-opendle-ref`, so describe once and then act on the ref.
+
+## Writing a scenario
+
+```js
+export async function run({ page }) {
+  await page.evaluate('window.__opendle.newDocument()');
+  await page.evaluate('window.__opendle.tool("room")');
+  const from = await page.evaluate('window.__opendle.worldToScreen(-160, -96)');
+  const to = await page.evaluate('window.__opendle.worldToScreen(96, 96)');
+  await page.drag(from, to);                       // real mouse events
+  const { brushes } = await page.evaluate('window.__opendle.state()');
+  if (brushes !== 1) throw new Error('the drag did not create a brush');
+}
+```
+
+Register it in `run.mjs`, then `node tools/automation/run.mjs <name>`.
+
+## Traps
+
+- **Never** add page-snapshot tooling here. A single whole-page snapshot is ~140 KB of session
+  history, and that is what has taken the editor down before.
+- Coordinates come from `worldToScreen`; a canvas that has not finished laying out gives silently
+  wrong pixels. `brushes.mjs` has `stableCanvas()` for that reason.
+- In 3D a press **on the gizmo** starts an axis-constrained transform. To test "drag the brush",
+  press away from its centre — a face centroid, for example.
+- A 2D drag snaps its *end* to the grid, so the travelled distance is a grid multiple, not an exact
+  pixel ratio.

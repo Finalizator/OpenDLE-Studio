@@ -8,6 +8,7 @@ import { LUT_SIZE, lutTableBytes, postFxParamDefault, postFxSignature } from '/s
 import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, sectorSurfaces, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv } from '/shared/uv.js';
+import { brushGeometry } from '/shared/brushes.js';
 import { wallScroll, TICRATE } from '/shared/scrollers.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
 import { verticalFov } from '/shared/game-settings.js';
@@ -898,6 +899,84 @@ export async function createPreview(canvas, project, state, { editor = false, on
     }
     buildStaticWorld();
     flushBatches();
+    // Brushes are authored geometry, not imported sector geometry: they are drawn as their own
+    // meshes so a box the mapper draws is a solid white surface in play as well as in the editor.
+    const brushRoot = new THREE.Group();
+    brushRoot.name = 'Brushes';
+    scene.add(brushRoot);
+    const brushTextureCache = new Map();
+    const brushPlainTexture = (() => {
+      const surface = document.createElement('canvas');
+      surface.width = surface.height = 64;
+      const paint = surface.getContext('2d');
+      paint.fillStyle = '#ffffff'; paint.fillRect(0, 0, 64, 64);
+      paint.fillStyle = '#e8e8e8'; paint.fillRect(0, 0, 32, 32); paint.fillRect(32, 32, 32, 32);
+      const texture = new THREE.CanvasTexture(surface);
+      texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      return texture;
+    })();
+    function brushMaterialFor(assetId) {
+      if (!assetId) return new THREE.MeshBasicNodeMaterial({ map: brushPlainTexture, color: '#ffffff', side: THREE.DoubleSide });
+      if (brushTextureCache.has(assetId)) return brushTextureCache.get(assetId);
+      let map = null;
+      try { map = imageTexture(assetId); } catch { map = null; }
+      const next = new THREE.MeshBasicNodeMaterial({ map: map || brushPlainTexture, color: '#ffffff', side: THREE.DoubleSide });
+      brushTextureCache.set(assetId, next);
+      return next;
+    }
+    function rebuildBrushMeshes() {
+      for (const child of [...brushRoot.children]) {
+        brushRoot.remove(child);
+        child.geometry?.dispose();
+      }
+      if (typeof brushGeometry !== 'function') return;
+      for (const brush of (project.map.brushes || [])) {
+        if (brush.visible === false) continue;
+        let shapes;
+        try { shapes = brushGeometry(brush); } catch { continue; }
+        const byMaterial = new Map();
+        for (const entry of shapes.faces) {
+          if (entry.points.length < 3) continue;
+          const face = brush.faces?.[entry.index] || {};
+          const positions = [], uvs = [];
+          const normal = entry.plane.normal;
+          const axis = Math.abs(normal[0]) > Math.abs(normal[1])
+            ? (Math.abs(normal[0]) > Math.abs(normal[2]) ? 0 : 2)
+            : (Math.abs(normal[1]) > Math.abs(normal[2]) ? 1 : 2);
+          const scaleX = Number(face.scaleX) || 1, scaleY = Number(face.scaleY) || 1;
+          const offsetX = Number(face.offsetX) || 0, offsetY = Number(face.offsetY) || 0;
+          const turn = (Number(face.rotation) || 0) * Math.PI / 180;
+          const cosTurn = Math.cos(turn), sinTurn = Math.sin(turn);
+          const uvOf = point => {
+            const u = axis === 0 ? point[1] : point[0];
+            const v = axis === 2 ? point[1] : point[2];
+            const su = u / (64 * scaleX), sv = v / (64 * scaleY);
+            return [su * cosTurn - sv * sinTurn + offsetX / 64, su * sinTurn + sv * cosTurn + offsetY / 64];
+          };
+          const push = point => {
+            positions.push(point[0], point[2], point[1]);
+            uvs.push(...uvOf(point));
+          };
+          for (let index = 1; index < entry.points.length - 1; index++) {
+            push(entry.points[0]); push(entry.points[index]); push(entry.points[index + 1]);
+          }
+          const key = face.texture || '';
+          if (!byMaterial.has(key)) byMaterial.set(key, { positions: [], uvs: [], material: brushMaterialFor(face.texture) });
+          const target = byMaterial.get(key);
+          target.positions.push(...positions); target.uvs.push(...uvs);
+        }
+        for (const { positions, uvs, material: surfaceMaterial } of byMaterial.values()) {
+          const buffer = new THREE.BufferGeometry();
+          buffer.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+          buffer.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+          buffer.computeVertexNormals();
+          const mesh = new THREE.Mesh(buffer, surfaceMaterial);
+          brushRoot.add(mesh);
+        }
+      }
+    }
+    if (!editor) rebuildBrushMeshes();
     // Three compiles a shader program the first time a material is drawn. Doors and
     // lifts reveal surfaces (the upper/lower/middle textures of the neighbouring
     // sector) that only exist once they move, so those materials get built and the
@@ -2564,6 +2643,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // single edited wall or sector costs one rebuild instead of the whole map.
       buildStaticWorld();
       flushBatches();
+      if (!editor) rebuildBrushMeshes();
       canvas.dataset.worldParts = `${rebuiltParts}/${worldParts.length}`;
       canvas.dataset.batches = String(batchMeshes.size);
       sectorIndex = createSectorIndex(geometry);

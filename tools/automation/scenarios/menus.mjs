@@ -1,0 +1,64 @@
+// The world/brush commands live in the right-click menu, not in the toolbar.
+//
+// This scenario draws a brush, opens the real context menu on it with a right click, and reads
+// back the commands that were offered. It also proves the toolbar no longer carries them, which
+// was the specific UI request: the menu is where a mapper looks, so that is where they belong.
+
+const wait = ms => new Promise(done => setTimeout(done, ms));
+
+export async function run({ page }) {
+  const steps = [];
+  const check = (name, ok, detail) => {
+    steps.push({ name, ok: Boolean(ok), ...(detail === undefined ? {} : { detail }) });
+    if (!ok) {
+      const trail = steps.map(step => `${step.ok ? 'ok  ' : 'FAIL'} ${step.name}${step.detail === undefined ? '' : ` ${JSON.stringify(step.detail)}`}`);
+      throw new Error(`${name}${detail === undefined ? '' : `: ${JSON.stringify(detail)}`}\n${trail.join('\n')}`);
+    }
+  };
+  const screen = (x, y, z = 0) => page.evaluate(`window.__opendle.worldToScreen(${x}, ${y}, ${z})`);
+
+  await page.evaluate('window.__opendle.newDocument()');
+  await page.evaluate('window.__opendle.projection("xy")');
+  await page.evaluate('window.__opendle.tool("room")');
+  await wait(400);
+  await page.drag(await screen(-160, -96), await screen(96, 80), { steps: 8 });
+  await wait(400);
+  check('a brush exists to act on', (await page.evaluate('window.__opendle.state()')).brushes === 1);
+
+  // The toolbar must no longer carry the world commands.
+  const toolbar = await page.evaluate(`[...document.querySelectorAll('#map-panel .map-tools button')].map(button => button.id)`);
+  check('the brush commands left the toolbar', !toolbar.some(id => /world-|bake/i.test(id)), toolbar);
+
+  // A right click that does not move is a menu request, exactly like in the editor.
+  await page.evaluate('window.__opendle.tool("select")');
+  await wait(150);
+  const onBrush = await screen(0, 0);
+  await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(onBrush.x), y: Math.round(onBrush.y), button: 'right', buttons: 2, clickCount: 1 });
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(onBrush.x), y: Math.round(onBrush.y), button: 'right', buttons: 0, clickCount: 1 });
+  await wait(250);
+
+  const menu = await page.evaluate(`[...document.querySelectorAll('.context-menu .context-menu-item')].map(item => item.textContent.trim())`);
+  check('the right click opened a menu', menu.length > 0, menu.slice(0, 4));
+  for (const wanted of ['Select brush', 'Select faces', 'Select corners', 'Clip', 'Hollow', 'Lock brush']) {
+    check(`the menu offers "${wanted}"`, menu.some(label => label.includes(wanted)), menu);
+  }
+
+  // Every command the toolbar used to hold is reachable from the menu.
+  const closeMenu = async () => {
+    await page.key('Escape');
+    await wait(120);
+  };
+  await closeMenu();
+  const empty = await screen(-320, 200);
+  await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(empty.x), y: Math.round(empty.y), button: 'right', buttons: 2, clickCount: 1 });
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(empty.x), y: Math.round(empty.y), button: 'right', buttons: 0, clickCount: 1 });
+  await wait(250);
+  const submenuItems = await page.evaluate(`[...document.querySelectorAll('.context-menu .context-menu-item')].map(item => item.textContent.trim())`);
+  check('empty space offers the Brush submenu', submenuItems.some(label => label.startsWith('Brush')), submenuItems);
+  check('empty space still offers create/object actions', submenuItems.some(label => label.includes('Create object')), submenuItems);
+  await closeMenu();
+
+  const errors = await page.evaluate('window.__opendle.errors()');
+  check('the page logged no errors', errors.length === 0, errors.slice(0, 3));
+  return { ok: true, steps: steps.length, menu };
+}

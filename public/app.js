@@ -1,4 +1,4 @@
-import { createProject, validateProject, cloneProjectData, cloneProjectForEdit, addRoom, newId, removeEntities, eventConditions, updateAsset, ENTITY_TYPES, CAMERA_DEFAULTS } from '/shared/project.js';
+import { createProject, validateProject, cloneProjectData, cloneProjectForEdit, newId, removeEntities, eventConditions, updateAsset, ENTITY_TYPES, CAMERA_DEFAULTS } from '/shared/project.js';
 import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity, pathHandle, pathSteps, bakePathRamp, PATH_SINE_DEFAULTS } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment, setAddonHooks } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
@@ -92,6 +92,20 @@ import { weaponScriptRules } from '/shared/weapon-script.js';
 import * as gameSaves from './game-saves.js';
 import { saveFileDocument, serializeSaveFile, parseSaveFile, saveFileName } from '/shared/save-files.js';
 import { installSplitters } from './splitters.js';
+import { installAutomationHooks } from './automation.js';
+import { bakeWorldGlb } from '/shared/world-bake.js';
+import { viewAxes as sharedViewAxes, projectWorld as sharedProjectWorld, unprojectWorld as sharedUnprojectWorld,
+  viewDeltaToWorld as sharedViewDelta,
+  brushBoundsFromView as sharedBrushBoundsFromView, snapViewPoint } from '/shared/brush-view.js';
+import { alignWorldSelection, distributeWorldSelection, flipWorldSelection,
+  lockWorldEntities, unlockWorldEntities, worldLayers,
+  createWorldLayer, setWorldLayer, assignWorldLayer } from '/shared/world-tools.js';
+import {
+  createBoxBrush, createWedgeBrush, brushGeometry, brushBounds, brushVertices,
+  moveBrush, moveBrushFace, moveBrushVertex, clipBrush, clipPlaneFromView, subtractBrush,
+  mergeBrushes, hollowBrush, duplicateBrush, removeBrushes, setBrushFaceMaterial,
+  setBrushFacePosition, facePlane, facesOf,
+} from '/shared/brushes.js';
 
 const $ = id => document.getElementById(id);
 $('asset-dock').append($('assets-panel'));
@@ -104,10 +118,24 @@ let scriptletsLoading = false, scriptletsLoaded = false, scriptletLoadError = ''
 // is what decides whether Save updates the open project or stores a new one.
 let projectId = null;
 let documentGeneration = 0, documentSession = {}, projectOperationBusy = false;
+/**
+ * Automation mode, opened by the desktop shell with `--automation-port` (it adds `automation=1`).
+ * It starts from a blank project instead of the stored campaign and never autosaves, so a test run
+ * is fast, deterministic and cannot add anything to the author's project library.
+ */
+const automationMode = new URLSearchParams(location.search).get('automation') === '1';
+const automationErrors = [];
+/** The last completed 2D drag, so a scenario can explain a surprising result instead of guessing. */
+let automationLastDrag = null;
+if (automationMode) {
+  window.addEventListener('error', event => automationErrors.push(String(event.message || event.error || 'error')));
+  window.addEventListener('unhandledrejection', event =>
+    automationErrors.push(`unhandled rejection: ${String(event.reason?.message || event.reason)}`));
+}
 let projectOperationPending = null;
 const projectAutosave = createProjectAutosave({
   isDirty: () => Boolean(project && dirty),
-  isBusy: () => projectOperationBusy || Boolean(liveEditState),
+  isBusy: () => automationMode || projectOperationBusy || Boolean(liveEditState),
   save: async () => {
     while (projectOperationPending) await projectOperationPending;
     if (dirty) await saveProject();
@@ -241,9 +269,16 @@ let sceneMode = '2d', sceneEditor = null, sceneProject = null, sceneLoading = fa
 // list of open ids is what the tab strip shows; the active one is edited below.
 let sceneObjectEditor = null, openSceneIds = [], activeSceneId = null;
 const camera = { x: 0, y: 0, zoom: 1 };
+let mapProjection = 'xy';
+// TrenchBroom edits a brush as a whole, or one of its faces, or one of its corners. The mode is
+// a property of the brush tools rather than a separate editor, so it lives beside the view.
+let brushMode = 'object';
+/** A clip in progress: the brush, and the line drawn so far in the 2D view. */
+let clipDraft = null;
 const keys = new Set(), pressed = new Set();
 const canvas = $('map'), ctx = canvas.getContext('2d');
 let drag = null, mapNeedsDraw = true;
+let marquee = null;
 // Panel edges are draggable and remembered per browser; the 2D map only repaints
 // when it is told its drawing buffer changed size, so every resize redraws it.
 const splitters = installSplitters({
@@ -560,11 +595,17 @@ async function refreshScene() {
         preview: () => cutTool.preview(), state: () => cutTool.state, finish: () => cutTool.finish(),
         cancel: () => cutTool.cancel(), back: () => cutTool.back() },
       surface: () => $('sector-surface').value,
+      brushMode: () => brushMode,
       script: openScript,
       remove: value => {
         // The 3D view may select a route or a waypoint as well as an object, so Delete means
         // whatever is selected there rather than always an object.
         const target = typeof value === 'string' ? { kind: 'entity', id: value } : value;
+        if (target?.kind === 'brush') {
+          edit(next => { next.map.brushes = (next.map.brushes || []).filter(brush => brush.id !== target.id); },
+            'Brush deleted');
+          return;
+        }
         void guard(deleteSelectionObject)(target);
       },
       pathPoint: point => addPathPoint(point),
@@ -586,7 +627,14 @@ async function refreshScene() {
       room: (start, end) => {
         try {
           const a = snap({ x: start.x, y: start.z }), b = snap({ x: end.x, y: end.z });
-          edit(next => addRoom(next, { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), depth: Math.abs(a.y - b.y) }), 'Room added in 3D');
+          edit(next => {
+            if (toolMode() === 'wedge') createWedgeBrush(next, {
+              x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: 0,
+              width: Math.abs(a.x - b.x), depth: Math.abs(a.y - b.y), height: 128,
+            });
+            else createBoxBrush(next, { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: 0,
+              width: Math.abs(a.x - b.x), depth: Math.abs(a.y - b.y), height: 128 });
+          }, toolMode() === 'wedge' ? 'Wedge brush added in 3D' : 'Room added in 3D');
         } catch (error) { status(error.message, true); }
       },
       menu: (event, picked) => mapViewMenu(event, picked),
@@ -607,6 +655,7 @@ async function refreshScene() {
 function setSceneMode(mode) {
   sceneMode = mode;
   $('map').hidden = mode !== '2d'; $('scene-3d').hidden = mode !== '3d';
+  $('map-projection-field').hidden = mode !== '2d';
   for (const field of ['transform-field', 'ceiling-field', 'surface-field', 'area-field', 'physics-field']) $(field).hidden = mode !== '3d';
   $('view-2d').setAttribute('aria-pressed', String(mode === '2d'));
   $('view-3d').setAttribute('aria-pressed', String(mode === '3d'));
@@ -642,7 +691,7 @@ $('tool').addEventListener('change', () => {
  * object is how a tool ends up silently doing nothing.
  */
 /** The tools that are always there, in the order a mapper reaches for them. */
-const BASE_TOOLS = [['select', 'Select / move'], ['room', 'Draw room'], ['cut', 'Cut / stairs / tunnel'], ['entity', 'Place entity'], ['path', 'Draw path']];
+const BASE_TOOLS = [['select', 'Select / move'], ['room', 'Draw box brush'], ['wedge', 'Draw wedge brush'], ['cut', 'Cut / stairs / tunnel'], ['entity', 'Place entity'], ['path', 'Draw path']];
 let toolListSignature = '';
 function syncTransformModes() {
   const mode = $('transform-mode');
@@ -1386,6 +1435,153 @@ function renderDoorProperties(parent, sector) {
   parent.append(section);
 }
 
+/**
+ * A brush's properties. The numbers are its bounding planes, and changing one moves that
+ * plane — the same thing as dragging the matching face, so typing and dragging never disagree.
+ */
+function renderBrushInspector(parent, brush) {
+  const bounds = brushBounds(brush);
+  $('selection-kind').textContent = 'Brush';
+  field(parent, 'Name', input(brush.name || 'Brush', 'text', value => edit(next => {
+    next.map.brushes.find(entry => entry.id === brush.id).name = value;
+  }, 'Brush renamed')));
+  const moveTo = (axis, value) => edit(next => {
+    const current = brushBounds(next.map.brushes.find(entry => entry.id === brush.id));
+    const delta = { x: 0, y: 0, z: 0 };
+    delta[axis] = value - current[axis];
+    moveBrush(next, brush.id, delta);
+  }, 'Brush moved');
+  const extent = (axis, value, side) => edit(next => {
+    setBrushFacePosition(next, brush.id, axis, side, value);
+  }, 'Brush resized');
+  const grid = make('div', undefined, 'field-grid');
+  field(grid, 'X', input(bounds.x, 'number', value => moveTo('x', value)));
+  field(grid, 'Y', input(bounds.y, 'number', value => moveTo('y', value)));
+  field(grid, 'Z', input(bounds.z, 'number', value => moveTo('z', value)));
+  field(grid, 'Width', input(bounds.width, 'number', value => extent(0, bounds.x + Math.max(1, value), 1)));
+  field(grid, 'Depth', input(bounds.depth, 'number', value => extent(1, bounds.y + Math.max(1, value), 1)));
+  field(grid, 'Height', input(bounds.height, 'number', value => extent(2, bounds.z + Math.max(1, value), 1)));
+  parent.append(grid);
+  parent.append(make('h3', 'Brush editing'));
+  parent.append(
+    button('Face mode', () => { setBrushMode('face'); status('Face mode: click a face to select it, drag to move it along its normal.'); }),
+    button('Corner mode', () => { setBrushMode('vertex'); status('Corner mode: drag a corner to reshape the brush.'); }),
+    button('Object mode', () => setBrushMode('object')));
+  parent.append(make('h3', 'Operations'));
+  parent.append(
+    button('Clip with a line…', () => startClip(brush.id)),
+    button('Hollow…', () => hollowSelectedBrush()),
+    button('Merge with another brush', () => mergeSelectedBrushes()),
+    button('Subtract another brush', () => subtractSelectedBrush()),
+    button('Duplicate', () => duplicateSelectedBrush()),
+    button('Delete brush', () => edit(next => { removeBrushes(next, [brush.id]); }, 'Brush deleted')));
+  parent.append(make('h3', 'Faces'));
+  const faces = brushGeometry(brush).faces;
+  for (const face of faces) {
+    const plane = face.plane;
+    const label = `Face ${face.index + 1} (${plane.normal.map(value => Math.round(value * 100) / 100).join(', ')})`;
+    const row = make('div', undefined, 'field-grid');
+    const textureName = project.assets?.find(asset => asset.id === facesOf(brush)[face.index]?.texture)?.name || 'White filler';
+    row.append(button(`${label} · ${textureName}`, () => {
+      selection = { kind: 'brushFace', id: brush.id, face: face.index };
+      renderInspector(); mapNeedsDraw = true;
+    }));
+    parent.append(row);
+  }
+  parent.append(make('p', 'Brushes are convex plane volumes: every face is a plane, and corners are derived from where three planes meet. Boxes, wedges, clipping, hollowing and CSG all stay exact because of that.', 'muted'));
+}
+
+/** One face: its texture, UV axes and the push along its normal. */
+function renderBrushFaceInspector(parent, brush) {
+  const face = facesOf(brush)[selection.face];
+  $('selection-kind').textContent = 'Brush face';
+  if (!face) {
+    parent.append(make('p', 'That face no longer exists. Re-select the brush.', 'muted'));
+    return;
+  }
+  const plane = facePlane(face);
+  parent.append(make('h2', `Face ${selection.face + 1}`),
+    make('p', `normal ${plane.normal.map(value => Math.round(value * 1000) / 1000).join(', ')} · offset ${Math.round(plane.distance * 100) / 100}`, 'muted'));
+  const change = patch => edit(next => { setBrushFaceMaterial(next, brush.id, selection.face, patch); }, 'Face changed');
+  imageAssetField(parent, 'Texture', face.texture, value => change({ texture: value }), ['texture', 'flat', 'sprite']);
+  field(parent, 'Texture X offset', input(face.offsetX ?? 0, 'number', value => change({ offsetX: value })));
+  field(parent, 'Texture Y offset', input(face.offsetY ?? 0, 'number', value => change({ offsetY: value })));
+  field(parent, 'X scale', input(face.scaleX ?? 1, 'number', value => change({ scaleX: value })));
+  field(parent, 'Y scale', input(face.scaleY ?? 1, 'number', value => change({ scaleY: value })));
+  field(parent, 'Rotation', input(face.rotation ?? 0, 'number', value => change({ rotation: value })));
+  field(parent, 'Push along normal', input(0, 'number', value => edit(next => {
+    moveBrushFace(next, brush.id, selection.face, value);
+  }, 'Face pushed')));
+  parent.append(button('Back to the brush', () => { selection = { kind: 'brush', id: brush.id }; render(); }));
+  parent.append(make('p', 'A face is a plane and a texture frame. Moving it keeps that frame, so a texture does not slide when a wall is pushed out.', 'muted'));
+}
+
+/**
+ * Switch the brush tool between whole-brush, face and corner editing.
+ *
+ * The selection follows the tool, because a face selection in object mode would show a face
+ * highlight with no way to edit it. The 3D view rebuilds its pickable meshes so the same tool
+ * decides what a click means in both views.
+ */
+function setBrushMode(mode) {
+  brushMode = mode;
+  if (selection?.kind?.startsWith('brush')) {
+    if (mode === 'face') selection = { kind: 'brushFace', id: selection.id, face: selection.face ?? 0 };
+    else if (mode === 'vertex') selection = { kind: 'brushVertex', id: selection.id, index: selection.index ?? 0 };
+    else selection = { kind: 'brush', id: selection.id };
+  }
+  sceneEditor?.refreshBrushes();
+  render();
+}
+function startClip(brushId) {
+  selection = { kind: 'brush', id: brushId };
+  clipDraft = { brushId, points: [], hover: null };
+  $('tool').value = 'select';
+  status('Clip: click two points in a 2D view to place the cutting plane. Enter clips, Shift+Enter keeps both halves, Escape cancels.');
+  mapNeedsDraw = true;
+}
+function applyClip(keepBoth) {
+  if (!clipDraft?.points?.length) return;
+  const [a, b] = clipDraft.points;
+  if (!a || !b) { status('Clip needs two points', true); return; }
+  try {
+    const plane = clipPlaneFromView(mapProjection, a, b);
+    edit(next => { clipBrush(next, clipDraft.brushId, plane, { keepBoth }); },
+      keepBoth ? 'Brush split in two' : 'Brush clipped');
+  } catch (error) { status(error.message, true); }
+  clipDraft = null;
+  mapNeedsDraw = true;
+}
+function hollowSelectedBrush() {
+  if (selection?.kind !== 'brush' && selection?.kind !== 'brushFace') { status('Select a brush to hollow', true); return; }
+  const thickness = Number($('grid').value) || 16;
+  try {
+    edit(next => { hollowBrush(next, selection.id, thickness); }, `Brush hollowed with ${thickness}-unit walls`);
+  } catch (error) { status(error.message, true); }
+}
+function mergeSelectedBrushes() {
+  const ids = [selection?.id, ...(multiSelectionKind === 'brush' ? multiSelection : [])].filter(Boolean);
+  try {
+    edit(next => { mergeBrushes(next, [...new Set(ids)]); }, 'Brushes merged');
+  } catch (error) { status(error.message, true); }
+}
+function subtractSelectedBrush() {
+  const ids = [...new Set([selection?.id, ...(multiSelectionKind === 'brush' ? multiSelection : [])].filter(Boolean))];
+  if (ids.length < 2) { status('Select the brush to keep and the brush to cut away with (Ctrl+click both)', true); return; }
+  try {
+    edit(next => { subtractBrush(next, ids[0], ids.slice(1)); }, 'Brush subtracted');
+  } catch (error) { status(error.message, true); }
+}
+function duplicateSelectedBrush() {
+  if (!selection?.id) return;
+  const grid = Number($('grid').value);
+  let copy = null;
+  try {
+    edit(next => { copy = duplicateBrush(next, selection.id, { x: grid, y: grid, z: 0 }); }, 'Brush duplicated');
+  } catch (error) { status(error.message, true); return; }
+  if (copy) { selection = { kind: 'brush', id: copy.id }; render(); }
+}
+
 function renderInspector() {
   const parent = $('inspector');
   parent.replaceChildren();
@@ -1400,7 +1596,8 @@ function renderInspector() {
   if (selection.kind === 'path' || selection.kind === 'pathPoint') { renderPathInspector(); return; }
   selection = { ...selection, id: layoutSelection(project, selection).id };
   delete selection.group;
-  const collection = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors' }[selection.kind];
+  const collection = { entity: 'entities', vertex: 'vertices', wall: 'walls', sector: 'sectors',
+    brush: 'brushes', brushFace: 'brushes', brushVertex: 'brushes' }[selection.kind];
   const item = project.map[collection]?.find(value => value.id === selection.id);
   if (!item) { selection = null; renderInspector(); return; }
   const instance = selection.kind === 'entity' ? sceneInstanceOf(project, item.id) : null;
@@ -1433,6 +1630,14 @@ function renderInspector() {
     if (selection.kind === 'entity' && key === 'elevation') delete target.z;
   });
   parent.append(make('h2', `${selection.kind[0].toUpperCase()}${selection.kind.slice(1)}`), make('p', item.id, 'muted'));
+  if (['entity', 'wall', 'sector', 'brush', 'brushFace', 'brushVertex'].includes(selection.kind)) {
+    const brushTarget = selection.kind.startsWith('brush');
+    field(parent, 'World layer', select(worldLayers(project).map(layer => [layer.id, layer.name]),
+      (brushTarget ? item.layerId : item.worldLayerId) || 'default', value => edit(next => {
+        const target = next.map[collection].find(value => value.id === item.id);
+        if (brushTarget) target.layerId = value; else target.worldLayerId = value;
+      }, 'Object moved to world layer')));
+  }
   if (project.importSource) {
     const types = { entity: ['thing', /^thing(\d+)$/], vertex: ['vertex', /^v(\d+)$/],
       wall: ['linedef', /^w(\d+)$/], sector: ['sector', /^sector(\d+)$/] };
@@ -1446,7 +1651,24 @@ function renderInspector() {
       parent.append(details);
     }
   }
-  if (selection.kind === 'sector') {
+  if (selection.kind === 'brush') {
+    renderBrushInspector(parent, item);
+  } else if (selection.kind === 'brushFace') {
+    renderBrushFaceInspector(parent, item);
+  } else if (selection.kind === 'brushVertex') {
+    const brush = project.map.brushes.find(entry => entry.id === item.id);
+    const vertex = brush && brushVertices(brush)[item.index];
+    $('selection-kind').textContent = 'Brush corner';
+    parent.append(make('h2', 'Brush corner'),
+      make('p', vertex ? vertex.map(value => Math.round(value * 100) / 100).join(', ') : 'This corner no longer exists', 'muted'));
+    if (vertex) for (const [axis, label] of [[0, 'X'], [1, 'Y'], [2, 'Z']]) {
+      field(parent, label, input(vertex[axis], 'number', value => {
+        const target = [...vertex];
+        target[axis] = value;
+        edit(next => { moveBrushVertex(next, brush.id, item.index, target); }, 'Brush corner moved');
+      }));
+    }
+  } else if (selection.kind === 'sector') {
     field(parent, 'Floor height', input(item.floorHeight, 'number', value => update('floorHeight', value)));
     field(parent, 'Ceiling height', input(item.ceilingHeight, 'number', value => update('ceilingHeight', value)));
     renderDoorProperties(parent, item);
@@ -1455,10 +1677,14 @@ function renderInspector() {
     // Texture scale is pixels-per-unit: 2 draws the artwork twice as large on the
     // floor and ceiling, 0.5 twice as fine, with no separate texture needed.
     field(parent, 'Texture scale (floors/ceilings)', input(item.textureScale ?? 1, 'number', value => update('textureScale', value)));
+    parent.append(make('h3', 'Face UV'));
+    field(parent, 'X texture offset', input(item.offsetX ?? 0, 'number', value => update('offsetX', value)));
+    field(parent, 'Y texture offset', input(item.offsetY ?? 0, 'number', value => update('offsetY', value)));
     field(parent, 'Light level (0-255)', input(item.light, 'number', value => update('light', value)));
     parent.append(checkbox('Sky ceiling', item.sky, value => update('sky', value)),
       make('p', 'Closed or inverted heights are retained for static Doom doors. Movement needs 56 units of clearance; upward steps are limited to 24 units.', 'muted'));
   } else if (selection.kind === 'wall') {
+    parent.append(make('h3', 'Face UV'));
     field(parent, 'Color', input(item.color, 'color', value => update('color', value)));
     field(parent, 'Height', input(item.height, 'number', value => update('height', value)));
     parent.append(checkbox('Blocks player', item.solid, value => update('solid', value)));
@@ -2236,6 +2462,18 @@ document.addEventListener('keydown', event => {
   if (event.code !== 'Escape') return;
   if (activePathId || toolMode() === 'path') finishPath();
 });
+// Brush tool modes, the way TrenchBroom switches between object, face and vertex editing.
+document.addEventListener('keydown', event => {
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  if (!['Digit1', 'Digit2', 'Digit3'].includes(event.code)) return;
+  if ($('map-panel').hidden || (runtime && $('play-dialog').open)) return;
+  if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  if (!selection?.kind?.startsWith('brush')) return;
+  event.preventDefault();
+  const mode = event.code === 'Digit2' ? 'face' : event.code === 'Digit3' ? 'vertex' : 'object';
+  setBrushMode(mode);
+  status(mode === 'face' ? 'Face mode' : mode === 'vertex' ? 'Corner mode' : 'Object mode');
+});
 // Delete removes whatever is selected, as it does in the 3D view. Walls, sectors and vertices
 // have no safe removal yet, so they are left alone rather than half-deleted.
 document.addEventListener('keydown', event => {
@@ -2243,7 +2481,7 @@ document.addEventListener('keydown', event => {
   if (geometryCutActive()) return;
   // The 3D view listens on its own canvas for this key, so it must not delete twice.
   if (sceneMode === '3d' || (runtime && $('play-dialog').open)) return;
-  if (!['entity', 'path', 'pathPoint'].includes(selection?.kind)) return;
+  if (!['entity', 'path', 'pathPoint', 'brush', 'brushFace', 'brushVertex'].includes(selection?.kind)) return;
   if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
   event.preventDefault();
   guard(() => deleteSelectionObject(selection))();
@@ -3378,14 +3616,26 @@ function zoneGripAt(point, entity, tolerance) {
 /** The sides a grip resizes: 0-3 corners take two, 4-7 edges take one. */
 const GRIP_SIDES = [['width', 'depth'], ['width', 'depth'], ['width', 'depth'], ['width', 'depth'],
   ['depth'], ['width'], ['depth'], ['width']];
+function viewPoint(x, y, z = 0) {
+  if (mapProjection === 'xz') return { x, y: z };
+  if (mapProjection === 'yz') return { x: y, y: z };
+  return { x, y };
+}
 function worldPoint(event) {
   const rect = canvas.getBoundingClientRect();
-  return { x: (event.clientX - rect.left - rect.width / 2) / camera.zoom + camera.x,
-    y: (event.clientY - rect.top - rect.height / 2) / camera.zoom + camera.y };
+  const u = (event.clientX - rect.left - rect.width / 2) / camera.zoom + camera.x;
+  const v = (event.clientY - rect.top - rect.height / 2) / camera.zoom + camera.y;
+  if (mapProjection === 'xz') return { x: u, y: 0, z: v };
+  if (mapProjection === 'yz') return { x: 0, y: u, z: v };
+  return { x: u, y: v, z: sectorAt(mapSectors, u, v)?.floorHeight || 0 };
 }
-function snap(point) {
+function snap(point, options = {}) {
   const grid = Number($('grid').value);
-  return { x: Math.round(point.x / grid) * grid, y: Math.round(point.y / grid) * grid };
+  const result = options.bypass || !$('map-snap')?.checked
+    ? { x: Math.round(point.x), y: Math.round(point.y) }
+    : { x: Math.round(point.x / grid) * grid, y: Math.round(point.y / grid) * grid };
+  if (point.z !== undefined) result.z = Math.round(point.z / grid) * grid;
+  return result;
 }
 cutTool = createGeometryCutTool($('cut-tools'), {
   active: geometryCutActive,
@@ -3408,6 +3658,26 @@ document.addEventListener('keydown', event => {
   if (event.code === 'Enter' || event.code === 'Escape' || event.code === 'Backspace' || event.code === 'Delete') {
     event.preventDefault();
     if (event.code === 'Enter') cutTool.finish(); else if (event.code === 'Escape') cutTool.cancel(); else cutTool.back();
+  }
+});
+// The brush clip tool is two clicks and Enter, exactly as TrenchBroom's clip tool is confirmed.
+document.addEventListener('keydown', event => {
+  if (!clipDraft || $('map-panel').hidden || (runtime && $('play-dialog').open) ||
+    event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  if (event.code === 'Escape') {
+    event.preventDefault();
+    clipDraft = null; mapNeedsDraw = true;
+    status('Clip cancelled');
+    return;
+  }
+  if (event.code === 'Backspace' && clipDraft.points.length) {
+    event.preventDefault();
+    clipDraft.points.pop(); mapNeedsDraw = true;
+    return;
+  }
+  if (event.code === 'Enter') {
+    event.preventDefault();
+    applyClip(event.shiftKey);
   }
 });
 /**
@@ -3470,13 +3740,232 @@ function fitMap() {
   const xs = vertices.map(vertex => vertex.x), ys = vertices.map(vertex => vertex.y);
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
   const rect = canvas.getBoundingClientRect();
-  camera.x = (minX + maxX) / 2; camera.y = (minY + maxY) / 2;
-  camera.zoom = Math.max(.02, Math.min(3, (rect.width - 90) / Math.max(64, maxX - minX), (rect.height - 90) / Math.max(64, maxY - minY)));
+  if (mapProjection === 'xz') {
+    const heights = (project.map.sectors || []).flatMap(sector => [sector.floorHeight || 0, sector.ceilingHeight || 128]);
+    camera.x = (minX + maxX) / 2; camera.y = (Math.min(...heights) + Math.max(...heights)) / 2;
+    camera.zoom = Math.max(.02, Math.min(3, (rect.width - 90) / Math.max(64, maxX - minX),
+      (rect.height - 90) / Math.max(64, Math.max(...heights) - Math.min(...heights))));
+  } else if (mapProjection === 'yz') {
+    const heights = (project.map.sectors || []).flatMap(sector => [sector.floorHeight || 0, sector.ceilingHeight || 128]);
+    camera.x = (minY + maxY) / 2; camera.y = (Math.min(...heights) + Math.max(...heights)) / 2;
+    camera.zoom = Math.max(.02, Math.min(3, (rect.width - 90) / Math.max(64, maxY - minY),
+      (rect.height - 90) / Math.max(64, Math.max(...heights) - Math.min(...heights))));
+  } else {
+    camera.x = (minX + maxX) / 2; camera.y = (minY + maxY) / 2;
+    camera.zoom = Math.max(.02, Math.min(3, (rect.width - 90) / Math.max(64, maxX - minX),
+      (rect.height - 90) / Math.max(64, maxY - minY)));
+  }
   mapNeedsDraw = true;
+}
+/** The two world axes the current view uses; the shared module owns the convention. */
+function viewAxes() { return sharedViewAxes(mapProjection); }
+/** Project a world point into the current 2D view, as `{x, y}` for canvas use. */
+function projectWorld(point) {
+  const { u, v } = sharedProjectWorld(mapProjection, point);
+  return { x: u, y: v };
+}
+/** The world point a 2D view coordinate stands for, on the view's own plane. */
+function unprojectWorld(u, v, along = 0) {
+  return sharedUnprojectWorld(mapProjection, u, v, along);
+}
+/**
+ * A world point expressed in the current view's own coordinates, plus the pair used for drags.
+ * Working in these coordinates is what makes a drag behave the same in Top, Front and Side —
+ * measuring a move from world x/y silently discarded every Side-view drag.
+ */
+function viewCoordsOf(point) {
+  const { u, v } = sharedProjectWorld(mapProjection, point);
+  return { x: u, y: v, u, v, z: point.z ?? 0 };
+}
+function snapView(view, bypass = false) {
+  return snapViewPoint(view, Number($('grid').value), !bypass && Boolean($('map-snap')?.checked));
+}
+/** The world translation a view-space drag stands for. */
+function viewDeltaToWorld(du, dv) {
+  return sharedViewDelta(mapProjection, du, dv);
+}
+/**
+ * The brush bounds a 2D drag describes.
+ *
+ * A drag in Top gives a floor outline (height defaults to one wall); a drag in Front or Side
+ * already contains the height, so the axis the view looks down gets a default depth instead.
+ * This is how TrenchBroom lets the same drag create a brush from any of its three views.
+ */
+function brushBoundsFromView(a, b) {
+  const grid = Number($('grid').value);
+  return sharedBrushBoundsFromView(mapProjection, a, b, Math.max(grid, 128));
+}
+function brushIsSelected(brushId) {
+  return selection?.id === brushId && ['brush', 'brushFace', 'brushVertex'].includes(selection?.kind);
+}
+function brushVisible(brush, hiddenLayers) {
+  if (brush.visible === false) return false;
+  if (hiddenLayers?.has(brush.layerId)) return false;
+  const layer = worldLayers(project).find(item => item.id === (brush.layerId || 'default'));
+  return !layer || layer.visible !== false;
+}
+function projectedBrushBounds(brush) {
+  const vertices = brushVertices(brush).map(projectWorld);
+  if (!vertices.length) return null;
+  const xs = vertices.map(point => point.x), ys = vertices.map(point => point.y);
+  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+}
+/** The eight grips of a brush in the current view: corners first, then edge middles. */
+function brushGrips(brush) {
+  const bounds = projectedBrushBounds(brush);
+  if (!bounds) return [];
+  const { minX, maxX, minY, maxY } = bounds;
+  const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
+  const [uAxis, vAxis] = viewAxes();
+  return [
+    { u: minX, v: minY, uAxis, vAxis, uSide: -1, vSide: -1 }, { u: maxX, v: minY, uAxis, vAxis, uSide: 1, vSide: -1 },
+    { u: maxX, v: maxY, uAxis, vAxis, uSide: 1, vSide: 1 }, { u: minX, v: maxY, uAxis, vAxis, uSide: -1, vSide: 1 },
+    { u: midX, v: minY, uAxis, vAxis, uSide: 0, vSide: -1 }, { u: maxX, v: midY, uAxis, vAxis, uSide: 1, vSide: 0 },
+    { u: midX, v: maxY, uAxis, vAxis, uSide: 0, vSide: 1 }, { u: minX, v: midY, uAxis, vAxis, uSide: -1, vSide: 0 },
+  ];
+}
+function gripAt(point) {
+  if (selection?.kind !== 'brush') return null;
+  const brush = (project.map.brushes || []).find(item => item.id === selection.id);
+  if (!brush || brush.locked) return null;
+  const tolerance = 9 / camera.zoom;
+  const grips = brushGrips(brush);
+  for (let index = 0; index < grips.length; index++) {
+    if (Math.hypot(point.x - grips[index].u, point.y - grips[index].v) <= tolerance) return { ...grips[index], index };
+  }
+  return null;
+}
+function brushVertexAt(point) {
+  if (!['brush', 'brushVertex'].includes(selection?.kind)) return null;
+  const brush = (project.map.brushes || []).find(item => item.id === selection.id);
+  if (!brush || brush.locked) return null;
+  const tolerance = 9 / camera.zoom;
+  let best = null;
+  brushVertices(brush).forEach((vertex, index) => {
+    const projected = projectWorld(vertex);
+    const distance = Math.hypot(projected.x - point.x, projected.y - point.y);
+    if (distance <= tolerance && (!best || distance < best.distance)) best = { index, vertex, distance };
+  });
+  return best;
+}
+function brushFaceAt(point) {
+  const tolerance = 0;
+  const brushes = (project.map.brushes || []).filter(brush => brushVisible(brush) && !brush.locked);
+  for (let b = brushes.length - 1; b >= 0; b--) {
+    const brush = brushes[b];
+    const faces = brushGeometry(brush).faces;
+    for (const face of faces) {
+      if (face.points.length < 3) continue;
+      const polygon = face.points.map(projectWorld);
+      if (pointInPolygon2d(point, polygon, tolerance)) return { brush, faceIndex: face.index };
+    }
+  }
+  return null;
+}
+function pointInPolygon2d(point, polygon, tolerance = 0) {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const a = polygon[index], b = polygon[previous];
+    if ((a.y > point.y) !== (b.y > point.y) &&
+      point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  if (inside) return true;
+  // A brush seen edge-on collapses to a sliver: treat a click near the outline as a hit.
+  if (!tolerance) return false;
+  return polygon.some((corner, index) => {
+    const next = polygon[(index + 1) % polygon.length];
+    return distanceToSegment(point.x, point.y, corner, next) <= tolerance;
+  });
+}
+/** Where a brush corner is drawn while a drag that has not been committed yet is in progress. */
+function brushPointPreview(brush, corner) {
+  if (!drag) return corner;
+  if (drag.kind === 'move' && drag.selection?.kind === 'brush' && drag.selection.id === brush.id
+    && drag.viewStart && drag.viewEnd) {
+    const [uAxis, vAxis] = viewAxes();
+    const offset = [0, 0, 0];
+    offset[uAxis] = drag.viewEnd.u - drag.viewStart.u;
+    offset[vAxis] = drag.viewEnd.v - drag.viewStart.v;
+    return [corner[0] + offset[0], corner[1] + offset[1], corner[2] + offset[2]];
+  }
+  if (drag.kind === 'brushVertex' && drag.brushId === brush.id && drag.vertexPoint && drag.target) {
+    return Math.hypot(corner[0] - drag.vertexPoint[0], corner[1] - drag.vertexPoint[1], corner[2] - drag.vertexPoint[2]) < 1e-4
+      ? drag.target : corner;
+  }
+  return corner;
+}
+function drawBrushes2d(hiddenWorldLayers) {
+  const brushes = project.map.brushes || [];
+  for (const brush of brushes) {
+    if (!brushVisible(brush, hiddenWorldLayers)) continue;
+    const selected = brushIsSelected(brush.id);
+    const previewPoint = corner => brushPointPreview(brush, corner);
+    const geometry = brushGeometry(brush);
+    // Filled faces read as a solid brush and show the shape a slope actually has; the white
+    // filler matches TrenchBroom's default material for a brush that has no texture yet.
+    for (const face of geometry.faces) {
+      if (face.points.length < 3) continue;
+      const polygon = face.points.map(point => projectWorld(previewPoint(point)));
+      ctx.beginPath();
+      polygon.forEach((corner, index) => index ? ctx.lineTo(corner.x, corner.y) : ctx.moveTo(corner.x, corner.y));
+      ctx.closePath();
+      const faceSelected = selection?.kind === 'brushFace' && selection.id === brush.id && selection.face === face.index;
+      ctx.fillStyle = faceSelected ? 'rgba(220,196,124,0.55)'
+        : selected ? 'rgba(228,228,228,0.42)' : 'rgba(222,222,222,0.24)';
+      ctx.fill();
+    }
+    ctx.strokeStyle = selected ? '#ffe08a' : '#d8d8d8';
+    ctx.lineWidth = (selected ? 2 : 1) / camera.zoom;
+    ctx.beginPath();
+    for (const [a, b] of geometry.edges) {
+      const pa = projectWorld(previewPoint(a)), pb = projectWorld(previewPoint(b));
+      ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y);
+    }
+    ctx.stroke();
+    if (selected) {
+      ctx.fillStyle = '#ffffff';
+      const size = 7 / camera.zoom;
+      for (const vertex of geometry.vertices) {
+        const projected = projectWorld(previewPoint(vertex));
+        ctx.fillRect(projected.x - size / 2, projected.y - size / 2, size, size);
+      }
+      if (selection.kind === 'brush' && !drag) {
+        ctx.fillStyle = '#ffe08a';
+        const gripSize = 8 / camera.zoom;
+        for (const grip of brushGrips(brush)) {
+          ctx.fillRect(grip.u - gripSize / 2, grip.v - gripSize / 2, gripSize, gripSize);
+        }
+      }
+    }
+  }
+  if (clipDraft) {
+    ctx.strokeStyle = '#ff655b';
+    ctx.lineWidth = 2 / camera.zoom;
+    const points = clipDraft.points;
+    if (points.length >= 2) {
+      ctx.beginPath();
+      ctx.moveTo(points[0].u, points[0].v); ctx.lineTo(points[1].u, points[1].v);
+      // The plane extends past the drawn segment so it reads as a cut, not a line.
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#ff655b';
+    for (const point of points) {
+      ctx.beginPath(); ctx.arc(point.u, point.v, 4 / camera.zoom, 0, Math.PI * 2); ctx.fill();
+    }
+    if (clipDraft.hover) {
+      const { u, v } = clipDraft.hover;
+      if (points.length === 1) {
+        ctx.setLineDash([6 / camera.zoom, 4 / camera.zoom]);
+        ctx.beginPath(); ctx.moveTo(points[0].u, points[0].v); ctx.lineTo(u, v); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
 }
 function drawMap() {
   const { width, height, ratio } = resizeMap();
   if (!width || !height) return;
+  const hiddenWorldLayers = new Set(worldLayers(project).filter(layer => !layer.visible).map(layer => layer.id));
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
   ctx.save();
@@ -3484,13 +3973,34 @@ function drawMap() {
   ctx.scale(camera.zoom, camera.zoom);
   ctx.translate(-camera.x, -camera.y);
   for (const sector of mapSectors) {
-    ctx.beginPath();
-    for (const ring of sector.rings) {
-      ring.forEach((vertex, index) => index ? ctx.lineTo(vertex.x, vertex.y) : ctx.moveTo(vertex.x, vertex.y));
-      ctx.closePath();
+    if (hiddenWorldLayers.has(sector.worldLayerId)) continue;
+    if (mapProjection === 'xy') {
+      ctx.beginPath();
+      for (const ring of sector.rings) {
+        ring.forEach((vertex, index) => {
+          const p = viewPoint(vertex.x, vertex.y, sector.floorHeight || 0);
+          index ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+        });
+        ctx.closePath();
+      }
+      ctx.fillStyle = selection?.id === sector.id ? '#4179aa70' : `rgba(150,170,195,${sector.light / 255 * .07})`;
+      ctx.fill('evenodd');
+    } else {
+      ctx.fillStyle = selection?.id === sector.id ? '#4179aa55' : `rgba(150,170,195,${sector.light / 255 * .035})`;
+      ctx.strokeStyle = selection?.id === sector.id ? '#d4c28e' : '#707880';
+      ctx.lineWidth = 1 / camera.zoom;
+      for (const ring of sector.rings) {
+        for (let index = 0; index < ring.length; index++) {
+          const a = ring[index], b = ring[(index + 1) % ring.length];
+          const pa = mapProjection === 'xz' ? { x: a.x, y: sector.floorHeight || 0 } : { x: a.y, y: sector.floorHeight || 0 };
+          const pb = mapProjection === 'xz' ? { x: b.x, y: sector.floorHeight || 0 } : { x: b.y, y: sector.floorHeight || 0 };
+          const ta = { x: pa.x, y: sector.ceilingHeight || 128 }, tb = { x: pb.x, y: sector.ceilingHeight || 128 };
+          ctx.beginPath();
+          ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.lineTo(tb.x, tb.y); ctx.lineTo(ta.x, ta.y); ctx.closePath();
+          ctx.fill(); ctx.stroke();
+        }
+      }
     }
-    ctx.fillStyle = selection?.id === sector.id ? '#4179aa70' : `rgba(150,170,195,${sector.light / 255 * .07})`;
-    ctx.fill('evenodd');
   }
   const left = camera.x - width / 2 / camera.zoom, top = camera.y - height / 2 / camera.zoom;
   let grid = Number($('grid').value);
@@ -3499,6 +4009,17 @@ function drawMap() {
   for (let x = Math.floor(left / grid) * grid; x < left + width / camera.zoom; x += grid) { ctx.moveTo(x, top); ctx.lineTo(x, top + height / camera.zoom); }
   for (let y = Math.floor(top / grid) * grid; y < top + height / camera.zoom; y += grid) { ctx.moveTo(left, y); ctx.lineTo(left + width / camera.zoom, y); }
   ctx.stroke();
+  if (drag?.kind === 'marquee') {
+    const left = Math.min(drag.start.x, drag.end.x), right = Math.max(drag.start.x, drag.end.x);
+    const top = Math.min(drag.start.y, drag.end.y), bottom = Math.max(drag.start.y, drag.end.y);
+    ctx.fillStyle = 'rgba(212,194,142,0.12)';
+    ctx.fillRect(left, top, right - left, bottom - top);
+    ctx.strokeStyle = '#d4c28e';
+    ctx.lineWidth = 1 / camera.zoom;
+    ctx.setLineDash([5 / camera.zoom, 4 / camera.zoom]);
+    ctx.strokeRect(left, top, right - left, bottom - top);
+    ctx.setLineDash([]);
+  }
   let display = project;
   if (drag?.kind === 'move') {
     // Display-only overlay during a 2D drag: only the map changes, and a waypoint drag only
@@ -3526,12 +4047,22 @@ function drawMap() {
     }
   }
   for (const wall of wallSegments(display)) {
+    if (hiddenWorldLayers.has(project.map.walls.find(item => item.id === wall.id)?.worldLayerId)) continue;
     ctx.strokeStyle = selection?.id === wall.id ? '#ffffff' : wall.color;
     ctx.lineWidth = (selection?.id === wall.id ? 4 : 2) / camera.zoom;
     ctx.setLineDash(wall.solid ? [] : [6 / camera.zoom, 5 / camera.zoom]);
-    ctx.beginPath(); ctx.moveTo(wall.start.x, wall.start.y); ctx.lineTo(wall.end.x, wall.end.y); ctx.stroke();
+    const a = viewPoint(wall.start.x, wall.start.y, 0), b = viewPoint(wall.end.x, wall.end.y, 0);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    if (mapProjection !== 'xy') {
+      const height = project.map.walls.find(item => item.id === wall.id)?.height || 128;
+      const ta = viewPoint(wall.start.x, wall.start.y, height), tb = viewPoint(wall.end.x, wall.end.y, height);
+      ctx.beginPath(); ctx.moveTo(ta.x, ta.y); ctx.lineTo(tb.x, tb.y); ctx.stroke();
+    }
   }
   ctx.setLineDash([]);
+  // Brushes are authored on top of the imported level, so they are painted after it: a box the
+  // mapper just drew must not disappear under the sector fill beneath it.
+  drawBrushes2d(hiddenWorldLayers);
   if (geometryCutActive()) {
     const preview = cutTool.preview();
     ctx.strokeStyle = '#ff655b'; ctx.lineWidth = 2 / camera.zoom; ctx.beginPath();
@@ -3556,14 +4087,18 @@ function drawMap() {
       ctx.strokeStyle = isSelected ? '#ffffff' : '#b18cff';
       ctx.lineWidth = 2.5 / camera.zoom;
       ctx.beginPath();
-      samples.forEach((sample, index) => index ? ctx.lineTo(sample.x, sample.y) : ctx.moveTo(sample.x, sample.y));
+      samples.forEach((sample, index) => {
+        const p = viewPoint(sample.x, sample.y, sample.z || 0);
+        index ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+      });
       ctx.stroke();
     }
     for (const point of path.points) {
       const active = selection?.kind === 'pathPoint' && selection.id === point.id && selection.pathId === path.id;
       const size = (active ? 8 : 5) / camera.zoom;
       ctx.fillStyle = active ? '#ffffff' : '#b18cff';
-      ctx.fillRect(point.x - size / 2, point.y - size / 2, size, size);
+      const p = viewPoint(point.x, point.y, point.z || 0);
+      ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
       // A closed route shows where it rejoins, which is the whole difference between the two.
       if (path.closed && path.points.length > 2) {
         const first = path.points[0];
@@ -3575,10 +4110,12 @@ function drawMap() {
   if (camera.zoom > .18) for (const vertex of display.map.vertices) {
     const size = (selection?.id === vertex.id ? 7 : 4) / camera.zoom;
     ctx.fillStyle = selection?.id === vertex.id ? '#ffffff' : '#95abc0';
-    ctx.fillRect(vertex.x - size / 2, vertex.y - size / 2, size, size);
+    const p = viewPoint(vertex.x, vertex.y, sectorAt(mapSectors, vertex.x, vertex.y)?.floorHeight || 0);
+    ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
   }
   const marked = new Set(selectedEntityIds());
   for (const entity of display.map.entities) {
+    if (hiddenWorldLayers.has(entity.worldLayerId)) continue;
     // A zone is a volume with no artwork, so in the map it is drawn as its footprint — a
     // translucent plate with a dashed edge — rather than as the dot every other object gets.
     if (entity.type === 'zone') {
@@ -3589,7 +4126,9 @@ function drawMap() {
       // The footprint is drawn in the object's own frame, because that is the frame the rule
       // tests the player against.
       ctx.save();
-      ctx.translate(entity.x, entity.y);
+      const zonePoint = viewPoint(entity.x, entity.y,
+        entity.z ?? (sectorAt(mapSectors, entity.x, entity.y)?.floorHeight || 0) + (entity.elevation || 0));
+      ctx.translate(zonePoint.x, zonePoint.y);
       ctx.rotate((Number(entity.angle) || 0) * Math.PI / 180);
       ctx.fillStyle = isSelected ? 'rgba(92,225,198,0.42)' : 'rgba(92,225,198,0.20)';
       ctx.fillRect(-halfWidth, -halfDepth, halfWidth * 2, halfDepth * 2);
@@ -3619,8 +4158,10 @@ function drawMap() {
     ctx.fillStyle = entityColors[entity.type];
     ctx.strokeStyle = isMarked ? '#ffffff' : entityColors[entity.type];
     ctx.lineWidth = 2 / camera.zoom;
-    ctx.beginPath(); ctx.arc(entity.x, entity.y, 7 / camera.zoom, 0, Math.PI * 2); ctx.fill();
-    if (isMarked) { ctx.beginPath(); ctx.arc(entity.x, entity.y, 12 / camera.zoom, 0, Math.PI * 2); ctx.stroke(); }
+    const entityPoint = viewPoint(entity.x, entity.y,
+      entity.z ?? (sectorAt(mapSectors, entity.x, entity.y)?.floorHeight || 0) + (entity.elevation || 0));
+    ctx.beginPath(); ctx.arc(entityPoint.x, entityPoint.y, 7 / camera.zoom, 0, Math.PI * 2); ctx.fill();
+    if (isMarked) { ctx.beginPath(); ctx.arc(entityPoint.x, entityPoint.y, 12 / camera.zoom, 0, Math.PI * 2); ctx.stroke(); }
     // Which way the player start looks is part of the map and nothing else says it: the marker is a
     // heading arrow with a head, so a start facing north cannot be mistaken for one facing east.
     // A faced model gets the same arrow *while it is selected*, because the angle is then the
@@ -3702,6 +4243,171 @@ function pasteEntities() {
   render();
   return true;
 }
+function duplicateSelectedEntities() {
+  const entities = selectedEntities();
+  if (!entities.length) {
+    status('Select objects to duplicate', true);
+    return false;
+  }
+  if (entities.some(entity => entity.type === 'player')) {
+    status('The player start cannot be duplicated', true);
+    return false;
+  }
+  const grid = Number($('grid').value);
+  let ids = [];
+  try {
+    edit(next => {
+      const sceneData = structuredClone({ groups: entityGroups(project), events: project.events, joints: project.map.joints || [] });
+      const source = entities.map(entity => structuredClone(entity));
+      const point = snap({ x: entities[0].x + grid, y: entities[0].y + grid });
+      const result = cloneEntitiesForPaste(next, source, point, sceneData);
+      next.map.entities.push(...result.entities);
+      next.events.push(...result.events);
+      if (result.joints.length) next.map.joints = [...(next.map.joints || []), ...result.joints];
+      ids = result.entities.map(entity => entity.id);
+    }, `${entities.length} object${entities.length === 1 ? '' : 's'} duplicated`);
+  } catch (error) { status(error.message, true); return false; }
+  multiSelection = ids;
+  multiSelectionKind = ids.length ? 'entity' : null;
+  selection = ids.length ? { kind: 'entity', id: ids[0] } : null;
+  lastPrimarySelection = ids.length ? ids[0] : null;
+  render();
+  return true;
+}
+function alignSelectedEntities() {
+  const entities = selectedEntities();
+  if (!entities.length) { status('Select objects to align', true); return; }
+  const x = Math.min(...entities.map(entity => entity.x));
+  edit(next => {
+    const ids = new Set(entities.map(entity => entity.id));
+    for (const entity of next.map.entities) if (ids.has(entity.id) && entity.type !== 'player') entity.x = x;
+  }, `${entities.length} object${entities.length === 1 ? '' : 's'} aligned left`);
+}
+function alignMenuItems() {
+  const ids = selectedEntityIds();
+  if (!ids.length) return [{ label: 'Select objects to align', disabled: true }];
+  return [
+    ...[
+      ['left', 'Align left'], ['right', 'Align right'], ['top', 'Align top'], ['bottom', 'Align bottom'],
+      ['centerX', 'Center horizontally'], ['centerY', 'Center vertically'],
+    ].map(([mode, label]) => ({ label, run: () => edit(next => { alignWorldSelection(next, ids, mode); }, label) })),
+    { separator: true },
+    { label: 'Distribute horizontally', run: () => edit(next => { distributeWorldSelection(next, ids, 'x'); }, 'Objects distributed horizontally') },
+    { label: 'Distribute vertically', run: () => edit(next => { distributeWorldSelection(next, ids, 'y'); }, 'Objects distributed vertically') },
+    { separator: true },
+    { label: 'Flip horizontally', run: () => edit(next => { flipWorldSelection(next, ids, 'x'); }, 'Objects flipped horizontally') },
+    { label: 'Flip vertically', run: () => edit(next => { flipWorldSelection(next, ids, 'y'); }, 'Objects flipped vertically') },
+  ];
+}
+/** Brush actions, the TrenchBroom way: they live where the brush was right-clicked. */
+function brushMenuItems(brush) {
+  const others = (project.map.brushes || []).filter(item => item.id !== brush.id);
+  return [
+    { label: 'Select brush', run: () => { selection = { kind: 'brush', id: brush.id }; brushMode = 'object'; render(); } },
+    { label: 'Select faces', hint: 'Edit one face: texture, offsets and push along its normal', run: () => {
+      selection = { kind: 'brush', id: brush.id }; setBrushMode('face');
+      status('Face mode: click a face to select it, drag to move it along its normal.');
+    } },
+    { label: 'Select corners', run: () => {
+      selection = { kind: 'brush', id: brush.id }; setBrushMode('vertex');
+      status('Corner mode: drag a corner to reshape the brush.');
+    } },
+    { separator: true },
+    { label: 'Clip\u2026', hint: 'Draw two points in a 2D view; Enter clips, Shift+Enter splits', run: () => startClip(brush.id) },
+    { label: 'Hollow\u2026', hint: `Keep ${Number($('grid').value)}-unit walls`, run: () => { selection = { kind: 'brush', id: brush.id }; hollowSelectedBrush(); } },
+    { label: 'Merge brushes', disabled: multiSelectionKind !== 'brush' && !others.length, run: () => {
+      selection = { kind: 'brush', id: brush.id }; mergeSelectedBrushes();
+    } },
+    { label: 'Subtract another brush', disabled: !(multiSelectionKind === 'brush' && multiSelection.length > 1), run: () => {
+      selection = { kind: 'brush', id: brush.id }; subtractSelectedBrush();
+    } },
+    { separator: true },
+    { label: 'Duplicate', run: () => { selection = { kind: 'brush', id: brush.id }; duplicateSelectedBrush(); } },
+    { label: brush.locked ? 'Unlock brush' : 'Lock brush', run: () => edit(next => {
+      const target = next.map.brushes.find(item => item.id === brush.id);
+      target.locked = !brush.locked;
+    }, brush.locked ? 'Brush unlocked' : 'Brush locked') },
+    { label: 'Move to layer', submenu: worldLayers(project).map(layer => ({
+      label: layer.name, run: () => edit(next => {
+        next.map.brushes.find(item => item.id === brush.id).layerId = layer.id;
+      }, 'Brush moved to layer'),
+    })) },
+    { separator: true },
+    { label: 'Delete brush', danger: true, run: () => edit(next => { removeBrushes(next, [brush.id]); }, 'Brush deleted') },
+  ];
+}
+/** Brush tools offered on empty space, where a mapper with no selection goes to start one. */
+function brushCreateMenuItems() {
+  return [
+    { label: 'Draw box brush', hint: 'Drag in a 2D view or the 3D view', run: () => {
+      $('tool').value = 'room'; $('tool').dispatchEvent(new Event('change'));
+      status('Box brush: drag in the 2D or 3D view to create a brush.');
+    } },
+    { label: 'Draw wedge brush', run: () => {
+      $('tool').value = 'wedge'; $('tool').dispatchEvent(new Event('change'));
+      status('Wedge brush: drag in the 2D or 3D view to create a triangular brush.');
+    } },
+    { label: 'Frame the level', run: () => { fitMap(); mapNeedsDraw = true; } },
+    { label: 'Bake this level to 3D (GLB)\u2026', run: guard(downloadBakedWorld) },
+    { label: 'Layers\u2026', run: guard(renderWorldLayers) },
+  ];
+}
+function groupSelection() {
+  const ids = selectedEntityIds();
+  if (ids.length === 1) {
+    const entity = project.map.entities.find(item => item.id === ids[0]);
+    const group = groupOf(project, entity);
+    if (group) {
+      edit(next => { ungroup(next, group.id); }, 'Objects ungrouped');
+      return;
+    }
+  }
+  if (ids.length < 2) { status('Select at least two objects to group, or select a group to ungroup', true); return; }
+  edit(next => { groupEntities(next, ids, { name: 'World group' }); }, 'Objects grouped');
+}
+function toggleLockSelection() {
+  const ids = selectedEntityIds();
+  if (!ids.length) { status('Select objects before locking', true); return; }
+  const locked = new Set(project.worldLockedEntityIds || []);
+  edit(next => {
+    if (ids.every(id => locked.has(id))) unlockWorldEntities(next, ids);
+    else lockWorldEntities(next, ids);
+  }, ids.every(id => locked.has(id)) ? 'Objects unlocked' : 'Objects locked');
+}
+function renderWorldLayers() {
+  const browser = $('world-layer-browser'), list = $('world-layer-list');
+  browser.hidden = false;
+  list.replaceChildren();
+  for (const layer of worldLayers(project)) {
+    const row = document.createElement('div');
+    row.className = 'world-layer-row';
+    const name = document.createElement('input');
+    name.type = 'text'; name.value = layer.name;
+    name.addEventListener('change', () => edit(next => { setWorldLayer(next, layer.id, { name: name.value }); }, 'World layer renamed'));
+    const visible = make('button', layer.visible ? 'Visible' : 'Hidden');
+    visible.addEventListener('click', () => edit(next => { setWorldLayer(next, layer.id, { visible: !layer.visible }); }, 'World layer visibility changed'));
+    const locked = make('button', layer.locked ? 'Locked' : 'Open');
+    locked.addEventListener('click', () => edit(next => { setWorldLayer(next, layer.id, { locked: !layer.locked }); }, 'World layer lock changed'));
+    row.append(name, visible, locked);
+    list.append(row);
+  }
+  const create = make('button', '+ Create layer');
+  create.addEventListener('click', () => edit(next => { createWorldLayer(next, `Layer ${worldLayers(next).length}`); }, 'World layer created'));
+  list.append(create);
+  browser.open = true;
+}
+function downloadBakedWorld() {
+  try {
+    const bytes = bakeWorldGlb(project);
+    const blob = new Blob([bytes], { type: 'model/gltf-binary' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${(project.title || 'level').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'level'}-baked.glb`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    status('Level baked to standalone GLB. The editable source project remains unchanged.');
+  } catch (error) { status(`World bake failed: ${error.message}`, true); }
+}
 document.addEventListener('keydown', event => {
   if (event.defaultPrevented) return;
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
@@ -3718,27 +4424,65 @@ document.addEventListener('keydown', event => {
     button.click();
     return;
   }
-  if (event.shiftKey || event.code !== 'KeyC' && event.code !== 'KeyV') return;
+  if (event.shiftKey || !['KeyC', 'KeyV', 'KeyD'].includes(event.code)) return;
   if (!$('timesheet-panel').hidden) {
     timesheetPanel.handleClipboardKey(event);
     return;
   }
+  if (event.code === 'KeyD') { if (duplicateSelectedEntities()) event.preventDefault(); return; }
   if (event.code === 'KeyC') { if (copySelectedEntities()) event.preventDefault(); return; }
   if (pasteEntities()) event.preventDefault();
 });
 function hitTest(point) {
   const tolerance = 12 / camera.zoom;
+  const locked = new Set(project.worldLockedEntityIds || []);
+  const lockedLayers = new Set(worldLayers(project).filter(layer => layer.locked).map(layer => layer.id));
+  const projected = (item, z = 0) => mapProjection === 'xz' ? { x: item.x, y: z }
+    : mapProjection === 'yz' ? { x: item.y, y: z }
+    : { x: item.x, y: item.y };
+  const distanceTo = (item, z) => {
+    const pointZ = point.z ?? (sectorAt(mapSectors, point.x, point.y)?.floorHeight || 0);
+    const a = projected(item, z), b = projected(point, pointZ);
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+  const entityHit = (item) => {
+    const sector = sectorAt(mapSectors, item.x, item.y);
+    const z = item.z ?? (item.elevation || 0) + (sector?.floorHeight || 0);
+    return distanceTo(item, z) < tolerance;
+  };
   // A waypoint is small and sits on top of the world, so it is tested before the objects
   // underneath it; otherwise a route through a room could never be selected.
   for (const path of project.paths || []) {
-    const hit = path.points.find(item => Math.hypot(item.x - point.x, item.y - point.y) < tolerance * .6);
+    const hit = path.points.find(item => distanceTo(item, item.z ?? 0) < tolerance * .6);
     if (hit) return { kind: 'pathPoint', id: hit.id, pathId: path.id };
   }
-  const entity = project.map.entities.find(item => Math.hypot(item.x - point.x, item.y - point.y) < tolerance);
+  const entity = project.map.entities.find(item => !locked.has(item.id) && !lockedLayers.has(item.worldLayerId) && entityHit(item));
   if (entity) return { kind: 'entity', id: entity.id };
-  const vertex = project.map.vertices.find(item => Math.hypot(item.x - point.x, item.y - point.y) < tolerance * .7);
+  const vertex = project.map.vertices.find(item => distanceTo(item, sectorAt(mapSectors, item.x, item.y)?.floorHeight || 0) < tolerance * .7);
   if (vertex) return { kind: 'vertex', id: vertex.id };
-  const wall = wallSegments(project).find(item => distanceToSegment(point.x, point.y, item.start, item.end) < tolerance * .6);
+  // Brushes sit above the old sector geometry: they are the thing the mapper is building, so a
+  // click on one must not fall through to the wall or floor underneath it.
+  const clickableBrushes = (project.map.brushes || []).filter(brush => brushVisible(brush) && !brush.locked);
+  for (let index = clickableBrushes.length - 1; index >= 0; index--) {
+    const brush = clickableBrushes[index];
+    if (selection?.kind === 'brushVertex' && selection.id === brush.id) {
+      const corner = brushVertexAt(point);
+      if (corner) return { kind: 'brushVertex', id: brush.id, index: corner.index };
+    }
+    if (brushMode === 'face' || selection?.kind === 'brushFace') {
+      const faceHit = brushFaceAt(point);
+      if (faceHit?.brush.id === brush.id) return { kind: 'brushFace', id: brush.id, face: faceHit.faceIndex };
+    }
+    const faces = brushGeometry(brush).faces;
+    if (faces.some(face => face.points.length >= 3 && pointInPolygon2d(point, face.points.map(projectWorld), 2 / camera.zoom))) {
+      return { kind: 'brush', id: brush.id };
+    }
+  }
+  const wall = wallSegments(project).find(item => {
+    if (mapProjection === 'xy') return distanceToSegment(point.x, point.y, item.start, item.end) < tolerance * .6;
+    const a = projected(item.start, 0), b = projected(item.end, 0);
+    return distanceToSegment(point.x, point.z || 0, a, b) < tolerance * .6;
+  });
   if (wall) return { kind: 'wall', id: wall.id };
   const sector = sectorAt(mapSectors, point.x, point.y);
   return sector ? { kind: 'sector', id: sector.id } : null;
@@ -3769,8 +4513,14 @@ canvas.addEventListener('pointerdown', guard(event => {
     drag = { kind: 'pan', button: event.button, clientX: event.clientX, clientY: event.clientY, x: camera.x, y: camera.y,
       startX: event.clientX, startY: event.clientY, moved: false }; return;
   }
+  if (toolMode() === 'select' && event.button === 0 && !hitTest(point)) {
+    drag = { kind: 'marquee', start: snap(point, { bypass: event.altKey }), end: snap(point, { bypass: event.altKey }) };
+    mapNeedsDraw = true;
+    return;
+  }
   if (toolMode() === 'path') { addPathPoint(point); return; }
   if (toolMode() === 'room') { drag = { kind: 'room', start: snap(point), end: snap(point) }; return; }
+  if (toolMode() === 'wedge') { drag = { kind: 'wedge', start: snap(point), end: snap(point) }; return; }
   if (toolMode() === 'entity') {
     const position = snap(point), type = $('entity-type').value;
     edit(next => {
@@ -3782,6 +4532,58 @@ canvas.addEventListener('pointerdown', guard(event => {
       else next.map.entities.push(newEntityOfType(type, position));
     }, `${type} placed`);
     return;
+  }
+  // Clip: two clicks define the plane; Enter cuts, Shift+Enter keeps both halves.
+  if (clipDraft) {
+    const view = viewCoordsOf(point);
+    if (!clipDraft.points.length) {
+      clipDraft.points.push(view);
+      status('Clip: click the second point of the cutting line, then Enter to clip or Shift+Enter to split.');
+    } else {
+      clipDraft.points.push(view);
+      status('Clip line ready: Enter clips the far side away, Shift+Enter keeps both halves, Escape cancels.');
+    }
+    mapNeedsDraw = true;
+    return;
+  }
+  // A brush grip resizes one side; a corner of a brush drags that corner; a face drags along its
+  // normal. These are the three edits TrenchBroom's brush tools offer.
+  if (event.button === 0 && brushMode === 'object') {
+    const grip = gripAt(viewCoordsOf(point));
+    if (grip) {
+      const brush = project.map.brushes.find(item => item.id === selection.id);
+      const start = viewCoordsOf(point);
+      drag = { kind: 'brushGrip', brushId: brush.id, grip, start, end: start, baseline: project };
+      return;
+    }
+  }
+  if (event.button === 0 && brushMode === 'vertex') {
+    const hovered = hitTest(viewCoordsOf(point));
+    if (hovered?.kind?.startsWith('brush') && selection?.id !== hovered.id) {
+      selection = { kind: 'brush', id: hovered.id };
+    }
+    const corner = brushVertexAt(viewCoordsOf(point));
+    if (corner) {
+      selection = { kind: 'brushVertex', id: selection.id, index: corner.index };
+      drag = { kind: 'brushVertex', brushId: selection.id, index: corner.index, vertexPoint: corner.vertex,
+        start: viewCoordsOf(point), end: viewCoordsOf(point), baseline: project };
+      renderInspector();
+      mapNeedsDraw = true;
+      return;
+    }
+  }
+  if (event.button === 0 && (brushMode === 'face' || selection?.kind === 'brushFace')) {
+    const faceHit = brushFaceAt(viewCoordsOf(point));
+    if (faceHit) {
+      const entry = brushGeometry(faceHit.brush).faces.find(item => item.index === faceHit.faceIndex);
+      const plane = facePlane(entry);
+      selection = { kind: 'brushFace', id: faceHit.brush.id, face: faceHit.faceIndex };
+      drag = { kind: 'brushFace', brushId: faceHit.brush.id, face: faceHit.faceIndex, plane,
+        start: viewCoordsOf(point), end: viewCoordsOf(point), baseline: project, distance: 0 };
+      renderInspector();
+      mapNeedsDraw = true;
+      return;
+    }
   }
   // The grips of a selected zone resize it; they are drawn only while it is selected, so a press
   // that lands on one is unambiguous.
@@ -3825,7 +4627,11 @@ canvas.addEventListener('pointerdown', guard(event => {
     return;
   }
   selection = pressed;
-  if (selection && ['entity', 'vertex', 'pathPoint', 'path'].includes(selection.kind)) drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point) };
+  if (selection && ['entity', 'vertex', 'pathPoint', 'path', 'brush'].includes(selection.kind)) {
+    const view = snapView(viewCoordsOf(point));
+    drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point),
+      viewStart: view, viewEnd: view };
+  }
   render();
 }));
 canvas.addEventListener('pointermove', event => {
@@ -3840,11 +4646,53 @@ canvas.addEventListener('pointermove', event => {
       ? `${snapped.kind} snap / X ${snapped.x.toFixed(2)} / Y ${snapped.y.toFixed(2)} / Z ${snapped.z.toFixed(2)}`
       : 'Aim at the starting sector surface';
   }
+  if (clipDraft && !drag) {
+    clipDraft.hover = snapView(viewCoordsOf(point), event.altKey);
+    mapNeedsDraw = true;
+  }
   if (!drag) return;
   if (drag.kind === 'pan') {
     if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 3) drag.moved = true;
     camera.x = drag.x - (event.clientX - drag.clientX) / camera.zoom;
     camera.y = drag.y - (event.clientY - drag.clientY) / camera.zoom;
+  } else if (drag.kind === 'marquee') {
+    drag.end = snap(point, { bypass: event.altKey });
+  } else if (drag.kind === 'brushGrip') {
+    const grip = drag.grip;
+    const view = snapView(viewCoordsOf(point), event.altKey);
+    drag.end = view;
+    drag.targets = [
+      ...(grip.uSide ? [{ axis: grip.uAxis, side: grip.uSide, value: view.u }] : []),
+      ...(grip.vSide ? [{ axis: grip.vAxis, side: grip.vSide, value: view.v }] : []),
+    ];
+    const label = drag.targets.map(target => `${['X', 'Y', 'Z'][target.axis]} ${target.value}`).join(', ');
+    $('coordinates').textContent = `Brush ${label}`;
+  } else if (drag.kind === 'brushVertex') {
+    const view = snapView(viewCoordsOf(point), event.altKey);
+    drag.end = view;
+    const fixed = drag.vertexPoint;
+    const [uAxis, vAxis] = viewAxes();
+    const target = [fixed[0], fixed[1], fixed[2]];
+    target[uAxis] = view.u;
+    target[vAxis] = view.v;
+    drag.target = target;
+    $('coordinates').textContent = `Corner ${target.map(value => Math.round(value)).join(', ')}`;
+  } else if (drag.kind === 'brushFace') {
+    const view = viewCoordsOf(point);
+    drag.end = view;
+    // A face moves along its own normal; the mouse travel projected onto the normal's screen
+    // direction gives the distance, so dragging feels the same from any angle.
+    const [uAxis, vAxis] = viewAxes();
+    const du = drag.plane.normal[uAxis], dv = drag.plane.normal[vAxis];
+    const square = du * du + dv * dv;
+    drag.distance = square < 1e-6 ? 0
+      : ((view.u - drag.start.u) * du + (view.v - drag.start.v) * dv) / square;
+    if (event.altKey) drag.distance = Math.round(drag.distance * 100) / 100;
+    else {
+      const grid = Number($('grid').value);
+      if ($('map-snap')?.checked) drag.distance = Math.round(drag.distance / grid) * grid;
+    }
+    $('coordinates').textContent = `Face ${drag.distance >= 0 ? '+' : ''}${drag.distance.toFixed(1)}`;
   } else if (drag.kind === 'form') {
     // A grip moves its own side, in the zone's own frame: by default only that side moves and the
     // opposite one stays, so the footprint's middle travels half the drag. Shift grows both sides
@@ -3874,6 +4722,9 @@ canvas.addEventListener('pointermove', event => {
     const label = Object.entries(drag.sizes).map(([key, value]) => `${key} ${value}`).join(', ');
     $('coordinates').textContent = `Zone ${label}${symmetric ? ' (both sides)' : ''}`;
     drag.end = point;
+  } else if (drag.kind === 'move') {
+    drag.viewEnd = snapView(viewCoordsOf(point));
+    drag.end = snap(point);
   } else drag.end = snap(point);
   mapNeedsDraw = true;
 });
@@ -3882,13 +4733,67 @@ canvas.addEventListener('pointerup', guard(event => {
   drag = null;
   mapNeedsDraw = true;
   if (!finished) return;
+  if (automationMode) {
+    automationLastDrag = { kind: finished.kind, selection: finished.selection || null,
+      from: finished.viewStart || null, to: finished.viewEnd || null,
+      ...(finished.targets ? { targets: finished.targets } : {}) };
+  }
   if (finished.kind === 'pan' && finished.button === 2 && !finished.moved) {
     if (geometryCutActive()) { cutTool.cancel(); return; }
     finishPath(); mapCanvasMenu(event); return;
   }
-  if (finished.kind === 'room') {
-    const { start, end } = finished;
-    edit(next => addRoom(next, { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: Math.abs(start.x - end.x), depth: Math.abs(start.y - end.y) }), 'Room added. Select shared walls and disable collision to make openings.');
+  if (finished.kind === 'marquee') {
+    const left = Math.min(finished.start.x, finished.end.x), right = Math.max(finished.start.x, finished.end.x);
+    const top = Math.min(finished.start.y, finished.end.y), bottom = Math.max(finished.start.y, finished.end.y);
+    const ids = project.map.entities.filter(entity => entity.x >= left && entity.x <= right && entity.y >= top && entity.y <= bottom).map(entity => entity.id);
+    multiSelection = ids;
+    multiSelectionKind = ids.length ? 'entity' : null;
+    selection = ids.length ? { kind: 'entity', id: ids[0] } : null;
+    lastPrimarySelection = ids.length ? ids[0] : null;
+    render();
+    status(ids.length ? `${ids.length} object${ids.length === 1 ? '' : 's'} selected` : 'Nothing selected');
+    return;
+  }
+  if (finished.kind === 'room' || finished.kind === 'wedge') {
+    const a = viewCoordsOf(finished.start), b = viewCoordsOf(finished.end);
+    if (Math.abs(a.u - b.u) < 1 || Math.abs(a.v - b.v) < 1) { status('Drag a larger area to draw a brush', true); return; }
+    const bounds = brushBoundsFromView(a, b);
+    let created = null;
+    try {
+      edit(next => {
+        created = finished.kind === 'room' ? createBoxBrush(next, bounds) : createWedgeBrush(next, bounds);
+      }, finished.kind === 'room' ? 'Box brush created' : 'Wedge brush created');
+    } catch (error) { status(error.message, true); return; }
+    if (created) {
+      selection = { kind: 'brush', id: created.id };
+      brushMode = 'object';
+      sceneEditor?.refreshBrushes();
+      render();
+    }
+  }
+  if (finished.kind === 'brushGrip') {
+    if (!finished.targets?.length) return;
+    try {
+      edit(next => {
+        for (const target of finished.targets) setBrushFacePosition(next, finished.brushId, target.axis, target.side, target.value);
+      }, 'Brush resized');
+    } catch (error) { status(error.message, true); }
+    return;
+  }
+  if (finished.kind === 'brushVertex') {
+    if (!finished.target) return;
+    try {
+      edit(next => { moveBrushVertex(next, finished.brushId, finished.index, finished.target); }, 'Brush corner moved');
+    } catch (error) { status(error.message, true); }
+    return;
+  }
+  if (finished.kind === 'brushFace') {
+    if (!finished.distance) return;
+    try {
+      edit(next => { moveBrushFace(next, finished.brushId, finished.face, finished.distance); },
+        `Brush face moved ${finished.distance > 0 ? '+' : ''}${finished.distance}`);
+    } catch (error) { status(error.message, true); }
+    return;
   }
   if (finished.kind === 'form') {
     const sides = finished.sizes || {};
@@ -3904,7 +4809,9 @@ canvas.addEventListener('pointerup', guard(event => {
     }, `Zone formed: ${Object.entries(sides).map(([key, value]) => `${key} ${value}`).join(', ')}`);
     return;
   }
-  if (finished.kind === 'move' && (finished.start.x !== finished.end.x || finished.start.y !== finished.end.y)) {
+  const viewMoved = finished.viewStart && finished.viewEnd &&
+    (finished.viewStart.u !== finished.viewEnd.u || finished.viewStart.v !== finished.viewEnd.v);
+  if (finished.kind === 'move' && (viewMoved || finished.start.x !== finished.end.x || finished.start.y !== finished.end.y)) {
     const shift = { x: finished.end.x - finished.start.x, y: finished.end.y - finished.start.y };
     const { kind, id, pathId } = finished.selection;
     // A whole route slides as one, and so does a set of objects: the shift is the same for
@@ -3930,6 +4837,13 @@ canvas.addEventListener('pointerup', guard(event => {
       }
       if (kind === 'entity' && [id, ...group].some(target => sceneInstanceOf(next, target))) {
         transformSelection(next, withSelectionGroup(finished.selection), 'move', shift, 1);
+        return;
+      }
+      if (kind === 'brush') {
+        const delta = finished.viewStart && finished.viewEnd
+          ? viewDeltaToWorld(finished.viewEnd.u - finished.viewStart.u, finished.viewEnd.v - finished.viewStart.v)
+          : [shift.x, shift.y, 0];
+        moveBrush(next, id, { x: delta[0], y: delta[1], z: delta[2] });
         return;
       }
       const ids = group.length > 1 && group.includes(id) ? group : [id];
@@ -5036,6 +5950,13 @@ requestAnimationFrame(frame);
 document.querySelectorAll('[data-tab]').forEach(element => element.addEventListener('click', () => showTab(element.dataset.tab)));
 $('title').addEventListener('change', guard(() => edit(next => { next.title = $('title').value; })));
 $('fit').addEventListener('click', fitMap);
+$('map-projection').addEventListener('change', () => {
+  mapProjection = $('map-projection').value;
+  camera.x = 0; camera.y = 0;
+  mapNeedsDraw = true;
+  const label = mapProjection === 'xy' ? 'Top / XY' : mapProjection === 'xz' ? 'Front / XZ' : 'Side / YZ';
+  $('scene-hint').textContent = `${label} orthographic viewport · wheel zoom · right-drag pan · Shift snap bypass`;
+});
 $('grid').addEventListener('change', () => { mapNeedsDraw = true; });
 $('save').addEventListener('click', guard(saveProject));
 $('reload').addEventListener('click', guard(() => reloadProject()));
@@ -6334,6 +7255,12 @@ function deleteSelectionObject(value) {
   if (value?.kind === 'path') { deleteSelectedPaths(value.id); return; }
   if (value?.kind === 'pathPoint') { deletePathPoint(value.pathId, value.id); return; }
   if (value?.kind === 'entity') return deleteSelectedEntities(value.id);
+  if (value?.kind?.startsWith('brush')) {
+    edit(next => { removeBrushes(next, [value.id]); }, 'Brush deleted');
+    selection = null;
+    render();
+    return;
+  }
   throw new Error(`Nothing to delete for a ${value?.kind || 'empty'} selection`);
 }
 /**
@@ -6571,7 +7498,7 @@ function placeLayoutObject(position, elevation = 0) {
   }, `${type} placed`);
 }
 
-function groupSelection(name) {
+function createNamedSelectionGroup(name) {
   const ids = selectedEntityIds();
   if (ids.length < 2) throw new Error('Ctrl+click to select at least two objects, then group them');
   edit(next => { groupEntities(next, ids, { name }); }, `${ids.length} objects grouped`);
@@ -6606,7 +7533,7 @@ function groupMenuItems(entity) {
   if (chosen.length >= 2 && !chosen.some(id => sceneInstanceOf(project, id))) {
     // Named "Group" straight away — the name is editable in the list by double-clicking it, which
     // is one step fewer than a dialog and works where prompt() does not exist.
-    items.push({ label: `Group ${chosen.length} selected objects`, run: guard(() => groupSelection('Group')) });
+    items.push({ label: `Group ${chosen.length} selected objects`, run: guard(() => createNamedSelectionGroup('Group')) });
   }
   if (group) {
     items.push({ label: `Rename "${group.name}"`, run: () => { renameGroupInline(group.id); } });
@@ -6761,7 +7688,11 @@ function mapCanvasMenu(event) {
   const hit = hitTest(point);
   const position = snap(point);
   const items = [];
-  if (hit?.kind === 'entity') {
+  const brush = hit?.kind?.startsWith('brush') ? (project.map.brushes || []).find(item => item.id === hit.id) : null;
+  if (brush) {
+    selection = { ...hit, kind: 'brush' };
+    items.push(...brushMenuItems(brush), { separator: true });
+  } else if (hit?.kind === 'entity') {
     const entity = project.map.entities.find(item => item.id === hit.id);
     if (entity) items.push(...objectMenuItems(entity), { separator: true });
   } else if (hit?.kind === 'sector') {
@@ -6772,9 +7703,15 @@ function mapCanvasMenu(event) {
       { label: 'Copy id', run: () => copyText(hit.id, hit.id) }, { separator: true });
   }
   items.push(
+    { label: 'Brush', submenu: brushCreateMenuItems() },
     { label: 'Create object', submenu: createObjectMenuItems(position) },
     { label: `Place ${$('entity-type').value} here`, run: guard(() => placeLayoutObject(position)) },
     { label: 'Import an object file\u2026', run: guard(() => importLayoutObjectFile()) },
+    { separator: true },
+    { label: 'Align and distribute', submenu: alignMenuItems() },
+    { label: 'Group selected objects', run: guard(groupSelection) },
+    { label: 'Lock / unlock selected objects', run: guard(toggleLockSelection) },
+    { label: 'Duplicate selection', run: guard(duplicateSelectedEntities) },
     { label: 'Fit the map in the view', run: () => { fitMap(); mapNeedsDraw = true; } },
     { separator: true },
     { label: 'Copy coordinates', run: () => copyText(`${position.x}, ${position.y}`, `${position.x}, ${position.y}`) });
@@ -6785,13 +7722,26 @@ function mapCanvasMenu(event) {
 function mapViewMenu(event, picked) {
   const entity = picked?.kind === 'entity' ? project.map.entities.find(item => item.id === picked.id) : null;
   const sector = picked?.kind === 'sector' ? project.map.sectors.find(item => item.id === picked.id) : null;
+  const brush = picked?.kind?.startsWith('brush')
+    ? (project.map.brushes || []).find(item => item.id === picked.id) : null;
+  if (brush) {
+    selection = { ...picked, kind: 'brush' };
+    contextMenu(event, [...brushMenuItems(brush), { separator: true },
+      { label: 'Brush', submenu: brushCreateMenuItems() }], { label: `${brush.name} actions` });
+    return;
+  }
   if (!entity && !sector) {
     const centre = { x: Math.round(camera.x), y: Math.round(camera.y) };
     // Where the pointer is pointing, which is where the mapper expects the new object to land;
     // the view centre is only the fallback for a click that hit nothing at all.
     const under = sceneEditor?.pointUnderPointer?.() || centre;
     contextMenu(event, [
+      { label: 'Brush', submenu: brushCreateMenuItems() },
       { label: 'Create object', submenu: createObjectMenuItems({ x: Math.round(under.x), y: Math.round(under.y) }) },
+      { separator: true },
+      { label: 'Align and distribute', submenu: alignMenuItems() },
+      { label: 'Group selected objects', run: guard(groupSelection) },
+      { label: 'Lock / unlock selected objects', run: guard(toggleLockSelection) },
       { separator: true },
       { label: 'Frame the room in this view', run: () => { sceneEditor?.fit?.(); } },
       { label: `Place ${$('entity-type').value} at the view centre`, run: guard(() => {
@@ -7074,13 +8024,92 @@ async function start() {
   // A disabled button that cannot say why it is disabled is a dead end, so it carries the fix.
   $('ask-ai').title = session.deepseekConfigured ? '' :
     'DeepSeek is not configured. Set DEEPSEEK_API_KEY in the local .env file and restart the server.';
-  await reloadProject(true);
-  await refreshProjects();
+  if (automationMode) {
+    // A blank document keeps a test run small: the stored campaign is ~100 MB of artwork and a
+    // scenario only needs geometry. Nothing is saved, so the library is untouched.
+    replace(installEngineScripts(createProject(), { organizeStarter: true }), 'Automation project');
+  } else {
+    await reloadProject(true);
+    await refreshProjects();
+  }
   // The version is part of every playtest log header, so read it before any play.
   await loadEngineVersion().catch(() => {});
   $('editor-shell').hidden = false; $('editor-shell').inert = false;
   fitMap();
 }
+/**
+ * The automation surface, installed only for `?automation=1`.
+ *
+ * Everything here delegates to the editor's own functions, so a scenario exercises the same paths
+ * a person does — and the answers are numbers, not page dumps.
+ */
+function installAutomation() {
+  if (!automationMode) return;
+  const toWorld = point => projectWorld(point);
+  installAutomationHooks({
+    getProject: () => project,
+    getSelection: () => (selection ? { ...selection } : null),
+    getErrorLog: () => automationErrors,
+    getLastDrag: () => automationLastDrag,
+    getProjection: () => mapProjection,
+    getBrushMode: () => brushMode,
+    getViewState: () => ({ view: sceneMode, zoom: camera.zoom, sceneReady: Boolean(sceneEditor) }),
+    getView: () => sceneMode,
+    setView: mode => setSceneMode(mode),
+    focus: (point, options) => sceneEditor?.focus?.(point, options) || false,
+    getBrushes: () => (project?.map.brushes || []).map(brush => {
+      let faceList = [];
+      try {
+        faceList = brushGeometry(brush).faces.filter(face => face.points.length >= 3).map(face => ({
+          index: face.index,
+          normal: face.plane.normal.map(value => Math.round(value * 1000) / 1000),
+          centroid: face.points.reduce((sum, point) => [
+            sum[0] + point[0] / face.points.length,
+            sum[1] + point[1] / face.points.length,
+            sum[2] + point[2] / face.points.length], [0, 0, 0]),
+        }));
+      } catch { faceList = []; }
+      return {
+        id: brush.id, name: brush.name, faces: facesOf(brush).length,
+        locked: Boolean(brush.locked), bounds: brushBounds(brush), faceList,
+      };
+    }),
+    isReady: () => Boolean(project && !$('editor-shell').hidden),
+    newDocument: () => {
+      replace(installEngineScripts(createProject(), { organizeStarter: true }), 'Automation project');
+      return true;
+    },
+    setTool: name => {
+      $('tool').value = name;
+      $('tool').dispatchEvent(new Event('change'));
+    },
+    setBrushMode: mode => setBrushMode(mode),
+    setProjection: mode => {
+      $('map-projection').value = mode;
+      $('map-projection').dispatchEvent(new Event('change'));
+    },
+    /** World point to CSS pixels for the view that is on screen. */
+    worldToScreen: (x, y, z = 0) => {
+      if (sceneMode === '3d') return sceneEditor?.worldToScreen?.(x, y, z) || null;
+      const rect = canvas.getBoundingClientRect();
+      const point = toWorld([x, y, z]);
+      return {
+        x: rect.left + rect.width / 2 + (point.x - camera.x) * camera.zoom,
+        y: rect.top + rect.height / 2 + (point.y - camera.y) * camera.zoom,
+        view: mapProjection,
+      };
+    },
+    screenToWorld: (x, y) => {
+      if (sceneMode === '3d') return sceneEditor?.pointUnderPointer?.() || null;
+      const rect = canvas.getBoundingClientRect();
+      const u = (x - rect.left - rect.width / 2) / camera.zoom + camera.x;
+      const v = (y - rect.top - rect.height / 2) / camera.zoom + camera.y;
+      return { u, v, ...(mapProjection === 'xz' ? { x: u, z: v } : mapProjection === 'yz' ? { y: u, z: v } : { x: u, y: v }) };
+    },
+  });
+}
+installAutomation();
+
 start().catch(error => {
   if ($('license-dialog').open) $('license-message').textContent = `Cannot open editor: ${error.message}. Check browser storage and the local service, then reload.`;
   status(`Cannot start editor: ${error.message}. Check the local service and reload.`, true);

@@ -18,7 +18,10 @@
     "gzdoom:run": "node tools/gzdoom/run.mjs",
     "gzdoom:diff": "node tools/gzdoom/diff.mjs",
     "gzdoom:measure": "node tools/gzdoom/measure-actors.mjs",
-    "gzdoom:animation": "node tools/gzdoom/animation.mjs"
+    "gzdoom:animation": "node tools/gzdoom/animation.mjs",
+    "automation": "node tools/automation/run.mjs",
+    "automation:brushes": "node tools/automation/run.mjs brushes",
+    "automation:menus": "node tools/automation/run.mjs menus"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.0",

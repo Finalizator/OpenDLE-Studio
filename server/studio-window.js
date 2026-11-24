@@ -7,9 +7,30 @@ import { localEditorURL } from './browser.js';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const permissions = new Set(['pointerLock', 'fullscreen', 'keyboardLock', 'clipboard-sanitized-write']);
 
+/** The editor URL with `automation=1`, which is what installs the page hooks. */
+function withAutomationFlag(url) {
+  const target = new URL(url);
+  target.searchParams.set('automation', '1');
+  return target.href;
+}
+
 export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, shell }, args) {
-  const { values } = parseArgs({ args, options: { url: { type: 'string' }, profile: { type: 'string' } } });
-  const initialURL = localEditorURL(values.url);
+  const { values } = parseArgs({ args, options: {
+    url: { type: 'string' }, profile: { type: 'string' }, 'automation-port': { type: 'string' },
+  } });
+  const automationPort = Number(values['automation-port'] || 0);
+  if (values['automation-port'] !== undefined && (!Number.isInteger(automationPort) || automationPort < 1 || automationPort > 65535)) {
+    throw new Error('--automation-port must be an integer between 1 and 65535');
+  }
+  if (automationPort) {
+    // Chromium's DevTools endpoint, so a test harness can drive this window over CDP. It is only
+    // opened when the flag is passed, and it listens on loopback like everything else here.
+    app.commandLine.appendSwitch('remote-debugging-port', String(automationPort));
+    // Chromium refuses DevTools WebSocket clients that send an Origin header unless it is allowed;
+    // a Node test client is not a browser and must still be able to attach.
+    app.commandLine.appendSwitch('remote-allow-origins', '*');
+  }
+  const initialURL = automationPort ? withAutomationFlag(localEditorURL(values.url)) : localEditorURL(values.url);
   if (!values.profile) throw new Error('Studio requires a persistent --profile directory');
   const profile = resolve(values.profile);
   mkdirSync(join(profile, 'session'), { recursive: true });

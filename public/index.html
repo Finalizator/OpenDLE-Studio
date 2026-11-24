@@ -90,9 +90,11 @@
       <section id="map-panel" class="panel">
         <div class="layout-toolbar"><strong>Layout 1 / editor only — use Play world for gameplay</strong><button id="view-2d" aria-pressed="true">2D</button><button id="view-3d" aria-pressed="false">3D</button><button id="layout-events">Event sheet</button></div>
         <div class="map-tools">
-          <label>Tool <select id="tool"><option value="select">Select / move</option><option value="room">Draw room</option><option value="cut">Cut / stairs / tunnel</option><option value="entity">Place entity</option><option value="path">Draw path</option></select></label>
+          <label>Tool <select id="tool"><option value="select">Select / move</option><option value="room">Draw room / box</option><option value="wedge">Draw wedge / triangle</option><option value="cut">Cut / stairs / tunnel</option><option value="entity">Place entity</option><option value="path">Draw path</option></select></label>
           <label>Entity <select id="entity-type"><option>enemy</option><option>pickup</option><option>light</option><option>decoration</option><option>ramp</option><option>zone</option><option>camera</option><option>player</option></select></label>
           <label>Grid <select id="grid"><option>16</option><option>8</option><option>32</option><option>64</option></select></label>
+          <label><input id="map-snap" type="checkbox" checked>Snap</label>
+          <label id="map-projection-field">2D view <select id="map-projection" aria-label="2D orthographic projection"><option value="xy">Top / XY</option><option value="xz">Front / XZ</option><option value="yz">Side / YZ</option></select></label>
           <button id="fit">Fit world</button>
           <label id="transform-field" hidden>Transform<select id="transform-mode" aria-label="3D transform"><option value="move">Move</option><option value="rotate">Rotate / tilt</option><option value="form">Form (resize sides)</option><option value="scale">Scale visual</option></select></label>
           <label id="ceiling-field" hidden><input id="show-ceilings" type="checkbox">Show ceilings</label>
@@ -103,6 +105,10 @@
         <div id="cut-tools" class="cut-tools" role="toolbar" aria-label="Geometry cutting" hidden></div>
         <div class="canvas-wrap" id="map-wrap"><canvas id="map" aria-label="Visual map editor" tabindex="0"></canvas><canvas id="scene-3d" aria-label="3D scene editor" tabindex="0" hidden></canvas><div id="scene-loading" role="status" hidden></div><div id="scene-hint" class="canvas-hint">Wheel: zoom · Right-drag: pan · Select wall, vertex or object to edit</div></div>
         <div class="map-footer"><span id="map-stats"></span><span id="coordinates">X 0 / Y 0</span></div>
+        <details id="world-layer-browser" class="world-layer-browser" hidden>
+          <summary>World layers</summary>
+          <div id="world-layer-list"></div>
+        </details>
         <details id="import-report" class="info" hidden><summary id="import-summary"></summary><pre id="import-warnings"></pre></details>
       </section>
       <section id="events-panel" class="panel" hidden>

@@ -152,6 +152,10 @@ body.scene-dragging .asset-tile, body.scene-dragging .object-tile { cursor: grab
 #asset-list .asset-tile, #entities [data-object-id] { cursor: grab; }
 #asset-list .asset-tile img, #asset-list .asset-tile audio { -webkit-user-drag: none; user-select: none; }
 .map-footer { display: flex; justify-content: space-between; gap: 8px; color: #c5c5c5; background: #535353; font-size: 9px; padding: 4px 7px; }
+.world-layer-browser { max-height: 155px; overflow: auto; background: #303030; border-top: 1px solid var(--border); padding: 5px 7px; font-size: 10px; }
+.world-layer-browser[open] { position: relative; z-index: 3; }
+.world-layer-row { display: grid; grid-template-columns: minmax(80px, 1fr) auto auto; gap: 6px; align-items: center; border-top: 1px solid #454545; padding: 5px 0; }
+.world-layer-row input[type=text] { width: 100%; }
 #project-search { margin: 5px; width: calc(100% - 10px); border-radius: 12px; padding: 4px 8px; }
 .project-tree { padding: 3px 7px 10px; flex: 1; min-height: 100px; overflow: auto; }
 .project-tree > strong { display: block; font-weight: 400; padding: 6px 3px; overflow-wrap: anywhere; }
