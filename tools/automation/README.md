@@ -7,6 +7,7 @@ few numbers, which is what keeps a long automation session cheap for this machin
 ```sh
 npm run automation:brushes     # draw, move (Top + Front), grip-resize, 3D move, 3D face drag
 npm run automation:menus       # the right-click menu carries the brush commands
+npm run automation:maps        # a Quake .map as a new project, and as a layout beside the open one
 node tools/automation/run.mjs brushes --port 3000
 ```
 
@@ -45,6 +46,8 @@ Output is one JSON line. A failure exits non-zero and names the failing step:
 | `tool(name)`, `brushMode(mode)`, `projection(mode)`, `view('2d' \| '3d')` | editor commands |
 | `focus(point, { distance, angle })` | places the 3D camera for a reproducible drag |
 | `newDocument()` | a blank project |
+| `importMap(text, { mode, name })` | the file picker's two modes: `project` or `layout`. Returns `{ ok, levelId, title, counts }` |
+| `getLayouts()` | `{ active, levels: [{ id, name, brushes, entities }], listed }` — `listed` is what `#layout-levels` renders |
 
 ## Ad-hoc driving: `drive.mjs`
 
@@ -91,6 +94,9 @@ export async function run({ page }) {
 
 Register it in `run.mjs`, then `node tools/automation/run.mjs <name>`.
 
+`scenarios/maps.mjs` is the model for the map importer: it drives `importMap` in both modes,
+then reads `getLayouts()` to prove the Layouts list and the dormant level agree with the import.
+
 ## Traps
 
 - **Never** add page-snapshot tooling here. A single whole-page snapshot is ~140 KB of session
@@ -101,3 +107,7 @@ Register it in `run.mjs`, then `node tools/automation/run.mjs <name>`.
   press away from its centre — a face centroid, for example.
 - A 2D drag snaps its *end* to the grid, so the travelled distance is a grid multiple, not an exact
   pixel ratio.
+- An imported layout must not nest the shared project fields (`version`, `title`, `assets`, `game`)
+  inside its `data`; the layout's name belongs in `level.name`.
+- The licence dialog is fetched text: on a slow first load its Accept button stays disabled for a
+  few seconds longer than usual, which is why that wait is 45 s and not 10.

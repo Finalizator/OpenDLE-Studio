@@ -21,7 +21,8 @@
     "gzdoom:animation": "node tools/gzdoom/animation.mjs",
     "automation": "node tools/automation/run.mjs",
     "automation:brushes": "node tools/automation/run.mjs brushes",
-    "automation:menus": "node tools/automation/run.mjs menus"
+    "automation:menus": "node tools/automation/run.mjs menus",
+    "automation:maps": "node tools/automation/run.mjs maps"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.0",

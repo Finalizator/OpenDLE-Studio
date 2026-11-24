@@ -642,7 +642,10 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   array(vertices, 'Vertices', LIMITS.vertices);
   array(walls, 'Walls', LIMITS.walls);
   array(entities, 'Entities', LIMITS.entities);
-  assert(vertices.length >= 3 && walls.length >= 3, 'A map needs at least three vertices and walls');
+  // A map is either sector geometry (walls and vertices) or authored brushes. An imported
+  // Quake-family map is brush-only, so it must not be refused for having no sectors.
+  assert((vertices.length >= 3 && walls.length >= 3) || brushes.length > 0,
+    'A map needs at least three vertices and walls, or at least one brush');
   const ids = new Set();
   const unique = (item, label) => {
     object(item, label);

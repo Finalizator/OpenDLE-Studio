@@ -85,7 +85,8 @@ import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGame
 import { gamepadLook, playRumble, readGamepads, rumbleEffect } from '/shared/gamepad.js';
 import { statusBarHidden } from '/shared/game-view.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
-import { cloneForLevelSwitch, selectGameLevel, stripInactiveLevels } from '/shared/game-levels.js';
+import { cloneForLevelSwitch, selectGameLevel, stripInactiveLevels, levelData, gameLevelAssetIds } from '/shared/game-levels.js';
+import { parseIdTechMap, projectFromIdTechMap, applyIdTechMap } from '/shared/idtech-map.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
 import { weaponScriptRules } from '/shared/weapon-script.js';
@@ -3736,8 +3737,18 @@ function finishPath({ select = true } = {}) {
 }
 function fitMap() {
   if (sceneMode === '3d') { sceneEditor?.fit(); return; }
-  const vertices = project.map.vertices;
-  const xs = vertices.map(vertex => vertex.x), ys = vertices.map(vertex => vertex.y);
+  // An imported brush map has no sector vertices, so the frame comes from the brushes and the
+  // objects instead. Without this a brush-only project framed itself on Infinity and the view went
+  // blank the moment it opened.
+  const points = [];
+  for (const vertex of project.map.vertices) points.push([vertex.x, vertex.y]);
+  for (const entity of project.map.entities) points.push([entity.x, entity.y]);
+  for (const brush of project.map.brushes || []) {
+    const box = brushBounds(brush);
+    points.push([box.x, box.y], [box.x + box.width, box.y + box.depth]);
+  }
+  if (!points.length) { camera.x = 0; camera.y = 0; camera.zoom = 1; mapNeedsDraw = true; return; }
+  const xs = points.map(point => point[0]), ys = points.map(point => point[1]);
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
   const rect = canvas.getBoundingClientRect();
   if (mapProjection === 'xz') {
@@ -5997,6 +6008,100 @@ $('redo').addEventListener('click', () => {
 $('new').addEventListener('click', guard(async () => {
   if (confirm('Create a new project? You can undo this change.')) await replaceDocument(installEngineScripts(createProject(), { organizeStarter: true }), 'New project created with editable Engine sheets');
 }));
+/**
+ * Quake-family `.map` import: as a clean project, or as another layout in this one.
+ *
+ * The two modes exist because they answer different questions. A new project is "open this map";
+ * adding a layout is "this map belongs beside the one I am working on", and it is listed in the
+ * Layouts section with the rest of the project's levels.
+ */
+let pendingMapImport = null;
+function levelIdFor(project, name) {
+  const base = String(name).replace(/\.map$/i, '').toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'layout';
+  const taken = new Set((project.game?.levels || []).map(level => level.id));
+  if (!taken.has(base)) return base;
+  for (let index = 2; ; index++) {
+    const candidate = `${base}-${index}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/**
+ * A level document for the imported map: the shared starter's shape, with an empty map and no
+ * rules — the starter's rules point at an object this map does not have.
+ */
+function importedLevelData(parsed) {
+  // A level's data must not nest the shared fields (title among them): the layout's own name lives
+  // in `level.name`, which is what the Layouts list and the level selector read.
+  const data = levelData(createProject());
+  data.map = { vertices: [], walls: [], sectors: [], entities: [], brushes: [] };
+  data.events = [];
+  data.timesheets = [];
+  data.paths = [];
+  data.variables = {};
+  applyIdTechMap(data, parsed);
+  return data;
+}
+
+function addMapAsLayout(project, parsed) {
+  if (!project.game) {
+    // The document that is open becomes the first layout, so the imported one has a neighbour
+    // rather than replacing it.
+    project.game = { version: 1, levels: [], entry: null, active: null };
+    const id = levelIdFor(project, project.title);
+    project.game.levels.push({ id, name: project.title, data: levelData(project),
+      assetIds: project.assets?.length ? gameLevelAssetIds(project) : [], next: null, secretNext: null });
+    project.game.active = id;
+    project.game.entry = id;
+  }
+  const id = levelIdFor(project, parsed.name);
+  const title = parsed.entities.find(entity => entity.properties.classname === 'worldspawn')
+    ?.properties.message?.trim() || parsed.name.replace(/\.map$/i, '');
+  project.game.levels.push({ id, name: title, data: importedLevelData(parsed),
+    assetIds: [], next: null, secretNext: null });
+  selectGameLevel(project, id);
+  return id;
+}
+
+function reportMapImport(parsed, summary) {
+  const warnings = parsed.warnings || [];
+  $('import-report').hidden = false;
+  $('import-summary').textContent = `${summary} (${parsed.stats.brushes} brushes, ${parsed.stats.faces} faces, ${parsed.stats.entities} entities)`;
+  $('import-warnings').textContent = warnings.length ? warnings.join('\n') : 'No warnings.';
+  status(`${summary}${warnings.length ? ` — ${warnings.length} warning${warnings.length === 1 ? '' : 's'}, see the import report` : ''}`);
+}
+
+async function importMapFile(file, mode) {
+  const parsed = parseIdTechMap(await file.text(), { name: file.name });
+  if (mode === 'project') {
+    const next = validateProject(projectFromIdTechMap(parsed, { createProject }));
+    replace(next, `${file.name} imported as a new project`);
+    reportMapImport(parsed, `${file.name} imported as a new project`);
+    await adoptDocument();
+    return;
+  }
+  let layoutId = null;
+  edit(draft => { layoutId = addMapAsLayout(draft, parsed); }, `${file.name} added as a layout`);
+  reportMapImport(parsed, `${file.name} added to this project as layout ${layoutId}`);
+}
+
+$('import-idtech').addEventListener('click', event => {
+  contextMenu(event, [
+    { label: 'As a new project', hint: 'Replaces the open document; undo is available',
+      run: () => { pendingMapImport = 'project'; $('map-file').value = ''; $('map-file').click(); } },
+    { label: 'Add to this project as a layout', hint: 'Listed in Layouts beside the current one',
+      run: () => { pendingMapImport = 'layout'; $('map-file').value = ''; $('map-file').click(); } },
+  ], { label: 'Import a .map file' });
+});
+$('map-file').addEventListener('change', guard(async () => {
+  const file = $('map-file').files?.[0];
+  const mode = pendingMapImport || 'layout';
+  pendingMapImport = null;
+  if (!file) return;
+  await importMapFile(file, mode);
+}));
+
 $('restore').addEventListener('click', guard(async () => {
   const draft = localStorage.getItem('opendle-draft');
   if (!draft) throw new Error('There is no local draft in this browser');
@@ -8043,6 +8148,19 @@ async function start() {
  * Everything here delegates to the editor's own functions, so a scenario exercises the same paths
  * a person does — and the answers are numbers, not page dumps.
  */
+/** Import `.map` text as the file picker would, for automation and scenario tests. */
+async function automationImportMap(text, { name = 'automation.map', mode = 'layout' } = {}) {
+  await importMapFile({ name, text: async () => text }, mode);
+  return { layouts: (project.game?.levels || []).map(level => level.id), active: project.game?.active || null };
+}
+/** The project's layouts, including each dormant level's size. */
+function automationLayouts() {
+  return (project.game?.levels || []).map(level => ({
+    id: level.id, name: level.name, active: level.id === project.game.active,
+    brushes: (level.data?.map?.brushes || []).length,
+    entities: (level.data?.map?.entities || []).length,
+  }));
+}
 function installAutomation() {
   if (!automationMode) return;
   const toWorld = point => projectWorld(point);
@@ -8079,6 +8197,14 @@ function installAutomation() {
       replace(installEngineScripts(createProject(), { organizeStarter: true }), 'Automation project');
       return true;
     },
+    /** Import `.map` text the way the file picker does; the picker itself cannot be scripted. */
+    importMap: (text, options) => automationImportMap(text, options),
+    getLayouts: () => automationLayouts(),
+    layouts: () => (project.game?.levels || []).map(level => ({
+      id: level.id, name: level.name, active: level.id === project.game.active,
+      brushes: (level.data?.map?.brushes || []).length,
+      entities: (level.data?.map?.entities || []).length,
+    })),
     setTool: name => {
       $('tool').value = name;
       $('tool').dispatchEvent(new Event('change'));

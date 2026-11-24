@@ -61,6 +61,8 @@ Flags: `--port <n>` (default 3000), `--attach <cdpPort>` (reuse a window), `--ti
 - `selection()`, `errors()`, `lastDrag()`, `status()`, `ready()`
 - `worldToScreen(x, y, z)` / `screenToWorld(x, y)` — the only correct way to turn world into pixels
 - `tool()`, `brushMode()`, `projection()`, `view('2d'|'3d')`, `focus(point, { distance, angle })`, `newDocument()`
+- `importMap(text, { mode: 'project' | 'layout', name })` — the same paths the `.map` picker takes
+- `getLayouts()` → `{ active, levels: [{ id, name, brushes, entities }], listed }`
 
 ## `window.__opendle.ui` — the universal hook
 
@@ -88,6 +90,10 @@ step and prints the trail.
   To test "drag the object", press away from its centre — a face centroid works.
 - **Grid snapping**: a 2D drag snaps its *end* to the grid, so the distance travelled is a grid
   multiple, not an exact pixel ratio.
+- **Licence gate**: the text is fetched, so `#license-accept` can stay disabled for many seconds on
+  a cold profile. `studio.mjs` allows 45 s; do not shorten it.
+- **Layout data**: an imported layout may not nest `version`/`title`/`assets`/`game` in its `data`.
+  If `importMap` throws "must not nest shared game fields", that is why.
 - **A face pointing at the camera** cannot be dragged in that 2D view (the drag has no direction).
   Face editing is a 3D test, or the numeric "Push along normal" field.
 - **Closing the window saves.** The harness kills the process on purpose; automation mode also

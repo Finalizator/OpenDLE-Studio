@@ -15,6 +15,7 @@ const port = portIndex >= 0 ? Number(rest[portIndex + 1]) : Number(process.env.P
 const scenarios = {
   brushes: () => import('./scenarios/brushes.mjs'),
   menus: () => import('./scenarios/menus.mjs'),
+  maps: () => import('./scenarios/maps.mjs'),
 };
 
 const load = scenarios[name];

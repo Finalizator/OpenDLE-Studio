@@ -90,7 +90,7 @@ export async function launchStudio({ port = Number(process.env.PORT || 3000), ti
     // the separate profile remembers it for the next scenario.
     const gated = await page.evaluate('Boolean(document.querySelector("#license-dialog[open]"))');
     if (gated) {
-      await page.waitFor('!document.getElementById("license-accept").disabled', { timeout: 20000, label: 'licence text' });
+      await page.waitFor('!document.getElementById("license-accept").disabled', { timeout: 45000, label: 'licence text' });
       await page.evaluate('document.getElementById("license-accept").click()');
     }
     await page.waitFor('window.__opendle.ready()', { timeout: 60000, label: 'the editor' });

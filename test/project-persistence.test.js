@@ -32,7 +32,7 @@ function fixture(api = async () => {}) {
   let timerId = 0;
   const project = createProject(); project.title = 'First';
   const context = vm.createContext({
-    project, projectId: 'first', revision: 1, projectTemporary: false, dirty: true, editVersion: 1,
+    project, projectId: 'first', revision: 1, projectTemporary: false, dirty: true, editVersion: 1, automationMode: false,
     cloneProjectForEdit, UNDO_DEEP_GAME_STEPS: 10, undoDepthFor: () => 10,
     documentGeneration: 1, documentSession: { projectId: 'first', revision: 1, temporary: false },
     projectOperationBusy: false, projectOperationPending: null, liveEditState: null,

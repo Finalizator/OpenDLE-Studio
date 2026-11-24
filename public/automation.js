@@ -192,7 +192,7 @@ export function createUiDriver({
 export function installAutomationHooks({
   getProject, getSelection, getErrorLog, getViewState, worldToScreen, screenToWorld,
   setTool, setBrushMode, setProjection, newDocument, isReady, getBrushes, getProjection, getBrushMode,
-  getView, setView, focus, getLastDrag,
+  getView, setView, focus, getLastDrag, importMap, getLayouts,
 }) {
   const hooks = {
     ready: () => Boolean(isReady()),
@@ -203,6 +203,8 @@ export function installAutomationHooks({
     clearErrors: () => { getErrorLog().length = 0; },
     lastDrag: () => getLastDrag(),
     newDocument: () => newDocument(),
+    importMap: (text, options) => importMap(text, options),
+    layouts: () => getLayouts(),
     state: () => {
       const project = getProject();
       if (!project) return { loaded: false, ...getViewState() };

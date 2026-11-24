@@ -141,7 +141,11 @@ test('the editor deletes whatever is selected, and says how to leave Draw path',
   assert.match(app, /function deleteSelectionObject\(value\) \{/);
   assert.match(app, /if \(value\?\.kind === 'path'\) \{ deleteSelectedPaths\(value\.id\); return; \}/);
   assert.match(app, /if \(value\?\.kind === 'pathPoint'\) \{ deletePathPoint\(value\.pathId, value\.id\); return; \}/);
-  assert.match(app, /if \(\!\['entity', 'path', 'pathPoint'\]\.includes\(selection\?\.kind\)\) return;/);
+  // Every kind the editor can select is dispatched, and an unknown kind says so instead of
+  // silently doing nothing (brushes joined the list with the TrenchBroom brush tools).
+  assert.match(app, /if \(value\?\.kind === 'entity'\) return deleteSelectedEntities\(value\.id\);/);
+  assert.match(app, /if \(value\?\.kind\?\.startsWith\('brush'\)\) \{/);
+  assert.match(app, /throw new Error\(`Nothing to delete for a \$\{value\?\.kind \|\| 'empty'\} selection`\);/);
   // The 3D view hands over the whole selection, never a bare id: a handler that expected an id
   // string looked up an object called "[object Object]" and refused to delete anything.
   assert.match(memo('scene-editor.js'), /callbacks\.remove\(\{ \.\.\.selected \}\);/);
