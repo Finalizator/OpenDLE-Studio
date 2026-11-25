@@ -16,6 +16,7 @@ import { validateShaders } from './shaders.js';
 import { POST_FX_BY_KIND, validatePostFx } from './post-fx.js';
 import { AREA_SHAPES } from './areas.js';
 import { MAX_SCENES, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
+import { MATERIAL_CHANNELS, MAX_MATERIALS } from './materials.js';
 import { MAX_JOINTS, validateJoint } from './joints.js';
 import { validatePanel } from './panel.js';
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
@@ -741,6 +742,53 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     }
   };
 
+  // PBR materials: the record that says which map is the base colour and which is the normal,
+  // which resolution the project plays with and which is only the editor's preview.
+  const materials = project.materials || [];
+  array(materials, 'Materials', MAX_MATERIALS);
+  const materialIds = new Set();
+  for (const material of materials) {
+    unique(material, 'Material');
+    text(material.name, 'Material name', 100);
+    object(material.channels, 'Material channels');
+    for (const [channel, value] of Object.entries(material.channels)) {
+      assert(MATERIAL_CHANNELS.includes(channel), `Unknown material channel "${channel}"`);
+      assetRef(value, `Material ${channel}`);
+    }
+    assert(MATERIAL_CHANNELS.some(channel => material.channels[channel]),
+      'A material needs at least one map');
+    if (material.preview !== undefined && material.preview !== null) {
+      object(material.preview, 'Material preview');
+      number(material.preview.size, 'Material preview size', 16, 4096);
+      object(material.preview.channels, 'Material preview channels');
+      for (const [channel, value] of Object.entries(material.preview.channels)) {
+        assert(MATERIAL_CHANNELS.includes(channel), `Unknown material preview channel "${channel}"`);
+        assetRef(value, `Material preview ${channel}`);
+      }
+    }
+    if (material.baked !== undefined && material.baked !== null) {
+      object(material.baked, 'Material baked set');
+      number(material.baked.size, 'Material baked size', 16, 4096);
+      if (material.baked.at !== undefined) assert(typeof material.baked.at === 'string' && material.baked.at.length <= 40,
+        'Material bake time must be a short string');
+    }
+    if (material.scale !== undefined) {
+      object(material.scale, 'Material scale');
+      for (const key of ['u', 'v']) if (material.scale[key] !== undefined) number(material.scale[key], `Material scale ${key}`, .001, 1000);
+    }
+    // The authored material is a link, never a payload: a path the creator can reopen, not a copy
+    // of someone else's project inside this one.
+    if (material.source !== undefined && material.source !== null) {
+      object(material.source, 'Material source');
+      if (material.source.name !== undefined) text(material.source.name, 'Material source name', 200);
+      if (material.source.path !== undefined) text(material.source.path, 'Material source path', 1000);
+    }
+    materialIds.add(material.id);
+  }
+  const materialRef = (id, label) => {
+    if (id === undefined || id === null) return;
+    assert(materialIds.has(id), `${label} references an unknown material`);
+  };
   // A compiled Quake 3 map is mostly brushes: the one in `Projects/Maps/Quake` has 5990 of them, and
   // a `.bsp` importer that cannot store its own map's geometry is not an importer.
   array(brushes, 'Brushes', MAX_BRUSHES);
@@ -762,6 +810,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       assert(face.points.length === 3 && face.points.every(point =>
         Array.isArray(point) && point.length === 3 && point.every(Number.isFinite)), 'A brush face needs three finite points');
       if (face.texture !== undefined && face.texture !== null) assetRef(face.texture, 'Brush face texture');
+      materialRef(face.material, 'Brush face');
       for (const key of ['offsetX', 'offsetY']) if (face[key] !== undefined) number(face[key], `Brush face ${key}`);
       for (const key of ['scaleX', 'scaleY']) if (face[key] !== undefined) assertTextureScale(face[key], `Brush face ${key}`);
       if (face.rotation !== undefined) number(face.rotation, 'Brush face rotation', -360, 360);
@@ -891,6 +940,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         }
       }
       for (const key of ['upper', 'middle', 'lower']) assetRef(side[key], 'Side material');
+      for (const key of ['material_upper', 'material_middle', 'material_lower']) materialRef(side[key], 'Wall side');
     }
     if (wall.flags !== undefined) number(wall.flags, 'Wall flags', 0, 65535);
     if (wall.activationModes !== undefined) {

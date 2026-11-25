@@ -39,8 +39,18 @@ export function brushFaceRecord(brush, entry) {
   return { positions, uvs, light: 1, indices, selection: { kind: 'brush', id: brush.id, face: entry.index } };
 }
 
-/** The texture a face is drawn with, as the key its batch is merged under. */
-const materialKey = (brush, entry) => brush.faces?.[entry.index]?.texture || '';
+/**
+ * What a face is drawn with, as the key its batch is merged under.
+ *
+ * A face with a PBR material is batched under the material, not the texture: the material brings
+ * a normal map and a roughness map as well, and they are per-material state, so one batch per
+ * material is the only way to draw them without splitting a merged buffer per map.
+ */
+const materialKey = (brush, entry) => {
+  const face = brush.faces?.[entry.index];
+  if (face?.material) return `material:${face.material}`;
+  return face?.texture || '';
+};
 
 /**
  * Every visible brush as merged geometry: one batch per texture, and one edge list for all of them.

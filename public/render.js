@@ -35,6 +35,7 @@ import { skyDomeMapping } from '/shared/sky-dome.js';
 import { createSpriteIndex } from '/shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 import { createSurfaceBatcher, mergePiece } from '/shared/surface-batch.js';
+import { materialDisplay, materialScale, materialById } from '/shared/materials.js';
 import { viewBob, weaponBob } from '/shared/player-motion.js';
 import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 import { createWorldNodeObject, createWorldTerminalController, gameplayCrosshairVisible, setWorldNodePose } from './world-media.js';
@@ -118,6 +119,15 @@ export async function createPreview(canvas, project, state, { editor = false, on
     return terminalController?.close() || false;
   }
   let assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
+  // A picture that belongs to a PBR material is drawn with its other maps too. The editor draws
+  // the preview set and the game the baked one, which is what `materialDisplay` decides.
+  const pbrByBaseColor = new Map(), pbrTextures = new Map();
+  for (const record of project.materials || []) {
+    const display = materialDisplay(record, { editor });
+    if (!display.baseColor) continue;
+    pbrByBaseColor.set(display.baseColor, { record, display });
+    for (const id of [display.normal, display.roughness, display.metallic]) if (id) pbrTextures.set(id, null);
+  }
   // Textures the engine draws itself, for marks no imported artwork exists for. A bullet hole
   // is the size of a thumbprint on a wall, and shipping a one-pixel idea as an asset would put
   // it in every project's library; a canvas drawn once and cached is enough.
@@ -436,7 +446,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
     // Load sequential batches to bound temporary decoded-image memory.
     const levelAssets = project.game ? new Set(gameLevelAssetIds(project)) : null;
     const assets = (project.assets || []).filter(asset => !['model', 'font', 'sound', 'music', 'video'].includes(asset.kind) &&
-      (!levelAssets || levelAssets.has(asset.id)));
+      // A material's maps are part of the level that draws it, even in a campaign where the
+      // level's own asset list is what decides: a normal map lives nowhere else.
+      (!levelAssets || levelAssets.has(asset.id) || pbrTextures.has(asset.id)));
     // A switch shows the other half of its pair only after it is pressed, so the level never
     // names that picture. Decoding it now is what keeps the first press from failing to find
     // the image; only the partners of pictures this level uses are loaded.
@@ -461,6 +473,17 @@ export async function createPreview(canvas, project, state, { editor = false, on
       alphaModes.set(asset.id, alphaModeFor(texture.image));
       textures.set(asset.id, texture);
     }));
+    // A normal or roughness map is data, not a picture: it must not be sRGB-decoded, and a
+    // nearest-neighbour filter on a normal map turns every lit surface into a mosaic.
+    for (const id of pbrTextures.keys()) {
+      const loaded = textures.get(id);
+      if (!loaded) continue;
+      const texture = loaded.clone();
+      texture.colorSpace = THREE.NoColorSpace;
+      texture.magFilter = texture.minFilter = THREE.LinearFilter;
+      texture.needsUpdate = true;
+      pbrTextures.set(id, texture);
+    }
     // Camera textures: ANIMDEFS reserves a surface no image backs. Rendering its
     // live view into a render target and pointing the asset's texture at it makes
     // every material that names it show the feed. Two targets alternate because a
@@ -523,7 +546,8 @@ export async function createPreview(canvas, project, state, { editor = false, on
       const local = new THREE.Box3().setFromObject(loaded.scene);
       if (!local.isEmpty()) modelBounds.set(id, local);
     }
-    if (usedModels.size) {
+    // Models are shaded physically, and so is a PBR material: both need the lights.
+    if (usedModels.size || pbrByBaseColor.size) {
       const room = new RoomEnvironment(), generator = new THREE.PMREMGenerator(renderer);
       environmentTarget = generator.fromScene(room, .04);
       scene.environment = environmentTarget.texture;
@@ -647,7 +671,30 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // Each scrolled material gets its own copy of the picture so its offset moves alone.
       let map = imageTexture(assetId);
       if (scroll && map) { map = map.clone(); scrolledTextures.set(map, scroll); }
-      const result = withEffect(new THREE.MeshBasicNodeMaterial({
+      // A surface drawn with a PBR material is lit instead of tinted: three's standard material
+      // brings the normal, roughness and metalness response, and the sector light multiplies the
+      // base colour underneath so a dark room still reads as dark. The lights it needs are added
+      // whenever a project has a material at all (see the studio rig above).
+      const pbr = assetId ? pbrByBaseColor.get(assetId) : null;
+      if (pbr && map) {
+        const scale = materialScale(pbr.record);
+        map = map.clone();
+        map.repeat.set(scale.u, scale.v);
+        map.needsUpdate = true;
+      }
+      const result = withEffect(pbr ? new THREE.MeshStandardNodeMaterial({
+        map, color: '#ffffff',
+        normalMap: pbrTextures.get(pbr.display.normal) || null,
+        roughnessMap: pbrTextures.get(pbr.display.roughness) || null,
+        metalnessMap: pbrTextures.get(pbr.display.metallic) || null,
+        // With a map, the scalar is the multiplier the map is read against: 1 uses it as authored.
+        roughness: pbr.display.roughness ? 1 : .65,
+        metalness: pbr.display.metallic ? 1 : 0,
+        side: oneSided ? THREE.FrontSide : THREE.DoubleSide,
+        alphaTest: blended ? 0 : (masked || ceiling || alpha === 'masked' ? .5 : 0),
+        transparent: blended,
+        depthWrite: !blended,
+      }) : new THREE.MeshBasicNodeMaterial({
         map, color: assetId ? '#ffffff' : color,
         side: oneSided ? THREE.FrontSide : THREE.DoubleSide,
         // A ceiling always keeps an alpha test: that is what cuts it away above the camera.
@@ -841,6 +888,18 @@ export async function createPreview(canvas, project, state, { editor = false, on
         }
       }
     }
+    /**
+     * The picture a wall side is drawn with.
+     *
+     * A side that names a PBR material draws that material's base colour, and the surface builder
+     * then finds the normal, roughness and metalness maps by that asset id. A side with no
+     * material is exactly what it always was.
+     */
+    const sideAsset = (side, part, fallback) => {
+      const record = materialById(project, side?.[`material_${part}`]);
+      if (!record) return fallback;
+      return materialDisplay(record, { editor }).baseColor || fallback;
+    };
     // While a level is playing its walls come from the runtime, which owns the sidedefs a
     // switch press or a script's `ReplaceTextures` changes; the editor draws the project.
     wallLines = editor || !state.walls?.length ? wallSegments(project) : state.walls;
@@ -862,24 +921,27 @@ export async function createPreview(canvas, project, state, { editor = false, on
         const frontSector = sectorMap.get(side.sectorId), backSector = sectorMap.get(back?.sectorId);
         const floor = frontSector.floorHeight, ceiling = frontSector.ceilingHeight, light = frontSector.light;
         if (!backSector) {
-          const asset = assetMap.get(side.middle);
+          const middle = sideAsset(side, 'mid', side.middle);
+          const asset = assetMap.get(middle);
           // Every wall texture is alpha-tested, as GZDoom does: a mountain silhouette is a
           // picture with holes, and drawing it opaque paints the sky black.
-          wallQuad(wall, a, b, floor, ceiling, side.middle, side, light,
+          wallQuad(wall, a, b, floor, ceiling, middle, side, light,
             wall.flags & 16 ? floor + (asset?.height || 128) : ceiling, true, flip, 'mid');
         } else {
+          const upper = sideAsset(side, 'top', side.upper), lower = sideAsset(side, 'bottom', side.lower);
+          const middle = sideAsset(side, 'mid', side.middle);
           if (!(frontSector.sky && backSector.sky)) wallQuad(wall, a, b, Math.max(floor, backSector.ceilingHeight), ceiling,
-            side.upper, side, light, wall.flags & 8 ? ceiling : backSector.ceilingHeight + (assetMap.get(side.upper)?.height || 128), true, flip, 'top');
-          wallQuad(wall, a, b, floor, Math.min(ceiling, backSector.floorHeight), side.lower, side, light,
+            upper, side, light, wall.flags & 8 ? ceiling : backSector.ceilingHeight + (assetMap.get(upper)?.height || 128), true, flip, 'top');
+          wallQuad(wall, a, b, floor, Math.min(ceiling, backSector.floorHeight), lower, side, light,
             wall.flags & 16 ? ceiling : backSector.floorHeight, true, flip, 'bottom');
-          if (side.middle) {
+          if (middle) {
             const bottom = Math.max(floor, backSector.floorHeight), top = Math.min(ceiling, backSector.ceilingHeight);
-            const height = assetMap.get(side.middle).height;
+            const height = assetMap.get(middle).height;
             const anchor = wall.flags & 16 ? bottom + height : top;
             const slot = side.slots?.mid;
             const rowOffset = slot ? slot.offsetY : (side.offsetY || 0);
             wallQuad(wall, a, b, Math.max(bottom, anchor - height - rowOffset), Math.min(top, anchor - rowOffset),
-              side.middle, side, light, anchor, true, flip, 'mid');
+              middle, side, light, anchor, true, flip, 'mid');
           }
         }
       }

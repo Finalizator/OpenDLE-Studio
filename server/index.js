@@ -18,6 +18,7 @@ import { readEngineVersion } from './version.js';
 import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, inspectPackage, importPackage } from './packages.js';
 import { scanLocalMaps, readLocalMapFile, localArchive, describeScan } from './local-maps.js';
 import { compiledMapAssets, describeAssets } from './bsp-textures.js';
+import { bakeChannels, previewChannels } from './material-bake.js';
 import { bspInfo, parseBsp } from '../shared/bsp.js';
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
 import { createPortableBuild, createZipArchive } from './export-build.js';
@@ -142,6 +143,23 @@ export function createApp({
     return projectId || projectSlug(title || 'project');
   };
   app.get('/api/pixieditor', (req, res) => res.json({ ...pixiEditor.status(), kinds: PIXIEDITOR_KINDS }));
+  /**
+   * Resamples a material's maps.
+   *
+   * The browser draws materials but cannot decode a PNG by hand, so the pixels are resampled here,
+   * where there is a decoder: `size` bakes the set the project keeps, `preview` makes the editor's
+   * cheap copies. Both answer data URLs the client stores as ordinary image assets.
+   */
+  app.post('/api/materials/resample', express.json({ limit: '64mb' }), (req, res) => {
+    const { channels = {}, size, mode = 'bake' } = req.body || {};
+    if (!channels || typeof channels !== 'object') return res.status(400).json({ error: 'A material needs its maps' });
+    try {
+      const images = mode === 'preview' ? previewChannels(channels, Number(size)) : bakeChannels(channels, Number(size));
+      return res.json({ channels: images });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
   app.post('/api/pixieditor/open', async (req, res) => {
     try {
       res.json({ ...(await pixiEditor.open(pixiProject(), req.body?.asset)), available: true });

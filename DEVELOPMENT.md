@@ -4124,6 +4124,39 @@ above a block of collapsed summaries: the help is reached by scrolling to the en
 it always was. The hidden file inputs live outside the scrolling body, so a file picker cannot
 contribute a grid row.
 
+### PBR materials: preview, then bake
+
+A Doom texture is one picture. A **material** is up to six maps that belong together: base colour,
+normal, roughness, metallic, height and ambient occlusion. `shared/materials.js` is the record
+(`project.materials`), `server/material-bake.js` is the resampling, and the editor draws the cheap
+copies while the project plays the settled ones.
+
+- **The maps are ordinary image assets.** A material only names them (`channels: { baseColor,
+  normal, … }`), so reference counting, deletion, packing and the asset browser keep working.
+  A surface draws exactly one thing: `assignMaterial` puts the material on a brush face or a wall
+  side (`material_middle`/`_upper`/`_lower`) and clears the texture it replaces.
+- **Two resolutions, one switch.** `channels` is what the project plays with — the baked set.
+  `preview.channels` is the editor's downscale (`PREVIEW_SIZE`, 256²), and `materialDisplay(material,
+  { editor })` is the single place that decides which is drawn. `scale {u,v}` is the material's own
+  tiling, applied to the texture's repeat.
+- **Baking settles it.** `POST /api/materials/resample` decodes the PNGs (`pngjs`), averages them
+  down (or passes a map that is already the right size through, so nothing loses a generation), and
+  answers data URLs the client writes back into the same assets — so every surface keeps pointing
+  at the same ids. The preview copies are then deleted and `baked = { size, at }` records what the
+  project now holds. A normal map is resampled as a direction (decode, mean, renormalise), not as
+  bytes: averaging encoded normals shortens the vector and tilts it.
+- **`source` is a link, never a payload.** The authored material (a MaterialCraft project, a folder
+  of exported maps) is kept as `{ name, path }` so the creator can find it again; it is never drawn
+  and never packed into a build.
+- **What draws it.** The 3D editor view batches brush faces by material (`brush-batch.js` keys them
+  `material:<id>`) and builds a `MeshStandardMaterial` with the preview maps, lit by a hemisphere and
+  a key light the view adds only when the project has a material. The play view (and the exported
+  game, which shares `render.js`) resolves a wall side's material to its base-colour asset and builds
+  a `MeshStandardNodeMaterial` with the normal/roughness/metalness maps, keeping Doom's sector light
+  as a multiply on the base colour, so a dark room stays dark and the material still has its
+  response. Material maps are always loaded, even in a campaign whose level only lists its own
+  assets.
+
 ### Textures open in PixiEditor
 
 A project keeps every picture as PNG data inside the document — 734 assets in an

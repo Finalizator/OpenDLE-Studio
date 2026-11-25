@@ -20,6 +20,7 @@ import { measureAssetForward } from '/shared/model-forward.js';
 import { nodeIcon } from './node-icons.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
 import { createSceneEditor } from './scene-editor.js';
+import { createMaterialPanel } from './material-panel.js';
 import {
   cloneEntitiesForPaste, entityGroups, groupEntities, groupOf, leaveGroup, membersOf, ungroup,
 } from '/shared/entity-groups.js';
@@ -108,10 +109,17 @@ import {
   mergeBrushes, hollowBrush, duplicateBrush, removeBrushes, setBrushFaceMaterial,
   setBrushFacePosition, facePlane, facesOf, brushSurfaceAt,
 } from '/shared/brushes.js';
+import { assignMaterial } from '/shared/materials.js';
 
 const $ = id => document.getElementById(id);
 $('asset-dock').append($('assets-panel'));
 $('assets-panel').hidden = false;
+// PBR materials live beside the asset library: the maps are assets, and the material is the record
+// that says which is which.
+const materialBrowser = document.createElement('section');
+materialBrowser.id = 'material-browser';
+$('assets-panel').append(materialBrowser);
+let materialPanel = null;
 let project, token, revision = 0, dirty = false, selection = null, editVersion = 0;
 const scriptletLibrary = createScriptletRegistry();
 let scriptletsLoading = false, scriptletsLoaded = false, scriptletLoadError = '';
@@ -332,6 +340,9 @@ const actorsPanel = createActorsPanel({
   list: $('actor-list'), summary: $('actors-summary'), gaps: $('actors-gaps'), search: $('actor-search'), filter: $('actor-filter'),
   form: $('actor-form'), title: $('actor-title'), fields: $('actor-fields'), states: $('actor-states'),
 }, { actors: () => project.actors || [], edit: editActors, unsupported: actorActionGaps });
+materialPanel = createMaterialPanel({
+  root: materialBrowser, project: () => project, edit, status, api, applyToSelection: applyMaterialToSelection,
+});
 const playtestLogPanel = createPlaytestLogPanel({
   directory: $('log-directory'), totals: $('log-totals'), list: $('log-list'), detail: $('log-detail'),
   refresh: $('log-refresh'), clear: $('log-clear'),
@@ -523,6 +534,7 @@ function render() {
   renderEvents();
   renderEnvironment();
   renderAssetsIfChanged();
+  materialPanel?.render();
   // The scriptlet cards report how many rules they have installed, so undo and
   // redo have to refresh them too, not only opening the tab.
   if (!$('scriptlets-panel').hidden) renderScriptlets();
@@ -4296,6 +4308,24 @@ function duplicateSelectedEntities() {
   selection = ids.length ? { kind: 'entity', id: ids[0] } : null;
   lastPrimarySelection = ids.length ? ids[0] : null;
   render();
+  return true;
+}
+/**
+ * Puts a material on what the mapper has selected.
+ *
+ * A brush face is a face; a wall is its front side's middle section, which is the surface a texture
+ * is normally painted on. Anything else gets the panel's own message rather than a silent no-op.
+ */
+function applyMaterialToSelection(materialId) {
+  const target = selection?.kind === 'brushFace'
+    ? { kind: 'brushFace', brushId: selection.id, faceIndex: selection.face ?? 0 }
+    : selection?.kind === 'wall'
+      ? { kind: 'wallSide', wallId: selection.id, side: 'right', part: 'middle' }
+      : null;
+  if (!target) return false;
+  edit(next => {
+    assignMaterial(next, materialId, target);
+  }, 'Material applied');
   return true;
 }
 function alignSelectedEntities() {

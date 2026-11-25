@@ -2,6 +2,7 @@ import * as THREE from '/vendor/three/three.module.js';
 import { createPreview } from './render.js';
 import { selectionAtTriangle } from '/shared/surface-batch.js';
 import { batchBrushes } from '/shared/brush-batch.js';
+import { materialDisplay, materialScale } from '/shared/materials.js';
 import { createRuntime, runtimeEntities } from '/shared/runtime.js';
 import { newId } from '/shared/project.js';
 import { containsPoint, sectorAt, sectorGeometry } from '/shared/sectors.js';
@@ -63,6 +64,17 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   // Where the routes are, so the pick radius for a line can follow the viewing distance.
   const pathCentre = new THREE.Vector3();
   scene.add(handles, helperGroup, vertexGroup, pathGroup, faceGroup, brushGroup);
+  // A PBR material is a lit surface, so the view needs a light to show one: a soft sky fill and a
+  // key that separates faces, the same pair the play view lights imported models with. Everything
+  // else in this view is an unlit editor material and is unaffected.
+  const pbrLights = new THREE.Group();
+  pbrLights.name = 'Material lights';
+  pbrLights.visible = Boolean((project.materials || []).length);
+  const skyFill = new THREE.HemisphereLight('#e8f0ff', '#454c58', 1.1);
+  const keyLight = new THREE.DirectionalLight('#fff3e2', 2.4);
+  keyLight.position.set(.55, 1, .35).normalize().multiplyScalar(2048);
+  pbrLights.add(skyFill, keyLight, keyLight.target);
+  scene.add(pbrLights);
   /**
    * Corner handles live in their own group, and only for the brush being edited.
    *
@@ -465,16 +477,59 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    */
   let brushResources = [];
   let brushSignature = '';
-  function brushTextureFor(assetId) {
-    if (!assetId) return brushFillMaterial;
-    if (brushMaterials.has(assetId)) return brushMaterials.get(assetId);
+  const brushTextures = new Map();
+  function brushTexture(assetId, { color = true } = {}) {
+    const key = `${assetId}/${color}`;
+    if (brushTextures.has(key)) return brushTextures.get(key);
     const asset = (project.assets || []).find(item => item.id === assetId);
-    if (!asset?.src) return brushFillMaterial;
+    if (!asset?.src) return null;
     const texture = new THREE.TextureLoader().load(asset.src);
-    texture.colorSpace = THREE.SRGBColorSpace;
+    // A normal or roughness map is data: decoding it as sRGB shifts every lit surface, and a
+    // nearest-neighbour filter turns the surface into a mosaic.
+    texture.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    texture.magFilter = texture.minFilter = color ? THREE.NearestFilter : THREE.LinearFilter;
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    brushTextures.set(key, texture);
+    return texture;
+  }
+  /**
+   * A PBR material, as the 3D view draws it.
+   *
+   * The editor shows the material's *preview* maps — the downscaled copies — so a 2K material does
+   * not cost 2K of texture memory on every brush face while it is being designed. The baking step
+   * is what puts the resolution the creator chose into the project.
+   */
+  function brushMaterialFor(materialId) {
+    const record = (project.materials || []).find(item => item.id === materialId);
+    if (!record) return brushFillMaterial;
+    const display = materialDisplay(record, { editor: true });
+    const base = display.baseColor && brushTexture(display.baseColor);
+    if (!base) return brushFillMaterial;
+    const scale = materialScale(record);
+    for (const texture of [base, brushTexture(display.normal, { color: false }),
+      brushTexture(display.roughness, { color: false }), brushTexture(display.metallic, { color: false })]) {
+      if (texture) texture.repeat.set(scale.u, scale.v);
+    }
+    const material = new THREE.MeshStandardMaterial({
+      map: base,
+      normalMap: brushTexture(display.normal, { color: false }),
+      roughnessMap: brushTexture(display.roughness, { color: false }),
+      metalnessMap: brushTexture(display.metallic, { color: false }),
+      roughness: display.roughness ? 1 : .7,
+      metalness: display.metallic ? 1 : 0,
+      side: THREE.DoubleSide,
+    });
+    brushMaterials.set(`material:${record.id}`, material);
+    return material;
+  }
+  function brushTextureFor(key) {
+    if (!key) return brushFillMaterial;
+    if (brushMaterials.has(key)) return brushMaterials.get(key);
+    if (key.startsWith('material:')) return brushMaterialFor(key.slice('material:'.length));
+    const texture = brushTexture(key);
+    if (!texture) return brushFillMaterial;
     const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
-    brushMaterials.set(assetId, material);
+    brushMaterials.set(key, material);
     return material;
   }
   /**
