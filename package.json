@@ -14,6 +14,7 @@
     "test": "node --test --test-concurrency=${TEST_CONCURRENCY:-4} test/*.test.js",
     "test:freedoom": "node scripts/check-freedoom.js",
     "check": "node scripts/check.js",
+    "docs": "node scripts/docs.js",
     "gzdoom:fetch": "node tools/gzdoom/fetch.mjs",
     "gzdoom:run": "node tools/gzdoom/run.mjs",
     "gzdoom:diff": "node tools/gzdoom/diff.mjs",

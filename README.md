@@ -115,6 +115,12 @@ limits itself to four workers (about 70 s for the suite, 108 s at two). Lower
 
 ## Documentation
 
+**The whole documentation as one site:** run `npm run docs` (the studio also builds it on first
+start) and open **Menu → Engine docs**, or `/docs/` on the studio's own address. It holds these
+guides with a readable layout, plus an auto-generated **module reference** — every module in
+`shared/`, `server/` and `public/` with each export's doc comment — and the **event catalogue**,
+every condition and action with its fields, read from the engine itself.
+
 - [Node editor, terminals and doors](Docs/node-editor.md): viewport controls,
   reusable node import/export, local variables, signals and a step-by-step code lock.
 - [Visual scripting reference](Docs/visual-scripting.md): event scopes, phases,

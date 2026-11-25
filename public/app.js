@@ -2311,6 +2311,9 @@ function renderEngineTweaks() {
     fields.append(wrapper);
   }
 }
+// The engine documentation is built into `public/docs` by `npm run docs`, so it is a page on the
+// same server rather than a folder to find.
+$('engine-docs').addEventListener('click', () => { window.open('/docs/', '_blank', 'noopener'); });
 $('engine-tweaks-reset').addEventListener('click', guard(() => {
   const tweaks = engineTweaks();
   localStorage.setItem('opendle-engine-tweaks', JSON.stringify(tweaks));
