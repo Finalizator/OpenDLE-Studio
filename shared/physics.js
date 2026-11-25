@@ -8,6 +8,7 @@ import { tiltQuaternion } from './source-motion.js';
 import { wedgeCorners } from './ramp.js';
 import { SV_STEPSIZE, categorizePosition, playerMove } from './try-player-move.js';
 import { modelAssetTriangles } from './model-geometry.js';
+import { brushPolygons } from './brushes.js';
 
 export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
@@ -104,6 +105,8 @@ export function validatePhysicsState(snapshot, expectedIds) {
 
 export function collisionMesh(project, triangulate, { sectors: liveSectors, moving, dynamic = false } = {}) {
   const positions = [], indices = [];
+  /** A brush's own axes are the map's: (x, y) on the floor with z up. Rapier wants y up. */
+  const upright = ([x, y, z]) => [x, z, y];
   function triangle(a, b, c) {
     const index = positions.length / 3;
     for (const point of [a, b, c]) positions.push(...point.map(value => value / PHYSICS_SCALE));
@@ -138,7 +141,8 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
       }
     }
   }
-  if (!sectors.length) {
+  // Stand-in ground for a project with neither sectors nor brushes, so an empty world is not a void.
+  if (!sectors.length && !project.map.brushes?.length) {
     triangle([-20000, 0, -20000], [20000, 0, -20000], [20000, 0, 20000]);
     triangle([-20000, 0, -20000], [20000, 0, 20000], [-20000, 0, 20000]);
   }
@@ -159,6 +163,19 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
     } else {
       wall(a, b, Math.min(front.floorHeight, back.floorHeight), Math.max(front.floorHeight, back.floorHeight));
       if (!(front.sky && back.sky)) wall(a, b, Math.min(front.ceilingHeight, back.ceilingHeight), Math.max(front.ceilingHeight, back.ceilingHeight));
+    }
+  }
+  // A level built from brushes — an imported Quake map — has no sectors to collide with, and a solid
+  // brush's faces *are* its walls and floors. They are static geometry like the sectors', so they go
+  // in the static mesh only: the movable one is rebuilt every time a door moves.
+  if (!dynamic && project.map.brushes?.length) {
+    for (const brush of project.map.brushes) {
+      for (const polygon of brushPolygons(brush)) {
+        // A brush's face is convex and its outline is already ordered, so a fan is its triangulation.
+        for (let index = 1; index < polygon.length - 1; index++) {
+          triangle(upright(polygon[0]), upright(polygon[index]), upright(polygon[index + 1]));
+        }
+      }
     }
   }
   return { positions: new Float32Array(positions), indices: new Uint32Array(indices), sectors };

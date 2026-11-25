@@ -170,12 +170,8 @@ export function brushVertices(brush) {
 }
 
 /** A face's outline, ordered anticlockwise as seen from outside the brush. */
-export function facePolygon(brush, faceIndex) {
-  const faces = facesOf(brush);
-  const face = faces[faceIndex];
-  if (!face) return [];
-  const plane = facePlane(face);
-  const points = brushVertices(brush).filter(point => Math.abs(dot(plane.normal, point) - plane.distance) <= EPS);
+function orderOnPlane(plane, vertices) {
+  const points = vertices.filter(point => Math.abs(dot(plane.normal, point) - plane.distance) <= EPS);
   if (points.length < 3) return points;
   const centre = mul(points.reduce((sum, point) => add(sum, point), [0, 0, 0]), 1 / points.length);
   const basis = Math.abs(plane.normal[0]) < .9 ? cross(plane.normal, [1, 0, 0]) : cross(plane.normal, [0, 1, 0]);
@@ -184,6 +180,26 @@ export function facePolygon(brush, faceIndex) {
     .map(point => ({ point, angle: Math.atan2(dot(sub(point, centre), v), dot(sub(point, centre), u)) }))
     .sort((a, b) => a.angle - b.angle)
     .map(entry => entry.point);
+}
+
+export function facePolygon(brush, faceIndex) {
+  const faces = facesOf(brush);
+  const face = faces[faceIndex];
+  if (!face) return [];
+  return orderOnPlane(facePlane(face), brushVertices(brush));
+}
+
+/**
+ * Every face's outline in one pass, for callers that want all of them.
+ *
+ * `facePolygon` re-derives the brush's vertices on every call, which is fine for the one face the
+ * editor is dragging and ruinous for a level of a thousand brushes built from a compiled map: the
+ * corner search is cubic in the number of planes.
+ */
+export function brushPolygons(brush) {
+  const planes = facesOf(brush).map(facePlane);
+  const vertices = brushVertices(brush);
+  return planes.map(plane => orderOnPlane(plane, vertices));
 }
 
 function adjacentOnPolygon(points, a, b) {

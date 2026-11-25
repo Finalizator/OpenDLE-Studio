@@ -86,13 +86,26 @@ export async function run({ page }) {
   await wait(300);
   check('the editor starts blank', (await page.evaluate('window.__opendle.state()')).brushes === 0);
 
-  // The menu a person actually uses offers both modes, and the picker takes `.map` files.
+  // The menu a person actually uses offers the folder list and the picker, and the picker takes
+  // `.map` files. The two import modes live one level down, on each of those.
   await page.evaluate(`window.__opendle.ui.click('#import-idtech')`);
   await wait(200);
   const menu = await page.evaluate('window.__opendle.ui.menu()');
-  check('the import menu offers both modes', menu.items.length === 2, menu.items.map(item => item.text));
-  check('one mode is a new project', menu.items.some(item => /new project/i.test(item.text)), menu.items.map(item => item.text));
-  check('one mode adds a layout', menu.items.some(item => /layout/i.test(item.text)), menu.items.map(item => item.text));
+  check('the import menu offers the folder list and the picker', menu.items.length === 2, menu.items.map(item => item.text));
+  check('one entry lists the Projects folder', menu.items.some(item => /Projects folder/i.test(item.text)), menu.items.map(item => item.text));
+  check('one entry opens the file picker', menu.items.some(item => /Pick a file/i.test(item.text)), menu.items.map(item => item.text));
+  // A submenu opens on hover, the way every menu behaves: the pointer has to have moved once.
+  const opened = await page.evaluate(`(() => {
+    document.dispatchEvent(new PointerEvent('pointermove'));
+    const parent = [...document.querySelectorAll('.context-menu-item')].find(item => /Projects folder/i.test(item.textContent));
+    if (!parent) return false;
+    parent.dispatchEvent(new PointerEvent('pointerenter'));
+    return true;
+  })()`);
+  await wait(200);
+  const submenu = opened ? await page.evaluate('window.__opendle.ui.menu()') : { items: [] };
+  check('the folder list offers a new project', submenu.items.some(item => /new project/i.test(item.text)), submenu.items.map(item => item.text));
+  check('the folder list offers a layout', submenu.items.some(item => /layout/i.test(item.text)), submenu.items.map(item => item.text));
   await page.evaluate(`window.__opendle.ui.press('Escape')`);
   await page.send('Input.dispatchKeyEvent', { type: 'keyDown', code: 'Escape', key: 'Escape', windowsVirtualKeyCode: 27 });
   await page.send('Input.dispatchKeyEvent', { type: 'keyUp', code: 'Escape', key: 'Escape', windowsVirtualKeyCode: 27 });

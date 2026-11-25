@@ -70,6 +70,14 @@ const colorPattern = /^#[0-9a-f]{6}$/i;
 export const MIN_TEXTURE_SCALE = .05;
 export const MAX_TEXTURE_SCALE = 16;
 /**
+ * How many brushes a project may hold.
+ *
+ * The old ceiling was 4096, which a Doom map never reaches and a compiled Quake map always does: one
+ * brush per piece of solid space is what the compiler's own output is. 20000 leaves room for a
+ * second map imported as a layout beside the first.
+ */
+export const MAX_BRUSHES = 20000;
+/**
  * GZDoom scales a texture by a factor, and a **negative** factor mirrors it. Real maps use that
  * (Lullaby's MAP01 has `scalex_mid = -1.0` on 72 sides), so the range is checked on the magnitude
  * and the sign is kept. Zero means "not set" in some editors and reads as 1 downstream.
@@ -733,7 +741,9 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     }
   };
 
-  array(brushes, 'Brushes', 4096);
+  // A compiled Quake 3 map is mostly brushes: the one in `Projects/Maps/Quake` has 5990 of them, and
+  // a `.bsp` importer that cannot store its own map's geometry is not an importer.
+  array(brushes, 'Brushes', MAX_BRUSHES);
   for (const brush of brushes) {
     object(brush, 'Brush');
     identifier(brush.id, 'Brush ID');

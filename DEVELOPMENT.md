@@ -375,15 +375,28 @@ provider credits or network access are required for tests.
 - **World editor:** draw rectangular rooms, place objects, move vertices and
   objects with live visual feedback, edit wall colors/heights/collision, edit
   spawn position/angle, zoom, pan, snap to grid, fit to scene and undo/redo.
-- **Quake-family maps import, and the Projects folder is listed.** `Import .map` parses id Tech
-  source text (`shared/idtech-map.js`) either as a new project or as one more layout, and reports
-  what it read. The file picker alone could not find a folder of maps — it filters, and a compiled
-  map is not something the importer reads — so `server/local-maps.js` walks `Projects/` (recursively,
-  archives only when they hold a `.map` or `.bsp`), reads a BSP header to name its game and version,
-  and the "From the Projects folder…" dialog lists every file with a verdict and an import button on
-  the sources. Compiled geometry is **not** imported: `crossfire.bsp` is listed and explained rather
-  than refused silently, and `/api/wads` is recursive for the same reason a mod keeps WADs in a
-  subfolder.
+- **Quake-family maps import — source and compiled.** `Import map` reads id Tech source text
+  (`shared/idtech-map.js`) or a compiled `.bsp` (`shared/bsp.js`), either as a new project or as one
+  more layout, and reports what it read. The file picker alone could not find a folder of maps — it
+  filters — so `server/local-maps.js` walks `Projects/` (recursively, archives only when they hold a
+  `.map` or `.bsp`) and the "From the Projects folder…" dialog lists every file with a verdict and an
+  import button. `/api/wads` is recursive for the same reason: a mod keeps WADs in a subfolder.
+- **A compiled map becomes brushes.** Quake 1 and Half-Life (BSP 29/30) keep the world only in the
+  BSP tree, so a solid leaf's volume is the intersection of the node planes on the path to it: the
+  walk carries half-spaces, and each solid *tree position* — not each leaf — becomes one brush, which
+  is what makes a wall a wall. Solid space is never subdivided for drawing, so one solid leaf is
+  reached by hundreds of paths and each is a different piece of the level. Quake 2 and Quake 3
+  (38/46/47, files starting `IBSP`) carry an explicit brush lump, read directly from outward planes.
+  Corners are found by intersecting triples of planes and kept within `CORNER_TOLERANCE` (0.01 unit):
+  the file's planes are floats, and demanding more precision threw away nine brushes in ten of a real
+  map. Each face is then emitted *from its own plane*, never from three corner points, so a brush's
+  geometry is the file's numbers and not a rounding of them. Texture names come from the miptex
+  directory (Quake, Half-Life) or the shader lump (Quake 3); the artwork itself is not imported, so a
+  face falls back to the renderer's own material like any unknown texture.
+- **Brush levels collide.** `collisionMesh` adds every brush's faces to the static trimesh, so a level
+  with no sectors is walkable: the solid leaf you stand on is a floor. Brushes are static, so they
+  are never in the movable collider, and the stand-in ground plane appears only when a project has
+  neither sectors nor brushes.
 - **3D scene editor:** switch between 2D and 3D on the Layout toolbar.
   Fly freely, select rendered objects/walls/sectors or vertex markers, edit
   Properties, drag colored transform handles, place objects and draw rooms.

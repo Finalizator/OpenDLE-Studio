@@ -16,7 +16,8 @@ import { openLocalBrowser } from './browser.js';
 import { openStudioWindow } from './studio-launcher.js';
 import { readEngineVersion } from './version.js';
 import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, inspectPackage, importPackage } from './packages.js';
-import { scanLocalMaps, readLocalMapSource, describeScan } from './local-maps.js';
+import { scanLocalMaps, readLocalMapFile, describeScan } from './local-maps.js';
+import { parseBsp } from '../shared/bsp.js';
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
 import { createPortableBuild, createZipArchive } from './export-build.js';
 import { resolveDist } from './electron-runtime.js';
@@ -159,10 +160,18 @@ export function createApp({
       res.json({ ...scan, summary: describeScan(scan) });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
+  /**
+   * The map the browser named, ready to import.
+   *
+   * A `.map` comes back as its own text, which the client parses; a compiled `.bsp` comes back as
+   * the brushes it *is*, parsed here because the reader is shared code the server already has. Both
+   * answers are the same shape, so the importer has one path.
+   */
   app.get('/api/local-maps/source', async (req, res) => {
     try {
-      const text = await readLocalMapSource(projectsDir, req.query.path, req.query.entry ? String(req.query.entry) : null);
-      res.type('text/plain; charset=utf-8').send(text);
+      const file = await readLocalMapFile(projectsDir, req.query.path, req.query.entry ? String(req.query.entry) : null);
+      if (file.kind === 'bsp') res.json({ name: file.name, parsed: parseBsp(file.bytes, { name: file.name }) });
+      else res.type('text/plain; charset=utf-8').send(file.text);
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
   // Every WAD under Projects/, at any depth: one level of a mod's `maps/` folder used to be

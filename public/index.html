@@ -60,7 +60,7 @@
   </header>
   <div id="file-menu" class="filebar" hidden>
     <button id="new">New project</button><button id="open">Open project</button><button id="export">Export project</button>
-    <button id="quick-import" class="primary">Quick import game</button><button id="export-build">Export playable app</button><button id="import-idtech">Import .map (Quake / HL / Q2 / Q3)</button><button id="wad">Import WAD + assets</button><button id="local-wad">Local WAD library</button><button id="package-upload">Import PK3 / IPK3</button><button id="package-library">Local package library</button><button id="reload">Reload server</button><button id="restore">Restore local draft</button>
+    <button id="quick-import" class="primary">Quick import game</button><button id="export-build">Export playable app</button><button id="import-idtech">Import map (Quake / HL / Q2 / Q3)</button><button id="wad">Import WAD + assets</button><button id="local-wad">Local WAD library</button><button id="package-upload">Import PK3 / IPK3</button><button id="package-library">Local package library</button><button id="reload">Reload server</button><button id="restore">Restore local draft</button>
     <label class="project-picker">Stored project<select id="projects" aria-label="Stored projects"></select></label>
     <button data-tab="addons">Addons</button>
     <button data-tab="about">About</button>
@@ -410,10 +410,10 @@
   </dialog>
   <dialog id="map-browser-dialog">
     <h2>Maps in the Projects folder</h2>
-    <p>Everything under <code>Projects/</code> that could hold a level, and what the engine can do with
-      it. A <strong>.map</strong> source — on its own or inside a <code>.pk3</code> or <code>.zip</code>
-      — imports directly from here. A compiled <strong>.bsp</strong> is listed with the game it was
-      built for, because the importer reads source, not compiled geometry.</p>
+    <p>Everything under <code>Projects/</code> that holds a level, and what each one is. A
+      <strong>.map</strong> source imports as the planes the mapper drew; a compiled
+      <strong>.bsp</strong> imports as the brushes a compiler made of them, and says which game it
+      was built for. Either kind works from inside a <code>.pk3</code> or a <code>.zip</code>.</p>
     <div class="button-row">
       <button id="map-browser-refresh">Refresh</button>
       <button id="map-browser-close">Close</button>

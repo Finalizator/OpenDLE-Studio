@@ -1,15 +1,15 @@
 // "Put the maps in the Projects folder and press import" has to show the maps.
 //
-// The file picker only offers what the operating system gives it, and a compiled `.bsp` is not a
-// file this importer reads — so a folder of Quake and Half-Life maps looked empty: folders visible,
-// files not. The studio now lists the folder itself and says what each file is.
+// The file picker only offers what the operating system gives it, so a folder of Quake and
+// Half-Life maps looked empty: folders visible, files not. The studio now lists the folder itself,
+// says what each file is, and imports both a `.map` source and a `.bsp` compiled from one.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanLocalMaps, readLocalMapSource, describeScan, bspInfo, bspEngine } from '../server/local-maps.js';
+import { scanLocalMaps, readLocalMapFile, describeScan, bspInfo, bspEngine } from '../server/local-maps.js';
 import { createZipArchive } from '../server/export-build.js';
 
 /** A folder tree a test owns, cleaned up with the test. */
@@ -26,14 +26,16 @@ function scratch(t) {
 }
 
 /** A BSP header of `version` with `lumps` empty lump directories, laid out like the real thing. */
-function bspHeader(version, { lumps = version >= 46 ? 17 : 15, trailing = 16 } = {}) {
-  const directoryEnd = 4 + lumps * 8;
+function bspHeader(version, { magic = false, lumps = version >= 46 ? 17 : 15, trailing = 16 } = {}) {
+  const directory = magic ? 8 : 4;
+  const directoryEnd = directory + lumps * 8;
   const buffer = Buffer.alloc(directoryEnd + trailing);
-  buffer.writeInt32LE(version, 0);
+  if (magic) buffer.write('IBSP', 0, 'latin1');
+  buffer.writeInt32LE(version, magic ? 4 : 0);
   for (let index = 0; index < lumps; index++) {
     // Every lump sits after the directory, which is what a real header looks like.
-    buffer.writeInt32LE(directoryEnd, 4 + index * 8);
-    buffer.writeInt32LE(index === 0 ? trailing : 0, 8 + index * 8);
+    buffer.writeInt32LE(directoryEnd, directory + index * 8);
+    buffer.writeInt32LE(index === 0 ? trailing : 0, directory + index * 8 + 4);
   }
   return buffer;
 }
@@ -41,8 +43,11 @@ function bspHeader(version, { lumps = version >= 46 ? 17 : 15, trailing = 16 } =
 const MAP_TEXT = '{ "classname" "worldspawn" }\n';
 
 test('a compiled BSP is identified by its version, and a file that is not one is not called one', () => {
-  assert.deepEqual(bspInfo(bspHeader(30)), { version: 30, engine: 'Half-Life', lumps: 15 });
-  assert.deepEqual(bspInfo(bspHeader(46)), { version: 46, engine: 'Quake 3', lumps: 17 });
+  assert.equal(bspInfo(bspHeader(30)).engine, 'Half-Life');
+  assert.equal(bspInfo(bspHeader(46)).engine, 'Quake 3');
+  // Quake 2 and Quake 3 files start with the ASCII magic `IBSP` and put the version after it.
+  assert.equal(bspInfo(bspHeader(46, { magic: true }))?.engine, 'Quake 3');
+  assert.equal(bspInfo(bspHeader(38, { magic: true, lumps: 19 }))?.engine, 'Quake 2');
   assert.equal(bspEngine(29), 'Quake');
   assert.equal(bspEngine(38), 'Quake 2');
   assert.equal(bspEngine(31), null, 'an unknown version is not a BSP this engine knows');
@@ -53,7 +58,7 @@ test('a compiled BSP is identified by its version, and a file that is not one is
   assert.equal(bspInfo(broken), null);
 });
 
-test('the folder is listed: a .map source is importable, a compiled map says what it is', async t => {
+test('the folder is listed: both a .map source and a compiled map are importable', async t => {
   const { root, write } = scratch(t);
   write('Maps/Half-Life/crossfire.bsp', bspHeader(30));
   write('Maps/Quake/quarry.map', MAP_TEXT);
@@ -65,14 +70,15 @@ test('the folder is listed: a .map source is importable, a compiled map says wha
     'map files at any depth, no hidden folders, no other files');
   assert.equal(byPath.get('Maps/Quake/quarry.map').importable, true);
   const compiled = byPath.get('Maps/Half-Life/crossfire.bsp');
-  assert.equal(compiled.importable, false);
+  assert.equal(compiled.importable, true);
   assert.equal(compiled.kind, 'bsp');
+  assert.equal(compiled.holds, 'bsp');
   assert.equal(compiled.engine, 'Half-Life');
   assert.match(compiled.detail, /Half-Life BSP v30/);
-  assert.match(compiled.detail, /compiled/);
-  // What can be imported comes first, so the list is for acting on.
+  assert.match(compiled.detail, /imports as brushes/);
+  // Sources come first, then compiled maps: the list is for acting on.
   assert.equal(scan.entries[0].path, 'Maps/Quake/quarry.map');
-  assert.match(describeScan(scan), /2 map files .*1 importable, 1 compiled map/);
+  assert.match(describeScan(scan), /2 map files .*2 importable, 1 compiled map/);
 });
 
 test('an archive is listed for the map inside it, and only when it holds one', async t => {
@@ -89,23 +95,35 @@ test('an archive is listed for the map inside it, and only when it holds one', a
   assert.equal(byPath.get('Maps/source-pack.zip').importable, true);
   assert.equal(byPath.get('Maps/source-pack.zip').entry, 'maps/quarry.map');
   assert.match(byPath.get('Maps/source-pack.zip').detail, /maps\/quarry\.map/);
-  assert.equal(byPath.get('Maps/Quake/map-13hell.pk3').importable, false);
-  assert.match(byPath.get('Maps/Quake/map-13hell.pk3').detail, /maps\/13hell\.bsp \(compiled\)/);
+  // A pk3 around a compiled map is that map, and the row says which game it is for.
+  const packed = byPath.get('Maps/Quake/map-13hell.pk3');
+  assert.equal(packed.importable, true);
+  assert.equal(packed.holds, 'bsp');
+  assert.equal(packed.entry, 'maps/13hell.bsp');
+  assert.match(packed.detail, /maps\/13hell\.bsp — Quake 3 BSP v46/);
 });
 
-test('a .map is read from the folder, and from inside a .pk3, without a file dialog', async t => {
+test('a map is read from the folder, and from inside a .pk3, without a file dialog', async t => {
   const { root, write } = scratch(t);
   write('Maps/Quake/quarry.map', MAP_TEXT);
-  write('Maps/source-pack.zip', createZipArchive([{ path: 'maps/quarry.map', data: Buffer.from(MAP_TEXT) }],
-    new Date('2026-01-01T00:00:00Z')));
-  assert.equal(await readLocalMapSource(root, 'Maps/Quake/quarry.map'), MAP_TEXT);
-  assert.equal(await readLocalMapSource(root, 'Maps/source-pack.zip', 'maps/quarry.map'), MAP_TEXT);
+  write('Maps/Half-Life/crossfire.bsp', bspHeader(30));
+  write('Maps/source-pack.zip', createZipArchive([
+    { path: 'maps/quarry.map', data: Buffer.from(MAP_TEXT) },
+    { path: 'maps/shared.bsp', data: bspHeader(46) },
+  ], new Date('2026-01-01T00:00:00Z')));
+  assert.deepEqual(await readLocalMapFile(root, 'Maps/Quake/quarry.map'), { kind: 'map', name: 'quarry.map', text: MAP_TEXT });
+  assert.equal((await readLocalMapFile(root, 'Maps/source-pack.zip', 'maps/quarry.map')).text, MAP_TEXT);
+  // A compiled map comes back as bytes for the BSP reader, whichever way it was stored.
+  const packed = await readLocalMapFile(root, 'Maps/source-pack.zip', 'maps/shared.bsp');
+  assert.equal(packed.kind, 'bsp');
+  assert.equal(bspInfo(packed.bytes).version, 46);
+  assert.equal((await readLocalMapFile(root, 'Maps/Half-Life/crossfire.bsp')).kind, 'bsp');
   // The path is not a way out of the Projects folder, and not a way to read anything else.
-  await assert.rejects(() => readLocalMapSource(root, '../outside.map'), /outside the Projects folder/);
+  await assert.rejects(() => readLocalMapFile(root, '../outside.map'), /outside the Projects folder/);
   // Asking for an entry out of a plain `.map` is a caller mistake, and it says which file it could
   // not open rather than failing somewhere deeper.
-  await assert.rejects(() => readLocalMapSource(root, 'Maps/Quake/quarry.map', 'maps/quarry.map'), /could not be read as an archive/);
-  await assert.rejects(() => readLocalMapSource(root, 'Maps/source-pack.zip', 'maps/missing.map'), /has no maps\/missing\.map/);
+  await assert.rejects(() => readLocalMapFile(root, 'Maps/Quake/quarry.map', 'maps/quarry.map'), /has no readable maps\/quarry\.map/);
+  await assert.rejects(() => readLocalMapFile(root, 'Maps/source-pack.zip', 'maps/missing.map'), /has no readable maps\/missing\.map/);
 });
 
 test('a scan with nothing in it says so instead of failing', async t => {

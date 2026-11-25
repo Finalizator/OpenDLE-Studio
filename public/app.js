@@ -88,6 +88,7 @@ import { statusBarHidden } from '/shared/game-view.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
 import { cloneForLevelSwitch, selectGameLevel, stripInactiveLevels, levelData, gameLevelAssetIds } from '/shared/game-levels.js';
 import { parseIdTechMap, projectFromIdTechMap, applyIdTechMap } from '/shared/idtech-map.js';
+import { parseBsp } from '/shared/bsp.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
 import { weaponScriptRules } from '/shared/weapon-script.js';
@@ -6093,7 +6094,14 @@ async function importMapFile(file, mode) {
 
 /** The import itself, from the text of a `.map`: a picked file and one from the folder are the same. */
 async function importMapText(text, name, mode) {
-  const parsed = parseIdTechMap(text, { name });
+  await importParsedMap(parseIdTechMap(text, { name }), name, mode);
+}
+
+/**
+ * Import a map that is already parsed — a `.bsp` the server read into brushes is the same shape a
+ * `.map` source parses to, so both land here and neither can drift from the other.
+ */
+async function importParsedMap(parsed, name, mode) {
   if (mode === 'project') {
     const next = validateProject(projectFromIdTechMap(parsed, { createProject }));
     replace(next, `${name} imported as a new project`);
@@ -6107,12 +6115,35 @@ async function importMapText(text, name, mode) {
 }
 
 /**
+ * What the map browser's button does with the row it belongs to.
+ *
+ * A `.map` arrives as text and a `.bsp` as parsed brushes; the content type is how they are told
+ * apart, because both answers come from the same URL.
+ */
+async function importMapEntry(entry, mode) {
+  const query = `path=${encodeURIComponent(entry.path)}${entry.entry ? `&entry=${encodeURIComponent(entry.entry)}` : ''}`;
+  const { response } = await requestWithSession(`/api/local-maps/source?${query}`, {}, token);
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.error || `HTTP ${response.status}`);
+  }
+  const name = entry.entry || entry.path.split('/').pop();
+  if ((response.headers.get('content-type') || '').includes('application/json')) {
+    const body = await response.json();
+    await importParsedMap(body.parsed, body.name || name, mode);
+  } else {
+    await importMapText(await response.text(), name, mode);
+  }
+  $('map-browser-dialog').close();
+}
+
+/**
  * The maps in the Projects folder, with what each one is.
  *
- * The file picker shows what the operating system offers it, and a compiled `.bsp` is not something
- * this importer reads — so a folder of Quake and Half-Life maps looked empty. The folder is listed
- * by the server instead, and a `.map` source found there (even inside a `.pk3`) imports from the
- * dialog: no file picker, no guesswork about why a file is not offered.
+ * The file picker shows what the operating system offers it, which is why a folder of Quake and
+ * Half-Life maps looked empty: the folder is listed by the server instead, and both a `.map` source
+ * and a compiled `.bsp` — either of them inside a `.pk3` or `.zip` — import from the dialog. No file
+ * picker, no guesswork about why a file is not offered.
  */
 let mapBrowserMode = 'layout';
 async function openMapBrowser(mode) {
@@ -6139,14 +6170,7 @@ async function renderMapBrowser() {
       row.append(make('span', entry.detail, 'save-file-detail'));
       const importable = Boolean(entry.importable);
       const action = button(importable ? (mapBrowserMode === 'project' ? 'Import as project' : 'Add as layout') : 'Not importable',
-        async () => {
-          const query = `path=${encodeURIComponent(entry.path)}${entry.entry ? `&entry=${encodeURIComponent(entry.entry)}` : ''}`;
-          const { response } = await requestWithSession(`/api/local-maps/source?${query}`, {}, token);
-          if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.error || `HTTP ${response.status}`); }
-          const name = entry.entry || entry.path.split('/').pop();
-          await importMapText(await response.text(), name, mapBrowserMode);
-          $('map-browser-dialog').close();
-        }, 'save-file-action');
+        () => importMapEntry(entry, mapBrowserMode), 'save-file-action');
       action.disabled = !importable;
       action.title = importable ? `Import ${entry.path} as ${mapBrowserMode === 'project' ? 'a new project' : 'a layout'}` : entry.detail;
       row.append(action, make('span'));
@@ -6169,23 +6193,28 @@ $('import-idtech').addEventListener('click', event => {
         { label: 'Add to this project as a layout', hint: 'Listed in Layouts beside the current one',
           run: guard(async () => { await openMapBrowser('layout'); }) },
       ] },
-    { label: 'Pick a file…', hint: 'A .map source, or a .pk3 / .zip that holds one',
+    { label: 'Pick a file…', hint: 'A .map source or a .bsp; an archive opens the folder list',
       submenu: [
         { label: 'As a new project', hint: 'Replaces the open document; undo is available',
           run: () => { pendingMapImport = 'project'; $('map-file').value = ''; $('map-file').click(); } },
         { label: 'Add to this project as a layout', hint: 'Listed in Layouts beside the current one',
           run: () => { pendingMapImport = 'layout'; $('map-file').value = ''; $('map-file').click(); } },
       ] },
-  ], { label: 'Import a .map file' });
+  ], { label: 'Import a map' });
 });
 $('map-file').addEventListener('change', guard(async () => {
   const file = $('map-file').files?.[0];
   const mode = pendingMapImport || 'layout';
   pendingMapImport = null;
   if (!file) return;
-  if (/\.(bsp|pk3|zip|pak)$/i.test(file.name)) {
-    // A compiled map or an archive is a real thing to pick, and the answer is not "that is not
-    // JSON": open the folder browser, which lists what is inside each one.
+  if (/\.bsp$/i.test(file.name)) {
+    // A compiled map is read for what it is — brushes — so a picked one imports like a source does.
+    await importParsedMap(parseBsp(new Uint8Array(await file.arrayBuffer()), { name: file.name }), file.name, mode);
+    return;
+  }
+  if (/\.(pk3|zip|pak)$/i.test(file.name)) {
+    // An archive has to be unpacked, and the folder browser is what does that: a picked one sends
+    // the person to the list of what is in `Projects/`, rather than to "that is not JSON".
     await openMapBrowser(mode);
     return;
   }
