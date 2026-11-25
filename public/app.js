@@ -106,7 +106,7 @@ import {
   createBoxBrush, createWedgeBrush, brushGeometry, brushBounds, brushVertices,
   moveBrush, moveBrushFace, moveBrushVertex, clipBrush, clipPlaneFromView, subtractBrush,
   mergeBrushes, hollowBrush, duplicateBrush, removeBrushes, setBrushFaceMaterial,
-  setBrushFacePosition, facePlane, facesOf,
+  setBrushFacePosition, facePlane, facesOf, brushSurfaceAt,
 } from '/shared/brushes.js';
 
 const $ = id => document.getElementById(id);
@@ -3753,21 +3753,24 @@ function fitMap() {
   const points = [];
   for (const vertex of project.map.vertices) points.push([vertex.x, vertex.y]);
   for (const entity of project.map.entities) points.push([entity.x, entity.y]);
+  // The vertical extent, which a brush level has and a sector level gets from its floors and
+  // ceilings. Without the brushes the Front and Side views had no height to frame and collapsed.
+  const heights = (project.map.sectors || []).flatMap(sector => [sector.floorHeight || 0, sector.ceilingHeight || 128]);
   for (const brush of project.map.brushes || []) {
     const box = brushBounds(brush);
     points.push([box.x, box.y], [box.x + box.width, box.y + box.depth]);
+    heights.push(box.z, box.z + box.height);
   }
   if (!points.length) { camera.x = 0; camera.y = 0; camera.zoom = 1; mapNeedsDraw = true; return; }
+  if (!heights.length) heights.push(0, 128);
   const xs = points.map(point => point[0]), ys = points.map(point => point[1]);
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
   const rect = canvas.getBoundingClientRect();
   if (mapProjection === 'xz') {
-    const heights = (project.map.sectors || []).flatMap(sector => [sector.floorHeight || 0, sector.ceilingHeight || 128]);
     camera.x = (minX + maxX) / 2; camera.y = (Math.min(...heights) + Math.max(...heights)) / 2;
     camera.zoom = Math.max(.02, Math.min(3, (rect.width - 90) / Math.max(64, maxX - minX),
       (rect.height - 90) / Math.max(64, Math.max(...heights) - Math.min(...heights))));
   } else if (mapProjection === 'yz') {
-    const heights = (project.map.sectors || []).flatMap(sector => [sector.floorHeight || 0, sector.ceilingHeight || 128]);
     camera.x = (minY + maxY) / 2; camera.y = (Math.min(...heights) + Math.max(...heights)) / 2;
     camera.zoom = Math.max(.02, Math.min(3, (rect.width - 90) / Math.max(64, maxY - minY),
       (rect.height - 90) / Math.max(64, Math.max(...heights) - Math.min(...heights))));
@@ -7733,12 +7736,26 @@ function pickAssetForEntity(entity) {
  * wherever the mapper is looking. A path is not an object in `map.entities` (it is a route in
  * `paths`), but it is placed the same way — click where it should start and keep clicking.
  */
-function createObjectMenuItems(position) {
+/**
+ * The height a newly placed object stands at, relative to what the level measures it from.
+ *
+ * In a level of sectors that is the sector's own floor, so the answer is zero and the sector does the
+ * rest. In a level of brushes there is no sector: the surface under the pointer is the floor, and
+ * without it every object landed at height zero — under the world in a Half-Life map, whose floors
+ * are at -1600.
+ */
+function placementElevationAt(x, y, fallback = null) {
+  if (sectorAt(mapSectors, x, y)) return 0;
+  if (Number.isFinite(fallback)) return Math.round(fallback);
+  return brushSurfaceAt(project.map.brushes, x, y) ?? 0;
+}
+
+function createObjectMenuItems(position, elevation = 0) {
   const place = type => guard(() => {
     if (position) {
       if (type === 'path') { startPathAt(position); return; }
       $('entity-type').value = type;
-      placeLayoutObject(position);
+      placeLayoutObject(position, elevation);
       return;
     }
     $('entity-type').value = type;
@@ -7965,10 +7982,11 @@ function mapCanvasMenu(event) {
     items.push({ label: `Select ${hit.kind} ${hit.id}`, run: () => { selection = { ...hit }; render(); } },
       { label: 'Copy id', run: () => copyText(hit.id, hit.id) }, { separator: true });
   }
+  const elevation = placementElevationAt(position.x, position.y);
   items.push(
     { label: 'Brush', submenu: brushCreateMenuItems() },
-    { label: 'Create object', submenu: createObjectMenuItems(position) },
-    { label: `Place ${$('entity-type').value} here`, run: guard(() => placeLayoutObject(position)) },
+    { label: 'Create object', submenu: createObjectMenuItems(position, elevation) },
+    { label: `Place ${$('entity-type').value} here`, run: guard(() => placeLayoutObject(position, elevation)) },
     { label: 'Import an object file\u2026', run: guard(() => importLayoutObjectFile()) },
     { separator: true },
     { label: 'Align and distribute', submenu: alignMenuItems() },
@@ -7981,58 +7999,65 @@ function mapCanvasMenu(event) {
   contextMenu(event, items, { label: 'Layout actions' });
 }
 
-/** Right click in the 3D view, with the object the ray hit (the view selects nothing). */
+/**
+ * What a right click in the 3D view always offers, whatever the pointer hit.
+ *
+ * The same list the 2D view appends, and for the same reason: the thing under the pointer decides
+ * which actions go *first*, never which actions exist. A level made of brushes used to answer a
+ * right click with brush actions alone — no Create object, no Align, no Group, no Duplicate — so
+ * every tool a mapper had learned disappeared the moment an imported map was loaded.
+ */
+function viewActionItems(under) {
+  const position = under ? { x: Math.round(under.x), y: Math.round(under.y) } : { x: Math.round(camera.x), y: Math.round(camera.y) };
+  const elevation = placementElevationAt(position.x, position.y, under?.floor);
+  return [
+    { label: 'Brush', submenu: brushCreateMenuItems() },
+    { label: 'Create object', submenu: createObjectMenuItems(position, elevation) },
+    { label: `Place ${$('entity-type').value} here`, run: guard(() => placeLayoutObject(position, elevation)) },
+    { label: 'Import an object file\u2026', run: guard(() => importLayoutObjectFile()) },
+    { separator: true },
+    { label: 'Align and distribute', submenu: alignMenuItems() },
+    { label: 'Group selected objects', run: guard(groupSelection) },
+    { label: 'Lock / unlock selected objects', run: guard(toggleLockSelection) },
+    { label: 'Duplicate selection', run: guard(duplicateSelectedEntities) },
+    { label: 'Frame the room in this view', run: () => { sceneEditor?.fit?.(); } },
+    { separator: true },
+    { label: 'Copy view coordinates', run: () => copyText(`${position.x}, ${position.y}`, `${position.x}, ${position.y}`) },
+  ];
+}
+
+/** Right click in the 3D view: what was hit, then everything the view can always do. */
 function mapViewMenu(event, picked) {
   const entity = picked?.kind === 'entity' ? project.map.entities.find(item => item.id === picked.id) : null;
   const sector = picked?.kind === 'sector' ? project.map.sectors.find(item => item.id === picked.id) : null;
   const brush = picked?.kind?.startsWith('brush')
     ? (project.map.brushes || []).find(item => item.id === picked.id) : null;
+  // Where the pointer is pointing, which is where a placed object should land; the view centre is
+  // only the fallback for a click that hit nothing at all.
+  const under = sceneEditor?.pointUnderPointer?.() || { x: camera.x, y: camera.y };
+  const items = [];
+  let label = '3D view actions';
   if (brush) {
     selection = { ...picked, kind: 'brush' };
-    contextMenu(event, [...brushMenuItems(brush), { separator: true },
-      { label: 'Brush', submenu: brushCreateMenuItems() }], { label: `${brush.name} actions` });
-    return;
+    items.push(...brushMenuItems(brush), { separator: true });
+    label = `${brush.name} actions`;
+  } else if (entity) {
+    // Right-clicking one of several selected objects keeps the set, so the menu can group it; only a
+    // right-click on something outside the set starts a new selection.
+    if (!selectedEntityIds().includes(entity.id)) {
+      selection = { kind: 'entity', id: entity.id };
+      multiSelection = [entity.id];
+      lastPrimarySelection = entity.id;
+      render();
+    }
+    items.push(...objectMenuItems(entity), { separator: true });
+    label = `${entity.name} actions`;
+  } else if (sector) {
+    items.push(...sectorMenuItems(sector), { separator: true });
+    label = `${sector.id} actions`;
   }
-  if (!entity && !sector) {
-    const centre = { x: Math.round(camera.x), y: Math.round(camera.y) };
-    // Where the pointer is pointing, which is where the mapper expects the new object to land;
-    // the view centre is only the fallback for a click that hit nothing at all.
-    const under = sceneEditor?.pointUnderPointer?.() || centre;
-    contextMenu(event, [
-      { label: 'Brush', submenu: brushCreateMenuItems() },
-      { label: 'Create object', submenu: createObjectMenuItems({ x: Math.round(under.x), y: Math.round(under.y) }) },
-      { separator: true },
-      { label: 'Align and distribute', submenu: alignMenuItems() },
-      { label: 'Group selected objects', run: guard(groupSelection) },
-      { label: 'Lock / unlock selected objects', run: guard(toggleLockSelection) },
-      { separator: true },
-      { label: 'Frame the room in this view', run: () => { sceneEditor?.fit?.(); } },
-      { label: `Place ${$('entity-type').value} at the view centre`, run: guard(() => {
-        placeLayoutObject(centre);
-      }) },
-      { label: 'Copy view coordinates', run: () => copyText(`${Math.round(camera.x)}, ${Math.round(camera.y)}`, `${Math.round(camera.x)}, ${Math.round(camera.y)}`) },
-    ], { label: '3D view actions' });
-    return;
-  }
-  if (sector) {
-    // A right click almost always lands on a floor or a wall, so the sector's own actions carry
-    // the same Create object submenu the empty view does: hunting for a patch of sky to right
-    // click on would be absurd.
-    const under = sceneEditor?.pointUnderPointer?.() || { x: camera.x, y: camera.y };
-    contextMenu(event, [...sectorMenuItems(sector), { separator: true },
-      { label: 'Create object', submenu: createObjectMenuItems({ x: Math.round(under.x), y: Math.round(under.y) }) }],
-    { label: `${sector.id} actions` });
-    return;
-  }
-  // Right-clicking one of several selected objects keeps the set, so the menu can group it; only a
-  // right-click on something outside the set starts a new selection.
-  if (!selectedEntityIds().includes(entity.id)) {
-    selection = { kind: 'entity', id: entity.id };
-    multiSelection = [entity.id];
-    lastPrimarySelection = entity.id;
-    render();
-  }
-  contextMenu(event, objectMenuItems(entity), { label: `${entity.name} actions` });
+  items.push(...viewActionItems(under));
+  contextMenu(event, items, { label });
 }
 
 /**

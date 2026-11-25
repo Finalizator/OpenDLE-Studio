@@ -3987,7 +3987,7 @@ and Home/End walk it.
 | where | what it offers |
 | --- | --- |
 | Layout 1 (2D) | actions for the object, sector, wall or vertex under the pointer, plus **Create object**, "place this object type here", fit the view and copy coordinates |
-| 3D view | the same object and sector actions for what the ray hit, or **Create object** and "place this object type at the view centre" |
+| 3D view | actions for the brush, object or sector the ray hit, **then** the same tail the 2D view has: **Create object**, "place this object type here", import an object file, align, group, lock, duplicate, frame, copy coordinates |
 | object tiles and the object list | select, edit its script, assign artwork, duplicate, capture as a scene object, delete |
 | asset tiles | assign to the selected object, use as weapon overlay/sky/level music, rename, copy name |
 | scene tiles and scene object rows | open the editor, place in the layout, rename, capture, delete |
@@ -4008,13 +4008,28 @@ and the 3D view flies on one, so the menu only opens when the button never moved
 That is why both views track `moved` on their drag state instead of using the
 `contextmenu` event.
 
-**Create object** is a submenu, and it is on every view menu: the 2D canvas, the 3D
-view's empty space, and the 3D sector menu as well — a right click in 3D almost
-always lands on a floor, so hiding the entry behind a patch of sky would be absurd.
+**Create object** is a submenu, and it is on every view menu: the 2D canvas and the 3D
+view — a right click in 3D almost always lands on a floor or a brush, so hiding the
+entry behind a patch of sky would be absurd.
 It lists every `ENTITY_TYPES` entry — so a new object type appears there without
 touching the menu — and then **Path (waypoints)**, which starts a route at the clicked
 point and leaves the Draw path tool active, so the following clicks extend the same
 route until Escape or a right click ends it. Objects land where the pointer is pointing rather than at the view centre.
+
+**What the pointer hits decides which actions come first, never which actions exist.**
+Both view menus are one list: `viewActionItems()` in `public/app.js` is the tail every
+right click gets, and `mapViewMenu()` pushes the hit's own actions (brush, object,
+sector) in front of it. The 3D menu used to `return` after the brush actions, so an
+imported Quake or Half-Life level — a level of nothing but brushes — answered a right
+click with *Delete brush* and *Draw box brush* and nothing else: no Create object, no
+Align, no Group, no Duplicate. A tool that vanished because of what a level is made of
+is the same bug as a tool that never existed, and brush levels are now ordinary.
+
+The height a placed object stands at is `placementElevationAt(x, y, fallback)` in
+`public/app.js`: a sector's floor when there is one, otherwise the surface the ray hit,
+otherwise `brushSurfaceAt()` from `shared/brushes.js`. Without that, placing in a
+brush level used height zero, which in a Half-Life map (floors at -1600) is under the
+world. `scene-editor.js` `floorPointAt()` keeps the same rule for drops.
 
 An item with `submenu: [...]` opens a second panel beside itself on hover or focus
 (click on touch, ArrowRight from the keyboard), flips to the left edge when it would

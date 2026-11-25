@@ -239,6 +239,25 @@ export function brushBounds(brush) {
   };
 }
 
+/**
+ * The highest brush surface above a floor point, or null when no brush covers it.
+ *
+ * A level made of brushes has no sectors, so "the floor here" has to come from the geometry: the top
+ * of the brush the point stands over. That is what an object placed at a click should stand on —
+ * in a Half-Life map the floors are at -1600, and placing at height zero put it under the world.
+ */
+export function brushSurfaceAt(brushes, x, y) {
+  let best = null;
+  for (const brush of brushes || []) {
+    if (brush.visible === false) continue;
+    const box = brushBounds(brush);
+    if (!Number.isFinite(box.x) || x < box.x || x > box.x + box.width || y < box.y || y > box.y + box.depth) continue;
+    const top = box.z + box.height;
+    if (best === null || top > best) best = top;
+  }
+  return best;
+}
+
 /** Whether a point is inside the brush, with an optional margin. */
 export function brushContains(brush, point, margin = 0) {
   return facesOf(brush).every(face => faceDistance(face, point) <= margin);

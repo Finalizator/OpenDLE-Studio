@@ -63,13 +63,20 @@ test('the context menu can open a submenu from an item', () => {
 
 test('both view menus offer every object type plus a path from a right click', () => {
   const app = memo('app.js');
-  assert.match(app, /function createObjectMenuItems\(position\)/);
+  // The elevation is the surface the object lands on: a sector floor, or — on a brush level — the
+  // brush top or the surface the ray hit.
+  assert.match(app, /function createObjectMenuItems\(position, elevation = 0\)/);
   // One list built from ENTITY_TYPES, so a new object type appears in the menu automatically.
   assert.match(app, /ENTITY_TYPES\.map\(type => \(\{\s*label: type\[0\]\.toUpperCase\(\) \+ type\.slice\(1\)/);
   assert.match(app, /label: 'Path \(waypoints\)'/);
-  // The 2D canvas menu, the 3D sector menu and the 3D empty-view menu all carry it.
+  // Two builders, not three menus: the 2D canvas and the tail every 3D right click gets. The 3D
+  // view used to have a menu per thing hit, and a brush level's answer was the brush actions
+  // alone — no Create object, no Group, no Duplicate.
   const uses = app.match(/\{ label: 'Create object', submenu: createObjectMenuItems\(/g) || [];
-  assert.equal(uses.length, 3, 'the 2D menu, the 3D sector menu and the 3D empty area');
+  assert.equal(uses.length, 2, 'the 2D canvas menu and the 3D view actions');
+  assert.match(app, /function viewActionItems\(under\)/, 'one tail of actions for the 3D view');
+  assert.match(app, /items\.push\(\.\.\.viewActionItems\(under\)\)/,
+    'the 3D menu appends it whatever the pointer hit');
   // A path is started at the clicked point, so the following clicks extend the same route.
   assert.match(app, /function startPathAt\(position\)/);
   assert.match(app, /activePathId = null;\s*\n\s*addPathPoint\(position\);/);

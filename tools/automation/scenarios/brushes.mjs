@@ -123,6 +123,23 @@ export async function run({ page }) {
   check('the brush is on screen in 3D', facePoint.x > 0 && facePoint.y > 0 && facePoint.visible !== false,
     { facePoint, normal: front.normal });
 
+  // A right click on a brush must offer the brush actions *and* everything the view can always do.
+  // It used to answer with the brush actions alone, so an imported brush level lost Create object,
+  // Group, Duplicate and the rest — tools that were there a moment before the level was loaded.
+  await page.rightClick(facePoint.x, facePoint.y);
+  await wait(250);
+  const menu = await page.evaluate('window.__opendle.ui.menu()');
+  const labels = (menu.items || []).map(item => item.text);
+  check('right clicking a brush opens a menu', menu.open, menu.count);
+  check('the menu offers the brush actions first', labels.some(text => /Delete brush/.test(text)), labels);
+  check('the menu also offers the actions every level has',
+    ['Create object', 'Align and distribute', 'Group selected objects', 'Lock / unlock selected objects',
+      'Duplicate selection', 'Place ', 'Copy view coordinates'].every(want => labels.some(text => text.startsWith(want))),
+    labels);
+  await page.key('Escape');
+  await wait(200);
+  check('Escape closed the menu', (await page.evaluate('window.__opendle.ui.menu()')).open === false);
+
   // Grab the face, not the gizmo at the brush centre: a press on the gizmo constrains the move to
   // one axis, which is not what "drag the brush" means.
   await page.evaluate('window.__opendle.brushMode("object")');

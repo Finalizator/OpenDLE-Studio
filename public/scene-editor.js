@@ -1384,7 +1384,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   }
   function floorPointAt(point) {
     const x = snapValue(point.x, callbacks.grid()), y = snapValue(point.z, callbacks.grid());
-    return { x, y, floor: sectorAt(sectors, x, y)?.floorHeight ?? 0 };
+    // A sector's floor, or — on a level made of brushes — the surface the ray actually hit. Without
+    // that second answer every object placed in an imported Quake map landed at height zero, which
+    // in a level whose floors are at -1600 is nowhere near the map.
+    const floor = sectorAt(sectors, x, y)?.floorHeight
+      ?? (Number.isFinite(point.y) ? Math.round(point.y) : 0);
+    return { x, y, floor };
   }
   // Dropping on empty sky still has to land somewhere: use where the view ray meets
   // the floor of the sector the camera is in, or a short step ahead when looking up.

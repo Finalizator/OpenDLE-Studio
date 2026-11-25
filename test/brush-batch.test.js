@@ -64,3 +64,18 @@ test('the whole level is a handful of buffers, and a hit finds its brush', () =>
   // A wireframe is one draw call too: twelve edges of a box, two points each, three numbers a point.
   assert.equal(edges.length, 12 * 2 * 3);
 });
+
+test('a floor on a brush level is the surface an object should stand on', async () => {
+  const { brushSurfaceAt } = await import('../shared/brushes.js');
+  const brushes = [
+    // A floor slab at -1600 with its top at -1568, and a wall beside it.
+    { id: 'floor', name: 'floor', visible: true, faces: [
+      faceFromPlane([0, 0, -1], 1632), faceFromPlane([0, 0, 1], -1600),
+      faceFromPlane([-1, 0, 0], 0), faceFromPlane([1, 0, 0], 256),
+      faceFromPlane([0, -1, 0], 0), faceFromPlane([0, 1, 0], 256),
+    ] },
+  ];
+  assert.equal(brushSurfaceAt(brushes, 100, 100), -1600, 'the top of the slab the point stands over');
+  assert.equal(brushSurfaceAt(brushes, 400, 100), null, 'nothing under there');
+  assert.equal(brushSurfaceAt([{ ...brushes[0], visible: false }], 100, 100), null, 'hidden geometry is not a floor');
+});
