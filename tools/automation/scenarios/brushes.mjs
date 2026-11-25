@@ -184,6 +184,177 @@ export async function run({ page }) {
     { before: moved3d, after: pushed.bounds });
   check('the brush is still a closed convex volume', pushed.faces === 6, pushed.faces);
 
+  // ---------- Multi-selection: the set the CSG tools act on.
+  //
+  // A brush used to be unselectable as part of a set: Ctrl+click collapsed the selection to the one
+  // brush, `Merge brushes` read a set that could never exist, and the marquee only ever collected
+  // objects — so merging two brushes was impossible from the interface that offers it.
+  const selectionOf = () => page.evaluate('window.__opendle.selection()');
+  /** A real Ctrl+click: CDP's modifier bitmask 2 is Ctrl. */
+  const ctrlClick = async point => {
+    const x = Math.round(point.x), y = Math.round(point.y);
+    const modifiers = 2;
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'left', buttons: 0, modifiers });
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1, modifiers });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1, modifiers });
+    await wait(220);
+  };
+  const drawBox = async (x, y, width, depth, height) => {
+    await page.evaluate('window.__opendle.tool("room")');
+    await wait(120);
+    const a = await screen(x, y), b = await screen(x + width, y + depth);
+    await page.drag(a, b, { steps: 8 });
+    await wait(260);
+    await page.evaluate('window.__opendle.tool("select")');
+    await wait(120);
+  };
+  await page.evaluate('window.__opendle.newDocument()');
+  await wait(200);
+  // These clicks land on the 2D canvas, which the 3D view covers with a canvas of its own.
+  await page.evaluate('window.__opendle.view("2d")');
+  await stableCanvas();
+  await page.evaluate('window.__opendle.projection("xy")');
+  // The first two share the plane at x = -224, so they are two halves of one volume: `Merge` refuses
+  // disjoint brushes, which is why a merge test has to build brushes that touch.
+  await drawBox(-320, -160, 96, 96, 64);
+  await drawBox(-224, -160, 96, 96, 64);
+  await drawBox(0, -160, 96, 96, 64);
+  check('three brushes for the set', (await state()).brushes === 3, (await state()).brushes);
+
+  const [first, second, third] = await brushes();
+  const centre = brushBox => ({ x: brushBox.bounds.x + brushBox.bounds.width / 2, y: brushBox.bounds.y + brushBox.bounds.depth / 2 });
+  // A click outside the canvas is a false negative, so the points are checked before they are used.
+  const canvasRect = await page.evaluate('(() => { const r = document.getElementById("map").getBoundingClientRect();'
+    + ' return { x: r.left, y: r.top, w: r.width, h: r.height }; })()');
+  const onCanvas = async point => {
+    const at = await screen(point.x, point.y);
+    return { ...at, inside: at.x >= canvasRect.x + 2 && at.x <= canvasRect.x + canvasRect.w - 2 &&
+      at.y >= canvasRect.y + 2 && at.y <= canvasRect.y + canvasRect.h - 2 };
+  };
+  const firstOnCanvas = await onCanvas(centre(first)), secondOnCanvas = await onCanvas(centre(second));
+  check('both brushes are on screen where the scenario clicks', firstOnCanvas.inside && secondOnCanvas.inside,
+    { canvasRect, firstOnCanvas, secondOnCanvas, view: (await state()).view });
+  // The brush drawn last is still selected, so the set is cleared first: an empty click starts a
+  // marquee over nothing, which is how a mapper deselects.
+  await page.press(canvasRect.x + 24, canvasRect.y + canvasRect.h - 24);
+  await page.release(canvasRect.x + 24, canvasRect.y + canvasRect.h - 24);
+  await wait(220);
+  check('an empty click clears the selection', (await selectionOf()) === null, await selectionOf());
+  await ctrlClick(firstOnCanvas);
+  await page.evaluate('window.__opendle.brushMode("object")');
+  await ctrlClick(secondOnCanvas);
+  let set = await selectionOf();
+  check('Ctrl+click puts two brushes in the set', set?.kind === 'brush' && set.count === 2, set);
+
+  // Ctrl+clicking a member again takes it back out.
+  await ctrlClick(secondOnCanvas);
+  set = await selectionOf();
+  check('Ctrl+click again removes it', set?.kind === 'brush' && set.count === 1, set);
+  await ctrlClick(secondOnCanvas);
+  set = await selectionOf();
+  check('and it can be added back', set?.count === 2, set);
+
+  // The menu offers the merge for the set it can see, and merging leaves one brush.
+  const firstScreen = await screen(centre(first).x, centre(first).y);
+  await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(firstScreen.x), y: Math.round(firstScreen.y), button: 'right', buttons: 2, clickCount: 1, modifiers: 2 });
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(firstScreen.x), y: Math.round(firstScreen.y), button: 'right', buttons: 0, clickCount: 1, modifiers: 2 });
+  await wait(280);
+  const mergeItem = (await page.evaluate('window.__opendle.ui.menu()')).items
+    .find(item => (item.text || '').includes('Merge') && (item.text || '').includes('brushes'));
+  check('the menu offers the merge of the set', mergeItem && mergeItem.disabled !== true, mergeItem);
+  const beforeMerge = await selectionOf();
+  await page.evaluate(`window.__opendle.ui.click(${JSON.stringify(mergeItem.ref)})`);
+  await wait(400);
+  const afterMerge = { brushes: (await state()).brushes, set: await selectionOf(),
+    status: await page.evaluate('window.__opendle.ui.text("#status")'),
+    errors: await page.evaluate('window.__opendle.errors()') };
+  check('merging the set leaves one fewer brush', afterMerge.brushes === 2, { beforeMerge, ...afterMerge });
+
+  // ---------- A set of faces, and a drag that carries the whole set.
+  await page.evaluate('window.__opendle.newDocument()');
+  await wait(200);
+  await page.evaluate('window.__opendle.view("2d")');
+  await stableCanvas();
+  await page.evaluate('window.__opendle.projection("xy")');
+  await drawBox(-320, -160, 96, 96, 64);
+  await drawBox(-224, -160, 96, 96, 64);
+  const faceBoxes = await brushes();
+  await page.press(canvasRect.x + 24, canvasRect.y + canvasRect.h - 24);
+  await page.release(canvasRect.x + 24, canvasRect.y + canvasRect.h - 24);
+  await wait(200);
+  await page.evaluate('window.__opendle.brushMode("face")');
+  await wait(150);
+  // A point over each brush: in face mode the click picks the face drawn there, which is all the
+  // set needs — the footprint centre is guaranteed to be over both the top and the bottom face.
+  const faceScreenA = await screen(centre(faceBoxes[0]).x, centre(faceBoxes[0]).y);
+  const faceScreenB = await screen(centre(faceBoxes[1]).x, centre(faceBoxes[1]).y);
+  await ctrlClick(faceScreenA);
+  await ctrlClick(faceScreenB);
+  const faceSet = await selectionOf();
+  check('Ctrl+click builds a set of faces', faceSet?.kind === 'brushFace' && faceSet.count === 2, faceSet);
+  // Several faces select the brushes they belong to, so the CSG tools can act on them.
+  await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(faceScreenB.x), y: Math.round(faceScreenB.y), button: 'right', buttons: 2, clickCount: 1 });
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(faceScreenB.x), y: Math.round(faceScreenB.y), button: 'right', buttons: 0, clickCount: 1 });
+  await wait(280);
+  const faceMerge = (await page.evaluate('window.__opendle.ui.menu()')).items
+    .find(item => (item.text || '').includes('Merge') && (item.text || '').includes('brushes'));
+  check('a set of faces offers the merge of their brushes', faceMerge && faceMerge.disabled !== true, faceMerge);
+  await page.evaluate(`window.__opendle.ui.click(${JSON.stringify(faceMerge.ref)})`);
+  await wait(400);
+  check('merging through the face set leaves one brush', (await state()).brushes === 1, (await state()).brushes);
+
+  // A drag that starts on one brush of the set moves all of them.
+  await page.evaluate('window.__opendle.brushMode("object")');
+  await page.evaluate('window.__opendle.newDocument()');
+  await wait(200);
+  await page.evaluate('window.__opendle.view("2d")');
+  await stableCanvas();
+  await drawBox(-320, -160, 96, 96, 64);
+  await drawBox(0, -160, 96, 96, 64);
+  await page.press(canvasRect.x + 24, canvasRect.y + canvasRect.h - 24);
+  await page.release(canvasRect.x + 24, canvasRect.y + canvasRect.h - 24);
+  await wait(200);
+  const dragBoxes = await brushes();
+  const dragA = await screen(centre(dragBoxes[0]).x, centre(dragBoxes[0]).y);
+  const dragB = await screen(centre(dragBoxes[1]).x, centre(dragBoxes[1]).y);
+  await ctrlClick(dragA);
+  await ctrlClick(dragB);
+  check('both brushes are in the set before the drag', (await selectionOf())?.count === 2, await selectionOf());
+  const beforeDrag = (await brushes()).map(brush => brush.bounds.x);
+  await page.drag(dragA, { x: dragA.x + 64, y: dragA.y }, { steps: 10 });
+  await wait(350);
+  const afterDrag = (await brushes()).map(brush => brush.bounds.x);
+  check('dragging one brush of the set moves every brush of it',
+    Math.abs(afterDrag[0] - beforeDrag[0]) > 8 && Math.abs(afterDrag[1] - beforeDrag[1]) > 8 &&
+    Math.abs((afterDrag[1] - beforeDrag[1]) - (afterDrag[0] - beforeDrag[0])) < 2,
+    { beforeDrag, afterDrag });
+
+  // Duplicate and Lock follow the set as well: five selected brushes became one copy before.
+  const beforeDuplicate = (await state()).brushes;
+  await page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', code: 'KeyD', key: 'd', windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68, modifiers: 2 });
+  await page.send('Input.dispatchKeyEvent', { type: 'keyUp', code: 'KeyD', key: 'd', windowsVirtualKeyCode: 68,
+    nativeVirtualKeyCode: 68, modifiers: 2 });
+  await wait(400);
+  check('Ctrl+D duplicates every brush of the set', (await state()).brushes === beforeDuplicate * 2,
+    { beforeDuplicate, after: (await state()).brushes, selection: await selectionOf() });
+
+  // A box select collects brushes too: that is how a mapper picks what to merge.
+  await page.evaluate('window.__opendle.newDocument()');
+  await wait(200);
+  await drawBox(-320, -160, 96, 96, 64);
+  await drawBox(0, -160, 96, 96, 64);
+  const corner1 = await screen(-400, -240), corner2 = await screen(200, 40);
+  await page.drag(corner1, corner2, { steps: 10 });
+  await wait(300);
+  set = await selectionOf();
+  check('a marquee selects both brushes', set?.kind === 'brush' && set.count === 2, set);
+
+  // Delete means the set, not the one brush whose arrows are showing.
+  await page.evaluate('window.__opendle.ui.press("Delete")');
+  await wait(300);
+  check('Delete removes every brush of the set', (await state()).brushes === 0, (await state()).brushes);
+
   const errors = await page.evaluate('window.__opendle.errors()');
   check('the page logged no errors', errors.length === 0, errors.slice(0, 3));
 

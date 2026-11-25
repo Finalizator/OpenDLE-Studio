@@ -849,6 +849,13 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         const y = vertexHeights.get(vertex.id) || 0;
         box.set(new THREE.Vector3(vertex.x - 16, y, vertex.y - 16), new THREE.Vector3(vertex.x + 16, y + 32, vertex.y + 16));
       }
+    } else if (selection.kind === 'brush' || selection.kind === 'brushFace' || selection.kind === 'brushVertex') {
+      const brush = (project.map.brushes || []).find(item => item.id === selection.id);
+      if (brush) {
+        const box3 = brushBounds(brush);
+        box.set(new THREE.Vector3(box3.x, box3.z, box3.y),
+          new THREE.Vector3(box3.x + box3.width, box3.z + box3.height, box3.y + box3.depth));
+      }
     } else if (selection.kind === 'entity') {
       const entity = entityById.get(selection.id);
       if (entity) {
@@ -971,13 +978,15 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    * all of them.
    */
   function setGroupOutline(selection) {
-    const kind = ['entity', 'path'].includes(selection?.kind) ? selection.kind : null;
+    const kind = ['entity', 'path', 'brush', 'brushFace'].includes(selection?.kind) ? selection.kind : null;
     const group = kind && Array.isArray(selection.group) ? selection.group : [];
     const points = [];
     const centres = [];
     const instances = new Set();
     const primaryInstance = kind === 'entity' ? sceneInstanceOf(project, selection.id)?.id : null;
-    for (const id of group) {
+    for (const raw of group) {
+      // A face set is keyed by `brush:plane`; the outline is per brush.
+      const id = String(raw).split(':')[0];
       if (id === selection.id) continue;
       const instance = kind === 'entity' ? sceneInstanceOf(project, id) : null;
       if (instance && (instance.id === primaryInstance || instances.has(instance.id))) continue;

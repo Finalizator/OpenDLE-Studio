@@ -581,6 +581,20 @@ async function refreshScene() {
           sceneEditor?.select(withSelectionGroup(selection));
           return;
         }
+        if ((value?.kind === 'brush' || value?.kind === 'brushFace') && options.additive) {
+          selectBrushLike(value, true);
+          sceneEditor?.select(withSelectionGroup(selection));
+          return;
+        }
+        if ((value?.kind === 'brush' || value?.kind === 'brushFace') && multiSelectionKind === value.kind
+          && multiSelection.length > 1 && multiSelection.includes(selectionKey(value))) {
+          // Pressing a member of the set keeps it, so the arrows move all of it.
+          selection = value.kind === 'brushFace' ? { ...value } : { kind: 'brush', id: value.id };
+          lastPrimarySelection = selectionKey(selection);
+          sceneEditor?.select(withSelectionGroup(selection));
+          renderInspector();
+          return;
+        }
         if (value?.kind === 'path' && multiSelectionKind === 'path' && multiSelection.length > 1 && multiSelection.includes(value.id)) {
           selectPath(value.id, false, { at: value.at, keepSet: true });
           sceneEditor?.select(withSelectionGroup(selection));
@@ -595,9 +609,9 @@ async function refreshScene() {
         }
         selection = value ? { ...value } : null;
         if (selection) delete selection.group;
-        multiSelection = ['entity', 'path'].includes(value?.kind) ? [value.id] : [];
-        multiSelectionKind = ['entity', 'path'].includes(value?.kind) ? value.kind : null;
-        lastPrimarySelection = ['entity', 'path'].includes(value?.kind) ? value.id : null;
+        multiSelection = MULTI_KINDS.has(value?.kind) ? [selectionKey(value)] : [];
+        multiSelectionKind = MULTI_KINDS.has(value?.kind) ? value.kind : null;
+        lastPrimarySelection = MULTI_KINDS.has(value?.kind) ? selectionKey(value) : null;
         if (value?.kind === 'sector') $('sector-surface').value = value.surface || 'floorHeight';
         syncTransformModes();
         renderInspector(); sceneEditor?.select(withSelectionGroup(selection));
@@ -1149,14 +1163,65 @@ let rampProfileSelection = { id: null, kind: 'vertex', index: 0 };
 // the outline and the delete all mean different things for each.
 let multiSelectionKind = null;
 let lastPrimarySelection = undefined;
+/**
+ * What can be selected as a set.
+ *
+ * Brushes belong here as much as objects do: `Merge brushes` and `Subtract another brush` are
+ * set operations and were unreachable, because a Ctrl+click on a brush collapsed the selection to
+ * that one brush (`syncMultiSelection` only knew objects and routes) and both tools stayed disabled.
+ */
+const MULTI_KINDS = new Set(['entity', 'path', 'brush', 'brushFace']);
+/** How a selection is keyed in the set: a face is its brush plus one of its planes. */
+const selectionKey = value => !value ? null
+  : value.kind === 'brushFace' ? `${value.id}:${value.face ?? 0}` : value.id;
 function syncMultiSelection() {
-  const kind = ['entity', 'path'].includes(selection?.kind) ? selection.kind : null;
-  const primary = kind ? selection.id : null;
+  const kind = MULTI_KINDS.has(selection?.kind) ? selection.kind : null;
+  const primary = kind ? selectionKey(selection) : null;
   if (primary !== lastPrimarySelection || kind !== multiSelectionKind) {
     multiSelection = primary ? [primary] : [];
     multiSelectionKind = kind;
     lastPrimarySelection = primary;
   }
+}
+/**
+ * Adds a brush or one of its faces to the selection, or takes it out again with Ctrl+click.
+ *
+ * The brush under a Ctrl+click joins the set; the face under one joins it as `brush:plane`, so a
+ * mapper can select several faces and still merge or subtract the brushes they belong to.
+ */
+function selectBrushLike(value, additive = false) {
+  if (!value?.id) { selection = null; multiSelection = []; multiSelectionKind = null; lastPrimarySelection = null; render(); return; }
+  const kind = value.kind === 'brushFace' ? 'brushFace' : 'brush';
+  const next = kind === 'brushFace' ? { kind, id: value.id, face: value.face ?? 0 } : { kind, id: value.id };
+  syncMultiSelection();
+  const key = selectionKey(next);
+  if (additive && multiSelectionKind === kind && multiSelection.length) {
+    const set = multiSelection.includes(key) ? multiSelection.filter(item => item !== key) : [...multiSelection, key];
+    if (!set.length) { selection = null; multiSelection = []; multiSelectionKind = null; lastPrimarySelection = null; render(); return; }
+    const primary = set.includes(key) ? key : set[set.length - 1];
+    const [brushId, face] = String(primary).split(':');
+    selection = kind === 'brushFace' ? { kind, id: brushId, face: Number(face) || 0 } : { kind, id: brushId };
+    multiSelection = set;
+    multiSelectionKind = kind;
+    lastPrimarySelection = primary;
+    render();
+    return;
+  }
+  selection = next;
+  multiSelection = [key];
+  multiSelectionKind = kind;
+  lastPrimarySelection = key;
+  render();
+}
+/** The brushes the brush tools act on: the whole-brush set, or the brushes of the selected faces. */
+function selectedBrushIds() {
+  syncMultiSelection();
+  const ids = new Set();
+  if (multiSelectionKind === 'brush') for (const id of multiSelection) ids.add(id);
+  else if (multiSelectionKind === 'brushFace') for (const key of multiSelection) ids.add(String(key).split(':')[0]);
+  if (selection?.id && ['brush', 'brushFace', 'brushVertex'].includes(selection.kind)) ids.add(selection.id);
+  const known = new Set((project?.map?.brushes || []).map(brush => brush.id));
+  return [...ids].filter(id => known.has(id));
 }
 function selectedEntityIds() {
   syncMultiSelection();
@@ -1184,6 +1249,10 @@ function withSelectionGroup(value) {
   }
   if (value?.kind === 'path') {
     const group = selectedPathIds();
+    return group.length > 1 ? { ...value, group } : value;
+  }
+  if (value?.kind === 'brush' || value?.kind === 'brushFace') {
+    const group = selectedBrushIds();
     return group.length > 1 ? { ...value, group } : value;
   }
   return value;
@@ -1583,14 +1652,17 @@ function hollowSelectedBrush() {
   } catch (error) { status(error.message, true); }
 }
 function mergeSelectedBrushes() {
-  const ids = [selection?.id, ...(multiSelectionKind === 'brush' ? multiSelection : [])].filter(Boolean);
+  const ids = selectedBrushIds();
   try {
-    edit(next => { mergeBrushes(next, [...new Set(ids)]); }, 'Brushes merged');
+    edit(next => { mergeBrushes(next, [...new Set(ids)]); }, `${ids.length} brushes merged`);
   } catch (error) { status(error.message, true); }
 }
-function subtractSelectedBrush() {
-  const ids = [...new Set([selection?.id, ...(multiSelectionKind === 'brush' ? multiSelection : [])].filter(Boolean))];
-  if (ids.length < 2) { status('Select the brush to keep and the brush to cut away with (Ctrl+click both)', true); return; }
+function subtractSelectedBrush(baseId = null) {
+  const all = selectedBrushIds();
+  if (all.length < 2) { status('Select the brush to keep and the brush to cut away with (Ctrl+click both)', true); return; }
+  // The base is the brush the menu was opened on, so "subtract the others from this one" means what
+  // it says whatever order the set was built in.
+  const ids = baseId && all.includes(baseId) ? [baseId, ...all.filter(id => id !== baseId)] : all;
   try {
     edit(next => { subtractBrush(next, ids[0], ids.slice(1)); }, 'Brush subtracted');
   } catch (error) { status(error.message, true); }
@@ -1598,11 +1670,22 @@ function subtractSelectedBrush() {
 function duplicateSelectedBrush() {
   if (!selection?.id) return;
   const grid = Number($('grid').value);
-  let copy = null;
+  // A set duplicates as a set, otherwise five selected brushes became one copy and four silent
+  // losses — the same rule Delete follows.
+  const ids = selectedBrushIds();
+  const targets = ids.length ? ids : [selection.id];
+  const copies = [];
   try {
-    edit(next => { copy = duplicateBrush(next, selection.id, { x: grid, y: grid, z: 0 }); }, 'Brush duplicated');
+    edit(next => {
+      for (const id of targets) copies.push(duplicateBrush(next, id, { x: grid, y: grid, z: 0 }));
+    }, copies.length > 1 ? `${copies.length} brushes duplicated` : 'Brush duplicated');
   } catch (error) { status(error.message, true); return; }
-  if (copy) { selection = { kind: 'brush', id: copy.id }; render(); }
+  if (!copies.length) return;
+  selection = { kind: 'brush', id: copies[copies.length - 1].id };
+  multiSelection = copies.map(copy => copy.id);
+  multiSelectionKind = 'brush';
+  lastPrimarySelection = selection.id;
+  render();
 }
 
 function renderInspector() {
@@ -3839,7 +3922,7 @@ function brushBoundsFromView(a, b) {
   return sharedBrushBoundsFromView(mapProjection, a, b, Math.max(grid, 128));
 }
 function brushIsSelected(brushId) {
-  return selection?.id === brushId && ['brush', 'brushFace', 'brushVertex'].includes(selection?.kind);
+  return ['brush', 'brushFace', 'brushVertex'].includes(selection?.kind) && selection?.id === brushId;
 }
 function brushVisible(brush, hiddenLayers) {
   if (brush.visible === false) return false;
@@ -3923,7 +4006,8 @@ function pointInPolygon2d(point, polygon, tolerance = 0) {
 /** Where a brush corner is drawn while a drag that has not been committed yet is in progress. */
 function brushPointPreview(brush, corner) {
   if (!drag) return corner;
-  if (drag.kind === 'move' && drag.selection?.kind === 'brush' && drag.selection.id === brush.id
+  if (drag.kind === 'move' && drag.selection?.kind === 'brush'
+    && (selectedBrushIds().includes(brush.id) || drag.selection.id === brush.id)
     && drag.viewStart && drag.viewEnd) {
     const [uAxis, vAxis] = viewAxes();
     const offset = [0, 0, 0];
@@ -3939,9 +4023,13 @@ function brushPointPreview(brush, corner) {
 }
 function drawBrushes2d(hiddenWorldLayers) {
   const brushes = project.map.brushes || [];
+  // The set is built once: asking `selectedBrushIds` per brush is a scan of every brush for every
+  // brush, which on a compiled Quake 3 map is thirty million comparisons a frame.
+  const selectedSet = new Set(selectedBrushIds());
+  const faces = new Set(multiSelectionKind === 'brushFace' ? multiSelection : []);
   for (const brush of brushes) {
     if (!brushVisible(brush, hiddenWorldLayers)) continue;
-    const selected = brushIsSelected(brush.id);
+    const selected = selectedSet.has(brush.id);
     const previewPoint = corner => brushPointPreview(brush, corner);
     const geometry = brushGeometry(brush);
     // Filled faces read as a solid brush and show the shape a slope actually has; the white
@@ -3952,7 +4040,8 @@ function drawBrushes2d(hiddenWorldLayers) {
       ctx.beginPath();
       polygon.forEach((corner, index) => index ? ctx.lineTo(corner.x, corner.y) : ctx.moveTo(corner.x, corner.y));
       ctx.closePath();
-      const faceSelected = selection?.kind === 'brushFace' && selection.id === brush.id && selection.face === face.index;
+      const faceSelected = faces.has(`${brush.id}:${face.index}`) ||
+        (selection?.kind === 'brushFace' && selection.id === brush.id && selection.face === face.index);
       ctx.fillStyle = faceSelected ? 'rgba(220,196,124,0.55)'
         : selected ? 'rgba(228,228,228,0.42)' : 'rgba(222,222,222,0.24)';
       ctx.fill();
@@ -4376,18 +4465,26 @@ function brushMenuItems(brush) {
     { separator: true },
     { label: 'Clip\u2026', hint: 'Draw two points in a 2D view; Enter clips, Shift+Enter splits', run: () => startClip(brush.id) },
     { label: 'Hollow\u2026', hint: `Keep ${Number($('grid').value)}-unit walls`, run: () => { selection = { kind: 'brush', id: brush.id }; hollowSelectedBrush(); } },
-    { label: 'Merge brushes', disabled: multiSelectionKind !== 'brush' && !others.length, run: () => {
-      selection = { kind: 'brush', id: brush.id }; mergeSelectedBrushes();
+    { label: `Merge ${Math.max(1, selectedBrushIds().length)} brushes`, disabled: selectedBrushIds().length < 2, run: () => {
+      mergeSelectedBrushes();
     } },
-    { label: 'Subtract another brush', disabled: !(multiSelectionKind === 'brush' && multiSelection.length > 1), run: () => {
-      selection = { kind: 'brush', id: brush.id }; subtractSelectedBrush();
+    { label: 'Subtract another brush', disabled: selectedBrushIds().length < 2, run: () => {
+      subtractSelectedBrush(brush.id);
     } },
     { separator: true },
-    { label: 'Duplicate', run: () => { selection = { kind: 'brush', id: brush.id }; duplicateSelectedBrush(); } },
-    { label: brush.locked ? 'Unlock brush' : 'Lock brush', run: () => edit(next => {
-      const target = next.map.brushes.find(item => item.id === brush.id);
-      target.locked = !brush.locked;
-    }, brush.locked ? 'Brush unlocked' : 'Brush locked') },
+    { label: 'Duplicate', run: () => { duplicateSelectedBrush(); } },
+    { label: brush.locked ? 'Unlock brush' : 'Lock brush', run: () => {
+      // Locking is a set action too: a mapper who selected ten brushes to protect them meant ten.
+      const ids = selectedBrushIds();
+      const targets = ids.length ? ids : [brush.id];
+      const locked = !brush.locked;
+      edit(next => {
+        for (const id of targets) {
+          const target = next.map.brushes.find(item => item.id === id);
+          if (target) target.locked = locked;
+        }
+      }, targets.length > 1 ? `${targets.length} brushes ${locked ? 'locked' : 'unlocked'}` : `Brush ${locked ? 'locked' : 'unlocked'}`);
+    } },
     // A mapper's "passthrough object": the brush stays where it is and is drawn, but nothing is in
     // its way any more — not a step, not a bullet, not a monster's line of sight.
     { label: 'Solid: blocks movement, shots and sight', checked: !brush.passable, run: () => edit(next => {
@@ -4496,7 +4593,13 @@ document.addEventListener('keydown', event => {
     timesheetPanel.handleClipboardKey(event);
     return;
   }
-  if (event.code === 'KeyD') { if (duplicateSelectedEntities()) event.preventDefault(); return; }
+  if (event.code === 'KeyD') {
+    // Ctrl+D duplicates whatever is selected: a brush set was ignored here, so the shortcut did
+    // nothing at all while the menu item next to it duplicated one brush.
+    if (['brush', 'brushFace'].includes(selection?.kind)) { duplicateSelectedBrush(); event.preventDefault(); return; }
+    if (duplicateSelectedEntities()) event.preventDefault();
+    return;
+  }
   if (event.code === 'KeyC') { if (copySelectedEntities()) event.preventDefault(); return; }
   if (pasteEntities()) event.preventDefault();
 });
@@ -4565,6 +4668,9 @@ canvas.addEventListener('pointerdown', guard(event => {
     const hit = hitTest(point);
     const entity = hit?.kind === 'entity' ? project.map.entities.find(item => item.id === hit.id) : null;
     if (entity) { selectObject(entity, true); return; }
+    // A brush joins the set whole, and in face mode the face under the pointer joins it as its
+    // brush plus that plane.
+    if (hit?.kind === 'brush' || hit?.kind === 'brushFace') { selectBrushLike(hit, true); return; }
     // A route in the map is picked by one of its waypoints, so Ctrl+clicking a waypoint adds the
     // whole route to the set rather than one point of it.
     if (hit?.kind === 'pathPoint') {
@@ -4693,6 +4799,16 @@ canvas.addEventListener('pointerdown', guard(event => {
     render();
     return;
   }
+  if ((pressed?.kind === 'brush' || pressed?.kind === 'brushFace') && multiSelection.length > 1
+    && multiSelectionKind === pressed.kind && multiSelection.includes(selectionKey(pressed))) {
+    // The press landed on a member of the set: keep the set, so the drag moves all of it.
+    selection = pressed.kind === 'brushFace' ? { ...pressed } : { kind: 'brush', id: pressed.id };
+    lastPrimarySelection = selectionKey(selection);
+    drag = { kind: 'move', selection: { ...selection }, start: snap(point), end: snap(point),
+      viewStart: snapView(viewCoordsOf(point)), viewEnd: snapView(viewCoordsOf(point)) };
+    render();
+    return;
+  }
   selection = pressed;
   if (selection && ['entity', 'vertex', 'pathPoint', 'path', 'brush'].includes(selection.kind)) {
     const view = snapView(viewCoordsOf(point));
@@ -4812,13 +4928,58 @@ canvas.addEventListener('pointerup', guard(event => {
   if (finished.kind === 'marquee') {
     const left = Math.min(finished.start.x, finished.end.x), right = Math.max(finished.start.x, finished.end.x);
     const top = Math.min(finished.start.y, finished.end.y), bottom = Math.max(finished.start.y, finished.end.y);
-    const ids = project.map.entities.filter(entity => entity.x >= left && entity.x <= right && entity.y >= top && entity.y <= bottom).map(entity => entity.id);
-    multiSelection = ids;
-    multiSelectionKind = ids.length ? 'entity' : null;
-    selection = ids.length ? { kind: 'entity', id: ids[0] } : null;
-    lastPrimarySelection = ids.length ? ids[0] : null;
+    const inside = (x, y) => x >= left && x <= right && y >= top && y <= bottom;
+    const hidden = new Set(worldLayers(project).filter(layer => !layer.visible).map(layer => layer.id));
+    const entities = project.map.entities.filter(entity => inside(entity.x, entity.y)).map(entity => entity.id);
+    // Brushes are boxed by their footprint, and in face mode by the centre of each of their faces:
+    // a box select is how the brushes to merge are picked, and in face mode it is how several faces
+    // are picked at once.
+    const brushes = brushMode === 'object'
+      ? (project.map.brushes || []).filter(brush => {
+        if (!brushVisible(brush, hidden)) return false;
+        let corners = [];
+        try { corners = brushVertices(brush).map(projectWorld); } catch { return false; }
+        return corners.length > 0 && corners.every(corner => inside(corner.x, corner.y));
+      }).map(brush => brush.id)
+      : [];
+    const faces = brushMode === 'face'
+      ? (project.map.brushes || []).flatMap(brush => {
+        if (!brushVisible(brush, hidden)) return [];
+        let geometry;
+        try { geometry = brushGeometry(brush); } catch { return []; }
+        return geometry.faces.filter(face => {
+          if (face.points.length < 3) return false;
+          const points = face.points.map(point => projectWorld(point));
+          const centre = points.reduce((sum, point) => ({ x: sum.x + point.x / points.length, y: sum.y + point.y / points.length }), { x: 0, y: 0 });
+          return inside(centre.x, centre.y);
+        }).map(face => `${brush.id}:${face.index}`);
+      })
+      : [];
+    if (faces.length) {
+      multiSelection = faces;
+      multiSelectionKind = 'brushFace';
+      const [brushId, face] = faces[0].split(':');
+      selection = { kind: 'brushFace', id: brushId, face: Number(face) || 0 };
+      lastPrimarySelection = faces[0];
+      render();
+      status(`${faces.length} face${faces.length === 1 ? '' : 's'} selected`);
+      return;
+    }
+    if (brushes.length) {
+      multiSelection = brushes;
+      multiSelectionKind = 'brush';
+      selection = { kind: 'brush', id: brushes[0] };
+      lastPrimarySelection = brushes[0];
+      render();
+      status(`${brushes.length} brush${brushes.length === 1 ? '' : 'es'} selected`);
+      return;
+    }
+    multiSelection = entities;
+    multiSelectionKind = entities.length ? 'entity' : null;
+    selection = entities.length ? { kind: 'entity', id: entities[0] } : null;
+    lastPrimarySelection = entities.length ? entities[0] : null;
     render();
-    status(ids.length ? `${ids.length} object${ids.length === 1 ? '' : 's'} selected` : 'Nothing selected');
+    status(entities.length ? `${entities.length} object${entities.length === 1 ? '' : 's'} selected` : 'Nothing selected');
     return;
   }
   if (finished.kind === 'room' || finished.kind === 'wedge') {
@@ -4910,7 +5071,10 @@ canvas.addEventListener('pointerup', guard(event => {
         const delta = finished.viewStart && finished.viewEnd
           ? viewDeltaToWorld(finished.viewEnd.u - finished.viewStart.u, finished.viewEnd.v - finished.viewStart.v)
           : [shift.x, shift.y, 0];
-        moveBrush(next, id, { x: delta[0], y: delta[1], z: delta[2] });
+        // The whole set moves by the same offset, so the arrangement the mapper built is kept.
+        for (const target of selectedBrushIds().length ? selectedBrushIds() : [id]) {
+          moveBrush(next, target, { x: delta[0], y: delta[1], z: delta[2] });
+        }
         return;
       }
       const ids = group.length > 1 && group.includes(id) ? group : [id];
@@ -7571,8 +7735,15 @@ function deleteSelectionObject(value) {
   if (value?.kind === 'pathPoint') { deletePathPoint(value.pathId, value.id); return; }
   if (value?.kind === 'entity') return deleteSelectedEntities(value.id);
   if (value?.kind?.startsWith('brush')) {
-    edit(next => { removeBrushes(next, [value.id]); }, 'Brush deleted');
+    // Delete means the set, not the one brush whose arrows happen to be on screen.
+    const ids = value.kind === 'brushVertex' ? [value.id] : selectedBrushIds();
+    const targets = ids.length ? ids : [value.id];
+    edit(next => { removeBrushes(next, targets); },
+      targets.length > 1 ? `${targets.length} brushes deleted` : 'Brush deleted');
     selection = null;
+    multiSelection = [];
+    multiSelectionKind = null;
+    lastPrimarySelection = null;
     render();
     return;
   }
@@ -8019,7 +8190,12 @@ function mapCanvasMenu(event) {
   const items = [];
   const brush = hit?.kind?.startsWith('brush') ? (project.map.brushes || []).find(item => item.id === hit.id) : null;
   if (brush) {
-    selection = { ...hit, kind: 'brush' };
+    // Right-clicking a brush of the set keeps the set: the menu is where `Merge` and `Subtract`
+    // live, and collapsing the selection here threw the other brushes away before the menu opened.
+    syncMultiSelection();
+    const member = multiSelection.length > 1 &&
+      (multiSelection.includes(selectionKey(hit)) || multiSelection.includes(hit.id));
+    if (!member) selection = { ...hit, kind: 'brush' };
     items.push(...brushMenuItems(brush), { separator: true });
   } else if (hit?.kind === 'entity') {
     const entity = project.map.entities.find(item => item.id === hit.id);
@@ -8087,7 +8263,9 @@ function mapViewMenu(event, picked) {
   const items = [];
   let label = '3D view actions';
   if (brush) {
-    selection = { ...picked, kind: 'brush' };
+    syncMultiSelection();
+    if (!(multiSelection.length > 1 &&
+      (multiSelection.includes(selectionKey(picked)) || multiSelection.includes(picked.id)))) selection = { ...picked, kind: 'brush' };
     items.push(...brushMenuItems(brush), { separator: true });
     label = `${brush.name} actions`;
   } else if (entity) {
@@ -8419,7 +8597,12 @@ function installAutomation() {
   const toWorld = point => projectWorld(point);
   installAutomationHooks({
     getProject: () => project,
-    getSelection: () => (selection ? { ...selection } : null),
+    getSelection: () => {
+      // The set matters to a scenario: "two brushes selected" is what `Merge` needs, and the
+      // primary alone cannot say it.
+      syncMultiSelection();
+      return selection ? { ...selection, count: multiSelection.length, ids: [...multiSelection] } : null;
+    },
     getErrorLog: () => automationErrors,
     getLastDrag: () => automationLastDrag,
     getProjection: () => mapProjection,
