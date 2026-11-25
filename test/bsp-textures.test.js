@@ -13,7 +13,9 @@ import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import {
   compiledMapAssets, decodeJpeg, decodeTga, findPalette, imageSize, miptexPixels, miptexTextures, readPalette,
+  textureSources, wadMiptexIndex,
 } from '../server/bsp-textures.js';
+import { createZipArchive } from '../server/export-build.js';
 
 function scratch(t) {
   const root = mkdtempSync(join(tmpdir(), 'opendle-textures-'));
@@ -51,6 +53,38 @@ function paletteBytes() {
     palette[index * 3 + 2] = 128;
   }
   return palette;
+}
+
+/** A WAD3 with several lumps in it, which is what `halflife.wad` is. */
+function wad3Lumps(lumps) {
+  const header = Buffer.alloc(12);
+  header.write('WAD3', 0, 'latin1');
+  header.writeInt32LE(lumps.length, 4);
+  header.writeInt32LE(12, 8);
+  let offset = 12 + lumps.length * 32;
+  const directory = Buffer.alloc(lumps.length * 32);
+  const payloads = [];
+  lumps.forEach((lump, index) => {
+    const at = index * 32;
+    directory.writeInt32LE(offset, at);
+    directory.writeUInt32LE(lump.data.length, at + 4);
+    directory.writeUInt32LE(lump.data.length, at + 8);
+    directory.write(lump.name, at + 16, 'latin1');
+    payloads.push(lump.data);
+    offset += lump.data.length;
+  });
+  return Buffer.concat([header, directory, ...payloads]);
+}
+
+/** One miptex entry: the 40-byte header a WAD3 and a BSP both use, then palette indices. */
+function miptexLump(name, width, height, indices) {
+  const header = Buffer.alloc(40 + indices.length);
+  header.write(name, 0, 'latin1');
+  header.writeUInt32LE(width, 16);
+  header.writeUInt32LE(height, 20);
+  header.writeUInt32LE(40, 24);
+  indices.forEach((value, index) => { header[40 + index] = value; });
+  return header;
 }
 
 /** A packet of BSP lumps holding just a texture directory, which is all the reader needs here. */
@@ -147,7 +181,8 @@ test('a Half-Life map with no palette says what is missing instead of importing 
   const result = await compiledMapAssets({ bytes, info, parsed: mapUsing('BRICK1'), root, relativePath: 'Maps/HL/test.bsp' });
   assert.equal(result.assets.length, 0);
   assert.equal(result.materials.size, 0);
-  assert.match(result.warnings.join('\n'), /palette.*not in the Projects folder/s);
+  assert.match(result.warnings.join('\n'), /palette is not under Projects/s);
+  assert.match(result.warnings.join('\n'), /put halflife\.wad there/s);
 });
 
 test('a TGA is decoded, run-length encoded or not, because no browser draws one', () => {
@@ -185,8 +220,63 @@ test('a Quake 3 shader takes its picture from the archive beside it', async () =
   assert.equal(result.assets.length, 2);
   assert.deepEqual(new Set(result.assets.map(asset => asset.name)), new Set(['textures/base/wall', 'textures/base/floor']));
   assert.ok(result.assets.every(asset => asset.src.startsWith('data:image/png;base64,')));
-  assert.match(result.warnings.join('\n'), /1 of its 3 textures are not in the archive/);
+  assert.match(result.warnings.join('\n'), /1 of its 3 textures could not be found/);
+  assert.match(result.warnings.join('\n'), /2 textures from the map's own archive/);
   // The TGA came out the right way up and the right colour; the PNG was already a PNG.
   assert.deepEqual([...pixelsOf(result.assets[0]).data.subarray(0, 3)], [1, 2, 3]);
   assert.deepEqual([result.assets[1].width, result.assets[1].height], [2, 2]);
+});
+
+test('a texture the map does not carry is taken from the archive that does', async t => {
+  // A mapper's `.pk3` holds what they added; the rest of a Quake 3 map's shaders are stock baseq3
+  // art in `pak0.pk3`. Dropping that file under Projects/ is what makes them appear.
+  const { root, write } = scratch(t);
+  const own = createZipArchive([{ path: 'maps/level.bsp', data: Buffer.alloc(8) }], new Date('2026-01-01T00:00:00Z'));
+  write('Maps/level.pk3', own);
+  write('GameData/pak0.pk3', createZipArchive([
+    { path: 'textures/base/wall.tga', data: tga(1, 1, [[9, 8, 7]]) },
+    { path: 'textures/base/floor.png', data: PNG.sync.write({ width: 4, height: 2, data: Buffer.alloc(4 * 2 * 4, 255) }) },
+  ], new Date('2026-01-01T00:00:00Z')));
+  const parsed = mapUsing('textures/base/wall', 'textures/base/floor');
+  const result = await compiledMapAssets({ bytes: Buffer.alloc(16), info: { version: 46, lumps: [] }, parsed,
+    root, relativePath: 'Maps/level.pk3', archive: null });
+  assert.equal(result.assets.length, 2, result.warnings.join('\n'));
+  assert.deepEqual(new Set(result.assets.map(asset => asset.name)), new Set(['textures/base/wall', 'textures/base/floor']));
+  assert.match(result.warnings.join('\n'), /2 textures from pak0\.pk3/);
+  assert.deepEqual([...pixelsOf(result.assets[0]).data.subarray(0, 3)], [9, 8, 7], 'the TGA from the other archive');
+});
+
+test('a Half-Life texture the map does not embed is taken from the WAD beside it', async t => {
+  // A Half-Life map usually references `halflife.wad` instead of embedding everything, so the
+  // picture is in a file the person already has — just not in the map.
+  const { root, write } = scratch(t);
+  write('Wads/halflife.wad', wad3Lumps([
+    { name: 'gfx/palette.lmp', data: paletteBytes() },
+    { name: 'BRICK1', data: miptexLump('BRICK1', 1, 1, [7]) },
+  ]));
+  const { bytes, info } = bspWithTexture('EMPTYBSP', 1, 1, [1]);
+  const result = await compiledMapAssets({ bytes, info, parsed: mapUsing('BRICK1'), root, relativePath: 'Maps/crossfire.bsp' });
+  assert.equal(result.assets.length, 1, result.warnings.join('\n'));
+  assert.match(result.warnings.join('\n'), /1 texture from halflife\.wad/);
+  const image = pixelsOf(result.assets[0]);
+  assert.deepEqual([image.data[0], image.data[1], image.data[2]], [7, 248, 128], 'palette entry 7, from that WAD');
+});
+
+test('what a map needs is listed: archives and WAD3s under the folder, the map excluded', async t => {
+  const { root, write } = scratch(t);
+  write('A/pak0.pk3', createZipArchive([{ path: 'textures/x.png', data: Buffer.from('x') }], new Date('2026-01-01T00:00:00Z')));
+  write('B/doom.wad', Buffer.concat([Buffer.from('PWAD'), Buffer.alloc(200)]));
+  write('C/halflife.wad', wad3Lumps([{ name: 'gfx/palette.lmp', data: paletteBytes() }]));
+  write('.hidden/secret.pk3', createZipArchive([{ path: 'textures/y.png', data: Buffer.from('y') }], new Date('2026-01-01T00:00:00Z')));
+  const sources = textureSources(root);
+  assert.equal(sources.archives.length, 1, 'one archive, and hidden folders are not searched');
+  assert.match(sources.archives[0].file, /pak0\.pk3$/);
+  assert.match(sources.archives[0].key, /pak0\.pk3:\d/, 'a stamp, so a replaced archive is not a stale index');
+  assert.equal(sources.wads.length, 1, 'a Doom IWAD is not a WAD3 and is not a source');
+  assert.match(sources.wads[0].file, /halflife\.wad$/);
+  const excluded = textureSources(root, { exclude: sources.archives[0].file });
+  assert.equal(excluded.archives.length, 0, 'the map\'s own archive is not searched again');
+  // The WAD3's own miptex directory is the index a texture name is looked up in.
+  const index = wadMiptexIndex(sources.wads[0]);
+  assert.equal(index.size, 0, 'a palette lump is not a texture');
 });

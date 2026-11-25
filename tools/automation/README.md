@@ -44,6 +44,13 @@ Output is one JSON line. A failure exits non-zero and names the failing step:
 - A game scenario waits through `waitForGame` (`scenarios/game.mjs`), which watches the page's own
   error screen as it polls: a boot that failed is reported in milliseconds with the game's words,
   not as a timeout 30 s later.
+- **A run is invisible by default.** The harness starts the real window with `--hidden`: the same
+  renderer, the same GPU surface, the same pixels — a window that is simply never shown and never
+  takes the taskbar, so `npm test` and a scenario pass cannot interrupt work happening on the same
+  machine. `backgroundThrottling: false` keeps a hidden window running at full speed, which is also
+  why the page still reports `visibilityState: visible` inside it. `OPENDLE_AUTOMATION_VISIBLE=1`
+  shows the window instead — the thing to do while writing a scenario, where watching it is the
+  point. The exported game takes the same switches (`--hidden` / `--show`).
 - `OPENDLE_AUTOMATION_ELECTRON_ARGS` adds Chromium switches to every window the harness opens —
   they go **before** the app path, because everything after it belongs to the app's own parser. It
   exists for a Wayland session that stops handing new Electron windows a connection (then

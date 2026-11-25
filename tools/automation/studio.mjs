@@ -63,6 +63,22 @@ export function extraElectronArgs() {
   return String(process.env.OPENDLE_AUTOMATION_ELECTRON_ARGS || '').split(/\s+/).filter(Boolean);
 }
 
+/**
+ * Whether a run gets a window on screen.
+ *
+ * A run is invisible by default: the same real window, with a real GPU surface, that simply never
+ * shows and never takes the taskbar, so an automation pass cannot interrupt the work happening on
+ * the same machine. `OPENDLE_AUTOMATION_VISIBLE=1` asks to watch one — useful while writing a
+ * scenario, where seeing the window is the whole point.
+ */
+export function visibleWindows() {
+  const value = String(process.env.OPENDLE_AUTOMATION_VISIBLE || '').toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+/** The switches that decide whether the app shows a window at all. */
+export const windowVisibilityArgs = () => (visibleWindows() ? ['--show'] : ['--hidden']);
+
 export async function electronBinary() {
   const imported = await import('electron');
   const binary = imported.default;
@@ -90,7 +106,7 @@ export async function launchStudio({ port = Number(process.env.PORT || 3000), ti
   const child = track(spawn(binary, [
     ...extraElectronArgs(),
     join(root, 'scripts', 'studio-desktop.js'),
-    '--url', url, '--profile', profile, '--automation-port', String(cdpPort),
+    '--url', url, '--profile', profile, '--automation-port', String(cdpPort), ...windowVisibilityArgs(),
   ], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env }));
   const log = [];
   child.stdout?.on('data', chunk => log.push(String(chunk).trim()));

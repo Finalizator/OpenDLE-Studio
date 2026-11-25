@@ -64,6 +64,9 @@ export function createApp({
   // One palette hunt per Projects folder, not one per map: a folder of Half-Life maps all want the
   // same halflife.wad, and reading it per import is seconds of wasted work.
   const paletteCacheForMaps = new Map();
+  // Where a texture may come from besides the map: the archives and WAD3s under Projects/, indexed
+  // once and reused, so a level of a hundred textures does not re-list `pak0.pk3` for each of them.
+  const textureSourceCache = { sources: new Map(), archives: new Map(), wads: new Map() };
   const app = express();
   app.disable('x-powered-by');
   app.use((req, res, next) => {
@@ -178,7 +181,7 @@ export function createApp({
     // that holds it (Quake 2/3). A map whose pictures cannot be found still imports, and says so.
     const artwork = await compiledMapAssets({
       bytes, info: bspInfo(bytes), parsed, root: projectsDir, relativePath, archive,
-      paletteCache: paletteCacheForMaps,
+      exclude: archive?.file ?? null, paletteCache: paletteCacheForMaps, sourceCache: textureSourceCache,
     });
     const imported = describeAssets(artwork.assets);
     return {

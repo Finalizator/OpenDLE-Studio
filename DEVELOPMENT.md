@@ -403,6 +403,25 @@ provider credits or network access are required for tests.
   asset whose id is a hash of its name, so importing the same map twice does not duplicate anything,
   and the faces that named it are pointed at it — a face keeps `textureName` for display and gains
   `texture` for the picture.
+- **A texture the map does not carry is looked for under `Projects/`.** A compiled map names far more
+  materials than it ships: a Quake 3 map carries only what its mapper added — the rest of its shaders
+  are stock `baseq3` art in `pak0.pk3` — and a Half-Life map usually *references* `halflife.wad`
+  instead of embedding its textures. `textureSources()` walks `Projects/` for archives (`.pk3`, `.zip`,
+  and the `.pke`/`.pk7` spellings) and WAD3 files, `pak<number>` archives first because that is the
+  name every Quake 2/3 game uses for its stock art, and `archiveTextures`/`wadTextures` fall back to
+  them after the map's own archive and its own miptex directory. Archive *indexes* are cached per file
+  with an mtime+size stamp; the folder walk is not cached, so a file dropped in and imported again is
+  seen immediately. Each source is named in the import report ("3 textures from pak0.pk3").
+  The practical instruction is the same in both games — put the file the map references anywhere
+  under `Projects/` and import the map again:
+  - **Half-Life**: copy `valve/halflife.wad` from your game install to `Projects/`
+    (e.g. `Projects/Maps/HL/halflife.wad`). It carries the palette (`gfx/palette.lmp`) *and* the
+    textures the map only references, so one file fixes both.
+  - **Quake 3**: copy `baseq3/pak0.pk3` (and `pak1..pak8` if you have them) to `Projects/`.
+  - **Quake 2**: the same, but Quake 2 ships `.pak` files that are not zips — only `.pk3`/`.zip` are
+    read, so a Quake 2 texture archive has to be zipped first.
+  Textures that are still missing are counted in the report, and their faces keep the renderer's own
+  fallback material rather than a guessed picture.
 - **Every model becomes brushes.** A compiled map's brush entities are separate models: Half-Life
   gives each door, platform and breakable wall one, and Quake 3 gives each `func_*` a range of the
   brush lump. They import onto the entity that names them (`"model" "*3"`), keeping the entity's

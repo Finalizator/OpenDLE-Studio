@@ -278,10 +278,13 @@ const permissions = new Set(['pointerLock', 'fullscreen', 'clipboard-sanitized-w
 app.setName(TITLE);
 app.setPath('userData', join(app.getPath('appData'), SLUG));
 
-// A player never passes this; a test harness does, so it can drive the real game window.
+// A player never passes these; a test harness does, so it can drive the real game window. The hidden
+// switch runs the game without ever showing it: a real window with a real GPU surface, invisible, so
+// a test run cannot interrupt whatever else is happening on the machine.
 const automationPort = process.argv.includes('--automation-port')
   ? process.argv[process.argv.indexOf('--automation-port') + 1] : null;
 if (automationPort) app.commandLine.appendSwitch('remote-debugging-port', String(automationPort));
+const hidden = process.argv.includes('--hidden') && !process.argv.includes('--show');
 
 let gameWindow = null;
 let server = null;
@@ -310,10 +313,14 @@ async function start() {
   server = await startGameServer({ root: ROOT, slug: SLUG, open: false, log: message => console.log(message) });
   gameWindow = new BrowserWindow({
     title: TITLE, width: 1280, height: 800, minWidth: 960, minHeight: 600,
-    backgroundColor: '#0b0d10', show: false, autoHideMenuBar: true, fullscreen: true,
-    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
+    backgroundColor: '#0b0d10', show: false, autoHideMenuBar: true, skipTaskbar: hidden, fullscreen: true,
+    // An invisible window is throttled by Chromium, and a game that is throttled is not the game:
+    // frames are what it is made of. This keeps a hidden window at full speed.
+    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
+      ...(hidden ? { backgroundThrottling: false } : {}) },
   });
-  gameWindow.once('ready-to-show', () => gameWindow.show());
+  if (hidden) gameWindow.once('ready-to-show', () => console.log('Game window ready (hidden)'));
+  else gameWindow.once('ready-to-show', () => gameWindow.show());
   gameWindow.on('closed', () => { gameWindow = null; });
   const session = gameWindow.webContents.session;
   session.setPermissionRequestHandler((contents, permission, callback) => callback(permissions.has(permission)));

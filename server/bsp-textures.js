@@ -18,14 +18,33 @@
 import { PNG } from 'pngjs';
 import jpeg from 'jpeg-js';
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { closeSync, lstatSync, openSync, readFileSync, readdirSync, readSync } from 'node:fs';
+import { basename, extname, join, resolve } from 'node:path';
 import { LIMITS } from '../shared/limits.js';
+import { listArchive, readArchiveEntries } from './local-maps.js';
 
 /** How large a WAD or archive may be before it is not worth opening for a palette. */
 const PALETTE_FILE_LIMIT = 128 * 1024 * 1024;
-/** How many folders the palette hunt looks in, so a huge Projects folder cannot stall an import. */
-const PALETTE_FOLDER_LIMIT = 64;
+/**
+ * How many folders a hunt looks in.
+ *
+ * A folder of game data grows deep — `ascentoftitan-1-1/maps/...`, a mod's `textures/...` — and the
+ * cap that stopped a runaway walk also stopped it before reaching a WAD someone had just dropped in
+ * the last folder alphabetically. A few hundred `readdir` calls cost milliseconds; the expensive part
+ * is opening an archive, and that is cached per file.
+ */
+const PALETTE_FOLDER_LIMIT = 512;
+/**
+ * How many other archives and WADs are searched for a texture the map does not carry.
+ *
+ * A Quake 3 map only carries what its mapper added; the rest of its shaders live in `baseq3`'s
+ * `pak0.pk3`, and a Half-Life map's textures may live in `halflife.wad` rather than in the map. Both
+ * are found by dropping the file anywhere under `Projects/`, and the search is bounded so a folder
+ * full of game data cannot turn one import into a scan.
+ */
+const SOURCE_LIMIT = 12;
+/** A texture archive larger than this is not opened at all. */
+const SOURCE_FILE_LIMIT = 2 * 1024 * 1024 * 1024;
 /** The image extensions a Quake 2 / Quake 3 map's shaders are stored with, in the order tried. */
 const IMAGE_EXTENSIONS = ['tga', 'jpg', 'jpeg', 'png'];
 
@@ -89,7 +108,9 @@ export function findPalette(root, relativePath, cache = new Map()) {
     ? join(base, relativePath.slice(0, relativePath.lastIndexOf('/')))
     : base;
   const folders = [];
-  const queue = [start.startsWith(base) ? start : base];
+  // The map's own folder first, then the whole Projects tree: a `halflife.wad` is usually kept in a
+  // folder of its own beside `Maps/`, and looking only *down* from the map missed it entirely.
+  const queue = [start.startsWith(base) ? start : base, base];
   const seen = new Set();
   while (queue.length && folders.length < PALETTE_FOLDER_LIMIT) {
     const folder = queue.shift();
@@ -284,6 +305,98 @@ function pictureNameFor(shader, available) {
 // The whole job
 // ---------------------------------------------------------------------------------------------------
 
+/**
+ * The files under `Projects/` that could hold textures the map does not: archives (a `.pk3` and a
+ * `.zip` are the same thing) and WAD3s. The map's own archive is excluded — it has already been read.
+ *
+ * The list is cached per folder because a level names a hundred textures and the same three archives
+ * answer all of them.
+ */
+export function textureSources(root, { exclude = null } = {}) {
+  const base = resolve(root);
+  const archives = [], wads = [];
+  const queue = [base], seen = new Set();
+  let folders = 0;
+  while (queue.length && folders < PALETTE_FOLDER_LIMIT) {
+    const folder = queue.shift();
+    if (seen.has(folder)) continue;
+    seen.add(folder);
+    folders++;
+    let entries;
+    try { entries = readdirSync(folder, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name.startsWith('.')) continue;
+      const path = join(folder, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) { queue.push(path); continue; }
+      if (!entry.isFile()) continue;
+      const extension = extname(entry.name).toLowerCase();
+      let info;
+      try { info = lstatSync(path); } catch { continue; }
+      if (!info.size || info.size > SOURCE_FILE_LIMIT) continue;
+      // The stamp is what makes a cached index honest: a file that was replaced is a new source.
+      const source = { file: path, key: `${path}:${info.mtimeMs}:${info.size}` };
+      if (extension === '.pk3' || extension === '.zip' || extension === '.pke' || extension === '.pk7') archives.push(source);
+      else if (extension === '.wad') {
+        // Four bytes decide whether a WAD is a source; reading a 50 MB IWAD whole for them would
+        // make an import wait on the disk once per Doom WAD in the folder.
+        let head = null;
+        try {
+          const handle = openSync(path, 'r');
+          try {
+            const buffer = Buffer.alloc(4);
+            readSync(handle, buffer, 0, 4, 0);
+            head = buffer;
+          } finally { closeSync(handle); }
+        } catch { head = null; }
+        if (head && cstring(head, 0, 4) === 'WAD3') wads.push(source);
+      }
+    }
+  }
+  // The walk is cheap — directory entries only — and it is what notices a file someone has just
+  // dropped in. What is cached is the *index* of each archive, which is the expensive part.
+  //
+  // `pak0.pk3` is the name every Quake 2/3 game ships its stock art under, so those are looked at
+  // first: a folder of unrelated mod archives must not push the one that matters out of the list.
+  const keep = source => source.file !== exclude;
+  const priority = source => (/^pak\d+\.(pk3|zip|pak)$/i.test(basename(source.file)) ? 0 : 1);
+  const order = (a, b) => priority(a) - priority(b) || a.file.localeCompare(b.file);
+  return { archives: archives.filter(keep).sort(order).slice(0, SOURCE_LIMIT),
+    wads: wads.filter(keep).sort(order).slice(0, SOURCE_LIMIT) };
+}
+
+/**
+ * The miptex directory of a WAD3, by texture name.
+ *
+ * A Half-Life map that does not embed a texture references the WAD it lives in — `halflife.wad`
+ * usually — so the picture is in a file the person already has, just not in the map.
+ */
+export function wadMiptexIndex(source, cache = new Map()) {
+  const key = typeof source === 'string' ? source : source.key;
+  const file = typeof source === 'string' ? source : source.file;
+  if (cache.has(key)) return cache.get(key);
+  const index = new Map();
+  let bytes;
+  try { bytes = readFileSync(file); } catch { cache.set(key, index); return index; }
+  if (cstring(bytes, 0, 4) !== 'WAD3' || bytes.length < 12) { cache.set(key, index); return index; }
+  const view = viewOf(bytes);
+  const count = view.getInt32(4, true), directory = view.getInt32(8, true);
+  if (count < 0 || directory < 0 || directory + count * 32 > bytes.length) { cache.set(key, index); return index; }
+  for (let entry = 0; entry < count; entry++) {
+    const at = directory + entry * 32;
+    const offset = view.getInt32(at, true), size = bytes.readUInt32LE(at + 4);
+    if (offset < 0 || size < 40 || offset + 40 > bytes.length) continue;
+    const name = cstring(bytes, offset, 16);
+    const width = view.getUint32(offset + 16, true), height = view.getUint32(offset + 20, true);
+    const data = offset + view.getUint32(offset + 24, true);
+    if (!name || !width || !height || width > LIMITS.imageSize || height > LIMITS.imageSize) continue;
+    if (data + width * height > bytes.length) continue;
+    index.set(name.toLowerCase(), { name, width, height, data, masked: name.startsWith('{'), bytes });
+  }
+  cache.set(key, index);
+  return index;
+}
+
 /** A stable asset id for a texture name, so importing the same map twice does not duplicate it. */
 const textureId = name => `asset_tex_${createHash('sha1').update(name).digest('hex').slice(0, 10)}`;
 
@@ -295,8 +408,9 @@ const textureId = name => `asset_tex_${createHash('sha1').update(name).digest('h
  * fails an import: a map whose artwork cannot be found imports with its texture *names* and a line
  * saying what is missing, which is exactly what it did before any of this existed.
  */
-export async function compiledMapAssets({ bytes, info, parsed, root, relativePath, archive, paletteCache } = {}) {
+export async function compiledMapAssets({ bytes, info, parsed, root, relativePath, archive, exclude = null, paletteCache, sourceCache } = {}) {
   const assets = [], materials = new Map(), warnings = [];
+  const name = parsed?.name || 'the map';
   const wanted = new Set();
   for (const entity of parsed?.entities || []) {
     for (const brush of entity.brushes || []) {
@@ -305,59 +419,156 @@ export async function compiledMapAssets({ bytes, info, parsed, root, relativePat
   }
   if (!wanted.size) return { assets, materials, warnings };
 
-  const add = (name, width, height, src) => {
+  const add = (texture, width, height, src) => {
     if (assets.length >= LIMITS.assets) return null;
-    const id = textureId(name);
-    if (materials.has(name)) return materials.get(name);
-    assets.push({ id, name: name.slice(0, 100), kind: 'texture', width, height, offsetX: 0, offsetY: 0, src });
-    materials.set(name, id);
+    const id = textureId(texture);
+    if (materials.has(texture)) return materials.get(texture);
+    assets.push({ id, name: texture.slice(0, 100), kind: 'texture', width, height, offsetX: 0, offsetY: 0, src });
+    materials.set(texture, id);
     return id;
   };
 
-  if (Number(info?.version) >= 38) {
-    const available = new Map();
-    if (archive) {
-      // The archive's own listing is the index: a shader names a picture, not a path, and the file's
-      // case is whatever the mapper's filesystem had.
-      for (const name of (await archive.list()) || []) available.set(name.toLowerCase(), name);
-    }
-    let missing = 0;
-    for (const shader of wanted) {
-      const picture = pictureNameFor(shader, available);
-      if (!picture) { missing++; continue; }
-      const data = await archive.read(picture);
-      if (!data) { missing++; continue; }
-      const extension = extname(picture).slice(1).toLowerCase();
-      // A PNG travels as it is — it is already the format a project stores — and the rest is decoded
-      // to pixels and written back out as one.
-      const decoded = extension === 'png' ? null : extension === 'tga' ? decodeTga(data) : decodeJpeg(data);
-      const src = extension === 'png' ? `data:image/png;base64,${Buffer.from(data).toString('base64')}` : pngDataUri(decoded);
-      const size = extension === 'png' ? imageSize(data) : decoded;
-      if (!src || !size) { missing++; continue; }
-      add(shader, size.width, size.height, src);
-    }
-    if (missing) warnings.push(`${parsed?.name || 'the map'}: ${missing} of its ${wanted.size} textures are not in the archive; those faces keep the renderer's own material`);
-    return { assets, materials, warnings };
-  }
+  const missing = Number(info?.version) >= 38
+    ? await archiveTextures({ wanted, archive, root, exclude, sourceCache, add, warnings, name })
+    : await wadTextures({ wanted, bytes, info, root, relativePath, exclude, paletteCache, sourceCache, add, warnings, name });
 
-  const textures = miptexTextures(bytes, info);
-  if (!textures.size) return { assets, materials, warnings };
-  const palette = findPalette(root, relativePath, paletteCache);
-  if (!palette) {
-    warnings.push(`${parsed?.name || 'the map'}: its ${textures.size} textures are embedded here, but the palette they were indexed into is not in the Projects folder — put halflife.wad there (or a palette.lmp) and import again`);
-    return { assets, materials, warnings };
-  }
-  let pixels = 0;
-  for (const name of wanted) {
-    const entry = textures.get(String(name).toLowerCase());
-    if (!entry) continue;
-    pixels += entry.width * entry.height;
-    if (pixels > LIMITS.assetPixels) break;
-    const source = miptexPixels({ ...entry, data: bytes.subarray(entry.data, entry.data + entry.width * entry.height) }, palette);
-    const src = `data:image/png;base64,${PNG.sync.write({ width: entry.width, height: entry.height, data: Buffer.from(source) }).toString('base64')}`;
-    add(name, entry.width, entry.height, src);
+  if (missing.size) {
+    warnings.push(`${name}: ${missing.size} of its ${wanted.size} textures could not be found; those faces keep the renderer's own material. `
+      + `${Number(info?.version) >= 38
+        ? 'A Quake 2/3 map takes its pictures from the .pk3 beside it — put the archive that holds them (baseq3\'s pak0.pk3) anywhere under Projects/ and import again.'
+        : 'A Half-Life map takes the textures it does not embed from a WAD3 — put halflife.wad under Projects/ and import again.'}`);
   }
   return { assets, materials, warnings };
+}
+
+/** An archive's own listing as a lower-case lookup, so a shader's case does not decide the match. */
+async function archiveIndex(source, cache) {
+  if (cache.has(source.key)) return cache.get(source.key);
+  const names = await listArchive(source.file);
+  const index = names ? new Map(names.map(entry => [entry.toLowerCase(), entry])) : new Map();
+  cache.set(source.key, index);
+  return index;
+}
+
+/** One picture file as an asset: PNG travels as it is, TGA and JPEG are decoded and re-encoded. */
+function pictureAsset(data, extension) {
+  if (!data?.length) return null;
+  const decoded = extension === 'png' ? null : extension === 'tga' ? decodeTga(data) : decodeJpeg(data);
+  const src = extension === 'png'
+    ? `data:image/png;base64,${Buffer.from(data).toString('base64')}`
+    : pngDataUri(decoded);
+  const size = extension === 'png' ? imageSize(data) : decoded;
+  return src && size ? { src, width: size.width, height: size.height } : null;
+}
+
+/**
+ * A Quake 2/3 map's textures: its own archive first, then any other archive under `Projects/`.
+ *
+ * A mapper's `.pk3` carries only what they added; the rest of a Quake 3 map's shaders are stock
+ * `baseq3` textures that live in `pak0.pk3`. Dropping that file under `Projects/` is what makes the
+ * difference between a level with seven textures and one with all of them.
+ */
+async function archiveTextures({ wanted, archive, root, exclude, sourceCache, add, warnings, name }) {
+  const missing = new Set(wanted);
+  const take = (index, dataFor, from) => {
+    let found = 0;
+    for (const shader of [...missing]) {
+      const picture = pictureNameFor(shader, index);
+      if (!picture) continue;
+      const data = dataFor(picture);
+      const asset = data && pictureAsset(data, extname(picture).slice(1).toLowerCase());
+      if (!asset) continue;
+      add(shader, asset.width, asset.height, asset.src);
+      missing.delete(shader);
+      found++;
+    }
+    if (found) warnings.push(`${name}: ${found} texture${found === 1 ? '' : 's'} from ${from}`);
+    return found;
+  };
+
+  if (archive) {
+    const available = new Map(((await archive.list()) || []).map(entry => [entry.toLowerCase(), entry]));
+    if (available.size) {
+      const pending = new Map();
+      for (const shader of missing) {
+        const picture = pictureNameFor(shader, available);
+        if (picture) pending.set(picture, await archive.read(picture));
+      }
+      take(available, picture => pending.get(picture), 'the map\'s own archive');
+    }
+  }
+  if (!missing.size || !root) return missing;
+
+  const indexes = sourceCache?.archives || new Map();
+  const { archives } = textureSources(root, { exclude });
+  for (const source of archives) {
+    if (!missing.size) break;
+    const index = await archiveIndex(source, indexes);
+    if (!index.size) continue;
+    const pictures = new Map();
+    for (const shader of missing) {
+      const picture = pictureNameFor(shader, index);
+      if (picture) pictures.set(shader, picture);
+    }
+    if (!pictures.size) continue;
+    const bytes = await readArchiveEntries(source.file, [...pictures.values()].map(stored => index.get(stored.toLowerCase())));
+    const byPicture = new Map();
+    for (const [stored, data] of bytes) byPicture.set(stored, data);
+    take(index, picture => byPicture.get(index.get(picture.toLowerCase())), basename(source.file));
+  }
+  return missing;
+}
+
+/**
+ * A Quake 1 / Half-Life map's textures: the ones embedded in the map, then the ones its WAD3s hold.
+ *
+ * Both are palette indices, so the palette is what turns either into a picture — and it is found in
+ * the same place the textures are, which is why a `halflife.wad` in `Projects/` fixes both at once.
+ */
+async function wadTextures({ wanted, bytes, info, root, relativePath, exclude, paletteCache, sourceCache, add, warnings, name }) {
+  const missing = new Set(wanted);
+  const embedded = miptexTextures(bytes, info);
+  const palette = findPalette(root, relativePath, paletteCache);
+  if (!palette) {
+    warnings.push(`${name}: its ${wanted.size} textures are textures the game indexes into a palette, and that palette is not under Projects/ — `
+      + 'put halflife.wad there (or a palette.lmp) and import again');
+    return missing;
+  }
+  let pixels = 0;
+  const store = (texture, entry) => {
+    pixels += entry.width * entry.height;
+    if (pixels > LIMITS.assetPixels) return false;
+    const source = miptexPixels({ ...entry, data: entry.bytes ? entry.bytes.subarray(entry.data, entry.data + entry.width * entry.height)
+      : bytes.subarray(entry.data, entry.data + entry.width * entry.height) }, palette);
+    add(texture, entry.width, entry.height,
+      `data:image/png;base64,${PNG.sync.write({ width: entry.width, height: entry.height, data: Buffer.from(source) }).toString('base64')}`);
+    return true;
+  };
+  let fromMap = 0;
+  for (const texture of [...missing]) {
+    const entry = embedded.get(String(texture).toLowerCase());
+    if (!entry || !store(texture, entry)) continue;
+    missing.delete(texture);
+    fromMap++;
+  }
+  if (fromMap) warnings.push(`${name}: ${fromMap} texture${fromMap === 1 ? '' : 's'} embedded in the map`);
+  if (!missing.size || !root) return missing;
+
+  const indexes = sourceCache?.wads || new Map();
+  const { wads } = textureSources(root, { exclude });
+  for (const source of wads) {
+    if (!missing.size) break;
+    const index = wadMiptexIndex(source, indexes);
+    let found = 0;
+    for (const texture of [...missing]) {
+      const entry = index.get(String(texture).toLowerCase());
+      if (!entry || !store(texture, entry)) continue;
+      missing.delete(texture);
+      found++;
+    }
+    if (found) warnings.push(`${name}: ${found} texture${found === 1 ? '' : 's'} from ${basename(source.file)}`);
+  }
+  return missing;
 }
 
 /** A colour word for a report: how much artwork came across. */

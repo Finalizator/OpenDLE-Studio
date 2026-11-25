@@ -25,6 +25,7 @@ function withAutomationFlag(url) {
 export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, shell }, args) {
   const { values } = parseArgs({ args, options: {
     url: { type: 'string' }, profile: { type: 'string' }, 'automation-port': { type: 'string' },
+    hidden: { type: 'boolean' }, show: { type: 'boolean' },
   } });
   const automationPort = Number(values['automation-port'] || 0);
   if (values['automation-port'] !== undefined && (!Number.isInteger(automationPort) || automationPort < 1 || automationPort > 65535)) {
@@ -38,6 +39,10 @@ export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, she
     // a Node test client is not a browser and must still be able to attach.
     app.commandLine.appendSwitch('remote-allow-origins', '*');
   }
+  // An automation window is invisible unless someone asks to watch it. It is a real window with a
+  // real GPU surface — a scenario drives the same pixels a person would — it simply never shows and
+  // never takes the taskbar, so a test run cannot interrupt the work happening on the same machine.
+  const hidden = Boolean(values.hidden) && !values.show;
   const initialURL = automationPort ? withAutomationFlag(localEditorURL(values.url)) : localEditorURL(values.url);
   if (!values.profile) throw new Error('Studio requires a persistent --profile directory');
   const profile = resolve(values.profile);
@@ -64,12 +69,22 @@ export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, she
     const window = new BrowserWindow({
       title: 'OpenDLE: Studio', width: 1440, height: 960, minWidth: 960, minHeight: 640,
       backgroundColor: '#101418', icon: join(root, 'public', 'studio-icon.png'), show: false,
-      autoHideMenuBar: true,
-      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
+      autoHideMenuBar: true, skipTaskbar: hidden,
+      // A hidden window is throttled by Chromium: timers and animation frames slow to a crawl and a
+      // scenario that needs frames — anything in the 3D view — would measure the throttle, not the
+      // code. `backgroundThrottling: false` keeps a hidden window running at full speed.
+      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
+        ...(hidden ? { backgroundThrottling: false } : {}) },
     });
     windows.set(url, window);
     window.on('closed', () => windows.delete(url));
-    window.once('ready-to-show', () => window.show());
+    if (hidden) {
+      // The page is told it is hidden (that is how a hidden window behaves) but it still gets
+      // frames, so a scenario can drive it end to end without a window on screen.
+      window.once('ready-to-show', () => console.log('OpenDLE Studio: window ready (hidden)'));
+    } else {
+      window.once('ready-to-show', () => window.show());
+    }
     // Closing asks the page to save, and the answer is bounded: a save that never settles — a
     // server that stopped answering, a document too large for the request — used to leave the
     // window unclosable, because the flag that guarded re-entry only cleared once the save did.

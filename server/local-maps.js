@@ -28,8 +28,8 @@ function sizeText(bytes) {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-/** Every file name inside an archive (`.pk3` and Quake's `.pak` are both zips), or null. */
-function listArchive(file) {
+/** Every file name inside an archive (a `.pk3` and a `.zip` are both zips), or null. */
+export function listArchive(file) {
   return new Promise(done => {
     yauzl.open(file, { lazyEntries: true, autoClose: true }, (error, zip) => {
       if (error) { done(null); return; }
@@ -156,6 +156,43 @@ function inside(root, path) {
   const target = resolve(base, String(path ?? ''));
   if (target === base || target.startsWith(`${base}${sep}`)) return target;
   throw new Error('That file is outside the Projects folder');
+}
+
+/**
+ * The bytes of several entries of one archive, in a single pass.
+ *
+ * A map names a hundred textures and each one lives somewhere in a `.pk3` of ten thousand entries;
+ * opening the archive once per picture is the difference between a second and a minute.
+ */
+export function readArchiveEntries(file, wanted, { limit = READ_LIMIT } = {}) {
+  const names = new Map([...wanted].map(name => [name.toLowerCase(), name]));
+  return new Promise(done => {
+    yauzl.open(file, { lazyEntries: true, autoClose: true }, (error, zip) => {
+      const found = new Map();
+      if (error) { done(found); return; }
+      let settled = false;
+      const finish = () => { if (!settled) { settled = true; done(found); } };
+      zip.on('error', finish);
+      zip.on('end', finish);
+      zip.on('entry', entry => {
+        if (settled) return;
+        const wantedName = names.get(entry.fileName.toLowerCase());
+        if (!wantedName || entry.uncompressedSize > limit) { zip.readEntry(); return; }
+        zip.openReadStream(entry, (streamError, stream) => {
+          if (streamError) { zip.readEntry(); return; }
+          const chunks = [];
+          stream.on('error', () => zip.readEntry());
+          stream.on('data', chunk => chunks.push(chunk));
+          stream.on('end', () => {
+            if (found.size < names.size) found.set(wantedName, Buffer.concat(chunks));
+            if (found.size >= names.size) { finish(); return; }
+            zip.readEntry();
+          });
+        });
+      });
+      zip.readEntry();
+    });
+  });
 }
 
 /** One entry of a `.pk3`/`.zip`/`.pak`, read whole, or null when it is not there. */

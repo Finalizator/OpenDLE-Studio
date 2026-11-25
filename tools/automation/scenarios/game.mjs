@@ -21,7 +21,7 @@ import { createPortableBuild } from '../../../server/export-build.js';
 import { resolveDist } from '../../../server/electron-runtime.js';
 import { connect } from '../cdp.mjs';
 import { track } from '../lifecycle.mjs';
-import { extraElectronArgs, freePort } from '../studio.mjs';
+import { extraElectronArgs, freePort, windowVisibilityArgs } from '../studio.mjs';
 
 export const needsStudio = false;
 
@@ -110,7 +110,7 @@ async function launchPlayer(appDir, executable) {
   delete env.ELECTRON_RUN_AS_NODE;
   const binary = executable;
   chmodSync(binary, 0o755);
-  const child = track(spawn(binary, ['--automation-port', String(port), ...extraElectronArgs()],
+  const child = track(spawn(binary, ['--automation-port', String(port), ...windowVisibilityArgs(), ...extraElectronArgs()],
     { cwd: appDir, stdio: ['ignore', 'pipe', 'pipe'], env }));
   const log = [];
   child.stdout?.on('data', chunk => log.push(String(chunk).trim()));
