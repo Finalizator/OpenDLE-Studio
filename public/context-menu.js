@@ -32,7 +32,11 @@ function makeMenuItem(item, owner) {
   button.type = 'button';
   button.className = itemClass(item);
   button.setAttribute('role', 'menuitem');
-  if (item.checked !== undefined) button.setAttribute('role', 'menuitemcheckbox');
+  if (item.checked !== undefined) {
+    // A tick alone tells a screen reader nothing, and a scenario driving the menu cannot read it.
+    button.setAttribute('role', 'menuitemcheckbox');
+    button.setAttribute('aria-checked', String(Boolean(item.checked)));
+  }
   if (item.disabled) button.disabled = true;
   if (item.danger) button.dataset.danger = 'true';
   const tick = document.createElement('span');

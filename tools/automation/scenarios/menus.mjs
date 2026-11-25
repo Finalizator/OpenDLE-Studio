@@ -48,6 +48,30 @@ export async function run({ page }) {
     await page.key('Escape');
     await wait(120);
   };
+  const openBrushMenu = async () => {
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(onBrush.x), y: Math.round(onBrush.y), button: 'right', buttons: 2, clickCount: 1 });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(onBrush.x), y: Math.round(onBrush.y), button: 'right', buttons: 0, clickCount: 1 });
+    await wait(250);
+  };
+  const solidItem = async () => (await page.evaluate('window.__opendle.ui.menu()')).items
+    // The checked item's text carries the tick glyph in front of its label.
+    .find(item => (item.text || '').includes('blocks movement, shots and sight'));
+
+  // A brush blocks everything by default, and the toggle is what makes it a passthrough object.
+  const solid = await solidItem();
+  check('a brush is solid by default', solid?.checked === true, solid);
+  await page.evaluate(`window.__opendle.ui.click(${JSON.stringify(solid.ref)})`);
+  await wait(300);
+  const passable = (await page.evaluate('window.__opendle.brushes()'))[0];
+  check('the toggle made the brush passable', passable?.passable === true, passable);
+  await openBrushMenu();
+  check('the menu shows it is no longer solid', (await solidItem())?.checked === false);
+  await closeMenu();
+  await openBrushMenu();
+  await page.evaluate(`window.__opendle.ui.click(${JSON.stringify((await solidItem()).ref)})`);
+  await wait(300);
+  check('and turning it back on makes it solid again',
+    (await page.evaluate('window.__opendle.brushes()'))[0].passable === false);
   await closeMenu();
   const empty = await screen(-320, 200);
   await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(empty.x), y: Math.round(empty.y), button: 'right', buttons: 2, clickCount: 1 });

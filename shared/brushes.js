@@ -258,6 +258,44 @@ export function brushSurfaceAt(brushes, x, y) {
   return best;
 }
 
+/**
+ * A brush as the game's traces see it: outward half-spaces plus a bounding box.
+ *
+ * Everything the *game* decides — whether a monster sees the player, whether it can take a step,
+ * where a rocket stops, where a bullet lands — asks `geometryDistance`, which knew only about
+ * sector walls, floors and ceilings. A level with brushes in it therefore had monsters looking,
+ * walking and shooting straight through them. The volumes are what a trace tests, and
+ * `shared/brush-trace.js` is the ray test itself.
+ *
+ * The planes keep the winding the brush was built with, the same convention `faceDistance` and
+ * `brushPolygons` already rely on: a face's normal points out, so `normal . point <= distance` is
+ * inside. A `passable` brush — the mapper's "passthrough object" — is left out, which is what makes
+ * it walkable, shootable and see-through; `passable` is set from the brush menu and skipped by
+ * `collisionMesh` too.
+ */
+export function brushVolumes(brushes) {
+  const volumes = [];
+  for (const brush of brushes || []) {
+    if (!brush || brush.passable) continue;
+    const faces = facesOf(brush);
+    if (faces.length < 4) continue;
+    const box = brushBounds(brush);
+    if (![box.x, box.y, box.z, box.width, box.depth, box.height].every(Number.isFinite)) continue;
+    const planes = [];
+    for (const face of faces) {
+      const plane = facePlane(face);
+      planes.push(plane.normal[0], plane.normal[1], plane.normal[2], plane.distance);
+    }
+    volumes.push({
+      id: brush.id,
+      planes,
+      minX: box.x, minY: box.y, minZ: box.z,
+      maxX: box.x + box.width, maxY: box.y + box.depth, maxZ: box.z + box.height,
+    });
+  }
+  return volumes;
+}
+
 /** Whether a point is inside the brush, with an optional margin. */
 export function brushContains(brush, point, margin = 0) {
   return facesOf(brush).every(face => faceDistance(face, point) <= margin);

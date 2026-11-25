@@ -77,6 +77,7 @@ export function createUiDriver({
     if ('value' in element && typeof element.value === 'string' && element.value &&
       !['button', 'submit', 'reset'].includes(element.type)) entry.value = summariseText(element.value, 40);
     if (element.type === 'checkbox' || element.type === 'radio') entry.checked = element.checked;
+    if (element.getAttribute('aria-checked') !== null) entry.checked = element.getAttribute('aria-checked') === 'true';
     if (element.tagName === 'SELECT') entry.options = element.options.length;
     return entry;
   };

@@ -443,6 +443,22 @@ provider credits or network access are required for tests.
   with no sectors is walkable: the solid leaf you stand on is a floor. Brushes are static, so they
   are never in the movable collider, and the stand-in ground plane appears only when a project has
   neither sectors nor brushes.
+- **A brush blocks the game, not just the player.** Collision alone left everything the *game*
+  decides passing through: a monster saw, walked and shot through brush walls, and missiles flew
+  through them, because `geometryDistance` — the one trace behind sight, monster steps, hitscan and
+  projectiles — knew only about sector walls, floors and ceilings. `brushVolumes` (in
+  `shared/brushes.js`) turns a level's brushes into convex volumes — outward half-spaces plus a
+  bounding box — `createRuntime` keeps them as `state.brushTrace`, and `shared/trace-grid.js`
+  buckets them by footprint beside the walls, so a trace tests only the brushes in the cells it
+  crosses. `volumeDistance` in `shared/brush-trace.js` clips the ray against every half-space at
+  once. It imports nothing on purpose: `combat.js` sits inside an import cycle through `project.js`
+  (`combat → trace-grid` is safe, `combat → brushes → project` is not), which is why the geometry
+  builder is not in the same module. A trace that *starts* inside a brush answers nothing rather
+  than zero, so a thing embedded in a wall can still see, shoot and step out.
+- **A passthrough brush is the mapper's exception.** The brush menu's *Solid: blocks movement, shots
+  and sight* toggle sets `brush.passable`. Such a brush is skipped by `brushVolumes` (nothing sees,
+  walks or shoots through it) and by `collisionMesh` (the player passes too), while still being
+  drawn and selectable — the "decorative, non-solid" object a TrenchBroom mapper expects.
 - **3D scene editor:** switch between 2D and 3D on the Layout toolbar.
   Fly freely, select rendered objects/walls/sectors or vertex markers, edit
   Properties, drag colored transform handles, place objects and draw rooms.

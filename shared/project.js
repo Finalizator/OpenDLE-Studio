@@ -748,6 +748,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     object(brush, 'Brush');
     identifier(brush.id, 'Brush ID');
     assert(typeof brush.name === 'string' && brush.name.length <= 100, 'Brush name must contain at most 100 characters');
+    if (brush.passable !== undefined) assert(typeof brush.passable === 'boolean', 'Brush passable flag must be boolean');
     assert(brush.faces === undefined || brush.planes === undefined, 'A brush stores faces or planes, never both');
     const faces = brush.faces || [];
     if (brush.planes !== undefined) array(brush.planes, 'Brush planes', 64);

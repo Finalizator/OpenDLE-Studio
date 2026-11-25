@@ -170,6 +170,9 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
   // in the static mesh only: the movable one is rebuilt every time a door moves.
   if (!dynamic && project.map.brushes?.length) {
     for (const brush of project.map.brushes) {
+      // A brush the mapper marked passable is scenery: nothing walks into it, and it must not be
+      // in the collision mesh either, or "walk through it" would only hold for the game's own traces.
+      if (brush.passable) continue;
       for (const polygon of brushPolygons(brush)) {
         // A brush's face is convex and its outline is already ordered, so a fan is its triangulation.
         for (let index = 1; index < polygon.length - 1; index++) {

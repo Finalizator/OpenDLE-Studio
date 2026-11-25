@@ -39,6 +39,7 @@ import {
   PLAYER_CYLINDER, SURFACE_REACH, WORLD_UP, alignUp, dot as dotMap, eyePosition, playerBasis, playerCentre, viewDirection,
 } from './gravity.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
+import { brushVolumes } from './brushes.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { advanceSwitches, pressSwitch, pressUsedSwitches, wallCanBeShot, wallSwitchRepeats } from './switches.js';
 import { advancePlaneMotion } from './plane-motion.js';
@@ -370,6 +371,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     messageTime: 0,
     walls: wallSegments(project),
     sectors,
+    // What a brush level has instead of walls: the solid brushes as convex volumes, for sight
+    // traces, monster steps, bullets and missiles. Built once, because brushes do not move.
+    brushTrace: brushVolumes(project.map.brushes),
     animations: new Map(entities.filter(entity => entity.animation?.autoPlay).map(entity => [entity.id, { ...entity.animation, playing: true, revision: 0 }])),
     animationFinished: new Set(),
     physics: null,

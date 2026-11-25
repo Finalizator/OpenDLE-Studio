@@ -1,5 +1,6 @@
 import { sectorAt, entitySector, containsPoint } from './sectors.js';
 import { traceGrid, forEachCellAlong } from './trace-grid.js';
+import { volumeDistance } from './brush-trace.js';
 import { recordDamage } from './player-state.js';
 
 /**
@@ -102,6 +103,12 @@ export function geometryDistance(state, origin, direction, range, movement = fal
     if (!front && !back && !wall.solid) return;
     nearest = distance;
   };
+  // Brush faces block sight, bullets, missiles and steps alike: a brush is solid or the mapper
+  // marked it passable, and a passable one never reaches this list.
+  const testBrush = brush => {
+    const distance = volumeDistance(brush, origin, direction, nearest);
+    if (distance < nearest) nearest = distance;
+  };
   // Two height planes per sector, without building a two element array for each of them.
   const testSector = sector => {
     let distance = (sector.floorHeight - origin.z) / vertical;
@@ -117,7 +124,7 @@ export function geometryDistance(state, origin, direction, range, movement = fal
   const inside = origin.x >= grid.minX && origin.x <= grid.maxX && origin.y >= grid.minY && origin.y <= grid.maxY;
   if (inside) {
     const visited = vertical ? new Set() : null;
-    forEachCellAlong(grid, origin.x, origin.y, direction.x, direction.y, range, (walls, cellSectors, exit) => {
+    forEachCellAlong(grid, origin.x, origin.y, direction.x, direction.y, range, (walls, cellSectors, exit, cellBrushes) => {
       for (let index = 0; index < walls.length; index++) testWall(walls[index]);
       if (visited) for (let index = 0; index < cellSectors.length; index++) {
         const sector = cellSectors[index];
@@ -125,16 +132,19 @@ export function geometryDistance(state, origin, direction, range, movement = fal
         visited.add(sector);
         testSector(sector);
       }
+      for (let index = 0; index < cellBrushes.length; index++) testBrush(cellBrushes[index]);
       return nearest <= exit;
     });
     if (visited) for (let index = 0; index < grid.oversizedSectors.length; index++) {
       const sector = grid.oversizedSectors[index];
       if (!visited.has(sector)) testSector(sector);
     }
+    for (let index = 0; index < grid.oversizedBrushes.length; index++) testBrush(grid.oversizedBrushes[index]);
     return nearest;
   }
   for (let index = 0; index < state.walls.length; index++) testWall(state.walls[index]);
   if (Math.abs(vertical) > 1e-9) for (const sector of state.sectors) testSector(sector);
+  for (const brush of state.brushTrace || []) testBrush(brush);
   return nearest;
 }
 /**

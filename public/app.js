@@ -4351,6 +4351,12 @@ function brushMenuItems(brush) {
       const target = next.map.brushes.find(item => item.id === brush.id);
       target.locked = !brush.locked;
     }, brush.locked ? 'Brush unlocked' : 'Brush locked') },
+    // A mapper's "passthrough object": the brush stays where it is and is drawn, but nothing is in
+    // its way any more — not a step, not a bullet, not a monster's line of sight.
+    { label: 'Solid: blocks movement, shots and sight', checked: !brush.passable, run: () => edit(next => {
+      const target = next.map.brushes.find(item => item.id === brush.id);
+      target.passable = !brush.passable;
+    }, brush.passable ? 'Brush is solid again' : 'Brush is passable: walk, shoot and see through it') },
     { label: 'Move to layer', submenu: worldLayers(project).map(layer => ({
       label: layer.name, run: () => edit(next => {
         next.map.brushes.find(item => item.id === brush.id).layerId = layer.id;
@@ -8400,6 +8406,8 @@ function installAutomation() {
         // How many faces keep an imported texture basis (`uvBasis`).
         bases: facesOf(brush).filter(face => face?.uvBasis).length,
         locked: Boolean(brush.locked), bounds: brushBounds(brush), faceList,
+        // A passthrough brush: still drawn, but nothing collides with it or is hidden by it.
+        passable: Boolean(brush.passable),
       };
     }),
     isReady: () => Boolean(project && !$('editor-shell').hidden),

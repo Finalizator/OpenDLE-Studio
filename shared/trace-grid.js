@@ -12,27 +12,32 @@
  * kept on a list that every trace consults instead of being duplicated across the map.
  *
  * The grid is derived from the wall array and cached against it; a rebuilt level gets a
- * fresh array and therefore a fresh grid.
+ * fresh array and therefore a fresh grid. Brushes are bucketed the same way, side by side with
+ * the walls, because a trace has to see them too: a level built from brushes has no walls at
+ * all, and a level with both has to answer with whichever is nearer.
  */
 
 const CELL = 128;
 const MAX_COLUMNS = 512;
 const MAX_SECTOR_CELLS = 64;
+const MAX_BRUSH_CELLS = 64;
 
 const grids = new WeakMap();
 
 export function traceGrid(state) {
   const walls = state.walls || [];
   const sectors = state.sectors || [];
+  const brushes = state.brushTrace || [];
   const cached = grids.get(walls);
   if (cached && cached.count === walls.length && cached.first === walls[0] && cached.last === walls[walls.length - 1]
-    && cached.sectorCount === sectors.length && cached.sectorFirst === sectors[0]) return cached;
-  const grid = createTraceGrid(walls, sectors);
+    && cached.sectorCount === sectors.length && cached.sectorFirst === sectors[0]
+    && cached.brushCount === brushes.length && cached.brushFirst === brushes[0]) return cached;
+  const grid = createTraceGrid(walls, sectors, brushes);
   grids.set(walls, grid);
   return grid;
 }
 
-export function createTraceGrid(walls, sectors = []) {
+export function createTraceGrid(walls, sectors = [], brushes = []) {
   const count = walls.length;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   const grow = (x, y) => {
@@ -47,6 +52,7 @@ export function createTraceGrid(walls, sectors = []) {
     if (!b) continue;
     grow(b.minX, b.minY); grow(b.maxX, b.maxY);
   }
+  for (const brush of brushes) { grow(brush.minX, brush.minY); grow(brush.maxX, brush.maxY); }
   const usable = Number.isFinite(minX) && maxX > minX && maxY > minY;
   // A level that spans more than MAX_COLUMNS cells gets coarser cells rather than a
   // grid too large to walk; 512 x 512 buckets is already far more than a blockmap.
@@ -55,6 +61,7 @@ export function createTraceGrid(walls, sectors = []) {
   const rows = usable ? Math.ceil((maxY - minY) / cellSize) + 1 : 1;
   const wallCells = Array.from({ length: columns * rows }, () => []);
   const sectorCells = Array.from({ length: columns * rows }, () => []);
+  const brushCells = Array.from({ length: columns * rows }, () => []);
   for (let index = 0; index < count; index++) {
     const wall = walls[index];
     const x0 = Math.min(wall.start.x, wall.end.x), x1 = Math.max(wall.start.x, wall.end.x);
@@ -72,9 +79,20 @@ export function createTraceGrid(walls, sectors = []) {
     if ((column1 - column0 + 1) * (row1 - row0 + 1) > MAX_SECTOR_CELLS) { oversizedSectors.push(sector); continue; }
     for (let row = row0; row <= row1; row++) for (let column = column0; column <= column1; column++) sectorCells[row * columns + column].push(sector);
   }
+  // Brushes are pruned by their footprint: a brush spanning half the level would be copied into
+  // thousands of buckets, so it goes on a list every trace consults instead.
+  const oversizedBrushes = [];
+  for (const brush of brushes) {
+    const column0 = clampCell((brush.minX - minX) / cellSize, columns), column1 = clampCell((brush.maxX - minX) / cellSize, columns);
+    const row0 = clampCell((brush.minY - minY) / cellSize, rows), row1 = clampCell((brush.maxY - minY) / cellSize, rows);
+    if ((column1 - column0 + 1) * (row1 - row0 + 1) > MAX_BRUSH_CELLS) { oversizedBrushes.push(brush); continue; }
+    for (let row = row0; row <= row1; row++) for (let column = column0; column <= column1; column++) brushCells[row * columns + column].push(brush);
+  }
   return {
-    cellSize, minX, minY, maxX, maxY, columns, rows, walls: wallCells, sectors: sectorCells, oversizedSectors,
+    cellSize, minX, minY, maxX, maxY, columns, rows, walls: wallCells, sectors: sectorCells, brushes: brushCells,
+    oversizedSectors, oversizedBrushes,
     count, first: walls[0], last: walls[count - 1], sectorCount: sectors.length, sectorFirst: sectors[0],
+    brushCount: brushes.length, brushFirst: brushes[0],
   };
 }
 
@@ -86,9 +104,9 @@ function clampCell(value, length) {
 /**
  * Walks the cells a ray crosses, nearest first.
  *
- * `visit(walls, sectors, exit)` is handed the contents of one cell and the distance at
- * which the ray leaves it; returning true stops the walk. A wall or sector is stored in
- * every cell its bounding box touches, so anything hit inside a visited cell is tested.
+ * `visit(walls, sectors, exit, brushes)` is handed the contents of one cell and the distance
+ * at which the ray leaves it; returning true stops the walk. A wall, sector or brush is stored
+ * in every cell its bounding box touches, so anything hit inside a visited cell is tested.
  */
 export function forEachCellAlong(grid, originX, originY, directionX, directionY, range, visit) {
   let column = clampCell((originX - grid.minX) / grid.cellSize, grid.columns);
@@ -103,8 +121,8 @@ export function forEachCellAlong(grid, originX, originY, directionX, directionY,
   for (;;) {
     const exit = Math.min(tMaxX, tMaxY);
     const index = row * grid.columns + column;
-    const walls = grid.walls[index], sectors = grid.sectors[index];
-    if ((walls.length || sectors.length) && visit(walls, sectors, exit)) return;
+    const walls = grid.walls[index], sectors = grid.sectors[index], brushes = grid.brushes[index];
+    if ((walls.length || sectors.length || brushes.length) && visit(walls, sectors, exit, brushes)) return;
     if (!(exit <= range)) return;
     if (tMaxX <= tMaxY) {
       column += stepX;

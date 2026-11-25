@@ -57,7 +57,10 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   'frame', 'eventRunners',
   // How many of an item a level has dropped so far (`DropItem "Clip", 256, 5`); a save without it
   // is a save taken before anything died, which is no drop history at all.
-  'droppedItems']);
+  'droppedItems',
+  // The level's brushes as trace volumes. Rebuilt from the project when the runtime is created, and
+  // storing them would put every plane of every brush into every save.
+  'brushTrace']);
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.
