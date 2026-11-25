@@ -4031,18 +4031,28 @@ otherwise `brushSurfaceAt()` from `shared/brushes.js`. Without that, placing in 
 brush level used height zero, which in a Half-Life map (floors at -1600) is under the
 world. `scene-editor.js` `floorPointAt()` keeps the same rule for drops.
 
-An item with `submenu: [...]` opens a second panel beside itself on hover or focus
-(click on touch, ArrowRight from the keyboard), flips to the left edge when it would
-overflow the window, and `Escape` / ArrowLeft step back out of it before closing the
-menu. The child panels are part of the same open menu for dismissal purposes —
-otherwise pressing an item in one would close the menu before the item could run.
+An item with `submenu: [...]` opens a second panel beside itself on hover or on
+keyboard focus (click on touch, ArrowRight from the keyboard), flips to the left edge
+when it would overflow the window, and `Escape` / ArrowLeft step back out of it before
+closing the menu. The child panels are part of the same open menu for dismissal
+purposes — otherwise pressing an item in one would close the menu before the item
+could run.
 
-A submenu closes when one of its items is pressed, when another item with a submenu
-replaces it, on Escape, or when the menu closes — but **not** when the pointer passes
-over an ordinary item of the parent. That was tried and it is a trap: a panel clamped
-to the bottom of the window sits lower than the item that opened it, so the pointer
-travelling to an entry crosses the parent menu, the panel disappears, and the click
-lands on the canvas underneath instead.
+**One panel at a time.** Every item, with a submenu or not, runs the same
+`showItem()`, which drops every panel outside the branch the pointer is in and then
+opens the item's own. Hovering *Brush* and then *Create object* shows the second panel
+and takes the first away; hovering an ordinary item folds the open panel. Closing on an
+ordinary item is safe because a panel is anchored to the row that opened it — its top
+is at or above that row, and when it has to be pushed up it is pushed to the window
+bottom, so the row is always covered and the way in is a sideways move, never a path
+across other items. A panel is matched to the item element that opened it
+(`openerOf`), not to its label: two items may share a label.
+
+**Focus is not intent.** The menu focuses its first item as it opens, and a press
+focuses the item it is about to click; unfolding a submenu on either opened a panel
+nobody asked for (a 3D right click, whose first item is *Brush*, opened that panel the
+moment the menu appeared). Only arrows, Home or End set `keyboardNav`, and only a real
+`pointerenter` opens a pointer-driven panel.
 
 The menu's `blur` listener is deliberately **not** captured. A `blur` fires on the
 element that loses focus and does not bubble, but a capturing listener on `window`

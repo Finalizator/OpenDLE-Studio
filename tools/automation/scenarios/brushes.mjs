@@ -136,6 +136,26 @@ export async function run({ page }) {
     ['Create object', 'Align and distribute', 'Group selected objects', 'Lock / unlock selected objects',
       'Duplicate selection', 'Place ', 'Copy view coordinates'].every(want => labels.some(text => text.startsWith(want))),
     labels);
+  // One panel, and no panel nobody asked for: the menu focuses its first item as it opens, and
+  // that item is "Brush", which has a submenu — unfolding then is what started the stack.
+  const panelsNow = () => page.evaluate(`document.querySelectorAll('.context-menu').length`);
+  check('the menu opens as a single panel', (await panelsNow()) === 1);
+  const hoverRootItem = async text => {
+    const point = await page.evaluate(`(() => {
+      const item = [...document.querySelectorAll('.context-menu:not([data-submenu]) .context-menu-item')]
+        .find(candidate => candidate.textContent.trim().startsWith(${JSON.stringify(text)}));
+      if (!item) return null;
+      const box = item.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    })()`);
+    if (!point) throw new Error(`the menu has no item "${text}"`);
+    await page.move(point.x, point.y);
+    await wait(220);
+  };
+  await hoverRootItem('Create object');
+  check('hovering an item unfolds its panel', (await panelsNow()) === 2);
+  await hoverRootItem('Lock / unlock selected objects');
+  check('hovering an ordinary item folds the panel away', (await panelsNow()) === 1);
   await page.key('Escape');
   await wait(200);
   check('Escape closed the menu', (await page.evaluate('window.__opendle.ui.menu()')).open === false);

@@ -48,19 +48,22 @@ function makeMenuItem(item, owner) {
     hint.textContent = item.hint;
     button.append(hint);
   }
+  // Which submenu is on screen is decided here, for every item, not only for the ones that carry
+  // one: hovering an ordinary item closes the panel another item opened, so walking down a menu
+  // leaves one panel open instead of a stack of them.
+  button.addEventListener('pointerenter', () => owner.showItem(item, button, 'pointer'));
   if (item.submenu?.length) {
-    // A submenu opens on hover or focus, which is how every other menu behaves; the click is
-    // kept for keyboards and touch, where there is no hover to rely on.
+    // A submenu opens on hover or on keyboard focus, which is how every other menu behaves; the
+    // click is kept for touch, where there is neither.
     button.setAttribute('aria-haspopup', 'menu');
     button.setAttribute('aria-expanded', 'false');
     const chevron = document.createElement('span');
     chevron.className = 'context-menu-chevron';
     chevron.textContent = '\u25b8';
     button.append(chevron);
-    // The panel appears under the pointer that opened it, and a submenu that pops open because
-    // the cursor happened to be over its item is noise: wait for a real move.
-    button.addEventListener('pointerenter', () => { if (owner.hoverReady()) owner.openSubmenu(item, button); });
-    button.addEventListener('focus', () => owner.openSubmenu(item, button));
+    // Focus arrives by itself when the menu opens, or on the press that also produces a click;
+    // unfolding a submenu then would open a panel nobody asked for.
+    button.addEventListener('focus', () => owner.showItem(item, button, 'focus'));
     button.addEventListener('click', event => {
       event.preventDefault();
       event.stopPropagation();
@@ -70,11 +73,6 @@ function makeMenuItem(item, owner) {
     });
     return button;
   }
-  // A submenu stays open until one of its items is pressed, another item with its own submenu
-  // replaces it, Escape steps out, or the menu closes. Closing it as the pointer passes over an
-  // ordinary item looks tidy and is a trap: the panel can sit lower than the item that opened
-  // it, so travelling to an entry crosses the parent menu and the panel vanishes from under the
-  // pointer that was about to press it.
   button.addEventListener('click', event => {
     event.preventDefault();
     event.stopPropagation();
@@ -102,9 +100,9 @@ export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
   const list = (items || []).filter(Boolean);
   if (!list.some(item => !item.separator)) return null;
   const state = { menu: null, children: [], anchor };
-  let pointerMoved = false;
-  const onFirstMove = () => { pointerMoved = true; document.removeEventListener('pointermove', onFirstMove, true); };
-  document.addEventListener('pointermove', onFirstMove, true);
+  // Whether the pointer or the keyboard is driving the menu. Focus alone means nothing: a menu
+  // focuses its first item as it opens, and a press focuses the item it is about to click.
+  let keyboardNav = false;
   const build = (entries, label2, parentItem) => {
     const panel = document.createElement('div');
     panel.className = 'context-menu';
@@ -126,21 +124,57 @@ export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
     }
     return panel;
   };
+  /** Which item opened each child panel, so a panel can be matched to its item, not to a label. */
+  const openerOf = new Map();
+  const panelOf = element => element?.closest?.('.context-menu') || null;
   /** The child panel an item opened, so hovering it again does not rebuild it. */
-  const submenuFor = element => state.children.find(child => child.dataset.parentLabel === element.dataset.submenuFor);
+  const submenuFor = element => state.children.find(child => openerOf.get(child) === element);
   const closeSubmenus = (from = 0) => {
-    for (const child of state.children.slice(from)) child.remove();
+    for (const child of state.children.slice(from)) {
+      child.remove();
+      openerOf.get(child)?.setAttribute('aria-expanded', 'false');
+      openerOf.delete(child);
+    }
     state.children.length = from;
-    for (const element of state.menu.querySelectorAll('[aria-expanded="true"]')) element.setAttribute('aria-expanded', 'false');
+  };
+  /** The panels that lead to `element`: the one it sits in, and the ones its parents opened. */
+  const branchOf = element => {
+    const branch = new Set();
+    for (let panel = panelOf(element); panel && panel !== state.menu; panel = panelOf(openerOf.get(panel))) branch.add(panel);
+    return branch;
+  };
+  const dropPanel = panel => {
+    panel.remove();
+    const index = state.children.indexOf(panel);
+    if (index >= 0) state.children.splice(index, 1);
+    openerOf.get(panel)?.setAttribute('aria-expanded', 'false');
+    openerOf.delete(panel);
+  };
+  /**
+   * Shows what `element` opens and takes down everything else, which is what keeps the panels
+   * from piling up beside each other as the pointer walks down the menu. Travel to a panel is
+   * safe: it is anchored to the row that opened it (its top sits at or above that row, its bottom
+   * at the window bottom when it has to be pushed up), so the way in is a sideways move.
+   */
+  const showItem = (item, element, source = 'pointer') => {
+    if (!element) return;
+    // A hover is where the pointer is, a focus is only where the caret is.
+    if (source === 'pointer') keyboardNav = false;
+    else if (!keyboardNav) return;
+    const keep = branchOf(element);
+    const own = submenuFor(element);
+    if (own) keep.add(own);
+    for (const child of [...state.children]) if (!keep.has(child)) dropPanel(child);
+    if (item?.submenu?.length) openSubmenu(item, element);
   };
   const openSubmenu = (item, element) => {
     if (!item?.submenu?.length || !element) return;
     const existing = submenuFor(element);
     if (existing) return;
     const panel = build(item.submenu, item.label, element);
-    panel.dataset.parentLabel = item.label;
     document.body.append(panel);
     state.children.push(panel);
+    openerOf.set(panel, element);
     // Beside the item, on whichever side fits: a menu opened near the right edge has to
     // unfold to the left or it would hang off the window.
     const box = element.getBoundingClientRect();
@@ -151,9 +185,11 @@ export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
     panel.style.top = `${Math.round(top)}px`;
     element.setAttribute('aria-expanded', 'true');
     const first = panel.querySelector('.context-menu-item:not([disabled])');
+    // The panel takes the caret, which is not a reason for its first item to unfold as well.
+    keyboardNav = false;
     first?.focus({ preventScroll: true });
   };
-  const owner = { openSubmenu, submenuFor, closeSubmenus, hoverReady: () => pointerMoved };
+  const owner = { openSubmenu, submenuFor, closeSubmenus, showItem };
   const menu = build(list, label);
   if (!menu.querySelector('.context-menu-item')) return null;
   state.menu = menu;
@@ -179,19 +215,19 @@ export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
     // steps back out of it rather than closing the whole menu.
     const panel = panelsOf(state).find(node => node.contains(document.activeElement)) || menu;
     const nested = panel !== menu;
+    if ((event.key === 'Escape' || event.key === 'ArrowLeft') && nested) {
+      // Step out one panel and land the caret back on the item that opened it. The panels only
+      // ever form one branch, so this drops the panel and the ones unfolded from it.
+      event.preventDefault();
+      const opener = openerOf.get(panel);
+      closeSubmenus(state.children.indexOf(panel));
+      opener?.focus();
+      return;
+    }
     if (event.key === 'Escape') {
       event.preventDefault();
-      if (nested) { closeSubmenus(1); panel.remove(); menu.querySelector('[aria-expanded="true"]')?.focus(); return; }
       if (state.children.length) { closeSubmenus(); menu.focus(); return; }
       closeContextMenu(); return;
-    }
-    if (event.key === 'ArrowLeft' && nested) {
-      event.preventDefault();
-      const parentLabel = panel.dataset.parentLabel;
-      closeSubmenus(1);
-      panel.remove();
-      [...menu.querySelectorAll('.context-menu-item')].find(item => item.dataset.submenuFor === parentLabel)?.focus();
-      return;
     }
     if (event.key === 'ArrowRight') {
       const focused = document.activeElement;
@@ -201,11 +237,14 @@ export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
         return;
       }
     }
-    if (event.key === 'ArrowDown') { event.preventDefault(); moveFocus(panel, 1); return; }
-    if (event.key === 'ArrowUp') { event.preventDefault(); moveFocus(panel, -1); return; }
-    if (event.key === 'Home') { event.preventDefault(); panel.querySelector('.context-menu-item:not([disabled])')?.focus(); return; }
+    // Moving with the keys is the other way a submenu opens: the arrow lands on the item, and the
+    // item's own focus handler asks this flag before unfolding anything.
+    if (event.key === 'ArrowDown') { event.preventDefault(); keyboardNav = true; moveFocus(panel, 1); return; }
+    if (event.key === 'ArrowUp') { event.preventDefault(); keyboardNav = true; moveFocus(panel, -1); return; }
+    if (event.key === 'Home') { event.preventDefault(); keyboardNav = true; panel.querySelector('.context-menu-item:not([disabled])')?.focus(); return; }
     if (event.key === 'End') {
       event.preventDefault();
+      keyboardNav = true;
       panel.querySelectorAll('.context-menu-item:not([disabled])').length &&
         [...panel.querySelectorAll('.context-menu-item:not([disabled])')].at(-1)?.focus();
       return;
@@ -230,7 +269,6 @@ export function contextMenu(anchor, items, { label = 'Actions' } = {}) {
   ];
   for (const [target, type, handler, capture] of listeners) target.addEventListener(type, handler, capture);
   open.cleanup = () => {
-    document.removeEventListener('pointermove', onFirstMove, true);
     for (const [target, type, handler, capture] of listeners) target.removeEventListener(type, handler, capture);
   };
   return menu;

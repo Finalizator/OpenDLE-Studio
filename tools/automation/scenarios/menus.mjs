@@ -56,6 +56,36 @@ export async function run({ page }) {
   const submenuItems = await page.evaluate(`[...document.querySelectorAll('.context-menu .context-menu-item')].map(item => item.textContent.trim())`);
   check('empty space offers the Brush submenu', submenuItems.some(label => label.startsWith('Brush')), submenuItems);
   check('empty space still offers create/object actions', submenuItems.some(label => label.includes('Create object')), submenuItems);
+
+  // Hovering one submenu parent after another shows one panel at a time. The panels used to pile
+  // up — hovering "Brush" and then "Create object" left the first one standing beside the second —
+  // because opening a submenu never took down the one before it.
+  const hoverMenuItem = async text => {
+    const point = await page.evaluate(`(() => {
+      const item = [...document.querySelectorAll('.context-menu:not([data-submenu]) .context-menu-item')]
+        .find(candidate => candidate.textContent.trim().startsWith(${JSON.stringify(text)}));
+      if (!item) return null;
+      const box = item.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    })()`);
+    if (!point) throw new Error(`the menu has no item "${text}"`);
+    await page.move(point.x, point.y);
+    await wait(220);
+    return page.evaluate(`({
+      panels: document.querySelectorAll('.context-menu').length,
+      labels: [...document.querySelectorAll('.context-menu')].slice(1)
+        .flatMap(panel => [...panel.querySelectorAll('.context-menu-item')]).map(item => item.textContent.trim()),
+    })`);
+  };
+  const brushHover = await hoverMenuItem('Brush');
+  check('hovering a submenu item opens its panel', brushHover.panels === 2 && brushHover.labels.length > 0, brushHover);
+  const createHover = await hoverMenuItem('Create object');
+  check('hovering the next one replaces it instead of stacking a second panel', createHover.panels === 2,
+    { panels: createHover.panels, labels: createHover.labels });
+  check('the replaced panel is gone with its items', !createHover.labels.some(label => /Draw box brush|Draw wedge brush/.test(label)),
+    createHover.labels);
+  const ordinaryHover = await hoverMenuItem('Place enemy here');
+  check('hovering an ordinary item closes the open panel', ordinaryHover.panels === 1, ordinaryHover);
   await closeMenu();
 
   const errors = await page.evaluate('window.__opendle.errors()');

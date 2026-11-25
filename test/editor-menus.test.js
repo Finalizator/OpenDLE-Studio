@@ -82,13 +82,25 @@ test('both view menus offer every object type plus a path from a right click', (
   assert.match(app, /activePathId = null;\s*\n\s*addPathPoint\(position\);/);
 });
 
-test('a submenu is not closed by the pointer crossing the parent menu', () => {
+test('hovering an item leaves one submenu open, not a stack of them', () => {
   const menu = memo('context-menu.js');
-  // Closing on hover looks tidy and loses the panel from under the pointer when it is clamped
-  // to the bottom of the window; the entries then cannot be pressed at all.
-  assert.equal(/pointerenter', \(\) => owner\.closeSubmenus/.test(menu), false,
-    'hovering a parent item does not close the open submenu');
-  assert.match(menu, /closeSubmenus\(1\)/, 'Escape and ArrowLeft still step out of it');
+  // Every item takes the same hover path, submenu or not, so pointing at an ordinary item takes
+  // down the panel another item left open instead of leaving it standing beside it.
+  assert.match(menu, /button\.addEventListener\('pointerenter', \(\) => owner\.showItem\(item, button, 'pointer'\)\)/);
+  assert.match(menu, /const showItem = \(item, element, source = 'pointer'\) => \{/);
+  assert.match(menu, /for \(const child of \[\.\.\.state\.children\]\) if \(!keep\.has\(child\)\) dropPanel\(child\)/);
+  // A panel belongs to the item that opened it, not to its label: two items may share a label, and
+  // a label cannot be matched against an element.
+  assert.match(menu, /const submenuFor = element => state\.children\.find\(child => openerOf\.get\(child\) === element\)/);
+  // Focus is not intent. The menu focuses its first item as it opens, and a press focuses the item
+  // it is about to click; unfolding on either would open a panel nobody asked for.
+  assert.match(menu, /button\.addEventListener\('focus', \(\) => owner\.showItem\(item, button, 'focus'\)\)/);
+  assert.match(menu, /let keyboardNav = false;/);
+  assert.match(menu, /else if \(!keyboardNav\) return;/);
+  assert.match(menu, /keyboardNav = true; moveFocus\(panel, 1\)/, 'arrows are the keyboard driving it');
+  // Escape and ArrowLeft step out of one panel and put the caret back on the item that opened it.
+  assert.match(menu, /closeSubmenus\(state\.children\.indexOf\(panel\)\)/);
+  assert.doesNotMatch(menu, /closeSubmenus\(1\)/);
 });
 
 test('Draw path is a mode that Escape and a right click can leave', () => {
