@@ -20,7 +20,9 @@ import { installDroppedPickupRules } from '/shared/doom-hud.js';
 import { upgradeCrusherRules } from '/shared/doom-specials.js';
 import { installGameDefaults } from './defaults.js';
 import { hydrateAssets } from './assets.js';
-import { checkpointDocument, applyCheckpoint } from '/shared/game-checkpoint.js';
+import { captureGameSave, restoreGameSave } from '/shared/save-game.js';
+import { saveFileDocument, serializeSaveFile, parseSaveFile } from '/shared/save-files.js';
+import { createSaveStore, SAVE_SLOT_COUNT } from '/shared/player-saves.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('view'), hudHost = $('hud');
@@ -100,30 +102,31 @@ function saveSettings() {
 }
 
 /**
+ * Where this game keeps its saves.
+ *
+ * One store for the slots and the save files, in the browser storage of the game's own origin — the
+ * port the server listens on is part of that origin, which is why it is derived from the game and
+ * not chosen at random (see `server/game-port.js`). The studio keeps its slots on its own server; a
+ * shipped game has nowhere but the browser, and a player must not have to care.
+ */
+function saves() {
+  return createSaveStore(localStorage, { identity: identity() });
+}
+
+/**
  * The save files the engine's `saveVariables` and checkpoint rules write.
  *
- * The studio keeps them with the project; an exported game has nowhere but the browser, so they live
- * in `localStorage` under the game's own name. The format belongs to the engine.
+ * The record in a slot, a whole-game save file and a checkpoint written by a rule are one format
+ * (`shared/save-game.js` inside the envelope `shared/save-files.js` describes), so a save means the
+ * same thing wherever a player moves it.
  */
 function saveFileHost() {
-  const prefix = `opendle-game-save-file:${identity().slice(0, 80)}:`;
+  const store = saves();
   return {
     identity: identity(),
-    read: name => { try { return localStorage.getItem(prefix + String(name)); } catch { return null; } },
-    write: (name, text) => {
-      try { localStorage.setItem(prefix + String(name), String(text)); }
-      catch (error) { throw new Error(`the game could not store ${name}: ${error.message}`); }
-    },
-    list: () => {
-      const names = [];
-      try {
-        for (let index = 0; index < localStorage.length; index++) {
-          const key = localStorage.key(index);
-          if (key?.startsWith(prefix)) names.push(key.slice(prefix.length));
-        }
-      } catch { /* storage is optional */ }
-      return names;
-    },
+    read: name => store.readFile(String(name)),
+    write: (name, text) => store.writeFile(String(name), String(text)),
+    list: () => store.fileNames(),
   };
 }
 
@@ -235,7 +238,26 @@ function buildRuntime({ levelId = null, screen = 'playing', progress = null } = 
   // menu row is only shown and made focusable while the HUD cursor is active, so without this the
   // title screen was there in the DOM and invisible on the canvas.
   runtime.hudState.cursor = runtime.gameScreen !== 'playing';
+  publishSaves(runtime);
   return { snapshot, runtime, levelId: playing };
+}
+
+/**
+ * Tells the running game which slots and save files exist.
+ *
+ * The save and load screens draw `{game:save1}`… and a rule's `loadGameState` asks whether a file is
+ * there before offering it, so both are read from storage on every menu that can change them.
+ */
+function publishSaves(runtime) {
+  if (!runtime) return;
+  try {
+    runtime.saveSlots = saves().slotLabels();
+    runtime.saveFiles = new Set(saves().fileNames());
+  } catch (error) {
+    runtime.saveSlots = Array(SAVE_SLOT_COUNT).fill('');
+    runtime.saveFiles = new Set();
+    runtime.saveStatus = `Saves are unavailable: ${error.message}`;
+  }
 }
 
 /**
@@ -247,6 +269,8 @@ function buildRuntime({ levelId = null, screen = 'playing', progress = null } = 
  * leaves the click-to-look and click-to-fire paths in charge.
  */
 let pointerWatch = { runtime: null, screen: null };
+/** Why the last load failed, for `__game.status()`: a save that refuses to load must not be silent. */
+let lastLoadError = '';
 function watchPointerCapture(runtime) {
   const screen = runtime?.gameScreen || null;
   if (runtime === pointerWatch.runtime && screen === pointerWatch.screen) return;
@@ -337,7 +361,7 @@ async function loadArtwork() {
 }
 
 /** Starts a level: the runtime is rebuilt at `playing` and the 3D view is created for it. */
-async function playLevel(levelId, { progress = null } = {}) {
+async function playLevel(levelId, { progress = null, record = null } = {}) {
   if (game.busy) return;
   game.busy = true;
   const token = ++startToken;
@@ -355,7 +379,20 @@ async function playLevel(levelId, { progress = null } = {}) {
       game.hydrated = true;
       if (token !== startToken) return;
     }
-    const engine = buildRuntime({ levelId, screen: 'playing', progress });
+    let engine = buildRuntime({ levelId, screen: 'playing', progress });
+    // A record rebuilds the runtime the save was written from: same level, same carried stats, same
+    // place on the map. Its physics is restored once the collision world exists, which is after the
+    // renderer has been created — a save that moves the player without moving their body would put
+    // the camera inside a wall.
+    let physicsData = null;
+    if (record) {
+      const restored = restoreGameSave(engine.snapshot, record, identity());
+      physicsData = restored.physicsData;
+      engine = { ...engine, runtime: restored.runtime };
+      engine.runtime.hudState.cursor = engine.runtime.gameScreen !== 'playing';
+      publishSaves(engine.runtime);
+      engine.runtime.saveStatus = `Loaded the game${record.levelId ? ` at ${record.levelId}` : ''}.`;
+    }
     // Screen size 11 is the fullscreen HUD, and it hides a classic status bar as a whole. A player
     // who starts a game and finds no bar at the bottom cannot tell that from a broken build, so the
     // bar wins over the screen size — but only for a project that has one.
@@ -384,6 +421,10 @@ async function playLevel(levelId, { progress = null } = {}) {
     }
     if (game.engine?.runtime !== engine.runtime) { preview?.dispose(); return; }
     game.engine.preview = preview;
+    if (physicsData && engine.runtime.physics) {
+      try { engine.runtime.physics.restoreState(physicsData); }
+      catch (error) { showToast(`The saved physics state could not be restored: ${error.message}`, true); }
+    }
     attachHud(game.engine);
     try {
       game.engine.audio = createAudioPlayer(engine.snapshot, message => showToast(message, true), undefined, primeAudio() || undefined);
@@ -393,9 +434,11 @@ async function playLevel(levelId, { progress = null } = {}) {
     canvas.focus();
     stepRuntime(engine.snapshot, engine.runtime, 0, new Set());
     game.engine.hud.update?.(engine.runtime);
-    if (engine.runtime.saveStatus) showToast(engine.runtime.saveStatus, true);
+    // A load reports the level it resumed; that is not an error, so it is not shown as one.
+    if (engine.runtime.saveStatus) showToast(engine.runtime.saveStatus);
   } catch (error) {
     showToast(`Could not start the level: ${error.message}`, true);
+    if (record) lastLoadError = error.message;
     await openMenu();
   } finally {
     game.busy = false;
@@ -438,26 +481,74 @@ function handleRequests(runtime) {
       void playLevel(request.levelId, { progress: carried });
       return;
     }
-    // A rule-written save file: the host is `localStorage`, the document format is the engine's.
+    // A whole-game document: a checkpoint a rule writes, or the file a player keeps. Both hold the
+    // engine's own record in the envelope `shared/save-files.js` describes.
     if (request?.type === 'save-file' || request?.type === 'load-file') {
       const name = String(request.file ?? '').trim();
       try {
         if (request.type === 'save-file') {
-          saveFileHost().write(name, JSON.stringify(checkpointDocument(runtime, game.engine?.levelId)));
-          runtime.saveStatus = `Saved ${name}.`;
+          const record = saveRecord(runtime, game.engine?.levelId);
+          saves().writeFile(name, serializeSaveFile(saveFileDocument({
+            kind: 'game', name, identity: identity(), levelId: game.engine?.levelId || null, record,
+          })));
+          publishSaves(runtime);
+          runtime.saveFileError = '';
+          runtime.saveStatus = `Saved the game to the save file ${name}.`;
         } else {
-          const text = saveFileHost().read(name);
+          const text = saves().readFile(name);
           if (text === null || text === undefined) throw new Error(`there is no save file named ${name}`);
-          applyCheckpoint(runtime, JSON.parse(text));
-          runtime.saveStatus = `Loaded ${name}.`;
+          const document_ = parseSaveFile(text);
+          if (document_.kind !== 'game') throw new Error(`${name} holds variables, not a whole game`);
+          if (document_.identity && document_.identity !== identity())
+            throw new Error(`${name} belongs to a different game`);
+          loadRecord(runtime, document_.record);
         }
-      } catch (error) { runtime.saveStatus = `Save file failed: ${error.message}`; }
+      } catch (error) { runtime.saveFileError = error.message; runtime.saveStatus = `Save file failed: ${error.message}`; }
       continue;
     }
+    // The save slots the project's own menu draws. The record is the engine's, the storage is the
+    // game's own: Save writes slot N, Load rebuilds the level the record names and resumes there.
     if (request?.type === 'save' || request?.type === 'load') {
-      runtime.saveStatus = 'Save slots belong to the studio; this build saves through the game\'s own save files.';
+      const slot = Number(request.slot);
+      try {
+        if (request.type === 'save') {
+          saves().writeSlot(slot, saveRecord(runtime, game.engine?.levelId));
+          publishSaves(runtime);
+          runtime.saveFileError = '';
+          runtime.saveStatus = `Game saved in slot ${slot}.`;
+          setGameScreen(runtime, 'save');
+        } else {
+          const record = saves().readSlot(slot);
+          if (!record) { runtime.saveStatus = `Save slot ${slot} is empty.`; runtime.saveFileError = 'empty'; continue; }
+          loadRecord(runtime, record);
+        }
+      } catch (error) {
+        runtime.saveFileError = error.message;
+        runtime.saveStatus = `${request.type === 'save' ? 'Save' : 'Load'} failed: ${error.message}`;
+      }
     }
   }
+}
+
+/** The engine's record of the running game, ready to be stored. */
+function saveRecord(runtime, levelId) {
+  if (!game.engine?.snapshot) throw new Error('start or resume a game before saving');
+  return captureGameSave(game.engine.snapshot, runtime, identity());
+}
+
+/**
+ * Resumes a record: its own level, its own state, its own physics.
+ *
+ * A level is rebuilt rather than patched in place, because the record may name a different level
+ * than the one on screen and half of a level's runtime is derived from its map.
+ */
+function loadRecord(runtime, record) {
+  const levelId = record?.levelId ?? null;
+  if (levelId && !game.project?.game?.levels?.some(level => level.id === levelId)) {
+    throw new Error(`that save is for level ${levelId}, which this build does not have`);
+  }
+  runtime.saveStatus = 'Loading…';
+  void playLevel(levelId, { record });
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -645,6 +736,17 @@ function frame(now) {
 window.__game = {
   /** Start a level without clicking through the menus; a test hook, and a way to reproduce a report. */
   start: levelId => playLevel(levelId || game.project?.game?.entry || null),
+  /**
+   * Ask the game for something, exactly as an engine rule does (`saveGame`, `loadGame`,
+   * `saveGameState`, `loadGameState` all end up as a `menuRequests` entry).
+   */
+  request: request => {
+    const runtime = game.engine?.runtime;
+    if (!runtime) return false;
+    runtime.menuRequests.push(request);
+    handleRequests(runtime);
+    return true;
+  },
   status: () => {
     const runtime = game.engine?.runtime;
     const rows = [...hudHost.querySelectorAll('[role="button"]')];
@@ -661,6 +763,12 @@ window.__game = {
       keys: [...game.keys].sort(),
       speed: Math.round(runtime?.speed ?? 0),
       pointer: { locked: document.pointerLockElement === canvas, held: game.pointerHeld },
+      // Save slots and save files, as the save and load screens see them; `saveStatus` is what the
+      // menu prints under the rows, so a report can quote the game's own words.
+      saveSlots: runtime?.saveSlots ?? [],
+      saveFiles: [...(runtime?.saveFiles || [])],
+      saveStatus: runtime?.saveStatus ?? '',
+      lastLoadError,
       viewSize: game.engine?.runtime?.settings?.viewSize ?? null,
       statusBar: (() => {
         const elements = [...(game.engine?.runtime?.hudState?.elements?.values?.() || [])].filter(element => element.statusbar);

@@ -20,6 +20,7 @@ import { installGameMenu } from '../../../shared/game-menu.js';
 import { createPortableBuild } from '../../../server/export-build.js';
 import { resolveDist } from '../../../server/electron-runtime.js';
 import { connect } from '../cdp.mjs';
+import { track } from '../lifecycle.mjs';
 import { extraElectronArgs, freePort } from '../studio.mjs';
 
 export const needsStudio = false;
@@ -67,6 +68,40 @@ async function testProject() {
   return { project, source: 'fixture' };
 }
 
+/**
+ * Waits for the game to reach a state, and names the reason when it does not.
+ *
+ * The page draws its own error screen (`#fatal`) when a boot fails, and a player sees that screen
+ * rather than a stuck loading bar — so a scenario waiting for the menu would sit out its own timeout
+ * looking at the reason. This polls both and throws with the game's own words the moment it is there.
+ */
+export async function waitForGame(page, expression, { timeout = 30000, interval = 120, label = expression } = {}) {
+  const deadline = Date.now() + timeout;
+  let last = null;
+  while (Date.now() < deadline) {
+    const state = await page.evaluate(`(() => {
+      const node = document.getElementById('fatal');
+      if (node && !node.hidden) {
+        return { fatal: {
+          title: document.getElementById('fatal-title').textContent,
+          message: document.getElementById('fatal-message').textContent,
+          hint: document.getElementById('fatal-hint').textContent || '' } };
+      }
+      try { return { value: (${expression}) }; }
+      catch (error) { return { error: String((error && error.message) || error) }; }
+    })()`);
+    if (state?.fatal) {
+      const { title, message, hint } = state.fatal;
+      throw new Error(`The game stopped on its error screen: ${title} — ${message}${hint ? ` (${hint})` : ''}`);
+    }
+    if (state?.error) throw new Error(`The game page threw while being read: ${state.error}`);
+    if (state?.value) return state.value;
+    last = state?.value ?? null;
+    await wait(interval);
+  }
+  throw new Error(`Timed out after ${Math.round(timeout / 1000)} s waiting for ${label} (last value: ${JSON.stringify(last)})`);
+}
+
 /** Run the build's own Electron main, exactly as its launch script does. */
 async function launchPlayer(appDir, executable) {
   const port = await freePort();
@@ -75,12 +110,28 @@ async function launchPlayer(appDir, executable) {
   delete env.ELECTRON_RUN_AS_NODE;
   const binary = executable;
   chmodSync(binary, 0o755);
-  const child = spawn(binary, ['--automation-port', String(port), ...extraElectronArgs()],
-    { cwd: appDir, stdio: ['ignore', 'pipe', 'pipe'], env });
+  const child = track(spawn(binary, ['--automation-port', String(port), ...extraElectronArgs()],
+    { cwd: appDir, stdio: ['ignore', 'pipe', 'pipe'], env }));
   const log = [];
   child.stdout?.on('data', chunk => log.push(String(chunk).trim()));
   child.stderr?.on('data', chunk => log.push(String(chunk).trim()));
-  const stop = () => { try { child.kill('SIGKILL'); } catch { /* already gone */ } };
+  const exited = new Promise(done => child.once('exit', done));
+  /**
+   * Ends the window the way a player does, and waits for it.
+   *
+   * A browser writes its storage to disk asynchronously, so a killed process can lose the saves
+   * written a second earlier — and the second launch must find the game's own port free, or it walks
+   * to the next one and the saves are in a different origin.
+   */
+  const stop = async () => {
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    await Promise.race([exited, wait(5000)]);
+  };
+  const closeGracefully = async () => {
+    try { await page.evaluate('window.close()'); } catch { /* the page may already be gone */ }
+    await Promise.race([exited, wait(8000)]);
+    await stop();
+  };
   try {
     const page = await connect(port, { timeout: 60000 });
     await page.send('Runtime.enable');
@@ -88,10 +139,10 @@ async function launchPlayer(appDir, executable) {
     await page.waitFor('typeof window.__game === "object"', { timeout: 60000, label: 'the game page' });
     // The window is the only one on screen; a hidden one gets no animation frames at all.
     await page.send('Page.bringToFront').catch(() => {});
-    return { page, stop, log: () => log.join('\n') };
+    return { page, stop, closeGracefully, log: () => log.join('\n') };
   } catch (error) {
     error.message += `\n--- game output ---\n${log.join('\n').slice(-2000)}`;
-    stop();
+    await stop();
     throw error;
   }
 }
@@ -126,7 +177,11 @@ async function scenario(_context, steps) {
   // its levels are real, and it is the project a bug report comes from. A machine with no library
   // falls back to a small authored fixture that carries a HUD and menus of its own — a project
   // without them never reached the export at all.
-  const { project, source } = await testProject();
+  const { project: library, source } = await testProject();
+  // The build's title becomes its slug, its userData folder and its single-instance lock. A copy of
+  // this game installed by the person using the machine would otherwise own both, so the window the
+  // scenario starts would hand its arguments to that one and quit.
+  const project = { ...library, title: `${library.title} (automation)` };
   const slug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'exported-hall';
   const classicBar = (project.hud?.elements || []).some(element => element.statusbar);
   // The finished game a person actually runs: its own Electron, its own server, no Node.js needed.
@@ -163,15 +218,13 @@ async function scenario(_context, steps) {
   try {
     // The game opens on **its own** main menu: the project's rows, drawn by the engine's HUD. There
     // is no player-made menu in the page, and no 3D renderer is needed to show the menu at all.
-    const menu = await page.waitFor(`(() => {
+    const menu = await waitForGame(page, `(() => {
       const rows = [...document.querySelectorAll('#hud [role="button"]')];
       if (!rows.length) return null;
       return {
         rows: rows.length,
         labels: rows.slice(0, 6).map(row => (row.textContent || '').trim().slice(0, 30)),
         loading: document.getElementById('loading').hidden,
-        fatal: !document.getElementById('fatal').hidden,
-        title: document.getElementById('fatal-title').textContent,
         domMenu: Boolean(document.getElementById('menu-buttons')),
         editor: Boolean(document.getElementById('editor-shell')) || Boolean(document.getElementById('license-dialog')),
       };
@@ -180,7 +233,6 @@ async function scenario(_context, steps) {
     check('the menu rows are the project\'s own', menu.labels.length >= 2, menu.labels);
     check('the menu is not a player-made overlay', menu.domMenu === false, menu);
     check('the editor is not in the page', menu.editor === false, menu);
-    check('the game is not reporting a failure', menu.fatal === false, menu);
     check('the loading overlay has gone', menu.loading === true, menu);
 
     // Keyboard is how a Doom menu is used: ArrowDown moves, and the focused row is a real row. The
@@ -201,10 +253,10 @@ async function scenario(_context, steps) {
     // Start the entry level: the HUD, the rules and the status bar must all work even when the 3D
     // view cannot come up, which is exactly what a stalled renderer leaves behind.
     await page.evaluate('window.__game.start()');
-    const playing = await page.waitFor(`window.__game.status().screen === 'playing'`, { timeout: 30000, label: 'a running level' })
-      .catch(() => null);
-    const playState = await page.evaluate('window.__game.status()');
-    check('the level starts', playing === true, playState);
+    const playState = await waitForGame(page, `window.__game.status().screen === 'playing' ? window.__game.status() : null`,
+      { timeout: 30000, label: 'a running level' })
+      .catch(error => { check('the level starts', false, error.message); });
+    check('the level starts', playState?.screen === 'playing', playState);
 
     // The first level of a session used to need a click in the view before the mouse was captured:
     // nothing had asked for it yet, so the pointer stayed the system's and the cursor sat over the
@@ -232,7 +284,7 @@ async function scenario(_context, steps) {
     // Completing a level must not hand the player a free cursor. The next level rebuilds the runtime
     // and the renderer, and the pointer has to survive that — it belongs to the game, not the level.
     await page.evaluate('window.__game.start()');
-    const nextLevel = await page.waitFor(`window.__game.status().screen === 'playing' && window.__game.status().level`,
+    const nextLevel = await waitForGame(page, `window.__game.status().screen === 'playing' && window.__game.status().level`,
       { timeout: 30000, label: 'the next level' }).catch(() => null);
     await wait(500);
     const afterLevel = await page.evaluate('window.__game.status()');
@@ -254,13 +306,57 @@ async function scenario(_context, steps) {
       check('the status bar sits at the bottom', (playState.statusBar.rect?.[1] ?? 0) > playState.statusBar.window[1] / 2, playState.statusBar);
     }
 
+    // Saves must work in the exported game, and "work" includes still being there tomorrow: the
+    // game is served from a port derived from its own name, and the port is the browser origin, so
+    // the same build opens the same storage. Save, quit, start again, load.
+    const saved = await page.evaluate(`(() => {
+      window.__game.request({ type: 'save', slot: 1 });
+      const status = window.__game.status();
+      return { slots: status.saveSlots, saveStatus: status.saveStatus, level: status.level };
+    })()`);
+    await waitForGame(page, `window.__game.status().saveSlots[0] !== ''`, { timeout: 20000, label: 'slot 1 to be written' })
+      .catch(() => null);
+    const written = await page.evaluate('window.__game.status()');
+    check('Save writes the slot the menu offers', written.saveSlots[0] !== '', { saved, written });
+    check('Save reports what it did, not a studio message', /saved in slot 1/i.test(written.saveStatus), written.saveStatus);
+    await page.evaluate(`(() => { window.__game.status(); return true; })()`);
+
+    // A rule's own checkpoint goes through the same record, in the envelope the studio writes, and
+    // `loadGameState` asks `saveFiles` whether the name exists before offering it.
+    const file = await page.evaluate(`(() => {
+      window.__game.request({ type: 'save-file', kind: 'game', file: 'checkpoint' });
+      const status = window.__game.status();
+      return { files: status.saveFiles, status: status.saveStatus };
+    })()`);
+    check('a rule can write a whole-game save file', file.files.includes('checkpoint'), file);
+    check('the save file reports itself', /saved the game to the save file checkpoint/i.test(file.status), file.status);
+
     const errors = (page.events || []).filter(event => event.method === 'Runtime.exceptionThrown');
     check('the game booted without a page exception', errors.length === 0,
       errors.slice(0, 2).map(event => event.params?.exceptionDetails?.exception?.description));
+    await player.closeGracefully();
+    const relaunched = await launchPlayer(join(scratch, slug), join(scratch, manifest.runtime.executable));
+    try {
+      await waitForGame(relaunched.page, `document.querySelectorAll('#hud [role="button"]').length > 0`,
+        { timeout: 30000, label: 'the menu after a restart' }).catch(() => null);
+      const before = await relaunched.page.evaluate('window.__game.status()');
+      check('the slots are still there after a restart', before.saveSlots[0] !== '', before);
+      await relaunched.page.evaluate(`window.__game.request({ type: 'load', slot: 1 })`);
+      const resumed = await waitForGame(relaunched.page,
+        `window.__game.status().screen === 'playing' ? window.__game.status() : null`,
+        { timeout: 45000, label: 'the loaded game' }).catch(() => null);
+      const afterLoad = resumed || await relaunched.page.evaluate('window.__game.status()');
+      check('Load resumes the saved game', Boolean(resumed), afterLoad);
+      check('the loaded game has no load error', !afterLoad.lastLoadError, afterLoad.lastLoadError);
+      check('Load resumes the level the save names', afterLoad.level === written.saveSlots[0].split(' / ')[0], { afterLoad, slot: written.saveSlots[0] });
+    } finally {
+      await relaunched.stop();
+    }
     return { source, menuRows: menu.rows, labels: menu.labels, focused, classicBar, bottom, keysAfterShot: afterShot.keys,
-      pointer: { captured, afterLevel: afterLevel.pointer } };
+      pointer: { captured, afterLevel: afterLevel.pointer },
+      saves: { slot: written.saveSlots[0], status: written.saveStatus, files: file.files } };
   } finally {
-    player.stop();
+    await player.stop();
     rmSync(scratch, { recursive: true, force: true });
   }
 }

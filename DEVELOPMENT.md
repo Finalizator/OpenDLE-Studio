@@ -6316,6 +6316,23 @@ player keeps the bar: if the stored setting would hide a bar the project actuall
 drops to 10 and says so in the game's message line. A player who finds no bar at the bottom cannot
 tell that from a broken build.
 
+**Saves work in the shipped game, and they survive a restart.** Two things were wrong:
+
+- The save and load rows answered with "Save slots belong to the studio; this build saves through
+  the game's own save files" — a sentence about the studio in a product that has no studio. Slots are
+  now real: `{ type: 'save', slot }` writes the engine's own record (`captureGameSave`) through
+  `shared/player-saves.js`, `{ type: 'load', slot }` rebuilds the level the record names
+  (`restoreGameSave`, then the physics state once the collision world exists) and resumes there, and
+  `runtime.saveSlots` publishes what each slot holds so the project's own save screen prints
+  `MAP01 / <date>`. A whole-game save file is the same record in the `shared/save-files.js`
+  envelope, so a player can move one between this game and the studio.
+- **The port is the storage.** A browser keeps `localStorage` per origin, and the game is served
+  from `http://127.0.0.1:<port>`; asking the system for a free port on every launch gave every run a
+  new origin, so settings and saves were thrown away at the next start (measured: the same port keeps
+  them, a different one does not). `server/game-port.js` derives the port from the game's slug, the
+  server walks forward if that port is taken (and says the session will not keep saves), and `0`
+  still means "any free port" for a test.
+
 `npm run automation:game` builds a **bundled** export from the campaign open in the editor (or a
 small authored fixture when the library is empty), starts it the way `launch.sh` does — the build's
 own Electron, its own server — and drives the real player window over CDP. It checks the engine

@@ -34,6 +34,16 @@ Output is one JSON line. A failure exits non-zero and names the failing step:
   profile closes the dialog by itself and leaves the accept button disabled on purpose, so the
   helper waits for *closed or enabled* — waiting on the button alone hangs on every run after the
   first.
+- **A run cannot outlive its own failure.** `lifecycle.mjs` tracks every process the harness spawns
+  and kills them all when the run ends, however it ends (success, failure, a signal, the deadline).
+  `run.mjs` puts the whole run behind a deadline — `OPENDLE_AUTOMATION_TIMEOUT_MS`, or `--timeout <ms>`,
+  240 s by default, build included — and prints the usual
+  one-line failure when it passes. Every CDP command is bounded too (`OPENDLE_CDP_TIMEOUT_MS`, 60 s): a page that
+  stops answering used to hang an `await` forever, and the process then died on "unsettled top-level
+  await" leaving the game window running.
+- A game scenario waits through `waitForGame` (`scenarios/game.mjs`), which watches the page's own
+  error screen as it polls: a boot that failed is reported in milliseconds with the game's words,
+  not as a timeout 30 s later.
 - `OPENDLE_AUTOMATION_ELECTRON_ARGS` adds Chromium switches to every window the harness opens —
   they go **before** the app path, because everything after it belongs to the app's own parser. It
   exists for a Wayland session that stops handing new Electron windows a connection (then

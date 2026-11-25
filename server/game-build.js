@@ -97,7 +97,10 @@ function readModule(root, source) {
  */
 export function gameModuleClosure(root, { entry = GAME_PAGE } = {}) {
   const page = `public/${entry}`;
-  const pending = [page, ...pageSeeds(readModule(root, page).toString('utf8'))];
+  // The served page, whatever it links, and the server the launcher runs: the server is not imported
+  // by the page, so its own imports have to be walked too — a module it gains (the port the game
+  // keeps its storage on, for one) is otherwise missing from the build and the game does not start.
+  const pending = [page, ...pageSeeds(readModule(root, page).toString('utf8')), 'server/game-serve.js'];
   const seen = new Map();
   const addons = new Set();
   while (pending.length) {
@@ -132,7 +135,6 @@ export function gameModuleClosure(root, { entry = GAME_PAGE } = {}) {
     }
   }
   const files = [...seen].map(([from, data]) => ({ path: gamePathFor(from), source: from, data }));
-  files.push({ path: 'server/game-serve.js', source: 'server/game-serve.js', data: readModule(root, 'server/game-serve.js') });
   for (const [name, data] of addonFiles) files.push({ path: `vendor/three-addons/${name}`, data });
   return files;
 }

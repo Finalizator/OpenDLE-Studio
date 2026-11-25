@@ -51,10 +51,27 @@ export async function connect(port, { match, timeout } = {}) {
     }
     if (message.method) events.push(message);
   });
+  /**
+   * A command, answered or timed out.
+   *
+   * A page can stop answering while the socket stays open — a renderer that crashed, a window whose
+   * process is gone — and an unbounded `Runtime.evaluate` then waits forever: the scenario never
+   * reaches its own timeout, and the node process ends on "unsettled top-level await" with the game
+   * window still running. Every command is bounded instead.
+   */
   const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     const id = nextId++;
-    pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    const budget = Number(process.env.OPENDLE_CDP_TIMEOUT_MS) || 60000;
+    const timer = setTimeout(() => {
+      if (!pending.delete(id)) return;
+      reject(new Error(`The page did not answer ${method} within ${Math.round(budget / 1000)} s`));
+    }, budget);
+    timer.unref?.();
+    const settle = { resolve: value => { clearTimeout(timer); resolve(value); },
+      reject: error => { clearTimeout(timer); reject(error); } };
+    pending.set(id, settle);
+    try { socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
+    catch (error) { pending.delete(id); settle.reject(error); }
   });
   socket.addEventListener('close', () => {
     for (const { reject } of pending.values()) reject(new Error('The DevTools connection closed'));

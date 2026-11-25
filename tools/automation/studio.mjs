@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { connect } from './cdp.mjs';
+import { track } from './lifecycle.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -38,9 +39,9 @@ async function serverIsUp(baseUrl) {
 async function ensureServer(port) {
   const url = `http://127.0.0.1:${port}/`;
   if (await serverIsUp(url)) return { url, child: null };
-  const child = spawn(process.execPath, [join(root, 'server', 'index.js')], {
+  const child = track(spawn(process.execPath, [join(root, 'server', 'index.js')], {
     cwd: root, stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, PORT: String(port) },
-  });
+  }));
   for (let attempt = 0; attempt < 150; attempt++) {
     if (await serverIsUp(url)) return { url, child };
     if (child.exitCode !== null) throw new Error(`The studio server exited with code ${child.exitCode}`);
@@ -86,11 +87,11 @@ export async function launchStudio({ port = Number(process.env.PORT || 3000), ti
   delete env.ELECTRON_RUN_AS_NODE;
   // Chromium switches go before the app path: everything after it belongs to the app's own parser,
   // which refuses switches it does not know.
-  const child = spawn(binary, [
+  const child = track(spawn(binary, [
     ...extraElectronArgs(),
     join(root, 'scripts', 'studio-desktop.js'),
     '--url', url, '--profile', profile, '--automation-port', String(cdpPort),
-  ], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env });
+  ], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env }));
   const log = [];
   child.stdout?.on('data', chunk => log.push(String(chunk).trim()));
   child.stderr?.on('data', chunk => log.push(String(chunk).trim()));

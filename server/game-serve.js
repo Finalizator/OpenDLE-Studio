@@ -9,6 +9,8 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { basename } from 'node:path';
+import { gamePortCandidates, gamePortFor } from './game-port.js';
 
 const MIME_TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -112,31 +114,63 @@ function openBrowser(url, log) {
 /**
  * Serves a game folder and returns where it is.
  *
- * `port: 0` asks the system for a free port, which is what the launchers use: two exported games
- * must be able to run at the same time without one of them failing to bind.
+ * **The port is the game's storage.** A browser keeps `localStorage` per origin, and the origin of
+ * this server is `http://127.0.0.1:<port>`. The game used to ask for a free port on every launch
+ * (`port: 0`), so every run was a new origin and the player's settings, save files and save slots
+ * were gone at the next start. `slug` (the game's name, or its folder name) picks a stable port;
+ * passing an explicit `port` still wins, and `port: 0` still means "any free port", which is what
+ * a test or a second copy of a game running beside the first needs.
  */
-export async function startGameServer({ root = process.cwd(), port = 0, open = true, log = console.log } = {}) {
-  const server = createServer(createGameHandler({ root, log }));
-  await new Promise((done, fail) => {
-    server.once('error', fail);
-    server.listen(port, '127.0.0.1', done);
-  });
-  const address = server.address();
-  const url = `http://127.0.0.1:${address.port}/`;
-  log(`Game ready at ${url}`);
-  if (open) openBrowser(url, log);
-  return {
-    url, port: address.port,
-    close: () => new Promise(done => server.close(() => done())),
-  };
+export async function startGameServer({ root = process.cwd(), port = null, slug = null, open = true, log = console.log } = {}) {
+  const wanted = Number.isSafeInteger(port) && port >= 0 ? port : null;
+  const candidates = wanted === null ? gamePortCandidates(slug || basename(resolve(root))) : [wanted];
+  let lastError = null;
+  for (const candidate of candidates) {
+    const server = createServer(createGameHandler({ root, log }));
+    try {
+      await new Promise((done, fail) => {
+        server.once('error', fail);
+        server.listen(candidate, '127.0.0.1', done);
+      });
+    } catch (error) {
+      server.removeAllListeners();
+      try { server.close(); } catch { /* never listened */ }
+      lastError = error;
+      if (error.code !== 'EADDRINUSE') throw error;
+      // The game's own port is taken by something else. Walk to the next one: a game that refuses
+      // to start is worse than a game whose saves this one session do not keep, but say so.
+      log(`Port ${candidate} is in use; trying ${gamePortFor(slug || basename(resolve(root)))}…`);
+      continue;
+    }
+    const address = server.address();
+    const url = `http://127.0.0.1:${address.port}/`;
+    if (candidates.length > 1 && candidate !== candidates[0]) {
+      log(`Another program holds this game's usual port, so this session runs on ${address.port}: saves and settings made now will not be kept.`);
+      log('Close the other program and start the game again to save normally.');
+    }
+    log(`Game ready at ${url}`);
+    if (open) openBrowser(url, log);
+    return {
+      url, port: address.port,
+      /** Whether this session landed on the game's own port, and so keeps its storage. */
+      stable: wanted === null && candidate === candidates[0],
+      close: () => new Promise(done => server.close(() => done())),
+    };
+  }
+  throw new Error(`The game could not open a port on 127.0.0.1 (${lastError?.code || 'unknown error'})`);
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  const port = Number(process.env.PORT || 0);
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const asked = process.env.PORT;
+  const port = asked === undefined || asked === '' ? null
+    : Number.isSafeInteger(Number(asked)) && Number(asked) >= 0 ? Number(asked) : null;
   startGameServer({
-    root: resolve(dirname(fileURLToPath(import.meta.url)), '..'),
-    port: Number.isSafeInteger(port) && port > 0 ? port : 0,
+    root,
+    port,
+    // The folder the game was unzipped into names its storage, so a copy keeps its saves.
+    slug: basename(root),
     open: process.env.OPENDLE_NO_BROWSER !== '1',
   }).catch(error => {
     console.error(`The game could not start: ${error.message}`);

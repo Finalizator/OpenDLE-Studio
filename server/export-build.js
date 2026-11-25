@@ -303,7 +303,9 @@ if (!app.requestSingleInstanceLock()) {
 async function start() {
   await app.whenReady();
   Menu.setApplicationMenu(null);
-  server = await startGameServer({ root: ROOT, port: 0, open: false, log: () => {} });
+  // No port argument: the server derives the game's own port from the slug, and the port *is* the
+  // browser origin — the same port every launch is what makes settings and saves survive a restart.
+  server = await startGameServer({ root: ROOT, slug: SLUG, open: false, log: message => console.log(message) });
   gameWindow = new BrowserWindow({
     title: TITLE, width: 1280, height: 800, minWidth: 960, minHeight: 600,
     backgroundColor: '#0b0d10', show: false, autoHideMenuBar: true, fullscreen: true,
