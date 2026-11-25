@@ -107,11 +107,13 @@ function quakeBox() {
 }
 
 /** Quake 3's file: the ASCII magic, the version, seventeen lumps, then one six-sided brush. */
-function quake3Box() {
+function quake3Box({ solid = true, material = 'textures/test/floor' } = {}) {
   const lumps = Array.from({ length: 17 }, () => Buffer.alloc(0));
   lumps[0] = Buffer.from(ENTITIES, 'latin1');
   const shader = Buffer.alloc(72);
-  shader.write('textures/test/floor', 0, 'latin1');
+  shader.write(material, 0, 'latin1');
+  // The shader's contents: `CONTENTS_SOLID`, or nothing at all for a compiler volume like `hint`.
+  shader.writeInt32LE(solid ? 1 : 0, 68);
   lumps[1] = shader;
   const planes = Buffer.alloc(6 * 16);
   outwardBoxPlanes().forEach(([normal, distance], index) => {
@@ -195,6 +197,7 @@ test('a Quake 3 brush lump imports as brushes and keeps its shader name', () => 
   const brush = project.map.brushes[0];
   assert.equal(brush.faces.length, 6);
   assert.deepEqual(new Set(brush.faces.map(face => face.textureName)), new Set(['textures/test/floor']));
+  assert.equal(brush.visible, true);
   assert.equal(brushVertices(brush).length, 8);
   assert.equal(facePolygon(brush, 0).length, 4, 'every face of the box is a quad');
 });
@@ -213,6 +216,22 @@ test('a level made of brushes is walkable: the player lands on solid space, not 
   assert.ok(state.physics.grounded, 'the player is standing on the box');
   const height = state.player.z;
   assert.ok(height > BOX * 0.5 && height <= BOX + 8, `landed on the box top (z = ${height})`);
+});
+
+test('a brush of tool materials is solid but not drawn', () => {
+  // Quake 3's `clip` is invisible and solid; importing it visible would fill the level with slabs.
+  const parsed = parseBsp(quake3Box({ material: 'textures/common/clip' }), { name: 'clip.bsp' });
+  const project = projectFromIdTechMap(parsed, { createProject });
+  assert.equal(project.map.brushes.length, 1);
+  assert.equal(project.map.brushes[0].visible, false, 'invisible in the editor and the play view');
+  // Invisible is not absent: it is still what the player is stopped by.
+  assert.equal(collisionMesh(project, triangulate).indices.length, 6 * 6 * 2);
+});
+
+test('a Quake 3 compiler volume is not geometry: it is skipped by name', () => {
+  const parsed = parseBsp(quake3Box({ solid: false }), { name: 'hint.bsp' });
+  assert.equal(parsed.stats.brushes, 0);
+  assert.ok(parsed.warnings.some(warning => /compiler volumes/.test(warning)), parsed.warnings);
 });
 
 test('a truncated file is refused by name instead of importing nothing', () => {

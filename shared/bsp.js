@@ -32,6 +32,20 @@ export const MAX_BSP_BRUSHES = 20000;
 const CORNER_TOLERANCE = 1e-2;
 /** No Quake map is a hundred thousand units across; a bigger corner is a broken plane set. */
 const MAX_CORNER = 100000;
+/**
+ * The tool materials a compiled map draws nothing with.
+ *
+ * `clip` is solid and invisible, `caulk` is the back of a wall the compiler added, `hint` and
+ * `lightgrid` are volumes the mapper never sees. A brush made only of these is real collision and no
+ * artwork, so it imports invisible: the renderer skips it and the collider does not. Half-Life has
+ * none of them — its materials are ordinary artwork names — so this only ever bites on Quake 2/3.
+ */
+const TOOL_MATERIAL = /(^|\/)(caulk|clip|weapclip|monsterclip|botclip|nodraw|hint|skip|lightgrid|trigger|areaportal|clusterportal|donotenter|origin|slick|nodrop)$/i;
+
+/** A brush of nothing but tool materials is geometry the game hides. */
+function invisibleBrush(faces) {
+  return faces.length > 0 && faces.every(face => TOOL_MATERIAL.test(face.texture || ''));
+}
 
 const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -344,7 +358,8 @@ function leafBrushes(quake, warnings, name) {
       if (leaf.contents !== CONTENTS_SOLID) continue;
       solid++;
       const brush = planesToBrush(next);
-      if (brush) brushes.push(brush); else degenerate++;
+      if (!brush) degenerate++;
+      else brushes.push(invisibleBrush(brush.faces) ? { ...brush, visible: false } : brush);
       if (brushes.length >= MAX_BSP_BRUSHES) {
         warnings.push(`${name}: stopped at ${MAX_BSP_BRUSHES} brushes; the rest of the world was not imported`);
         return brushes;
@@ -364,22 +379,32 @@ function leafBrushes(quake, warnings, name) {
 // Quake 2 and Quake 3: the brushes are in the file
 // ---------------------------------------------------------------------------------------------------
 
-/** Quake 3's 72-byte shader records; the first 64 bytes are the name. */
-function shaderNames(bytes, lump) {
-  const names = [];
-  if (!lump || lump.length < 72) return names;
-  for (let index = 0; index < Math.floor(lump.length / 72); index++) names.push(text(bytes, lump.offset + index * 72, 64) || null);
-  return names;
+/** Quake 3's 72-byte shader records: the name, then the surface and contents flags the compiler set. */
+function shaders(view, bytes, lump) {
+  const out = [];
+  if (!lump || lump.length < 72) return out;
+  for (let index = 0; index < Math.floor(lump.length / 72); index++) {
+    const at = lump.offset + index * 72;
+    out.push({ name: text(bytes, at, 64) || null, contents: view.getInt32(at + 68, true) });
+  }
+  return out;
 }
+
+/** Quake 3's `CONTENTS_SOLID`: a shader without it is a volume the compiler made, not a wall. */
+const CONTENTS_SOLID_BIT = 1;
+/** `CONTENTS_PLAYERCLIP`: invisible to the eye and solid to the player, which is what a clip brush is. */
+const CONTENTS_PLAYERCLIP = 0x10000;
 
 function explicitBrushes(view, bytes, info, warnings, name) {
   const { lumps, version } = info;
   const quake3 = version >= 46;
   const planes = records(view, lumps[quake3 ? 2 : 1], quake3 ? 16 : 20, planeReader);
-  const textures = quake3 ? shaderNames(bytes, lumps[1]) : miptexNames(view, bytes, lumps[2]);
+  const materials = quake3 ? shaders(view, bytes, lumps[1]) : miptexNames(view, bytes, lumps[2]);
   const texinfo = quake3 ? [] : records(view, lumps[6], 76, (data, at) => ({ name: text(bytes, at + 40, 32) || null }));
+  // Quake 2 puts a brush's contents in the brush record; Quake 3 puts it on the shader each side uses.
   const brushes = records(view, lumps[quake3 ? 8 : 15], 12, (data, at) => ({
     firstSide: data.getInt32(at, true), sides: data.getInt32(at + 4, true),
+    ...(quake3 ? {} : { contents: data.getInt32(at + 8, true) }),
   }));
   const sides = quake3
     ? records(view, lumps[9], 8, (data, at) => ({ plane: data.getInt32(at, true), texture: data.getInt32(at + 4, true) }))
@@ -387,12 +412,31 @@ function explicitBrushes(view, bytes, info, warnings, name) {
   const textureOf = side => {
     if (side.texture < 0) return DEFAULT_TEXTURE;
     if (!quake3) return texinfo[side.texture]?.name ?? DEFAULT_TEXTURE;
-    return textures[side.texture] ?? DEFAULT_TEXTURE;
+    return materials[side.texture]?.name ?? DEFAULT_TEXTURE;
+  };
+  /**
+   * Whether a brush is a wall at all.
+   *
+   * Quake 3's brush lump also carries the compilers' own volumes — `lightgrid`, `hint`, triggers —
+   * which are marked non-solid in their shader precisely so nothing collides with them. Importing
+   * them as geometry filled rooms with invisible slabs and put the player start inside one. A brush
+   * is kept when any of its sides is solid or blocks the player, which is the collision test the
+   * game itself answers.
+   */
+  const solid = record => {
+    if (!quake3) return ((record.contents ?? 0) & (CONTENTS_SOLID_BIT | CONTENTS_PLAYERCLIP)) !== 0;
+    for (let index = 0; index < record.sides; index++) {
+      const side = sides[record.firstSide + index];
+      const info = side ? materials[side.texture] : null;
+      if (info && (info.contents & (CONTENTS_SOLID_BIT | CONTENTS_PLAYERCLIP))) return true;
+    }
+    return false;
   };
   if (!brushes.length) warnings.push(`${name}: the file has no brush lump; Quake 2 and Quake 3 also draw curves and patches, which are not imported`);
   const out = [];
-  let degenerate = 0;
+  let degenerate = 0, compilerVolumes = 0;
   for (const record of brushes) {
+    if (!solid(record)) { compilerVolumes++; continue; }
     const faces = [], seen = new Set();
     for (let index = 0; index < record.sides; index++) {
       const side = sides[record.firstSide + index];
@@ -406,13 +450,16 @@ function explicitBrushes(view, bytes, info, warnings, name) {
     }
     const hull = planesToBrush(faces);
     if (!hull) { degenerate++; continue; }
-    out.push(hull);
+    out.push(invisibleBrush(hull.faces) ? { ...hull, visible: false } : hull);
     if (out.length >= MAX_BSP_BRUSHES) {
       warnings.push(`${name}: stopped at ${MAX_BSP_BRUSHES} brushes; the rest of the map was not imported`);
       break;
     }
   }
   if (degenerate) warnings.push(`${name}: ${degenerate} brushes had fewer than four planes and were skipped`);
+  if (compilerVolumes) {
+    warnings.push(`${name}: ${compilerVolumes} compiler volumes (lightgrid, hint, triggers) are not solid and were not imported`);
+  }
   return out;
 }
 

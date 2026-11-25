@@ -446,8 +446,10 @@ function convertBrush(brush, index, warnings, fileName) {
     });
   }
   if (faces.length < 4) return { error: 'fewer than four faces' };
+  // A brush made of a compiler's tool materials is solid and invisible in its own game, so it stays
+  // solid here and keeps its invisibility. A `.map` source never says this; a compiled one does.
   const candidate = { id: newId('brush'), name: `Brush ${index}`, layerId: 'default',
-    visible: true, locked: false, faces };
+    visible: brush.visible !== false, locked: false, faces };
   let vertices = brushVertices(candidate);
   if (vertices.length < 4) {
     // Some exporters write the opposite winding; flipping every face is cheaper than failing.
