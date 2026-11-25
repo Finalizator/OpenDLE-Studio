@@ -6088,25 +6088,94 @@ function reportMapImport(parsed, summary) {
 }
 
 async function importMapFile(file, mode) {
-  const parsed = parseIdTechMap(await file.text(), { name: file.name });
+  await importMapText(await file.text(), file.name, mode);
+}
+
+/** The import itself, from the text of a `.map`: a picked file and one from the folder are the same. */
+async function importMapText(text, name, mode) {
+  const parsed = parseIdTechMap(text, { name });
   if (mode === 'project') {
     const next = validateProject(projectFromIdTechMap(parsed, { createProject }));
-    replace(next, `${file.name} imported as a new project`);
-    reportMapImport(parsed, `${file.name} imported as a new project`);
+    replace(next, `${name} imported as a new project`);
+    reportMapImport(parsed, `${name} imported as a new project`);
     await adoptDocument();
     return;
   }
   let layoutId = null;
-  edit(draft => { layoutId = addMapAsLayout(draft, parsed); }, `${file.name} added as a layout`);
-  reportMapImport(parsed, `${file.name} added to this project as layout ${layoutId}`);
+  edit(draft => { layoutId = addMapAsLayout(draft, parsed); }, `${name} added as a layout`);
+  reportMapImport(parsed, `${name} added to this project as layout ${layoutId}`);
 }
+
+/**
+ * The maps in the Projects folder, with what each one is.
+ *
+ * The file picker shows what the operating system offers it, and a compiled `.bsp` is not something
+ * this importer reads — so a folder of Quake and Half-Life maps looked empty. The folder is listed
+ * by the server instead, and a `.map` source found there (even inside a `.pk3`) imports from the
+ * dialog: no file picker, no guesswork about why a file is not offered.
+ */
+let mapBrowserMode = 'layout';
+async function openMapBrowser(mode) {
+  mapBrowserMode = mode === 'project' ? 'project' : 'layout';
+  $('map-browser-dialog').showModal();
+  await renderMapBrowser();
+}
+async function renderMapBrowser() {
+  const status = $('map-browser-status');
+  status.textContent = 'Reading the Projects folder…';
+  status.classList.remove('error');
+  const list = $('map-browser-list');
+  list.replaceChildren();
+  try {
+    const scan = await api('/api/local-maps');
+    status.textContent = scan.summary;
+    if (!scan.entries.length) {
+      list.append(make('p', 'No .map, .bsp, .pk3, .zip or .wad under Projects/. Put a map there and press Refresh.', 'muted'));
+      return;
+    }
+    for (const entry of scan.entries) {
+      const row = make('div', undefined, 'save-file-row');
+      row.append(make('span', entry.path, 'save-file-name'));
+      row.append(make('span', entry.detail, 'save-file-detail'));
+      const importable = Boolean(entry.importable);
+      const action = button(importable ? (mapBrowserMode === 'project' ? 'Import as project' : 'Add as layout') : 'Not importable',
+        async () => {
+          const query = `path=${encodeURIComponent(entry.path)}${entry.entry ? `&entry=${encodeURIComponent(entry.entry)}` : ''}`;
+          const { response } = await requestWithSession(`/api/local-maps/source?${query}`, {}, token);
+          if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.error || `HTTP ${response.status}`); }
+          const name = entry.entry || entry.path.split('/').pop();
+          await importMapText(await response.text(), name, mapBrowserMode);
+          $('map-browser-dialog').close();
+        }, 'save-file-action');
+      action.disabled = !importable;
+      action.title = importable ? `Import ${entry.path} as ${mapBrowserMode === 'project' ? 'a new project' : 'a layout'}` : entry.detail;
+      row.append(action, make('span'));
+      list.append(row);
+    }
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add('error');
+  }
+}
+$('map-browser-refresh').addEventListener('click', guard(renderMapBrowser));
+$('map-browser-close').addEventListener('click', () => $('map-browser-dialog').close());
 
 $('import-idtech').addEventListener('click', event => {
   contextMenu(event, [
-    { label: 'As a new project', hint: 'Replaces the open document; undo is available',
-      run: () => { pendingMapImport = 'project'; $('map-file').value = ''; $('map-file').click(); } },
-    { label: 'Add to this project as a layout', hint: 'Listed in Layouts beside the current one',
-      run: () => { pendingMapImport = 'layout'; $('map-file').value = ''; $('map-file').click(); } },
+    { label: 'From the Projects folder…', hint: 'Lists what is there and what can be imported',
+      submenu: [
+        { label: 'As a new project', hint: 'Replaces the open document; undo is available',
+          run: guard(async () => { await openMapBrowser('project'); }) },
+        { label: 'Add to this project as a layout', hint: 'Listed in Layouts beside the current one',
+          run: guard(async () => { await openMapBrowser('layout'); }) },
+      ] },
+    { label: 'Pick a file…', hint: 'A .map source, or a .pk3 / .zip that holds one',
+      submenu: [
+        { label: 'As a new project', hint: 'Replaces the open document; undo is available',
+          run: () => { pendingMapImport = 'project'; $('map-file').value = ''; $('map-file').click(); } },
+        { label: 'Add to this project as a layout', hint: 'Listed in Layouts beside the current one',
+          run: () => { pendingMapImport = 'layout'; $('map-file').value = ''; $('map-file').click(); } },
+      ] },
   ], { label: 'Import a .map file' });
 });
 $('map-file').addEventListener('change', guard(async () => {
@@ -6114,6 +6183,12 @@ $('map-file').addEventListener('change', guard(async () => {
   const mode = pendingMapImport || 'layout';
   pendingMapImport = null;
   if (!file) return;
+  if (/\.(bsp|pk3|zip|pak)$/i.test(file.name)) {
+    // A compiled map or an archive is a real thing to pick, and the answer is not "that is not
+    // JSON": open the folder browser, which lists what is inside each one.
+    await openMapBrowser(mode);
+    return;
+  }
   await importMapFile(file, mode);
 }));
 

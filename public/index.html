@@ -66,7 +66,7 @@
     <button data-tab="about">About</button>
     <input id="project-file" type="file" accept=".zip,.json,.opendle" hidden>
     <input id="wad-file" type="file" accept=".wad" hidden>
-    <input id="map-file" type="file" accept=".map,text/plain" hidden>
+    <input id="map-file" type="file" accept=".map,.zip,.pk3,.pak,.bsp,text/plain" hidden>
     <input id="package-file" type="file" accept=".pk3,.ipk3" hidden>
     <span class="muted">OpenDLE: Studio / local-first studio</span>
   </div>
@@ -407,6 +407,19 @@
     <div id="preview-stage"><canvas id="preview" width="800" height="450" tabindex="0" aria-label="First-person game preview"></canvas><div id="hud-overlay" class="hud-overlay"></div><div id="game-message" aria-live="polite"></div></div>
     <div id="preview-controls" class="preview-controls"></div>
     <div id="game-variables"></div>
+  </dialog>
+  <dialog id="map-browser-dialog">
+    <h2>Maps in the Projects folder</h2>
+    <p>Everything under <code>Projects/</code> that could hold a level, and what the engine can do with
+      it. A <strong>.map</strong> source — on its own or inside a <code>.pk3</code> or <code>.zip</code>
+      — imports directly from here. A compiled <strong>.bsp</strong> is listed with the game it was
+      built for, because the importer reads source, not compiled geometry.</p>
+    <div class="button-row">
+      <button id="map-browser-refresh">Refresh</button>
+      <button id="map-browser-close">Close</button>
+    </div>
+    <div id="map-browser-list" class="save-file-list"></div>
+    <p id="map-browser-status" role="status"></p>
   </dialog>
   <dialog id="save-files-dialog">
     <h2>Save files</h2>

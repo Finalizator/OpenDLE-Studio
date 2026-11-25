@@ -1,8 +1,8 @@
 import express from 'express';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ProjectStore, projectSlug } from './store.js';
@@ -16,6 +16,7 @@ import { openLocalBrowser } from './browser.js';
 import { openStudioWindow } from './studio-launcher.js';
 import { readEngineVersion } from './version.js';
 import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, inspectPackage, importPackage } from './packages.js';
+import { scanLocalMaps, readLocalMapSource, describeScan } from './local-maps.js';
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
 import { createPortableBuild, createZipArchive } from './export-build.js';
 import { resolveDist } from './electron-runtime.js';
@@ -145,15 +146,38 @@ export function createApp({
       res.json(pixiEditor.reload(pixiProject(), req.body?.asset));
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
+  /**
+   * What is in the Projects folder, for the map import.
+   *
+   * The file picker can only offer what the operating system shows it, and a compiled map is not a
+   * file the importer reads — so the studio lists the folder itself and says, per file, what it is.
+   * A `.map` source found here (even inside a `.pk3`) can then be imported without a file dialog.
+   */
+  app.get('/api/local-maps', async (req, res) => {
+    try {
+      const scan = await scanLocalMaps(projectsDir);
+      res.json({ ...scan, summary: describeScan(scan) });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.get('/api/local-maps/source', async (req, res) => {
+    try {
+      const text = await readLocalMapSource(projectsDir, req.query.path, req.query.entry ? String(req.query.entry) : null);
+      res.type('text/plain; charset=utf-8').send(text);
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  // Every WAD under Projects/, at any depth: one level of a mod's `maps/` folder used to be
+  // invisible here for the same reason a `.bsp` was invisible to the map import — the library only
+  // looked at the top of the folder.
   app.get('/api/wads', (req, res) => {
-    const files = readdirSync(projectsDir, { withFileTypes: true }).filter(file => file.isFile() && /\.wad$/i.test(file.name));
-    res.json({ files: files.map(file => file.name) });
+    res.json({ files: packageLibrary(projectsDir).wads });
   });
   function localWad(name) {
-    if (typeof name !== 'string' || !/^[a-zA-Z0-9_. -]+\.wad$/i.test(name)) throw new Error('Invalid WAD filename');
-    const file = resolve(projectsDir, name);
-    const info = statSync(file, { throwIfNoEntry: false });
-    if (!info?.isFile() || info.size > LIMITS.archiveBytes) {
+    if (typeof name !== 'string' || !/\.wad$/i.test(name)) throw new Error('Invalid WAD filename');
+    const base = resolve(projectsDir);
+    const file = resolve(base, name);
+    if (!file.startsWith(`${base}${sep}`)) throw new Error('Invalid WAD filename');
+    const info = lstatSync(file, { throwIfNoEntry: false });
+    if (!info?.isFile() || info.isSymbolicLink() || info.size > LIMITS.archiveBytes) {
       throw new Error(`WAD is missing or exceeds ${LIMITS.archiveBytes / (1024 * 1024)} MiB`);
     }
     return readFileSync(file);
