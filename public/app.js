@@ -2264,6 +2264,10 @@ function renderEngineTweaks() {
   for (const [key, label] of [['masterVolume', 'Overall sound level (0 = silent, 1 = full)'], ['muted', 'Mute preview audio'],
     ['renderResolution', 'Render resolution'], ['fov', 'Field of view — horizontal degrees of a 4:3 view'],
     ['resolution', 'Render scale'], ['brightness', 'Brightness'],
+    // PBR detail by distance: beyond the first, a material is its base colour and nothing else;
+    // between the two it keeps the normal map; inside the second it is drawn in full.
+    ['materialNormalDistance', 'PBR detail distance — beyond this a material draws its base colour only'],
+    ['materialDetailDistance', 'PBR full detail distance — inside this it also draws roughness and metalness'],
     ['bunnyhop', 'Simulated bunnyhop (speed gain while chaining jumps)'], ['bunnyhopGain', 'Bunnyhop speed gain per chained jump'],
     // Controllers: an imported game's classic menus have no Controls page, so this is the one
     // place every project can reach. The pad itself needs no layout setting — the browser

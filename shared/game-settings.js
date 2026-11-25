@@ -16,6 +16,11 @@ export const GAME_SETTINGS = {
   renderResolution: { value: 'display', options: RENDER_RESOLUTION_VALUES },
   resolution: { value: 1, min: .5, max: 1.5, step: .25 },
   brightness: { value: 1, min: .5, max: 2, step: .1 },
+  // How far a PBR material is drawn in full. A normal map or a roughness map costs a texture fetch
+  // and a pipeline; past these distances the surface is drawn with the maps it still needs, which
+  // is invisible on a wall 2000 units away and is most of the frame on a big map.
+  materialNormalDistance: { value: 1536, min: 0, max: 32768, step: 32 },
+  materialDetailDistance: { value: 768, min: 0, max: 32768, step: 32 },
   messages: { value: true },
   // Doom's `always_run` is on out of the box (GZDoom's `cl_run` defaults to 1), and the speed
   // key walks instead of runs. Starting off made the player walk at 291 units a second, which

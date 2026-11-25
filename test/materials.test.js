@@ -68,6 +68,26 @@ test('the editor draws the preview and the game draws the baked set', () => {
   assert.equal(materialDisplay(material, { editor: true }).baseColor, id);
 });
 
+test('each material keeps its own preview and bake resolution', () => {
+  const { project, id } = projectWithImage('texture', 'Shared');
+  const small = createMaterial(project, { name: 'Floor tile', channels: { baseColor: id } });
+  const hero = createMaterial(project, { name: 'Hero wall', channels: { baseColor: id } });
+  small.preview = { size: 64, channels: { baseColor: id } };
+  small.baked = { size: 512, at: '2026-11-25T00:00:00.000Z' };
+  hero.preview = { size: 512, channels: { baseColor: id } };
+  hero.baked = { size: 2048, at: '2026-11-25T00:00:00.000Z' };
+  validateProject(project);
+  // One material's choice is not another's: the two are looked at and played at different sizes.
+  assert.equal(materialDisplay(small, { editor: true }).size, 64);
+  assert.equal(materialDisplay(hero, { editor: true }).size, 512);
+  assert.equal(materialDisplay(small).size, 512);
+  assert.equal(materialDisplay(hero).size, 2048);
+  // A material with no preview of its own still draws its full set.
+  const plain = createMaterial(project, { name: 'Plain', channels: { baseColor: id } });
+  assert.equal(materialDisplay(plain, { editor: true }).size, null);
+  assert.equal(materialDisplay(plain, { editor: true }).baseColor, id);
+});
+
 test('a surface draws one material, and removing the material clears the assignment', () => {
   const { project, id } = projectWithImage();
   const material = createMaterial(project, { channels: { baseColor: id } });

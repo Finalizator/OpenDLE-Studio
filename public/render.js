@@ -621,7 +621,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
         if (!mesh) {
           const geometry = new THREE.BufferGeometry();
           geometries.add(geometry);
-          mesh = new THREE.Mesh(geometry, batchMaterials.get(piece.key.split('@')[0]));
+          const batchMaterial = batchMaterials.get(piece.key.split('@')[0]);
+          mesh = new THREE.Mesh(geometry, batchMaterial);
+          if (batchMaterial?.userData?.pbrVariants) mesh.userData.pbrVariants = batchMaterial.userData.pbrVariants;
           materials.add(mesh.material);
           scene.add(mesh);
           batchMeshes.set(piece, mesh);
@@ -682,19 +684,23 @@ export async function createPreview(canvas, project, state, { editor = false, on
         map.repeat.set(scale.u, scale.v);
         map.needsUpdate = true;
       }
-      const result = withEffect(pbr ? new THREE.MeshStandardNodeMaterial({
+      // The same surface at three levels of detail, chosen by distance every frame: the base colour
+      // alone far away, base colour and normal in the middle, everything close up. A normal map and
+      // a roughness map are a texture fetch each, and on a wall 2000 units away nobody can see them.
+      const pbrVariant = details => withEffect(new THREE.MeshStandardNodeMaterial({
         map, color: '#ffffff',
-        normalMap: pbrTextures.get(pbr.display.normal) || null,
-        roughnessMap: pbrTextures.get(pbr.display.roughness) || null,
-        metalnessMap: pbrTextures.get(pbr.display.metallic) || null,
+        normalMap: details.normal ? pbrTextures.get(pbr.display.normal) || null : null,
+        roughnessMap: details.detail ? pbrTextures.get(pbr.display.roughness) || null : null,
+        metalnessMap: details.detail ? pbrTextures.get(pbr.display.metallic) || null : null,
         // With a map, the scalar is the multiplier the map is read against: 1 uses it as authored.
-        roughness: pbr.display.roughness ? 1 : .65,
-        metalness: pbr.display.metallic ? 1 : 0,
+        roughness: details.detail && pbr.display.roughness ? 1 : .65,
+        metalness: details.detail && pbr.display.metallic ? 1 : 0,
         side: oneSided ? THREE.FrontSide : THREE.DoubleSide,
         alphaTest: blended ? 0 : (masked || ceiling || alpha === 'masked' ? .5 : 0),
         transparent: blended,
         depthWrite: !blended,
-      }) : new THREE.MeshBasicNodeMaterial({
+      }));
+      const result = pbr ? pbrVariant({ normal: true, detail: true }) : withEffect(new THREE.MeshBasicNodeMaterial({
         map, color: assetId ? '#ffffff' : color,
         side: oneSided ? THREE.FrontSide : THREE.DoubleSide,
         // A ceiling always keeps an alpha test: that is what cuts it away above the camera.
@@ -723,7 +729,41 @@ export async function createPreview(canvas, project, state, { editor = false, on
       result.colorNode = vec4(colour.rgb.mul(shade.min(vec3(2))),
         ceiling ? colour.a.mul(aboveCamera) : colour.a);
       materials.add(result); materialCache.set(key, result); batchMaterials.set(key, result);
+      if (pbr) {
+        // The cheaper levels of detail share this one's colour node, so the sector light and the
+        // point lights tint them exactly as they tint the full material.
+        const variants = { full: result, normalOnly: pbrVariant({ normal: true, detail: false }),
+          baseOnly: pbrVariant({ normal: false, detail: false }) };
+        for (const variant of Object.values(variants)) {
+          if (variant === result) continue;
+          variant.userData.assetId = assetId; variant.userData.batchKey = key;
+          variant.colorNode = result.colorNode;
+          materials.add(variant);
+        }
+        result.userData.pbrVariants = variants;
+      }
       return result;
+    }
+    /**
+     * Switches each merged surface to the level of detail its distance allows.
+     *
+     * `Engine tweaks` owns the two distances: past the first a material is its base colour only,
+     * past the second it keeps the normal map, and inside the second it is drawn in full. The
+     * variants are built once per material, so this is a handful of distance comparisons a frame
+     * and no pipeline changes — the same object, a different material.
+     */
+    function applySurfaceLod(settings) {
+      const normalDistance = Number(settings?.materialNormalDistance ?? 1536);
+      const detailDistance = Number(settings?.materialDetailDistance ?? 768);
+      for (const mesh of batchMeshes.values()) {
+        const variants = mesh.userData.pbrVariants;
+        if (!variants) continue;
+        const centre = mesh.geometry.boundingSphere?.center;
+        const distance = centre ? camera.position.distanceTo(centre) : 0;
+        const wanted = distance > normalDistance ? variants.baseOnly
+          : distance > detailDistance ? variants.normalOnly : variants.full;
+        if (mesh.material !== wanted) mesh.material = wanted;
+      }
     }
     /**
      * A blended surface's buffer, by its distance from the middle of the level.
@@ -1889,6 +1929,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
     function render(state, dt = 0) {
       const started = clock();
       renderFrame(state, dt);
+      applySurfaceLod(state.settings);
       terminalController?.update();
       const elapsed = clock() - started;
       frameStats.push(elapsed);

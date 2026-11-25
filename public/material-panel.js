@@ -8,8 +8,9 @@
  */
 
 import {
-  MATERIAL_CHANNELS, PREVIEW_SIZE, BAKE_SIZES, createMaterial, materialDisplay, materialScale, removeMaterial,
+  MATERIAL_CHANNELS, PREVIEW_SIZE, PREVIEW_SIZES, BAKE_SIZES, createMaterial, materialDisplay, materialScale, removeMaterial,
 } from '/shared/materials.js';
+import { newId } from '/shared/project.js';
 
 const CHANNEL_LABELS = {
   baseColor: 'Base colour', normal: 'Normal', roughness: 'Roughness',
@@ -64,28 +65,39 @@ export function createMaterialPanel({ root, project: getProject, edit, status, a
       const facts = document.createElement('span');
       facts.className = 'muted';
       const baked = material.baked?.size ? `baked ${material.baked.size}²` : 'not baked';
-      const shown = material.preview?.size ? `editor shows ${material.preview.size}²` : `drawn at ${baked}`;
+      const shown = material.preview?.size ? `editor preview ${material.preview.size}²` : 'no preview yet';
       facts.textContent = `${Object.keys(material.channels).length} map(s) · ${baked} · ${shown}`
         + (scale.u !== 1 || scale.v !== 1 ? ` · tiled ${scale.u}×${scale.v}` : '')
         + (material.source?.name ? ` · from ${material.source.name}` : '');
       const apply = button('Apply to selection', () => apply(material.id));
-      const bake = document.createElement('select');
-      bake.setAttribute('aria-label', `${material.name} bake resolution`);
-      for (const size of BAKE_SIZES) {
-        const option = document.createElement('option');
-        option.value = String(size); option.textContent = `${size} × ${size}`;
-        if (size === (material.baked?.size || 512)) option.selected = true;
-        bake.append(option);
-      }
+      // The preview size belongs to the material, not to the panel: one material can be looked at
+      // 64 px to the tile while another is worth 512, and the choice survives a bake.
+      const preview = sizeSelect(`${material.name} preview resolution`, PREVIEW_SIZES, material.preview?.size || PREVIEW_SIZE);
+      const previewButton = button('Preview', () => void setPreview(material, Number(preview.value)));
+      previewButton.title = 'Rebuild the editor copies at this resolution';
+      const bake = sizeSelect(`${material.name} bake resolution`, BAKE_SIZES, material.baked?.size || 512);
       const bakeButton = button('Bake', () => void bakeTo(material, Number(bake.value)));
       const remove = button('Delete', () => edit(next => removeMaterial(next, material.id), `${material.name} deleted`), 'danger');
       const controls = document.createElement('span');
       controls.className = 'material-controls';
-      controls.append(apply, bake, bakeButton, remove);
+      controls.append(apply, preview, previewButton, bake, bakeButton, remove);
       row.append(title, facts, controls);
       row.title = display.baseColor ? 'Base colour, normal, roughness and metalness are all drawn' : 'No base colour map';
       list.append(row);
     }
+  }
+
+  /** A picker of resolutions, with this material's own size selected. */
+  function sizeSelect(label, sizes, selected) {
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', label);
+    for (const size of sizes) {
+      const option = document.createElement('option');
+      option.value = String(size); option.textContent = `${size} × ${size}`;
+      if (size === selected) option.selected = true;
+      select.append(option);
+    }
+    return select;
   }
 
   function button(label, run, className = '') {
@@ -108,11 +120,59 @@ export function createMaterialPanel({ root, project: getProject, edit, status, a
    * A material authored at 2K is looked at 256² at a time: the full set stays the project's, and
    * only the downscaled copies are uploaded while it is being designed.
    */
-  async function withPreview(channels) {
+  async function withPreview(channels, size = PREVIEW_SIZE) {
     const result = await api('/api/materials/resample', {
-      method: 'POST', body: JSON.stringify({ channels, size: PREVIEW_SIZE, mode: 'preview' }),
+      method: 'POST', body: JSON.stringify({ channels, size, mode: 'preview' }),
     });
     return result.channels;
+  }
+
+  /**
+   * Rebuilds one material's editor copies at the size chosen for it.
+   *
+   * Each material carries its own preview resolution: a large tiled floor can be looked at 64² to
+   * the tile while a hero wall is worth 512, and nothing about one material's choice touches
+   * another's. The copies are ordinary image assets, so they are replaced in place and never
+   * accumulate.
+   */
+  async function setPreview(material, size) {
+    if (!PREVIEW_SIZES.includes(size)) throw new Error(`A preview may be ${PREVIEW_SIZES.join(', ')} pixels`);
+    const channels = await withPreview(sourceUrls(material.channels), size);
+    edit(next => {
+      const target = next.materials.find(item => item.id === material.id);
+      if (!target) throw new Error('That material is no longer part of the project');
+      target.preview = { size, channels: writePreviewAssets(next, target, channels, size) };
+    }, `${material.name} preview at ${size} × ${size}`);
+    status(`${material.name} is drawn at ${size} × ${size} in the editor; the project keeps its own maps.`);
+  }
+
+  /**
+   * Puts a preview set into the project as assets, keeping the ids a previous preview used.
+   *
+   * Keeping the ids is what stops a slider from leaving a trail of orphaned images behind: the
+   * second press of "Preview" rewrites the same six assets instead of adding six more.
+   */
+  function writePreviewAssets(next, target, channels, size) {
+    const previous = target.preview?.channels || {};
+    const kept = {};
+    for (const [channel, src] of Object.entries(channels)) {
+      const existing = previous[channel] && next.assets.find(asset => asset.id === previous[channel]);
+      if (existing) {
+        existing.src = src; existing.width = size; existing.height = size;
+        kept[channel] = existing.id;
+        continue;
+      }
+      const asset = {
+        id: newId('asset'), name: `${target.name} ${CHANNEL_LABELS[channel] || channel} preview`,
+        kind: 'texture', width: size, height: size, src,
+      };
+      next.assets.push(asset);
+      kept[channel] = asset.id;
+    }
+    // A channel that no longer has a preview copy: its old asset goes with it.
+    const stale = new Set(Object.entries(previous).filter(([channel]) => !kept[channel]).map(([, id]) => id));
+    if (stale.size) next.assets = next.assets.filter(asset => !stale.has(asset.id));
+    return kept;
   }
 
   function openCreator() {
@@ -147,9 +207,11 @@ export function createMaterialPanel({ root, project: getProject, edit, status, a
     }
     const scaleU = document.createElement('input'); scaleU.type = 'number'; scaleU.value = '1'; scaleU.min = '.001'; scaleU.step = 'any';
     const scaleV = document.createElement('input'); scaleV.type = 'number'; scaleV.value = '1'; scaleV.min = '.001'; scaleV.step = 'any';
+    const previewPick = sizeSelect('Preview resolution', PREVIEW_SIZES, PREVIEW_SIZE);
     const nameField = document.createElement('label'); nameField.append('Name', nameInput);
     const tileField = document.createElement('label'); tileField.append('Tiling', scaleU, scaleV);
-    form.append(nameField, tileField);
+    const previewField = document.createElement('label'); previewField.append('Editor preview', previewPick);
+    form.append(nameField, tileField, previewField);
     const footer = document.createElement('div');
     footer.className = 'command-footer';
     const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
@@ -162,14 +224,15 @@ export function createMaterialPanel({ root, project: getProject, edit, status, a
       if (!channels.baseColor) { status('A material needs a base colour map', true); return; }
       createButton.disabled = true;
       try {
-        const preview = await withPreview(sourceUrls(channels));
+        const size = Number(previewPick.value) || PREVIEW_SIZE;
+        const preview = await withPreview(sourceUrls(channels), size);
         edit(next => {
           const material = createMaterial(next, {
             name: nameInput.value.trim() || 'Material', channels,
             scale: { u: Number(scaleU.value) || 1, v: Number(scaleV.value) || 1 },
             source: { name: 'Project assets', path: '' },
           });
-          material.preview = { size: PREVIEW_SIZE, channels: preview };
+          material.preview = { size, channels: writePreviewAssets(next, material, preview, size) };
         }, `Material ${nameInput.value.trim() || 'Material'} created`);
         dialog.close();
       } catch (error) {
@@ -207,6 +270,11 @@ export function createMaterialPanel({ root, project: getProject, edit, status, a
     const result = await api('/api/materials/resample', {
       method: 'POST', body: JSON.stringify({ channels: sourceUrls(material.channels), size }),
     });
+    // The preview belongs to the material and outlives the bake: a 1024² material looked at 128²
+    // while it was being designed is still worth looking at 128². When the bake is no larger than
+    // the preview there is nothing to downscale, so the preview goes.
+    const previewSize = material.preview?.size && material.preview.size < size ? material.preview.size : null;
+    const previewChannels = previewSize ? await withPreview(result.channels, previewSize) : null;
     edit(next => {
       const target = next.materials.find(item => item.id === material.id);
       if (!target) throw new Error('That material is no longer part of the project');
@@ -215,18 +283,18 @@ export function createMaterialPanel({ root, project: getProject, edit, status, a
         if (!asset) continue;
         asset.src = src; asset.width = size; asset.height = size;
       }
-      const previewIds = new Set(Object.values(target.preview?.channels || {}));
-      if (previewIds.size) {
-        const used = new Set(next.materials.flatMap(item => [
-          ...Object.values(item.channels || {}),
-          ...Object.values(item.preview?.channels || {}).filter(id => id !== material.id || item.id !== target.id),
-        ]));
-        next.assets = next.assets.filter(asset => !previewIds.has(asset.id) || used.has(asset.id));
+      if (previewChannels) target.preview = {
+        size: previewSize, channels: writePreviewAssets(next, target, previewChannels, previewSize),
+      };
+      else {
+        const stale = new Set(Object.values(target.preview?.channels || {}));
+        if (stale.size) next.assets = next.assets.filter(asset => !stale.has(asset.id));
+        target.preview = null;
       }
-      target.preview = null;
       target.baked = { size, at: new Date().toISOString() };
     }, `${material.name} baked to ${size} × ${size}`);
-    status(`${material.name} now plays at ${size} × ${size}; the authored material stays a link.`);
+    status(`${material.name} now plays at ${size} × ${size}`
+      + (previewSize ? `, and the editor still draws ${previewSize} × ${previewSize}.` : '; the authored material stays a link.'));
   }
 
   return { render };

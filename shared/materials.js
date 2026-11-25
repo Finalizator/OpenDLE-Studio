@@ -24,8 +24,9 @@ export const SHADING_CHANNELS = ['baseColor', 'normal', 'roughness', 'metallic']
 /** How many materials a project may hold. */
 export const MAX_MATERIALS = 256;
 
-/** The editor's preview resolution, and what a material may bake to. */
+/** The editor's default preview resolution, the sizes it offers, and what a material may bake to. */
 export const PREVIEW_SIZE = 256;
+export const PREVIEW_SIZES = [64, 128, 256, 512];
 export const BAKE_SIZES = [128, 256, 512, 1024, 2048];
 
 /** A material's own tiling: how many times the maps repeat across its surface's own UVs. */

@@ -4135,10 +4135,14 @@ copies while the project plays the settled ones.
   normal, … }`), so reference counting, deletion, packing and the asset browser keep working.
   A surface draws exactly one thing: `assignMaterial` puts the material on a brush face or a wall
   side (`material_middle`/`_upper`/`_lower`) and clears the texture it replaces.
-- **Two resolutions, one switch.** `channels` is what the project plays with — the baked set.
-  `preview.channels` is the editor's downscale (`PREVIEW_SIZE`, 256²), and `materialDisplay(material,
-  { editor })` is the single place that decides which is drawn. `scale {u,v}` is the material's own
-  tiling, applied to the texture's repeat.
+- **Two resolutions per material, one switch.** `channels` is what the project plays with — the
+  baked set — and `preview.channels` is the editor's downscale, with its own size stored on the
+  material (`preview.size`, one of 64/128/256/512, 256 by default). Each material chooses its own
+  pair: a tiled floor can be looked at 64² to the tile while a hero wall is worth 512², and a bake
+  keeps the preview afterwards when the preview is still the smaller of the two. The preview assets
+  are rewritten in place, so pressing *Preview* again never leaves orphaned images behind.
+  `materialDisplay(material, { editor })` is the single place that decides which set is drawn.
+  `scale {u,v}` is the material's own tiling, applied to the texture's repeat.
 - **Baking settles it.** `POST /api/materials/resample` decodes the PNGs (`pngjs`), averages them
   down (or passes a map that is already the right size through, so nothing loses a generation), and
   answers data URLs the client writes back into the same assets — so every surface keeps pointing
@@ -4148,6 +4152,12 @@ copies while the project plays the settled ones.
 - **`source` is a link, never a payload.** The authored material (a MaterialCraft project, a folder
   of exported maps) is kept as `{ name, path }` so the creator can find it again; it is never drawn
   and never packed into a build.
+- **Detail by distance, tuned in Engine tweaks.** `materialDetailDistance` (768) and
+  `materialNormalDistance` (1536) are engine tweaks: past the first a material is drawn as its base
+  colour only, past the second it keeps the normal map, and inside the second it is drawn in full.
+  `material()` builds the three variants once per surface material and `applySurfaceLod()` picks one
+  per merged batch each frame — a distance comparison, not a pipeline change, so a 2000-unit wall
+  stops paying for two texture fetches nobody can see.
 - **What draws it.** The 3D editor view batches brush faces by material (`brush-batch.js` keys them
   `material:<id>`) and builds a `MeshStandardMaterial` with the preview maps, lit by a hemisphere and
   a key light the view adds only when the project has a material. The play view (and the exported
