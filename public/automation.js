@@ -192,7 +192,7 @@ export function createUiDriver({
 export function installAutomationHooks({
   getProject, getSelection, getErrorLog, getViewState, worldToScreen, screenToWorld,
   setTool, setBrushMode, setProjection, newDocument, isReady, getBrushes, getProjection, getBrushMode,
-  getView, setView, focus, getLastDrag, importMap, getLayouts, getTextures,
+  getView, setView, focus, getLastDrag, importMap, getLayouts, getTextures, getSceneStats,
 }) {
   const hooks = {
     ready: () => Boolean(isReady()),
@@ -223,6 +223,8 @@ export function installAutomationHooks({
       };
     },
     brushes: () => getBrushes(),
+    /** What the 3D view is drawing, and where its camera is. */
+    sceneStats: () => getSceneStats(),
     /** The textures a compiled map brought with it, and how many brush faces point at one. */
     textures: () => getTextures(),
     selection: () => getSelection(),

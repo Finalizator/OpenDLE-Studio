@@ -646,6 +646,10 @@ async function refreshScene() {
     if (sceneMode !== '3d' || project !== snapshot) { scenePose = editor.pose(); editor.dispose(); return; }
     editor.settings(readEngineTweaks());
     sceneEditor = editor; sceneProject = snapshot;
+    // A document can already hold brushes — an imported map, or the project as it was saved. The
+    // scene used to build brush geometry only after the first edit, so a level made of nothing but
+    // brushes opened on an empty 3D view and stayed empty until something was touched.
+    sceneEditor.refreshBrushes();
     syncTransformModes();
     sceneEditor.select(withSelectionGroup(selection)); sceneEditor.mode($('transform-mode').value); sceneEditor.ceilings($('show-ceilings').checked);
     sceneEditor.areas($('show-areas').checked); sceneEditor.physicsOverlay($('show-physics').checked);
@@ -8347,6 +8351,8 @@ function installAutomation() {
     getProjection: () => mapProjection,
     getBrushMode: () => brushMode,
     getViewState: () => ({ view: sceneMode, zoom: camera.zoom, sceneReady: Boolean(sceneEditor) }),
+    /** What the 3D view is drawing: an empty scene and a lost camera look the same on screen. */
+    getSceneStats: () => sceneEditor?.stats?.() || null,
     getView: () => sceneMode,
     setView: mode => setSceneMode(mode),
     focus: (point, options) => sceneEditor?.focus?.(point, options) || false,

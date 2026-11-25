@@ -104,6 +104,12 @@ export async function run({ page }) {
   await page.evaluate('window.__opendle.view("3d")');
   await page.waitFor('window.__opendle.state().sceneReady === true', { timeout: 45000, label: 'the 3D scene' });
   await wait(250);
+  // A document that already holds brushes must draw them: the view used to build brush geometry only
+  // after the first edit, so a level of nothing but brushes opened on an empty scene and stayed
+  // empty. The scene is merged by material, so a handful of meshes is right and thousands is not.
+  const stats = await page.evaluate('window.__opendle.sceneStats()');
+  check('the brush is drawn when the 3D view opens', stats?.brushMeshes > 0 && stats.brushTriangles > 0, stats);
+  check('the level is a handful of merged meshes, not one per face', stats.brushMeshes <= 8, stats.brushMeshes);
   const box = (await brushes())[0].bounds;
   await page.evaluate(`window.__opendle.focus(${JSON.stringify({
     x: box.x + box.width / 2, y: box.y + box.depth / 2, z: box.z + box.height / 2,

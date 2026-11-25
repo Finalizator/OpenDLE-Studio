@@ -409,6 +409,17 @@ provider credits or network access are required for tests.
   properties and naming the brushes after its classname. A `trigger_*` or `func_illusionary` model is
   a *volume*, not a wall — the compiler stores it exactly like a door and the game is what refuses to
   let anything stand in it — so those keep their entity and import no brushes.
+- **A brush level is drawn merged, and it is drawn at all.** The 3D view used to build one mesh per
+  face, one wireframe per brush and one sphere per corner — fine for a hand-drawn room, impossible for
+  a compiled map: `map-13hell.pk3` is 5702 brushes and 21 772 visible faces, and the result was a
+  hundred thousand objects that never reached a first frame. `shared/brush-batch.js` merges every
+  face into one buffer per texture and every edge into one line (9 drawables for that level, 73 690
+  triangles), and a click is resolved through the triangle the ray hit, exactly as the world's
+  walls and sectors already were. Corner handles exist only for the selected brush (or the first 64
+  when nothing is selected). Two things also had to change around it: brush geometry is built when
+  the view *opens* rather than after the first edit — a document made of nothing but brushes opened
+  on an empty scene — and `fit()` frames a brush level by its bounding sphere from outside, because
+  the room-fitting pass pulled the camera in until it stood inside a wall.
 - **Brush levels collide.** `collisionMesh` adds every brush's faces to the static trimesh, so a level
   with no sectors is walkable: the solid leaf you stand on is a floor. Brushes are static, so they
   are never in the movable collider, and the stand-in ground plane appears only when a project has
