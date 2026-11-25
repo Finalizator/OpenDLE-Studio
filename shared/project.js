@@ -34,6 +34,19 @@ export const MAX_TIMESHEETS = 32;
 import { PATH_MODES } from './path-motion.js';
 
 export const VERSION = 1;
+/**
+ * The version a game starts life at, and the shape every game version has to keep.
+ *
+ * An exported game writes its own version next to the engine's (`version.ini` carries `[engine]
+ * e_version` and `[game] g_version`), so the two are separate things that must not be confused: the
+ * engine version says which studio built the game, the game version says which release of *this*
+ * game it is.
+ */
+export const DEFAULT_GAME_VERSION = '0.1.0';
+const GAME_VERSION = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+export const isGameVersion = value => typeof value === 'string' && value.length <= 64 && GAME_VERSION.test(value);
+/** A project's game version: its own, or the one a game starts at when it has never been set. */
+export const gameVersionOf = project => (isGameVersion(project?.gameVersion) ? project.gameVersion : DEFAULT_GAME_VERSION);
 const EMPTY_TYPES = new Set();
 // `shared/addons.js` cannot import this module back (the two would depend on each other's evaluation
 // order), so the validator a removal needs to prove it left a working project is handed over here.
@@ -556,6 +569,13 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   if (project.modelFacingSemantics !== undefined)
     assert(project.modelFacingSemantics === MODEL_FACING_SEMANTICS, 'Unknown model facing semantics');
   text(project.title, 'Title', 100);
+  // The game's own release number, which the exported build writes into its `version.ini` beside the
+  // engine's. Optional: a project written before it existed exports as DEFAULT_GAME_VERSION.
+  if (project.gameVersion !== undefined) {
+    assert(typeof project.gameVersion === 'string' && project.gameVersion.length <= 64,
+      'Game version must be a string of at most 64 characters');
+    assert(isGameVersion(project.gameVersion), 'Game version must be SemVer, for example 1.0.0 or 1.2.0-beta.1');
+  }
   // The commands the installed addons declare, collected once: a project with hundreds of rules asks
   // for this per command otherwise.
   const addonDeclared = project.addons?.length ? declaredAddonTypes(project) : EMPTY_TYPES;
@@ -1663,6 +1683,7 @@ export function createProject() {
     // Which meaning of a declared model facing this project is written in; see `migrateModelFacing`.
     modelFacingSemantics: MODEL_FACING_SEMANTICS,
     title: 'My first OpenDLE world',
+    gameVersion: DEFAULT_GAME_VERSION,
     map: {
       brushes: [],
       vertices: [

@@ -70,6 +70,30 @@ fails startup explicitly and produces an explicit error if changed while running
 This is the engine's displayed version, not the saved-project revision or the
 npm package release version in `package.json`.
 
+### Game version, and what an export ships
+
+A build is two things at once — the engine that runs it and the game itself — so an exported game
+writes **both** numbers into its `version.ini`, and a bug report can name each:
+
+```ini
+[engine]
+e_version=0.4.87
+[game]
+g_version=1.0.0
+```
+
+The game's number is `project.gameVersion` (`shared/project.js`: `DEFAULT_GAME_VERSION` `0.1.0`,
+SemVer only, optional so an older project still validates). Set it from **Export playable app →
+Game version**; it is saved with the project, so the next export carries it. It also becomes the
+bundled app's `package.json` version and `build.json`'s `project.version`, while `engine.version` and
+the zip name stay keyed on the studio build that produced the folder.
+
+`server/version.js` reads either shape: the author's file (`[engine] version=`, still what the studio
+and its health API read) and the build's (`e_version` + `[game] g_version`), so the same reader
+identifies an exported folder. Unknown sections or a key in the wrong section are refused by name
+rather than ignored — a version file is exactly the place where a silent typo costs a support
+round-trip.
+
 ### Stored projects and reopening the last one
 
 The studio reopens the project that was open when it last ran. Projects are stored

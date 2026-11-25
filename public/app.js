@@ -1,4 +1,5 @@
-import { createProject, validateProject, cloneProjectData, cloneProjectForEdit, newId, removeEntities, eventConditions, updateAsset, ENTITY_TYPES, CAMERA_DEFAULTS } from '/shared/project.js';
+import { createProject, validateProject, cloneProjectData, cloneProjectForEdit, newId, removeEntities, eventConditions, updateAsset, ENTITY_TYPES, CAMERA_DEFAULTS,
+  gameVersionOf, isGameVersion } from '/shared/project.js';
 import { createPath, createPathPoint, samplePath, pathLength, pathPointLabel, pathPointName, pathReferences, removePath, removePathPoint, routesForEntity, pathHandle, pathSteps, bakePathRamp, PATH_SINE_DEFAULTS } from '/shared/paths.js';
 import { createRuntime, stepRuntime, lookPlayer, wallSegments, distanceToSegment, setAddonHooks } from '/shared/runtime.js';
 import { unsupportedActorActions } from '/shared/actor-runtime.js';
@@ -6201,6 +6202,24 @@ async function exportBuild(runtime, platform = exportPlatform()) {
     : `Game downloaded: ${name} (${size}). Unzip it and run the launch script; it opens on the main menu and needs Node.js 22+ and a browser.`);
 }
 
+/**
+ * The game's own release number.
+ *
+ * It is not the studio's version: an exported game writes both into its `version.ini` — `[engine]
+ * e_version` says which studio build made it, `[game] g_version` says which release of the game it
+ * is — and a bug report needs both. The value belongs to the project, so it is saved with it.
+ */
+function editGameVersion() {
+  const current = gameVersionOf(project);
+  const answer = prompt(`Game version (SemVer, for example 1.0.0 or 1.2.0-beta.1)\n\n` +
+    `Written into the exported game as version.ini: [game] g_version.\nThe studio's own version stays [engine] e_version.`, current);
+  if (answer === null) return;
+  const next = answer.trim();
+  if (!isGameVersion(next)) { status('A game version looks like 1.0.0 — three numbers, digits only.', true); return; }
+  edit(draft => { draft.gameVersion = next; }, `Game version set to ${next}`);
+  status(`Game version ${next}. The next export carries it in version.ini as [game] g_version.`);
+}
+
 $('export-build').addEventListener('click', guard(async event => {
   const menu = contextMenu(event, [
     // The primary choice: a folder that plays on a machine with nothing installed.
@@ -6208,6 +6227,8 @@ $('export-build').addEventListener('click', guard(async event => {
       submenu: bundledTargetItems() },
     { label: 'Small build', hint: 'A few MB plus your assets. The computer needs Node.js 22.2+ and a browser.',
       run: guard(async () => { $('export-build').disabled = true; try { await exportBuild('portable'); } finally { $('export-build').disabled = false; } }) },
+    { label: `Game version: ${gameVersionOf(project)}`, hint: 'Written into the build as [game] g_version, beside the engine\'s [engine] e_version.',
+      run: guard(async () => { editGameVersion(); }) },
   ], { label: 'Export playable app — the game only, no editor' });
   return menu;
 }));

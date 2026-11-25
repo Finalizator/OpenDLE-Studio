@@ -3,9 +3,10 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
-import { validateProject } from '../shared/project.js';
+import { validateProject, gameVersionOf } from '../shared/project.js';
 import { documentBytes, packProject } from './project-folder.js';
 import { gameModuleClosure, gameVendorFiles, gameDataFiles, importSpecifiers } from './game-build.js';
+import { gameVersionFile } from './version.js';
 
 const MiB = 1024 * 1024;
 export const BUILD_MAX_BYTES = 128 * MiB;
@@ -227,7 +228,8 @@ Set \`PORT\` to force a port, or \`OPENDLE_NO_BROWSER=1\` to start the server wi
 | \`data/game.json\` | The campaign: every level, its name and where it leads |
 | \`data/actors.json\` | The actor table (monsters, weapons, decorations) |
 | \`data/assets/\` | One file per texture, flat, sprite, sound and model |
-| \`build.json\` | Manifest: engine version, title, export date, every file and its SHA-256 |
+| \`version.ini\` | Two versions: \`[engine] e_version\` is the studio build that made this game, \`[game] g_version\` is this game's own release |
+| \`build.json\` | Manifest: engine version, game version, title, export date, every file and its SHA-256 |
 
 Only the level being played is loaded into memory, so a large campaign costs disk rather than RAM.
 
@@ -335,9 +337,11 @@ async function start() {
 }
 
 /** The Electron app manifest: enough for the runtime to find its entry point. */
-function electronAppManifest({ title, slug, engineVersion }) {
+function electronAppManifest({ title, slug, gameVersion }) {
+  // The app's version is the game's: that is what a player sees in the file properties and what an
+  // update is compared against. The engine that built it is in `version.ini` and `build.json`.
   return `${JSON.stringify({
-    name: slug, productName: title, version: engineVersion, private: true, type: 'module', main: 'main.js',
+    name: slug, productName: title, version: gameVersion, private: true, type: 'module', main: 'main.js',
   }, null, 2)}\n`;
 }
 
@@ -412,7 +416,8 @@ Nothing else in this folder has to be opened, moved or configured.
 | \`resources/app/data/game.json\`, \`data/actors.json\` | The campaign and the actor table |
 | \`resources/app/data/assets/\` | One file per texture, flat, sprite, sound and model |
 | \`resources/app/server/game-serve.js\` | The local server that serves that folder |
-| \`build.json\` | Build manifest: engine version, Electron version, export date, every file and its SHA-256 |
+| \`resources/app/version.ini\` | Two versions: \`[engine] e_version\` (the studio that made it) and \`[game] g_version\` (this game's release) |
+| \`build.json\` | Build manifest: engine version, game version, Electron version, export date, every file and its SHA-256 |
 | \`LICENSE\`, \`LICENSES.chromium.html\` | The OpenDLE: Studio license and the runtime's own notices |
 
 ## Limits
@@ -546,7 +551,7 @@ export function createZipArchive(entries, when) {
 }
 
 export async function createPortableBuild({
-  project, projectJson, version, platform = 'portable', runtime = 'portable',
+  project, projectJson, version, gameVersion = null, platform = 'portable', runtime = 'portable',
   now = new Date(), root = engineRoot, limits = {}, electronDist = null, electronVersion = null,
 } = {}) {
   const kind = checkRuntime(runtime);
@@ -558,6 +563,10 @@ export async function createPortableBuild({
   check(typeof zlib.crc32 === 'function', 'Portable builds need Node.js 22.2 or newer for CRC-32 support');
   // The project is bounded by its own cap, and by a caller's smaller one when it sets one.
   const document = projectDocument(projectJson, project, Math.min(PROJECT_MAX_BYTES, bounds.maxBytes));
+  // The game's own release number travels with the game: the engine version says which studio build
+  // produced the folder, the game version says which release of *this* game it is. A project that
+  // has never set one exports as the version a game starts life at.
+  const gameRelease = checkVersion(gameVersion ?? gameVersionOf(document.project));
   const title = projectTitle(project, document.project);
   const slug = slugifyTitle(title);
   const nodeModules = join(root, 'node_modules');
@@ -584,7 +593,7 @@ export async function createPortableBuild({
   for (const file of data.files) add(file.path, file.bytes, 0o644);
   add('licenses/three-LICENSE.txt', readSource(join(nodeModules, 'three', 'LICENSE')));
   add('licenses/THIRD-PARTY-NOTICES.txt', noticeText());
-  add('version.ini', `[engine]\nversion=${engineVersion}\n`);
+  add('version.ini', gameVersionFile({ engine: engineVersion, game: gameRelease }));
   add('LICENSE', readSource(join(root, 'LICENSE')));
 
   const executable = kind === 'bundled' ? gameExecutableName(title, target) : null;
@@ -599,7 +608,7 @@ export async function createPortableBuild({
       collector.add(`${slug}/${renamed}`, readSource(join(electronDist, name)), fileMode(join(electronDist, name)));
     }
     add('main.js', electronMainScript({ title, slug }));
-    add('package.json', electronAppManifest({ title, slug, engineVersion }));
+    add('package.json', electronAppManifest({ title, slug, gameVersion: gameRelease }));
     // One launcher, for the platform the runtime was built for: a shell script inside a Windows
     // build would only be a file that cannot run.
     if (target === 'windows') collector.add(`${slug}/launch.cmd`, bundledLaunchWindows(executable), 0o644);
@@ -616,7 +625,7 @@ export async function createPortableBuild({
   const manifest = {
     format: kind === 'bundled' ? 'opendle-bundled-build/1' : 'opendle-portable-build/1',
     engine: { name: 'OpenDLE: Studio', version: engineVersion },
-    project: { title, slug },
+    project: { title, slug, version: gameRelease },
     exportDate: exportedAt.toISOString(),
     target,
     runtime: kind === 'bundled'

@@ -1,5 +1,5 @@
 import { createRuntime } from './runtime.js';
-import { initialiseActorEntities } from './actor-runtime.js';
+import { dropTemplate, initialiseActorEntities } from './actor-runtime.js';
 import { buildCamera, isCamera } from './camera-runtime.js';
 import { HL2_MOVEMENT } from './source-motion.js';
 import { selectGameLevel, levelData } from './game-levels.js';
@@ -232,9 +232,21 @@ function validateRuntime(project, state, baseline) {
   const cameraTemplate = entity => (isCamera(entity) ? buildCamera({ id: entity.id }) : null);
   for (const entity of state.entities) {
     if (!plain(entity) || seen.has(entity.id)) fail('unknown or duplicate entity');
-    const template = entities.get(entity.id) ||
+    const resolved = () => entities.get(entity.id) ||
       (typeof entity.spawnedFrom === 'string' && (entities.get(entity.spawnedFrom) || templateFor(entity.spawnedFrom))) ||
       cameraTemplate(entity);
+    let template = resolved();
+    if (!template && typeof entity.spawnedFrom === 'string' && entity.spawnedFrom.startsWith('drop_template_')) {
+      // A monster's dropped item is a clone of a template the dropper makes on the spot and keeps on
+      // the level, not in any save — so a save taken after a kill could not be loaded at all (the
+      // exported game said "unknown entity drop_1"). The template is derived from the project's
+      // actor table, and the drop names the item it came from, so it is built again here. Saves
+      // written before that field existed fall back to the drop's own actor/item name.
+      const item = typeof entity.droppedFrom === 'string' && entity.droppedFrom ? entity.droppedFrom
+        : String(entity.actorName || entity.name || '');
+      if (item) { try { dropTemplate(project, item); } catch { /* no actor table: the failure below names it */ } }
+      template = resolved();
+    }
     if (!template) fail(`unknown entity ${entity.id}`);
     seen.add(entity.id); matchShape(entity, template, `entity ${entity.id}`);
     for (const key of ['x', 'y']) if (!Number.isFinite(entity[key])) fail('invalid entity position');

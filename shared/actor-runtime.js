@@ -863,7 +863,7 @@ function actorFlag(actor, name, entity) {
  * its artwork and its editor number — and a level that places none gets one built from the item's
  * own actor, which is what a save validates a dropped object against.
  */
-function dropTemplate(project, itemName) {
+export function dropTemplate(project, itemName) {
   const actor = projectActorIndex(project).byName.get(String(itemName).toLowerCase()) || null;
   // A project with an imported actor table names the item itself; one built on the classic
   // table has no actor records for its items at all, and Doom's editor numbers answer instead.
@@ -921,8 +921,12 @@ export function dropItems(project, state, entity, actor) {
     } while (state.entities.some(candidate => candidate.id === id));
     // The spread keeps the template's own fields, and `variables` is what the runtime gives every
     // object it holds — a save checks each live object against that shape.
+    // `droppedFrom` is the item the drop table named, not the template it was cloned from: a level
+    // that placed no item of this kind gets its template made on the spot, and that template is not
+    // in any save. Recording the *item* is what lets a loader build the same template again from the
+    // project's actor table — without it a save taken after one monster died could not be loaded.
     const dropped = { ...structuredClone(template), id, x: entity.x, y: entity.y, z: floorAt(state, entity),
-      elevation: 0, spawnedFrom: template.id, variables: { ...(template.variables || {}) } };
+      elevation: 0, spawnedFrom: template.id, droppedFrom: String(drop.item), variables: { ...(template.variables || {}) } };
     state.entities.push(dropped);
     state.worldRevision++;
     spawned++;

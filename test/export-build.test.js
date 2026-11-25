@@ -107,7 +107,7 @@ test('manifest records engine version, project title, export date and every bund
   const manifest = JSON.parse(entries.get('my-first-opendle-world/build.json').data.toString('utf8'));
   assert.equal(manifest.format, 'opendle-portable-build/1');
   assert.deepEqual(manifest.engine, { name: 'OpenDLE: Studio', version: '0.0.7' });
-  assert.deepEqual(manifest.project, { title: 'My first OpenDLE world', slug: 'my-first-opendle-world' });
+  assert.deepEqual(manifest.project, { title: 'My first OpenDLE world', slug: 'my-first-opendle-world', version: '0.1.0' });
   assert.equal(manifest.exportDate, '2026-10-25T12:00:00.000Z');
   assert.equal(manifest.target, 'linux');
   assert.equal(manifest.manifest, 'my-first-opendle-world/build.json');
@@ -236,7 +236,9 @@ test('a build is the game and its data, with no editor in it', async () => {
   validateProject(document.project);
   assert.equal(document.project.title, 'My first OpenDLE world');
   assert.equal(document.format, 'project-folder', 'the game reads the same split document the studio writes');
-  assert.equal(entries.get(`${slug}/version.ini`).data.toString('utf8'), '[engine]\nversion=0.0.7\n');
+  // A build carries two versions: the studio that made it and the game's own release.
+  assert.equal(entries.get(`${slug}/version.ini`).data.toString('utf8'),
+    '[engine]\ne_version=0.0.7\n[game]\ng_version=0.1.0\n');
 
   const names = [...entries.keys()];
   assert.equal(names.filter(name => name.includes('node_modules')).length, 0, 'no npm dependencies are copied');

@@ -10,7 +10,7 @@ import { spriteAssetNames } from './sprite-animation.js';
 // What belongs to the game rather than to one map. Addons are here because an addon adds *commands*:
 // one level cannot have a vocabulary the next one lacks, or a rule would stop resolving the moment
 // the author looked at another map. Its artwork already went into the shared asset list.
-const sharedKeys = new Set(['version', 'title', 'assets', 'game', 'actors', 'strings', 'soundAliases', 'addons']);
+const sharedKeys = new Set(['version', 'title', 'gameVersion', 'assets', 'game', 'actors', 'strings', 'soundAliases', 'addons']);
 
 /**
  * Point a level's environment at its music asset. MAPINFO `music` wins, then the
