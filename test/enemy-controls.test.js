@@ -157,6 +157,28 @@ test('a boxed-in monster and a blocked path are two different facts', () => {
   assert.equal(state.variables.watching, true, 'the condition reports it');
 });
 
+test('a removed monster leaves nothing behind in the blocked set', () => {
+  // The set is keyed by entity id and was never cleared, so a level that spawns and removes monsters
+  // grew it by one id per monster for the whole session — and a recycled id read as boxed in.
+  const project = arena({ x: 0 });
+  createBoxBrush(project, { x: -32, y: -32, z: 0, width: 16, depth: 64, height: 128 });
+  createBoxBrush(project, { x: 16, y: -32, z: 0, width: 16, depth: 64, height: 128 });
+  createBoxBrush(project, { x: -32, y: 16, z: 0, width: 64, depth: 16, height: 128 });
+  createBoxBrush(project, { x: -32, y: -32, z: 0, width: 64, depth: 16, height: 128 });
+  const { state, guard } = runtimeOf(project);
+  project.events = [{ id: 'walk', name: 'walk', enabled: true, once: false,
+    condition: { type: 'everySeconds', seconds: .01 }, conditions: [],
+    actions: [{ type: 'moveEnemy', entityId: 'guard', speed: 200 }] }];
+  for (let frame = 0; frame < 10; frame++) tick(project, state);
+  assert.equal(state.enemyBlocked.has(guard.id), true, 'boxed in');
+  project.events = [{ id: 'gone', name: 'gone', enabled: true, once: true,
+    condition: { type: 'everySeconds', seconds: .01 }, conditions: [],
+    actions: [{ type: 'removeEntity', entityId: 'guard' }] }];
+  tick(project, state);
+  assert.equal(state.entities.some(entity => entity.id === guard.id), false, 'the monster is gone');
+  assert.equal(state.enemyBlocked.has(guard.id), false, 'and so is its entry');
+});
+
 test('a wall between a monster and the player is its own condition', () => {
   const open = arena({ x: -100 });
   const free = runtimeOf(open);

@@ -126,7 +126,7 @@ export function readGamepads(pads, settings = {}, previous = {}, { menu = false 
   const keys = new Set(), pressed = new Set(), connected = [];
   // The raw pad, as well as the key codes it stands for: an event rule that asks "is the right
   // stick past half a turn" cannot answer that from a key set, because a stick is not a key.
-  const buttons = new Map(), axes = new Map(), pressedNames = new Set();
+  const buttons = new Map(), axes = new Map(), presses = new Map();
   const deadzone = Number.isFinite(settings.gamepadDeadzone) ? settings.gamepadDeadzone : 0.2;
   const lookScale = (Number.isFinite(settings.gamepadLookSensitivity) ? settings.gamepadLookSensitivity : 1) *
     (Number.isFinite(settings.sensitivity) ? settings.sensitivity : 1);
@@ -148,7 +148,7 @@ export function readGamepads(pads, settings = {}, previous = {}, { menu = false 
     if (pad.mapping !== 'standard') continue;
 
     const wasHeld = previous.held?.get(pad.index) ?? new Set();
-    const down = new Set(), heldNames = new Set();
+    const down = new Set(), heldNames = new Set(), newNames = new Set();
     axes.set(pad.index, {
       leftX: clampAxis(pad.axes?.[PAD_AXES.leftX]), leftY: clampAxis(pad.axes?.[PAD_AXES.leftY]),
       rightX: clampAxis(pad.axes?.[PAD_AXES.rightX]), rightY: clampAxis(pad.axes?.[PAD_AXES.rightY]),
@@ -163,10 +163,13 @@ export function readGamepads(pads, settings = {}, previous = {}, { menu = false 
       down.add(index);
       heldNames.add(name);
       keys.add(boundTo(action));
-      if (!wasHeld.has(index)) { pressed.add(boundTo(action)); pressedNames.add(name); }
+      if (!wasHeld.has(index)) { pressed.add(boundTo(action)); newNames.add(name); }
     }
     held.set(pad.index, down);
     buttons.set(pad.index, heldNames);
+    // Which button *this* pad started holding this frame, for the controller conditions: with two
+    // pads connected, a press on the second one must not read as a press on the first.
+    presses.set(pad.index, newNames);
 
     // The left stick is a set of keys held while it is pushed; the right stick is analog and
     // feeds the view continuously rather than as a direction.
@@ -185,7 +188,7 @@ export function readGamepads(pads, settings = {}, previous = {}, { menu = false 
     lookX += turn * lookScale;
     lookY += (invertLook ? tilt : -tilt) * lookScale;
   }
-  return { keys, pressed, lookX, lookY, connected, held, sticks, looks, buttons, pressedNames, axes };
+  return { keys, pressed, lookX, lookY, connected, held, sticks, looks, buttons, presses, axes };
 }
 
 /**
@@ -212,7 +215,9 @@ export function controllerSnapshot(result = {}) {
     // Canonical button names (`cross`, `l1`, `up`…), not indices: a rule says "Cross", the
     // standard mapping is what decides that Cross is button 0 on every supported pad.
     buttons: new Set(result.buttons?.get(index) || []),
-    pressed: new Set(result.pressedNames || []),
+    // This pad's presses, not the union of every pad's: `buttons` above is already per pad, and a
+    // rule reading "Cross was pressed" answered by the *other* controller is a rule that misfires.
+    pressed: new Set(result.presses?.get(index) || []),
     axes: result.axes?.get(index) || { leftX: 0, leftY: 0, rightX: 0, rightY: 0 },
     sticks: result.sticks?.get(index) || { x: 0, y: 0 },
   };

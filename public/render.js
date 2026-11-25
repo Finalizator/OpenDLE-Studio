@@ -35,7 +35,7 @@ import { skyDomeMapping } from '/shared/sky-dome.js';
 import { createSpriteIndex } from '/shared/sprite-animation.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 import { createSurfaceBatcher, mergePiece } from '/shared/surface-batch.js';
-import { materialDisplay, materialScale, materialById } from '/shared/materials.js';
+import { materialById, materialDisplay, materialScale, wallSideMaterial } from '/shared/materials.js';
 import { viewBob, weaponBob } from '/shared/player-motion.js';
 import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 import { createWorldNodeObject, createWorldTerminalController, gameplayCrosshairVisible, setWorldNodePose } from './world-media.js';
@@ -655,7 +655,8 @@ export async function createPreview(canvas, project, state, { editor = false, on
     // Sector light is a per-vertex attribute rather than a per-material uniform: a map
     // with a couple of hundred light levels would otherwise need a material per level
     // per texture, and the renderer keeps a pipeline for every material it draws.
-    function material(assetId, color = '#ffffff', { masked = false, oneSided = false, ceiling = false, scroll = null } = {}) {
+    function material(assetId, color = '#ffffff',
+      { masked = false, oneSided = false, ceiling = false, scroll = null, materialId = null } = {}) {
       // A texture with soft alpha everywhere is a glow or a pane, not a silhouette: Doom's
       // shapes (and Lullaby's mountains) are cut with an alpha test, everything else is
       // blended. `masked` therefore only says the surface is not solid; the picture decides
@@ -663,7 +664,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
       const alpha = (assetId && alphaModes.get(assetId)) || 'opaque';
       const blended = alpha === 'translucent' && !ceiling;
       const scrollKey = scroll ? `${scroll.u.toFixed(7)}/${scroll.v.toFixed(7)}` : '-';
-      const key = `${assetId}/${color}/${masked}/${oneSided}/${ceiling}/${alpha}/${scrollKey}`;
+      // The assigned material is part of the key: two materials may share a base colour and differ
+      // in their normal, roughness or metalness maps, and a key that named only the picture would
+      // hand the second one's surfaces the first one's material.
+      const key = `${assetId}/${color}/${masked}/${oneSided}/${ceiling}/${alpha}/${scrollKey}/${materialId || ''}`;
       if (materialCache.has(key)) return materialCache.get(key);
       // Doom scrolls a wall by moving its texture offset (`xOffset`) and never its geometry, so
       // the picture slides across the surface and the alpha test cuts the hole where the picture
@@ -677,7 +681,13 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // brings the normal, roughness and metalness response, and the sector light multiplies the
       // base colour underneath so a dark room still reads as dark. The lights it needs are added
       // whenever a project has a material at all (see the studio rig above).
-      const pbr = assetId ? pbrByBaseColor.get(assetId) : null;
+      // A surface that names a material draws that material. Everything else falls back to the
+      // material whose base colour is the picture it paints, which is how a bare texture that also
+      // belongs to a material is still lit.
+      const assigned = materialId ? materialById(project, materialId) : null;
+      const pbr = assigned?.channels?.baseColor || assigned?.preview?.channels?.baseColor
+        ? { record: assigned, display: materialDisplay(assigned, { editor }) }
+        : assetId ? pbrByBaseColor.get(assetId) : null;
       if (pbr && map) {
         const scale = materialScale(pbr.record);
         map = map.clone();
@@ -755,7 +765,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
     function applySurfaceLod(settings) {
       const normalDistance = Number(settings?.materialNormalDistance ?? 1536);
       const detailDistance = Number(settings?.materialDetailDistance ?? 768);
-      for (const mesh of batchMeshes.values()) {
+      for (const mesh of [...batchMeshes.values(), ...brushPbrMeshes]) {
         const variants = mesh.userData.pbrVariants;
         if (!variants) continue;
         const centre = mesh.geometry.boundingSphere?.center;
@@ -882,6 +892,8 @@ export async function createPreview(canvas, project, state, { editor = false, on
         }
       });
     }
+    // A sidedef's texture slots and its material slots are the same three surfaces under two names.
+    const SLOT_PART = { mid: 'middle', top: 'upper', bottom: 'lower' };
     function wallQuad(wall, a, b, bottom, top, assetId, side, light, referenceTop, masked = false, flip = false, slot = 'mid') {
       if (top <= bottom) return;
       const length = Math.hypot(b.x - a.x, b.y - a.y), asset = assetMap.get(assetId);
@@ -902,8 +914,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
         : null;
       // The tiled width, so the offset can be reported in texels rather than in UV units.
       if (scroll) scroll.texelWidth = (asset?.width || 64) * scale;
+      const record = side ? wallSideMaterial(project, side, SLOT_PART[slot] || 'middle') : null;
       surface([a.x, bottom, a.y, b.x, bottom, b.y, b.x, top, b.y, a.x, top, a.y], coords, [0, 1, 2, 0, 2, 3],
-        material(assetId, wall.color, { masked, oneSided: !editor, scroll }), light, { kind: 'wall', id: wall.id });
+        material(assetId, wall.color, { masked, oneSided: !editor, scroll, materialId: record?.id || null }),
+        light, { kind: 'wall', id: wall.id });
     }
     /**
      * The edge of a 3D floor: one quad per ring edge, between the control sector's planes.
@@ -936,7 +950,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
      * material is exactly what it always was.
      */
     const sideAsset = (side, part, fallback) => {
-      const record = materialById(project, side?.[`material_${part}`]);
+      const record = wallSideMaterial(project, side, part);
       if (!record) return fallback;
       return materialDisplay(record, { editor }).baseColor || fallback;
     };
@@ -961,15 +975,15 @@ export async function createPreview(canvas, project, state, { editor = false, on
         const frontSector = sectorMap.get(side.sectorId), backSector = sectorMap.get(back?.sectorId);
         const floor = frontSector.floorHeight, ceiling = frontSector.ceilingHeight, light = frontSector.light;
         if (!backSector) {
-          const middle = sideAsset(side, 'mid', side.middle);
+          const middle = sideAsset(side, 'middle', side.middle);
           const asset = assetMap.get(middle);
           // Every wall texture is alpha-tested, as GZDoom does: a mountain silhouette is a
           // picture with holes, and drawing it opaque paints the sky black.
           wallQuad(wall, a, b, floor, ceiling, middle, side, light,
             wall.flags & 16 ? floor + (asset?.height || 128) : ceiling, true, flip, 'mid');
         } else {
-          const upper = sideAsset(side, 'top', side.upper), lower = sideAsset(side, 'bottom', side.lower);
-          const middle = sideAsset(side, 'mid', side.middle);
+          const upper = sideAsset(side, 'upper', side.upper), lower = sideAsset(side, 'lower', side.lower);
+          const middle = sideAsset(side, 'middle', side.middle);
           if (!(frontSector.sky && backSector.sky)) wallQuad(wall, a, b, Math.max(floor, backSector.ceilingHeight), ceiling,
             upper, side, light, wall.flags & 8 ? ceiling : backSector.ceilingHeight + (assetMap.get(upper)?.height || 128), true, flip, 'top');
           wallQuad(wall, a, b, floor, Math.min(ceiling, backSector.floorHeight), lower, side, light,
@@ -1018,6 +1032,43 @@ export async function createPreview(canvas, project, state, { editor = false, on
       texture.colorSpace = THREE.SRGBColorSpace;
       return texture;
     })();
+    /**
+     * A brush face drawn with a PBR material.
+     *
+     * A face that carries a material has no texture — assigning one takes the picture away, because
+     * a surface draws one thing — so the brush path, which groups by `face.texture`, drew every
+     * material face as the white filler. It gets the lit material the walls get, in the same three
+     * levels of detail, so a brush far away costs one texture fetch like a wall does.
+     */
+    function brushMaterialForMaterial(materialId) {
+      const record = (project.materials || []).find(item => item.id === materialId);
+      const display = record && materialDisplay(record, { editor });
+      if (!display?.baseColor) return null;
+      const scale = materialScale(record);
+      const tiled = (texture, repeat) => {
+        if (!texture) return null;
+        const copy = texture.clone();
+        copy.repeat.set(repeat ? scale.u : 1, repeat ? scale.v : 1);
+        copy.needsUpdate = true;
+        return copy;
+      };
+      const mapOf = (id, isData) => id ? tiled(isData ? pbrTextures.get(id) : imageTexture(id), true) : null;
+      const build = ({ normal, detail }) => {
+        const base = mapOf(display.baseColor, false) || brushPlainTexture;
+        return new THREE.MeshStandardMaterial({
+          map: base, color: '#ffffff', side: THREE.DoubleSide,
+          normalMap: normal ? mapOf(display.normal, true) : null,
+          roughnessMap: detail ? mapOf(display.roughness, true) : null,
+          metalnessMap: detail ? mapOf(display.metallic, true) : null,
+          roughness: detail && display.roughness ? 1 : .65,
+          metalness: detail && display.metallic ? 1 : 0,
+        });
+      };
+      const full = build({ normal: true, detail: true });
+      full.userData.pbrVariants = { full, normalOnly: build({ normal: true, detail: false }),
+        baseOnly: build({ normal: false, detail: false }) };
+      return full;
+    }
     function brushMaterialFor(assetId) {
       if (!assetId) return new THREE.MeshBasicNodeMaterial({ map: brushPlainTexture, color: '#ffffff', side: THREE.DoubleSide });
       if (brushTextureCache.has(assetId)) return brushTextureCache.get(assetId);
@@ -1027,7 +1078,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
       brushTextureCache.set(assetId, next);
       return next;
     }
+    const brushPbrMeshes = [];
     function rebuildBrushMeshes() {
+      brushPbrMeshes.length = 0;
       for (const child of [...brushRoot.children]) {
         brushRoot.remove(child);
         child.geometry?.dispose();
@@ -1051,8 +1104,11 @@ export async function createPreview(canvas, project, state, { editor = false, on
           for (let index = 1; index < entry.points.length - 1; index++) {
             push(entry.points[0]); push(entry.points[index]); push(entry.points[index + 1]);
           }
-          const key = face.texture || '';
-          if (!byMaterial.has(key)) byMaterial.set(key, { positions: [], uvs: [], material: brushMaterialFor(face.texture) });
+          const key = face.material ? `material:${face.material}` : face.texture || '';
+          if (!byMaterial.has(key)) {
+            byMaterial.set(key, { positions: [], uvs: [],
+              material: (face.material && brushMaterialForMaterial(face.material)) || brushMaterialFor(face.texture) });
+          }
           const target = byMaterial.get(key);
           target.positions.push(...positions); target.uvs.push(...uvs);
         }
@@ -1061,7 +1117,14 @@ export async function createPreview(canvas, project, state, { editor = false, on
           buffer.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
           buffer.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
           buffer.computeVertexNormals();
+          buffer.computeBoundingSphere();
           const mesh = new THREE.Mesh(buffer, surfaceMaterial);
+          // The LOD switch walks these too, so a material's brush faces lose their normal and
+          // detail maps with distance exactly as the walls do.
+          if (surfaceMaterial.userData?.pbrVariants) {
+            mesh.userData.pbrVariants = surfaceMaterial.userData.pbrVariants;
+            brushPbrMeshes.push(mesh);
+          }
           brushRoot.add(mesh);
         }
       }

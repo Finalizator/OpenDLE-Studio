@@ -589,6 +589,9 @@ function forgetEntity(state, id) {
   for (const key of state.timers.keys()) if (key.startsWith(`${id}:`)) state.timers.delete(key);
   state.pathMotions.delete(id);
   state.enemyMoves.delete(id);
+  // A monster that is gone must not stay in the "boxed in" set: levels that spawn and remove
+  // monsters would grow it for the whole session, one id per monster.
+  state.enemyBlocked?.delete(id);
   state.cameraMoves?.delete(id);
   state.pathTweens = state.pathTweens.filter(tween => tween.entityId !== id);
   if (state.viewCamera === id) state.viewCamera = null;

@@ -8,8 +8,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PAD_AXES, PAD_BUTTONS, PAD_DEFAULT_ACTIONS, gamepadLook, padKind, padLabels, padName, playRumble,
-  readGamepads, rumbleEffect, stickDirection,
+  PAD_AXES, PAD_BUTTONS, PAD_DEFAULT_ACTIONS, controllerSnapshot, gamepadLook, padKind, padLabels, padName,
+  playRumble, readGamepads, rumbleEffect, stickDirection,
 } from '../shared/gamepad.js';
 import { GAME_SETTINGS, bindKey, gameSettings, mappedKeys, validBinding } from '../shared/game-settings.js';
 import { createProject } from '../shared/project.js';
@@ -29,6 +29,20 @@ function pad({ id = 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Pro
   };
 }
 const pressedNames = result => [...result.keys].sort();
+
+test('a press on one pad is not a press on the other', () => {
+  // The snapshot reports pad 0. Its held buttons were already per pad, but its *presses* were the
+  // union of every pad's, so a second controller pressing Cross said "pad 0 pressed Cross" — and
+  // the pad conditions answered a rule the player never performed.
+  const second = pad({ index: 1, id: 'DualSense Wireless Controller', buttons: { [PAD_BUTTONS.cross]: 1 } });
+  const result = readGamepads([pad({ index: 0 }), second], {}, {});
+  const snapshot = controllerSnapshot(result);
+  assert.equal(snapshot.connected, 2, 'both pads are there');
+  assert.equal(snapshot.buttons.has('cross'), false, 'pad 0 holds nothing');
+  assert.equal(snapshot.pressed.has('cross'), false, 'and pressed nothing');
+  assert.equal(controllerSnapshot(readGamepads([second], {}, {})).pressed.has('cross'), true,
+    'while the pad that was actually pressed reports it');
+});
 
 test('the standard mapping is what is read, whatever the controller is called', () => {
   // Browsers normalise PS5, PS4, Xbox and Switch Pro pads onto one layout; the id only decides

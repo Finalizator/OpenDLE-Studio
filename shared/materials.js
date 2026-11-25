@@ -126,12 +126,30 @@ export function assignMaterial(project, materialId, target) {
   if (target.kind === 'wallSide') {
     const wall = (project.map.walls || []).find(item => item.id === target.wallId);
     const part = target.part || 'middle';
+    if (!WALL_MATERIAL_PARTS[part]) throw new Error(`A wall side has no "${part}" part`);
     if (!wall?.[target.side || 'right']) throw new Error('That wall side no longer exists');
     const side = wall[target.side || 'right'];
-    if (materialId) side[`material_${part}`] = materialId; else delete side[`material_${part}`];
+    if (materialId) side[WALL_MATERIAL_PARTS[part]] = materialId; else delete side[WALL_MATERIAL_PARTS[part]];
     return side;
   }
   throw new Error('A material is assigned to a brush face or a wall side');
+}
+
+/** The field a wall side keeps each of its three material slots in. */
+export const WALL_MATERIAL_PARTS = { upper: 'material_upper', middle: 'material_middle', lower: 'material_lower' };
+
+/**
+ * The material a wall side draws for one of its parts, or null.
+ *
+ * A sidedef has three surfaces — above, between and below the neighbouring sector — and any of them
+ * can carry a material. The name of the field lives here and nowhere else: the assignment, the
+ * removal, the validator and the renderer all ask this table, because a renderer reading
+ * `material_mid` while the editor writes `material_middle` drew the old texture for ever.
+ */
+export function wallSideMaterial(project, side, part = 'middle') {
+  const key = WALL_MATERIAL_PARTS[part];
+  if (!key) throw new Error(`A wall side has no "${part}" part; use ${Object.keys(WALL_MATERIAL_PARTS).join(', ')}`);
+  return materialById(project, side?.[key] || null);
 }
 
 /** The material a surface draws, or null. */
@@ -147,7 +165,7 @@ export function removeMaterial(project, materialId) {
     for (const face of brush.faces || []) if (face.material === materialId) delete face.material;
   }
   for (const wall of project.map.walls || []) {
-    for (const key of ['material_upper', 'material_middle', 'material_lower']) {
+    for (const key of Object.values(WALL_MATERIAL_PARTS)) {
       if (wall.right?.[key] === materialId) delete wall.right[key];
       if (wall.left?.[key] === materialId) delete wall.left[key];
     }

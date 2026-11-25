@@ -5,11 +5,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { PNG } from 'pngjs';
 import { createProject, validateProject } from '../shared/project.js';
 import { createBoxBrush } from '../shared/brushes.js';
 import { createMaterial, materialDisplay, materialScale, assignMaterial, removeMaterial,
-  materialsUsing, MAX_MATERIALS, MATERIAL_CHANNELS } from '../shared/materials.js';
+  materialsUsing, wallSideMaterial, WALL_MATERIAL_PARTS, MAX_MATERIALS, MATERIAL_CHANNELS } from '../shared/materials.js';
 import { bakeChannels, previewChannels, resample, readPng, writePng, imageSize } from '../server/material-bake.js';
 
 /** A solid-colour PNG data URL, which is all a resize test needs. */
@@ -106,13 +107,66 @@ test('a surface draws one material, and removing the material clears the assignm
   validateProject(project);
 });
 
-test('a wall side can carry a material per part', () => {
+test('a wall side carries a material per part, and the renderer reads the same field', () => {
   const { project, id } = projectWithImage();
   const material = createMaterial(project, { channels: { baseColor: id } });
-  project.map.walls[0].right.material_middle = material.id;
+  const wall = project.map.walls[0];
+  // Every part the sidedef has: assignment and lookup must agree on the field name, which is what
+  // broke when the renderer asked for `material_mid` and the editor wrote `material_middle`.
+  for (const part of Object.keys(WALL_MATERIAL_PARTS)) {
+    assignMaterial(project, material.id, { kind: 'wallSide', wallId: wall.id, side: 'right', part });
+    assert.equal(wall.right[WALL_MATERIAL_PARTS[part]], material.id, `assigning wrote ${part}`);
+    assert.equal(wallSideMaterial(project, wall.right, part)?.id, material.id, `the lookup found ${part}`);
+  }
+  assert.equal(wallSideMaterial(project, wall.right, 'middle')?.channels.baseColor, id,
+    'and the part resolves to a material whose base colour is the picture the wall draws');
+  assert.throws(() => wallSideMaterial(project, wall.right, 'nonsense'), /no "nonsense" part/,
+    'a misspelt part is an error, not a silently missing material');
   validateProject(project);
-  project.map.walls[0].right.material_middle = 'material_nowhere';
+  wall.right.material_middle = 'material_nowhere';
   assert.throws(() => validateProject(project), /unknown material/);
+});
+
+test('a brush face that names a material draws that material in play, not the white filler', () => {
+  // Assigning a material takes the texture away ("a surface draws one thing"), and the play
+  // renderer grouped brush faces by `face.texture` alone — so every material face played as the
+  // white checker filler while the editor drew it correctly.
+  const project = createProject();
+  const brush = createBoxBrush(project, { x: 0, y: 0, z: 0, width: 64, depth: 64, height: 64 });
+  const material = createMaterial(project, { channels: { baseColor: 'asset_base', normal: 'asset_normal' } });
+  assignMaterial(project, material.id, { kind: 'brushFace', brushId: brush.id, faceIndex: 0 });
+  const face = project.map.brushes[0].faces[0];
+  assert.equal(face.texture, null, 'the texture is gone, so the picture cannot be the key');
+  assert.equal(face.material, material.id);
+
+  const source = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
+  assert.match(source, /const key = face\.material \? `material:\$\{face\.material\}`/,
+    'the brush path groups by the material when there is one');
+  assert.match(source, /brushMaterialForMaterial\(face\.material\)/, 'and builds a lit material for it');
+  assert.match(source, /full\.userData\.pbrVariants = \{ full, normalOnly: build/, 'with the same levels of detail the walls get');
+  assert.match(source, /\.\.\.batchMeshes\.values\(\), \.\.\.brushPbrMeshes/, 'which the LOD switch walks');
+});
+
+test('a wall draws the material it names, even when another material shares its picture', () => {
+  // The wall path looked a material up by base-colour asset id, so two materials over one albedo
+  // (polished stone and rough stone) drew each other's normal and roughness maps.
+  const source = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
+  assert.match(source, /materialId: record\?\.id \|\| null/, "the side's own material is passed in");
+  assert.match(source, /const assigned = materialId \? materialById\(project, materialId\) : null/);
+  assert.match(source, /const key = `\$\{assetId\}\/\$\{color\}\/.*\/\$\{materialId \|\| ''\}`/,
+    'and the material is part of the cache key');
+});
+
+test('the renderer resolves wall materials through the shared part names', () => {
+  // The draw path used `material_mid`/`material_top`/`material_bottom`, none of which any assignment
+  // writes: a material on a Doom wall was stored, validated and never drawn.
+  const source = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
+  assert.match(source, /wallSideMaterial\(project, side, part\)/);
+  for (const part of ["'middle'", "'upper'", "'lower'"]) {
+    assert.ok(source.includes(`sideAsset(side, ${part},`), `the renderer asks for ${part}`);
+  }
+  assert.doesNotMatch(source, /material_mid[^d]/, 'no field name of its own');
+  assert.doesNotMatch(source, /material_top|material_bottom/);
 });
 
 test('resampling averages, and a normal map stays a direction', () => {
