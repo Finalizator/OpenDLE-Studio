@@ -194,7 +194,9 @@ test('MENUDEF directives become editable per-game HUDs, links and live settings;
   assert.ok(warnings.some(w => w.includes('gl_fake_feature')));
   assert.equal(p.gameMenus.sources[0].source, definitions[0].source);
   const s = createRuntime(p, { screen: 'title' });
-  click(p, s, 'Mod options'); assert.equal(s.gameScreen, 'mod_ModOptions');
+  // Menu names are `FName`s in GZDoom and therefore case-insensitive, so the generated screen id is
+  // lower-cased: a submenu written in another case has to reach the same page.
+  click(p, s, 'Mod options'); assert.equal(s.gameScreen, 'mod_modoptions');
   click(p, s, 'Loudness -'); assert.equal(s.settings.volume, .75);
   assert.ok(p.hud.elements.some(item => item.text === 'https://example.test/my-game'));
   assert.ok(p.events.some(event => event.condition.type === 'hudClicked' && event.actions[0].type === 'adjustGameSetting'));

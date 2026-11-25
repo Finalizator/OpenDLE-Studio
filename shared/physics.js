@@ -309,8 +309,13 @@ function solidActor(project, entity) {
  */
 export function physicsEntityIds(project, entities) {
   const ids = new Set();
-  for (const entity of entities)
-    if (entity.type === 'player' || entity.physics || solidActor(project, entity)) ids.add(entity.id);
+  for (const entity of entities) {
+    // Exactly `addBody`'s decision: `body: 'none'` takes the body away from an object that would
+    // otherwise have its own, but a solid imported actor keeps the kinematic body the actor table
+    // gives it. Listing the body-less object made its own save unloadable.
+    const config = entity.physics?.body === 'none' ? null : entity.physics;
+    if (entity.type === 'player' || config || solidActor(project, entity)) ids.add(entity.id);
+  }
   return ids;
 }
 

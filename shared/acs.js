@@ -387,6 +387,12 @@ function decode(behavior, offset) {
 
 function operands(behavior, cursor, spec) {
   const bytes = behavior.bytes, little = behavior.format === LITTLE_ENHANCED, values = [];
+  // An operand that runs past the end of the lump is a broken module, which `decode` answers with
+  // `null`; reading it anyway threw a RangeError straight through the per-frame script tick and
+  // took the whole game down instead of disabling the one script.
+  let width = 0;
+  for (const kind of spec) width += little ? (kind === 'w' ? 4 : kind === 's' ? 2 : 1) : 4;
+  if (cursor + width > bytes.length) return null;
   let at = cursor;
   for (const kind of spec) {
     if (kind === 'w') { values.push(behavior.view.getInt32(at, true)); at += 4; continue; }
@@ -404,8 +410,9 @@ export function instructionAt(behavior, offset) {
   const definition = OPS.get(decoded.code);
   if (!definition) return { offset, code: decoded.code, name: PCODE_NAMES[decoded.code] || `#${decoded.code}`, operands: [], end: decoded.cursor, supported: false };
   if (definition.spec === null) return { offset, code: decoded.code, name: PCODE_NAMES[decoded.code], operands: [], end: null, supported: true, custom: definition };
-  const { values, end } = operands(behavior, decoded.cursor, definition.spec);
-  return { offset, code: decoded.code, name: PCODE_NAMES[decoded.code], operands: values, end, supported: true };
+  const read = operands(behavior, decoded.cursor, definition.spec);
+  if (!read) return null;
+  return { offset, code: decoded.code, name: PCODE_NAMES[decoded.code], operands: read.values, end: read.end, supported: true };
 }
 
 /**
@@ -925,14 +932,13 @@ function definePrinting() {
     const ranged = code === P.PRINTMAPCHRANGE || code === P.PRINTWORLDCHRANGE || code === P.PRINTGLOBALCHRANGE ||
       code === P.PRINTSCRIPTCHRANGE;
     define(code, '', (vm, script) => {
-      let capacity = 0x7fffffff, offset = 0;
-      if (ranged) {
-        capacity = peek(vm, script, 1); offset = peek(vm, script, 2);
-        script.sp -= 2;
-        if (capacity < 1 || offset < 0) { script.sp -= 2; return; }
-      }
-      const slot = pop(vm, script);
-      offset += pop(vm, script);
+      // `Print*CharArray(arrayid, offset)` and `Print*ChrRange(arrayid, offset, length)`, pushed
+      // first argument first like every other call. The ranged form used to peek for its length and
+      // offset, drop two slots and then pop two more — four operands out of a three-operand frame —
+      // so every ranged print ended in `stack underflow` and printed nothing.
+      const [slot, first, length = 0x7fffffff] = popArgs(vm, script, ranged ? 3 : 2);
+      let capacity = length, offset = first;
+      if (ranged && (capacity < 1 || offset < 0)) return;
       const store = code === P.PRINTMAPCHARARRAY || code === P.PRINTMAPCHRANGE ? arrayFor(vm, script, 'map')
         : code === P.PRINTWORLDCHARARRAY || code === P.PRINTWORLDCHRANGE ? arrayFor(vm, script, 'world')
           : code === P.PRINTGLOBALCHARARRAY || code === P.PRINTGLOBALCHRANGE ? arrayFor(vm, script, 'global')
@@ -1558,9 +1564,11 @@ function runScript(vm, script) {
     vm.pc = decoded.cursor;
     if (definition.spec === null) definition.run(vm, script);
     else {
-      const { values, end } = operands(vm.module, decoded.cursor, definition.spec);
-      vm.pc = end;
-      definition.run(vm, script, values);
+      const read = operands(vm.module, decoded.cursor, definition.spec);
+      // A truncated instruction stops this script and says so; it does not escape as a RangeError.
+      if (!read) { fail(vm, 'truncated instruction'); return; }
+      vm.pc = read.end;
+      definition.run(vm, script, read.values);
     }
   }
   // The interpreter keeps the live program counter in `vm.pc`, which is shared by

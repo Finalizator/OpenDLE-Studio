@@ -489,13 +489,18 @@ export function createMapScripts(project, state, callbacks = {}) {
 
   function setLineTexture(tag, side, part, name) {
     const asset = project.assets?.find(asset => asset.kind === 'texture' && asset.name.toUpperCase() === String(name).toUpperCase());
+    // A sidedef field holds the asset's **id**, which is what `changeFlat` above and
+    // `replaceTextures` below write and what every reader (the batcher, `imageTexture`, the
+    // material lookup) expects. Storing the record made the wall show `[object Object]` and
+    // threw "was not loaded" on the next rebuild, so `SetLineTexture` never changed a wall.
+    const id = asset?.id || null;
     for (const wall of state.walls) {
       if (wall.tag !== tag && wall.id !== tag) continue;
       const record = side === 1 ? wall.left : wall.right;
       if (!record) continue;
-      if (part === 0) record.upper = asset || null;
-      else if (part === 1) record.middle = asset || null;
-      else if (part === 2) record.lower = asset || null;
+      if (part === 0) record.upper = id;
+      else if (part === 1) record.middle = id;
+      else if (part === 2) record.lower = id;
     }
     state.worldRevision++;
   }

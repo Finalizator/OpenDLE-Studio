@@ -16,6 +16,13 @@
  * the level on every edit. The weights were calibrated against real snapshots: an imported Doom 2
  * level measures ~14 bytes per weight unit and a map with two-sided walls on every linedef ~80, so
  * the budget uses the larger figure and errs towards a shallower history.
+ *
+ * Brushes weigh by their faces, which is where their bytes are. A brush level has no walls at all,
+ * so counting only walls, sectors and entities measured a 5,702-brush Quake 3 map as 696 weight
+ * units — less than a fifth of a small Doom level — and gave it the full forty steps at 8.1 MB a
+ * snapshot: 324 MB of history against a 48 MB budget, in the editor that has to hold the level and
+ * its artwork as well. A brush is ~1.4 KB on that map, about eighteen vertices, and its faces carry
+ * most of it.
  */
 
 /** How much history may be held, in bytes of live objects. */
@@ -40,8 +47,14 @@ export const UNDO_DEEP_GAME_STEPS = 6;
  */
 export function snapshotWeight(project) {
   const map = project?.map || {};
+  // A brush level's geometry is all in `brushes`: every face carries its own plane points, so the
+  // faces are counted apart from the brush record.
+  let brushFaces = 0;
+  for (const brush of map.brushes || []) brushFaces += brush.faces?.length || 0;
   return (map.vertices?.length || 0)
     + (map.walls?.length || 0) * 2
+    + (map.brushes?.length || 0) * 6
+    + brushFaces * 2
     + (map.sectors?.length || 0) * 2
     + (map.entities?.length || 0) * 4
     + (map.entityGroups?.length || 0) * 2

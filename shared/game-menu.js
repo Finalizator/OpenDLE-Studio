@@ -14,7 +14,11 @@ const aliases = {
 const cvars = { snd_sfxvolume: 'volume', snd_musicvolume: 'musicVolume', mouse_sensitivity: 'sensitivity',
   invertmouse: 'invertY', fov: 'fov', vid_brightness: 'brightness', show_messages: 'messages', cl_run: 'alwaysRun',
   detaillevel: 'lowDetail', screenblocks: 'viewSize' };
-export const menuScreen = name => aliases[name.toLowerCase()] || `mod_${name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}`;
+// Menu names are `FName`s in GZDoom, so a `Submenu "…", "MyMenu"` finds `ListMenu "mymenu"`.
+// The reference and the declaration both go through here; keeping the case made them two screens
+// and sent the row to the "not translated" notice.
+export const menuScreen = name => aliases[name.toLowerCase()] ||
+  `mod_${name.toLowerCase().replace(/[^a-z0-9_-]/g, '_').slice(0, 60)}`;
 
 /**
  * The colour a MENUDEF `Font` translation names.
@@ -106,6 +110,10 @@ export function parseMenuDefinitions(source, label = 'MENUDEF', resolve) {
     if (!['listmenu', 'optionmenu', 'defaultlistmenu', 'defaultoptionmenu'].includes(kind)) {
       warnings.push(`${label}: unsupported top-level directive ${kind}`);
       while (i < tokens.length && tokens[i] !== '\n' && tokens[i] !== '{') i++;
+      // The brace is nearly always on the line *after* the directive (`OptionValue "OnOff"` then
+      // `{`), and the skip loop used to stop at that newline: the body's own tokens were then
+      // reported one by one, 859 warnings from the stock MENUDEF where 115 constructs exist.
+      while (tokens[i] === '\n') i++;
       if (tokens[i] === '{') { let depth = 1; i++; while (i < tokens.length && depth) { const t = tokens[i++]; if (t === '{') depth++; if (t === '}') depth--; } }
       continue;
     }

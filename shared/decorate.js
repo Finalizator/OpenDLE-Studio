@@ -271,8 +271,15 @@ function parseStates(lines, start, { zscript = false } = {}) {
   let current = null;
   let pendingBlock = null;
   while (index < lines.length) {
-    const line = lines[index];
+    let line = lines[index];
     if (!line.length) { index++; continue; }
+    // `----` is a frame token meaning "the sprite the last frame used", but a run of dashes
+    // tokenizes as four punctuation tokens, so such a frame was dropped as unreadable. `####`
+    // arrives as one word and is handled below.
+    if (line.length > 4 && line[0].kind === 'punct' && line[0].value === '-' &&
+      line.slice(0, 4).every(token => token.kind === 'punct' && token.value === '-')) {
+      line = [{ ...line[0], kind: 'word', value: '----' }, ...line.slice(4)];
+    }
     const first = line[0];
     if (first.kind === 'punct' && first.value === '}') break;
     // ZScript frame bodies span multiple lines and were captured while reading.
@@ -342,10 +349,19 @@ function parseActorBody(lines, start, head, sourceName) {
   const stateBlocks = [];
   let index = start;
   for (; index < lines.length; index++) {
-    const line = lines[index];
+    let line = lines[index];
     if (!line.length) continue;
+    // A block can also close on the line that carries its last property — `Health 10 }` — and a
+    // one-line `actor Foo : Bar { Health 10 }` closes on the line it opened on. The closing brace
+    // used to be recognised only when it was the line's first token, so such a block swallowed the
+    // rest of the file and deleted the actor declared after it.
+    const close = line.findIndex(token => token.kind === 'punct' && token.value === '}');
+    if (close === 0) return { properties, flags, stateBlocks, index };
+    if (close > 0) line = line.slice(0, close);
+    // `continue` inside this wrapper ends the line rather than the block, so the closing brace
+    // below is still honoured.
+    do {
     const first = line[0];
-    if (first.kind === 'punct' && first.value === '}') return { properties, flags, stateBlocks, index };
     const keyword = first.kind === 'word' ? first.value.toLowerCase() : '';
     if (keyword === 'states' || keyword === 'state') {
       // The opening brace may sit on its own line (`States` then `{`), which is
@@ -393,6 +409,8 @@ function parseActorBody(lines, start, head, sourceName) {
       const number = numeric(scalar);
       properties[key] = number !== null && /^-?[0-9]/.test(String(scalar)) ? number : scalar;
     } else properties[key] = values;
+    } while (false);
+    if (close > 0) return { properties, flags, stateBlocks, index };
   }
   return { properties, flags, stateBlocks, index };
 }
@@ -419,7 +437,18 @@ export function parseDecorate(text, { source = 'DECORATE' } = {}) {
       // A new actor starts here, so an unterminated previous block ends.
       const head = parseHead(line, 0);
       if (!head) { warnings.push(`${source}:${first.line}: unreadable actor declaration`); continue; }
-      const body = parseActorBody(lines, index + 1, head, source);
+      // `actor Foo : Bar { Health 10 }` opens its body on the declaration line; the header stopped
+      // at the brace, so the body starts there. The line is rewritten to begin at its `{` and any
+      // closing brace is split onto lines of its own, which is the shape the body reader expects.
+      const brace = line.findIndex(token => token.kind === 'punct' && token.value === '{');
+      if (brace >= 0) {
+        const rest = line.slice(brace);
+        const close = rest.findIndex(token => token.kind === 'punct' && token.value === '}');
+        const opened = [rest[0]];
+        const inner = rest.slice(1, close >= 0 ? close : undefined);
+        lines.splice(index, 1, opened, ...(inner.length ? [inner] : []), ...(close >= 0 ? [[rest[close]]] : []));
+      }
+      const body = parseActorBody(lines, brace >= 0 ? index : index + 1, head, source);
       index = body.index;
       actors.push({
         name: head.name, parent: head.parent, replaces: head.replaces, doomedNum: head.doomedNum,
@@ -527,7 +556,10 @@ export function compileActorStates(actor, { parentLookup = () => null } = {}) {
     labels.set(label, frames.length);
     for (const frame of entries) {
       if (frame.type === 'frame') {
-        const sprite = frame.sprite === '#' || frame.sprite === '-' ? lastSprite : frame.sprite;
+        // The sprite column is four characters wide, so GZDoom's "same sprite as last frame" is
+        // written `####` (or `----`), never a single `#`. Comparing against `'#'` never matched:
+        // the literal `####` became the sprite's name and `----` frames were dropped outright.
+        const sprite = /^(#+|-+)$/.test(String(frame.sprite)) ? lastSprite : frame.sprite;
         if (sprite) lastSprite = sprite;
         for (const rawLetter of String(frame.letters || '')) {
           const letter = rawLetter === '#' || rawLetter === '-' ? lastLetter : rawLetter;

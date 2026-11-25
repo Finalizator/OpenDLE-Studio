@@ -368,9 +368,19 @@ export function hudBinding(binding, state) {
 }
 
 export function hudText(element, state) {
-  const text = element.binding ? String(hudBinding(element.binding, state))
+  const value = element.binding ? hudBinding(element.binding, state)
     : element.text.replace(/\{([^{}]+)\}/g, (_, key) => String(hudBinding(key, state)));
-  return element.maxLength ? text.slice(-element.maxLength) : text;
+  const text = value === null || value === undefined ? '' : String(value);
+  if (!element.maxLength) return text;
+  // A digit field clamps the value, as GZDoom's `drawnumber` caps it at `10^length - 1` before
+  // formatting. Keeping the last characters threw the most significant digits away instead:
+  // 1000 health in a three-digit field read "000", and 200 armour in two read "00".
+  const number = Number(text);
+  if (text.trim() && Number.isFinite(number)) {
+    const limit = Math.pow(10, element.maxLength) - 1;
+    return String(Math.max(-limit, Math.min(limit, Math.trunc(number))));
+  }
+  return text.slice(0, element.maxLength);
 }
 
 export function bitmapGlyph(font, char) {

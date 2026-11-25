@@ -109,9 +109,9 @@ export const SUPPORTED_SPECIALS = new Set([
   // Boom's wall scrollers: the plane is drawn with a moving texture coordinate.
   100, 101, 102, 103,
   62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 73, 74, 75, 80, 81, 82, 83, 84, 85, 95, 96, 99, 105, 106, 109, 110, 111,
-  112, 113, 114, 115, 116, 117, 119, 125, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 192, 196, 202, 206, 214, 226,
+  112, 113, 117, 119, 125, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 192, 196, 202, 206, 214, 226,
   228, 230,
-  195, 203, 231, 232, 233, 234, 237, 238, 241, 243, 244, 245, 246, 247, 248, 249, 251, 252, 253, 254, 255, 257, 258, 259,
+  195, 203, 231, 233, 234, 237, 238, 241, 243, 244, 245, 246, 247, 248, 249, 251, 252, 253, 254, 255, 257, 258, 259,
   ...NOP_SPECIALS,
 ]);
 
@@ -448,9 +448,11 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 41: case 252: // Ceiling_RaiseByValue / ToNearest
       return planes(special === 41 ? 'byValue' : 'toNearestUp', 'ceilingHeight', special === 41 ? arg3 : 0, { sound: 'DSCNSTRT' });
     case 42: case 196: // Ceiling_CrushAndRaise
+      // A crusher repeats until `Ceiling_CrushStop` (44) stops it; one down-up stroke left the
+      // ceiling in place for the rest of the level and gave the stop special nothing to stop.
       for (const sector of sectors) {
         moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: sector.floorHeight + 4,
-          speed: Math.max(TIC, speed * TIC), wait: 1, returnMode: 'return', returnHeight: sector.ceilingHeight, sound: 'DSCNSTRT' });
+          speed: Math.max(TIC, speed * TIC), wait: 1, returnMode: 'cycle', returnHeight: sector.ceilingHeight, sound: 'DSCNSTRT' });
       }
       return 1;
     case 43: // Ceiling_LowerAndCrush
@@ -682,7 +684,10 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         else if (special === 114 || special === 115 || special === 116) continue;
         if (sector.light !== before) state.worldRevision++;
       }
-      return 1;
+      // Glow, flicker and strobe are not animated here yet, so the special did *not* happen: saying
+      // it did hid the fact from `unsupportedSpecials`, and the import report told the author
+      // their lighting worked.
+      return special === 114 || special === 115 || special === 116 ? 0 : 1;
     }
     case 109: { // Light_ForceLightning (mode) — a flash that brightens every sky sector and
       // then fades it back, as Hexen's DLightningThinker does. Mode 2 only stops the storm,
@@ -708,6 +713,8 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       return 1;
     }
     case 232: case 233: case 234: { // Light_StrobeDoom / Min/MaxNeighbor
+      // 232 strobes, which this runtime does not animate yet; the min/max neighbours below do.
+      if (special === 232) return 0;
       for (const sector of sectors) {
         const neighbours = neighbourIds(project, sector.id).map(id => liveSector(state, id)).filter(Boolean);
         if (!neighbours.length) continue;

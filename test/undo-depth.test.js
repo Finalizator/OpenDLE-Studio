@@ -7,7 +7,7 @@ import {
 
 const level = (counts) => {
   const project = createProject();
-  const { vertices = 4, walls = 4, sectors = 1, entities = 2, events = 0, hud = 0 } = counts;
+  const { vertices = 4, walls = 4, sectors = 1, entities = 2, events = 0, hud = 0, brushes = 0, faces = 6 } = counts;
   project.map.vertices = Array.from({ length: vertices }, (_, i) => ({ id: `v${i}`, x: i, y: 0 }));
   project.map.walls = Array.from({ length: walls }, (_, i) => ({ id: `w${i}`, a: `v${i % vertices}`, b: `v${(i + 1) % vertices}`,
     height: 128, color: '#888888', solid: true, right: { sectorId: 'room', offsetX: 0, offsetY: 0 } }));
@@ -16,6 +16,11 @@ const level = (counts) => {
   project.events = Array.from({ length: events }, (_, i) => ({ id: `ev${i}`, name: `R${i}`, enabled: true, once: false,
     condition: { type: 'onStart' }, conditions: [], actions: [{ type: 'showMessage', message: 'hi' }] }));
   if (hud) project.hud = { ...project.hud, elements: Array.from({ length: hud }, (_, i) => ({ id: `h${i}`, type: 'label', name: `H${i}` })) };
+  if (brushes) project.map.brushes = Array.from({ length: brushes }, (unused, i) => ({
+    id: `b${i}`, name: `B${i}`, visible: true,
+    faces: Array.from({ length: faces }, (unused, f) => ({ texture: 'asset', offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, rotation: 0,
+      points: [[0, 0, 0], [64, 0, 0], [64, 64, 32], [0, 64, 0]] })),
+  }));
   return project;
 };
 
@@ -65,4 +70,21 @@ test('the weight counts what a snapshot copies and ignores what it shares', () =
   const before = snapshotWeight(project);
   project.events = [...project.events, ...project.events];
   assert.equal(snapshotWeight(project) - before, 3 * 6, 'one more rule is one more thing to copy');
+});
+
+// The regression: an imported brush level has no walls, so counting only walls, sectors and entities
+// measured the 5,702-brush Quake 3 map at 696 weight units and gave it forty steps at 8.1 MB a
+// snapshot — 324 MB of history against a 48 MB budget.
+test('a brush level keeps the history its snapshots can afford', () => {
+  // The real imported levels: a Quake 3 map (5,702 brushes, 35,537 faces, 8.1 MB a snapshot) and a
+  // Half-Life one (1,166 brushes, 6,985 faces, 1.37 MB).
+  const quake = level({ vertices: 0, walls: 0, sectors: 0, entities: 0, events: 0, brushes: 5702, faces: 6.2 });
+  const halfLife = level({ vertices: 0, walls: 0, sectors: 0, entities: 0, events: 0, brushes: 1166, faces: 6 });
+  assert.ok(undoDepthFor(quake) <= 6, `a 5,702-brush level must not be given the full history, got ${undoDepthFor(quake)}`);
+  assert.ok(undoDepthFor(quake) >= UNDO_MIN_STEPS, 'and it still keeps the minimum');
+  assert.ok(undoDepthFor(halfLife) > undoDepthFor(quake), 'a smaller brush level keeps more steps than a larger one');
+  assert.ok(snapshotWeight(quake) > snapshotWeight(level({ vertices: 20000, walls: 20000, sectors: 5000, entities: 3000 })),
+    '4.5 MB of brush geometry weighs more than the megawad that already gets a shallow history');
+  assert.equal(snapshotWeight(level({ brushes: 10, faces: 6 })) - snapshotWeight(level({ brushes: 10, faces: 0 })), 120,
+    'the faces are counted, because that is where a brush\'s bytes are');
 });
