@@ -1466,8 +1466,20 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         if (!isExpression(command.fromPoint)) assert(Number.isInteger(command.fromPoint) && command.fromPoint >= 0 && command.fromPoint <= lastPoint, 'Path start waypoint is outside the route');
         if (!isExpression(command.toPoint)) assert(Number.isInteger(command.toPoint) && command.toPoint >= -1 && command.toPoint <= lastPoint, 'Path end waypoint is outside the route');
       }
-      if (['moveEnemy', 'enemySeesPlayer', 'enemyHitscan', 'enemyProjectile', 'enemyAlert', 'enemyAttackChance'].includes(command.type)) {
+      if (['moveEnemy', 'enemySeesPlayer', 'enemyHitscan', 'enemyProjectile', 'enemyAlert', 'enemyAttackChance',
+        'enemyTargetsPlayer', 'enemyTargetsMonster', 'enemyTargetDistance', 'enemySeesTarget', 'enemyHealthPercent',
+        'enemyBlocked', 'enemyPathBlocked', 'enemyFlag', 'enemyFlying', 'setEnemyTarget', 'wakeEnemy', 'sleepEnemy', 'startEnemyAttack',
+        'stopEnemy', 'moveEnemyToward', 'moveEnemyAway', 'faceEnemyTarget', 'enemyPain'].includes(command.type)) {
         assert(targetEntities(command.entityId).every(entity => entity.type === 'enemy'), 'Enemy commands require enemy objects');
+      }
+      // Who a monster is told to hunt, and where it is told to walk, are references the rule names
+      // now: a typo is refused while the rule is written instead of being found when it runs.
+      for (const type of ['setEnemyTarget', 'moveEnemyToward']) {
+        if (command.type !== type) continue;
+        const wanted = command.target;
+        if (wanted === undefined || wanted === '' || wanted === '$player' || wanted === '$none') continue;
+        if (typeof wanted === 'string' && wanted.startsWith('$')) continue;
+        targetId(wanted);
       }
       if (command.stat === 'armorDivisor' && command.type === 'setPlayerStat') numberOrExpression(command.value, 'Armor divisor', 1, 1000000);
       if (command.stat === 'armorDivisor' && command.type === 'addPlayerStat') throw new Error('Set the armor divisor instead of adding to it');

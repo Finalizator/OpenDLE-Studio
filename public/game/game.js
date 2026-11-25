@@ -12,6 +12,7 @@ import { createPreview } from '/render.js';
 import { createAudioPlayer } from '/audio.js';
 import { createHUDView } from '/hud-view.js';
 import { createRuntime, stepRuntime, lookPlayer } from '/shared/runtime.js';
+import { controllerSnapshot, gamepadLook, playRumble, readGamepads, rumbleEffect, stopRumble } from '/shared/gamepad.js';
 import { gameSettings, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
 import { statusBarHidden } from '/shared/game-view.js';
 import { selectGameLevel, stripInactiveLevels } from '/shared/game-levels.js';
@@ -32,6 +33,35 @@ const game = {
   keys: new Set(), pressed: new Set(), audioContext: null, fullscreenAsked: false, pointerHeld: false,
 };
 let lookDrag = null, lastSettingsRevision = -1, frameCount = 0, lastFrameError = '', lastTick = 0;
+/** What the pads said last frame, for the sticks' hysteresis and the buttons' press edges. */
+let padState = { held: new Map(), sticks: new Map(), looks: new Map() };
+/**
+ * The controllers, read once a frame.
+ *
+ * A pad is translated into the same key codes the keyboard produces, so the runtime, the menus and
+ * every event rule written against the keyboard keep working with one — and the buttons and axes
+ * themselves are stored on the runtime as `state.pad`, which is what the controller conditions read.
+ */
+function pollGamepads(runtime, dt) {
+  const empty = { keys: new Set(), pressed: new Set() };
+  if (!navigator.getGamepads || runtime.settings.gamepadEnabled === false) return empty;
+  const pads = [...navigator.getGamepads()].filter(Boolean);
+  const result = readGamepads(pads, runtime.settings, padState, { menu: runtime.gameScreen !== 'playing' });
+  padState = { held: result.held, sticks: result.sticks, looks: result.looks };
+  runtime.pad = controllerSnapshot(result);
+  const look = gamepadLook(result, dt);
+  if ((look.x || look.y) && !runtime.hudState.cursor) lookPlayer(runtime, look.x, look.y);
+  return result;
+}
+/** A rumble a rule asked for belongs to whoever holds the controllers, which is this page. */
+function playRumbles(runtime) {
+  if (!runtime.rumbles?.length) return;
+  const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+  for (const request of runtime.rumbles.splice(0)) {
+    if (request.stop) stopRumble(pads);
+    else playRumble(pads, rumbleEffect(request));
+  }
+}
 /** Bumped by every start: a load that finishes after the player gave up is thrown away. */
 let startToken = 0;
 /** How long the 3D view may take to come up before the game goes on without it. */
@@ -700,10 +730,14 @@ function frame(now) {
   const runtime = engine.runtime;
   try {
     const menu = runtime.gameScreen !== 'playing';
-    const held = menu ? game.keys : mappedKeys(game.keys, runtime.settings);
-    const pressed = menu ? game.pressed : mappedKeys(game.pressed, runtime.settings);
+    const pad = pollGamepads(runtime, dt);
+    const heldKeys = pad.keys.size ? new Set([...game.keys, ...pad.keys]) : game.keys;
+    const pressedKeys = pad.pressed.size ? new Set([...game.pressed, ...pad.pressed]) : game.pressed;
+    const held = menu ? heldKeys : mappedKeys(heldKeys, runtime.settings);
+    const pressed = menu ? pressedKeys : mappedKeys(pressedKeys, runtime.settings);
     stepRuntime(engine.snapshot, runtime, dt, held, pressed);
     game.pressed.clear();
+    playRumbles(runtime);
     handleRequests(runtime);
     if (game.engine) watchPointerCapture(runtime);
     if (!game.engine) return;

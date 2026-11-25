@@ -412,6 +412,29 @@ already there — a restart instead of a play, which froze monsters in their fir
 them look like they were flapping. The walk itself carries no such gate: `moveEnemy` takes the
 frame time, so a monster covers 8 map units a tic (280 a second) at 30, 60 or 144 frames.
 
+Those four rules are Doom's own behaviour. A **custom** monster is usually not Doom's: it hides,
+charges, retreats, guards a spot, changes behaviour when hurt, or has to be woken by a script.
+The enemy commands are for exactly that, and they all act on the object the rule picked as
+`$self`, so one rule can be written for a whole type:
+
+| Question or command | Type | What it is for |
+|---|---|---|
+| who does it hunt? | `enemyTargetsPlayer`, `enemyTargetsMonster` | Doom's target is the player until a hit switches it; these say which it is now |
+| how far, in sight? | `enemyTargetDistance`, `enemySeesTarget` | distance and line of sight to *its* target, not to the player |
+| how hurt is it? | `enemyHealthPercent` | a phase change at half health, a rage below a quarter |
+| why is it not moving? | `enemyBlocked`, `enemyPathBlocked` | boxed in by geometry, or a wall between it and its target — then open the door, shout, teleport or give up |
+| what is it? | `enemyFlag`, `enemyFlying` | any DECORATE flag by name (`AMBUSH`, `DORMANT`, `BOSS`, `STANDSTILL`, `QUICKTORETALIATE`, `MISSILE`…), so a rule works for an actor the engine has never heard of |
+| change its mind | `setEnemyTarget` | `$player`, an object, or nobody — a scripted duel, or the end of one |
+| wake or settle it | `wakeEnemy`, `sleepEnemy` | a boss that wakes when the fight starts, a guard that calms down |
+| attack on cue | `startEnemyAttack` | `auto` enters `Missile` when the actor has it, `Melee` when that is all it has; it never interrupts a pain or death frame |
+| move it somewhere | `moveEnemyToward`, `moveEnemyAway`, `stopEnemy` | patrol to a marker, back off while firing, or hold position |
+| face it | `faceEnemyTarget` | turn to whatever it hunts, which `facePlayer` cannot do in an infight |
+| flinch | `enemyPain` | play the actor's `Pain` state as if it had been hit |
+
+An explicit `moveEnemyToward`/`moveEnemyAway` drops the direction a chase had already committed
+to: Doom's AI keeps walking the way it chose until that step runs out, which would otherwise
+ignore the command for a few tics.
+
 A UDMF or Hexen line is a rule too: the import writes `Linedef <id> / <Special_Name>` with
 the line's activation modes as conditions and `runLineSpecial` (`special`, `arg1`…`arg5`)
 carrying the special and its arguments, then marks the wall so the engine does not run the
@@ -601,7 +624,25 @@ Enemy dies:
 ```
 
 `rumbleController` is the one thing a rule has to ask for: a game decides what is worth a buzz,
-and the engine does not guess that being shot should be one.
+and the engine does not guess that being shot should be one. `stopControllerRumble` ends one early.
+
+A pad is normally invisible to rules — it produces key codes, and everything written against the
+keyboard works. When a rule needs the *controller* itself, these ask it directly, and they are
+about the first connected pad with a standard layout:
+
+```text
+Player presses Cross and the shield is down:
+  Controller: button was pressed this frame (button = cross)
+  → block for 0.6 s, Controller: rumble (0.4, 0.2)
+```
+
+`padConnected` (by family: `dualsense`, `dualshock`, `xbox`, `switch`, `playstation`, or `any`),
+`padButtonHeld` and `padButtonPressed` (by name: `cross`, `circle`, `square`, `triangle`, `l1`,
+`r1`, `l2`, `r2`, `share`, `options`, `l3`, `r3`, `up`, `down`, `left`, `right`, `guide`),
+`padAxis` (compare `leftX`, `leftY`, `rightX` or `rightY`, −1 to 1) and `padStick` (a stick pushed
+`up`, `down`, `left`, `right` or `any` past the deadzone in Engine tweaks) cover the pad as a
+thing in itself. The state is written by the page that owns the controllers each frame, so it
+never enters a save.
 
 ### Cameras
 
@@ -769,6 +810,15 @@ activate in the shot's original frame.
 | elevator is moving | `sectorElevatorMoving` | — | sectorId |
 | player visible in range | `enemySeesPlayer` | yes | range, fov |
 | Doom distance-based attack decision | `enemyAttackChance` | yes | — |
+| its target is the player | `enemyTargetsPlayer` | yes | — |
+| its target is another monster | `enemyTargetsMonster` | yes | — |
+| compare distance to its target | `enemyTargetDistance` | yes | operator, distance |
+| its target is in sight | `enemySeesTarget` | yes | — |
+| compare health as a percentage | `enemyHealthPercent` | yes | operator, percent |
+| every step was refused (boxed in) | `enemyBlocked` | yes | — |
+| a wall stands between it and its target | `enemyPathBlocked` | yes | — |
+| actor flag is set (DECORATE) | `enemyFlag` | yes | flag |
+| flies (`FLOAT`) | `enemyFlying` | yes | — |
 | owns weapon | `weaponOwned` | — | weapon |
 | selected weapon | `weaponSelected` | — | weapon |
 | owns key | `keyOwned` | — | key |
@@ -789,6 +839,11 @@ activate in the shot's original frame.
 | player stat changed | `hudStatChanged` | — | stat, direction |
 | group is active | `groupActive` | — | — |
 | key / mouse button held | `keyHeld` | — | key |
+| controller is connected | `padConnected` | — | kind |
+| controller button is held | `padButtonHeld` | — | button |
+| controller button was pressed this frame | `padButtonPressed` | — | button |
+| compare a stick axis | `padAxis` | — | axis, operator, value |
+| stick pushed in a direction | `padStick` | — | stick, direction |
 | mouse moved | `mouseMoved` | — | — |
 | compare stat | `playerStat` | — | stat, operator, value |
 | compare health | `entityHealth` | yes | operator, value |
@@ -878,6 +933,7 @@ keep their existing global-variable output.
 | play a sprite state on picked instances | `setPickedSpriteState` | — | objectType, state, restart |
 | remove picked instances | `removePicked` | — | objectType |
 | rumble the controller | `rumbleController` | — | strength, seconds |
+| stop rumbling | `stopControllerRumble` | — | — |
 | create a camera | `createCamera` | — | x, y, z, angle, pitch, fov, name, activate |
 | switch the view to a camera | `switchCamera` | — | camera |
 | set camera position | `setCameraPosition` | — | camera, x, y, z |
@@ -907,6 +963,15 @@ keep their existing global-variable output.
 | set gravity scale | `setGravityScale` | yes | scale |
 | set linear damping | `setDamping` | yes | damping |
 | move toward player with collision | `moveEnemy` | yes | speed |
+| set who it hunts (`$player`, an object, or nobody) | `setEnemyTarget` | yes | target |
+| wake it up for N seconds | `wakeEnemy` | yes | seconds |
+| put it to sleep | `sleepEnemy` | yes | — |
+| attack now (`auto` picks the state its actor has) | `startEnemyAttack` | yes | state |
+| stop moving | `stopEnemy` | yes | — |
+| walk toward an object | `moveEnemyToward` | yes | target, speed |
+| back away from its target | `moveEnemyAway` | yes | speed |
+| face its target | `faceEnemyTarget` | yes | — |
+| play its pain state | `enemyPain` | yes | — |
 | face player for attack | `facePlayer` | yes | — |
 | trace shot at player | `enemyHitscan` | yes | damage, diceSides, range, spread, pellets |
 | launch projectile from player | `launchProjectile` | — | speed, damage, diceSides, radius, color, sound, clipId, impactClipId |

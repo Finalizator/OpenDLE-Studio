@@ -841,7 +841,14 @@ const targetDistance = (state, entity) => {
 };
 const meleeable = (state, entity) => targetDistance(state, entity) <= meleeRange;
 
-function actorFlag(actor, name, entity) {
+/**
+ * A DECORATE actor flag, with a per-entity override (`A_ChangeFlag`) taking precedence.
+ *
+ * Exported because an event rule can branch on any flag by name, which is how a custom monster the
+ * engine has never heard of is still controllable: AMBUSH, FLOAT, DORMANT, BOSS, STANDSTILL,
+ * QUICKTORETALIATE, LOOKALLAROUND, MISSILE, COUNTKILL and whatever else the mod declares.
+ */
+export function actorFlag(actor, name, entity) {
   // A_ChangeFlag writes per-entity overrides; they shadow the actor's declared flags.
   if (entity?.actorFlags) {
     const key = Object.keys(entity.actorFlags).find(candidate => candidate.toLowerCase() === name.toLowerCase());

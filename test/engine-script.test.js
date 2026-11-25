@@ -94,7 +94,8 @@ test('every Engine command has shared editor defaults and validates after adding
       project.environment.shaderId = 'test_shader';
     }
     if (command.target) {
-      const enemyCommand = ['moveEnemy', 'enemySeesPlayer', 'enemyHitscan', 'enemyProjectile', 'enemyAlert', 'enemyAttackChance'].includes(command.type);
+      // Every enemy command is labelled "Enemy: …", so a new one is covered without editing a list.
+      const enemyCommand = /^Enemy:/.test(command.label);
       if (enemyCommand) project.map.entities.push({ id: 'test_enemy', name: 'Enemy', type: 'enemy', x: 0, y: 0, angle: 0 });
       value.entityId = enemyCommand ? 'test_enemy' : 'pickup';
       if (['onSignal', 'emitSignal'].includes(command.type)) project.map.entities.find(e => e.id === value.entityId).signals = ['submitted'];

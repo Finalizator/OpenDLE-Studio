@@ -11,10 +11,41 @@ import { createArrayState } from './arrays.js';
 import { postFxParamDefault } from './post-fx.js';
 import { TIC_RATE, stepActors, advanceThrusts, stepThingGravity, stepProjectiles, runProjectileDeath, beginWeapon, weaponTic, playWeaponState,
   initialiseActorEntities, installActorProjectileSprites, missileProjectile, saySound, hurtActor,
-  setActorState, actorStateBusy, explodeAt, homeMissile, bfgSpray, projectileActor, labelIndex } from './actor-runtime.js';
+  setActorState, actorStateBusy, explodeAt, homeMissile, bfgSpray, projectileActor, labelIndex,
+  actorTarget, setActorTarget, actorFlag, projectActorIndex } from './actor-runtime.js';
 import { SLOW_TURN_RATIO, SLOW_TURN_TICS, TURN_SPEED, ZERO_MOMENTUM, advanceMomentum, bamPerDegreePerSecond, bobFor,
   momentumSpeed, resetMomentum, thrustFor, thrustTowards, turnStep } from './player-motion.js';
 import { HL2_MOVEMENT, clampHorizontal, horizontalStep, measuredVelocity } from './source-motion.js';
+
+/**
+ * The monster this enemy is hunting *instead of* the player, when it is still alive.
+ *
+ * Doom's `target` is the player unless damage made it somebody else, which is what an infight is;
+ * a rule that asks who a monster is after gets the same answer the AI uses.
+ */
+function huntingMonster(state, entity) {
+  const id = entity?.targetId;
+  if (!id || id === '$player') return null;
+  return state.entities.find(item => item.id === id && (item.health ?? 0) > 0) || null;
+}
+
+/** The imported actor record behind an entity, for the DECORATE flags and states a rule names. */
+function actorRecord(project, entity) {
+  const name = entity?.actorName;
+  if (!name) return null;
+  return projectActorIndex(project).byName.get(String(name).toLowerCase()) || null;
+}
+
+/** Whether the player allowed rumble at all, so every request goes through one check. */
+function rumbleAllowed(state) {
+  return state.settings.gamepadEnabled !== false && state.settings.gamepadRumble !== false;
+}
+
+/** Queues a rumble request for the host that owns the controllers, bounded so a rule cannot flood it. */
+function pushRumble(state, request) {
+  if (state.rumbles.length >= 8) state.rumbles.shift();
+  state.rumbles.push(request);
+}
 
 /** The mark a bullet leaves, in map units, and how many are kept before the oldest goes. */
 const BULLET_MARK = { assetId: 'builtin:bullethole', width: 12, limit: 160 };
@@ -38,7 +69,7 @@ import { areaContains, areaEntered, areaVolume } from './areas.js';
 import {
   PLAYER_CYLINDER, SURFACE_REACH, WORLD_UP, alignUp, dot as dotMap, eyePosition, playerBasis, playerCentre, viewDirection,
 } from './gravity.js';
-import { damagePlayer, canSeePlayer, canHearPlayer, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance } from './combat.js';
+import { damagePlayer, canSeePlayer, canHearPlayer, canSeeTarget, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance, enemyFloats, floorAt } from './combat.js';
 import { brushVolumes } from './brushes.js';
 import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
 import { advanceSwitches, pressSwitch, pressUsedSwitches, wallCanBeShot, wallSwitchRepeats } from './switches.js';
@@ -370,6 +401,13 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     message: '',
     messageTime: 0,
     walls: wallSegments(project),
+    // Monsters whose last step found no way through: `enemyBlocked` reads it, and a rule can then
+    // sidestep, open a door or teleport instead of pushing at the same wall for ever.
+    enemyBlocked: new Set(),
+    // What the host's controller poller saw this frame, in the shape the pad conditions read.
+    // Written by the page that owns the pads (studio preview, exported game), never by the runtime.
+    pad: { connected: 0, kind: '', name: '', standard: false,
+      buttons: new Set(), pressed: new Set(), axes: { leftX: 0, leftY: 0, rightX: 0, rightY: 0 }, sticks: { x: 0, y: 0 } },
     sectors,
     // What a brush level has instead of walls: the solid brushes as convex volumes, for sight
     // traces, monster steps, bullets and missiles. Built once, because brushes do not move.
@@ -1634,6 +1672,81 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
         // state at all, and a melee one. Without them the Doom thing number decides.
         return entity && enemyAttackChance(state, entity, { missile: condition.missile, melee: condition.melee });
       }
+      // ---- Enemy: who it is hunting, and what state that hunt is in ----------------------------
+      if (condition.type === 'enemyTargetsPlayer') {
+        const entity = findTarget(condition.entityId);
+        // Doom's `target` is the player unless a hit made it somebody else, so "hunts the player"
+        // is exactly "not hunting another monster" — and there has to be a player left to hunt.
+        return Boolean(entity) && !huntingMonster(state, entity) && state.playerStats.health > 0;
+      }
+      if (condition.type === 'enemyTargetsMonster') {
+        const entity = findTarget(condition.entityId);
+        return Boolean(entity) && Boolean(huntingMonster(state, entity));
+      }
+      if (condition.type === 'enemyTargetDistance') {
+        const entity = findTarget(condition.entityId), target = entity ? actorTarget(state, entity) : null;
+        if (!target) return false;
+        return compareValues(Math.hypot(target.x - entity.x, target.y - entity.y),
+          condition.operator || '<', Number(condition.distance) || 0);
+      }
+      if (condition.type === 'enemySeesTarget') {
+        const entity = findTarget(condition.entityId), target = entity ? actorTarget(state, entity) : null;
+        return Boolean(target) && canSeeTarget(state, entity, target, 65536, 360);
+      }
+      if (condition.type === 'enemyHealthPercent') {
+        const entity = findTarget(condition.entityId);
+        if (!entity || !(entity.health > 0)) return false;
+        const maximum = entity.maxHealth || entity.spawnHealth || entity.health || 1;
+        return compareValues(Math.round(entity.health / maximum * 100), condition.operator || '<', Number(condition.percent) || 0);
+      }
+      if (condition.type === 'enemyBlocked') {
+        const entity = findTarget(condition.entityId);
+        return Boolean(entity) && Boolean(state.enemyBlocked?.has(entity.id));
+      }
+      if (condition.type === 'enemyPathBlocked') {
+        // The same probe the monster's own step search uses, aimed at what it is hunting: the
+        // answer a rule needs to open the door, shout at the player or give up the chase.
+        const entity = findTarget(condition.entityId), target = entity ? actorTarget(state, entity) : null;
+        if (!entity || !target) return false;
+        const dx = target.x - entity.x, dy = target.y - entity.y, distance = Math.hypot(dx, dy);
+        if (!(distance > 0)) return false;
+        const origin = { x: entity.x, y: entity.y, z: floorAt(state, entity) + 28 };
+        return geometryDistance(state, origin, { x: dx / distance, y: dy / distance, z: 0 }, distance, true) < distance;
+      }
+      if (condition.type === 'enemyFlag') {
+        const entity = findTarget(condition.entityId);
+        return Boolean(entity) && actorFlag(actorRecord(project, entity), String(condition.flag || ''), entity);
+      }
+      if (condition.type === 'enemyFlying') {
+        const entity = findTarget(condition.entityId);
+        return Boolean(entity) && enemyFloats(entity);
+      }
+      // ---- Controller: the pad itself ---------------------------------------------------------
+      if (condition.type === 'padConnected') {
+        const pad = state.pad;
+        if (!pad?.connected) return false;
+        // "Any" is the common case; a named family is what a screen that says "Press Cross" needs.
+        return !condition.kind || condition.kind === 'any' || pad.kind === condition.kind;
+      }
+      if (condition.type === 'padButtonHeld') return Boolean(state.pad?.buttons?.has(String(condition.button || '')));
+      if (condition.type === 'padButtonPressed') return Boolean(state.pad?.pressed?.has(String(condition.button || '')));
+      if (condition.type === 'padAxis') {
+        const axis = state.pad?.axes?.[condition.axis] ?? 0;
+        return compareValues(axis, condition.operator || '>', Number(condition.value) || 0);
+      }
+      if (condition.type === 'padStick') {
+        const pad = state.pad;
+        if (!pad?.connected) return false;
+        const deadzone = Math.max(.05, Number(state.settings?.gamepadDeadzone ?? .2));
+        const right = condition.stick === 'right';
+        // The standard mapping reports "up" as a negative Y, so a rule says up and means up.
+        const x = right ? pad.axes.rightX : pad.axes.leftX, y = right ? pad.axes.rightY : pad.axes.leftY;
+        if (condition.direction === 'up') return -y >= deadzone;
+        if (condition.direction === 'down') return y >= deadzone;
+        if (condition.direction === 'left') return x <= -deadzone;
+        if (condition.direction === 'right') return x >= deadzone;
+        return Math.hypot(x, y) >= deadzone;
+      }
       if (condition.type === 'weaponOwned') return state.inventory.weapons.has(condition.weapon);
       if (condition.type === 'weaponSelected') return state.inventory.selectedWeapon === condition.weapon;
       if (condition.type === 'keyOwned') return state.inventory.keys.has(condition.key);
@@ -1980,9 +2093,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             case 'rumbleController':
               // Kept as a request for the frame rather than played here: the runtime has no access to
               // a controller, and the page that does drains this after the step.
-              if (state.settings.gamepadEnabled !== false && state.settings.gamepadRumble !== false) {
-                state.rumbles.push({ strength: action.strength, seconds: action.seconds });
-              }
+              if (rumbleAllowed(state)) pushRumble(state, { strength: action.strength, seconds: action.seconds });
               break;
             // ---- Cameras ---------------------------------------------------------------------
             case 'createCamera': {
@@ -2357,6 +2468,97 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
               if (entity && !actorStateBusy(entity)) moveEnemy(state, entity, action.speed, frame.dt);
               break;
             }
+            // ---- Enemy: the commands a hand-written monster needs ------------------------------
+            // Doom's own behaviour is four generated rules; these are the rest — a scripted duel,
+            // a boss that wakes when the fight starts, a monster told to walk somewhere, and the
+            // retreat an ambusher needs. Each acts on the object the rule picked as `$self`.
+            case 'setEnemyTarget': {
+              const entity = findTarget(action.entityId);
+              if (!entity) break;
+              const wanted = String(action.target ?? '').trim();
+              if (!wanted || wanted === '$none' || wanted === '$self') delete entity.targetId;
+              else if (wanted === '$player') entity.targetId = '$player';
+              else {
+                const other = state.entities.find(item => item.id === wanted && (item.health ?? 0) > 0);
+                // Naming something that is gone is a mistake in the rule, and a monster that
+                // silently keeps hunting the player instead hides it.
+                if (!other) throw new Error(`Event "${event.name || event.id}": there is no living object "${wanted}" to hunt`);
+                setActorTarget(entity, other);
+              }
+              break;
+            }
+            case 'wakeEnemy': {
+              const entity = findTarget(action.entityId);
+              if (entity) state.timers.set(`${entity.id}:alert`, state.time + (Number(action.seconds) || 8));
+              break;
+            }
+            case 'sleepEnemy': {
+              const entity = findTarget(action.entityId);
+              if (!entity) break;
+              state.timers.delete(`${entity.id}:alert`);
+              state.enemyMoves.delete(entity.id);
+              state.enemyBlocked?.delete(entity.id);
+              break;
+            }
+            case 'startEnemyAttack': {
+              const entity = findTarget(action.entityId);
+              const actor = entity ? actorRecord(project, entity) : null;
+              // A rule that forces an attack still must not interrupt a pain or death frame: the
+              // animation is the game's own answer to being hit.
+              if (entity && actor && entity.health > 0 && !actorStateBusy(entity)) {
+                const wanted = action.state === 'auto' ? null : String(action.state || '');
+                const hasMelee = labelIndex(actor, 'Melee') !== null, hasMissile = labelIndex(actor, 'Missile') !== null;
+                const label = wanted && labelIndex(actor, wanted) !== null ? wanted
+                  : hasMissile ? 'Missile' : hasMelee ? 'Melee' : null;
+                if (label) setActorState(project, entity, label, { ifDifferent: false });
+              }
+              break;
+            }
+            case 'stopEnemy': {
+              const entity = findTarget(action.entityId);
+              if (!entity) break;
+              state.enemyMoves.delete(entity.id);
+              state.enemyBlocked?.delete(entity.id);
+              break;
+            }
+            case 'moveEnemyToward': {
+              const entity = findTarget(action.entityId);
+              if (!entity || actorStateBusy(entity)) break;
+              const wanted = String(action.target ?? '$player');
+              const target = wanted === '$player' ? state.player : state.entities.find(item => item.id === wanted);
+              // An explicit destination overrides the direction a chase had committed to: Doom's
+              // AI keeps walking the way it chose until the step runs out, which would ignore this.
+              if (target) { state.enemyMoves.delete(entity.id); moveEnemy(state, entity, Number(action.speed) || 80, frame.dt, target); }
+              break;
+            }
+            case 'moveEnemyAway': {
+              const entity = findTarget(action.entityId);
+              if (!entity || actorStateBusy(entity)) break;
+              const target = actorTarget(state, entity);
+              if (!target || (target.x === entity.x && target.y === entity.y)) break;
+              state.enemyMoves.delete(entity.id);
+              // A point as far behind the monster as its target is in front: `moveEnemy` walks at
+              // whatever it is given, so backing away is one reflected point rather than a new
+              // movement model.
+              moveEnemy(state, entity, Number(action.speed) || 80, frame.dt,
+                { x: entity.x * 2 - target.x, y: entity.y * 2 - target.y });
+              break;
+            }
+            case 'faceEnemyTarget': {
+              const entity = findTarget(action.entityId);
+              const target = entity ? actorTarget(state, entity) : null;
+              if (target) entity.angle = Math.atan2(target.y - entity.y, target.x - entity.x) * 180 / Math.PI;
+              break;
+            }
+            case 'enemyPain': {
+              const entity = findTarget(action.entityId);
+              if (entity && entity.health > 0 && !actorStateBusy(entity)) setActorState(project, entity, 'Pain', { ifDifferent: false });
+              break;
+            }
+            case 'stopControllerRumble':
+              // The host owns the pads, so the rule queues the request like it queues a rumble.
+              pushRumble(state, { stop: true });
+              break;
             case 'enemyHitscan': {
               const entity = findTarget(action.entityId);
               if (entity) enemyHitscan(state, entity, action);

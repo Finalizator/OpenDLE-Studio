@@ -83,7 +83,7 @@ import { createPixiEditor, isEditableImage, PIXIEDITOR_KINDS } from './pixiedito
 import { RENDER_RESOLUTIONS } from '/shared/render-resolution.js';
 import { installIntermission } from '/shared/intermission.js';
 import { GAME_SETTINGS, gameSettings, bindKey, mappedKeys, validBinding, setGameScreen, changeSetting, verticalFov } from '/shared/game-settings.js';
-import { gamepadLook, playRumble, readGamepads, rumbleEffect } from '/shared/gamepad.js';
+import { controllerSnapshot, gamepadLook, playRumble, readGamepads, rumbleEffect, stopRumble } from '/shared/gamepad.js';
 import { statusBarHidden } from '/shared/game-view.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
 import { cloneForLevelSwitch, selectGameLevel, stripInactiveLevels, levelData, gameLevelAssetIds } from '/shared/game-levels.js';
@@ -5847,6 +5847,9 @@ function pollGamepads(state, dt) {
   // PAD_MENU_ACTIONS — a Circle that meant Escape while playing would pause the game on a door.
   const result = readGamepads(pads, state.settings, padState, { menu: state.gameScreen !== 'playing' });
   padState = { held: result.held, sticks: result.sticks, looks: result.looks };
+  // What a rule reads: buttons by name and sticks by travel, rather than the key codes the rest of
+  // the engine works in. Without this the controller conditions could never be true.
+  state.pad = controllerSnapshot(result);
   const report = result.connected.length
     ? result.connected.map(pad => `${pad.name}${pad.standard ? '' : ' (unsupported layout)'}`).join(', ')
     : '';
@@ -5926,7 +5929,10 @@ function frame(now) {
       // A rumble a rule asked for is played by whoever holds the controllers, which is this page.
       if (runtime.rumbles?.length) {
         const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
-        for (const request of runtime.rumbles.splice(0)) playRumble(pads, rumbleEffect(request));
+        for (const request of runtime.rumbles.splice(0)) {
+          if (request.stop) stopRumble(pads);
+          else playRumble(pads, rumbleEffect(request));
+        }
       }
       audioPlayer?.update(runtime);
       frameParts.audio = performance.now() - frameStart - frameParts.step;

@@ -124,6 +124,9 @@ export function stickDirection(value, previous = 0, deadzone = 0.2) {
  */
 export function readGamepads(pads, settings = {}, previous = {}, { menu = false } = {}) {
   const keys = new Set(), pressed = new Set(), connected = [];
+  // The raw pad, as well as the key codes it stands for: an event rule that asks "is the right
+  // stick past half a turn" cannot answer that from a key set, because a stick is not a key.
+  const buttons = new Map(), axes = new Map(), pressedNames = new Set();
   const deadzone = Number.isFinite(settings.gamepadDeadzone) ? settings.gamepadDeadzone : 0.2;
   const lookScale = (Number.isFinite(settings.gamepadLookSensitivity) ? settings.gamepadLookSensitivity : 1) *
     (Number.isFinite(settings.sensitivity) ? settings.sensitivity : 1);
@@ -145,7 +148,11 @@ export function readGamepads(pads, settings = {}, previous = {}, { menu = false 
     if (pad.mapping !== 'standard') continue;
 
     const wasHeld = previous.held?.get(pad.index) ?? new Set();
-    const down = new Set();
+    const down = new Set(), heldNames = new Set();
+    axes.set(pad.index, {
+      leftX: clampAxis(pad.axes?.[PAD_AXES.leftX]), leftY: clampAxis(pad.axes?.[PAD_AXES.leftY]),
+      rightX: clampAxis(pad.axes?.[PAD_AXES.rightX]), rightY: clampAxis(pad.axes?.[PAD_AXES.rightY]),
+    });
     for (const [name, index] of Object.entries(PAD_BUTTONS)) {
       const action = (menu ? PAD_MENU_ACTIONS[name] : undefined) ?? PAD_DEFAULT_ACTIONS[name];
       if (!action) continue;
@@ -154,10 +161,12 @@ export function readGamepads(pads, settings = {}, previous = {}, { menu = false 
       const isDown = Boolean(button?.pressed) || Number(button?.value) > AXIS_PRESS;
       if (!isDown) continue;
       down.add(index);
+      heldNames.add(name);
       keys.add(boundTo(action));
-      if (!wasHeld.has(index)) pressed.add(boundTo(action));
+      if (!wasHeld.has(index)) { pressed.add(boundTo(action)); pressedNames.add(name); }
     }
     held.set(pad.index, down);
+    buttons.set(pad.index, heldNames);
 
     // The left stick is a set of keys held while it is pushed; the right stick is analog and
     // feeds the view continuously rather than as a direction.
@@ -176,7 +185,54 @@ export function readGamepads(pads, settings = {}, previous = {}, { menu = false 
     lookX += turn * lookScale;
     lookY += (invertLook ? tilt : -tilt) * lookScale;
   }
-  return { keys, pressed, lookX, lookY, connected, held, sticks, looks };
+  return { keys, pressed, lookX, lookY, connected, held, sticks, looks, buttons, pressedNames, axes };
+}
+
+/**
+ * The pad's own state, in the shape an event rule reads it.
+ *
+ * `readGamepads` answers in the engine's key vocabulary, which is what makes a pad and a keyboard
+ * the same thing for movement, weapons and menus. A rule that wants the *controller* — "hold L1 to
+ * block", "the right stick is pushed up", "vibrate while the boss charges" — needs the buttons and
+ * the axes themselves, so the host stores this snapshot on the runtime each frame and the
+ * conditions in the event sheet read it.
+ *
+ * Pad 0 is the one it reports: with two pads connected there is no sensible answer to "is Cross
+ * down" otherwise, and a game that needs a specific pad can name it later.
+ */
+export function controllerSnapshot(result = {}) {
+  const pads = result.connected || [];
+  const pad = pads.find(entry => entry.standard) || pads[0] || null;
+  const index = pad?.index ?? 0;
+  return {
+    connected: pads.length,
+    kind: pad?.kind || '',
+    name: pad?.name || '',
+    standard: Boolean(pad?.standard),
+    // Canonical button names (`cross`, `l1`, `up`…), not indices: a rule says "Cross", the
+    // standard mapping is what decides that Cross is button 0 on every supported pad.
+    buttons: new Set(result.buttons?.get(index) || []),
+    pressed: new Set(result.pressedNames || []),
+    axes: result.axes?.get(index) || { leftX: 0, leftY: 0, rightX: 0, rightY: 0 },
+    sticks: result.sticks?.get(index) || { x: 0, y: 0 },
+  };
+}
+
+/** A rumble that has ended, for the "stop rumbling" action. */
+export function stopRumble(pads) {
+  let stopped = 0;
+  for (const pad of pads || []) {
+    const actuator = pad?.vibrationActuator;
+    if (!actuator) continue;
+    try {
+      if (typeof actuator.reset === 'function') { actuator.reset(); stopped++; }
+      else if (typeof actuator.playEffect === 'function') {
+        actuator.playEffect('dual-rumble', { duration: 1, strongMagnitude: 0, weakMagnitude: 0 });
+        stopped++;
+      }
+    } catch { /* a pad that refuses is still a pad */ }
+  }
+  return stopped;
 }
 
 /** A stick's travel past its deadzone, scaled so the whole stick is usable rather than the top half. */

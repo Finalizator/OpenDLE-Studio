@@ -1581,6 +1581,38 @@ far below the game view (which reads as "the HUD disappeared") and menu clicks l
 on the wrong elements. `test/preview-layout.test.js` guards the markup and both CSS
 files so the stage cannot lose its positioning again.
 
+### Enemy and controller commands
+
+The four generated rules per imported archetype describe what *Doom's* monsters do. A custom
+monster usually does something else, so the catalogue carries a second set that acts on the object
+the rule picked as `$self`:
+
+- **What it is hunting:** `enemyTargetsPlayer`, `enemyTargetsMonster`, `enemyTargetDistance`,
+  `enemySeesTarget`. Doom's `target` is the player until damage switches it to the monster that
+  hurt it, so these ask `actorTarget()` — the same answer the AI uses — rather than assuming the
+  player. `setEnemyTarget` sets it (`$player`, an object, or `$none`); a name that has stopped
+  existing is a rule error, not a silent fallback to the player.
+- **How it is doing:** `enemyHealthPercent` (health against `maxHealth`), `enemyFlag` (any
+  DECORATE flag by name, through `actorFlag()` so `A_ChangeFlag` overrides count), `enemyFlying`
+  (`enemyFloats`, which reads `FLOAT` including per-entity overrides).
+- **Why it is not moving:** `enemyBlocked` is "every direction was refused this tic", recorded by
+  `moveEnemy` in `state.enemyBlocked`; `enemyPathBlocked` re-runs `moveEnemy`'s own probe along the
+  line to its target. The first is boxed in, the second is a wall in the way — different problems
+  with different answers (teleport vs. open the door).
+- **Making it act:** `wakeEnemy`/`sleepEnemy` (the alert timer the generated rules already read),
+  `startEnemyAttack` (`auto` picks `Missile`, or `Melee` when that is all the actor has, and never
+  interrupts `Pain`/`Death`), `stopEnemy`, `moveEnemyToward`/`moveEnemyAway`, `faceEnemyTarget`,
+  `enemyPain`. The move commands drop `state.enemyMoves` first, so Doom's "keep walking the way I
+  chose until the step runs out" does not swallow the command for a few tics.
+
+**Controllers are a pad as well as a keyboard.** `readGamepads` answers in key codes, which is what
+makes every existing rule work with a pad; `controllerSnapshot(result)` (both in
+`shared/gamepad.js`) is the other half — buttons by name, raw axes and the press edges — stored on
+`state.pad` by whichever page owns the pads (the studio preview and the exported game) and omitted
+from saves. `padConnected`, `padButtonHeld`, `padButtonPressed`, `padAxis` and `padStick` read it;
+`stopControllerRumble` queues `{ stop: true }` on `state.rumbles`, the queue `rumbleController`
+already uses, and the host answers it with `stopRumble`.
+
 **Engine scriptlets** are generators that install ready-made rules. They live in
 their own **Engine scriptlets** tab next to Engine tweaks, not in the event-sheet
 tree, so the tree lists sheets and the tab lists things that create them. Each

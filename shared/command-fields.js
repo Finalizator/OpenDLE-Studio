@@ -93,7 +93,9 @@ export function commandFields(command, { entities, zones = [], cameras = [], obj
         // An object type is picked from the types this level actually holds, with the ones it does
         // not hold still offered: a creator writes the rule for a type before placing it.
         ...(field.kind === 'objectType' ? { options: objectTypeOptions(objectTypes) } : {}),
-        ...(field.kind === 'objectReference' ? { options: [['$player', 'Player'], ...entities] } : {}),
+        // `none` is for the reference that can be deliberately empty: an enemy told to hunt nobody.
+        ...(field.kind === 'objectReference' ? { options: [
+          ...(field.none ? [['$none', 'Nobody']] : []), ['$player', 'Player'], ...entities] } : {}),
         // A property is picked by name and sorted the way a person thinks of them, not by the
         // order the reader happens to declare them in.
         ...(field.kind === 'instanceProperty' ? { options: INSTANCE_PROPERTIES.map(property => [property.name, property.label]) } : {}),

@@ -438,6 +438,8 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
       return false;
     }
     entity.x = x; entity.y = y; entity.angle = index * 45;
+    // A step that happened is the answer the `enemyBlocked` condition asks for.
+    state.enemyBlocked?.delete(entity.id);
     state.enemyMoves.set(entity.id, { direction: index, remaining: previous?.direction === index && previous.remaining > 0
       ? previous.remaining - step : speed * (4 / 35) * randomDamage(state, 1, 16) });
     if (flying) {
@@ -458,7 +460,10 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
     if (index === reverse) continue;
     if (walkable(index)) return;
   }
-  if (reverse >= 0) walkable(reverse);
+  if (reverse >= 0 && walkable(reverse)) return;
+  // Every direction was refused: the monster is standing against something. A rule reads this to
+  // sidestep, open a door or give up, which is the whole point of knowing.
+  (state.enemyBlocked ||= new Set()).add(entity.id);
   // A flyer that is boxed in still hovers towards its target, which is what lifts a Cacodemon
   // over the ledge it cannot climb.
   if (hovered) state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);

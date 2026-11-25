@@ -60,7 +60,10 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   'droppedItems',
   // The level's brushes as trace volumes. Rebuilt from the project when the runtime is created, and
   // storing them would put every plane of every brush into every save.
-  'brushTrace']);
+  'brushTrace',
+  // What the controllers said this frame, and which monsters were boxed in: both are a moment, not
+  // the game's state, and both are written again by the next frame.
+  'pad', 'enemyBlocked']);
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.

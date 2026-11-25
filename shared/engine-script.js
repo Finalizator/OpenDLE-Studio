@@ -13,6 +13,7 @@ import { POST_FX_KINDS } from './post-fx.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 import { addonCommands, addonCommand, declaredAddonTypes } from './addons.js';
 import { PATH_EASINGS } from './timesheet.js';
+import { PAD_BUTTONS } from './gamepad.js';
 import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTIES } from './instance-properties.js';
 import { weaponScriptRules } from './weapon-script.js';
 import { enemyScriptRules } from './enemy-script.js';
@@ -52,6 +53,8 @@ const objectType = (value = 'enemy') => ({ name: 'objectType', value, kind: 'obj
 const instanceProperty = (value = 'health') => ({ name: 'property', value, kind: 'instanceProperty',
   properties: INSTANCE_PROPERTIES.map(property => property.name) });
 const projectileClips = () => ['clipId', 'impactClipId'].map(name => ({ name, kind: 'text', optional: true }));
+/** A physical pad button by the standard mapping's name, which is the same on every supported pad. */
+const padButton = () => choice('button', 'cross', Object.keys(PAD_BUTTONS));
 
 /**
  * Conditions and actions the runtime answers by itself, before the catalogue is consulted.
@@ -125,6 +128,27 @@ export const ENGINE_CONDITIONS = [
   { type: 'enemySeesPlayer', label: 'Enemy: player visible in range', fields: [numeric('range', 1024, 1, 65536),
     { ...numeric('fov', 360, 0, 360), optional: true }], target: true },
   { type: 'enemyAttackChance', label: 'Enemy: Doom distance-based attack decision', fields: [], target: true },
+  // ---- Enemy: what it is hunting and how it feels about it -----------------------------------
+  // Doom's `target` is the player by default and another monster after a hit, so these ask about
+  // whoever this monster is actually after rather than about the player specifically. That is what
+  // makes an infight, a scripted duel or a boss that only reacts to one attacker expressible.
+  { type: 'enemyTargetsPlayer', label: 'Enemy: its target is the player', fields: [], target: true },
+  { type: 'enemyTargetsMonster', label: 'Enemy: its target is another monster', fields: [], target: true },
+  { type: 'enemyTargetDistance', label: 'Enemy: compare distance to its target', target: true, fields: [
+    comparison(), numeric('distance', 128, 0, 65536)] },
+  { type: 'enemySeesTarget', label: 'Enemy: its target is in sight', fields: [], target: true },
+  { type: 'enemyHealthPercent', label: 'Enemy: compare health as a percentage', target: true, fields: [
+    comparison(), numeric('percent', 50, 0, 100)] },
+  // A monster whose step was blocked is standing against something: the condition that lets a rule
+  // decide to jump, sidestep, open a door or teleport instead of pushing at a wall for ever.
+  { type: 'enemyBlocked', label: 'Enemy: every step was refused (boxed in)', fields: [], target: true },
+  { type: 'enemyPathBlocked', label: 'Enemy: a wall stands between it and its target', fields: [], target: true },
+  // DECORATE flags are how a custom monster says what it *is* (AMBUSH, FLOAT, DORMANT, BOSS,
+  // STANDSTILL, QUICKTORETALIATE, LOOKALLAROUND, MISSILE, COUNTKILL…), and a rule that branches on
+  // one keeps working for an actor the engine has never heard of.
+  { type: 'enemyFlag', label: 'Enemy: actor flag is set', target: true,
+    fields: [{ name: 'flag', kind: 'string', value: 'AMBUSH' }] },
+  { type: 'enemyFlying', label: 'Enemy: flies (FLOAT)', fields: [], target: true },
   { type: 'weaponOwned', label: 'Inventory: owns weapon', fields: [choice('weapon', 'pistol', WEAPONS)] },
   { type: 'weaponSelected', label: 'Inventory: selected weapon', fields: [choice('weapon', 'pistol', WEAPONS)] },
   { type: 'keyOwned', label: 'Inventory: owns key', fields: [choice('key', 'blueCard', KEYS)] },
@@ -154,6 +178,18 @@ export const ENGINE_CONDITIONS = [
   { type: 'groupActive', label: 'System: group is active', fields: [], group: true },
   { type: 'keyHeld', label: 'Input: key / mouse button held', fields: [choice('key', 'KeyW', INPUT_KEYS)] },
   { type: 'mouseMoved', label: 'Input: mouse moved', fields: [] },
+  // ---- Controller: the pad itself -------------------------------------------------------------
+  // A pad is normally read as the keys it produces, which is why every existing rule works with one.
+  // These ask the controller directly: a stick has travel and a button has a name, and a custom
+  // enemy or a HUD screen can act on either without inventing a keyboard binding for it.
+  { type: 'padConnected', label: 'Controller: is connected', fields: [
+    choice('kind', 'any', ['any', 'dualsense', 'dualshock', 'xbox', 'switch', 'playstation'])] },
+  { type: 'padButtonHeld', label: 'Controller: button is held', fields: [padButton()] },
+  { type: 'padButtonPressed', label: 'Controller: button was pressed this frame', fields: [padButton()] },
+  { type: 'padAxis', label: 'Controller: compare a stick axis', fields: [
+    choice('axis', 'leftX', ['leftX', 'leftY', 'rightX', 'rightY']), comparison(), numeric('value', .5, -1, 1)] },
+  { type: 'padStick', label: 'Controller: stick pushed in a direction', fields: [
+    choice('stick', 'left', ['left', 'right']), choice('direction', 'any', ['any', 'up', 'down', 'left', 'right'])] },
   { type: 'playerStat', label: 'Player: compare stat', fields: [stat(), comparison(), numeric('value', 0, -1e6, 1e6)] },
   { type: 'entityHealth', label: 'Object: compare health', fields: [comparison(), numeric('value', 0, -1e6, 1e6)], target: true },
   { type: 'entityHasHealth', label: 'Object: has explicit health', fields: [], target: true },
@@ -329,6 +365,7 @@ export const ENGINE_ACTIONS = [
   // than the engine guessing that being shot should buzz.
   { type: 'rumbleController', label: 'Controller: rumble', fields: [
     { ...numeric('strength', .6, 0, 1), hint: 'How hard, 0 to 1' }, numeric('seconds', .2, .01, 5)] },
+  { type: 'stopControllerRumble', label: 'Controller: stop rumbling', fields: [] },
   { type: 'followCamera', label: 'Camera: follow an object', fields: [
     cameraRef('camera', '$active'), { name: 'target', kind: 'string', value: '$player' },
     choice('copyAngle', 'no', ['yes', 'no'])] },
@@ -341,6 +378,23 @@ export const ENGINE_ACTIONS = [
   { type: 'setGravityScale', label: 'Physics: set gravity scale', target: true, fields: [numeric('scale', 1, 0, 10)] },
   { type: 'setDamping', label: 'Physics: set linear damping', target: true, fields: [numeric('damping', .1, 0, 100)] },
   { type: 'moveEnemy', label: 'Enemy: move toward player with collision', fields: [numeric('speed', 80, 0, 1024)], target: true },
+  // ---- Enemy: commands a custom monster needs ------------------------------------------------
+  // The four generated rules cover Doom's own behaviour. These are for the rest: a monster that is
+  // told who to hunt, woken by a script, sent somewhere, stopped, or made to attack on cue.
+  { type: 'setEnemyTarget', label: 'Enemy: set who it hunts', target: true, fields: [
+    { name: 'target', kind: 'objectReference', value: '$player', none: true,
+      hint: '$player, an object, or Nobody' }] },
+  { type: 'wakeEnemy', label: 'Enemy: wake it up', target: true, fields: [numeric('seconds', 8, .1, 3600)] },
+  { type: 'sleepEnemy', label: 'Enemy: put it to sleep', fields: [], target: true },
+  { type: 'startEnemyAttack', label: 'Enemy: attack now', target: true, fields: [
+    choice('state', 'auto', ['auto', 'Missile', 'Melee'])] },
+  { type: 'stopEnemy', label: 'Enemy: stop moving', fields: [], target: true },
+  { type: 'moveEnemyToward', label: 'Enemy: walk toward an object', target: true, fields: [
+    { name: 'target', kind: 'objectReference', value: '$player' }, numeric('speed', 80, 0, 1024)] },
+  { type: 'moveEnemyAway', label: 'Enemy: back away from its target', target: true,
+    fields: [numeric('speed', 80, 0, 1024)] },
+  { type: 'faceEnemyTarget', label: 'Enemy: face its target', fields: [], target: true },
+  { type: 'enemyPain', label: 'Enemy: play its pain state', fields: [], target: true },
   // A missile's own Death state calls these; a rule can call them too, which is how an
   // imported rocket's explosion and the BFG's spray stop being code only the machine runs.
   { type: 'explodeArea', label: 'Combat: explode at this object', fields: [
