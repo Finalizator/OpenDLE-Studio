@@ -16,8 +16,9 @@ import { openLocalBrowser } from './browser.js';
 import { openStudioWindow } from './studio-launcher.js';
 import { readEngineVersion } from './version.js';
 import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, inspectPackage, importPackage } from './packages.js';
-import { scanLocalMaps, readLocalMapFile, describeScan } from './local-maps.js';
-import { parseBsp } from '../shared/bsp.js';
+import { scanLocalMaps, readLocalMapFile, localArchive, describeScan } from './local-maps.js';
+import { compiledMapAssets, describeAssets } from './bsp-textures.js';
+import { bspInfo, parseBsp } from '../shared/bsp.js';
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
 import { createPortableBuild, createZipArchive } from './export-build.js';
 import { resolveDist } from './electron-runtime.js';
@@ -60,6 +61,9 @@ export function createApp({
   pixiEditor = createPixiEditorBridge({ directory: resolve(root, 'data/pixieditor') }),
 } = {}) {
   readEngineVersion(versionFile);
+  // One palette hunt per Projects folder, not one per map: a folder of Half-Life maps all want the
+  // same halflife.wad, and reading it per import is seconds of wasted work.
+  const paletteCacheForMaps = new Map();
   const app = express();
   app.disable('x-powered-by');
   app.use((req, res, next) => {
@@ -167,11 +171,43 @@ export function createApp({
    * the brushes it *is*, parsed here because the reader is shared code the server already has. Both
    * answers are the same shape, so the importer has one path.
    */
+  /** A compiled map, its brushes and the artwork it names, in the shape the importer expects. */
+  async function compiledMapPayload(bytes, name, { relativePath = '', archive = null } = {}) {
+    const parsed = parseBsp(bytes, { name });
+    // The artwork comes with it: embedded in the map (Quake, Half-Life) or beside it in the archive
+    // that holds it (Quake 2/3). A map whose pictures cannot be found still imports, and says so.
+    const artwork = await compiledMapAssets({
+      bytes, info: bspInfo(bytes), parsed, root: projectsDir, relativePath, archive,
+      paletteCache: paletteCacheForMaps,
+    });
+    const imported = describeAssets(artwork.assets);
+    return {
+      name, parsed, assets: artwork.assets, materials: Object.fromEntries(artwork.materials),
+      warnings: [...artwork.warnings, ...(imported ? [`${name}: ${imported} imported`] : [])],
+    };
+  }
   app.get('/api/local-maps/source', async (req, res) => {
     try {
-      const file = await readLocalMapFile(projectsDir, req.query.path, req.query.entry ? String(req.query.entry) : null);
-      if (file.kind === 'bsp') res.json({ name: file.name, parsed: parseBsp(file.bytes, { name: file.name }) });
-      else res.type('text/plain; charset=utf-8').send(file.text);
+      const path = req.query.path, entry = req.query.entry ? String(req.query.entry) : null;
+      const file = await readLocalMapFile(projectsDir, path, entry);
+      if (file.kind !== 'bsp') { res.type('text/plain; charset=utf-8').send(file.text); return; }
+      res.json(await compiledMapPayload(file.bytes, file.name,
+        { relativePath: String(path || ''), archive: entry ? localArchive(projectsDir, path) : null }));
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  /**
+   * A compiled map the person picked in a file dialog rather than found in the folder.
+   *
+   * The file is not on disk here, but everything else is the same: the brushes, and the artwork
+   * embedded in the map or a palette the Projects folder already had. An archive cannot follow it —
+   * a picked `.pk3` goes to the folder browser instead, which is where its textures are.
+   */
+  app.post('/api/local-maps/parse', express.raw({ type: 'application/octet-stream', limit: archiveLimit }), async (req, res) => {
+    try {
+      const bytes = req.body;
+      if (!Buffer.isBuffer(bytes) || !bytes.length) { res.status(400).json({ error: 'No map file was sent' }); return; }
+      const name = String(req.query.name || 'map.bsp').slice(0, 200);
+      res.json(await compiledMapPayload(bytes, name));
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
   // Every WAD under Projects/, at any depth: one level of a mod's `maps/` folder used to be

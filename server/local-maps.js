@@ -188,6 +188,22 @@ function readArchiveEntry(file, wanted, limit = READ_LIMIT) {
 }
 
 /**
+ * Read access to the archive a map came in, for the textures beside it.
+ *
+ * A `.pk3` is where a Quake 3 map keeps its pictures, so importing the map without the archive would
+ * import names and no artwork. `list`/`read` are all the texture importer needs, and a map on disk
+ * gets nothing, which is how it knows there is no archive to look in.
+ */
+export function localArchive(root, path) {
+  const file = inside(root, path);
+  return {
+    list: () => listArchive(file),
+    read: name => readArchiveEntry(file, name),
+    file,
+  };
+}
+
+/**
  * A map the browser listed: the text of a `.map`, or the bytes of a `.bsp`.
  *
  * Both come from the folder rather than a file dialog, and both work inside a `.pk3` or `.zip` —

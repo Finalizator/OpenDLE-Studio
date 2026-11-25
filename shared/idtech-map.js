@@ -421,7 +421,7 @@ function materialiseUv(faces) {
  * with no closed corner set (a malformed or non-convex brush, which a compiler would split) is
  * refused with a reason instead of being drawn as garbage.
  */
-function convertBrush(brush, index, warnings, fileName) {
+function convertBrush(brush, index, warnings, fileName, textures) {
   const faces = [];
   for (const face of brush.faces) {
     const [a, b, c] = face.points;
@@ -433,7 +433,9 @@ function convertBrush(brush, index, warnings, fileName) {
     }
     faces.push({
       points: [a, c, b],
-      texture: null,
+      // The artwork, when the import brought it: a compiled map's textures are decoded into project
+      // assets, and a face that names one of them is drawn with it instead of the fallback.
+      texture: (textures && face.texture ? textures.get(face.texture) : null) || null,
       textureName: face.texture,
       offsetX: face.offsetX || 0,
       offsetY: face.offsetY || 0,
@@ -448,8 +450,10 @@ function convertBrush(brush, index, warnings, fileName) {
   if (faces.length < 4) return { error: 'fewer than four faces' };
   // A brush made of a compiler's tool materials is solid and invisible in its own game, so it stays
   // solid here and keeps its invisibility. A `.map` source never says this; a compiled one does.
-  const candidate = { id: newId('brush'), name: `Brush ${index}`, layerId: 'default',
-    visible: brush.visible !== false, locked: false, faces };
+  // A compiled map names a brush after the entity whose model it came from, so a door's pieces are
+  // called `func_door` instead of `Brush 47`. A source map names nothing and gets the index.
+  const candidate = { id: newId('brush'), name: String(brush.name || `Brush ${index}`).slice(0, 100),
+    layerId: 'default', visible: brush.visible !== false, locked: false, faces };
   let vertices = brushVertices(candidate);
   if (vertices.length < 4) {
     // Some exporters write the opposite winding; flipping every face is cheaper than failing.
@@ -468,7 +472,7 @@ function convertBrush(brush, index, warnings, fileName) {
  * `offset` shifts everything by a world vector, which is how an imported map is dropped beside an
  * existing one instead of inside it.
  */
-export function idTechContent(parsed, { offset = [0, 0, 0], keepPlayer = true } = {}) {
+export function idTechContent(parsed, { offset = [0, 0, 0], keepPlayer = true, textures = null } = {}) {
   const warnings = [...parsed.warnings];
   const brushes = [];
   const entities = [];
@@ -478,7 +482,7 @@ export function idTechContent(parsed, { offset = [0, 0, 0], keepPlayer = true } 
   let playerSeen = false;
   for (const entity of parsed.entities) {
     for (const brush of entity.brushes) {
-      const result = convertBrush(brush, brushIndex++, warnings, parsed.name);
+      const result = convertBrush(brush, brushIndex++, warnings, parsed.name, textures);
       if (result.error) { skipped++; warnings.push(`${parsed.name}: brush ${brushIndex - 1} skipped: ${result.error}`); continue; }
       if (offset.some(value => value)) {
         result.brush.faces = result.brush.faces.map(face => ({
@@ -548,11 +552,12 @@ export function idTechContent(parsed, { offset = [0, 0, 0], keepPlayer = true } 
 }
 
 /** Add a parsed map to a project, keeping what is already there. */
-export function applyIdTechMap(project, parsed, { offset = [0, 0, 0] } = {}) {
+export function applyIdTechMap(project, parsed, { offset = [0, 0, 0], textures = null, assets = [] } = {}) {
   // A project has exactly one player start. An imported map's own starts become ordinary objects
   // carrying their class, so nothing is lost and the existing start keeps working.
   const keepPlayer = !project.map.entities.some(entity => entity.type === 'player');
-  const content = idTechContent(parsed, { offset, keepPlayer });
+  const content = idTechContent(parsed, { offset, keepPlayer, textures });
+  if (assets.length) project.assets = [...(project.assets || []), ...assets];
   project.map.brushes = [...(project.map.brushes || []), ...content.brushes];
   project.map.entities = [...project.map.entities, ...content.entities];
   project.mapSource = content.source;
@@ -565,12 +570,12 @@ export function applyIdTechMap(project, parsed, { offset = [0, 0, 0] } = {}) {
  * The starter room, its objects and their rules are deliberately absent: an imported Quake map is
  * the level, and leaving a Doom starter room behind would put a hole in someone else's geometry.
  */
-export function projectFromIdTechMap(parsed, { createProject }) {
+export function projectFromIdTechMap(parsed, { createProject, assets = [], textures = null }) {
   const project = createProject();
   const message = parsed.entities.find(entity => entity.properties.classname === 'worldspawn')?.properties.message;
   project.title = (message && message.trim()) || parsed.name.replace(/\.map$/i, '');
   project.map = { vertices: [], walls: [], sectors: [], entities: [], brushes: [] };
   project.events = [];
-  applyIdTechMap(project, parsed);
+  applyIdTechMap(project, parsed, { assets, textures });
   return project;
 }

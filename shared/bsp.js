@@ -317,31 +317,33 @@ function nodeTexture(quake, node, textures) {
 }
 
 /**
- * Every piece of solid space in the world model, as a brush.
+ * Every piece of solid space in one model, as a brush.
  *
  * A BSP needs only one solid leaf — solid space is never subdivided for drawing — so the same leaf
  * index is reached by hundreds of different paths, each a different room's wall. The hull is
  * therefore built per *tree position*, not per leaf, which is what makes the walls come out as
  * walls. An explicit stack keeps a deep tree off the call stack.
+ *
+ * A model is the world, or one brush entity: Half-Life puts every door, platform and breakable wall
+ * in its own model with its own tree, sharing this file's planes, nodes and leafs. Walking them all
+ * is what makes a door a door instead of a hole in the level.
  */
-function leafBrushes(quake, warnings, name) {
-  const model = quake.models[0];
-  if (!model) { warnings.push(`${name}: the compiled map has no world model`); return []; }
-  if (model.headnode[0] < 0) { warnings.push(`${name}: the world model is a single leaf; there is no geometry to import`); return []; }
+function leafBrushes(quake, model, textures) {
+  const counts = { solid: 0, degenerate: 0, missed: 0, truncated: false };
+  const brushes = [];
+  if (!model) { counts.missed++; return { brushes, counts }; }
+  if (model.headnode[0] < 0) return { brushes, counts };
   // The tree's own bounds, grown a little: the compiler puts the outer hull exactly on them, and a
   // hull clipped exactly on a plane leaves faces with no area.
   const min = model.mins.map(value => value - 8), max = model.maxs.map(value => value + 8);
-  if (![...min, ...max].every(Number.isFinite)) { warnings.push(`${name}: the world model has no bounds`); return []; }
+  if (![...min, ...max].every(Number.isFinite)) { counts.missed++; return { brushes, counts }; }
 
-  const textures = planeTextures(quake);
-  const brushes = [];
-  let solid = 0, degenerate = 0, missed = 0;
   const stack = [{ node: model.headnode[0], planes: boxPlanes(min, max) }];
   while (stack.length) {
     const { node: index, planes } = stack.pop();
     const node = quake.nodes[index];
     const plane = node ? quake.planes[node.plane] : null;
-    if (!node || !plane || !plane.normal.every(Number.isFinite) || !Number.isFinite(plane.distance)) { missed++; continue; }
+    if (!node || !plane || !plane.normal.every(Number.isFinite) || !Number.isFinite(plane.distance)) { counts.missed++; continue; }
     const texture = nodeTexture(quake, node, textures);
     for (const side of [0, 1]) {
       const child = node.children[side];
@@ -354,25 +356,16 @@ function leafBrushes(quake, warnings, name) {
       const next = [...planes, outward];
       if (child > 0) { stack.push({ node: child, planes: next }); continue; }
       const leaf = quake.leafs[-child - 1];
-      if (!leaf) { missed++; continue; }
+      if (!leaf) { counts.missed++; continue; }
       if (leaf.contents !== CONTENTS_SOLID) continue;
-      solid++;
+      counts.solid++;
       const brush = planesToBrush(next);
-      if (!brush) degenerate++;
+      if (!brush) counts.degenerate++;
       else brushes.push(invisibleBrush(brush.faces) ? { ...brush, visible: false } : brush);
-      if (brushes.length >= MAX_BSP_BRUSHES) {
-        warnings.push(`${name}: stopped at ${MAX_BSP_BRUSHES} brushes; the rest of the world was not imported`);
-        return brushes;
-      }
+      if (brushes.length >= MAX_BSP_BRUSHES) { counts.truncated = true; return { brushes, counts }; }
     }
   }
-  if (missed) warnings.push(`${name}: ${missed} tree records pointed outside the file and were skipped`);
-  if (!brushes.length) warnings.push(`${name}: no solid space was found in the compiled map`);
-  else if (degenerate) warnings.push(`${name}: ${degenerate} pieces of solid space had no usable volume and became no brush`);
-  if (!quake.faceLayout && quake.lumps[7]?.length) {
-    warnings.push(`${name}: its face records are in a layout this reader does not know, so brushes carry no texture name`);
-  }
-  return brushes;
+  return { brushes, counts };
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -394,8 +387,18 @@ function shaders(view, bytes, lump) {
 const CONTENTS_SOLID_BIT = 1;
 /** `CONTENTS_PLAYERCLIP`: invisible to the eye and solid to the player, which is what a clip brush is. */
 const CONTENTS_PLAYERCLIP = 0x10000;
+/**
+ * Entities whose model is a volume and not a wall.
+ *
+ * A trigger brush is stored in the BSP exactly like a door is — the compiler gives it a model tree of
+ * solid leaves — and the *game* is what decides it cannot be walked into, by classname. Importing a
+ * trigger as geometry put an invisible wall across the room it was built to detect. These keep their
+ * entity, so the mapper still sees where they are, and lose only the brushes.
+ */
+const VOLUME_ENTITY = /^(trigger_.*|func_(illusionary|water|ladder|areaportal|areaportalwater|portal|fog|light|detail|trainpath|rotating_light))$/i;
 
-function explicitBrushes(view, bytes, info, warnings, name) {
+/** The lumps a Quake 2 / Quake 3 brush map is built from, read once and shared by every model. */
+function brushSource(view, bytes, info) {
   const { lumps, version } = info;
   const quake3 = version >= 46;
   const planes = records(view, lumps[quake3 ? 2 : 1], quake3 ? 16 : 20, planeReader);
@@ -427,38 +430,41 @@ function explicitBrushes(view, bytes, info, warnings, name) {
     if (!quake3) return ((record.contents ?? 0) & (CONTENTS_SOLID_BIT | CONTENTS_PLAYERCLIP)) !== 0;
     for (let index = 0; index < record.sides; index++) {
       const side = sides[record.firstSide + index];
-      const info = side ? materials[side.texture] : null;
-      if (info && (info.contents & (CONTENTS_SOLID_BIT | CONTENTS_PLAYERCLIP))) return true;
+      const material = side ? materials[side.texture] : null;
+      if (material && (material.contents & (CONTENTS_SOLID_BIT | CONTENTS_PLAYERCLIP))) return true;
     }
     return false;
   };
-  if (!brushes.length) warnings.push(`${name}: the file has no brush lump; Quake 2 and Quake 3 also draw curves and patches, which are not imported`);
+  return { brushes, sides, planes, solid, textureOf };
+}
+
+/**
+ * The brushes one model owns.
+ *
+ * Quake 3 keeps a brush list per model as a range of the same lump, so a door's brushes are a slice;
+ * a brush the compiler marked non-solid is counted and dropped either way.
+ */
+function modelBrushes(source, from, count, counters) {
   const out = [];
-  let degenerate = 0, compilerVolumes = 0;
-  for (const record of brushes) {
-    if (!solid(record)) { compilerVolumes++; continue; }
+  for (let index = from; index < from + count && index < source.brushes.length; index++) {
+    const record = source.brushes[index];
+    if (!source.solid(record)) { counters.compilerVolumes++; continue; }
+    counters.solid++;
     const faces = [], seen = new Set();
-    for (let index = 0; index < record.sides; index++) {
-      const side = sides[record.firstSide + index];
-      if (!side) continue;
-      const plane = planes[side.plane];
+    for (let side = 0; side < record.sides; side++) {
+      const entry = source.sides[record.firstSide + side];
+      if (!entry) continue;
+      const plane = source.planes[entry.plane];
       if (!plane || !plane.normal.every(Number.isFinite) || !Number.isFinite(plane.distance)) continue;
       const key = `${plane.normal.map(value => value.toFixed(3)).join(',')}|${plane.distance.toFixed(2)}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      faces.push({ normal: plane.normal, distance: plane.distance, texture: textureOf(side) });
+      faces.push({ normal: plane.normal, distance: plane.distance, texture: source.textureOf(entry) });
     }
     const hull = planesToBrush(faces);
-    if (!hull) { degenerate++; continue; }
+    if (!hull) { counters.degenerate++; continue; }
     out.push(invisibleBrush(hull.faces) ? { ...hull, visible: false } : hull);
-    if (out.length >= MAX_BSP_BRUSHES) {
-      warnings.push(`${name}: stopped at ${MAX_BSP_BRUSHES} brushes; the rest of the map was not imported`);
-      break;
-    }
-  }
-  if (degenerate) warnings.push(`${name}: ${degenerate} brushes had fewer than four planes and were skipped`);
-  if (compilerVolumes) {
-    warnings.push(`${name}: ${compilerVolumes} compiler volumes (lightgrid, hint, triggers) are not solid and were not imported`);
+    if (out.length >= MAX_BSP_BRUSHES) { counters.truncated = true; break; }
   }
   return out;
 }
@@ -484,30 +490,101 @@ export function parseBsp(bytes, { name = 'map' } = {}) {
   if (!worldspawn) throw new Error(`${name}: the compiled map has no entities`);
   if (!worldspawn.properties.classname) worldspawn.properties.classname = 'worldspawn';
 
+  // A model the world does not own belongs to the entity that names it: `"model" "*3"` is the fourth
+  // model, and that is where a door's brushes live in Half-Life and Quake 3 alike.
+  const owner = index => entities.find(entity => String(entity.properties.model || '') === `*${index}`);
+  const counters = { solid: 0, degenerate: 0, missed: 0, truncated: false, compilerVolumes: 0, attached: 0, orphans: 0, volumes: 0 };
   let brushes;
   const extra = {};
   if (info.version >= 38) {
-    brushes = explicitBrushes(view, bytes, info, warnings, name);
+    const source = brushSource(view, bytes, info);
+    extra.brushModels = 0;
+    if (!source.brushes.length) {
+      warnings.push(`${name}: the file has no brush lump; Quake 2 and Quake 3 also draw curves and patches, which are not imported`);
+    }
+    const models = info.version >= 46
+      ? records(view, info.lumps[7], 40, (data, at) => ({
+        firstBrush: data.getInt32(at + 32, true), brushes: data.getInt32(at + 36, true),
+      }))
+      : [];
+    // Without a model list every brush is the world's, which is what Quake 2 files usually are.
+    const ranges = models.length ? models.map((model, index) => ({ index, ...model })) : [{ index: 0, firstBrush: 0, brushes: source.brushes.length }];
+    for (const range of ranges) {
+      const own = modelBrushes(source, range.firstBrush, range.brushes, counters);
+      if (range.index === 0) { brushes = own; continue; }
+      if (!own.length) continue;
+      const entity = owner(range.index);
+      if (!entity) { counters.orphans += own.length; continue; }
+      if (VOLUME_ENTITY.test(entity.properties.classname || '')) { counters.volumes += own.length; continue; }
+      entity.brushes = [...(entity.brushes || []), ...own.map(brush => ({
+        ...brush, name: entity.properties.classname || brush.name,
+      }))];
+      counters.attached += own.length;
+      extra.brushModels++;
+    }
+    brushes ||= [];
   } else {
     const quake = quakeWorld(view, bytes, info);
-    brushes = leafBrushes(quake, warnings, name);
+    const textures = planeTextures(quake);
+    const world = leafBrushes(quake, quake.models[0], textures);
+    brushes = world.brushes;
+    Object.assign(counters, { solid: world.counts.solid, missed: world.counts.missed,
+      degenerate: world.counts.degenerate, truncated: world.counts.truncated });
     extra.models = quake.models.length;
-    extra.solidPieces = brushes.length;
-    if (quake.models.length > 1) {
-      warnings.push(`${name}: ${quake.models.length - 1} brush models (doors, platforms, moving parts) were not imported; only the world was`);
+    extra.brushModels = 0;
+    for (let index = 1; index < quake.models.length; index++) {
+      const model = leafBrushes(quake, quake.models[index], textures);
+      counters.solid += model.counts.solid;
+      counters.missed += model.counts.missed;
+      counters.degenerate += model.counts.degenerate;
+      if (!model.brushes.length) continue;
+      const entity = owner(index);
+      if (!entity) { counters.orphans += model.brushes.length; continue; }
+      if (VOLUME_ENTITY.test(entity.properties.classname || '')) { counters.volumes += model.brushes.length; continue; }
+      entity.brushes = [...(entity.brushes || []), ...model.brushes.map(brush => ({
+        ...brush, name: entity.properties.classname || brush.name,
+      }))];
+      counters.attached += model.brushes.length;
+      extra.brushModels++;
     }
   }
   worldspawn.brushes = brushes;
+  const report = describeModels(counters, extra, name);
+  warnings.push(...report);
   let faceCount = 0;
-  for (const brush of brushes) faceCount += brush.faces.length;
+  for (const entity of entities) for (const brush of entity.brushes || []) faceCount += brush.faces.length;
+  let brushCount = 0;
+  for (const entity of entities) brushCount += (entity.brushes || []).length;
   return {
     name,
     entities,
     warnings,
-    stats: { entities: entities.length, brushes: brushes.length, faces: faceCount, primitives: 0 },
+    stats: { entities: entities.length, brushes: brushCount, faces: faceCount, primitives: 0 },
     format: 'bsp',
     bsp: { version: info.version, game: info.engine, ...extra },
   };
+}
+
+/** What the walk found, said once: how much of the file became brushes and what did not. */
+function describeModels(counters, extra, name) {
+  const warnings = [];
+  if (counters.truncated) warnings.push(`${name}: stopped at ${MAX_BSP_BRUSHES} brushes; the rest of the map was not imported`);
+  if (counters.missed) warnings.push(`${name}: ${counters.missed} tree records pointed outside the file and were skipped`);
+  if (counters.degenerate) warnings.push(`${name}: ${counters.degenerate} pieces of solid space had no usable volume and became no brush`);
+  if (counters.compilerVolumes) {
+    warnings.push(`${name}: ${counters.compilerVolumes} compiler volumes (lightgrid, hint, triggers) are not solid and were not imported`);
+  }
+  if (!counters.solid && !counters.compilerVolumes && !counters.truncated) {
+    warnings.push(`${name}: no solid space was found in the compiled map`);
+  }
+  if (extra.brushModels) {
+    warnings.push(`${name}: ${extra.brushModels} brush models (doors, platforms and other moving parts) imported from their own trees`);
+  }
+  if (counters.orphans) warnings.push(`${name}: ${counters.orphans} pieces of brush-model geometry belonged to no entity and were not imported`);
+  if (counters.volumes) {
+    warnings.push(`${name}: ${counters.volumes} trigger and illusionary volumes kept their entity and imported no brushes; the game does not let anything stand in them`);
+  }
+  return warnings;
 }
 
 /**

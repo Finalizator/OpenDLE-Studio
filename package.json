@@ -27,10 +27,11 @@
     "automation:close": "node tools/automation/run.mjs close"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.0",
     "@dimforge/rapier3d-compat": "^0.19.3",
+    "@modelcontextprotocol/sdk": "^1.25.0",
     "electron": "^45.2.1",
     "express": "^5.1.0",
+    "jpeg-js": "^0.4.4",
     "pngjs": "^7.0.0",
     "three": "^0.180.0",
     "yauzl": "^3.2.0",

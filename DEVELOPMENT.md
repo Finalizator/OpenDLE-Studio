@@ -391,8 +391,24 @@ provider credits or network access are required for tests.
   the file's planes are floats, and demanding more precision threw away nine brushes in ten of a real
   map. Each face is then emitted *from its own plane*, never from three corner points, so a brush's
   geometry is the file's numbers and not a rounding of them. Texture names come from the miptex
-  directory (Quake, Half-Life) or the shader lump (Quake 3); the artwork itself is not imported, so a
-  face falls back to the renderer's own material like any unknown texture.
+  directory (Quake, Half-Life) or the shader lump (Quake 3).
+- **A compiled map's artwork comes with it** (`server/bsp-textures.js`). A project holds PNG data
+  URLs and nothing else, so every format is decoded to pixels and written back out as one. Quake and
+  Half-Life embed their textures in the map as 8-bit images indexed into a palette that is *not* in
+  the file: `halflife.wad`'s `gfx/palette.lmp` or a bare `palette.lmp` is looked for beside the map
+  and under `Projects/`, cached per folder, and its absence is reported by name rather than guessed
+  at with another game's colours. Quake 2 and Quake 3 keep their pictures in the `.pk3` beside the
+  map (`textures/<shader>.tga|jpg|png`), matched case-insensitively against the archive's own list;
+  TGA (uncompressed and RLE) and JPEG are decoded here, PNG travels as it is. Each texture becomes an
+  asset whose id is a hash of its name, so importing the same map twice does not duplicate anything,
+  and the faces that named it are pointed at it — a face keeps `textureName` for display and gains
+  `texture` for the picture.
+- **Every model becomes brushes.** A compiled map's brush entities are separate models: Half-Life
+  gives each door, platform and breakable wall one, and Quake 3 gives each `func_*` a range of the
+  brush lump. They import onto the entity that names them (`"model" "*3"`), keeping the entity's
+  properties and naming the brushes after its classname. A `trigger_*` or `func_illusionary` model is
+  a *volume*, not a wall — the compiler stores it exactly like a door and the game is what refuses to
+  let anything stand in it — so those keep their entity and import no brushes.
 - **Brush levels collide.** `collisionMesh` adds every brush's faces to the static trimesh, so a level
   with no sectors is walkable: the solid leaf you stand on is a floor. Brushes are static, so they
   are never in the movable collider, and the stand-in ground plane appears only when a project has

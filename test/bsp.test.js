@@ -69,40 +69,49 @@ function packQuake(payloads, { version = 29 } = {}) {
 }
 
 /**
- * A Quake 1 world of one solid box.
+ * A Quake 1 world of solid boxes.
  *
- * Each node splits space on one of the box's planes: its back child is the air outside the box, and
+ * Each node splits space on one of a box's planes: its back child is the air outside the box, and
  * its front child is the next plane, so the only way to the solid leaf is through the front of all
- * six. That is the one convex piece of solid space this map has, and the hull it is reached with is
- * the box those planes enclose.
+ * six. That is the one convex piece of solid space each model has, and the hull it is reached with is
+ * the box those planes enclose. A second box is a second *model*: a door, or a platform — every
+ * Half-Life brush entity is one.
  */
-function quakeBox() {
+function quakeBox({ models = 1 } = {}) {
   const payloads = Array.from({ length: 15 }, () => Buffer.alloc(0));
-  payloads[0] = Buffer.from(ENTITIES, 'latin1');
-  const planes = Buffer.alloc(6 * 20);
-  boxPlanes().forEach(([normal, distance], index) => {
-    const at = index * 20;
-    normal.forEach((value, axis) => planes.writeFloatLE(value, at + axis * 4));
-    planes.writeFloatLE(distance, at + 12);
-  });
-  payloads[1] = planes;
-  const nodes = Buffer.alloc(6 * 24);
-  for (let index = 0; index < 6; index++) {
-    const at = index * 24;
-    nodes.writeInt32LE(index, at);
-    nodes.writeInt16LE(index === 5 ? -1 : index + 1, at + 4);
-    nodes.writeInt16LE(-2, at + 6);
+  const doors = Array.from({ length: models - 1 }, (unused, index) => index + 1);
+  payloads[0] = Buffer.from(`${ENTITIES}${doors.map(index => `{\n"classname" "func_door"\n"model" "*${index}"\n}\n`).join('')}`, 'latin1');
+
+  const planes = Buffer.alloc(models * 6 * 20), nodes = Buffer.alloc(models * 6 * 24);
+  for (let model = 0; model < models; model++) {
+    // Every model's box is the same box around its own origin, which is how a compiler writes a
+    // door: the geometry sits where the door is, not at the world origin.
+    boxPlanes().forEach(([normal, distance], index) => {
+      const at = (model * 6 + index) * 20;
+      normal.forEach((value, axis) => planes.writeFloatLE(value, at + axis * 4));
+      planes.writeFloatLE(distance, at + 12);
+    });
+    for (let index = 0; index < 6; index++) {
+      const at = (model * 6 + index) * 24;
+      nodes.writeInt32LE(index, at);
+      nodes.writeInt16LE(index === 5 ? -1 : model * 6 + index + 1, at + 4);
+      nodes.writeInt16LE(-2, at + 6);
+    }
   }
+  payloads[1] = planes;
   payloads[5] = nodes;
   const leafs = Buffer.alloc(2 * 24);
   leafs.writeInt32LE(-2, 0);
   leafs.writeInt32LE(-1, 24);
   payloads[10] = leafs;
-  const models = Buffer.alloc(64);
-  [0, 0, 0].forEach((value, axis) => models.writeFloatLE(value, axis * 4));
-  [BOX, BOX, BOX].forEach((value, axis) => models.writeFloatLE(value, 12 + axis * 4));
-  models.writeInt32LE(0, 36);
-  payloads[14] = models;
+  const modelsLump = Buffer.alloc(models * 64);
+  for (let model = 0; model < models; model++) {
+    const at = model * 64;
+    [0, 0, 0].forEach((value, axis) => modelsLump.writeFloatLE(value, at + axis * 4));
+    [BOX, BOX, BOX].forEach((value, axis) => modelsLump.writeFloatLE(value, at + 12 + axis * 4));
+    modelsLump.writeInt32LE(model * 6, at + 36);
+  }
+  payloads[14] = modelsLump;
   return packQuake(payloads);
 }
 
@@ -166,7 +175,7 @@ test('a Half-Life BSP header names its game, and one that is not a BSP is not ca
 test('a Quake world of solid space imports as a brush, with the map\'s own entities', () => {
   const parsed = parseBsp(quakeBox(), { name: 'box.bsp' });
   assert.equal(parsed.format, 'bsp');
-  assert.deepEqual(parsed.bsp, { version: 29, game: 'Quake', models: 1, solidPieces: 1 });
+  assert.deepEqual(parsed.bsp, { version: 29, game: 'Quake', models: 1, brushModels: 0 });
   assert.equal(parsed.stats.brushes, 1);
   assert.equal(parsed.stats.faces, 6);
   // The entity lump is the map's own text, so the keys the mapper typed survive.
@@ -187,9 +196,26 @@ test('a Quake world of solid space imports as a brush, with the map\'s own entit
   assert.deepEqual([start.x, start.y, start.elevation], [64, 64, 256]);
 });
 
+test('a Quake brush model — a door — imports as brushes on its own entity', () => {
+  const parsed = parseBsp(quakeBox({ models: 2 }), { name: 'door.bsp' });
+  assert.equal(parsed.bsp.brushModels, 1);
+  const worldspawn = parsed.entities.find(entity => entity.properties.classname === 'worldspawn');
+  const door = parsed.entities.find(entity => entity.properties.classname === 'func_door');
+  assert.equal(worldspawn.brushes.length, 1, 'the world keeps its own piece of solid space');
+  assert.equal(door.brushes.length, 1, 'the door\'s model became its brushes');
+  assert.equal(door.brushes[0].name, 'func_door');
+  assert.equal(parsed.stats.brushes, 2);
+
+  const project = projectFromIdTechMap(parsed, { createProject });
+  validateProject(project);
+  assert.equal(project.map.brushes.length, 2);
+  assert.ok(project.map.entities.some(entity => entity.mapClassname === 'func_door'), 'the entity itself survives');
+  assert.deepEqual(project.map.brushes.map(brush => brush.name).sort(), ['Brush 0', 'func_door']);
+});
+
 test('a Quake 3 brush lump imports as brushes and keeps its shader name', () => {
   const parsed = parseBsp(quake3Box(), { name: 'box3.bsp' });
-  assert.deepEqual(parsed.bsp, { version: 46, game: 'Quake 3' });
+  assert.deepEqual(parsed.bsp, { version: 46, game: 'Quake 3', brushModels: 0 });
   assert.equal(parsed.stats.brushes, 1);
   assert.equal(parsed.stats.faces, 6);
   const project = projectFromIdTechMap(parsed, { createProject });

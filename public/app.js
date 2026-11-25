@@ -88,7 +88,6 @@ import { statusBarHidden } from '/shared/game-view.js';
 import { engineTweaks } from '/shared/engine-tweaks.js';
 import { cloneForLevelSwitch, selectGameLevel, stripInactiveLevels, levelData, gameLevelAssetIds } from '/shared/game-levels.js';
 import { parseIdTechMap, projectFromIdTechMap, applyIdTechMap } from '/shared/idtech-map.js';
-import { parseBsp } from '/shared/bsp.js';
 import { requireLicenseAgreement } from './license-agreement.js';
 import { gameSaveIdentity, captureGameSave, restoreGameSave } from '/shared/save-game.js';
 import { weaponScriptRules } from '/shared/weapon-script.js';
@@ -6047,7 +6046,7 @@ function levelIdFor(project, name) {
  * A level document for the imported map: the shared starter's shape, with an empty map and no
  * rules — the starter's rules point at an object this map does not have.
  */
-function importedLevelData(parsed) {
+function importedLevelData(parsed, textures) {
   // A level's data must not nest the shared fields (title among them): the layout's own name lives
   // in `level.name`, which is what the Layouts list and the level selector read.
   const data = levelData(createProject());
@@ -6056,11 +6055,15 @@ function importedLevelData(parsed) {
   data.timesheets = [];
   data.paths = [];
   data.variables = {};
-  applyIdTechMap(data, parsed);
+  applyIdTechMap(data, parsed, { textures });
   return data;
 }
 
-function addMapAsLayout(project, parsed) {
+function addMapAsLayout(project, parsed, { assets = [], textures } = {}) {
+  // The level's own pictures travel with the project, not with the level: `assets` is shared by every
+  // layout, so the same texture is one asset however many maps use it.
+  const fresh = (assets || []).filter(asset => !(project.assets || []).some(existing => existing.id === asset.id));
+  if (fresh.length) project.assets = [...(project.assets || []), ...fresh];
   if (!project.game) {
     // The document that is open becomes the first layout, so the imported one has a neighbour
     // rather than replacing it.
@@ -6074,8 +6077,8 @@ function addMapAsLayout(project, parsed) {
   const id = levelIdFor(project, parsed.name);
   const title = parsed.entities.find(entity => entity.properties.classname === 'worldspawn')
     ?.properties.message?.trim() || parsed.name.replace(/\.map$/i, '');
-  project.game.levels.push({ id, name: title, data: importedLevelData(parsed),
-    assetIds: [], next: null, secretNext: null });
+  project.game.levels.push({ id, name: title, data: importedLevelData(parsed, textures),
+    assetIds: fresh.map(asset => asset.id), next: null, secretNext: null });
   selectGameLevel(project, id);
   return id;
 }
@@ -6100,17 +6103,23 @@ async function importMapText(text, name, mode) {
 /**
  * Import a map that is already parsed — a `.bsp` the server read into brushes is the same shape a
  * `.map` source parses to, so both land here and neither can drift from the other.
+ *
+ * A compiled map also brings its artwork: `assets` are the pictures its materials name, and
+ * `materials` maps each material name to the asset that now holds it, which is what turns a face from
+ * "textured `out_pav3`, drawn with the fallback" into a real texture.
  */
-async function importParsedMap(parsed, name, mode) {
+async function importParsedMap(parsed, name, mode, { assets = [], materials = {}, warnings = [] } = {}) {
+  if (warnings.length) parsed.warnings = [...(parsed.warnings || []), ...warnings];
+  const textures = new Map(Object.entries(materials || {}));
   if (mode === 'project') {
-    const next = validateProject(projectFromIdTechMap(parsed, { createProject }));
+    const next = validateProject(projectFromIdTechMap(parsed, { createProject, assets, textures }));
     replace(next, `${name} imported as a new project`);
     reportMapImport(parsed, `${name} imported as a new project`);
     await adoptDocument();
     return;
   }
   let layoutId = null;
-  edit(draft => { layoutId = addMapAsLayout(draft, parsed); }, `${name} added as a layout`);
+  edit(draft => { layoutId = addMapAsLayout(draft, parsed, { assets, textures }); }, `${name} added as a layout`);
   reportMapImport(parsed, `${name} added to this project as layout ${layoutId}`);
 }
 
@@ -6130,7 +6139,7 @@ async function importMapEntry(entry, mode) {
   const name = entry.entry || entry.path.split('/').pop();
   if ((response.headers.get('content-type') || '').includes('application/json')) {
     const body = await response.json();
-    await importParsedMap(body.parsed, body.name || name, mode);
+    await importParsedMap(body.parsed, body.name || name, mode, body);
   } else {
     await importMapText(await response.text(), name, mode);
   }
@@ -6208,8 +6217,14 @@ $('map-file').addEventListener('change', guard(async () => {
   pendingMapImport = null;
   if (!file) return;
   if (/\.bsp$/i.test(file.name)) {
-    // A compiled map is read for what it is — brushes — so a picked one imports like a source does.
-    await importParsedMap(parseBsp(new Uint8Array(await file.arrayBuffer()), { name: file.name }), file.name, mode);
+    // A compiled map is read for what it is — brushes — and for the artwork embedded in it, which
+    // needs a palette the Projects folder may already have. That is the server's job, so the file goes
+    // there rather than being parsed in this page.
+    const { response } = await requestWithSession(`/api/local-maps/parse?name=${encodeURIComponent(file.name)}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: await file.arrayBuffer() }, token);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    await importParsedMap(body.parsed, body.name || file.name, mode, body);
     return;
   }
   if (/\.(pk3|zip|pak)$/i.test(file.name)) {
@@ -8369,6 +8384,15 @@ function installAutomation() {
       brushes: (level.data?.map?.brushes || []).length,
       entities: (level.data?.map?.entities || []).length,
     })),
+    getTextures: () => {
+      const assets = (project?.assets || []).filter(asset => asset.kind === 'texture');
+      const ids = new Set(assets.map(asset => asset.id));
+      let faces = 0, bound = 0;
+      for (const brush of project?.map.brushes || []) {
+        for (const face of facesOf(brush)) { faces++; if (face?.texture && ids.has(face.texture)) bound++; }
+      }
+      return { assets: assets.length, faces, bound, names: assets.map(asset => asset.name).slice(0, 40) };
+    },
     setTool: name => {
       $('tool').value = name;
       $('tool').dispatchEvent(new Event('change'));

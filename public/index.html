@@ -412,8 +412,13 @@
     <h2>Maps in the Projects folder</h2>
     <p>Everything under <code>Projects/</code> that holds a level, and what each one is. A
       <strong>.map</strong> source imports as the planes the mapper drew; a compiled
-      <strong>.bsp</strong> imports as the brushes a compiler made of them, and says which game it
-      was built for. Either kind works from inside a <code>.pk3</code> or a <code>.zip</code>.</p>
+      <strong>.bsp</strong> imports as the brushes a compiler made of them — the world, and the doors
+      and platforms it built as separate models — and says which game it was built for. Its textures
+      come with it where they can: embedded in the map, or from the <code>.pk3</code> beside it. Either
+      kind works from inside a <code>.pk3</code> or a <code>.zip</code>.</p>
+    <p class="muted">A Half-Life map's colours live in a palette that is not in the map: drop
+      <code>halflife.wad</code> (or its <code>palette.lmp</code>) anywhere under <code>Projects/</code>
+      and the embedded textures import with it.</p>
     <div class="button-row">
       <button id="map-browser-refresh">Refresh</button>
       <button id="map-browser-close">Close</button>
