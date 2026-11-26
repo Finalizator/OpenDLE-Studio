@@ -749,6 +749,19 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     object(project.terrain, 'Terrain');
     const terrain = project.terrain;
     if (terrain.name !== undefined) text(terrain.name, 'Terrain name', 100);
+    if (terrain.mode !== undefined)
+      assert(['finite', 'infinite', 'planet', 'mini'].includes(terrain.mode),
+        'A terrain world is finite, infinite, planet or mini');
+    if (terrain.source !== undefined)
+      assert(['procedural', 'manual'].includes(terrain.source), 'A terrain source is procedural or manual');
+    if (terrain.base !== undefined)
+      assert(['procedural', 'flat'].includes(terrain.base), 'A sculpted terrain is based on the stack or on flat ground');
+    if (terrain.mini !== undefined) {
+      object(terrain.mini, 'Terrain mini diorama');
+      if (terrain.mini.recipe !== undefined) text(terrain.mini.recipe, 'Terrain mini recipe', 40);
+      if (terrain.mini.width !== undefined) number(terrain.mini.width, 'Terrain mini width', 256, 4096);
+      if (terrain.mini.quality !== undefined) text(terrain.mini.quality, 'Terrain mini quality', 20);
+    }
     number(terrain.seed, 'Terrain seed', -2147483648, 2147483647);
     number(terrain.chunkCount, 'Terrain chunk count', 1, 64);
     number(terrain.chunkSize, 'Terrain chunk size', 8, 4096);
@@ -784,6 +797,39 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       }
       if (terrain.stack.normalizeOutput !== undefined)
         assert(typeof terrain.stack.normalizeOutput === 'boolean', 'Terrain normalizeOutput must be a boolean');
+    }
+    // Sculpted shapes are the manual document's stamps; the runtime normalises and clamps them, so
+    // what the project guarantees is that the list is shaped the way it reads it.
+    if (terrain.shapes !== undefined && terrain.shapes !== null) {
+      array(terrain.shapes, 'Terrain shapes', 256);
+      for (const shape of terrain.shapes) {
+        object(shape, 'Terrain shape');
+        identifier(shape.id, 'Terrain shape id');
+        text(shape.name, 'Terrain shape name', 80);
+        text(shape.type, 'Terrain shape type', 40);
+        object(shape.position, 'Terrain shape position');
+        number(shape.position.x, 'Terrain shape X', -100000, 100000);
+        number(shape.position.z, 'Terrain shape Z', -100000, 100000);
+        object(shape.scale, 'Terrain shape scale');
+        number(shape.scale.x, 'Terrain shape width', 8, 10000);
+        number(shape.scale.z, 'Terrain shape depth', 8, 10000);
+        number(shape.height, 'Terrain shape height', -3000, 3000);
+        if (shape.rotation !== undefined) number(shape.rotation, 'Terrain shape rotation', -Math.PI * 8, Math.PI * 8);
+        if (shape.detail !== undefined) number(shape.detail, 'Terrain shape detail', 0, 1);
+        if (shape.opacity !== undefined) number(shape.opacity, 'Terrain shape opacity', 0, 1);
+        if (shape.sharpness !== undefined) number(shape.sharpness, 'Terrain shape sharpness', .2, 4);
+        if (shape.terraces !== undefined) number(shape.terraces, 'Terrain shape terraces', 0, 16);
+        if (shape.blendMode !== undefined)
+          assert(['add', 'subtract', 'max', 'min', 'replace', 'average'].includes(shape.blendMode),
+            'A terrain shape blends by add, subtract, max, min, replace or average');
+        if (shape.mask !== undefined) {
+          object(shape.mask, 'Terrain shape mask');
+          if (shape.mask.type !== undefined)
+            assert(['none', 'radial', 'box', 'noise'].includes(shape.mask.type), 'A terrain mask is none, radial, box or noise');
+          if (shape.mask.feather !== undefined) number(shape.mask.feather, 'Terrain mask feather', .02, 1);
+          if (shape.mask.strength !== undefined) number(shape.mask.strength, 'Terrain mask strength', 0, 1);
+        }
+      }
     }
   }
 

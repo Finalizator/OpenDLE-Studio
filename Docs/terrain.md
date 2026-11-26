@@ -29,6 +29,44 @@ The terrain tree also gets its own **specifier scope**, so its `three` is the cl
 `three.module.js` build: the runtime constructs a `WebGLRenderer`, and the WebGPU build the rest of
 the editor import-maps (`three.webgpu.js`) does not export one at all.
 
+## World modes
+
+The **World** selector is the runtime's four worlds, not a style choice:
+
+| Mode | What it is | Exports to a level? |
+| --- | --- | --- |
+| **Finite island** | a bounded board, the one the exporter meshes | **yes** |
+| **Infinite** | streams chunks around the camera, no boundary | no — preview |
+| **Planet** | a cube-sphere planet (needs a noise stack to evaluate in 3D) | no — preview |
+| **Mini diorama** | a small preset (cove, mesa, atoll, ridge, isles) with its own relief | no — preview |
+
+The tab runs its own viewport (`public/terrain-viewport.js`: renderer, scene, orbit camera, frame
+loop) rather than the package's single-world viewer, because it needs all four modes *and* a click
+that lands on the terrain. `Export to level` is disabled with the reason on the button outside the
+finite board — a mode that cannot be exported should not offer a button that does nothing.
+
+## Sculpting
+
+**Source → Sculpted shapes** switches the recipe from a pure noise stack to the runtime's *manual*
+document: a list of parametric stamps over the stack (or over flat ground, with **Sculpt over**).
+
+- **Add shape** puts a stamp in the list: mountain, ridge, wide valley, canyon, plateau or crater,
+  each starting at its catalogue size, height and detail.
+- Select a shape to edit it: position, width and depth, height, rotation, sharpness, detail,
+  terraces, opacity, blend (`add`/`subtract`/`max`/`min`/`replace`/`average`) and a mask
+  (none/radial/box/noise, with invert and feather).
+- **Click the terrain to place it.** The click raycasts the world and writes the shape's `x`/`z`,
+  which is the whole interaction of stamping. A drag orbits the camera instead — a press that moved
+  more than a few pixels is not a placement.
+- Every edit rebuilds the world, debounced, so the shapes are edited against what they look like.
+
+Stamps are a document, not a mesh: `project.terrain.shapes` holds them, so a sculpted world reopens
+for the next author and the export can be repeated at another resolution.
+
+Not ported: the studio's freehand height-field brush (`sculpt` deltas) and its surface painting
+(`surfacePaint`). The runtime's manual document carries both fields, and they are the next step if
+you want pixel-level sculpting rather than stamps.
+
 ## The layer editor
 
 The recipe's shape is a **noise stack**: an ordered list of layers, each one blended into what the

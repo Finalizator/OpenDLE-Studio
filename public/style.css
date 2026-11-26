@@ -846,3 +846,11 @@ body.scene-dragging { cursor: grabbing; }
 .terrain-param input[type="number"] { flex: 0 0 56px; }
 .terrain-param em { flex: 0 0 30px; text-align: right; font-style: normal; color: var(--muted); }
 .terrain-layer-enum { flex: 0 0 96px; }
+
+/* Sculpted shapes: the list, with the selected one open for editing. */
+.terrain-shape-name { flex: 1 1 auto; min-width: 0; padding: 1px 4px; text-align: left; background: transparent;
+  border: none; color: var(--text); font-size: 10px; }
+.terrain-shape-name:hover { background: #555; }
+.terrain-shape-type { flex: 0 0 auto; font-size: 9px; color: var(--muted); }
+.terrain-layer.open { border-color: #7d7454; background: #474441; }
+.terrain-form select { font-size: 10px; }

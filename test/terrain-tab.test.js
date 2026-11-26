@@ -190,3 +190,81 @@ test('the surface packs the tab ships are the ones the manifest names', () => {
       `${material.id} diffuse → ${material.maps.diffuse}`);
   }
 });
+
+// World modes and sculpting: the two things the tab gained after the layer editor.
+import { SHAPE_CATALOG, newShape, manualDocument, shapeType } from '../public/terrain-shapes.js';
+
+test('each world mode gets the configuration only it accepts', () => {
+  const base = defaultTerrain();
+  // The mini world is the only one with a `mini` block; every other mode rejects one outright
+  // ("Unsupported terrain option: configuration.mini").
+  const finite = terrainConfiguration({ ...base, mode: 'finite' });
+  assert.equal(finite.mini, undefined);
+  assert.equal(finite.source.kind, 'noise');
+  assert.equal(terrainConfiguration({ ...base, mode: 'planet' }).mini, undefined);
+  const mini = terrainConfiguration({ ...base, mode: 'mini' });
+  assert.deepEqual(mini.mini, base.mini);
+
+  // The manual source is a document, with the stack as its base unless flat ground was chosen.
+  const proceduralBase = terrainConfiguration({ ...base, source: 'manual', base: 'procedural',
+    shapes: [newShape('crater', { x: 40, z: -40 })] });
+  assert.equal(proceduralBase.source.kind, 'manual');
+  assert.equal(proceduralBase.source.document.baseSource, 'procedural');
+  assert.equal(proceduralBase.source.document.shapes.length, 1);
+  assert.equal(proceduralBase.source.resolution, 512);
+  const flat = terrainConfiguration({ ...base, source: 'manual', base: 'flat' });
+  assert.equal(flat.source.document.baseSource, 'flat');
+  // A stack is passed through in both sources, because a sculpt is layered over it.
+  const stacked = terrainConfiguration({ ...base, stack: presetByName('rollingHills')[2]() });
+  assert.equal(stacked.source.stack.layers.length, 3);
+});
+
+test('a sculpted shape is the record the runtime normalises', () => {
+  assert.deepEqual(SHAPE_CATALOG.map(shape => shape.id).sort(),
+    ['canyon', 'crater', 'mountain', 'plateau', 'ridge', 'valley']);
+  const shape = newShape('mountain', { x: 100, z: -50 });
+  // The fields the runtime's normaliser reads, with a type's own defaults.
+  assert.equal(shape.type, 'mountain');
+  assert.deepEqual(shape.position, { x: 100, z: -50 });
+  assert.equal(shape.scale.x, shapeType('mountain').size.x);
+  assert.equal(shape.scale.z, shapeType('mountain').size.z);
+  assert.equal(shape.height, shapeType('mountain').height);
+  assert.equal(shape.blendMode, 'add');
+  assert.deepEqual(shape.mask, { type: 'none', invert: false, feather: .32, strength: 1 });
+  assert.ok(Number.isInteger(shape.seed) && shape.seed >= 0);
+  // A carving shape adds by default only when it is a hill; a valley subtracts.
+  assert.equal(newShape('valley').blendMode, 'subtract');
+  // Two mountains in one document get two names.
+  const first = newShape('mountain');
+  assert.notEqual(newShape('mountain', {}, [first]).name, first.name);
+
+  const document = manualDocument({ shapes: [shape] });
+  assert.equal(document.version, 5);
+  assert.equal(document.baseSource, 'procedural');
+  assert.equal(document.shapes.length, 1);
+  assert.equal(document.sculpt, null);
+});
+
+test('a project stores the world mode, the source and the shapes it was authored with', () => {
+  const project = createProject();
+  project.terrain = { ...defaultTerrain(), mode: 'planet', source: 'manual', base: 'flat',
+    mini: { recipe: 'mesa', width: 2048, quality: 'balanced' },
+    shapes: [newShape('plateau', { x: 64, z: 64 })] };
+  validateProject(project, { unique: new Set() });
+  assert.equal(project.terrain.mode, 'planet');
+  assert.equal(project.terrain.shapes[0].type, 'plateau');
+
+  const bad = change => {
+    const next = createProject();
+    next.terrain = { ...defaultTerrain(), ...change };
+    assert.throws(() => validateProject(next, { unique: new Set() }), undefined, JSON.stringify(change).slice(0, 120));
+  };
+  bad({ mode: 'moon' });
+  bad({ source: 'painted' });
+  bad({ base: 'noise' });
+  bad({ mini: { recipe: 'mesa', width: 100000 } });
+  bad({ shapes: [{ ...newShape('mountain'), blendMode: 'multiply' }] });
+  bad({ shapes: [{ ...newShape('mountain'), scale: { x: 2, z: 500 } }] });
+  bad({ shapes: [{ ...newShape('mountain'), mask: { type: 'ring' } }] });
+  bad({ shapes: [{ ...newShape('mountain'), position: { x: 0 } }] });
+});
