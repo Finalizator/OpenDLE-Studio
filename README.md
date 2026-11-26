@@ -32,7 +32,7 @@ Every picture below is this editor, on an imported campaign, with nothing mocked
 | Lay out paths and motion in 3D | Time sequences on the timeline |
 | --- | --- |
 | ![Multi-point path editing in the 3D view, with the asset browser underneath](./Docs/multipurpose_path_system.png) | ![A timesheet with tracks and cues, driving object motion and level timing](./Docs/timeline_editor.png) |
-| *Multi-point paths with a height and a speed per point: objects follow them, or you drag the points in the view.* | *Timesheets hold tracks and cues that move objects, play sounds and time the level as it runs.* |
+| *Multi-point paths carry a height and a speed per point so objects can follow them, and the path also generates geometry along itself — slopes and ramps today (single, double-sided ridge or a custom cross-section), with roads and other procedural objects next.* | *Timesheets hold tracks and cues that move objects, play sounds and time the level as it runs.* |
 
 | Generate and sculpt terrain | Stack full-screen shader effects |
 | --- | --- |
