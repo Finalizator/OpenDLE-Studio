@@ -1083,7 +1083,10 @@ function defineQueries() {
   define(P.GETLEVELINFO, '', (vm, script) => { setTop(vm, script, 1, vm.host.levelInfo(peek(vm, script, 1))); });
   define(P.STRLEN, '', (vm, script) => { setTop(vm, script, 1, vmString(vm, peek(vm, script, 1)).length); });
   define(P.GETLINEROWOFFSET, '', (vm, script) => push(vm, script, script.line ? vm.host.lineRowOffset(script.line) : 0));
-  define(P.PLAYERINGAME, '', (vm, script) => { setTop(vm, script, 1, peek(vm, script, 1) === 1 ? 1 : 0); });
+  // GZDoom's players are 0-based and this engine has exactly one: `PlayerInGame(0)` is the one in
+  // the game, and `PlayerInGame(1)` is nobody. It answered the reverse, so a script that waited for
+  // player 0 to exist waited forever.
+  define(P.PLAYERINGAME, '', (vm, script) => { setTop(vm, script, 1, peek(vm, script, 1) === 0 ? 1 : 0); });
   define(P.PLAYERISBOT, '', (vm, script) => push(vm, script, 0));
   define(P.PLAYERCLASS, '', (vm, script) => push(vm, script, 0));
   // GetPlayerInfo(player, info): only player 0 exists, and GZDoom answers -1 for the others.
@@ -1215,8 +1218,10 @@ function defineWorld() {
   });
   define(P.SETFLOORTRIGGER, '', (vm, script) => { for (let index = 0; index < 8; index++) pop(vm, script); });
   define(P.SETCEILINGTRIGGER, '', (vm, script) => { for (let index = 0; index < 8; index++) pop(vm, script); });
-  // ACS colours arrive as 16.16 fixed point, but small values are also written as plain bytes.
-  const scaleColour = value => Math.max(0, Math.min(255, Math.round(value / 65536 || value)));
+  // `FadeTo`/`FadeRange` take their colours as plain 0..255 integers — only the amount and the
+  // seconds are fixed point (GZDoom's `FadeTo` clamps r, g, b to 0..255). Reading them as 16.16
+  // turned every ACS fade black: 255 became 0.
+  const scaleColour = value => Math.max(0, Math.min(255, Math.round(value)));
   const scaleAmount = value => Math.max(0, Math.min(1, value / 65536));
   const scaleSeconds = value => Math.max(0, value / 65536);
   define(P.FADETO, '', (vm, script) => {

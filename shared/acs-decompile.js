@@ -841,11 +841,11 @@ const BUILTINS = {
     type: 'setLineSpecial', tag: argumentOf(tag), special: argumentOf(special),
     arg1: argumentOf(args[0]), arg2: argumentOf(args[1]), arg3: argumentOf(args[2]),
     arg4: argumentOf(args[3]), arg5: argumentOf(args[4]) }) },
-  // `FadeTo(red, green, blue, amount, seconds)`: ACS carries these as 16.16 fixed point, and
-  // the action takes ordinary numbers, so a constant is converted here and a variable becomes
-  // the expression the rule evaluates.
+  // `FadeTo(red, green, blue, amount, seconds)`: the colours are plain 0..255 integers and only
+  // the amount and the seconds are 16.16 fixed point, so a constant is converted here and a
+  // variable becomes the expression the rule evaluates.
   FADETO: { count: 5, action: ([red, green, blue, amount, seconds]) => {
-    const colour = entry => fixed(entry, 255, value => Math.round(value / 65536 || value));
+    const colour = entry => fixed(entry, 255, value => Math.round(value));
     const colours = [red, green, blue].map(colour);
     const strength = fixed(amount, 1, value => value / 65536);
     const duration = fixed(seconds, 600, value => value / 65536);
@@ -959,8 +959,11 @@ function fold(operator, right, left) {
   }
   if (left?.kind === 'number' && right?.kind === 'number') {
     const a = Number(left.value), b = Number(right.value);
-    const value = operator === '+' ? a + b : operator === '-' ? a - b : operator === '*' ? a * b
-      : operator === '/' ? (b === 0 ? null : a / b) : (b === 0 ? null : a % b);
+    // ACS arithmetic is signed 32-bit and its division truncates towards zero; folding in JS
+    // numbers gave 4294967296+ for a value that wraps, and a fractional quotient where the script
+    // would have had an integer.
+    const value = operator === '+' ? (a + b) | 0 : operator === '-' ? (a - b) | 0 : operator === '*' ? Math.imul(a, b)
+      : operator === '/' ? (b === 0 ? null : Math.trunc(a / b) | 0) : (b === 0 ? null : (a % b) | 0);
     return value === null ? null : { kind: 'number', value };
   }
   // Two values the expression language can read compose into one it can read.

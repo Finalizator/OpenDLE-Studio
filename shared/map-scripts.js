@@ -605,8 +605,11 @@ export function createMapScripts(project, state, callbacks = {}) {
       case APROP.spawnHealth: return actor?.health ?? entity.health ?? 0;
       case APROP.dormant: return entity.dormant ? 1 : 0;
       case APROP.mass: return actor?.mass ?? 0;
-      case APROP.height: return actor?.height ?? 0;
-      case APROP.radius: return actor?.radius ?? 0;
+      // 16.16 fixed point, like speed, alpha and gravity above: `GetActorProperty(0, APROP_Height)`
+      // returning 56 where a script compares against 56*65536 made every height and radius check
+      // false.
+      case APROP.height: return Math.round((actor?.height ?? entity.height ?? 0) * 65536);
+      case APROP.radius: return Math.round((actor?.radius ?? entity.radius ?? 0) * 65536);
       case APROP.gravity: return Math.round((entity.gravity ?? 1) * 65536);
       default: return 0;
     }

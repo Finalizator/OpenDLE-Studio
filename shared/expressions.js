@@ -180,10 +180,12 @@ export function expressionContext(project, event, state, dt = 0, { selection } =
       if (hostedReads[kind]) {
         const host = state?.scripts?.host;
         if (!host) return 0;
+        // The property index is a number; slicing the last argument off dropped it and asked for
+        // `getActorProperty(tid, null)`.
+        if (kind === 'acsactorproperty') return host.getActorProperty(Number(args[0]) || 0, Number(args[1]) || 0, 'player') | 0;
         const name = String(args[args.length - 1]);
         const numbers = args.slice(0, -1).map(value => Number(value) || 0);
         if (kind === 'acsactor') return host.getActor(numbers[0], name, 'player') | 0;
-        if (kind === 'acsactorproperty') return host.getActorProperty(numbers[0], numbers[1], 'player') | 0;
         return host.getSectorZ(numbers[0], numbers[1], numbers[2], name === 'ceiling') | 0;
       }
       if (kind === 'acsvar') return readAcsVariable(state, args[0], Number(args[1]) || 0);
@@ -236,7 +238,9 @@ function checkCall(node) {
   const min = count || (node.name === 'random' ? 2 : definition?.[0]);
   const max = count || (node.name === 'random' ? 2 : definition?.[1]);
   if (min === undefined || node.args.length < min || node.args.length > max) throw new Error(`Unknown function or invalid argument count: ${node.name}`);
-  if (hostedReads[node.name]) {
+  // `acsactorproperty(tid, index)` takes two numbers: the property is an index, not a name, so it
+  // is not one of the reads whose last argument is a literal.
+  if (hostedReads[node.name] && node.name !== 'acsactorproperty') {
     const name = node.args[node.args.length - 1];
     if (name?.op !== 'literal' || typeof name.value !== 'string')
       throw new Error(`${node.name} needs a literal name as its last argument`);
@@ -270,7 +274,10 @@ function checkCall(node) {
       throw new Error('array needs a literal quoted array name');
     return;
   }
-  if (count && node.args.some(arg => arg.op !== 'literal' || typeof arg.value !== 'string')) throw new Error(`${node.name} references require literal quoted names`);
+  // `acsactorproperty(tid, index)` and `acsarray(index, row, column)` name what they read with
+  // numbers, so they are not part of the "literal quoted name" rule.
+  if (count && node.name !== 'acsactorproperty' && node.args.some(arg => arg.op !== 'literal' || typeof arg.value !== 'string'))
+    throw new Error(`${node.name} references require literal quoted names`);
 }
 
 export function expressionObjectReferences(value) {
