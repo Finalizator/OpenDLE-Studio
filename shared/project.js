@@ -364,7 +364,10 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
   if (entity.health !== undefined) number(entity.health, 'Object health', 0, 1000000);
   if (entity.ambush !== undefined) assert(typeof entity.ambush === 'boolean', 'Object ambush must be boolean');
   if (entity.skillMask !== undefined) {
-    number(entity.skillMask, 'Object skill mask', 1, 7);
+    // 0 is "present on every skill", which is what the object editor offers (min 0) and what the
+    // runtime's filter reads (`!entity.skillMask || ...`). Refusing it made a project the editor had
+    // just written fail its own validation on save.
+    number(entity.skillMask, 'Object skill mask', 0, 7);
     assert(Number.isInteger(entity.skillMask), 'Object skill mask must be an integer');
   }
   if (entity.tid !== undefined) {

@@ -597,11 +597,22 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     warnings.push(`UDMF ${source.namespace} geometry imported natively. Original global/block properties are retained in importSource as an import snapshot, not live gameplay state. Later visual edits change native map data, not that snapshot.`);
     if (sectors.some(sector => sector.light < 0 || sector.light > 255)) warnings.push('UDMF lightlevel values outside 0-255 are clamped for the current renderer; original values are preserved in importSource.');
     const unsupported = new Set();
+    // Every key the importer actually maps. The list had drifted: linedef specials, their
+    // arguments and activation flags were read and became rules, per-slot sidedef offsets were
+    // applied, and sectors kept `special` and `gravity` — yet all of them were still reported as
+    // "preserved but not simulated", which tells an author their working map is unsupported.
     const supported = {
-      vertex: ['x', 'y'], linedef: ['v1', 'v2', 'sidefront', 'sideback', 'blocking', 'blockplayers', 'blockeverything', 'dontpegtop', 'dontpegbottom', 'twosided'],
-      sidedef: ['sector', 'offsetx', 'offsety', 'texturetop', 'texturebottom', 'texturemiddle'],
-      sector: ['heightfloor', 'heightceiling', 'texturefloor', 'textureceiling', 'lightlevel'],
-      thing: ['x', 'y', 'angle', 'height', 'type', 'skill1', 'skill2', 'skill3', 'skill4', 'skill5', 'single', 'coop', 'dm'],
+      vertex: ['x', 'y'],
+      linedef: ['v1', 'v2', 'sidefront', 'sideback', 'blocking', 'blockplayers', 'blockeverything', 'blockmonsters',
+        'dontpegtop', 'dontpegbottom', 'twosided', 'special', 'id', 'repeatspecial',
+        'arg0', 'arg1', 'arg2', 'arg3', 'arg4',
+        'playercross', 'playeruse', 'playeruseback', 'impact', 'missilecross'],
+      sidedef: ['sector', 'offsetx', 'offsety', 'texturetop', 'texturebottom', 'texturemiddle',
+        'offsetx_top', 'offsety_top', 'offsetx_mid', 'offsety_mid', 'offsetx_bottom', 'offsety_bottom',
+        'scalex_mid', 'scaley_mid', 'scalex'],
+      sector: ['heightfloor', 'heightceiling', 'texturefloor', 'textureceiling', 'lightlevel', 'special', 'gravity'],
+      thing: ['x', 'y', 'angle', 'height', 'type', 'skill1', 'skill2', 'skill3', 'skill4', 'skill5', 'single', 'coop', 'dm',
+        'ambush', 'id'],
     };
     for (const block of source.blocks) for (const key of Object.keys(block.properties)) {
       if (!supported[block.type]?.includes(key)) unsupported.add(`${block.type}.${key}`);

@@ -1933,7 +1933,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
           view.camera.aspect = view.definition.width / view.definition.height;
           view.camera.updateProjectionMatrix();
           // A camera thing looks along its own angle; eye height matches the player.
-          view.camera.position.set(subject.x, (subject.z ?? subject.elevation ?? 0) + 41, subject.y);
+          // `elevation` is floor-relative (entity-visuals: authored Z wins, otherwise floor plus
+          // elevation), so reading it as absolute filmed from up to a map-unit under the floor.
+          view.camera.position.set(subject.x,
+            (subject.z ?? (sectorOf(subject)?.floorHeight ?? 0) + (subject.elevation || 0)) + 41, subject.y);
           view.camera.rotation.set(0, -subject.angle * Math.PI / 180, 0, 'YXZ');
           // The main pass leaves autoClear off, so the feed clears itself explicitly.
           renderer.autoClear = true;

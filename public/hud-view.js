@@ -167,7 +167,10 @@ export function createHUDView(host, project, { editor = false, select, click, er
       if (element.type === 'bar') {
         const value = element.binding ? Number(hudBinding(element.binding, state)) : element.value;
         const fillAsset = assets.get(element.fillAssetId);
-        const amount = Math.max(0, Math.min(1, value / element.maximum));
+        // A binding can hold text (`game:save1` is "Empty slot"). `Number("Empty slot")` is NaN and
+        // `NaN%` is a width CSS drops, so the bar kept whatever width it had before — a full bar on
+        // an empty save slot. Text is not a partial fill: draw nothing.
+        const amount = Number.isFinite(value) ? Math.max(0, Math.min(1, value / element.maximum)) : 0;
         const direction = element.fillDirection || 'right', vertical = ['up', 'down'].includes(direction);
         const contentKey = `${amount}|${direction}|${rect.width}|${rect.height}|${fillAsset ? fillAsset.id : element.color}`;
         if (contentKey !== entry.contentKey) {

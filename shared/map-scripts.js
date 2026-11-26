@@ -235,6 +235,8 @@ export function createMapScripts(project, state, callbacks = {}) {
     restore,
   };
 
+  // Radians to a 32-bit binary angle (`angle_t`): one full turn is 2^32.
+  const angleToBam = radians => Math.round((radians || 0) / (Math.PI * 2) * 4294967296) | 0;
   const host = {
     // ACS always calls the Hexen special table, whatever format the map's own lines use.
     executeSpecial: (number, args, context = {}) => runSpecial(number, args,
@@ -384,8 +386,12 @@ export function createMapScripts(project, state, callbacks = {}) {
       const buttons = state.buttons || 0;
       if (input === 0) return state.prevButtons || 0;
       if (input === 1 || input === 9) return buttons;
-      if (input === 2) return Math.round((state.player.pitch || 0) * 65536);
-      if (input === 3) return Math.round((state.player.angle || 0) * 65536) & 0xffff;
+      // ZDoom's numbers: 2 is pitch and 3 is yaw, and both are `angle_t` — 32-bit BAM, 2^32 to a
+      // full turn. Multiplying radians by 65536 gave 16.16 radians (neither unit), and masking the
+      // yaw with 0xffff threw away all but the last 16 bits, so a yaw past 90 degrees wrapped and a
+      // negative one became a large positive.
+      if (input === 2) return angleToBam(state.player.pitch || 0);
+      if (input === 3) return angleToBam(state.player.angle || 0);
       if (input === 4) return 0;
       if (input === 5 || input === 13) return (state.settings?.alwaysRun ? 50 : 25) * 65536;
       return 0;
@@ -856,6 +862,13 @@ export function createMapScripts(project, state, callbacks = {}) {
       api.acc -= tic;
       tickAcs(api.vm);
     }
+    // A frame longer than eight tics (an editor stall, a window dragged, a slow first frame) cannot
+    // be caught up: keeping the backlog makes every later frame spend its whole allowance on the
+    // past, and `capture()` would hand `restore()` a clock its own check rejects (`acc < 1`), so the
+    // save was refused after any long frame. The tics that cannot run are dropped, as Doom drops
+    // the time it cannot simulate.
+    const backlog = tic - 1e-6;
+    if (api.acc >= tic) api.acc = backlog;
     if (api.vm.errors.length) {
       const messages = api.vm.errors.splice(0);
       for (const error of messages) if (api.errors.length < 40) api.errors.push(error);

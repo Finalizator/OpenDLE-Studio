@@ -206,8 +206,11 @@ const PICKUP_MESSAGES = new Map([
   [2005, 'A chainsaw! Find some meat!'],
   [5, 'Picked up a blue keycard.'], [6, 'Picked up a yellow keycard.'], [13, 'Picked up a red keycard.'],
   [40, 'Picked up a blue skull key.'], [39, 'Picked up a yellow skull key.'], [38, 'Picked up a red skull key.'],
-  [2011, 'Picked up a health bonus.'], [2012, 'Picked up a stimpack.'], [2013, 'Supercharge!'],
-  [2014, 'Picked up a medikit.'], [2015, 'Picked up an armor bonus.'],
+  // Doom's numbers, in Doom's order: 2011 is the stimpack, 2012 the medikit, 2014 the health bonus.
+  // The three strings were a row out of step with the actions beside them, so a stimpack announced
+  // itself as a health bonus.
+  [2011, 'Picked up a stimpack.'], [2012, 'Picked up a medikit.'], [2013, 'Supercharge!'],
+  [2014, 'Picked up a health bonus.'], [2015, 'Picked up an armor bonus.'],
   [2018, 'Picked up the armor.'], [2019, 'Picked up the MegaArmor!'], [83, 'Megasphere!'],
   [2022, 'Invulnerability!'], [2023, 'Berserk!'], [2024, 'Partial Invisibility'],
   [2025, 'Radiation Shielding Suit'], [2045, 'Light Amplification Visor'],

@@ -41,8 +41,11 @@ export function switchPairs(project) {
     if (!name || byName.get(name)?.kind === 'texture') continue;
     byName.set(name, asset);
   }
+  // What the project declares wins over the naming convention: a mod that pairs `SW1DOOR` with
+  // something other than `SW2DOOR` had its own pair overwritten by the convention loop below.
   const pair = (off, on) => {
     if (!off || !on || off === on) return;
+    if (pairs.on.has(off) || pairs.off.has(on)) return;
     pairs.on.set(off, on);
     pairs.off.set(on, off);
   };
@@ -70,7 +73,10 @@ export function switchPairs(project) {
  */
 export function wallSwitchRepeats(wall) {
   if (!wall?.special) return false;
-  if (wall.specialFormat === 'zdoom') return true;
+  // A Hexen/UDMF line repeats only when the map says so (`ML_REPEAT_SPECIAL`, `repeatspecial`).
+  // Returning true for every one of them flicked a one-shot switch back on as it was used, so the
+  // player could not tell it had been pressed at all.
+  if (wall.specialFormat === 'zdoom') return wall.repeatable === true;
   return classicSpecialRepeats(wall.special);
 }
 

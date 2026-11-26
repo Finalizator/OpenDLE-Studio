@@ -55,9 +55,6 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // The frame a rule reads (frame delta, held keys, the signal being dispatched) and the runners
   // cached against each rule are rebuilt by the next step, so neither is part of the game.
   'frame', 'eventRunners',
-  // How many of an item a level has dropped so far (`DropItem "Clip", 256, 5`); a save without it
-  // is a save taken before anything died, which is no drop history at all.
-  'droppedItems',
   // The level's brushes as trace volumes. Rebuilt from the project when the runtime is created, and
   // storing them would put every plane of every brush into every save.
   'brushTrace',
@@ -79,6 +76,10 @@ const optional = new Set(['areaEntries', 'intervals', 'decalCounter', 'lastShot'
   // whether this is the shot an easy skill skips. Without it a save reloaded mid-fight restarts
   // the sequence from the first spot.
   'bossBrain',
+  // How many of an item a level has dropped so far (`DropItem "Clip", 256, 5`); a save without it
+  // is a save taken before anything died, which is no drop history at all. It was listed as omitted
+  // right under a comment saying it had to travel, so the drop budget restarted on every load.
+  'droppedItems',
   'scriptState', 'scriptWarning', 'damageAcc', 'musicRequest', 'skyRequest', 'gravity', 'airControl', 'scriptLog',
   'messageCount', 'buttons', 'prevButtons', 'actorClock', 'thrustClock', 'weaponClock', 'weaponSlot', 'weaponReady', 'playerMorph', 'cameraTextures',
   // A script's screen fade and the things' fall clock outlive a single frame.
@@ -336,6 +337,7 @@ function validateRuntime(project, state, baseline) {
     for (const [key, value] of state.entitySamples)
       if (typeof value !== 'number' || Number.isNaN(value)) state.entitySamples.delete(key);
   for (const key of ['entitySamples', 'shaderUniforms']) numberMap(state[key], key);
+  if (state.droppedItems instanceof Map) numberMap(state.droppedItems, 'dropped items');
   numberMap(state.hudState.statSamples, 'HUD stat samples');
   const objectMap = (map, allowed, fields, label) => {
     for (const [id, item] of map) {

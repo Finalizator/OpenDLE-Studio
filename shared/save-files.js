@@ -91,10 +91,19 @@ export function saveFileDocument({ kind, name, identity = null, levelId = null, 
 /** The text a save file holds. Refused rather than truncated when it would be too large to keep. */
 export function serializeSaveFile(document) {
   const text = `${JSON.stringify(document, null, 2)}\n`;
-  if (text.length > MAX_SAVE_FILE_BYTES) {
-    fail(`a save of this size (${(text.length / 1024 / 1024).toFixed(1)} MiB) is larger than the ${MAX_SAVE_FILE_BYTES / 1024 / 1024} MiB limit`);
+  // The limit is bytes, and `text.length` is UTF-16 code units: a save full of three-byte characters
+  // passed at six million units while occupying eighteen megabytes.
+  const bytes = byteLength(text);
+  if (bytes > MAX_SAVE_FILE_BYTES) {
+    fail(`a save of this size (${(bytes / 1024 / 1024).toFixed(1)} MiB) is larger than the ${MAX_SAVE_FILE_BYTES / 1024 / 1024} MiB limit`);
   }
   return text;
+}
+
+/** UTF-8 size of a string, without building the buffer for a value already too large to keep. */
+function byteLength(text) {
+  if (typeof TextEncoder === 'function') return new TextEncoder().encode(text).length;
+  return Buffer.byteLength(text, 'utf8');
 }
 
 /**
@@ -103,7 +112,7 @@ export function serializeSaveFile(document) {
  */
 export function parseSaveFile(text) {
   if (typeof text !== 'string' || !text.trim()) fail('the file is empty');
-  if (text.length > MAX_SAVE_FILE_BYTES) fail('the file is larger than the save-file limit');
+  if (byteLength(text) > MAX_SAVE_FILE_BYTES) fail('the file is larger than the save-file limit');
   let document;
   try { document = JSON.parse(text); }
   catch (error) { fail(`it is not JSON (${error.message})`); }
