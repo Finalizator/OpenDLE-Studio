@@ -40,6 +40,9 @@ function fontColor(name) {
 export function rebuildGameMenu(project, assets, definitions = [], warnings = [], episodeInfo) {
   episodeInfo ||= { episodes: project.gameMenus?.episodes || [], sources: project.gameMenus?.episodeSources || [],
     levelIds: project.game?.levels.map(level => level.id) || [] };
+  // The game a menu was translated for is not something a rebuild can re-derive: it comes from the
+  // WAD its MENUDEF arrived in, and `IfGame` in that file decides which rows exist at all.
+  if (!episodeInfo.game && project.gameMenus?.game) episodeInfo = { ...episodeInfo, game: project.gameMenus.game };
   const removed = new Set(project.gameMenus?.elementIds || []);
   project.hud.elements = project.hud.elements.filter(item => !removed.has(item.id));
   project.hud.fonts = project.hud.fonts.filter(font => (!font.id.startsWith('menu_') && font.name !== 'Imported menu small font') ||
@@ -65,7 +68,7 @@ export function attachMenuElement(project, item, screen) {
 }
 
 // MENUDEF is a data language. Unsupported constructs are preserved as diagnostics, never executed.
-export function parseMenuDefinitions(source, label = 'MENUDEF', resolve) {
+export function parseMenuDefinitions(source, label = 'MENUDEF', resolve, game = 'doom') {
   const sources = [], active = new Set();
   let budget = 0, tokenCount = 0;
   function tokenize(source, name, depth = 0) {
@@ -128,21 +131,56 @@ export function parseMenuDefinitions(source, label = 'MENUDEF', resolve) {
       i++;
     }
     if (!name || tokens[i++] !== '{') throw new Error(`${label}: expected menu name and opening brace`);
-    const directives = [];
-    let depth = 1;
-    while (i < tokens.length && depth) {
-      const token = tokens[i++];
-      if (token === '\n') continue;
-      if (token === '}') { depth--; continue; }
-      if (token === '{') { depth++; continue; }
-      const args = [];
-      while (i < tokens.length && !['\n', '{', '}'].includes(tokens[i])) {
-        const value = tokens[i++]; if (![',', '(', ')'].includes(value)) args.push(text(value));
+    // A menu body, read as a tree: `IfGame(Doom, Chex) { ... }` wraps *every* row of the stock
+    // GZDoom main menu, so dropping conditionals left the title screen with no rows at all — a
+    // player could not start the game. `IfGame` is resolved here; the other conditionals are kept
+    // (their rows are the menu a single-player game wants) and reported once per menu.
+    const target = String(game || 'doom').toLowerCase();
+    const warned = new Set();
+    const note = text_ => { if (!warned.has(text_)) { warned.add(text_); warnings.push(`${label}/${name}: conditional ${text_} is kept untranslated`); } };
+    let closedBy = null, sawGameBlock = false, keptGameBlock = false, fallbackBlock = null;
+    const readBlock = () => {
+      const out = [];
+      let depth = 1;
+      while (i < tokens.length && depth) {
+        const token = tokens[i++];
+        if (token === '\n') continue;
+        if (token === '}') { depth--; break; }
+        if (token === '{') { depth++; continue; }
+        const args = [];
+        while (i < tokens.length && !['\n', '{', '}'].includes(tokens[i])) {
+          const value = tokens[i++]; if (![',', '(', ')'].includes(value)) args.push(text(value));
+        }
+        const type = token.toLowerCase();
+        while (tokens[i] === '\n') i++;
+        let block = null;
+        if (tokens[i] === '{') { i++; block = readBlock(); }
+        if (type === 'ifgame') {
+          const games = args.join(' ').split(/[\s,]+/).filter(Boolean).map(item => item.toLowerCase());
+          sawGameBlock = true;
+          // The branch that names this game wins.
+          if (games.includes(target) || !games.length) { out.push(...(block || [])); keptGameBlock = true; }
+          else fallbackBlock ??= block || [];
+          continue;
+        }
+        if (type === 'else') { note('Else'); out.push(...(block || [])); continue; }
+        if (type === 'ifoption') { note('IfOption'); out.push(...(block || [])); continue; }
+        if (block) { warnings.push(`${label}/${name}: nested directive ${token} requires further translation`); continue; }
+        out.push({ type, args });
       }
-      if (depth === 1 && !/^(ifgame|ifoption|else)$/i.test(token)) directives.push({ type: token.toLowerCase(), args });
-      else warnings.push(`${label}/${name}: conditional or nested directive ${token} requires further translation`);
+      if (depth) closedBy = 'unterminated';
+      return out;
+    };
+    let directives = readBlock();
+    // No branch named this game (a Doom base reading a file written for another game): the first
+    // branch stands in. An empty menu is worse than a menu for the wrong game, and the author can
+    // edit the rows.
+    if (sawGameBlock && !keptGameBlock && fallbackBlock) {
+      // Rows written outside any `IfGame` are kept either way; only the conditional ones are stood in for.
+      directives = directives.length ? [...directives, ...fallbackBlock] : fallbackBlock;
+      note('IfGame');
     }
-    if (depth) throw new Error(`${label}/${name}: unterminated menu`);
+    if (closedBy) throw new Error(`${label}/${name}: unterminated menu`);
     if (isDefault) defaults.push({ kind: kind.slice(7), directives });
     else menus.push({ name, kind, directives });
     // A stock GZDoom MENUDEF declares 78 menus (one set per game), so the ceiling is well
@@ -156,7 +194,8 @@ export function parseMenuDefinitions(source, label = 'MENUDEF', resolve) {
 // Room kept for the selector patches, classic option screens and intermission artwork that
 // are installed after the menus have been translated.
 const MENU_ELEMENT_RESERVE = 24;
-export function installGameMenu(project, assets, definitions = [], warnings = [], episodeInfo = { episodes: [], sources: [] }) {
+export function installGameMenu(project, assets, definitions = [], warnings = [], episodeInfo = {}) {
+  episodeInfo = { episodes: [], sources: [], ...episodeInfo };
   // A project made from scratch has no sheets, events, groups or assets yet.
   project.assets ||= [];
   project.eventSheets ||= [];
@@ -166,6 +205,7 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
   if (!project.hud) installDefaultHUD(project);
   const hud = project.hud, sx = hud.width / 320, sy = hud.height / 200;
   const episodes = episodeInfo.episodes;
+  const game = String(episodeInfo.game || project.gameMenus?.game || 'doom').toLowerCase();
   const newGameScreen = episodes.length > 1 ? 'episode' : 'difficulty';
   const newGameActions = () => episodes.length === 1 && episodes[0].noSkillMenu
     ? episodeActions(episodes[0]) : [go(newGameScreen)];
@@ -364,7 +404,7 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
     { text: 'WASD: move\nMouse: look / fire\nSpace: jump / E: use\n1-9: weapons\nEscape: pause\nOptions: change controls and settings' });
   // Existing gameplay HUD is suppressed on menus without changing its authored state.
   project.gameMenus = { version: 1, presentation: 2, entry: 'title', screens: [...pages], sources: [],
-    episodes, episodeSources: episodeInfo.sources, backdropId: backdrop.id };
+    episodes, episodeSources: episodeInfo.sources, backdropId: backdrop.id, game };
   if (assets) installClassicOptions();
   translateDefinitions();
   installSelectors();
@@ -508,7 +548,7 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
     // tail is what a Doom base does not need.
     let skippedMenus = 0;
     for (const definition of definitions) {
-      const parsed = parseMenuDefinitions(definition.source, definition.name, definition.resolve);
+      const parsed = parseMenuDefinitions(definition.source, definition.name, definition.resolve, game);
       project.gameMenus.sources.push(...parsed.sources.filter(source => source.source.trim()));
       if (project.gameMenus.sources.length > 64) throw new Error('MENUDEF exceeds 64 retained source resources');
       warnings.push(...parsed.warnings);

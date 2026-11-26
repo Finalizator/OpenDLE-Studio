@@ -216,7 +216,14 @@ test('MENUDEF directives become editable per-game HUDs, links and live settings;
   const next = createRuntime(p, { screen: 'title' }); step(p, next);
   assert.equal(next.hudState.elements.get(extra.id).visible, true);
   assert.throws(() => parseMenuDefinitions('ListMenu "Broken" { TextItem "x"'), /unterminated/);
-  assert.ok(parseMenuDefinitions('ListMenu "Conditions" {\n IfGame(Doom) {\n Position 10,20\n }\n}').warnings.length);
+  // `IfGame` is resolved to the game being imported for, because the stock GZDoom main menu wraps
+  // every row of the title screen in one; the conditionals that are still carried untranslated are
+  // the ones that must be reported.
+  const branches = parseMenuDefinitions('ListMenu "Conditions" {\n IfGame(Doom, Chex) {\n Position 10,20\n }\n IfGame(Strife) {\n Position 30,40\n }\n}');
+  assert.equal(branches.menus[0].directives.length, 1);
+  assert.deepEqual(branches.menus[0].directives[0].args, ['10', '20']);
+  assert.equal(parseMenuDefinitions('ListMenu "Other" {\n IfGame(Strife) {\n Position 30,40\n }\n}', 'MENUDEF', undefined, 'heretic').menus[0].directives[0].args[0], '30');
+  assert.ok(parseMenuDefinitions('ListMenu "Conditions" {\n IfOption(Always) {\n Position 10,20\n }\n}').warnings.length);
   const invalid = structuredClone(p);
   invalid.events.find(event => event.actions.some(action => action.type === 'adjustGameSetting')).actions[0].setting = 'unsupported';
   assert.throws(() => validateProject(invalid));
@@ -457,4 +464,36 @@ test('imported menu artwork is centred and never runs past the canvas', { skip: 
     assert.ok(Math.abs(item.x + item.width / 2 - p.hud.width / 2) < .01,
       `${item.name} is centred: ${item.x} + ${item.width}`);
   }
+});
+test('a MENUDEF that gates every main-menu row behind IfGame still fills the title screen', () => {
+  // The stock GZDoom main menu is shaped exactly like this: nothing on the title page sits outside
+  // an `IfGame` block, so dropping conditionals left a player with only "Resume" and no way to
+  // start a game. `IfGame` is resolved against the game the WAD was recognised as instead.
+  const source = `LISTMENU "MainMenu"
+{
+  IfGame(Doom, Chex)
+  {
+    Position 97, 72
+    PatchItem "M_NGAME", "n", "NewGame"
+    PatchItem "M_OPTION", "o", "OptionsMenu"
+  }
+  IfGame(Strife)
+  {
+    PatchItem "M_STRIFE", "s", "NewGame"
+  }
+}
+`;
+  const project = installGameMenu(installEngineScripts(createProject()), null, [{ name: 'MENUDEF', source }]);
+  const state = createRuntime(project, { screen: 'title' });
+  setGameScreen(state, 'title');
+  for (let index = 0; index < 3; index++) step(project, state);
+  const visible = project.hud.elements.filter(item => project.gameMenus.elementIds.includes(item.id) &&
+    item.name === 'M_NGAME' && state.hudState.elements.get(item.id).visible);
+  assert.equal(visible.length, 1);
+  assert.equal(state.hudState.cursor, true);
+  assert.equal(project.gameMenus.game, 'doom');
+  // Rebuilding keeps the game the file was translated for, so the rows survive an edit round-trip.
+  rebuildGameMenu(project, null, [{ name: 'MENUDEF', source }]);
+  assert.equal(project.gameMenus.game, 'doom');
+  assert.ok(project.hud.elements.some(item => item.name === 'M_NGAME'));
 });

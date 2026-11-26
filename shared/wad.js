@@ -27,6 +27,16 @@ import { parseSurfaceAnimations, rangeNames } from './animdefs.js';
 
 const mapPattern = /^(MAP\d\d|E\dM\d)$/;
 
+// The title patch a WAD ships is the cheapest reliable game marker: `M_HTIC` covers Heretic and
+// Hexen, and a BEHAVIOR lump is what tells those two apart. A MENUDEF's `IfGame` branches are real
+// rows only for the game they name — the stock GZDoom main menu wraps every row in one.
+function wadGameKind(wad) {
+  const names = new Set(wad.lumps.map(lump => lump.name));
+  if (names.has('M_STRIFE')) return 'strife';
+  if (!names.has('M_HTIC')) return 'doom';
+  return names.has('BEHAVIOR') ? 'hexen' : 'heretic';
+}
+
 /** The map's per-thing scale, as the entity fields the renderer reads. */
 function thingScale(record) {
   const x = record.scaleX ?? 1, y = record.scaleY ?? 1;
@@ -790,7 +800,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
   const definitions = wad.lumps.filter(lump => lump.name === 'MENUDEF').map(lump => ({
     ...hudSource(lump), resolve: resolveHUD,
   }));
-  installGameMenu(project, assets, [...definitions, ...menuDefinitions], warnings, episodeInfo);
+  installGameMenu(project, assets, [...definitions, ...menuDefinitions], warnings,
+    { ...episodeInfo, game: wadGameKind(wad) });
   // A single-map import has no MAPINFO routing of its own, so read the map's own
   // music declaration here; the full game assembles routes for every level instead.
   const declaredMusic = music || (episodeInfo ? null : mapInfoMusic(wad, mapName));
