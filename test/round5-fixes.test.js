@@ -15,6 +15,7 @@ import { doomPickups } from '../shared/doom-hud.js';
 import { switchPairs, wallSwitchRepeats } from '../shared/switches.js';
 import { createMapScripts } from '../shared/map-scripts.js';
 import { doomSpecialBehaviour } from '../shared/doom-specials.js';
+import { installWorldScripts } from '../shared/world-motion.js';
 
 test('a stimpack says it is a stimpack', () => {
   const rules = new Map(doomPickups());
@@ -138,4 +139,22 @@ test('monster attacks do Doom’s damage, not a profile written the other way ro
   assert.deepEqual(sample('A_SargAttack'), { low: 4, high: 40 });
   assert.deepEqual(sample('A_SkelFist'), { low: 6, high: 60 });
   assert.deepEqual(sample('A_VileAttack'), { low: 20, high: 20 });
+});
+
+test('a secret exit you walk through is a walk line, not a switch', () => {
+  // Doom's line 51 is W1 (crossed); only 11 is pressed. It was wired to `use`, so walking over a
+  // secret exit did nothing.
+  const project = createProject();
+  project.events = [];
+  installEngineScripts(project);
+  project.map.vertices = [[-128, -64], [128, -64], [128, 64], [-128, 64]].map(([x, y], index) => ({ id: `v${index}`, x, y }));
+  const side = { sectorId: 's1', offsetX: 0, offsetY: 0 };
+  project.map.sectors = [{ id: 's1', floorHeight: 0, ceilingHeight: 128, light: 255, sky: false, tag: 0 }];
+  project.map.walls = [0, 1, 2, 3].map(index => ({ id: `w${index}`, a: `v${index}`, b: `v${(index + 1) % 4}`,
+    right: side, height: 128, color: '#888888', solid: true, ...(index === 0 ? { special: 51 } : {}) }));
+  project.map.entities = [{ ...project.map.entities[0], x: 0, y: 0, angle: 0 }];
+  installWorldScripts(project, []);
+  const rule = project.events.find(event => event.name.startsWith('Exit level'));
+  assert.equal(rule.condition.mode, 'cross');
+  assert.equal(rule.actions[0].exit, 'secret');
 });

@@ -355,7 +355,10 @@ export function installWorldScripts(project, warnings) {
     if (wall.specialFormat === 'zdoom') continue;
     const classicExit = [11, 51, 52, 124, 197, 198].includes(special);
     if (classicExit) {
-      const modes = [[52, 124].includes(special) ? 'cross' : [197, 198].includes(special) ? 'shoot' : 'use'];
+      // Doom's exit types: 11 is S1 (pressed), 51 and 52 and 124 are W1 (walked over), 197/198 are
+      // shot. Leaving 51 out of the walk list meant a secret exit you walk through had to be
+      // pressed instead — it did nothing when a player crossed it.
+      const modes = [[51, 52, 124].includes(special) ? 'cross' : [197, 198].includes(special) ? 'shoot' : 'use'];
       for (const mode of modes) rule(`Exit level / ${wall.id}`, { type: 'wallActivated', wallId: wall.id, mode },
         [{ type: 'finishLevel', exit: [51, 124, 198, 244].includes(special) ? 'secret' : 'normal' }], { once: true });
       continue;
