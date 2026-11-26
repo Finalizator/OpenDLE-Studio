@@ -325,7 +325,10 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
   // as units per tic made every door and lift eight times too fast, which is why a
   // 120-unit door snapped open in two frames.
   const zdoom = (options.format || line?.specialFormat) === 'zdoom';
-  if (zdoom && !arg1 && /^(Door_|Generic_Door)/.test(specialName(special))) {
+  // GZDoom's `GetSectorTagIterator(tag, line)` reads a tag of 0 as "the sector behind the
+  // activating line", and every special that moves a plane asks for its sectors that way. Using it
+  // only for doors left a tag-0 lift, floor or ceiling special doing nothing at all.
+  if (zdoom && !arg1 && /^(Door_|Generic_Door|Plat_|Elevator_|Generic_Lift|Floor_|Ceiling_|Generic_Floor|Generic_Ceiling|Generic_Crusher|Stairs_)/.test(specialName(special) || '')) {
     const back = liveSector(state, line?.left?.sectorId);
     if (back) sectors = [back];
   }

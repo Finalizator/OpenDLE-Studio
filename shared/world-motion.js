@@ -320,7 +320,7 @@ export function installWorldScripts(project, warnings) {
       const actions = steps?.length
         ? steps[0].actions
         : [{ type: 'runLineSpecial', special: wall.special, arg1: args[0] ?? 0, arg2: args[1] ?? 0,
-          arg3: args[2] ?? 0, arg4: args[3] ?? 0, arg5: args[4] ?? 0 }];
+          arg3: args[2] ?? 0, arg4: args[3] ?? 0, arg5: args[4] ?? 0, line: wall.id }];
       const parent = rule(`Linedef ${wall.id} / ${name}`.slice(0, 100), { type: 'wallActivated', wallId: wall.id, mode }, actions,
         { once: wall.repeatable !== true });
       if (!steps?.length) continue;

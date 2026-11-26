@@ -415,7 +415,10 @@ export const ENGINE_ACTIONS = [
     { ...numeric('arg2', 0, -32768, 32767), optional: true },
     { ...numeric('arg3', 0, -32768, 32767), optional: true },
     { ...numeric('arg4', 0, -32768, 32767), optional: true },
-    { ...numeric('arg5', 0, -32768, 32767), optional: true }] },
+    { ...numeric('arg5', 0, -32768, 32767), optional: true },
+    // The line the special came from. Doom reads a tag of 0 as "the sector behind this line", so a
+    // rule that runs a special without naming its line cannot resolve a tag-0 target at all.
+    { name: 'line', value: '', kind: 'string', optional: true }] },
   // A compiled ACS script, callable from a rule: the trigger is a rule, the body is the
   // module the WAD shipped (visible in the Scripts tab).
   { type: 'runScript', label: 'Script: run an ACS script', fields: [

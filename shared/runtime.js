@@ -2370,7 +2370,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             case 'runLineSpecial':
               if (!state.worldTerminalActive) {
                 executeSpecial(project, state, action.special,
-                  [action.arg1, action.arg2, action.arg3, action.arg4, action.arg5], { scripts: state.scripts, format: 'zdoom' });
+                  [action.arg1, action.arg2, action.arg3, action.arg4, action.arg5],
+                  { scripts: state.scripts, format: 'zdoom', ...(action.line ? { line: action.line } : {}) });
               }
               break;
             // A decompiled script's own builtins — `ChangeFloor(tag, "HEX01")`, `SetLineSpecial`,
