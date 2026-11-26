@@ -68,3 +68,9 @@ test('Strife’s marine and the combo attack are performed', async () => {
   assert.equal(typeof ACTIONS.A_M_Refire, 'function');
   assert.equal(typeof ACTIONS.A_CustomComboAttack, 'function');
 });
+
+test('the derived engines’ homing missile and burning flame are performed', async () => {
+  const { ACTIONS } = await import('../shared/actor-runtime.js');
+  assert.equal(typeof ACTIONS.A_SeekerMissile, 'function');
+  assert.equal(typeof ACTIONS.A_Countdown, 'function');
+});

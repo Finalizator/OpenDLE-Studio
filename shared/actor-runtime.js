@@ -1360,6 +1360,20 @@ export const ACTIONS = {
   // tic and leaves a smoke puff behind the tracer.
   A_Tracer(ctx) { homeMissile(ctx.project, ctx.state, ctx.entity); },
   A_Tracer2(ctx) { tracerStep(ctx, numArg(ctx, 0, 19.6875)); },
+  // The derived engines' homing, with their own turn rate and step (Heretic's mummy and the
+  // wraith's rod): unanswered, their missiles flew straight while the same actors' attacks expect
+  // them to follow.
+  A_SeekerMissile(ctx) { homeMissile(ctx.project, ctx.state, ctx.entity, { turn: numArg(ctx, 0, 16.875), everyTics: 1 }); },
+  // Strife's flame missiles burn out: `A_Countdown` counts the object down and kills it. Left
+  // unanswered a flame crossed the map and stayed there.
+  A_Countdown(ctx) {
+    const { project, state, entity } = ctx;
+    const left = Number.isFinite(entity.special1) ? entity.special1 - 1 : 3;
+    entity.special1 = left;
+    if (left > 0) return;
+    entity.health = 0;
+    runProjectileDeath(project, state, entity);
+  },
   // A_BFGSpray(spraytype, rays, damagecount, spread, distance, vrange, damage):
   // the BFG ball's Death state sweeps a deadly cone of rays across what it sees.
   A_BFGSpray(ctx) {
