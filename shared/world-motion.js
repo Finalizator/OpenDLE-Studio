@@ -1,4 +1,5 @@
 import { sectorAt, sectorGeometry } from './sectors.js';
+import { PLAYER_CYLINDER } from './gravity.js';
 import { floorAt, entityHeight, soundEvent } from './combat.js';
 import { doomSpecialBehaviour, doomSpecialName } from './doom-specials.js';
 import { specialName } from './line-specials.js';
@@ -59,11 +60,34 @@ export function useWall(state) {
   return { use: selected, special: specialWall ?? reachWall };
 }
 
-export function crossedWalls(state, previous) {
+/** How close a moving player must come to a line for it to count as walked into. */
+export const PLAYER_TOUCH = PLAYER_CYLINDER.radius + 2;
+
+// Walls each state's player was already standing against after the last movement. A line fires
+// when contact begins, not on every frame of the same contact, so walking past a repeatable
+// trigger once still fires it once. A WeakMap keeps this out of the save format.
+const touchedLines = new WeakMap();
+
+export function crossedWalls(state, previous, { touch = 0 } = {}) {
   // One pass and one Set: this runs on every frame the player moves, and the two
   // intermediate arrays of a filter/map chain were pure garbage.
   const crossed = new Set();
-  for (const wall of state.walls) if (intersection(previous, state.player, wall) !== null) crossed.add(wall.id);
+  const wasTouching = touchedLines.get(state) ?? new Set();
+  const touching = new Set();
+  // Doom runs a walk special for every line the player's bounding box hit while moving
+  // (`spechit`), not only for the ones the movement crossed. A shut door stops the player
+  // outside its own line, so a crossing-only test never fires and a W1/DR door never opens.
+  // Standing still hits nothing, so the touch test only applies to a movement.
+  const moved = touch > 0 && (previous.x !== state.player.x || previous.y !== state.player.y);
+  for (const wall of state.walls) {
+    const hit = intersection(previous, state.player, wall) !== null;
+    if (!hit && !(moved && wall.special && segmentDistance(state.player, wall).distance <= touch)) continue;
+    if (moved) touching.add(wall.id);
+    // Contact beginning is the trigger: a line a player is already standing against has been
+    // walked into once, and walking on across it is not a second crossing.
+    if (!wasTouching.has(wall.id)) crossed.add(wall.id);
+  }
+  touchedLines.set(state, touching);
   return crossed;
 }
 

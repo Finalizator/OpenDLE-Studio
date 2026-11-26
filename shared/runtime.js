@@ -72,7 +72,7 @@ import {
 import { damagePlayer, canSeePlayer, canHearPlayer, canSeeTarget, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance, enemyFloats, floorAt } from './combat.js';
 import { brushVolumes } from './brushes.js';
 import { createTerrainSurface } from './terrain-surface.js';
-import { useWall, crossedWalls, moveSector, advanceSectors } from './world-motion.js';
+import { useWall, crossedWalls, moveSector, advanceSectors, PLAYER_TOUCH } from './world-motion.js';
 import { advanceSwitches, pressSwitch, pressUsedSwitches, wallCanBeShot, wallSwitchRepeats } from './switches.js';
 import { advancePlaneMotion } from './plane-motion.js';
 import { advancePathMotion } from './path-motion.js';
@@ -977,6 +977,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // Doom's power-ups are clocks: the sphere stops protecting the player when it runs out, and
   // its screen tint goes with it.
   advancePowerups(state, dt);
+  // Doom's damaging floors: 5, 7 and 16 are nukage, and the sector's own special is what burns.
+  // It runs once a second rather than every frame, as `P_PlayerInSpecialSector` does, and the
+  // radiation suit is what makes the burn not happen at all.
   // The red a hit puts on the view drains the way Doom's `damagecount` does.
   advanceDamage(state, dt);
   // The colour an item flashed as it was taken, gone in a third of a second.
@@ -1191,7 +1194,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // Nothing can be crossed by a player who has not moved, and walking the whole wall
   // list every frame is the single most expensive per-frame check on a big map.
   state.worldTriggers.cross = previousPosition.x === player.x && previousPosition.y === player.y
-    ? new Set() : crossedWalls(state, previousPosition);
+    ? new Set() : crossedWalls(state, previousPosition, { touch: PLAYER_TOUCH });
   // ACS `Use`/`PlayerUse` sees the same line the visual rules see, which is the one
   // with the special when the player is not aiming straight at a plain wall.
   for (const id of new Set([usedWall?.use, usedWall?.special].filter(Boolean))) {
@@ -2837,17 +2840,33 @@ export function buttonsFor(keys) {
   return mask;
 }
 
-/** A sector's `damage` (Sector_SetDamage) hurts whatever stands in it, once a second. */
+// Hazard sectors, from their classic specials. Doom's `P_PlayerInSpecialSector` takes the damage
+// straight out of the player's health every second: 4 (strobe hurt) and 11 (hurt + exit) cost 20,
+// 5 (nukage) 10, 7 (blood) 5 and 16 (super nukage) 20. This campaign has hundreds of these sectors
+// and none of them did anything, so a player could stand in a lava pit for a whole level.
+const SECTOR_DAMAGE = new Map([[4, 20], [5, 10], [7, 5], [11, 20], [16, 20]]);
+const sectorHazard = sector => SECTOR_DAMAGE.get(Number(sector?.special)) ?? 0;
+
+/**
+ * A sector's `damage` (Sector_SetDamage) hurts whatever stands in it, once a second, on the same
+ * clock as the classic hazard specials.
+ */
 function applySectorDamage(state, dt) {
-  if (!state.sectors.some(sector => sector.damage)) { state.damageAcc = 0; return; }
+  if (!state.sectors.some(sector => sector.damage || sectorHazard(sector))) { state.damageAcc = 0; return; }
   state.damageAcc = (state.damageAcc || 0) + dt;
   if (state.damageAcc < 1) return;
   state.damageAcc -= 1;
   const sector = sectorAt(state.sectors, state.player.x, state.player.y);
-  if (!sector?.damage) return;
-  state.playerStats.health = Math.max(0, state.playerStats.health - sector.damage);
-  state.feedback.health = state.playerStats.health;
-  state.feedback.damage = { amount: sector.damage, time: state.time };
+  if (sector?.damage) {
+    state.playerStats.health = Math.max(0, state.playerStats.health - sector.damage);
+    state.feedback.health = state.playerStats.health;
+    state.feedback.damage = { amount: sector.damage, time: state.time };
+    return;
+  }
+  // The radiation suit stops the burn while its clock runs, and the damage goes through
+  // `damagePlayer`, so armour, the invulnerability sphere and the easy-skill halving all apply.
+  const hazard = sectorHazard(sector);
+  if (hazard && !(state.playerStats.radiation > 0)) damagePlayer(state, hazard);
 }
 
 function activateWallTriggers(state) {
