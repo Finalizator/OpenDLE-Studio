@@ -1535,7 +1535,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
     const withoutArtwork = [];
     const usesWorldNodeFactory = entity => entityRepresentation(entity) === 'media';
     function mediaError(message) {
-      if (disposed) return;
+      if (disposed) { globalThis.__staleRenders = (globalThis.__staleRenders || 0) + 1; return; }
       canvas.dataset.mediaError = message;
       onMediaError(message);
     }
@@ -2001,6 +2001,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
     }
 
     function render(state, dt = 0) {
+      // A disposed preview has no renderer, materials or textures left; drawing with it re-uploads
+      // into a state the GPU already released. The caller is not allowed to be stale (the game loop
+      // checks), but this is the one function whose misuse corrupts the frame rather than failing.
+      if (disposed) { globalThis.__staleRenders = (globalThis.__staleRenders || 0) + 1; return; }
       const started = clock();
       renderFrame(state, dt);
       applySurfaceLod(state.settings);
@@ -2334,7 +2338,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
         // An object's angle is stored negated (Doom's Y axis is flipped for the world), so the
         // world-space heading is its negative — the same conversion the sprite facing uses.
         const direction = spectator
-          ? viewDirection({ angle: -(spectator.angle || 0) * Math.PI / 180, pitch: spectator.cameraPitch || 0,
+          ? viewDirection({ angle: -(spectator.angle || 0) * Math.PI / 180,
+            // `cameraPitch` is degrees, like every other pitch in the project; passing it to a
+            // radians function made any camera actor with a pitch look almost straight down.
+            pitch: (spectator.cameraPitch || 0) * Math.PI / 180,
             up: [0, 0, 1] })
           : viewDirection(state.player);
         // The view rises and falls as the player walks, which is half of what makes Doom's
@@ -2366,7 +2373,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
       }
       for (let index = 0; index < activeLights.length; index++) {
         const entity = activeLights[index];
-        const z = entity.z ?? sectorOf(entity)?.floorHeight ?? 0;
+        // The documented placement: authored Z wins, otherwise the sector floor plus the floor-relative
+    // elevation. Dropping the elevation put a raised lamp's light on the floor beneath it.
+    const z = entity.z ?? (sectorOf(entity)?.floorHeight ?? 0) + (entity.elevation || 0);
         lightPositions[index].set(entity.x, z + 48, entity.y);
         lightColors[index].set(entity.light.color).multiplyScalar(entity.light.intensity);
         lightRadii[index] = entity.light.radius;

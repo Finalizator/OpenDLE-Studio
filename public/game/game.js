@@ -390,8 +390,24 @@ async function loadArtwork() {
   return { loaded, failed };
 }
 
+/**
+ * Starts a level, retrying once when it fails.
+ *
+ * A level change builds its runtime and its renderer in the same instant the previous level is
+ * being torn down, and a texture decode or a GPU allocation can lose that race. Players report it
+ * as "it said it could not load the textures and went back to the menu, but the second try worked" —
+ * so the second try is taken here, once, before the session is thrown away. A save load is not
+ * retried: a record that does not fit is a real error and hiding it would cost the player the
+ * message.
+ */
+async function playLevel(levelId, options = {}) {
+  const { attempt = 1, ...rest } = options;
+  const outcome = await startLevel(levelId, { ...rest, attempt });
+  if (outcome === 'retry') return playLevel(levelId, { ...rest, attempt: attempt + 1 });
+}
+
 /** Starts a level: the runtime is rebuilt at `playing` and the 3D view is created for it. */
-async function playLevel(levelId, { progress = null, record = null } = {}) {
+async function startLevel(levelId, { progress = null, record = null, attempt = 1 } = {}) {
   if (game.busy) return;
   game.busy = true;
   const token = ++startToken;
@@ -437,8 +453,8 @@ async function playLevel(levelId, { progress = null, record = null } = {}) {
     let preview = null;
     setLoading('Starting the 3D view…');
     const started = await withDeadline(
-      createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) })
-        .catch(error => { throw error; }), PREVIEW_TIMEOUT);
+      createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) }),
+      PREVIEW_TIMEOUT);
     if (token !== startToken) {
       // The player gave up on this level while the renderer was coming up: throw the late one away.
       if (started?.value?.dispose) started.value.dispose();
@@ -467,8 +483,13 @@ async function playLevel(levelId, { progress = null, record = null } = {}) {
     // A load reports the level it resumed; that is not an error, so it is not shown as one.
     if (engine.runtime.saveStatus) showToast(engine.runtime.saveStatus);
   } catch (error) {
-    showToast(`Could not start the level: ${error.message}`, true);
     if (record) lastLoadError = error.message;
+    // The retry runs from `playLevel`, after this call's `finally` has released `game.busy`.
+    if (!record && attempt < 2) {
+      console.warn(`The level did not start (${error.message}); trying once more.`);
+      return 'retry';
+    }
+    showToast(`Could not start the level: ${error.message}`, true);
     await openMenu();
   } finally {
     game.busy = false;
@@ -739,6 +760,12 @@ function frame(now) {
     game.pressed.clear();
     playRumbles(runtime);
     handleRequests(runtime);
+    // A level change, a load or a quit disposes this engine and builds the next one *inside*
+    // handleRequests, so `engine` above is now a disposed renderer and a disposed HUD. Rendering
+    // with it drew one more frame into a torn-down WebGL state and, on Windows, threw — which sent
+    // the player straight back to the menu from the middle of a level change. Leave the frame to
+    // the engine that is actually current; the next frame picks it up.
+    if (game.engine !== engine) return;
     if (game.engine) watchPointerCapture(runtime);
     if (!game.engine) return;
     if (runtime.settingsRevision !== lastSettingsRevision) {
@@ -781,6 +808,19 @@ window.__game = {
     handleRequests(runtime);
     return true;
   },
+  /**
+   * Ask for something and let the *frame loop* carry it out, which is how a real level exit
+   * reaches `handleRequests`. `request` above runs it here and now, on the caller's stack, so it
+   * cannot show what the loop does when the engine is replaced underneath it.
+   */
+  enqueue: request => {
+    const runtime = game.engine?.runtime;
+    if (!runtime) return false;
+    runtime.menuRequests.push(request);
+    return true;
+  },
+  /** The campaign's level ids, in play order. */
+  levels: () => (game.project?.game?.levels || []).map(level => level.id || level.name).filter(Boolean),
   status: () => {
     const runtime = game.engine?.runtime;
     const rows = [...hudHost.querySelectorAll('[role="button"]')];

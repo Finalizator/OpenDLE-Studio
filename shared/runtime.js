@@ -2858,12 +2858,10 @@ function applySectorDamage(state, dt) {
   if (state.damageAcc < 1) return;
   state.damageAcc -= 1;
   const sector = sectorAt(state.sectors, state.player.x, state.player.y);
-  if (sector?.damage) {
-    state.playerStats.health = Math.max(0, state.playerStats.health - sector.damage);
-    state.feedback.health = state.playerStats.health;
-    state.feedback.damage = { amount: sector.damage, time: state.time };
-    return;
-  }
+  // A script's `Sector_SetDamage` hurts like any other hit: through `damagePlayer`, so armour, the
+  // invulnerability sphere and the god flag apply to it too. Subtracting the health directly let a
+  // damaging sector kill a player who was invulnerable.
+  if (sector?.damage) { damagePlayer(state, sector.damage); return; }
   // The radiation suit stops the burn while its clock runs, and the damage goes through
   // `damagePlayer`, so armour, the invulnerability sphere and the easy-skill halving all apply.
   const hazard = sectorHazard(sector);

@@ -289,6 +289,22 @@ async function scenario(_context, steps) {
     await wait(500);
     const afterLevel = await page.evaluate('window.__game.status()');
     check('a level change keeps the mouse captured', afterLevel.pointer.locked === true, { nextLevel, afterLevel });
+    // The report from a player: on a level change the game sometimes said it could not load the
+    // textures and dropped back to the main menu, and a second attempt was fine. The frame that
+    // started the change also finished it — with the engine it had just disposed — so the change
+    // must be shown to leave the player in the *new* level with no error on screen.
+    const transition = await page.evaluate(`(() => {
+      const toast = document.querySelector('#toast');
+      return { screen: window.__game.status().screen, level: window.__game.status().level,
+        toast: toast && !toast.hidden ? toast.textContent : '', fatal: !document.querySelector('#fatal')?.hidden,
+        frames: window.__game.status().frames, lastError: window.__game.status().lastError || '',
+        stale: globalThis.__staleRenders || 0 };
+    })()`);
+    check('a level change leaves the game playing the new level', transition.screen === 'playing' && Boolean(transition.level), transition);
+    check('a level change shows no error and no fatal screen',
+      !/stopped|could not start/i.test(transition.toast) && transition.fatal === false, transition);
+    // Nothing in the frame that *asked* for the new level may draw with the renderer it disposed.
+    check('the frame that changed the level never drew with the disposed one', transition.stale === 0, transition);
     // The bottom of the screen is the part a player notices missing first. Two checks, because the
     // two kinds of HUD answer differently: an imported campaign has classic `statusbar` elements,
     // an authored one draws its own bottom panel with ordinary elements.
@@ -331,6 +347,30 @@ async function scenario(_context, steps) {
     check('a rule can write a whole-game save file', file.files.includes('checkpoint'), file);
     check('the save file reports itself', /saved the game to the save file checkpoint/i.test(file.status), file.status);
 
+    // And the same through the path a real exit takes: a request the *frame loop* carries out, so
+    // the transition happens with a frame already in flight.
+    let inFrame = null;
+    const nextId = await page.evaluate(`(() => {
+      const levels = window.__game.levels();
+      const current = window.__game.status().level;
+      return levels.map(level => level.id || level).find(id => id && id !== current) || null;
+    })()`);
+    if (nextId) {
+      const staleBefore = await page.evaluate('globalThis.__staleRenders || 0');
+      await page.evaluate(`window.__game.enqueue({ type: 'level', levelId: ${JSON.stringify(nextId)}, carryProgress: false })`);
+      const arrived = await waitForGame(page, `window.__game.status().screen === 'playing' && window.__game.status().level === ${JSON.stringify(nextId)}`,
+        { timeout: 30000, label: 'the level the frame loop started' }).catch(() => null);
+      await wait(400);
+      inFrame = await page.evaluate(`(() => {
+        const toast = document.querySelector('#toast');
+        return { level: window.__game.status().level, screen: window.__game.status().screen,
+          toast: toast && !toast.hidden ? toast.textContent : '', lastError: window.__game.status().lastError || '',
+          stale: globalThis.__staleRenders || 0, diagnostics: globalThis.__frameDiagnostics || null };
+      })()`);
+      check('a level change the frame loop carries out arrives', Boolean(arrived) && inFrame.screen === 'playing', inFrame);
+      check('and it neither drew with the disposed engine nor reported an error',
+        inFrame.stale === staleBefore && !/stopped|could not start/i.test(inFrame.toast), inFrame);
+    }
     const errors = (page.events || []).filter(event => event.method === 'Runtime.exceptionThrown');
     check('the game booted without a page exception', errors.length === 0,
       errors.slice(0, 2).map(event => event.params?.exceptionDetails?.exception?.description));
@@ -354,7 +394,8 @@ async function scenario(_context, steps) {
     }
     return { source, menuRows: menu.rows, labels: menu.labels, focused, classicBar, bottom, keysAfterShot: afterShot.keys,
       pointer: { captured, afterLevel: afterLevel.pointer },
-      saves: { slot: written.saveSlots[0], status: written.saveStatus, files: file.files } };
+      saves: { slot: written.saveSlots[0], status: written.saveStatus, files: file.files },
+      transition: inFrame };
   } finally {
     await player.stop();
     rmSync(scratch, { recursive: true, force: true });

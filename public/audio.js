@@ -286,7 +286,12 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
         state.soundOverflow = 0;
       }
       for (const event of state.sounds.splice(0)) {
-        const attenuation = event.x === undefined ? 1 : Math.max(0, 1 - Math.hypot(event.x - state.player.x, event.y - state.player.y) / 1200);
+        // A sound carries its place as `position` (`saySound` in the actor runtime) or as plain
+        // `x`/`y` (a combat event). Reading only `x`/`y` left every monster sound — sight, pain,
+        // death, every attack — at full volume from anywhere on the map.
+        const at = event.position || (event.x === undefined ? null : event);
+        const attenuation = at === null ? 1
+          : Math.max(0, 1 - Math.hypot(at.x - state.player.x, at.y - state.player.y) / 1200);
         if (!attenuation) continue;
         load(event.name).then(buffer => {
           if (disposed || !buffer) return;

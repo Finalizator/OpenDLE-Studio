@@ -74,6 +74,7 @@ export function createHUDView(host, project, { editor = false, select, click, er
     }
   }
   function update(state, { selectedId, cursor = state.hudState.cursor, screen } = {}) {
+    if (disposed) return;
     currentState = state;
     if (screen !== undefined) editorScreen = screen;
     anySelectorVisible = false;
