@@ -1348,6 +1348,11 @@ export const ACTIONS = {
     if (state.entities.some(candidate => candidate.type === 'enemy' && candidate.health > 0 && (candidate.actorName || '').toLowerCase() !== (entity.actorName || '').toLowerCase() &&
       candidate.actorId === entity.actorId)) return;
     state.bossDefeated = true;
+    // A boss level ends through the floor its boss death moves: E1M8 lowers the sectors tagged 666
+    // once the last Baron is down, and Doom 2's MAP07 lowers the same tag for its Mancubi. A map
+    // without those tags keeps playing, exactly as it does in Doom — its exit lines still work.
+    const run = registerSpecialExecutor.run;
+    if (typeof run === 'function') run(ctx.project, state, 21, [666, 1, 0, 0, 0], { format: 'zdoom', activator: entity });
   },
   // ------------------------------------------------------------------ Icon of Sin
   // The action pointers Doom's finale is written in. The states that call them live in the

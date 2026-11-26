@@ -1486,8 +1486,10 @@ export function createAcsVm(program, host = {}) {
     script: null,
     running(number) { return vm.active.some(script => script.number === number && script.state !== 'terminated'); },
     random() {
+      // The whole 32-bit state, not a 100 000-value slice of it: `Random(0, 2)` drew its three
+      // outcomes in unequal shares, and a roll over a range near 100 000 could not cover it evenly.
       vm.seed ^= vm.seed << 13; vm.seed ^= vm.seed >>> 17; vm.seed ^= vm.seed << 5;
-      return ((vm.seed >>> 0) % 100000) / 100000;
+      return (vm.seed >>> 0) / 4294967296;
     },
   };
   container.modules.forEach(({ index, module }) => {

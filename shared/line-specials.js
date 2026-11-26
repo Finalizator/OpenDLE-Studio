@@ -359,7 +359,15 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 11: // Door_Open
       for (const sector of sectors) movePlane(state, sector, 'ceilingHeight', doorTarget(state, project, sector), speed, { sound: 'DSDOROPN' });
       return 1;
-    case 12: case 13: case 105: // Door_Raise / LockedRaise (tag, speed, delay, lock) / WaitRaise
+    case 105: // Door_WaitRaise (tag, speed, delay, wait, lighttag)
+      // The fourth argument is how long the door stays shut *before* it rises, and it stays open
+      // afterwards; read as a stand-open time it opened at once and then closed again.
+      for (const sector of sectors) {
+        movePlane(state, sector, 'ceilingHeight', doorTarget(state, project, sector), speed,
+          { wait: 0, returnMode: 'stay', startDelay: Math.max(0, arg4 || 0) / TIC, sound: 'DSDOROPN' });
+      }
+      return 1;
+    case 12: case 13: // Door_Raise / LockedRaise (tag, speed, delay, lock)
       if (special === 13 && options.activator === 'player' && !hasLockKey(project, state, arg4)) {
         options.message?.('You need a key to open this door.');
         return 0;
