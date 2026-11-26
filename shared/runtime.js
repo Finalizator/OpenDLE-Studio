@@ -2853,6 +2853,9 @@ const sectorHazard = sector => SECTOR_DAMAGE.get(Number(sector?.special)) ?? 0;
  * clock as the classic hazard specials.
  */
 function applySectorDamage(state, dt) {
+  // The score screen is not the level: a player standing in nukage when they cross the exit must not
+  // keep burning (and eventually die) while the intermission counts their kills.
+  if (state.gameScreen && state.gameScreen !== 'playing') { state.damageAcc = 0; return; }
   if (!state.sectors.some(sector => sector.damage || sectorHazard(sector))) { state.damageAcc = 0; return; }
   state.damageAcc = (state.damageAcc || 0) + dt;
   if (state.damageAcc < 1) return;

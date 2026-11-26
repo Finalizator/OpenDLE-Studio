@@ -1077,10 +1077,13 @@ export const ACTIONS = {
       setActorState(ctx.project, entity, 'See');
       return;
     }
+    // `entity.angle` is degrees everywhere an actor is concerned (`A_FaceTarget` writes degrees),
+    // so the sweep is 45 degrees — not 0.79 of one — and the counter starts again at the next
+    // `A_Look2` after the monster has had its two sweeps.
     const sweeps = (entity.lookSweeps || 0) + 1;
-    if (sweeps > 2) return;
+    if (sweeps > 2) { entity.lookSweeps = 0; return; }
     entity.lookSweeps = sweeps;
-    entity.angle = (Number(entity.angle) || 0) + (sweeps === 1 ? -Math.PI / 4 : Math.PI / 4);
+    entity.angle = (Number(entity.angle) || 0) + (sweeps === 1 ? -45 : 45);
   },
   A_MarineLook(ctx) { ACTIONS.A_Look(ctx); },
   A_MarineNoise(ctx) { ACTIONS.A_NoiseAlert?.(ctx); },
@@ -1321,6 +1324,21 @@ export const ACTIONS = {
   // Melee attacks that all roll Doom's `((P_Random()%8)+1)*3` and only land in range: the
   // Strife marine's punch, D'Sparil's knights, Heretic's wraith and the Maulotaur's first swing.
   A_M_Punch(ctx) { meleeAttack(ctx, 3, 8); },
+  // Strife's marines ask whether to keep firing: out of sight, or with no target, they stop. Left
+  // unanswered the state machine never took that exit and a marine fired for ever.
+  A_M_Refire(ctx) {
+    const { state, entity } = ctx;
+    if (!canSeePlayer(state, entity, SIGHT_RANGE)) { entity.lookSweeps = 0; setActorState(ctx.project, entity, 'See'); return; }
+    if (randomDamage(state, 1, 256) < 40) setActorState(ctx.project, entity, 'See');
+  },
+  // The melee-or-missile decision every derived engine spells `A_CustomComboAttack`.
+  A_CustomComboAttack(ctx) {
+    const { state, entity } = ctx;
+    if (meleeable(state, entity)) { meleeAttack(ctx, 3, 8); return; }
+    ACTIONS.A_FaceTarget(ctx);
+    const name = String(arg(ctx, 0) || ctx.actor?.projectile || '');
+    if (name) spawnActorProjectile(ctx.project, state, entity, actorMissile(ctx, name));
+  },
   A_KnightAttack(ctx) { meleeAttack(ctx, 3, 8); },
   A_WraithMelee(ctx) { meleeAttack(ctx, 3, 8); },
   A_MinotaurAtk1(ctx) { meleeAttack(ctx, 3, 8); },

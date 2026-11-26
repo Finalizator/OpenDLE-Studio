@@ -51,3 +51,20 @@ test('the generic attack actions a derived engine relies on are performed', asyn
     'A_M_Punch', 'A_KnightAttack', 'A_WraithMelee', 'A_MinotaurAtk1'])
     assert.equal(typeof ACTIONS[name], 'function', name);
 });
+
+test('an acolyte sweeps 45 degrees, in degrees, and can sweep again later', async () => {
+  const source = readFileSync(new URL('../shared/actor-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /entity\.angle = \(Number\(entity\.angle\) \|\| 0\) \+ \(sweeps === 1 \? -45 : 45\);/);
+  assert.match(source, /if \(sweeps > 2\) \{ entity\.lookSweeps = 0; return; \}/);
+});
+
+test('a minefield does not burn the player while the score screen is up', () => {
+  const source = readFileSync(new URL('../shared/runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /if \(state\.gameScreen && state\.gameScreen !== 'playing'\) \{ state\.damageAcc = 0; return; \}/);
+});
+
+test('Strife’s marine and the combo attack are performed', async () => {
+  const { ACTIONS } = await import('../shared/actor-runtime.js');
+  assert.equal(typeof ACTIONS.A_M_Refire, 'function');
+  assert.equal(typeof ACTIONS.A_CustomComboAttack, 'function');
+});
