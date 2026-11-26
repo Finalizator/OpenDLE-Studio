@@ -14,6 +14,7 @@ import { serializeSaveFile, saveFileDocument } from '../shared/save-files.js';
 import { doomPickups } from '../shared/doom-hud.js';
 import { switchPairs, wallSwitchRepeats } from '../shared/switches.js';
 import { createMapScripts } from '../shared/map-scripts.js';
+import { doomSpecialBehaviour } from '../shared/doom-specials.js';
 
 test('a stimpack says it is a stimpack', () => {
   const rules = new Map(doomPickups());
@@ -102,4 +103,12 @@ test('a HUD bar bound to text draws nothing instead of freezing at its last widt
 test('a camera texture films from the height its own object stands at', () => {
   const source = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
   assert.match(source, /subject\.z \?\? \(sectorOf\(subject\)\?\.floorHeight \?\? 0\) \+ \(subject\.elevation \|\| 0\)/);
+});
+
+test('classic crushers run at Doom’s own ceiling speed', () => {
+  // CEILSPEED is one unit a tic — 35 a second — and only line 6's "fast" crusher uses twice that.
+  // Every classic crusher here was written at twice Doom's speed.
+  const speed = special => doomSpecialBehaviour(special).effect.speed;
+  assert.equal(speed(6), 70, 'fast crush and raise');
+  for (const special of [25, 49, 73, 141]) assert.equal(speed(special), 35, `line ${special}`);
 });

@@ -103,9 +103,12 @@ export const DOOM_SPECIAL_BEHAVIOUR = new Map([
   [135, blazingDoor('red', true)], [137, blazingDoor('yellow', true)],
   [134, blazingDoor('red', false)], [136, blazingDoor('yellow', false)],
   // Ceilings.
-  [6, crushAndRaise('cross', true, 140)], [25, crushAndRaise('cross', true, 70)],
-  [141, crushAndRaise('cross', true, 70)], [73, crushAndRaise('cross', false, 70)],
-  [49, crushAndRaise('use', true, 70)],
+  // Doom's ceiling speed is CEILSPEED = one unit a tic (35 a second), and only the "fast" crusher
+  // of line 6 uses twice that. Every one of these was written at twice Doom's speed, so a crusher
+  // in the original fell through its whole stroke in half the time.
+  [6, crushAndRaise('cross', true, 70)], [25, crushAndRaise('cross', true, 35)],
+  [141, crushAndRaise('cross', true, 35)], [73, crushAndRaise('cross', false, 35)],
+  [49, crushAndRaise('use', true, 35)],
   [44, { mode: 'cross', once: true, effect: { kind: 'ceiling', target: 'floor', speed: 70 } }],
   // Floors that rise to a neighbouring height.
   [20, { mode: 'use', once: true, effect: { kind: 'floor', target: 'nearest', speed: 35 } }],
@@ -152,6 +155,8 @@ export function upgradeCrusherRules(project) {
       const sector = action.type === 'moveSector' ? sectors.get(action.sectorId) : null;
       if (!sector || action.surface !== 'ceilingHeight' || action.height === sector.floorHeight) continue;
       action.height = sector.floorHeight;
+      // A project imported before the speeds were corrected carries twice Doom's ceiling speed.
+      action.speed = wall.special === 6 ? 70 : 35;
       action.wait = CEIL_WAIT;
       action.bottomWait = 0;
       action.returnMode = 'cycle';
