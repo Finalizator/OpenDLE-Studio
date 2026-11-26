@@ -29,6 +29,14 @@ Output is one JSON line. A failure exits non-zero and names the failing step:
   stored campaign and disables autosave.
 - `cdp.mjs` is a ~120-line CDP client built on Node's global `WebSocket` (`Runtime.evaluate`,
   `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`).
+- **No dialog can block a run.** `cdp.mjs` enables the Page domain and answers every page dialog:
+  a confirmation that follows a scenario's own click is accepted, a question about unsaved work
+  ("discard", "restore", "overwrite") is dismissed so the project survives, and `page.dialogs`
+  records what was answered. A dialog that opened during boot is cleared when the client attaches.
+  The window is also spawned with `--no-close-prompt`, so the shell's own "close without saving?"
+  box never appears either — a hidden window has nobody to click it, and it used to stay on screen,
+  modal, after the run that spawned it had died. `dialogPolicy` (`accept`, `dismiss`, or
+  `message => boolean`) overrides the default for a scenario that needs a specific answer.
 - The licence dialog is accepted by clicking it, like a person does. The automation profile lives in
   `data/automation-profile` (gitignored), so it is remembered between runs. An already-accepted
   profile closes the dialog by itself and leaves the accept button disabled on purpose, so the

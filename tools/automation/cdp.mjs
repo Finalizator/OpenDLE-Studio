@@ -29,10 +29,11 @@ export async function pageTarget(port, match = () => true, options) {
   return found;
 }
 
-export async function connect(port, { match, timeout } = {}) {
+export async function connect(port, { match, timeout, dialogPolicy = 'auto' } = {}) {
   const target = await pageTarget(port, match, { timeout });
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   const pending = new Map();
+  const dialogs = [];
   let nextId = 1;
   const events = [];
   await new Promise((resolve, reject) => {
@@ -47,6 +48,15 @@ export async function connect(port, { match, timeout } = {}) {
       pending.delete(message.id);
       if (message.error) reject(new Error(`${message.error.message} (${message.error.code})`));
       else resolve(message.result);
+      return;
+    }
+    if (message.method === 'Page.javascriptDialogOpening') {
+      const accepted = dialogAnswer(message.params?.message, dialogPolicy);
+      dialogs.push({ ...message.params, accepted });
+      // Answering is what keeps the page alive: an open dialog stops the renderer, so every later
+      // Runtime.evaluate waits forever — the run looks hung while a "yes or cancel" box sits on
+      // screen waiting for a person who is not there.
+      send('Page.handleJavaScriptDialog', { accept: accepted }).catch(() => {});
       return;
     }
     if (message.method) events.push(message);
@@ -77,6 +87,14 @@ export async function connect(port, { match, timeout } = {}) {
     for (const { reject } of pending.values()) reject(new Error('The DevTools connection closed'));
     pending.clear();
   });
+
+  // The Page domain has to be on before a dialog opens, or its event is never sent; and a dialog
+  // that opened during boot is answered once here (the call fails harmlessly when none is showing),
+  // so attaching to a window that is already blocked clears it instead of hanging.
+  send('Page.enable').then(
+    () => send('Page.handleJavaScriptDialog', { accept: false }).catch(() => {}),
+    () => {},
+  );
 
   /** Evaluate an expression in the page and return its value; throws on a page exception. */
   const evaluate = async expression => {
@@ -136,8 +154,23 @@ export async function connect(port, { match, timeout } = {}) {
     await send('Input.dispatchKeyEvent', { type: 'keyUp', ...common });
   };
 
-  return { target, send, evaluate, waitFor, move, press, release, drag, rightClick, key, events,
+  return { target, send, evaluate, waitFor, move, press, release, drag, rightClick, key, events, dialogs,
     close: () => socket.close() };
+}
+
+/**
+ * How an automation run answers a page dialog.
+ *
+ * A scenario clicked something, and the question that follows is the app asking to confirm that
+ * click — "yes" is the answer that keeps the run going. The exception is a question about unsaved
+ * work: accepting one of those throws the open project away, so the answer is "no" and the project
+ * survives. `dialogPolicy` overrides this with `accept`, `dismiss`, or a `message => boolean`.
+ */
+export function dialogAnswer(message, dialogPolicy = 'auto') {
+  if (typeof dialogPolicy === 'function') return Boolean(dialogPolicy(message));
+  if (dialogPolicy === 'accept') return true;
+  if (dialogPolicy === 'dismiss') return false;
+  return !/discard|restore|overwrite|replace|unsaved/i.test(String(message ?? ''));
 }
 
 function virtualKey(code) {

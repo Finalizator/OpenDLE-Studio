@@ -319,3 +319,39 @@ test('desktop bootstrap does not block Electron readiness and accepts runtime sw
   assert.match(errors[1], /could not start: Editor startup failed/);
   assert.equal(errors[2], 1);
 });
+
+test('an unattended window never raises a modal that waits for a click', async t => {
+  // An automation run has nobody in front of it. A native "close without saving?" box used to
+  // appear when the save failed — the server was killed with the run — and it stayed on screen,
+  // modal, until the person at the machine pressed a button. The run that spawned it looked hung.
+  for (const flag of ['--hidden', '--no-close-prompt']) {
+    const f = fixture(t);
+    await startStudioDesktop(f.electron, [...f.args, flag]);
+    const window = f.windows[0];
+    let asked = 0;
+    f.electron.dialog.showMessageBoxSync = () => { asked++; return 0; };
+    window.webContents.executeJavaScript = async script => {
+      if (script.includes('opendleSaveBeforeClose')) throw new Error('The local service is not answering');
+      return true;
+    };
+    window.close();
+    await setImmediate();
+    assert.equal(asked, 0, `${flag} asks nobody`);
+    assert.equal(window.closed, true, `${flag} closes, so the run can finish`);
+    assert.equal(f.errors.length, 0, 'and no error box replaces the question');
+  }
+});
+
+test('a save that still succeeds closes an unattended window without asking either', async t => {
+  const f = fixture(t);
+  await startStudioDesktop(f.electron, [...f.args, '--hidden']);
+  const window = f.windows[0];
+  let asked = 0, saves = 0;
+  f.electron.dialog.showMessageBoxSync = () => { asked++; return 0; };
+  window.webContents.executeJavaScript = async () => { saves++; return false; };
+  window.close();
+  await setImmediate();
+  assert.equal(saves, 1, 'the page is still asked to save');
+  assert.equal(asked, 0);
+  assert.equal(window.closed, true);
+});

@@ -25,7 +25,7 @@ function withAutomationFlag(url) {
 export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, shell }, args) {
   const { values } = parseArgs({ args, options: {
     url: { type: 'string' }, profile: { type: 'string' }, 'automation-port': { type: 'string' },
-    hidden: { type: 'boolean' }, show: { type: 'boolean' },
+    hidden: { type: 'boolean' }, show: { type: 'boolean' }, 'no-close-prompt': { type: 'boolean' },
   } });
   const automationPort = Number(values['automation-port'] || 0);
   if (values['automation-port'] !== undefined && (!Number.isInteger(automationPort) || automationPort < 1 || automationPort > 65535)) {
@@ -43,6 +43,11 @@ export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, she
   // real GPU surface — a scenario drives the same pixels a person would — it simply never shows and
   // never takes the taskbar, so a test run cannot interrupt the work happening on the same machine.
   const hidden = Boolean(values.hidden) && !values.show;
+  // Nobody is sitting in front of an automation window, so nothing may ask it a question: a native
+  // modal waits for a click that never comes, keeps the window on screen, and blocks the run that
+  // spawned it. The same switch covers a person who wants closing to be unconditional.
+  const unattended = hidden || Boolean(values['no-close-prompt'])
+    || /^(1|true|yes)$/i.test(String(process.env.OPENDLE_NO_CLOSE_PROMPT || ''));
   const initialURL = automationPort ? withAutomationFlag(localEditorURL(values.url)) : localEditorURL(values.url);
   if (!values.profile) throw new Error('Studio requires a persistent --profile directory');
   const profile = resolve(values.profile);
@@ -55,7 +60,8 @@ export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, she
   const windows = new Map();
   const report = error => {
     console.error(`OpenDLE Studio: ${error.message}`);
-    dialog.showErrorBox('OpenDLE: Studio', error.message);
+    // An error box is modal and waits for a click; an unattended window reports and moves on.
+    if (!unattended) dialog.showErrorBox('OpenDLE: Studio', error.message);
   };
   if (!app.requestSingleInstanceLock({ url: initialURL })) { app.quit(); return; }
   async function open(url) {
@@ -97,6 +103,11 @@ export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, she
       // offer has to say what closing costs: a campaign too large for browser storage has no draft.
       ask: async reason => {
         if (window.isDestroyed()) return true;
+        if (unattended) {
+          // No one can answer: closing is the only outcome that does not leave a modal behind.
+          console.error(`OpenDLE Studio: closing unattended window without saving (${reason})`);
+          return true;
+        }
         const backedUp = await window.webContents
           .executeJavaScript('typeof window.opendleUnsavedEditsAreBackedUp === "function" ? window.opendleUnsavedEditsAreBackedUp() : false')
           .catch(() => false);

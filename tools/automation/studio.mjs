@@ -36,7 +36,7 @@ async function serverIsUp(baseUrl) {
 }
 
 /** The studio server, started only when nothing is listening on the port already. */
-async function ensureServer(port) {
+export async function ensureServer(port) {
   const url = `http://127.0.0.1:${port}/`;
   if (await serverIsUp(url)) return { url, child: null };
   const child = track(spawn(process.execPath, [join(root, 'server', 'index.js')], {
@@ -106,7 +106,10 @@ export async function launchStudio({ port = Number(process.env.PORT || 3000), ti
   const child = track(spawn(binary, [
     ...extraElectronArgs(),
     join(root, 'scripts', 'studio-desktop.js'),
-    '--url', url, '--profile', profile, '--automation-port', String(cdpPort), ...windowVisibilityArgs(),
+    '--url', url, '--profile', profile, '--automation-port', String(cdpPort),
+    // A run is never attended, even with `OPENDLE_AUTOMATION_VISIBLE=1` for watching it: a native
+    // "close without saving?" box would wait for a click and keep the window on screen.
+    '--no-close-prompt', ...windowVisibilityArgs(),
   ], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env }));
   const log = [];
   child.stdout?.on('data', chunk => log.push(String(chunk).trim()));
