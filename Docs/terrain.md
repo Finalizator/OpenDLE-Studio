@@ -129,6 +129,8 @@ the studio's full PBR library is 1.1 GB and is deliberately *not* vendored). The
 manifest at `/textures/terrain/materials.json`, so adding a pack later means copying its folder and
 adding its manifest row.
 
+![The Terrain tab: the recipe and layers on the left, the generated world on the right](terrain_editor.png)
+
 ## Using the tab
 
 1. Open **Terrain** in the tab strip. The viewer starts on the recipe the project stores, or on the
