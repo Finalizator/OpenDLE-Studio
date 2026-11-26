@@ -262,8 +262,16 @@ function validateRuntime(project, state, baseline) {
       if (item) { try { dropTemplate(project, item); } catch { /* no actor table: the failure below names it */ } }
       template = resolved();
     }
-    if (!template) fail(`unknown entity ${entity.id}`);
-    seen.add(entity.id); matchShape(entity, template, `entity ${entity.id}`);
+    // An action can make a new thing mid-game — A_PainDie lets three Lost Souls out of a Pain
+    // Elemental — and no project placed it, so there is no template to compare against. The actor
+    // table entry it was built from is enough to know it is the engine's own thing rather than an
+    // addon's; without this, every save taken after a monster spawned another was refused as
+    // "an addon changed the runtime state".
+    const spawnedThing = !template && typeof entity.id === 'string' && entity.id.startsWith('spawned_') &&
+      (project.actors || []).some(actor => actor.id === entity.actorId);
+    if (!template && !spawnedThing) fail(`unknown entity ${entity.id}`);
+    seen.add(entity.id);
+    if (template) matchShape(entity, template, `entity ${entity.id}`);
     for (const key of ['x', 'y']) if (!Number.isFinite(entity[key])) fail('invalid entity position');
     if (entity.z !== undefined && !Number.isFinite(entity.z)) fail('invalid entity height');
   }
