@@ -252,8 +252,19 @@ export function brushSurfaceAt(brushes, x, y) {
     if (brush.visible === false) continue;
     const box = brushBounds(brush);
     if (!Number.isFinite(box.x) || x < box.x || x > box.x + box.width || y < box.y || y > box.y + box.depth) continue;
-    const top = box.z + box.height;
-    if (best === null || top > best) best = top;
+    // The *surface* over the point, not the top of its bounding box: on a wedge or a ramp the two
+    // are different, and an object placed on the box top floated above the slope.
+    let top = null;
+    for (const face of facesOf(brush)) {
+      const plane = facePlane(face), [nx, ny, nz] = plane.normal;
+      // Only a face that points upwards can be stood on; a side face says nothing about the height.
+      if (!(nz > .05)) continue;
+      const z = (plane.distance - nx * x - ny * y) / nz;
+      if (z < box.z - .01 || z > box.z + box.height + .01) continue;
+      if (top === null || z > top) top = z;
+    }
+    const height = top ?? box.z + box.height;
+    if (best === null || height > best) best = height;
   }
   return best;
 }

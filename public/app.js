@@ -3754,10 +3754,13 @@ function worldPoint(event) {
 }
 function snap(point, options = {}) {
   const grid = Number($('grid').value);
-  const result = options.bypass || !$('map-snap')?.checked
-    ? { x: Math.round(point.x), y: Math.round(point.y) }
-    : { x: Math.round(point.x / grid) * grid, y: Math.round(point.y / grid) * grid };
-  if (point.z !== undefined) result.z = Math.round(point.z / grid) * grid;
+  const snapped = !(options.bypass || !$('map-snap')?.checked);
+  const result = snapped
+    ? { x: Math.round(point.x / grid) * grid, y: Math.round(point.y / grid) * grid }
+    : { x: Math.round(point.x), y: Math.round(point.y) };
+  // The height follows the same switch: with Snap off (or Alt held) the height of the surface that
+  // was clicked is the height the object gets, not the nearest grid line above it.
+  if (point.z !== undefined) result.z = snapped ? Math.round(point.z / grid) * grid : point.z;
   return result;
 }
 cutTool = createGeometryCutTool($('cut-tools'), {
@@ -4715,12 +4718,18 @@ canvas.addEventListener('pointerdown', guard(event => {
   if (toolMode() === 'entity') {
     const position = snap(point), type = $('entity-type').value;
     edit(next => {
+      // The same elevation the 3D path computes: how far above the floor the click landed, in
+      // grid steps. Using it without computing it threw "elevation is not defined" and the player
+      // was never placed at all.
+      const floor = sectorAt(mapSectors, position.x, position.y)?.floorHeight || 0;
+      const grid = Number($('grid').value);
+      const elevation = (point.z === undefined ? 0 : Math.round((point.z - floor) / grid) * grid);
       if (type === 'player') {
         const player = next.map.entities.find(entity => entity.type === 'player');
         Object.assign(player, position, { elevation });
         delete player.z;
       }
-      else next.map.entities.push(newEntityOfType(type, position));
+      else next.map.entities.push(newEntityOfType(type, position, { elevation }));
     }, `${type} placed`);
     return;
   }
@@ -4903,7 +4912,9 @@ canvas.addEventListener('pointermove', event => {
     const dx = point.x - drag.start.x, dy = point.y - drag.start.y;
     const local = { x: dx * Math.cos(-radians) - dy * Math.sin(-radians), y: dx * Math.sin(-radians) + dy * Math.cos(-radians) };
     const sizing = GRIP_SIDES[drag.grip] || [];
-    const grid = Number($('grid').value);
+    // The grip snaps the way every other measurement does, which means it obeys the Snap switch:
+    // passing the grid unconditionally rounded a resized zone even with snapping off.
+    const grid = $('map-snap')?.checked ? Number($('grid').value) : 0;
     const symmetric = event.shiftKey;
     const shift = { x: 0, y: 0 };
     drag.sizes = { ...drag.startSizes };

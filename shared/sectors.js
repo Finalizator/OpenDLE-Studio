@@ -59,7 +59,10 @@ export function sectorGeometry(project) {
         // floor and ceiling, because subsectors come from the node builder rather than from a
         // closed loop; dropping the ring instead left a hole in the level that showed
         // whatever was behind it. The ring is closed across the gap and drawn.
-        if (!choices.length) break;
+        // A dead end keeps the corner it reached: pushing only each edge's start left the far
+        // vertex out of the ring, so a sector with one wall missing was drawn as a triangle with
+        // half its area, and `sectorAt` could not find the room in the part that was lost.
+        if (!choices.length) { ring.push(vertices.get(edge.b)); break; }
         const a = vertices.get(edge.a), b = vertices.get(edge.b);
         const incoming = Math.atan2(b.y - a.y, b.x - a.x);
         // Follow the nearest left turn at touching loops rather than joining islands.
