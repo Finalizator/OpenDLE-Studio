@@ -37,7 +37,12 @@ export function areaVolume(entity, floorHeight = 0) {
   const base = Number.isFinite(entity.z) ? entity.z : (floorHeight || 0) + (entity.elevation || 0);
   const half = spec.shape === 'box'
     ? { width: spec.width / 2, depth: spec.depth / 2, height: spec.height / 2 }
-    : { width: spec.radius, depth: spec.radius, height: (spec.shape === 'sphere' ? spec.radius * 2 : spec.height) / 2 };
+    // A capsule is never shorter than its own diameter: the editor draws it with
+    // `max(radius, height/2)` and Rapier clamps the same way, so a radius of 200 with a height of 96
+    // is a 400-unit sphere to both of them. Testing the raw height meant a player standing inside
+    // the drawn capsule never triggered the zone.
+    : { width: spec.radius, depth: spec.radius,
+      height: spec.shape === 'sphere' ? spec.radius : Math.max(spec.radius, spec.height / 2) };
   return {
     shape: spec.shape, radius: spec.radius,
     center: { x: entity.x, y: entity.y, z: base + half.height },

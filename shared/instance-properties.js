@@ -125,8 +125,12 @@ function velocityFor(state, entity) {
 function dimensions(entity) {
   if (entity.type === 'player') return { width: PLAYER_CYLINDER.radius * 2,
     height: PLAYER_CYLINDER.halfHeight * 2, depth: PLAYER_CYLINDER.radius * 2, radius: PLAYER_CYLINDER.radius };
+  const fromArea = Boolean(entity.area);
   const size = entity.area || entity.mesh || entity.spritePlane || entity.projector || entity.terminal || entity.panel || entity.physics || {};
-  const round = !entity.mesh && ['sphere', 'ball', 'capsule', 'cylinder', 'cone'].includes(size.shape);
+  // Whether the shape is round is a property of the record that was picked: an object with both a
+  // mesh node and a sphere area has its dimensions read from the *area*, which ignores width and
+  // depth entirely, so testing `entity.mesh` reported 96 for a 400-unit sphere.
+  const round = fromArea && ['sphere', 'ball', 'capsule', 'cylinder', 'cone'].includes(size.shape);
   return {
     width: round ? (size.radius ?? 0) * 2 : size.width ?? 0,
     height: ['sphere', 'ball'].includes(size.shape) ? (size.radius ?? 0) * 2 : size.height ?? 0,

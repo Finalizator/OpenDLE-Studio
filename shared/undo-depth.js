@@ -67,8 +67,12 @@ export function snapshotWeight(project) {
     + (project?.scenes?.length || 0) * 20
     + (project?.spriteClips?.length || 0) * 10
     + (project?.materialAnimations?.length || 0) * 4
-    + (project?.gameMenus?.length || 0) * 20
-    + (project?.game?.levels?.length || 0) * 40;
+    // `gameMenus` is an object, not a list: its `.length` was always undefined, so a project with a
+    // megabyte of MENUDEF text weighed nothing. Its source text is what a snapshot copies. The
+    // campaign's levels are *shared* between snapshots (`cloneProjectForEdit` points every snapshot
+    // at the same `game`), so they are not charged for at all — doing so made a campaign's history
+    // shallower than the same map's on its own.
+    + (project?.gameMenus?.sources || []).reduce((total, source) => total + (String(source?.source || '').length / 1024) * 4, 0);
 }
 
 /** How many steps this project's history may hold: 3 for a megawad map, 40 for a small one. */

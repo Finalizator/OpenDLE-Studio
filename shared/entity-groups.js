@@ -211,7 +211,10 @@ export function cloneEntitiesForPaste(project, entities, point, {
   const copies = source.map(entity => {
     const copy = structuredClone(entity);
     copy.id = newId('entity');
-    const base = `${entity.name} copy`;
+    // Entity names are capped at 100 characters, so the suffix has to fit inside that budget: a
+    // 98-character name would otherwise paste as a 103-character one and the whole paste was
+    // refused by the project's own validation.
+    const base = `${String(entity.name || '').slice(0, 94)} copy`;
     copy.name = base;
     for (let index = 2; names.has(copy.name); index++) copy.name = `${base} ${index}`;
     names.add(copy.name);
