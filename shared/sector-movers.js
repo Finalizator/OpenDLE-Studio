@@ -46,7 +46,11 @@ export function sectorMovers(project) {
           surface: 'ceilingHeight', speed: Math.max(35, (wall.args?.[1] || 1) * 35 / 8) };
       }
       if (zdoom && elevator) {
-        const amount = (wall.args?.[2] || 0) * (/Times8/.test(name) ? 8 : 1);
+        // `Plat_UpByValue`/`Plat_DownByValue` are (tag, speed, delay, height) and the height is in
+        // eighths, so the fourth argument is the amount and the third is the delay. Reading the
+        // delay made the inspector disagree with the runtime about where the platform goes.
+        const plat = /^Plat_/.test(name || '');
+        const amount = (wall.args?.[plat && /ByValue/.test(name) ? 3 : 2] || 0) * (plat && /ByValue/.test(name) ? 8 : /Times8/.test(name) ? 8 : 1);
         let height;
         if (/ByValue/.test(name)) height = sector.floorHeight + (/Lower|Down/.test(name) ? -amount : amount);
         else if (/MoveToValue/.test(name)) height = wall.args?.[3] ? -amount : amount;
@@ -56,7 +60,11 @@ export function sectorMovers(project) {
           if (target === 3) {
             const ceilings = sectorNeighbors(project, sector).map(item => item.ceilingHeight);
             height = ceilings.length ? Math.min(...ceilings) : sector.floorHeight;
-          } else if (target === 4) height = sector.floorHeight + (distance || 64);
+          } else if (target === 4) {
+            // platPerpetualRaise: between the lowest floor around it and its own floor, repeating.
+            const floors = sectorNeighbors(project, sector).map(item => item.floorHeight);
+            height = Math.max(sector.floorHeight, floors.length ? Math.max(...floors) : sector.floorHeight);
+          }
           else if (target === 1 || target === 2) height = sectorPlaneTarget(project, sectors, sector, 'floorHeight',
             target === 1 ? 'toLowest' : 'toNearestDown');
           else height = sector.floorHeight + distance;

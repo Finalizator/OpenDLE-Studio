@@ -233,8 +233,9 @@ test('hunt 149: a Doom crusher keeps crushing until it is told to stop', () => {
   let bottoms = 0, down = false;
   for (let tic = 0; tic < 35 * 20; tic++) {
     advanceSectors(state, 1 / 35);
-    if (sector.ceilingHeight <= 5 && !down) { bottoms++; down = true; }
-    if (sector.ceilingHeight > 5) down = false;
+    // GZDoom's crusher bottoms out eight units above the floor.
+    if (sector.ceilingHeight <= 8 && !down) { bottoms++; down = true; }
+    if (sector.ceilingHeight > 8) down = false;
   }
   assert.ok(bottoms >= 2, `the ceiling comes down more than once, got ${bottoms} in 20 s`);
   assert.equal(state.sectorMotions.has(`${sector.id}:ceilingHeight`), true, 'and it is still running');

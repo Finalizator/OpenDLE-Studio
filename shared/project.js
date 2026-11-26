@@ -1085,6 +1085,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       number(wall[key], `Wall ${key}`, 0, 65535); assert(Number.isInteger(wall[key]), `Wall ${key} must be an integer`);
     }
     if (wall.specialFormat !== undefined) assert(wall.specialFormat === 'zdoom', 'Unknown linedef special format');
+    if (wall.repeatable !== undefined) assert(typeof wall.repeatable === 'boolean', 'Wall repeatable must be a boolean');
     if (wall.args !== undefined) {
       array(wall.args, 'Linedef arguments', 5);
       assert(wall.args.length === 5, 'Linedef requires five arguments');

@@ -145,6 +145,15 @@ test('typed settings, sensitivity, inverted Y, key swaps and persistent serializ
   changeSetting(s, 'volume', -10, true); assert.equal(s.settings.volume, 0);
   changeSetting(s, 'volume', 10, true); assert.equal(s.settings.volume, 1);
   for (const [key, value] of [['unknown', 1], ['muted', 1], ['fov', 500], ['difficulty', 1.5]]) assert.throws(() => changeSetting(s, key, value));
+  // A relative change follows the setting's own step: a fractional step has to survive, or the
+  // shipped Options row "Mouse sensitivity +0.1" does nothing at all.
+  for (const [name, from, step, expected] of [['sensitivity', 1, .1, 1.1], ['brightness', 1, .1, 1.1],
+    ['masterVolume', .8, .05, .85], ['resolution', 1, .25, 1.25], ['volume', .8, .1, .9]]) {
+    s.settings[name] = from;
+    changeSetting(s, name, step, true);
+    assert.equal(s.settings[name], expected, `${name} +${step}`);
+  }
+  changeSetting(s, 'fov', 5, true); assert.equal(s.settings.fov, 95, 'a whole-number step still rounds');
   s.settings.sensitivity = 2; s.settings.invertY = true;
   lookPlayer(s, 10, 5); assert.equal(s.input.mouseX, 20); assert.equal(s.input.mouseY, -10);
   s.bindingKey = 'KeyW'; bindKey(s, 'KeyS');

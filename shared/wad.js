@@ -391,7 +391,8 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
         special: view.getUint8(6), args: Array.from({ length: 5 }, (unused, index) => view.getUint8(7 + index)),
         right: view.getUint16(12, true) === 65535 ? -1 : view.getUint16(12, true),
         left: view.getUint16(14, true) === 65535 ? -1 : view.getUint16(14, true),
-        tag: view.getUint8(7), activationModes: HEXEN_ACTIVATION[(flags & 0x1c00) >> 10] || [] };
+        tag: view.getUint8(7), activationModes: HEXEN_ACTIVATION[(flags & 0x1c00) >> 10] || [],
+        repeatable: Boolean(flags & 0x200) };
     }),
     things: records('THINGS', 20).map(view => ({ tid: view.getInt16(0, true), x: view.getInt16(2, true), y: view.getInt16(4, true),
       elevation: view.getInt16(6, true), angle: view.getInt16(8, true), type: view.getUint16(10, true),
@@ -502,6 +503,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
     return {
       id: `w${index}`, a: `v${a}`, b: `v${b}`, right, left, flags: record.flags,
       special: record.special || 0, tag: record.tag || 0, ...(zdoomFormat ? { specialFormat: 'zdoom', args: record.args,
+        ...(record.repeatable !== undefined ? { repeatable: Boolean(record.repeatable) } : {}),
         ...(record.activationModes?.length ? { activationModes: [...new Set(record.activationModes)] } : {}) } : {}),
       color: '#9aa3ab', height: sector ? Math.max(8, Math.min(4096, sector.ceilingHeight - sector.floorHeight)) : 128,
       solid: !left || !right || Boolean(record.flags & 1),

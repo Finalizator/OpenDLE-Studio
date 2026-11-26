@@ -181,6 +181,7 @@ export function udmfRecords(document) {
       special: number(p, 'special', 0, { integer: true, min: 0, max: 65535 }),
       tag: number(p, 'id', 0, { integer: true, min: 0, max: 65535 }),
       args: Array.from({ length: 5 }, (_, i) => number(p, `arg${i}`, 0, { integer: true, min: -32768, max: 32767 })),
+      repeatable: bool(p, 'repeatable'),
       activationModes: [['playercross', 'cross'], ['playeruse', 'use'], ['playeruseback', 'use'],
         ['impact', 'shoot'], ['missilecross', 'shoot']]
         .filter(([key]) => bool(p, key)).map(([, mode]) => mode),

@@ -150,8 +150,11 @@ function planeHeights(state, project, sector, surface) {
 function movePlane(state, sector, surface, target, speedTics, { wait = 0, returnMode = 'stay', sound } = {}) {
   const current = sector[surface];
   if (!Number.isFinite(target) || Math.abs(target - current) < 0.5) return false;
+  // SPEED(a) in GZDoom is `a/8` units a tic with no floor: a speed of 0 builds a plane that never
+  // moves, and speeds below 8 keep their own pace instead of all running at a whole unit a tic.
+  if (!(speedTics > 0)) return false;
   moveSector(state, {
-    sectorId: sector.id, surface, height: target, speed: Math.max(TIC, speedTics * TIC),
+    sectorId: sector.id, surface, height: target, speed: speedTics * TIC,
     wait, returnMode, sound, returnHeight: current,
   });
   return true;
@@ -326,8 +329,8 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     const back = liveSector(state, line?.left?.sectorId);
     if (back) sectors = [back];
   }
-  const doorSpeed = zdoom ? Math.max(1, arg2) / 8 : CLASSIC_DOOR_SPEED;
-  const planeSpeed = zdoom ? Math.max(1, arg2) / 8 : CLASSIC_PLANE_SPEED;
+  const doorSpeed = zdoom ? arg2 / 8 : CLASSIC_DOOR_SPEED;
+  const planeSpeed = zdoom ? arg2 / 8 : CLASSIC_PLANE_SPEED;
   const waitTics = value => Math.max(0, value || 0) / TIC;
   const waitOctics = value => Math.max(0, value || 0) / 8;
   const speed = doorSpeed;
@@ -372,7 +375,7 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       const wait = zdoom ? waitTics(arg3) : CLASSIC_DOOR_WAIT;
       for (const sector of sectors) {
         moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: sector.floorHeight,
-          speed: Math.max(TIC, speed * TIC), wait, returnMode: 'return',
+          speed: speed * TIC, wait, returnMode: 'return',
           returnHeight: doorTarget(state, project, sector), sound: 'DSDORCLS' });
       }
       return 1;
@@ -430,13 +433,13 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         if (movePlane(state, sector, 'ceilingHeight', sector.floorHeight + Math.max(0, arg5), planeSpeed, { sound: 'DSCNSTRT' })) moved++;
       return moved;
     }
-    case 192: { // Ceiling_LowerToHighestFloor (tag, speed)
-      // The ceiling comes down to the highest floor around the sector; if that floor
-      // is already above the ceiling the move happens instantly instead of lowering.
+    case 192: { // Ceiling_LowerToHighestFloor (tag, speed, change, crush, gap)
+      // The ceiling comes down to the highest floor around the sector plus the gap argument; if
+      // that floor is already above the ceiling the move happens instantly instead of lowering.
       let moved = 0;
       for (const sector of sectors) {
         const floors = planeHeights(state, project, sector, 'floorHeight');
-        const target = floors.length ? Math.max(...floors) : sector.floorHeight;
+        const target = (floors.length ? Math.max(...floors) : sector.floorHeight) + Math.max(0, arg5 || 0);
         if (target >= sector.ceilingHeight) {
           if (target > sector.ceilingHeight) { sector.ceilingHeight = target; state.worldRevision++; moved++; }
           continue;
@@ -451,12 +454,14 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       // A crusher repeats until `Ceiling_CrushStop` (44) stops it; one down-up stroke left the
       // ceiling in place for the rest of the level and gave the stop special nothing to stop.
       for (const sector of sectors) {
-        moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: sector.floorHeight + 4,
-          speed: Math.max(TIC, speed * TIC), wait: 1, returnMode: 'cycle', returnHeight: sector.ceilingHeight, sound: 'DSCNSTRT' });
+        // GZDoom passes a gap of 8 to EV_DoCeiling and DCeiling::Tick reverses in both directions
+        // without waiting, so the piston hammers instead of resting a second at each end.
+        moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: sector.floorHeight + 8,
+          speed: speed * TIC, wait: 0, bottomWait: 0, returnMode: 'cycle', returnHeight: sector.ceilingHeight, sound: 'DSCNSTRT' });
       }
       return 1;
     case 43: // Ceiling_LowerAndCrush
-      for (const sector of sectors) movePlane(state, sector, 'ceilingHeight', sector.floorHeight + 4, speed, { sound: 'DSCNSTRT' });
+      for (const sector of sectors) movePlane(state, sector, 'ceilingHeight', sector.floorHeight + 8, speed, { sound: 'DSCNSTRT' });
       return 1;
     case 44: // Ceiling_CrushStop
       for (const sector of sectors) state.sectorMotions.delete(`${sector.id}:ceilingHeight`);
@@ -507,7 +512,7 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         const low = Math.min(sector.floorHeight, targetFor('toLowest', sector, 'floorHeight', others, 0) + lip);
         const high = targetFor('toHighest', sector, 'floorHeight', others, 0);
         moveSector(state, { sectorId: sector.id, surface: 'floorHeight', height: down ? low : high,
-          speed: Math.max(TIC, speed * TIC), wait: Math.max(0, (arg3 || 0) / TIC),
+          speed: speed * TIC, wait: Math.max(0, (arg3 || 0) / TIC),
           returnMode: special === 60 ? 'cycle' : 'return',
           returnHeight: special === 60 ? high : sector.floorHeight, sound: 'DSPSTART' });
       }
@@ -528,7 +533,7 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         const height = special === 246 ? liveSector(state, line?.right?.sectorId)?.floorHeight
           : sectorPlaneTarget(project, state.sectors, sector, 'floorHeight', special === 245 ? 'toNearestUp' : 'toNearestDown');
         if (!Number.isFinite(height)) continue;
-        const speed = Math.max(TIC, planeSpeed * TIC);
+        const speed = planeSpeed * TIC;
         moveSector(state, { sectorId: sector.id, surface: 'floorHeight', height,
           speed, wait: 0, returnMode: 'stay', sound: 'DSPSTART', moveCeiling: true });
       }
@@ -800,7 +805,7 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
         const open = doorTarget(state, project, sector), closed = sector.floorHeight;
         const first = closingFirst ? closed : open;
         moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: first,
-          speed: Math.max(TIC, speed * TIC), wait: cycle ? wait : 0,
+          speed: speed * TIC, wait: cycle ? wait : 0,
           returnMode: cycle ? 'return' : 'stay', returnHeight: closingFirst ? open : closed,
           sound: closingFirst ? 'DSDORCLS' : 'DSDOROPN' });
       }
@@ -812,16 +817,20 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       for (const sector of sectors) {
         const others = planeHeights(state, project, sector, 'floorHeight');
         const lowest = targetFor('toLowest', sector, 'floorHeight', others, 0);
+        const highest = others.length ? Math.max(...others) : sector.floorHeight;
         const ceilings = planeHeights(state, project, sector, 'ceilingHeight');
+        // GZDoom's target table: 1 downWaitUpStay, 2 downToNearestFloor, 3 downToLowestCeiling,
+        // 4 platPerpetualRaise, anything else platUpByValue. A perpetual raise ignores the height
+        // argument and travels between the lowest floor around it and its own floor.
         const target = kind === 2 ? targetFor('toNearestDown', sector, 'floorHeight', others, 0)
-          : kind === 3 ? (ceilings.length ? Math.min(...ceilings) : sector.floorHeight)
-            : kind === 4 ? sector.floorHeight + (height || 64)
+          : kind === 3 ? Math.max(sector.floorHeight, ceilings.length ? Math.min(...ceilings) : sector.floorHeight)
+            : kind === 4 ? Math.max(sector.floorHeight, highest)
               : kind === 1 ? lowest
                 : sector.floorHeight + height;
         moveSector(state, { sectorId: sector.id, surface: 'floorHeight', height: target,
-          speed: Math.max(TIC, speed * TIC), wait,
-          returnMode: kind === 1 || kind === 2 ? 'return' : kind === 4 ? 'cycle' : 'stay',
-          returnHeight: sector.floorHeight, sound: 'DSPSTART' });
+          speed: speed * TIC, wait,
+          returnMode: kind === 1 || kind === 2 || kind === 4 ? (kind === 4 ? 'cycle' : 'return') : 'stay',
+          returnHeight: kind === 4 ? lowest : sector.floorHeight, sound: 'DSPSTART' });
       }
       return 1;
     }
@@ -833,7 +842,7 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 249: { // Door_CloseWaitOpen (tag, speed, delay in octics)
       for (const sector of sectors) {
         moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: sector.floorHeight,
-          speed: Math.max(TIC, speed * TIC), wait: zdoom ? waitOctics(arg3) : CLASSIC_DOOR_WAIT, returnMode: 'return',
+          speed: speed * TIC, wait: zdoom ? waitOctics(arg3) : CLASSIC_DOOR_WAIT, returnMode: 'return',
           returnHeight: doorTarget(state, project, sector), sound: 'DSDORCLS' });
       }
       return 1;

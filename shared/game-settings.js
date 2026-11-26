@@ -109,9 +109,11 @@ export function changeSetting(state, name, value, relative = false) {
   if (relative) {
     if (typeof spec.value !== 'number' || typeof value !== 'number') throw new Error(`Cannot increment ${name}`);
     const next = Math.max(spec.min, Math.min(spec.max, state.settings[name] + value));
-    // A setting that holds whole numbers steps in whole numbers, so an expression that works out
-    // fractional rounds to the nearest valid value instead of failing to apply mid-game.
-    value = Number.isInteger(spec.value) ? Math.round(next) : Math.round(next * 10000) / 10000;
+    // The step decides what a relative change lands on, not the default value: sensitivity,
+    // brightness, master volume and internal resolution all default to 1 but step by a fraction,
+    // and reading the default rounded every one of those changes straight back to 1 — the Options
+    // row could not touch them at all. A whole-number step still rounds.
+    value = Number.isInteger(spec.step ?? 1) ? Math.round(next) : Math.round(next * 10000) / 10000;
   }
   state.settings[name] = validateSetting(name, value);
   state.settingsRevision++;
