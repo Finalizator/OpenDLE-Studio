@@ -248,15 +248,17 @@ test('the power-up pickups are always taken and start their clock', () => {
 
 test('every pickup says what it was, the way Doom announces an item', () => {
   const p = room();
-  p.map.entities.push({ id: 'medikit', type: 'pickup', name: 'Medikit', doomType: 2014, x: -60, y: 0, angle: 0 });
+  // Doom's thing 2014 is the health bonus, and it says so — the strings beside these rules were a
+  // row out of step with the actions, so a stimpack announced itself as a health bonus.
+  p.map.entities.push({ id: 'medikit', type: 'pickup', name: 'HealthBonus', doomType: 2014, x: -60, y: 0, angle: 0 });
   installDoomInventoryScripts(p);
   validateProject(p);
   const collect = p.events.find(event => event.name === 'Doom pickup 2014 / collect');
-  assert.deepEqual(collect.actions[0], { type: 'showMessage', message: 'Picked up a medikit.' },
+  assert.deepEqual(collect.actions[0], { type: 'showMessage', message: 'Picked up a health bonus.' },
     'the message comes before the health is given');
   const s = createRuntime(p);
   tick(p, s, 2);
-  assert.equal(s.message, 'Picked up a medikit.', 'taking the item prints its message');
+  assert.equal(s.message, 'Picked up a health bonus.', 'taking the item prints its message');
   assert.ok(!s.entities.some(entity => entity.id === 'medikit'), 'and the item is gone');
 });
 

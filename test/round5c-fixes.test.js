@@ -41,3 +41,13 @@ test('constant folding wraps like ACS int32', () => {
   assert.match(source, /Math\.imul\(a, b\)/, 'multiplication wraps');
   assert.match(source, /Math\.trunc\(a \/ b\) \| 0/, 'division truncates');
 });
+
+test('the generic attack actions a derived engine relies on are performed', async () => {
+  // `A_SpawnProjectile` is how fifteen monsters — Hexen's Serpents and Centaurs among them — fire;
+  // unanswered, they chased and never attacked. The chase, refire and melee names of Strife and
+  // Heretic are the same decisions under other names.
+  const { ACTIONS } = await import('../shared/actor-runtime.js');
+  for (const name of ['A_SpawnProjectile', 'A_FastChase', 'A_MarineChase', 'A_SentinelRefire',
+    'A_M_Punch', 'A_KnightAttack', 'A_WraithMelee', 'A_MinotaurAtk1'])
+    assert.equal(typeof ACTIONS[name], 'function', name);
+});

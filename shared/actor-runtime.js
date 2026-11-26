@@ -990,6 +990,13 @@ export function hurtActor(project, state, entity, amount, source = null, damageT
 }
 
 /** A monster's hitscan attack: aim at its target, roll damage, let walls stop it. */
+/** A melee attack that only lands inside Doom's melee range, and says so when it misses. */
+function meleeAttack(ctx, damage, diceSides) {
+  if (!meleeable(ctx.state, ctx.entity)) return;
+  monsterHitscan(ctx, damage, diceSides);
+  saySound(ctx.state, 'DSCLAW', ctx.entity);
+}
+
 function monsterHitscan(ctx, damage, diceSides, spread = 0) {
   const { state, entity } = ctx;
   if (entity.health <= 0) return;
@@ -1101,7 +1108,7 @@ export const ACTIONS = {
     if (entity.health <= 0 || entity.dormant) return;
     const runtime = actorStateOf(entity);
     // Doom's chase ticks move the monster, then decide whether it may attack.
-    const speed = (entity.actorSpeed || actor.speed || 8) * TIC_RATE * (state.settings?.fastMonsters ? 2 : 1);
+    const speed = (entity.actorSpeed || actor.speed || 8) * TIC_RATE * (ctx.fast || state.settings?.fastMonsters ? 2 : 1);
     moveEnemy(state, entity, speed, 1 / TIC_RATE, targetPosition(state, entity));
     if (randomDamage(state, 1, 256) < 4) saySound(state, actor.sounds?.active, entity);
     if (runtime.reactionTime > 0) { runtime.reactionTime--; return; }
@@ -1293,6 +1300,30 @@ export const ACTIONS = {
   },
   // Heretic's acolyte: face the target and launch its fireball. The action was unknown, so all
   // 43 Acolyte variants chased a player forever and never fired a shot.
+  // The generic projectile attack every derived engine uses: `A_SpawnProjectile(class, ofs_xy,
+  // ofs_z, angle, pitch, ...)` launches the named class, or the actor's own `Projectile` when the
+  // name is left out. Unanswered, fifteen monsters — Hexen's Serpents and Centaurs among them —
+  // chased the player and never fired.
+  A_SpawnProjectile(ctx) {
+    const { state, entity } = ctx;
+    if (!canSeePlayer(state, entity, SIGHT_RANGE)) return;
+    ACTIONS.A_FaceTarget(ctx);
+    const name = String(arg(ctx, 0) || ctx.actor?.projectile || '');
+    if (!name) return;
+    spawnActorProjectile(ctx.project, state, entity, actorMissile(ctx, name));
+  },
+  // Nightmare's fast chase: the same decision at double the speed, whatever the skill setting is.
+  A_FastChase(ctx) { ACTIONS.A_Chase({ ...ctx, fast: true }); },
+  // Strife's marines chase exactly as any other monster does.
+  A_MarineChase(ctx) { ACTIONS.A_Chase(ctx); },
+  // A refire check that is `A_CPosRefire` under another name (Strife's sentinels and beggars).
+  A_SentinelRefire(ctx) { ACTIONS.A_CPosRefire(ctx); },
+  // Melee attacks that all roll Doom's `((P_Random()%8)+1)*3` and only land in range: the
+  // Strife marine's punch, D'Sparil's knights, Heretic's wraith and the Maulotaur's first swing.
+  A_M_Punch(ctx) { meleeAttack(ctx, 3, 8); },
+  A_KnightAttack(ctx) { meleeAttack(ctx, 3, 8); },
+  A_WraithMelee(ctx) { meleeAttack(ctx, 3, 8); },
+  A_MinotaurAtk1(ctx) { meleeAttack(ctx, 3, 8); },
   A_ShootGun(ctx) {
     const { state, entity } = ctx;
     ACTIONS.A_FaceTarget(ctx);
@@ -1430,8 +1461,13 @@ export const ACTIONS = {
     // time and the table below could only ever return its first entry: every skull cube in the
     // Icon of Sin fight produced an imp.
     const roll = randomDamage(state, 1, 256) - 1;
-    const pick = SPAWN_CUBE_MONSTERS.find(([limit]) => roll < limit);
-    const monster = pick ? spawnLiveActor(project, state, pick[1], at) : null;
+    // The class the roll names, or the first one this project actually defines: an imported game
+    // that ships only some of Doom's monsters must still put something in the room rather than
+    // nothing at all.
+    const from = SPAWN_CUBE_MONSTERS.findIndex(([limit]) => roll < limit);
+    const order = from < 0 ? SPAWN_CUBE_MONSTERS : [...SPAWN_CUBE_MONSTERS.slice(from), ...SPAWN_CUBE_MONSTERS.slice(0, from)];
+    let monster = null;
+    for (const [, name] of order) { monster = spawnLiveActor(project, state, name, at); if (monster) break; }
     if (monster) {
       monster.angle = Math.atan2(state.player.y - monster.y, state.player.x - monster.x) * 180 / Math.PI;
       if (canSeePlayer(state, monster, SIGHT_RANGE)) setActorState(project, monster, 'See');

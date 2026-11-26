@@ -65,7 +65,9 @@ test('an Acolyte that wakes through A_Look2 hunts the player', () => {
   const state = createRuntime(project);
   const acolyte = state.entities.find(entity => entity.id === 'acolyte');
   for (let frame = 0; frame < 35 * 2; frame++) stepRuntime(project, state, 1 / 35, new Set());
-  assert.ok(acolyte.target || acolyte.stateLabel === 'See', `the acolyte woke (state ${acolyte.stateLabel})`);
+  // Awake or already attacking: an acolyte that sees the player goes to `See` and, now that
+  // `A_ShootGun` is implemented, straight on into `Missile`.
+  assert.ok(acolyte.target || ['See', 'Missile'].includes(acolyte.stateLabel), `the acolyte woke (state ${acolyte.stateLabel})`);
   const before = acolyte.x;
   for (let frame = 0; frame < 35 * 4; frame++) stepRuntime(project, state, 1 / 35, new Set());
   assert.ok(Math.abs(acolyte.x - before) > 16, 'and closed on the player');
