@@ -7,6 +7,8 @@ This guide covers installing someone else's addon and writing your own. For
 ready-made generators that create ordinary editable events without introducing a
 new runtime command, use [scriptlets](scriptlets.md) instead.
 
+![The Addons tab, where a project installs or removes an extension](addons.png)
+
 ## Choose the right mechanism
 
 | Need | Use |

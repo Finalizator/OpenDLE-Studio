@@ -14,15 +14,25 @@ Doom and GZDoom content is a first-class input rather than the whole point: the 
 its maps, artwork and gameplay definitions, and everything it brings is editable in the same
 visual tools as a hand-built level.
 
-![OpenDLE: Studio editor workspace](./Docs/editor_overall.png)
+![The editor workspace: properties, the 2D layout view of an imported Doom map, the asset browser and the project tree](./Docs/editor_overall.png)
 
 ## See it in action
 
-| Visual event scripting | HUD and menu design |
-| --- | --- |
-| ![Visual event sheets with conditions and actions](./Docs/event_sheets.png) | ![WYSIWYG HUD designer](./Docs/hud_designer.png) |
+Every picture below is this editor, on an imported campaign, with nothing mocked up.
 
-![In-game testing in the browser](./Docs/ingame_testing.png)
+| Build gameplay as events | Design the HUD and menus |
+| --- | --- |
+| ![A visual event sheet: initial stats, movement keys mapped to conditions and actions](./Docs/event_sheets.png) | ![The WYSIWYG HUD designer with the Doom status bar and a pause menu open in the preview](./Docs/hud_designer.png) |
+
+| Lay out paths and motion in 3D | Time sequences on the timeline |
+| --- | --- |
+| ![Multi-point path editing in the 3D view, with the asset browser underneath](./Docs/multipurpose_path_system.png) | ![A timesheet with tracks and cues, driving object motion and level timing](./Docs/timeline_editor.png) |
+
+| Generate and sculpt terrain | Stack full-screen shader effects |
+| --- | --- |
+| ![The Terrain tab: recipes and noise layers on the left, the generated world on the right](./Docs/terrain_editor.png) | ![The Shader tab: the effect stack, technique picker and per-technique sliders](./Docs/shader_editor.png) |
+
+![Playing the level inside the editor, in the browser, driven by the project's own events](./Docs/ingame_testing.png)
 
 ## Create without starting from code
 

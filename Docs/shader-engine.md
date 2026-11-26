@@ -7,6 +7,8 @@ time, and tune each one with its own sliders. The stack is project data, so a lo
 travels with the game, undoes like any other edit, and can be driven by events while
 the game runs.
 
+![The Shader tab: the effect stack on the left, the technique picker open, and each technique's sliders](shader_editor.png)
+
 ## How it works
 
 The level is drawn into a render target that keeps its depth. The stack then runs over
