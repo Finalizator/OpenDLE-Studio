@@ -1276,6 +1276,14 @@ export const ACTIONS = {
     spawnActorProjectile(ctx.project, state, entity, actorMissile(ctx, 'BaronBall'));
     saySound(state, 'DSPISTOL', entity, 70);
   },
+  // Heretic's acolyte: face the target and launch its fireball. The action was unknown, so all
+  // 43 Acolyte variants chased a player forever and never fired a shot.
+  A_ShootGun(ctx) {
+    const { state, entity } = ctx;
+    ACTIONS.A_FaceTarget(ctx);
+    spawnActorProjectile(ctx.project, state, entity, actorMissile(ctx, 'AcolyteFX'));
+    saySound(state, 'DSPISTOL', entity, 70);
+  },
   A_BspiAttack(ctx) {
     spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'ArachnotronPlasma'));
     saySound(ctx.state, 'DSPLASMA', ctx.entity, 70);

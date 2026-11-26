@@ -88,3 +88,34 @@ function buildAcolyte() {
       { kind: 'frame', sprite: 'ACLO', letter: 'A', duration: 8, actions: [{ name: 'A_Chase', args: [] }], label: 'See' },
     ], labels: { Spawn: 0, See: 1 } } }];
 }
+
+test('an Acolyte that wakes fires instead of chasing with empty hands', () => {
+  // Heretic's acolyte attacks from `A_ShootGun`, which was unknown: it closed on the player and
+  // then stood there. The attack launches its own fireball.
+  const project = createProject();
+  project.events = [];
+  installEngineScripts(project);
+  project.map.vertices = [[-512, -512], [512, -512], [512, 512], [-512, 512]].map(([x, y], index) => ({ id: `v${index}`, x, y }));
+  project.map.sectors = [{ id: 's1', floorHeight: 0, ceilingHeight: 256, light: 255, sky: false, tag: 0 }];
+  const side = { sectorId: 's1', offsetX: 0, offsetY: 0 };
+  project.map.walls = [0, 1, 2, 3].map(index => ({ id: `w${index}`, a: `v${index}`, b: `v${(index + 1) % 4}`,
+    right: side, height: 256, color: '#888888', solid: true }));
+  project.map.entities = [
+    { id: 'player', type: 'player', name: 'Player', x: -300, y: 0, angle: 0 },
+    { id: 'acolyte', type: 'enemy', name: 'Acolyte', actorName: 'AcolyteRed', doomType: 142, x: 128, y: 0, angle: 180, health: 80 },
+  ];
+  project.actors = [...buildAcolyte(), { id: 'acolyte_fx', name: 'AcolyteFX', radius: 12, height: 12,
+    flags: { MISSILE: true, NOGRAVITY: true },
+    seeState: 'Spawn', states: { frames: [
+      { kind: 'frame', sprite: 'FX01', letter: 'A', duration: 4, actions: [], label: 'Spawn' },
+    ], labels: { Spawn: 0 } }, speed: 12, damage: 8, damageType: null }];
+  validateProject(project);
+  const state = createRuntime(project);
+  let fired = 0;
+  for (let frame = 0; frame < 35 * 8; frame++) {
+    const before = state.projectiles.length;
+    stepRuntime(project, state, 1 / 35, new Set());
+    if (state.projectiles.length > before) fired++;
+  }
+  assert.ok(fired > 0, 'the acolyte fired at the player');
+});
