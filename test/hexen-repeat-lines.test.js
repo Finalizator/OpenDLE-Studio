@@ -1,7 +1,7 @@
 // A Hexen/UDMF line that is not marked repeatable must fire once.
 //
 // Hexen and UDMF lines carry their own repeatability: `ML_REPEAT_SPECIAL` (0x200) in the binary
-// format and `repeatable = true` in UDMF, both false by default. The importer never read either,
+// format and `repeatspecial = true` in UDMF, both false by default. The importer never read either,
 // so every translated line here was repeatable — a one-shot line re-lowered its floor, re-ran its
 // script and re-fired its teleport for as long as the player stood against it.
 
@@ -62,9 +62,9 @@ sidedef { sector = 0; }
 sidedef { sector = 1; }
 linedef { v1 = 0; v2 = 1; sidefront = 0; blocking = true; }
 linedef { v1 = 1; v2 = 2; sidefront = 0; sideback = 1; special = 12; arg0 = 1; arg1 = 8; playercross = true; }
-linedef { v1 = 1; v2 = 2; sidefront = 0; sideback = 1; special = 13; arg0 = 1; repeatable = true; playercross = true; }
+linedef { v1 = 1; v2 = 2; sidefront = 0; sideback = 1; special = 13; arg0 = 1; repeatspecial = true; playercross = true; }
 `;
   const map = udmfRecords(parseUDMF(text));
   assert.equal(map.lines[1].repeatable, false, 'repeatable is off unless the map says otherwise');
-  assert.equal(map.lines[2].repeatable, true);
+  assert.equal(map.lines[2].repeatable, true, 'UDMF spells the key repeatspecial');
 });

@@ -181,7 +181,9 @@ export function udmfRecords(document) {
       special: number(p, 'special', 0, { integer: true, min: 0, max: 65535 }),
       tag: number(p, 'id', 0, { integer: true, min: 0, max: 65535 }),
       args: Array.from({ length: 5 }, (_, i) => number(p, `arg${i}`, 0, { integer: true, min: -32768, max: 32767 })),
-      repeatable: bool(p, 'repeatable'),
+      // UDMF spells it `repeatspecial` (Doom Builder and UDB both write that key); reading
+      // `repeatable` turned every UDMF line into a one-shot line instead.
+      repeatable: bool(p, 'repeatspecial'),
       activationModes: [['playercross', 'cross'], ['playeruse', 'use'], ['playeruseback', 'use'],
         ['impact', 'shoot'], ['missilecross', 'shoot']]
         .filter(([key]) => bool(p, key)).map(([, mode]) => mode),

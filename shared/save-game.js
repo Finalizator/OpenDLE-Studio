@@ -63,7 +63,11 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   'brushTrace',
   // What the controllers said this frame, and which monsters were boxed in: both are a moment, not
   // the game's state, and both are written again by the next frame.
-  'pad', 'enemyBlocked']);
+  'pad', 'enemyBlocked',
+  // `removeLiveActor` leaves `actorRemovals` set on the state after a boss cube lands, and a key
+  // the validator does not know makes every save taken afterwards unloadable. It records a moment
+  // inside one frame, not the game.
+  'actorRemovals']);
 const legacyDiscarded = new Set(['rendererStatus']);
 // Imported actors run their own tic clocks and weapon machine, so these fields only
 // exist once a game with an actor table has been played.
