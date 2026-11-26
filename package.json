@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",
-  "description": "OpenDLE: Studio - source-available browser-native visual game engine with local DeepSeek and MCP tools",
+  "description": "OpenDLE: Studio - source-available, browser-native Doom/GZDoom engine and visual level editor with local DeepSeek and MCP tools",
   "engines": {
     "node": ">=22.12"
   },

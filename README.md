@@ -4,10 +4,11 @@ Ver 0.5 goal = Doom 2 fully playable and completable inside of OpenDLE: Studio
 **Build worlds. Script visually. Make them playable in your browser.**
 
 OpenDLE: Studio is an experimental, source-available **Doom/GZDoom-compatible game
-engine** that runs in the browser, with a **no-code visual editor**: import WAD and PK3
-levels, edit sectors and objects in 2D and 3D, script gameplay with Construct-inspired
-event sheets and GDevelop-style conditions/actions, and press play without leaving the
-page.
+engine** that runs in the browser, with a **full visual level editor**: import WAD and PK3
+levels as well as Quake, Half-Life and Quake 3 layouts, edit sectors, brushes and objects in
+2D and 3D, assign PBR materials, generate and sculpt terrain, script gameplay with
+Construct-inspired event sheets and GDevelop-style conditions/actions — then play in the page
+or export a standalone app.
 
 ![OpenDLE: Studio editor workspace](./Docs/editor_overall.png)
 
