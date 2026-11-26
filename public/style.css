@@ -823,3 +823,26 @@ body.scene-dragging { cursor: grabbing; }
 .terrain-stage { position: relative; min-height: 0; overflow: hidden; background: #10151c; }
 .terrain-stage canvas { display: block; width: 100%; height: 100%; }
 .terrain-stage > p { margin: 16px; max-width: 560px; }
+
+/* The noise stack: an ordered list, because the order is the composition. A layer is a card with
+   its own name, type and strength on one line and its type's parameters underneath. */
+.terrain-stack { margin-top: 10px; }
+.terrain-stack-toolbar { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.terrain-stack-toolbar select { flex: 1 1 auto; min-width: 0; }
+.terrain-stack-toolbar button { flex: 0 0 auto; }
+.terrain-layer { padding: 6px 8px; margin-bottom: 6px; background: #414141; border: 1px solid var(--border); border-radius: 3px; }
+.terrain-layer-head { display: flex; align-items: center; gap: 4px; }
+.terrain-layer-name { flex: 1 1 auto; min-width: 0; font-size: 10px; }
+.terrain-layer-type { flex: 0 0 96px; font-size: 10px; }
+.terrain-icon { flex: 0 0 auto; width: 20px; padding: 0; font-size: 11px; line-height: 18px; }
+.terrain-layer-row { display: flex; align-items: center; gap: 6px; margin: 5px 0 2px; font-size: 10px; }
+.terrain-layer-row select { flex: 0 0 84px; }
+.terrain-layer-strength { flex: 1 1 auto; min-width: 0; }
+.terrain-layer-row em { flex: 0 0 30px; text-align: right; font-style: normal; color: var(--muted); }
+.terrain-layer-desc { margin: 4px 0 2px; font-size: 9px; line-height: 1.4; color: var(--muted); }
+.terrain-param { display: flex; align-items: center; gap: 6px; margin: 2px 0; font-size: 9px; }
+.terrain-param span { flex: 0 0 70px; }
+.terrain-param input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.terrain-param input[type="number"] { flex: 0 0 56px; }
+.terrain-param em { flex: 0 0 30px; text-align: right; font-style: normal; color: var(--muted); }
+.terrain-layer-enum { flex: 0 0 96px; }

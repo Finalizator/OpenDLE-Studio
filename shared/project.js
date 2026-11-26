@@ -761,6 +761,30 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     if (terrain.seaLevel !== undefined) number(terrain.seaLevel, 'Terrain sea level', -100000, 100000);
     for (const flag of ['exportCollision', 'exportWater'])
       if (terrain[flag] !== undefined) assert(typeof terrain[flag] === 'boolean', `Terrain ${flag} must be a boolean`);
+    // The noise stack is the recipe's composition: an ordered list of layers the runtime's own
+    // schema validates as it builds them. What a *project* has to guarantee is that the list is
+    // shaped the way the runtime reads it, so a saved world can always be reopened.
+    if (terrain.stack !== undefined && terrain.stack !== null) {
+      object(terrain.stack, 'Terrain noise stack');
+      array(terrain.stack.layers, 'Terrain noise layers', 32);
+      assert(terrain.stack.layers.length > 0, 'A terrain noise stack needs at least one layer');
+      for (const layer of terrain.stack.layers) {
+        object(layer, 'Terrain noise layer');
+        identifier(layer.id, 'Terrain noise layer id');
+        text(layer.name, 'Terrain noise layer name', 60);
+        text(layer.type, 'Terrain noise layer type', 40);
+        assert(['replace', 'add', 'subtract'].includes(layer.blendMode || 'add'),
+          `Unknown noise blend mode ${layer.blendMode}`);
+        number(layer.strength, 'Terrain noise layer strength', 0, 8);
+        if (layer.opacity !== undefined) number(layer.opacity, 'Terrain noise layer opacity', 0, 1);
+        if (layer.seedOffset !== undefined) number(layer.seedOffset, 'Terrain noise seed offset', -2147483648, 2147483647);
+        object(layer.params, 'Terrain noise layer params');
+        for (const [key, value] of Object.entries(layer.params))
+          number(value, `Terrain noise parameter ${key}`, -100000, 100000);
+      }
+      if (terrain.stack.normalizeOutput !== undefined)
+        assert(typeof terrain.stack.normalizeOutput === 'boolean', 'Terrain normalizeOutput must be a boolean');
+    }
   }
 
   // PBR materials: the record that says which map is the base colour and which is the normal,

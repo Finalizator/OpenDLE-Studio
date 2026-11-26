@@ -15,7 +15,10 @@
 // 560-unit height), because its validator owns the accepted ranges: a value outside one is refused
 // by name rather than quietly clamped, so the tab starts from something it will definitely accept.
 const DEFAULTS = { name: 'Terrain', seed: 1337, chunkCount: 8, chunkSize: 128, heightScale: 560,
-  octaves: 7, scale: 26, meshRes: 256, seaLevel: 0, exportCollision: true, exportWater: false };
+  octaves: 7, scale: 26, meshRes: 256, seaLevel: 0, exportCollision: true, exportWater: false,
+  // `null` means "the runtime's own classic stack"; a project that has been edited through the
+  // layer panel stores the stack itself, so the same world comes back and can be edited again.
+  stack: null };
 
 export function defaultTerrain() { return { ...DEFAULTS }; }
 export function terrainRecipe(project) { return { ...DEFAULTS, ...(project?.terrain || {}) }; }
@@ -26,7 +29,8 @@ export function terrainConfiguration(recipe) {
     heightScale: recipe.heightScale,
     seaLevel: recipe.seaLevel,
     layout: { chunkCount: recipe.chunkCount, chunkSize: recipe.chunkSize },
-    source: { kind: 'noise', seed: recipe.seed, octaves: recipe.octaves, scale: recipe.scale },
+    source: { kind: 'noise', seed: recipe.seed, octaves: recipe.octaves, scale: recipe.scale,
+      ...(recipe.stack?.layers?.length ? { stack: recipe.stack } : {}) },
   };
 }
 
@@ -112,8 +116,49 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     field('Mesh resolution', 'meshRes', { min: 16, max: 1024, step: 16 }),
     toolbar, state);
 
+  // The layer stack is the real recipe; the fields above are its quick controls. It is built lazily
+  // with the rest of the tab, because it imports the runtime's schema module.
+  const layersHost = document.createElement('div');
+  layersHost.className = 'terrain-stack';
+  layersHost.id = 'terrain-stack';
+  form.append(layersHost);
+  let stackEditor = null;
+  void import('./terrain-layers.js').then(({ createStackEditor }) => {
+    stackEditor = createStackEditor({
+      root: layersHost,
+      status,
+      onChange: stack => {
+        recipe = { ...recipe, stack };
+        syncNoiseFields();
+        save();
+        // Regenerating on every edit is what makes the panel an editor rather than a form: the
+        // viewer is rebuilt from the new stack, which is the only honest answer to "what does this
+        // look like".
+        scheduleRebuild();
+      },
+    });
+    if (recipe.stack?.layers?.length) stackEditor.set(recipe.stack);
+  }).catch(error => {
+    layersHost.textContent = `The noise layer editor could not load: ${error.message}`;
+  });
+
   function save() {
     edit(next => { next.terrain = { ...recipe }; }, 'Terrain recipe saved');
+  }
+
+  /**
+   * Whether the two noise fields above still decide anything.
+   *
+   * With no stack the runtime builds its classic single layer from these two numbers, so they are
+   * the recipe. Once a stack exists, the stack *is* the shape and those numbers are ignored — showing
+   * them would be a control that does nothing, which is worse than a control that is absent.
+   */
+  function syncNoiseFields() {
+    const stacked = Boolean(recipe.stack?.layers?.length);
+    for (const key of ['octaves', 'scale']) {
+      const input = root.querySelector(`#terrain-${key}`);
+      if (input?.parentElement) input.parentElement.hidden = stacked;
+    }
   }
 
   async function loadModules() {
@@ -121,6 +166,12 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     loading ||= Promise.all([import('procedural-terrains/viewer'), import('procedural-terrains/export')])
       .then(([viewerModule, exportModule]) => (modules = { viewer: viewerModule, exporter: exportModule }));
     return loading;
+  }
+
+  let rebuildTimer = 0;
+  function scheduleRebuild() {
+    clearTimeout(rebuildTimer);
+    rebuildTimer = setTimeout(() => void build(), 320);
   }
 
   async function build() {
@@ -173,8 +224,10 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     recipe = defaultTerrain();
     for (const [key, value] of Object.entries(recipe)) {
       const input = root.querySelector(`#terrain-${key}`);
-      if (input) input.value = String(value);
+      if (input) input.value = String(value ?? '');
     }
+    stackEditor?.set(null);
+    syncNoiseFields();
     save();
     void build();
   });
@@ -186,6 +239,8 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
       const input = root.querySelector(`#terrain-${key}`);
       if (input) input.value = String(value);
     }
+    stackEditor?.set(recipe.stack);
+    syncNoiseFields();
     // The viewer is built on demand: a project with no terrain yet should not pay for a WebGL2
     // context or the package's workers until the author asks for one.
     if (!viewer && !loading) void build();

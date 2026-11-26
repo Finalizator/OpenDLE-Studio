@@ -29,6 +29,35 @@ The terrain tree also gets its own **specifier scope**, so its `three` is the cl
 `three.module.js` build: the runtime constructs a `WebGLRenderer`, and the WebGPU build the rest of
 the editor import-maps (`three.webgpu.js`) does not export one at all.
 
+## The layer editor
+
+The recipe's shape is a **noise stack**: an ordered list of layers, each one blended into what the
+layers above it produced (`replace` starts again from flat). The panel is the studio's
+`NoiseLayersPanel` rebuilt in this editor's own DOM — no React, and no copy of its engine:
+
+- **Preset** applies one of the studio's six recipes (Classic, Rolling Hills, Sharp Mountains, Canyon
+  Terraces, Desert Dunes, Moon Craters) as a starting point; every layer stays editable afterwards.
+- **Add layer** appends a layer of the chosen type. The type list, each type's description and every
+  parameter field (label, range, step, default) come from the runtime's own `NOISE_TYPES` schema, so
+  a type the package adds appears without touching this repository.
+- Each card has enable, name, type, up/down and remove, plus blend mode and strength. Changing the
+  type replaces the layer's parameters with the new type's defaults and keeps its place and name.
+- Any edit regenerates the world after a short pause, so the panel is an editor rather than a form.
+
+With a stack present, the **Noise octaves** and **Noise scale** fields stand down (they are the
+classic single-layer recipe and the stack ignores them); they come back with **Reset**.
+
+The stack is stored in `project.terrain.stack` and validated with the project, so a world authored
+here reopens for the next person exactly as it was.
+
+## Surface packs
+
+The five classic packs — grass, rock, sand, mud, alien — are copied from the studio into
+`public/textures/terrain/`, together with a `materials.json` trimmed to those five (about 430 KB;
+the studio's full PBR library is 1.1 GB and is deliberately *not* vendored). The runtime reads the
+manifest at `/textures/terrain/materials.json`, so adding a pack later means copying its folder and
+adding its manifest row.
+
 ## Using the tab
 
 1. Open **Terrain** in the tab strip. The viewer starts on the recipe the project stores, or on the

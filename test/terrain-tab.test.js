@@ -110,3 +110,83 @@ test('the studio page is served under a policy hashed from the page itself', asy
   assert.deepEqual(hashes(header), hashes(expected), 'the served policy hashes this page, not an older one');
   assert.ok(hashes(header).length > 0, 'the inline import map is allowed to run');
 });
+
+// The layer editor is the studio's noise-stack panel, rebuilt in this editor's DOM on the schema
+// the runtime publishes — no React, and no copy of the engine.
+import { BLEND_MODES, STACK_PRESETS, freshStack, layerParams, newLayer, noiseTypeById, presetByName } from '../public/terrain-layers.js';
+import { makeLayer, makeStack, NOISE_TYPES } from 'procedural-terrains/generation';
+
+test('the layer editor is driven by the schema the runtime publishes', () => {
+  assert.ok(NOISE_TYPES.length >= 10, 'the runtime lists its noise types');
+  const type = noiseTypeById('ridged');
+  assert.ok(type, 'ridged is one of them');
+  assert.ok(type.params.length > 0, 'and it declares its parameters');
+  // A layer card asks the type what its fields are, with the schema's defaults for a layer that has
+  // never been edited, so a type the runtime adds needs no change here.
+  const params = layerParams(makeLayer('ridged'));
+  for (const param of type.params) assert.equal(params[param.key], param.default, `${param.key} default`);
+  assert.deepEqual(Object.keys(params).sort(), type.params.map(param => param.key).sort());
+  assert.deepEqual(BLEND_MODES.map(([value]) => value), ['replace', 'add', 'subtract']);
+});
+
+test('every studio preset rebuilds a valid stack, and names are unique per stack', () => {
+  assert.equal(STACK_PRESETS.length, 6);
+  for (const [key, label, build] of STACK_PRESETS) {
+    assert.equal(typeof label, 'string');
+    const stack = build();
+    assert.ok(stack.layers.length >= 1, `${key} has layers`);
+    for (const layer of stack.layers) {
+      assert.ok(NOISE_TYPES.some(type => type.id === layer.type), `${key}: ${layer.type} is a real type`);
+      assert.ok(['replace', 'add', 'subtract'].includes(layer.blendMode), `${key}: ${layer.blendMode}`);
+      assert.ok(Number.isFinite(layer.strength));
+    }
+  }
+  assert.equal(presetByName('sharpMountains')[1], 'Sharp Mountains');
+  assert.equal(presetByName('nope'), null);
+
+  // Adding two FBM layers in a row must not produce two layers called "FBM / Fractal".
+  const first = newLayer('fbm', []);
+  const second = newLayer('fbm', [first]);
+  assert.notEqual(first.name, second.name);
+  assert.throws(() => newLayer('not-a-type', []), /Unknown noise layer type/);
+  assert.ok(freshStack().layers.length >= 1, 'the default stack is the classic recipe');
+});
+
+test('a stored noise stack survives validation, and a broken one is refused', () => {
+  const project = createProject();
+  project.terrain = { ...defaultTerrain(), stack: presetByName('rollingHills')[2]() };
+  validateProject(project, { unique: new Set() });
+  assert.equal(project.terrain.stack.layers.length, 3);
+
+  const bad = change => {
+    const next = createProject();
+    const stack = makeStack([makeLayer('fbm'), makeLayer('ridged')]);
+    next.terrain = { ...defaultTerrain(), stack: { ...stack, ...change } };
+    assert.throws(() => validateProject(next, { unique: new Set() }));
+  };
+  bad({ layers: [] });
+  bad({ layers: [{ ...makeLayer('fbm'), blendMode: 'multiply' }] });
+  bad({ layers: [{ ...makeLayer('fbm'), strength: 99 }] });
+  bad({ layers: [{ ...makeLayer('fbm'), params: { scale: Infinity } }] });
+  bad({ layers: [{ ...makeLayer('fbm'), name: '' }] });
+  assert.throws(() => {
+    const next = createProject();
+    next.terrain = { ...defaultTerrain(), stack: 'not a stack' };
+    validateProject(next, { unique: new Set() });
+  }, /noise stack must be an object/);
+});
+
+test('the surface packs the tab ships are the ones the manifest names', () => {
+  // A manifest row whose folder was not copied is a texture the viewer asks for and the server
+  // answers with 404 — the subset has to be reflected in the manifest, not just in the folder.
+  const manifest = JSON.parse(readFileSync(resolve(root, 'public/textures/terrain/materials.json'), 'utf8'));
+  assert.ok(manifest.materials.length >= 3, `packs: ${manifest.materials.map(item => item.id).join(', ')}`);
+  for (const material of manifest.materials) {
+    const folder = resolve(root, 'public/textures/terrain', material.folder);
+    // A pack is a base set plus variants; the manifest names files inside a variant folder, and the
+    // runtime resolves them under `base/`. The diffuse map is the one every surface needs.
+    assert.ok(existsSync(resolve(folder, 'base')), `${material.id} has its base set`);
+    assert.ok(existsSync(resolve(folder, 'base', material.maps.diffuse)),
+      `${material.id} diffuse → ${material.maps.diffuse}`);
+  }
+});
