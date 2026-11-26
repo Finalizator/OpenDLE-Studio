@@ -322,7 +322,7 @@ actions:   saveGame(slot 1)        // overwrite asks for confirmation first
 
 ---
 
-## 6. Engine tweaks (the only non-project settings)
+## 6. Engine Settings (the only non-project settings)
 
 These are editor/browser preferences stored per browser, not part of a game:
 field of view, render resolution, brightness, mute, jumping toggle, and the
@@ -615,7 +615,7 @@ and the menus with no controller-specific rule at all.
 
 A pad button presses the **action** its key is bound to, so rebinding Forward to the up arrow
 moves the left stick with it. The pad's own settings — deadzone, look speed, inverted look and
-whether it rumbles — are in the editor's **Engine tweaks**, because an imported game's classic
+whether it rumbles — are in the editor's **Engine Settings** (Menu → Engine Settings), because an imported game's classic
 menus have no Controls page.
 
 ```text
@@ -640,7 +640,7 @@ Player presses Cross and the shield is down:
 `padButtonHeld` and `padButtonPressed` (by name: `cross`, `circle`, `square`, `triangle`, `l1`,
 `r1`, `l2`, `r2`, `share`, `options`, `l3`, `r3`, `up`, `down`, `left`, `right`, `guide`),
 `padAxis` (compare `leftX`, `leftY`, `rightX` or `rightY`, −1 to 1) and `padStick` (a stick pushed
-`up`, `down`, `left`, `right` or `any` past the deadzone in Engine tweaks) cover the pad as a
+`up`, `down`, `left`, `right` or `any` past the deadzone in Engine Settings) cover the pad as a
 thing in itself. The state is written by the page that owns the controllers each frame, so it
 never enters a save.
 

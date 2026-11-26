@@ -2395,17 +2395,17 @@ function renderEngineTweaks() {
   }
 }
 // The engine documentation is built into `public/docs` by `npm run docs`, so it is a page on the
-// same server rather than a folder to find. Two buttons open it — the header and the About tab,
-// where "where is the manual" gets asked — and F1 is the shortcut every other editor uses.
+// same server rather than a folder to find. It has a button of its own in the Menu, one in the
+// header so it is never hidden, and F1 — the shortcut every editor uses.
 const openEngineDocs = () => { window.open('/docs/', '_blank', 'noopener'); };
 $('engine-docs').addEventListener('click', openEngineDocs);
-$('engine-docs-about').addEventListener('click', openEngineDocs);
+$('engine-docs-header').addEventListener('click', openEngineDocs);
 $('engine-tweaks-reset').addEventListener('click', guard(() => {
   const tweaks = engineTweaks();
   localStorage.setItem('opendle-engine-tweaks', JSON.stringify(tweaks));
   if (runtime) { Object.assign(runtime.settings, tweaks); runtime.settingsRevision++; }
   sceneEditor?.settings(tweaks);
-  renderEngineTweaks(); $('engine-tweaks-status').textContent = 'Engine tweaks reset.';
+  renderEngineTweaks(); $('engine-tweaks-status').textContent = 'Engine settings reset.';
 }));
 /** Reads the engine version once and caches it for the About tab and log headers. */
 function loadEngineVersion() {
@@ -5669,7 +5669,7 @@ async function beginPreview(gameMode = false, resumeSettings, start = false, lev
     $('play-level').replaceChildren(...(snapshot.game?.levels || []).map(level =>
       new Option(`${level.id} — ${level.name}`, level.id, false, level.id === snapshot.game.active)));
     $('preview-controls').textContent = runtime.scriptedInput
-      ? 'Editable Engine controls: WASD / arrows / mouse look. Space: jump (editor Engine tweaks). E: use doors and switches. Left mouse: fire selected weapon (pistol/shotgun bullets are instant hitscan, not flying missiles). 1-9: select owned weapons (8=chainsaw, 9=super shotgun). Right-drag: look without capture. Tab: HUD cursor. Escape releases cursor, then opens the pause menu.'
+      ? 'Editable Engine controls: WASD / arrows / mouse look. Space: jump (editor Engine Settings). E: use doors and switches. Left mouse: fire selected weapon (pistol/shotgun bullets are instant hitscan, not flying missiles). 1-9: select owned weapons (8=chainsaw, 9=super shotgun). Right-drag: look without capture. Tab: HUD cursor. Escape releases cursor, then opens the pause menu.'
       : 'Click: mouse look (or left-drag). Escape releases cursor, then opens the pause menu. WASD moves, arrows turn, Space jumps; E / F / Q trigger events.';
     if (!$('play-dialog').open) $('play-dialog').showModal();
     $('preview').focus(); keys.clear(); pressed.clear();
