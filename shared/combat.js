@@ -571,6 +571,16 @@ export function advanceProjectiles(state, dt, onDeath, onDamage) {
       if (distance !== null) { nearest = distance; target = entity; }
     }
     projectile.x += projectile.dx * nearest; projectile.y += projectile.dy * nearest; projectile.z += projectile.dz * nearest; projectile.age += dt;
+    // Hexen's Centaur Lord shield: a missile that reaches a reflective thing turns around and flies
+    // back the way it came, owned now by the thing it bounced off, exactly as `bReflective` does.
+    if (target && target.reflective && target !== state.player) {
+      projectile.dx = -projectile.dx; projectile.dy = -projectile.dy; projectile.dz = -projectile.dz;
+      projectile.ownerId = target.id;
+      projectile.age = 0;
+      if (projectile.sound) soundEvent(state, projectile.sound, .7, projectile);
+      survivors.push(projectile);
+      continue;
+    }
     if (target || nearest < travel) {
       const source = projectileSource(state, projectile);
       const hit = entity => hurt(entity, randomDamage(state, projectile.damage, projectile.diceSides), source, projectile.damageType);

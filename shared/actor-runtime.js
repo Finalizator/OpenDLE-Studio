@@ -326,6 +326,8 @@ const numArg = (ctx, index, fallback = 0) => {
 };
 const truthyArg = value => value === true || (typeof value === 'string' ? /^(true|[1-9]\d*)$/i.test(value.trim()) : Number(value) !== 0 && Boolean(value));
 const projectilesByName = project => projectActorIndex(project);
+// `sv_corpsequeuesize`'s default: Hexen keeps 64 bodies and destroys the oldest past that.
+const CORPSE_QUEUE_SIZE = 64;
 // A_SpawnItemEx flags that change how its offsets, angle and velocity are read.
 const SPAWN_FLAGS = { sxf_absoluteposition: 2, sxf_absoluteangle: 4, sxf_absolutemomentum: 8, sxf_absolutevelocity: 8 };
 /** A flags argument written as a number or as `NAME|NAME|4`; unknown names count as 0. */
@@ -445,6 +447,14 @@ export function missileProjectile(project, name) {
  * spray puff or an explosion burst. It animates through the actor's Spawn frames
  * and is dropped when that clip ends; it never blocks, collides or takes damage.
  */
+/**
+ * A roll between two numbers, ends included.
+ *
+ * `randomDamage(state, base, sides)` is Doom's `((P_Random() % sides) + 1) * base`, which is a
+ * damage roll, not a range: `randomDamage(state, -64, 63)` multiplies by a negative base.
+ */
+const randomRange = (state, min, max) => min + randomDamage(state, 1, Math.max(1, max - min + 1)) - 1;
+
 export function spawnEffect(project, state, actorName, { x, y, z, vx = 0, vy = 0, vz = 0 } = {}) {
   const actor = projectActorIndex(project).byName.get(String(actorName || '').toLowerCase());
   if (!actor) return null;
@@ -949,6 +959,9 @@ export function dropItems(project, state, entity, actor) {
 
 export function hurtActor(project, state, entity, amount, source = null, damageType = null) {
   if (!entity || entity.type !== 'enemy' || (entity.health ?? 0) <= 0 || !(amount > 0)) return false;
+  // Hexen's Centaur Lord raises a shield that takes no damage at all while it is up
+  // (`A_SetReflectiveInvulnerable`), and drops it to charge in again.
+  if (entity.invulnerable) return false;
   const actor = actorOf(project, entity);
   // DamageFactor "Fire", 0 makes an actor immune to fire; 2 doubles the fire it takes.
   // The compile stores each factor under both its authored case and lowercase.
@@ -1216,6 +1229,104 @@ export const ACTIONS = {
     ctx.state.physics?.remove(ctx.entity.id);
   },
   A_Stop(ctx) { ctx.entity.vx = 0; ctx.entity.vy = 0; },
+  // --------------------------------------------------------------- death dressing
+  // A_TossGib (Strife): the death spray. `Meat` is +NOCLIP and never interacts with anything, so it
+  // is decoration here too — an effect that flies out and fades, not a thing that can be shot.
+  A_TossGib(ctx) {
+    const { project, state, entity, actor } = ctx;
+    const angle = randomRange(state, 0, 255) * 360 / 256 * Math.PI / 180;
+    const speed = randomRange(state, 0, 15);
+    spawnEffect(project, state, actorFlag(actor, 'NOBLOOD', entity) ? 'Junk' : 'Meat', {
+      x: entity.x, y: entity.y, z: (entity.z ?? floorAt(state, entity)) + 24,
+      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, vz: randomRange(state, 0, 15) });
+  },
+  // A_FreezeDeath (shared/ice.zs): a frozen corpse holds its frame far longer than a body does
+  // (GZDoom adds 75 + 3*(P_Random()&7) + 4 tics) and stops blocking the level.
+  A_FreezeDeath(ctx) {
+    const { state, entity } = ctx;
+    actorStateOf(entity).tics += 75 + randomRange(state, 0, 7) * 3 + 4;
+    entity.solid = false;
+    entity.noBlockmap = true;
+    state.physics?.remove(entity.id);
+    saySound(state, 'misc/freeze', entity);
+  },
+  // A_FreezeDeathChunks: the ice body shatters into chunks that fall as decoration. GZDoom waits
+  // three tics when the body is still moving so the chunks do not hang in the air.
+  A_FreezeDeathChunks(ctx) {
+    const { project, state, entity } = ctx;
+    const runtime = actorStateOf(entity);
+    if ((entity.vx || entity.vy) && runtime.tics > 3) { runtime.tics = 3; return; }
+    const z = entity.z ?? floorAt(state, entity);
+    for (let chunk = 0; chunk < 6; chunk++) {
+      spawnEffect(project, state, 'IceChunk', {
+        x: entity.x + randomRange(state, -16, 16), y: entity.y + randomRange(state, -16, 16),
+        z: z + randomRange(state, 0, 32), vx: randomRange(state, -4, 4), vy: randomRange(state, -4, 4),
+        vz: randomRange(state, 0, 8) });
+    }
+    saySound(state, 'misc/freeze', entity);
+    removeLiveActor(state, entity);
+  },
+  // A_QueueCorpse / A_DeQueueCorpse: Hexen's corpse queue. GZDoom keeps `sv_corpsequeuesize` (64 by
+  // default) bodies and destroys the oldest past that, which is what stops a long level filling up
+  // with corpses. The queue is the marked corpses themselves, in the order they queued, so nothing
+  // extra has to travel in a save.
+  A_QueueCorpse(ctx) {
+    const { state, entity } = ctx;
+    const corpses = state.entities.filter(candidate => candidate.queuedCorpse && !candidate.removed);
+    while (corpses.length >= CORPSE_QUEUE_SIZE) removeLiveActor(state, corpses.shift());
+    entity.queuedCorpse = true;
+  },
+  A_DeQueueCorpse(ctx) {
+    const { state, entity } = ctx;
+    for (const corpse of state.entities) if (corpse.queuedCorpse && corpse.id === entity.id) corpse.queuedCorpse = false;
+  },
+  // A_PlayerScream: the player's own death cry. A class with a DeathSound of its own uses it;
+  // otherwise Doom picks by how badly the body is wrecked.
+  A_PlayerScream(ctx) {
+    const { state, entity, actor } = ctx;
+    if (actor?.sounds?.death) { saySound(state, actor.sounds.death, entity); return; }
+    // The health the body died with, which is what picks the scream; this engine clamps the player's
+    // own health at zero, so an actor that carries a negative one is what says the body was mangled.
+    const health = Number.isFinite(entity.health) ? entity.health : state.playerStats?.health ?? 0;
+    saySound(state, health > -50 ? '*death' : health > -100 ? '*crazydeath' : '*xdeath', entity);
+  },
+  // A_ClassBossHealth: Hexen multiplies a boss's health by five for each extra player, once, and
+  // only in co-op. A single-player game is exactly the case GZDoom leaves alone, so there is
+  // nothing to do — and saying so here is better than reporting the action as missing.
+  A_ClassBossHealth() {},
+  // A_SentinelBob (strife/sentinel.zs): the Stalker hangs in the air 96 above the floor instead of
+  // standing in front of the player, drifting a unit a tic towards that height.
+  A_SentinelBob(ctx) {
+    const { state, entity } = ctx;
+    if (actorStateOf(entity).threshold !== 0) return;
+    // The sector floor, not `floorAt`: that one answers with the thing's own `z` when it has one,
+    // and a height measured against itself climbs a unit a tic until it reaches the ceiling.
+    const sector = state.sectors.length ? sectorAt(state.sectors, entity.x, entity.y) : null;
+    const floor = (sector?.floorHeight ?? 0) + (entity.elevation || 0);
+    const ceiling = (sector?.ceilingHeight ?? floor + 128) - (entity.height ?? 56) - 16;
+    const hover = Math.min(floor + 96, ceiling);
+    const z = entity.z ?? floor;
+    const next = z < hover ? Math.min(hover, z + 1) : z > hover ? Math.max(Math.max(floor, hover), z - 1) : z;
+    if (next === z) return;
+    entity.z = next;
+    state.physics?.teleport(entity.id, entity.x, entity.y, next);
+  },
+  // ------------------------------------------------------------ Hexen Centaur Lord shield
+  // A_SetReflectiveInvulnerable / A_UnsetReflectiveInvulnerable: the shield is damage immunity plus
+  // a bounce for missiles (the bounce itself lives in `advanceProjectiles`).
+  A_SetReflectiveInvulnerable(ctx) { ctx.entity.invulnerable = true; ctx.entity.reflective = true; },
+  A_UnsetReflectiveInvulnerable(ctx) { ctx.entity.invulnerable = false; ctx.entity.reflective = false; },
+  // A_CentaurDefend: with the shield up the Centaur Lord waits for the player to close, and drops
+  // the shield to charge in on a one-in-eight roll inside melee range.
+  A_CentaurDefend(ctx) {
+    ACTIONS.A_FaceTarget(ctx);
+    const { project, state, entity } = ctx;
+    if (!meleeable(state, entity)) return;
+    if (randomRange(state, 0, 255) >= 32) return;
+    entity.invulnerable = false;
+    entity.reflective = false;
+    setActorState(project, entity, 'Melee');
+  },
   A_PlaySound(ctx) { saySound(ctx.state, String(arg(ctx, 0) || ''), ctx.entity, numArg(ctx, 1, 127)); },
   A_StartSound(ctx) { saySound(ctx.state, String(arg(ctx, 0) || ''), ctx.entity, numArg(ctx, 1, 127)); },
   A_StopSound() {},
@@ -2153,7 +2264,7 @@ export const WEAPON_ACTION_NAMES = new Set(['A_WeaponReady', 'A_ReFire', 'A_Chec
   'A_Light0', 'A_Light1', 'A_Light2', 'A_Raise', 'A_Lower', 'A_FireBullets', 'A_FireCustomMissile',
   'A_FireProjectile', 'A_FireMissile', 'A_FirePlasma', 'A_FireBFG', 'A_FireCGun', 'A_FireShotgun', 'A_FireShotgun2',
   'A_Punch', 'A_Saw', 'A_FirePistol', 'A_PlaySound', 'A_StartSound', 'A_BFGsound', 'A_OpenShotgun2',
-  'A_LoadShotgun2', 'A_CloseShotgun2']);
+  'A_LoadShotgun2', 'A_CloseShotgun2', 'A_FireOldBFG']);
 
 /**
  * Actions a weapon state may call that only change presentation. `runWeaponAction`
@@ -2297,6 +2408,7 @@ function runWeaponAction(ctx, action) {
     case 'A_FireMissile':
     case 'A_FirePlasma':
     case 'A_FireBFG':
+    case 'A_FireOldBFG':
     case 'A_FireCGun':
     case 'A_FireShotgun':
     case 'A_FireShotgun2':
@@ -2431,6 +2543,7 @@ export const FIRE_SOUNDS = {
   A_FirePistol: 'weapons/pistol', A_FireShotgun: 'weapons/shotgf', A_FireShotgun2: 'weapons/sshotf',
   A_FireCGun: 'weapons/chngun', A_FireMissile: 'weapons/rocklf', A_FirePlasma: 'weapons/plasmaf',
   A_FireBFG: 'weapons/bfgf', A_Saw: 'weapons/sawfull', A_Punch: '*fist',
+  A_FireOldBFG: 'weapons/plasmaf',
 };
 
 /**
@@ -2474,6 +2587,12 @@ export function weaponAttackFor(project, actionName, args = [], named = {}) {
     case 'A_Saw': return { attack: { kind: 'hitscan', damage: [2, 10], pellets: 1, spread: 0, range: 64, hitSound: 'weapons/sawhit' } };
     case 'A_FireMissile': return { attack: missile('Rocket', 20, 128) };
     case 'A_FirePlasma': return { attack: missile('PlasmaBall', 5, 0) };
+    // A_FireOldBFG (weaponbfg.zs): Doom's pre-release BFG, two plasma balls at once with no autoaim,
+    // each thrown off by its own random angle and pitch. `volley` is what makes it two shots.
+    case 'A_FireOldBFG': {
+      const first = missile('PlasmaBall1', 5, 0), second = missile('PlasmaBall2', 5, 0);
+      return { attack: { ...first, volley: [first, second] } };
+    }
     case 'A_FireBFG': return { attack: missile('BFGBall', 100, 256) };
     case 'A_FireCustomMissile':
     case 'A_FireProjectile': {

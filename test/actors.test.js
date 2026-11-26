@@ -482,7 +482,7 @@ test('unsupported action functions are reported with the actors that call them',
     { id: 'actor_imp', name: 'TestImp', flags: { MONSTER: true }, health: 60, speed: 8, radius: 20, height: 56,
       states: { labels: { Spawn: 0, See: 1 }, frames: [
         { kind: 'frame', sprite: 'TROO', letter: 'A', duration: 10, actions: [{ name: 'A_Look', args: [] }], label: 'Spawn' },
-        { kind: 'frame', sprite: 'TROO', letter: 'B', duration: 3, actions: [{ name: 'A_CentaurDefend', args: [] }], label: 'See' },
+        { kind: 'frame', sprite: 'TROO', letter: 'B', duration: 3, actions: [{ name: 'A_NoSuchAction', args: [] }], label: 'See' },
         { kind: 'loop', label: 'See' },
       ] } },
     { id: 'actor_pistol', name: 'Pistol', flags: { WEAPON: true }, weaponAmmoType: 'Clip',
@@ -499,7 +499,7 @@ test('unsupported action functions are reported with the actors that call them',
   project.map.entities.push({ id: 'imp1', type: 'enemy', x: 64, y: 64, angle: 0, elevation: 0, health: 60, actorId: 'actor_imp' });
   const gaps = unsupportedActorActions(project);
   const names = gaps.map(gap => gap.name);
-  assert.deepEqual(names.sort(), ['A_CentaurDefend', 'A_JumpIf']);
+  assert.deepEqual(names.sort(), ['A_JumpIf', 'A_NoSuchAction']);
   const jump = gaps.find(gap => gap.name === 'A_JumpIf');
   assert.deepEqual(jump.actors, ['Pistol'], 'the weapon path ignores general actions, so the pistol is named');
   assert.equal(jump.calls, 1);
@@ -508,7 +508,9 @@ test('unsupported action functions are reported with the actors that call them',
   assert.equal(actionSupported('A_JumpIf', true), false);
   assert.equal(actionSupported('A_FirePistol', true), true);
   assert.equal(actionSupported('A_FirePistol', false), false, 'a monster cannot fire a weapon action');
-  assert.equal(actionSupported('A_CentaurDefend', false), false);
+  // A name no GZDoom version ever had is the stable example of a gap: actions that are real keep
+  // getting implemented, and each one moved this example to another action that was then fixed too.
+  assert.equal(actionSupported('A_NoSuchAction', false), false);
 });
 
 test('the declared weapon action set matches the weapon state machine', () => {

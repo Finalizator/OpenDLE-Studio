@@ -2918,21 +2918,33 @@ function applyWeaponAttack(project, state) {
   }
   // A missile's flight, explosion and trail all come from the actor definition, so
   // a mod's custom projectile behaves and looks like the mod wrote it.
-  const missile = attack.missile ? missileProjectile(project, attack.missile) : null;
-  if (!missile && attack.missile) {
-    // A_FireCustomMissile named a class this project does not contain: report it
-    // rather than launching a placeholder the mod never asked for.
-    state.missileGaps ||= new Set();
-    if (state.missileGaps.size < 40) state.missileGaps.add(attack.missile);
+  const fire = (shot, spread = null) => {
+    const missile = shot.missile ? missileProjectile(project, shot.missile) : null;
+    if (!missile && shot.missile) {
+      // A_FireCustomMissile named a class this project does not contain: report it
+      // rather than launching a placeholder the mod never asked for.
+      state.missileGaps ||= new Set();
+      if (state.missileGaps.size < 40) state.missileGaps.add(shot.missile);
+      return;
+    }
+    launchProjectile(state, { speed: shot.speed, damage: shot.damage, diceSides: shot.diceSides,
+      radius: shot.radius, color: '#66bbff', sound: null,
+      clipId: missile?.clipId || null, impactClipId: missile?.impactClipId || null,
+      actorId: missile?.actorId || shot.actorId || null, actorName: missile?.name || shot.missile || null,
+      damageType: missile?.damageType || null,
+      angleOffset: spread ? spread.angle : shot.angle || 0,
+      spawnOffset: shot.spawnofs || 0, spawnHeight: shot.spawnheight || 0,
+      pitchOffset: spread ? spread.pitch : shot.pitch || 0, seeker: shot.seeker === true });
+  };
+  // A volley is one trigger pull that throws more than one missile: the old BFG throws two plasma
+  // balls, each with its own random angle (90/768 of a degree a step) and pitch (90/640).
+  if (Array.isArray(attack.volley) && attack.volley.length) {
+    for (const shot of attack.volley) fire(shot, {
+      angle: (randomDamage(state, 1, 128) - 64.5) * 90 / 768,
+      pitch: (randomDamage(state, 1, 128) - 64.5) * 90 / 640 });
     return;
   }
-  launchProjectile(state, { speed: attack.speed, damage: attack.damage, diceSides: attack.diceSides,
-    radius: attack.radius, color: '#66bbff', sound: null,
-    clipId: missile?.clipId || null, impactClipId: missile?.impactClipId || null,
-    actorId: missile?.actorId || attack.actorId || null, actorName: missile?.name || attack.missile || null,
-    damageType: missile?.damageType || null,
-    angleOffset: attack.angle || 0, spawnOffset: attack.spawnofs || 0, spawnHeight: attack.spawnheight || 0,
-    pitchOffset: attack.pitch || 0, seeker: attack.seeker === true });
+  fire(attack);
 }
 
 /**
