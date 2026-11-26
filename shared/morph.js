@@ -35,8 +35,11 @@ export function morphEntity(project, state, entity, className, { duration = 0, s
   const actor = findActor(project, className);
   if (!actor) return false;
   const current = entity.actorId || entity.actorName;
+  // The refusal has to come first: morphing into the class the entity already is must change
+  // nothing and return false. Un-morphing first meant a second `A_Morph` with a fresh duration
+  // restored the original actor while reporting that no morph had happened.
+  if (entity.type !== 'player' && !entity.morph && current && String(current).toLowerCase() === actor.id.toLowerCase()) return false;
   if (entity.morph) unmorphEntity(project, state, entity, true);
-  if (entity.type !== 'player' && current && String(current).toLowerCase() === actor.id.toLowerCase()) return false;
 
   if (entity.type === 'player') {
     // Like P_MorphPlayer, an already-morphed player refuses a second morph: replacing the

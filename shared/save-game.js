@@ -337,7 +337,12 @@ function validateRuntime(project, state, baseline) {
     for (const [key, value] of state.entitySamples)
       if (typeof value !== 'number' || Number.isNaN(value)) state.entitySamples.delete(key);
   for (const key of ['entitySamples', 'shaderUniforms']) numberMap(state[key], key);
-  if (state.droppedItems instanceof Map) numberMap(state.droppedItems, 'dropped items');
+  // Keyed by the thing's number, not by a name, so `numberMap` (which insists on string keys and
+  // would refuse every real save) is not the check for it.
+  if (state.droppedItems instanceof Map)
+    for (const [key, value] of state.droppedItems)
+      if (!(typeof key === 'number' || typeof key === 'string') || typeof value !== 'number' || !Number.isFinite(value))
+        fail('invalid dropped items');
   numberMap(state.hudState.statSamples, 'HUD stat samples');
   const objectMap = (map, allowed, fields, label) => {
     for (const [id, item] of map) {

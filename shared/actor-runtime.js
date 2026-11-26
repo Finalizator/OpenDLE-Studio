@@ -1117,13 +1117,24 @@ export const ACTIONS = {
         return;
       }
     }
-    // P_CheckMissileRange: a target that is not in sight is not shot at, and closer monsters
-    // are far more likely to shoot; the MISSILEMORE flags bias that roll the way Doom does.
+    // P_CheckMissileRange: a target that is not in sight is not shot at, and closer monsters are
+    // more likely to shoot. Doom clamps the distance to 200 *before* the roll — without the clamp
+    // every monster further than 392 units fired on every single chase tic, which turned the
+    // Zombiemen of a big room into a firing squad. The MISSILEMORE flags bias the same roll.
     if (!canSeeTarget(state, entity, target, SIGHT_RANGE)) return;
     let reach = Math.max(0, distance - 64) - 128;
     if (actorFlag(actor, 'MISSILEMORE', entity)) reach += 100;
     if (actorFlag(actor, 'MISSILEEVENMORE', entity)) reach += 200;
-    if (reach < 200 && randomDamage(state, 1, 256) < reach) return;
+    // The Archvile, Revenant, Cyberdemon, Spider and Lost Soul adjust the same distance: the
+    // Archvile refuses anything past 896 units, the Revenant halves it beyond its fist range, and
+    // the three heavy shooters halve it always.
+    const kind = String(entity.actorName || actor.name || '').toLowerCase();
+    if (kind.includes('archvile')) { if (reach > 14 * 64) return; }
+    else if (kind.includes('revenant')) { if (reach < 196) return; reach /= 2; }
+    if (kind.includes('cyberdemon') || kind.includes('spider') || kind.includes('lost')) reach /= 2;
+    if (reach > 200) reach = 200;
+    if (kind.includes('cyberdemon') && reach > 160) reach = 160;
+    if (randomDamage(state, 1, 256) < reach) return;
     if (setActorState(ctx.project, entity, missileLabel)) runtime.reactionTime = actor.reactionTime || 8;
   },
   A_Wander(ctx) {
@@ -1349,7 +1360,9 @@ export const ACTIONS = {
   },
   A_BossDeath(ctx) {
     const { state, entity } = ctx;
-    if (state.entities.some(candidate => candidate.type === 'enemy' && candidate.health > 0 && (candidate.actorName || '').toLowerCase() !== (entity.actorName || '').toLowerCase() &&
+    // Two monsters of one class share both their id and their name, so comparing the names as well
+    // made this guard unreachable: MAP07 opened its exit when the *first* of its two Mancubi died.
+    if (state.entities.some(candidate => candidate !== entity && candidate.type === 'enemy' && candidate.health > 0 &&
       candidate.actorId === entity.actorId)) return;
     state.bossDefeated = true;
     // A boss level ends through the floor its boss death moves: E1M8 lowers the sectors tagged 666
@@ -1413,7 +1426,10 @@ export const ACTIONS = {
     // The landing is a fire and a teleport, then the monster steps out of it.
     spawnEffect(project, state, 'SpawnFire', at);
     saySound(state, 'DSTELEPT', target);
-    const roll = randomDamage(state, 0, 255);
+    // `randomDamage(state, damage, sides)` multiplies by `damage`, so a damage of 0 rolled 0 every
+    // time and the table below could only ever return its first entry: every skull cube in the
+    // Icon of Sin fight produced an imp.
+    const roll = randomDamage(state, 1, 256) - 1;
     const pick = SPAWN_CUBE_MONSTERS.find(([limit]) => roll < limit);
     const monster = pick ? spawnLiveActor(project, state, pick[1], at) : null;
     if (monster) {
@@ -1575,8 +1591,10 @@ export const ACTIONS = {
     const name = String(arg(ctx, 0) || '').replace(/^"|"$/g, '');
     const spawned = projectilesByName(project).byName.get(name.toLowerCase());
     if (!spawned) return;
+    // `chance` is the probability the item appears, out of 256 — the roll was compared the other
+    // way round, so a chance of 64 spawned 75% of the time and a chance of 200 spawned 21%.
     const chance = numArg(ctx, 9, 0);
-    if (chance > 0 && randomDamage(state, 1, 256) <= chance) return;
+    if (chance > 0 && chance < 256 && randomDamage(state, 1, 256) > chance) return;
     // GZDoom: the angle adds to the spawner's facing, and in that frame x is forward and
     // y is to the right, for both the offset and the velocity, unless flagged absolute.
     const flags = flagArg(ctx, 8, SPAWN_FLAGS);
@@ -2372,9 +2390,13 @@ export function weaponAttackFor(project, actionName, args = [], named = {}) {
   };
   switch (actionName) {
     case 'A_FireBullets': {
+      // `A_FireBullets(spread_xy, spread_z, numbullets, damage, puff, flags, range, missile)`.
+      // The dice were read from argument 1 — the *vertical spread* — so a weapon's damage changed
+      // when its pitch spread did and a plain 5-damage bullet did a fixed 5. A hitscan's dice are
+      // Doom's three (5*(1..3)), and the range is the seventh argument.
       const spread = numArg(ctx, 0, 0), pellets = Math.max(1, Math.min(40, numArg(ctx, 2, 1)));
-      const damage = Math.max(1, numArg(ctx, 3, 5)), range = numArg(ctx, 9, 2048) || 2048;
-      return { attack: { kind: 'hitscan', damage: [damage, Math.max(1, numArg(ctx, 1, 3))], pellets, spread, range } };
+      const damage = Math.max(1, numArg(ctx, 3, 5)), range = numArg(ctx, 6, 2048) || 2048;
+      return { attack: { kind: 'hitscan', damage: [damage, 3], pellets, spread, range } };
     }
     case 'A_FireShotgun': return { attack: { kind: 'hitscan', damage: [5, 3], pellets: 7, spread: 11.25, range: 2048 } };
     case 'A_FireShotgun2': return { attack: { kind: 'hitscan', damage: [5, 3], pellets: 20, spread: 22.5, range: 2048 } };

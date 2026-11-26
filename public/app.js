@@ -4793,15 +4793,20 @@ canvas.addEventListener('pointerdown', guard(event => {
     const grip = zoneGripAt(point, selectedZone, 10 / camera.zoom);
     if (grip !== null) {
       const area = { ...ZONE_AREA, ...selectedZone.area };
-      const halfWidth = (area.shape === 'box' ? area.width : area.radius * 2) / 2;
-      const halfDepth = (area.shape === 'box' ? area.depth : area.radius * 2) / 2;
+      const round = area.shape !== 'box';
+      const halfWidth = (round ? area.radius * 2 : area.width) / 2;
+      const halfDepth = (round ? area.radius * 2 : area.depth) / 2;
       const [gx, gy] = zoneGrips(halfWidth, halfDepth)[grip];
       // Which way each side of this grip points, so a drag outwards grows that side whichever
       // grip was taken.
       drag = { kind: 'form', selection: { ...selection }, grip, start: point, end: point, baseline: project,
         origin: { x: selectedZone.x, y: selectedZone.y },
         sides: { width: Math.sign(gx), depth: Math.sign(gy) },
-        startSizes: { width: area.width, depth: area.depth } };
+        // A round zone is sized by its radius and drawn from `radius * 2`, so the drag has to start
+        // from those numbers: starting from `width`/`depth` measured the grabbed face in the wrong
+        // place and wrote back numbers the volume ignores, so the grip did nothing but move the zone.
+        startSizes: round ? { width: area.radius * 2, depth: area.radius * 2, radius: area.radius }
+          : { width: area.width, depth: area.depth } };
       return;
     }
   }
@@ -5058,7 +5063,11 @@ canvas.addEventListener('pointerup', guard(event => {
     const offset = finished.offset || { x: 0, y: 0 };
     edit(next => {
       const zone = next.map.entities.find(entity => entity.id === finished.selection.id);
-      zone.area = { ...zone.area, ...sides };
+      const { radius: _radius, ...boxed } = sides;
+      zone.area = { ...zone.area, ...boxed };
+      // A round zone keeps its radius as the single size it is drawn and tested by.
+      if (sides.radius !== undefined || zone.area.shape !== 'box')
+        zone.area.radius = Math.max(1, Math.round((sides.width ?? zone.area.width) / 2));
       // Applied exactly, never snapped: the grip that was dragged snapped to the grid, so rounding
       // the zone's position again would move the edge that is meant to stay put.
       zone.x = Math.round(finished.origin.x + offset.x);

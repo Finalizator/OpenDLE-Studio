@@ -109,7 +109,9 @@ export function compileActorRecord(actor, { knownActors = new Map(), index = 0 }
     if (value !== undefined && value !== null) sounds[field] = String(value);
   }
   const flags = {};
-  for (const [name, value] of Object.entries(actor.flags || {})) if (value) flags[name.toUpperCase()] = true;
+  // A flag written `-SOLID` is a decision, not an absent one: dropping it let the monster bundle
+  // below set SOLID back on, so a ghost that a mod made non-solid still blocked the player.
+  for (const [name, value] of Object.entries(actor.flags || {})) flags[name.toUpperCase()] = Boolean(value);
   for (const key of ['monster', 'projectile', 'weapon', 'inventory', 'custominventory', 'powerup']) {
     if (prop(properties, key) === true) flags[key.toUpperCase()] = true;
   }
@@ -117,7 +119,7 @@ export function compileActorRecord(actor, { knownActors = new Map(), index = 0 }
   // (`class MyGun : DoomWeapon`), so walk the chain for the base class.
   const baseClass = classFamily(actor, knownActors);
   if (baseClass) flags[baseClass] = true;
-  if (flags.MONSTER) for (const flag of MONSTER_FLAGS) flags[flag] = true;
+  if (flags.MONSTER) for (const flag of MONSTER_FLAGS) flags[flag] = flags[flag] !== false;
   if (flags.PROJECTILE) { flags.MISSILE = true; flags.NOGRAVITY = flags.NOGRAVITY ?? true; }
   return {
     id: `actor_${actor.name.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`,

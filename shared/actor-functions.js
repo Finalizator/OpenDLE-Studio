@@ -86,8 +86,10 @@ function parseExpression(source) {
   };
   const unary = () => {
     ws();
-    if (eat('-') && !/\d/.test(text[at])) return { kind: 'negate', of: unary() };
-    if (text[at - 1] === '-' && /\d/.test(text[at])) { const value = primary(); return { kind: 'negate', of: value }; }
+    // `-x` negates a name, but `-8` is a number `primary` already reads with its sign, and after a
+    // binary operator the minus belongs to the *caller*: testing `text[at - 1] === '-'` re-read the
+    // operator the additive level had just consumed, so `z-8` evaluated as `z - (-8)`.
+    if (text[at] === '-' && !/\d/.test(text[at + 1] ?? '')) { at += 1; return { kind: 'negate', of: unary() }; }
     if (eat('!')) return { kind: 'not', of: unary() };
     return primary();
   };

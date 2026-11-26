@@ -23,15 +23,29 @@ const MODEL_UNIT = 32;
 const cellSize = 16;
 
 /** A centroid-bucketed index of triangles, so a vertical query touches a handful of them. */
-function indexTriangles(positions, indices, { offsetX, offsetY, scale }) {
+function indexTriangles(positions, indices, { offsetX, offsetY, scale, angle = 0 }) {
   const triangles = [];
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, maxHeight = -Infinity;
-  for (let at = 0; at + 8 < positions.length; at += 9) {
+  // A model names its triangles through its index buffer. Reading every three consecutive vertices
+  // instead is right only for an unindexed (duplicated) mesh: a normally indexed export has shared
+  // vertices, so most of its surface was missing from the ground here.
+  const order = indices?.length ? indices : null;
+  const count = order ? order.length : Math.floor(positions.length / 3);
+  // The renderer and the collider both turn an object by its angle (about the map's up axis), so
+  // the ground the engine stands on has to turn with them.
+  const yaw = -(Number(angle) || 0) * Math.PI / 180, cos = Math.cos(yaw), sin = Math.sin(yaw);
+  const turn = (x, y) => (yaw ? [x * cos - y * sin, x * sin + y * cos] : [x, y]);
+  for (let corner = 0; corner + 2 < count; corner += 3) {
+    const at = (order ? order[corner] : corner) * 3, mid = (order ? order[corner + 1] : corner + 1) * 3,
+      last = (order ? order[corner + 2] : corner + 2) * 3;
     // The model is Y-up; the map is Z-up, which is the same swap the renderer and the physics
     // collider make (`y` becomes height, `z` becomes map depth).
-    const x0 = positions[at] * scale + offsetX, y0 = positions[at + 2] * scale + offsetY, h0 = positions[at + 1] * scale;
-    const x1 = positions[at + 3] * scale + offsetX, y1 = positions[at + 5] * scale + offsetY, h1 = positions[at + 4] * scale;
-    const x2 = positions[at + 6] * scale + offsetX, y2 = positions[at + 8] * scale + offsetY, h2 = positions[at + 7] * scale;
+    const [ax, ay] = turn(positions[at] * scale, positions[at + 2] * scale);
+    const [bx, by] = turn(positions[mid] * scale, positions[mid + 2] * scale);
+    const [cx, cy] = turn(positions[last] * scale, positions[last + 2] * scale);
+    const x0 = ax + offsetX, y0 = ay + offsetY, h0 = positions[at + 1] * scale;
+    const x1 = bx + offsetX, y1 = by + offsetY, h1 = positions[mid + 1] * scale;
+    const x2 = cx + offsetX, y2 = cy + offsetY, h2 = positions[last + 1] * scale;
     minX = Math.min(minX, x0, x1, x2); maxX = Math.max(maxX, x0, x1, x2);
     minY = Math.min(minY, y0, y1, y2); maxY = Math.max(maxY, y0, y1, y2);
     maxHeight = Math.max(maxHeight, h0, h1, h2);
@@ -89,8 +103,12 @@ export function createTerrainSurface(project, cache) {
     if (!asset) continue;
     const triangles = modelAssetTriangles(asset, cache);
     if (!triangles) continue;
-    const scale = (Number(entity.modelScale) || MODEL_UNIT) / MODEL_UNIT;
-    const index = indexTriangles(triangles.positions, triangles.indices, { offsetX: entity.x || 0, offsetY: entity.y || 0, scale });
+    // Map units per model unit, the same number the collider and the renderer use
+    // (`modelScale ?? 32`). Dividing it by 32 made the ground index one thirty-second of the
+    // collider that stands in the level.
+    const scale = Number(entity.modelScale) || MODEL_UNIT;
+    const index = indexTriangles(triangles.positions, triangles.indices,
+      { offsetX: entity.x || 0, offsetY: entity.y || 0, scale, angle: entity.angle || 0 });
     if (index) surfaces.push({ entity, index });
   }
   if (!surfaces.length) return null;
@@ -139,6 +157,10 @@ export function terrainEntity({ id, name, assetId, x = 0, y = 0, angle = 0, boun
   const radius = Math.max(4, Math.round(Math.min(width, depth) / 2));
   return {
     id, name, type: 'decoration', x, y, angle, modelAsset: assetId,
+    // The exporter writes the mesh in map units, which is `modelScale: 1` — the same convention
+    // the ramp builder uses. Left unset, the collider defaulted to 32 map units per model unit and
+    // a 200-unit hill collided as a 6 400-unit one.
+    modelScale: 1,
     physics: { body: 'fixed', shape: 'model', modelCollision: 'trimesh', width, height, depth, radius,
       mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true },
   };

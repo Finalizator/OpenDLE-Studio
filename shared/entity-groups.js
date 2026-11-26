@@ -216,7 +216,12 @@ export function cloneEntitiesForPaste(project, entities, point, {
     // refused by the project's own validation.
     const base = `${String(entity.name || '').slice(0, 94)} copy`;
     copy.name = base;
-    for (let index = 2; names.has(copy.name); index++) copy.name = `${base} ${index}`;
+    // The disambiguating suffix has to fit inside the same 100 characters, or the second copy of a
+    // long-named object fails the project's own validation and the whole paste is refused.
+    for (let index = 2; names.has(copy.name); index++) {
+      const suffix = ` ${index}`;
+      copy.name = `${base.slice(0, 100 - suffix.length)}${suffix}`;
+    }
     names.add(copy.name);
     copy.x = Math.round(((entity.x || 0) + dx) * 100) / 100;
     copy.y = Math.round(((entity.y || 0) + dy) * 100) / 100;
