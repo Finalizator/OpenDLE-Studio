@@ -1198,12 +1198,16 @@ export const ACTIONS = {
   A_PlaySound(ctx) { saySound(ctx.state, String(arg(ctx, 0) || ''), ctx.entity, numArg(ctx, 1, 127)); },
   A_StartSound(ctx) { saySound(ctx.state, String(arg(ctx, 0) || ''), ctx.entity, numArg(ctx, 1, 127)); },
   A_StopSound() {},
+  // Doom's own damage profiles, from p_enemy.c: `((P_Random()%N)+1)*base` is `base` damage with N
+  // sides. Several were written the other way round (5 with 3 sides for the Zombieman's 3 with 5),
+  // so every zombie, chaingunner and spider hit for the wrong amount, and the Archvile's flat 20
+  // was rolled as 20 with eight sides — up to 160 damage from one attack.
   A_PosAttack(ctx) {
-    monsterHitscan(ctx, 5, 3);
+    monsterHitscan(ctx, 3, 5);
     saySound(ctx.state, 'DSPISTOL', ctx.entity, 90);
   },
   A_SPosAttack(ctx) {
-    for (let pellet = 0; pellet < 3; pellet++) monsterHitscan(ctx, 5, 3, 11.25);
+    for (let pellet = 0; pellet < 3; pellet++) monsterHitscan(ctx, 3, 5, 11.25);
     saySound(ctx.state, 'DSSHOTGN', ctx.entity, 90);
   },
   // GZDoom renamed the Spider Mastermind's attack and its states call the new name: the old one
@@ -1222,7 +1226,7 @@ export const ACTIONS = {
   A_SkelFist(ctx) {
     const { state, entity } = ctx;
     if (!meleeable(state, entity)) return;
-    monsterHitscan(ctx, 6, 8);
+    monsterHitscan(ctx, 6, 10);
     saySound(state, 'skeleton/melee', entity);
   },
   // The Pain Elemental's death: it stops blocking and lets three Lost Souls out, which is the
@@ -1245,7 +1249,7 @@ export const ACTIONS = {
   A_BabyMetal(ctx) { saySound(ctx.state, 'baby/walk', ctx.entity); },
   A_Hoof(ctx) { saySound(ctx.state, 'cyber/hoof', ctx.entity); },
   A_CPosAttack(ctx) {
-    monsterHitscan(ctx, 3, 3);
+    monsterHitscan(ctx, 3, 5);
     saySound(ctx.state, 'DSPISTOL', ctx.entity, 80);
   },
   A_CPosRefire(ctx) {
@@ -1261,7 +1265,7 @@ export const ACTIONS = {
   A_SargAttack(ctx) {
     const { state, entity } = ctx;
     if (!meleeable(state, entity)) return;
-    monsterHitscan(ctx, 4, 8);
+    monsterHitscan(ctx, 4, 10);
     saySound(state, 'DSCLAW', entity);
   },
   A_HeadAttack(ctx) {
@@ -1329,7 +1333,7 @@ export const ACTIONS = {
   A_VileAttack(ctx) {
     const { state, entity } = ctx;
     if (!canSeePlayer(state, entity, SIGHT_RANGE)) return;
-    monsterHitscan(ctx, 20, 8);
+    monsterHitscan(ctx, 20, 1);
     saySound(state, 'DSVILATK', entity);
   },
   A_VileTarget() {},

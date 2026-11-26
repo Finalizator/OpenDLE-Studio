@@ -112,3 +112,30 @@ test('classic crushers run at Doom’s own ceiling speed', () => {
   assert.equal(speed(6), 70, 'fast crush and raise');
   for (const special of [25, 49, 73, 141]) assert.equal(speed(special), 35, `line ${special}`);
 });
+
+test('monster attacks do Doom’s damage, not a profile written the other way round', async () => {
+  // From `p_enemy.c`: `((P_Random()%N)+1)*base` — base damage, N sides. The Zombieman is 3 with 5
+  // sides, not 5 with 3; the Demon bites 4 with 10; the Revenant's fist is 6 with 10; and the
+  // Archvile's attack is a flat 20, not twenty with eight sides.
+  const { ACTIONS } = await import('../shared/actor-runtime.js');
+  const sample = name => {
+    const project = createProject();
+    project.events = [];
+    installEngineScripts(project);
+    const state = createRuntime(project);
+    const attacker = { ...state.entities[0], id: 'm', actorName: 'Monster', health: 100,
+      x: state.player.x + 40, y: state.player.y, angle: 0 };
+    const seen = new Set();
+    for (let roll = 0; roll < 400; roll++) {
+      state.playerStats.health = 1000;
+      ACTIONS[name]({ project, state, entity: attacker, actor: { name: 'Monster' } });
+      seen.add(1000 - state.playerStats.health);
+    }
+    return { low: Math.min(...seen), high: Math.max(...seen) };
+  };
+  assert.deepEqual(sample('A_PosAttack'), { low: 3, high: 15 });
+  assert.deepEqual(sample('A_CPosAttack'), { low: 3, high: 15 });
+  assert.deepEqual(sample('A_SargAttack'), { low: 4, high: 40 });
+  assert.deepEqual(sample('A_SkelFist'), { low: 6, high: 60 });
+  assert.deepEqual(sample('A_VileAttack'), { low: 20, high: 20 });
+});
