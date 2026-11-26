@@ -163,11 +163,19 @@ function fireConditions(plan, alt) {
  * silently dropped.
  */
 export function weaponScriptRules(project, { sheetId, groupId, id = uniqueId(project) } = {}) {
-  const events = [], skipped = [];
+  const events = [], skipped = [], driven = new Map();
   for (const actor of project.actors || []) {
     if (actor?.flags?.WEAPON !== true) continue;
     const plan = analyseWeapon(project, actor);
     if (!plan.expressible) { skipped.push({ name: actor.name, reasons: plan.reasons }); continue; }
+    // `Fist` and `Punch` (or `BFG9000` and `BFG`) both name the same slot. Two rules for one slot
+    // would share a cooldown timer, so the second could never fire: the first rule starts it and
+    // the second reads it as busy. The duplicate keeps its state machine and is reported.
+    if (driven.has(plan.slot)) {
+      skipped.push({ name: actor.name, reasons: [`the ${plan.slot} slot is already driven by ${driven.get(plan.slot)}`] });
+      continue;
+    }
+    driven.set(plan.slot, actor.name);
     const base = { sheetId, groupId, enabled: true, once: false, condition: { type: 'keyHeld', key: 'Mouse0' },
       weaponActor: actor.name,
       comment: `Imported from the ${actor.name} actor's DECORATE states. Edit freely; delete this rule to hand the weapon back to its states.` };

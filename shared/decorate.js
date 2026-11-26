@@ -358,6 +358,10 @@ function parseActorBody(lines, start, head, sourceName) {
     const close = line.findIndex(token => token.kind === 'punct' && token.value === '}');
     if (close === 0) return { properties, flags, stateBlocks, index };
     if (close > 0) line = line.slice(0, close);
+    // `{ Health 5` — a block that opens and carries its first property on the same line. Reading
+    // the brace as a bare block opener dropped the property; a nested block still has a `{` left
+    // here and is skipped below.
+    while (line.length > 1 && line[0].kind === 'punct' && line[0].value === '{') line = line.slice(1);
     // `continue` inside this wrapper ends the line rather than the block, so the closing brace
     // below is still honoured.
     do {
@@ -374,6 +378,12 @@ function parseActorBody(lines, start, head, sourceName) {
       if (brace < lines.length && lines[brace].some(token => token.kind === 'punct' && token.value === '{')) {
         const parsed = parseStates(lines, brace);
         stateBlocks.push(...parsed.states);
+        // The states block stops on its own `}`; when the actor's `}` shares that line — `} }`,
+        // which is how every minified or generated file closes a block — the actor ends there too.
+        // Skipping the line left the block open and the next `actor` was read as properties of
+        // this one, so its doomed number never registered.
+        if (lines[parsed.index]?.filter(token => token.kind === 'punct' && token.value === '}').length > 1)
+          return { properties, flags, stateBlocks, index: parsed.index };
         index = parsed.index;
         continue;
       }
@@ -514,6 +524,11 @@ export function resolveActorInheritance(definitions) {
       language: definition.language,
     };
     for (const state of definition.states) {
+      // ZDoom state labels are `FName`s and compare case-insensitively, so a child that writes
+      // `see:` redefines the parent's `See:`. Keeping both left the inherited label reachable and
+      // the child's frames unreachable dead code.
+      for (const existing of result.labels.keys())
+        if (existing !== state.label && existing.toLowerCase() === state.label.toLowerCase()) result.labels.delete(existing);
       result.labels.set(state.label, state.frames.map(frame => ({ ...frame })));
     }
     // Flag combos expand into the individual flags they imply.

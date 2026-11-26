@@ -372,12 +372,16 @@ export function hudText(element, state) {
     : element.text.replace(/\{([^{}]+)\}/g, (_, key) => String(hudBinding(key, state)));
   const text = value === null || value === undefined ? '' : String(value);
   if (!element.maxLength) return text;
-  // A digit field clamps the value, as GZDoom's `drawnumber` caps it at `10^length - 1` before
-  // formatting. Keeping the last characters threw the most significant digits away instead:
+  // A digit field clamps the *number* it draws, as GZDoom's `drawnumber` caps it at `10^length - 1`
+  // before formatting. Keeping the last characters threw the most significant digits away instead:
   // 1000 health in a three-digit field read "000", and 200 armour in two read "00".
-  const number = Number(text);
+  // The clamp applies to a number read from a binding, never to text the author typed: a field
+  // with the literal text "007" was drawn as "7", which is a rename, not a clamp.
+  const number = element.binding ? Number(text) : NaN;
   if (text.trim() && Number.isFinite(number)) {
-    const limit = Math.pow(10, element.maxLength) - 1;
+    // The sign is a glyph like any other, and the field is one glyph per cell: "-1234" in three
+    // cells is "-99", not four glyphs spilling over the neighbouring patch.
+    const limit = Math.pow(10, element.maxLength - (number < 0 ? 1 : 0)) - 1;
     return String(Math.max(-limit, Math.min(limit, Math.trunc(number))));
   }
   return text.slice(0, element.maxLength);

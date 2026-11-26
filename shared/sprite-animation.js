@@ -149,14 +149,20 @@ export function actorSpriteCells(actor) {
 
 /** Sprite asset name to asset id, so an actor's state frames can name their images. */
 export function spriteAssetNames(project) {
-  let names = nameCache.get(project);
-  if (names) return names;
-  names = new Map();
-  for (const asset of project.assets || []) {
+  const assets = project.assets;
+  const cached = nameCache.get(project);
+  // The list and its length, exactly as `spriteIndex` checks: a project that gains sprites after
+  // this was built (a PK3 imported on top of a WAD) kept the old map, so the new artwork could
+  // never name an actor's frames.
+  if (cached && cached.assetList === assets && cached.assetCount === (assets?.length || 0)) return cached;
+  const names = new Map();
+  for (const asset of assets || []) {
     if (asset.kind !== 'sprite') continue;
     const key = String(asset.name).toUpperCase();
     if (!names.has(key)) names.set(key, asset.id);
   }
+  names.assetList = assets;
+  names.assetCount = assets?.length || 0;
   nameCache.set(project, names);
   return names;
 }
@@ -191,7 +197,9 @@ export function actorEffectClip(project, actor) {
       (project.spriteClips ||= []).push({ id: clipId, name: `${actor.name} / effect`.slice(0, 100),
         frames: assets, seconds: Math.min(60, Math.max(.001, (duration || 1) / 35)), loop: false });
   }
-  cached.set(actor.id, clipId);
+  // A miss is not cached, for the same reason `actorProjectileClips` does not cache one: the
+  // sprite may be imported later, and remembering the miss would hand `null` to every caller.
+  if (clipId) cached.set(actor.id, clipId);
   return clipId;
 }
 

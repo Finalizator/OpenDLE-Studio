@@ -758,7 +758,10 @@ function argumentOf(entry) {
 function expressionOf(entry) {
   if (entry?.kind === 'number') return String(Number(entry.value) || 0);
   if (entry?.kind === 'value') return entry.text;
-  if (entry?.kind === 'random') return `floor(random(${entry.min}, ${entry.max}))`;
+  // ACS's `Random(min, max)` includes both ends; the expression's `random(min, max)` is half-open,
+  // so the top value needs one more. Without it every decompiled roll lost its highest result and
+  // `Random(x, x)` folded to a single constant.
+  if (entry?.kind === 'random') return `floor(random(${entry.min}, (${entry.max}) + 1))`;
   if (entry?.kind === 'not') {
     const inner = expressionOf(entry.of);
     return inner === null ? null : `(${inner} == 0 ? 1 : 0)`;

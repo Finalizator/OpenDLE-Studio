@@ -1024,7 +1024,8 @@ test('a script that rolls a random line becomes an expression with the script\'s
   const [rule] = acsScriptStepRules(program, entry, { sheetId: 'sheet', groupId: 'group' });
   const action = rule.actions.find(item => item.type === 'setLineSpecial');
   assert.equal(action.special, 70);
-  assert.deepEqual(action.tag, { expr: 'floor(random(acsvar("map", 6), (acsvar("map", 6) + 2)))' });
+  // `Random` includes its top value, so the half-open expression roll covers `max + 1`.
+  assert.deepEqual(action.tag, { expr: 'floor(random(acsvar("map", 6), ((acsvar("map", 6) + 2)) + 1))' });
   assert.deepEqual(action.arg1, { expr: 'acsvar("map", 7)' });
 });
 
