@@ -836,8 +836,11 @@ export function actorTarget(state, entity) {
 
 /** Sets who a monster hunts; `null` clears it, `$player` means the player. */
 export function setActorTarget(entity, target) {
-  if (!target) delete entity.targetId;
-  else entity.targetId = target === entity || target.type === 'player' ? '$player' : target.id;
+  if (!target) { delete entity.targetId; return; }
+  // `state.player` is the player's position, not its map entity: it carries no `id` and no `type`,
+  // so this used to store `undefined` and every monster in the game lost the target A_Look had just
+  // given it. Anything without an id is the player.
+  entity.targetId = target === entity ? '$player' : target.type === 'player' || target.id === undefined ? '$player' : target.id;
 }
 
 const targetPosition = (state, entity) => actorTarget(state, entity) || state.player;

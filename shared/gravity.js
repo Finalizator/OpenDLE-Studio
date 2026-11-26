@@ -5,6 +5,10 @@
 
 export const WORLD_UP = Object.freeze([0, 0, 1]);
 // The player capsule, shared with interaction areas so both agree on the body size.
+// Doom's `MT_PLAYER` is 16 units in radius and this is 12: the body walks into gaps a Doom player is
+// stopped by, and stands inside a monster's own radius. Widening it is not a one-line change — the
+// pickup rule measures a fixed 36-unit box around the body and a ledge bonus then falls out of
+// reach — so `Docs/gzdoom-parity.md` records what has to move together.
 export const PLAYER_CYLINDER = Object.freeze({ radius: 12, halfHeight: 28 });
 // Eyes sit 48 map units above the feet, measured along the player's up axis.
 export const EYE_HEIGHT = 48;

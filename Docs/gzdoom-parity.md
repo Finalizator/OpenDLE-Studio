@@ -241,18 +241,32 @@ All of it is now `shared/player-motion.js`, used by both the key path and the `m
 actions of a scripted project, and the editable Engine input sheet asks for Doom's speeds rather
 than 160.
 
-**Still different, and measured:**
+**Still different, and measured.** Re-measured after the bug-hunt rounds (`player-stop` agrees to
+1.1 units, `map01-idle` to 0.4):
 
-- **Steps.** Walking down MAP01's staircase, GZDoom is briefly airborne on every step and keeps
-  its speed (no friction in the air); the Rapier character controller keeps the player grounded
-  and applies friction throughout, so OpenDLE decelerates over the steps. This is the largest
-  remaining difference in the traces: `player-walk` diverges at tic 24, where the staircase
-  starts.
-- **A wall GZDoom stops at and OpenDLE walks through** near y = 1098 on MAP01, and another in
-  `player-strafe` at x = 48. These look like collision geometry rather than player physics and
-  need their own investigation. Monsters, at least, no longer pass through: an imported actor
-  whose actor table calls it solid gets a kinematic capsule the player is stopped by, and a
-  corpse stops blocking the way Doom's `A_NoBlocking` does.
+- **One ZombieMan decides `player-walk` and `player-run`.** At tic 55 the map's first ZombieMan —
+  `-112, 1136` in trace coordinates, room floor 24 — wakes in both engines. In GZDoom it walks
+  *east* (`-112 → 0` by tic 110) and the player's path clears at tic 84; in OpenDLE it never moves
+  and the player wedges against it at `(-92, -1109)` for the rest of the trace. `state.enemyBlocked`
+  has it: every one of the eight `ENEMY_DIRECTIONS` is refused, so it cannot step aside. The
+  player's body is the reason it is boxed in —
+- **the player capsule is 12 units in radius; Doom's is 16** (`PLAYER_CYLINDER` in
+  `shared/gravity.js`, and `radius = player ? 12` in `shared/physics.js`). A 12-unit body stands
+  four units inside a 20-radius monster, where `PIT_CheckThing` would have refused the move, so the
+  pair overlap and neither can move. Widening the body is **not** a one-line change: the pickup rule
+  measures a fixed 36-unit *box* plus a wall trace (`playerReachesEntity`), so a 16-unit body stops
+  ~0.3 units short of a Freedoom ledge bonus that is collected today
+  (`test/world-motion.test.js`, "Freedoom shelf bonuses"). Widen the body and the pickup rule
+  together, and re-run `npm run gzdoom:diff -- player-walk` after each half.
+- **Steps.** Walking down MAP01's staircase, GZDoom is briefly airborne on every step and keeps its
+  speed (no friction in the air); the Rapier character controller keeps the player grounded and
+  applies friction throughout, so OpenDLE decelerates over the steps. After the wedge above this is
+  the smaller difference: `player-walk` agrees to about a unit through the staircase until the
+  ZombieMan stops the player.
+
+A watched actor is how to see this: `scenario.watch` names a class and the trace mod prints its
+position every tic (`{ "watch": "ZombieMan" }` in a scenario that replays the `walk` demo), so the
+two engines' monsters can be compared directly instead of inferred from the player.
 
 ### What playing found that the trace cannot
 

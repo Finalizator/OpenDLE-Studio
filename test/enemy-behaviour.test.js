@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createProject, validateProject } from '../shared/project.js';
 import { parseDecorate } from '../shared/decorate.js';
 import { importActors } from '../shared/actors.js';
-import { actorOf, actorStateOf, actorTic, hurtActor, setActorState, actionSupported, unsupportedActorActions, runActions } from '../shared/actor-runtime.js';
+import { actorOf, actorStateOf, actorTic, hurtActor, setActorState, setActorTarget, actorTarget, actionSupported, unsupportedActorActions, runActions } from '../shared/actor-runtime.js';
 import { canSeeTarget } from '../shared/combat.js';
 import { executeSpecial } from '../shared/line-specials.js';
 import { createRuntime, stepRuntime, settleGroundActors } from '../shared/runtime.js';
@@ -138,6 +138,20 @@ test('pain interrupts a monster according to its PainChance', () => {
   for (let hit = 0; hit < 5; hit++) hurtActor(project, state, guard, 1, state.player);
   assert.equal(guard.stateLabel, 'Pain', 'PainChance 256 always flinches');
   assert.equal(actorStateOf(guard).reactionTime, 0, 'pain clears the reaction delay');
+});
+
+test('a monster that wakes up records the player as its target', () => {
+  // `state.player` is the player's position, not its map entity: it carries no `id`, so
+  // `setActorTarget(entity, state.player)` stored `undefined` and the target A_Look had just found
+  // was never written down. Every reader treats "no target" as the player, which is why this only
+  // showed up as a monster that could not say who it was hunting.
+  const { project, state } = room();
+  const guard = state.entities.find(entity => entity.id === 'guard');
+  setActorTarget(guard, state.player);
+  assert.equal(guard.targetId, '$player');
+  assert.equal(actorTarget(state, guard), state.player);
+  setActorTarget(guard, null);
+  assert.equal(guard.targetId, undefined);
 });
 
 test('damage from one monster makes the victim fight back instead of the player', () => {
