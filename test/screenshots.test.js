@@ -40,3 +40,12 @@ test('no screenshot in Docs/ is orphaned', () => {
     assert.ok(shown.has(file), `Docs/${file} is not shown anywhere; add it to a guide or delete it`);
   }
 });
+
+test('the screenshot tool cannot replace a picture on its own', () => {
+  const source = readFileSync(join(root, 'tools', 'automation', 'screenshots.mjs'), 'utf8');
+  // The README's pictures are hand-picked. A capture run wrote into Docs/ and replaced the
+  // author's own screenshots twice; the tool must not be able to do that again.
+  assert.match(source, /outDir = join\(root, 'data', 'screenshots'\)/, 'captures land outside Docs/');
+  assert.match(source, /existsSync\(file\) && !force/, 'an existing picture is left alone');
+  assert.doesNotMatch(source, /outDir = join\(root, 'Docs'\)/);
+});

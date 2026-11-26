@@ -6,9 +6,13 @@
 // deliberately opens a blank document instead of the campaign, and the window stays hidden so a
 // capture pass cannot interrupt whoever is working on the machine.
 //
-//   node tools/automation/screenshots.mjs                # every shot
-//   node tools/automation/screenshots.mjs ingame_testing  # one of them
+//   node tools/automation/screenshots.mjs                     # every shot
+//   node tools/automation/screenshots.mjs ingame_testing       # one of them
 //   node tools/automation/screenshots.mjs ingame_testing --show
+//
+// Pictures land in `data/screenshots/` and an existing file is never replaced unless `--force` is
+// passed. The README's images are hand-picked: a run that wrote into `Docs/` on its own replaced the
+// author's own screenshots twice, which is a thing a tool must not be able to do.
 //
 // `--show` puts the window on screen. The panels composite off screen as well, but a live GPU
 // surface — the 3D view and the running game — does not: those two shots need a visible window.
@@ -17,7 +21,7 @@
 // other surface mode before the run gives up on it.
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -50,7 +54,8 @@ const wheel = (selector, notches) => `(() => {
  * were captured by hand and are the author's; a script that rewrites them would silently replace
  * someone's work with its own framing, which is exactly what happened once.
  *
- * `steps` runs against the loaded campaign; `wheel` zooms an element before the capture.
+ * `steps` runs against the loaded campaign, `ready` waits for it to be worth photographing,
+ * `afterReady` runs once it is, and `wheel` zooms an element before the capture.
  */
 export const SHOTS = [
   {
@@ -77,7 +82,10 @@ export const SHOTS = [
       return canvas.width + 'x' + canvas.height;
     })()`,
     readyTimeout: 90000,
-    settle: 2500,
+    // The preview opens as a panel over a dimmed editor. The picture people want is the game, so
+    // the shot goes fullscreen once the level is actually running.
+    afterReady: [click('#preview-fullscreen')],
+    settle: 4000,
   },
 ];
 
@@ -155,7 +163,10 @@ async function waitForEditor(page, timeout = 90000) {
   })()`, { timeout, label: 'the project to load' }).catch(() => {});
 }
 
-export async function shoot({ outDir = join(root, 'Docs'), only = [], visible = false, port = Number(process.env.PORT || 3461) } = {}) {
+export async function shoot({
+  outDir = join(root, 'data', 'screenshots'), only = [], visible = false, force = false,
+  port = Number(process.env.PORT || 3461),
+} = {}) {
   const { url, child: server } = await ensureServer(port);
   const cdpPort = await freePort();
   const profile = process.env.OPENDLE_AUTOMATION_PROFILE || join(root, 'data', 'automation-profile');
@@ -179,6 +190,7 @@ export async function shoot({ outDir = join(root, 'Docs'), only = [], visible = 
   };
   mkdirSync(outDir, { recursive: true });
   const written = [];
+  const skipped = [];
   try {
     const page = await connect(cdpPort, { timeout: 60000 });
     await waitForEditor(page);
@@ -186,17 +198,25 @@ export async function shoot({ outDir = join(root, 'Docs'), only = [], visible = 
       if (only.length && !only.includes(shot.name)) continue;
       for (const step of shot.steps) await page.evaluate(step);
       if (shot.ready) await page.waitFor(shot.ready, { timeout: shot.readyTimeout || 60000, label: `${shot.name} to be ready` });
+      for (const step of shot.afterReady || []) await page.evaluate(step);
       await delay(shot.settle || 1400);
       if (shot.wheel) await zoom(page, shot.wheel.selector, shot.wheel.notches);
       await delay(600);
       const file = join(outDir, `${shot.name}.png`);
-      writeFileSync(file, await capture(page));
+      if (existsSync(file) && !force) {
+        skipped.push({ name: shot.name, file });
+        console.log(`${shot.name}: ${file} already exists, so it was left alone (--force replaces it)`);
+        continue;
+      }
+      // The viewport is what is on screen, which a fullscreen preview changes.
+      const viewport = await page.evaluate('({ width: window.innerWidth, height: window.innerHeight })');
+      writeFileSync(file, await capture(page, { width: viewport.width, height: viewport.height }));
       written.push({ name: shot.name, file, bytes: statSync(file).size });
       console.log(`${shot.name}: ${(statSync(file).size / 1024).toFixed(0)} KB — ${shot.what}`);
     }
     // Leave the editor on the layout view rather than on whatever the last shot needed.
     await page.evaluate(click('[data-tab="map"]')).catch(() => {});
-    return { url, written, log: () => log.join('\n') };
+    return { url, written, skipped, log: () => log.join('\n') };
   } catch (error) {
     error.message += `\n--- desktop output ---\n${log.join('\n').slice(-4000)}`;
     throw error;
@@ -207,9 +227,13 @@ export async function shoot({ outDir = join(root, 'Docs'), only = [], visible = 
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
-  const only = args.filter(name => !name.startsWith('-'));
-  shoot({ only, visible: args.includes('--show') }).then(
-    result => console.log(`\n${result.written.length} screenshot(s) in Docs/.`),
+  const outIndex = args.indexOf('--out');
+  const only = args.filter((name, index) => !name.startsWith('-') && index !== outIndex + 1);
+  shoot({
+    only, visible: args.includes('--show'), force: args.includes('--force'),
+    ...(outIndex >= 0 ? { outDir: resolve(args[outIndex + 1]) } : {}),
+  }).then(
+    result => console.log(`\n${result.written.length} screenshot(s) in ${result.written[0]?.file ? dirname(result.written[0].file) : 'data/screenshots'}.`),
     error => { console.error(error.message); process.exitCode = 1; },
   );
 }
