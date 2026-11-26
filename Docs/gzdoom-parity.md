@@ -124,6 +124,25 @@ Details that matter to the fight feeling right:
 - **The spots are marker things**, so `BossTarget` stays a decoration: it is found by its editor
   number (87), never drawn, never hit.
 
+### The action pointers a monster is written in
+
+A codepointer with no handler is not an error here: the frame runs, the name is recorded as
+unsupported, and nothing happens. Imported classes reach for names this engine did not answer, and
+the failures were invisible until every monster in a level was made to fight. `runActions` now
+answers these (each has a test in `test/monster-attacks.test.js`):
+
+| action | who | what was broken |
+| --- | --- | --- |
+| `A_SPosAttackUseAtkSound`, `A_SposAttackUseAtkSound` | Spider Mastermind | GZDoom renames its attack; its states call the new name, so the biggest boss in Doom II stood in front of the player firing nothing |
+| `A_SpidRefire` | Spider Mastermind | never stopped firing at something it could not see |
+| `A_SkelFist`, `A_SkelWhoosh` | Revenant | the punch did nothing and the swing was silent |
+| `A_PainDie` | Pain Elemental | a killing produced none of the three Lost Souls it is famous for |
+| `A_FatRaise`, `A_Metal`, `A_BabyMetal`, `A_Hoof` | Mancubus, Spider, Arachnotron, Cyberdemon | the heavies walked and raised their guns in silence |
+
+`A_SetFloorClip`/`A_UnSetFloorClip` are still unanswered on purpose: they change how a death sprite
+sits on the floor, which this renderer does not do, and answering them would hide that from the
+unsupported-action report the editor shows.
+
 **Not replicated yet:** `A_BossDeath` still only latches `bossDefeated`, so a Cyberdemon dying on
 E2M8 (or the Spider Mastermind on E3M8) does not end its level — Doom decides that per map, and
 the map-aware rule is not written. MAP07's mancubus/arachnotron triggers are line specials and are

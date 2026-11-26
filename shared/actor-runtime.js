@@ -1177,6 +1177,44 @@ export const ACTIONS = {
     for (let pellet = 0; pellet < 3; pellet++) monsterHitscan(ctx, 5, 3, 11.25);
     saySound(ctx.state, 'DSSHOTGN', ctx.entity, 90);
   },
+  // GZDoom renamed the Spider Mastermind's attack and its states call the new name: the old one
+  // left the biggest boss in the game standing in front of the player, firing nothing. Two
+  // spellings are in the wild (`SPos` and `Spos`), so both are answered.
+  A_SPosAttackUseAtkSound(ctx) { ACTIONS.A_SPosAttack(ctx); },
+  A_SposAttackUseAtkSound(ctx) { ACTIONS.A_SPosAttack(ctx); },
+  // Whether the Spider keeps firing: GZDoom's `A_SpidRefire` is `A_CPosRefire` with a
+  // one-in-twenty-five chance of stopping instead of one-in-six.
+  A_SpidRefire(ctx) {
+    const { state, entity } = ctx;
+    if (!canSeePlayer(state, entity, 2048) || randomDamage(state, 1, 256) < 10) setActorState(ctx.project, entity, 'See');
+  },
+  // The Revenant's punch. `A_SkelWhoosh` is the swing before it lands.
+  A_SkelWhoosh(ctx) { saySound(ctx.state, 'skeleton/swing', ctx.entity); },
+  A_SkelFist(ctx) {
+    const { state, entity } = ctx;
+    if (!meleeable(state, entity)) return;
+    monsterHitscan(ctx, 6, 8);
+    saySound(state, 'skeleton/melee', entity);
+  },
+  // The Pain Elemental's death: it stops blocking and lets three Lost Souls out, which is the
+  // reason killing one in a corridor is a mistake. Without this its death was silent in the way
+  // that matters — nothing came out.
+  A_PainDie(ctx) {
+    const { project, state, entity } = ctx;
+    ACTIONS.A_NoBlocking(ctx);
+    const z = entity.z ?? floorAt(state, entity);
+    for (const [dx, dy] of [[24, 0], [-24, 0], [0, 24]]) {
+      const soul = spawnLiveActor(project, state, 'LostSoul', { x: entity.x + dx, y: entity.y + dy, z: z + 24 });
+      if (soul) setActorState(project, soul, 'See');
+    }
+    saySound(state, 'skeleton/swing', entity);
+  },
+  // The Mancubus raising its guns, and the heavy footsteps that make a Cyberdemon, an
+  // Arachnotron and the Mancubus heard before they are seen.
+  A_FatRaise(ctx) { saySound(ctx.state, 'fatso/raiseguns', ctx.entity); },
+  A_Metal(ctx) { saySound(ctx.state, 'spider/walk', ctx.entity); },
+  A_BabyMetal(ctx) { saySound(ctx.state, 'baby/walk', ctx.entity); },
+  A_Hoof(ctx) { saySound(ctx.state, 'cyber/hoof', ctx.entity); },
   A_CPosAttack(ctx) {
     monsterHitscan(ctx, 3, 3);
     saySound(ctx.state, 'DSPISTOL', ctx.entity, 80);
