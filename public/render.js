@@ -27,6 +27,7 @@ import { liveProjectPlan, entityRepresentation, entityMediaSignature, modelOrien
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
 import { PANEL_DEFAULTS } from '/shared/panel.js';
+import { cloneNodeMaterial } from '/shared/node-material.js';
 import { areaVolume, areaYaw } from '/shared/areas.js';
 import { gameView, viewNeedsScissor } from '/shared/game-view.js';
 import { gameLevelAssetIds } from '/shared/game-levels.js';
@@ -1303,7 +1304,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
       const template = spriteTemplates.get(spriteMode);
       const material = entity.shaderId
         ? withEffectFor(new UprightSpriteMaterial(style), entity)
-        : template ? template.clone() : withEffect(new UprightSpriteMaterial(style));
+        : template ? cloneNodeMaterial(template) : withEffect(new UprightSpriteMaterial(style));
       if (template) { material.map = map; material.color.set(color); }
       else if (!entity.shaderId) spriteTemplates.set(spriteMode, material);
       materials.add(material);
@@ -1466,7 +1467,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
         if (node.geometry) geometries.add(node.geometry);
         if (node.material) {
           const copy = original => {
-            const result = withEffectFor(original.clone(), entity); materials.add(result);
+            const result = withEffectFor(cloneNodeMaterial(original), entity); materials.add(result);
             if (screenMaterials.has(result)) root.userData.samplesScreen = true;
             if (result.color) { result.userData.baseColor = result.color.clone(); tinted.push(result); }
             for (const value of Object.values(result)) if (value?.isTexture) textures.set(value.uuid, value);
@@ -1776,7 +1777,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
     materials.add(effectTemplates.sprite); materials.add(effectTemplates.mesh);
     const effectPools = { sprite: [], mesh: [] };
     function takeEffectMaterial(kind, projectile) {
-      const material = effectPools[kind].pop() || effectTemplates[kind].clone();
+      const material = effectPools[kind].pop() || cloneNodeMaterial(effectTemplates[kind]);
       materials.add(material);
       if (kind === 'mesh') material.color.set(projectile.color || '#ffffff');
       return material;

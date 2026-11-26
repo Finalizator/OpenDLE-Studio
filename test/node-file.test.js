@@ -108,7 +108,7 @@ test('the renderers apply per-object shaders and draw panels', () => {
   const render = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
   assert.match(render, /function withEffectFor\(material, entity\)/);
   assert.match(render, /const effect = effectFor\(entity\?\.shaderId\)/);
-  assert.match(render, /withEffectFor\(original\.clone\(\), entity\)/);
+  assert.match(render, /withEffectFor\(cloneNodeMaterial\(original\), entity\)/);
   assert.match(render, /function addPanel\(entity\)/);
   assert.match(render, /new THREE\.MeshPhysicalMaterial\(/);
   const view = readFileSync(new URL('../public/scene-3d-view.js', import.meta.url), 'utf8');
