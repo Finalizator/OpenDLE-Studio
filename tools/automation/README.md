@@ -29,6 +29,10 @@ Output is one JSON line. A failure exits non-zero and names the failing step:
   stored campaign and disables autosave.
 - `cdp.mjs` is a ~120-line CDP client built on Node's global `WebSocket` (`Runtime.evaluate`,
   `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`).
+- **A capture pass does not open a window either.** `screenshots.mjs --show` is honoured only with
+  `OPENDLE_AUTOMATION_VISIBLE=1`, because the 3D view and the running game need a live GPU surface
+  and the panels do not. Without the switch a shot that needs a screen is skipped with the reason,
+  and everything is still captured off screen (`Page.startScreencast`, not `captureScreenshot`).
 - **No dialog can block a run.** `cdp.mjs` enables the Page domain and answers every page dialog:
   a confirmation that follows a scenario's own click is accepted, a question about unsaved work
   ("discard", "restore", "overwrite") is dismissed so the project survives, and `page.dialogs`

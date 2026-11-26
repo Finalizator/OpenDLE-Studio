@@ -49,3 +49,13 @@ test('the screenshot tool cannot replace a picture on its own', () => {
   assert.match(source, /existsSync\(file\) && !force/, 'an existing picture is left alone');
   assert.doesNotMatch(source, /outDir = join\(root, 'Docs'\)/);
 });
+
+test('a capture pass never opens a window on its own', () => {
+  const source = readFileSync(join(root, 'tools', 'automation', 'screenshots.mjs'), 'utf8');
+  // Every other automation run is invisible unless OPENDLE_AUTOMATION_VISIBLE=1 says otherwise;
+  // a capture tool that pops a window because a flag was passed is the tool overruling the person.
+  assert.match(source, /const onScreen = visible && visibleWindows\(\)/);
+  assert.match(source, /onScreen \? '--show' : '--hidden'/,
+    'the window switch follows that decision, not the flag');
+  assert.match(source, /needsScreen && !onScreen/, 'a shot that needs pixels says so and is skipped');
+});

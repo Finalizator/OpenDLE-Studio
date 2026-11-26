@@ -14,8 +14,11 @@
 // passed. The README's images are hand-picked: a run that wrote into `Docs/` on its own replaced the
 // author's own screenshots twice, which is a thing a tool must not be able to do.
 //
-// `--show` puts the window on screen. The panels composite off screen as well, but a live GPU
-// surface — the 3D view and the running game — does not: those two shots need a visible window.
+// The panels composite off screen as well, but a live GPU surface — the 3D view and the running
+// game — does not, so those two shots need a window on screen. Nothing here may open one on its
+// own: `--show` is only honoured when `OPENDLE_AUTOMATION_VISIBLE=1` says somebody is watching,
+// which is the same gate every other automation run obeys. A capture pass that pops a window on
+// the author's screen while they are working is a bug in the tool, not a preference.
 //
 // A capture can hang in the canvas views on some drivers, so each is bounded and retried with the
 // other surface mode before the run gives up on it.
@@ -27,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { connect } from './cdp.mjs';
 import { track } from './lifecycle.mjs';
-import { electronBinary, ensureServer, extraElectronArgs, freePort } from './studio.mjs';
+import { electronBinary, ensureServer, extraElectronArgs, freePort, visibleWindows } from './studio.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -71,6 +74,7 @@ export const SHOTS = [
   {
     name: 'ingame_testing',
     what: 'the level running in the browser',
+    needsScreen: true,
     steps: [click('#play')],
     // The preview builds a renderer, a level and its actor table before it can draw anything, so
     // the shot waits for the canvas to have size and for the loading notice to be gone.
@@ -167,6 +171,8 @@ export async function shoot({
   outDir = join(root, 'data', 'screenshots'), only = [], visible = false, force = false,
   port = Number(process.env.PORT || 3461),
 } = {}) {
+  // Two keys turn the same lock, as everywhere else in this harness: a flag alone is not consent.
+  const onScreen = visible && visibleWindows();
   const { url, child: server } = await ensureServer(port);
   const cdpPort = await freePort();
   const profile = process.env.OPENDLE_AUTOMATION_PROFILE || join(root, 'data', 'automation-profile');
@@ -179,7 +185,7 @@ export async function shoot({
     `--remote-debugging-port=${cdpPort}`, '--remote-allow-origins=*',
     ...extraElectronArgs(),
     join(root, 'scripts', 'studio-desktop.js'),
-    '--url', url, '--profile', profile, visible ? '--show' : '--hidden', '--no-close-prompt',
+    '--url', url, '--profile', profile, onScreen ? '--show' : '--hidden', '--no-close-prompt',
   ], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env }));
   const log = [];
   child.stdout?.on('data', chunk => log.push(String(chunk).trim()));
@@ -196,6 +202,11 @@ export async function shoot({
     await waitForEditor(page);
     for (const shot of SHOTS) {
       if (only.length && !only.includes(shot.name)) continue;
+      if (shot.needsScreen && !onScreen) {
+        skipped.push({ name: shot.name, reason: 'needs a window on screen (OPENDLE_AUTOMATION_VISIBLE=1)' });
+        console.log(`${shot.name}: skipped — it needs a live GPU surface, so set OPENDLE_AUTOMATION_VISIBLE=1 to capture it`);
+        continue;
+      }
       for (const step of shot.steps) await page.evaluate(step);
       if (shot.ready) await page.waitFor(shot.ready, { timeout: shot.readyTimeout || 60000, label: `${shot.name} to be ready` });
       for (const step of shot.afterReady || []) await page.evaluate(step);
