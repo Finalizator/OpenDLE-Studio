@@ -23,7 +23,37 @@
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/hud.css">
   <script type="importmap">
-    {"imports":{"three":"/vendor/three/three.webgpu.js","three/webgpu":"/vendor/three/three.webgpu.js","three/tsl":"/vendor/three/three.tsl.js","three/addons/":"/vendor/three-addons/"}}
+    {
+  "imports": {
+    "three": "/vendor/three/three.webgpu.js",
+    "three/webgpu": "/vendor/three/three.webgpu.js",
+    "three/tsl": "/vendor/three/three.tsl.js",
+    "three/addons/": "/vendor/three-addons/",
+    "three/examples/jsm/": "/vendor/three-addons/",
+    "procedural-terrains": "/vendor/terrain/index.js",
+    "fflate": "/vendor/fflate/browser.js",
+    "procedural-terrains/mini": "/vendor/terrain/mini.js",
+    "procedural-terrains/water": "/vendor/terrain/water.js",
+    "procedural-terrains/clouds": "/vendor/terrain/clouds.js",
+    "procedural-terrains/export": "/vendor/terrain/export.js",
+    "procedural-terrains/planet": "/vendor/terrain/planet.js",
+    "procedural-terrains/render": "/vendor/terrain/render.js",
+    "procedural-terrains/viewer": "/vendor/terrain/viewer.js",
+    "procedural-terrains/infinite": "/vendor/terrain/infinite.js",
+    "procedural-terrains/documents": "/vendor/terrain/documents.js",
+    "procedural-terrains/generation": "/vendor/terrain/generation.js",
+    "procedural-terrains/real-world": "/vendor/terrain/real-world.js",
+    "procedural-terrains/assets": "/vendor/terrain/assets.js"
+  },
+  "scopes": {
+    "/vendor/terrain/": {
+      "three": "/vendor/three/three.module.js",
+      "three/addons/": "/vendor/three-addons/",
+      "three/examples/jsm/": "/vendor/three-addons/",
+      "fflate": "/vendor/fflate/browser.js"
+    }
+  }
+}
   </script>
   <script type="module" src="/app.js"></script>
 </head>
@@ -51,6 +81,7 @@
       <button data-tab="scriptlets">Engine scriptlets</button>
       <button data-tab="timesheet">Timesheet</button>
       <button data-tab="hud">HUD</button>
+      <button data-tab="terrain">Terrain</button>
       <button data-tab="assets">Assets</button>
     </nav>
     <button id="tab-back" class="tab-scroll" title="Scroll the editor tabs" aria-label="Scroll editor tabs left">&lsaquo;</button>
@@ -303,6 +334,7 @@
         <div id="scriptlet-errors" class="prose" role="alert"></div>
         <div id="scriptlet-list" class="scriptlet-list" role="list"></div>
       </section>
+      <section id="terrain-panel" class="panel" hidden></section>
       <section id="tweaks-panel" class="panel" hidden>
         <div class="panel-heading"><div><h1>Engine Settings</h1><p>OpenDLE preview overrides, independent of imported game menus.</p></div></div>
         <div class="prose">

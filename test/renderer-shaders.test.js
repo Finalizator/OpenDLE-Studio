@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { shaderTemplate, validateShaders } from '../shared/shaders.js';
 import { compileGLSLEffect } from '../public/shader-effects.js';
+import { contentSecurityPolicy } from '../server/export-launcher.js';
 import { selectRendererBackend, createBrowserRenderer } from '../public/renderer-backend.js';
 import { vec4, vec2, float, uniform } from 'three/tsl';
 import { isShadertoySource, parseShaderSource } from '../shared/shader-language.js';
@@ -203,12 +204,15 @@ test('disposed WebGL contexts restore before the same canvas initializes its nex
   assert.equal(lost, false);
 });
 
-test('the CSP permits exactly the checked-in Three import map without unsafe inline/eval', () => {
+test('the CSP permits exactly the checked-in import map without unsafe inline/eval', () => {
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   const importMap = html.match(/<script type="importmap">([\s\S]*?)<\/script>/)[1];
   const hash = createHash('sha256').update(importMap).digest('base64');
+  // The hash is computed from this page rather than pinned in the server: a hand-written hash went
+  // stale the moment the import map named a new package, and the editor booted to an empty window.
+  assert.ok(contentSecurityPolicy(html).includes(`'sha256-${hash}'`), 'the import map is what the policy allows');
   const server = readFileSync(new URL('../server/index.js', import.meta.url), 'utf8');
-  assert.ok(server.includes(`'sha256-${hash}'`));
+  assert.doesNotMatch(server, /sha256-[A-Za-z0-9+/=]{20}/, 'no pinned script hash');
   const compiler = readFileSync(new URL('../public/shader-effects.js', import.meta.url), 'utf8');
   assert.doesNotMatch(compiler, /new Function|\beval\(/);
 });

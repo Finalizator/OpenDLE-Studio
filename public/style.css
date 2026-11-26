@@ -804,3 +804,22 @@ body.scene-dragging { cursor: grabbing; }
 .addon-docs summary { cursor: pointer; font-size: 10px; color: var(--muted); }
 .addon-code { margin: 6px 0; padding: 8px; background: #303030; border: 1px solid var(--border); border-radius: 2px;
   font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.5; white-space: pre; overflow-x: auto; }
+
+/* Terrain: the recipe on the left, the generated world on the right. The viewer owns its canvas,
+   so the stage is a plain box that fills the remaining height and the package decides what is
+   inside it. */
+/* The panel is exactly the workspace's height, not the document's: the stage is a live canvas that
+   has to fill what is on screen, and scrolling a canvas is meaningless. */
+#terrain-panel { padding: 0; height: 100%; min-height: 0; overflow: hidden; }
+.terrain-body { display: grid; grid-template-columns: 292px minmax(0, 1fr); height: 100%; min-height: 0; }
+.terrain-form { padding: 12px; border-right: 1px solid var(--border); overflow-y: auto; background: #3a3a3a; }
+.terrain-form h2 { margin: 0 0 4px; font-size: 13px; }
+.terrain-form p { margin: 0 0 10px; font-size: 10px; line-height: 1.5; }
+.terrain-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 6px; font-size: 10px; }
+.terrain-field input { width: 104px; }
+.terrain-actions { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 8px; }
+.terrain-actions button { width: 100%; }
+#terrain-status { min-height: 2.4em; }
+.terrain-stage { position: relative; min-height: 0; overflow: hidden; background: #10151c; }
+.terrain-stage canvas { display: block; width: 100%; height: 100%; }
+.terrain-stage > p { margin: 16px; max-width: 560px; }

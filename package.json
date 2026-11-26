@@ -34,7 +34,8 @@
     "express": "^5.1.0",
     "jpeg-js": "^0.4.4",
     "pngjs": "^7.0.0",
-    "three": "^0.180.0",
+    "procedural-terrains": "^2.1.0",
+    "three": "^0.185.1",
     "yauzl": "^3.2.0",
     "zod": "^3.25.0"
   }

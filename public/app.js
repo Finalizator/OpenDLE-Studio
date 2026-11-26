@@ -21,6 +21,7 @@ import { nodeIcon } from './node-icons.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
 import { createSceneEditor } from './scene-editor.js';
 import { createMaterialPanel } from './material-panel.js';
+import { createTerrainPanel } from './terrain-panel.js';
 import {
   cloneEntitiesForPaste, entityGroups, groupEntities, groupOf, leaveGroup, membersOf, ungroup,
 } from '/shared/entity-groups.js';
@@ -342,6 +343,9 @@ const actorsPanel = createActorsPanel({
 }, { actors: () => project.actors || [], edit: editActors, unsupported: actorActionGaps });
 materialPanel = createMaterialPanel({
   root: materialBrowser, project: () => project, edit, status, api, applyToSelection: applyMaterialToSelection,
+});
+const terrainPanel = createTerrainPanel({
+  root: $('terrain-panel'), project: () => project, edit, status, addModel: placeTerrainModel,
 });
 const playtestLogPanel = createPlaytestLogPanel({
   directory: $('log-directory'), totals: $('log-totals'), list: $('log-list'), detail: $('log-detail'),
@@ -2504,7 +2508,7 @@ function showTab(tab) {
   if (tab === 'assets') {
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
-  for (const name of ['map', 'events', 'environment', 'shaders', 'hud', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'addons', 'about', 'scene'])
+  for (const name of ['map', 'events', 'environment', 'shaders', 'hud', 'terrain', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'addons', 'about', 'scene'])
     $(name + '-panel').hidden = tab !== name;
   // Tabs an addon added belong to the same strip and must close with it.
   for (const entry of addonTabs.values()) entry.panel.hidden = tab !== entry.id;
@@ -2514,6 +2518,7 @@ function showTab(tab) {
   // has to build it once.
   if (tab === 'shaders') shaderEnginePanel.render(message => status(message, true));
   if (tab === 'hud') hudEditor.render();
+  if (tab === 'terrain') terrainPanel.render();
   if (tab === 'scene') { sceneObjectEditor?.render(); /* the scene editor's columns are fitted to the panel, so measure it now that it is visible */ splitters.refresh(); }
   if (tab === 'actors') actorsPanel.render();
   if (tab === 'scripts') scriptsPanel.render();
@@ -6947,6 +6952,36 @@ async function importModelFiles(files) {
   if (version !== editVersion) throw new Error('Project changed during model import. Retry.');
   $('asset-filter').value = 'model'; renderAssets();
   edit(next => { next.assets ||= []; next.assets.push(...assets); }, `${assets.length} models imported. ${warnings.join(' ')}`);
+}
+/**
+ * Turns a terrain export into a model asset, and puts that model in the level.
+ *
+ * The terrain runtime is a generator, not a renderer of ours: what it hands back is a GLB, and a
+ * GLB is already something this project knows how to hold (`bundleModel`) and draw (an object with
+ * a `modelAsset`). So the export path is the ordinary model import with the file the tab produced,
+ * and the object lands where the player starts so it is visible the moment the level opens.
+ */
+async function placeTerrainModel({ bytes, binary, name }) {
+  const version = editVersion;
+  const file = new File([bytes], `${name || 'Terrain'}.glb`, { type: binary ? 'model/gltf-binary' : 'model/gltf+json' });
+  const result = await bundleModel(file, [file], newId('asset'));
+  const preview = await captureModelPreview(result.asset).catch(() => null);
+  if (version !== editVersion) throw new Error('Project changed during the terrain export. Export again.');
+  const asset = { ...result.asset, name: String(name || 'Terrain').slice(0, 100), ...(preview ? { preview } : {}) };
+  const player = project.map.entities.find(entity => entity.type === 'player');
+  const id = newId('entity');
+  edit(next => {
+    next.assets ||= [];
+    next.assets.push(asset);
+    next.map.entities.push({
+      id, name: asset.name, type: 'decoration',
+      x: Math.round(player?.x ?? 0), y: Math.round(player?.y ?? 0), angle: 0,
+      modelAsset: asset.id,
+    });
+  }, `${asset.name} exported to the level`);
+  selection = { kind: 'entity', id };
+  render();
+  return asset.name;
 }
 $('model-file').addEventListener('change', guard(async event => {
   const files = [...event.target.files]; event.target.value = '';

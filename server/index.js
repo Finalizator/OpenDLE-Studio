@@ -27,6 +27,7 @@ import { resolveDist } from './electron-runtime.js';
 import { projectZipEntries } from './project-folder.js';
 import { readProjectArchive } from './project-archive.js';
 import { loadGzdoomActors } from './actor-sources.js';
+import { contentSecurityPolicy } from './export-launcher.js';
 import { createPlaytestLogStore, DEFAULT_LOG_DIRECTORY, DEFAULT_PLACEHOLDER_DIRECTORY } from './playtest-logs.js';
 import { isLogId, normalizeLogEntry, LOG_LIMITS } from '../shared/playtest-log.js';
 import { fetchShadertoy } from './shadertoy.js';
@@ -36,6 +37,22 @@ import { scriptletFiles } from './scriptlets.js';
 import { createPixiEditorBridge, PIXIEDITOR_KINDS } from './pixieditor.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * The policy for the studio page, hashed from the page itself.
+ *
+ * The hash was written out by hand once, so editing the inline import map — which is what naming a
+ * new vendored package does — silently broke the whole editor behind a CSP violation, with an empty
+ * window as the only symptom. `contentSecurityPolicy` already does this for the exported build; the
+ * studio uses it too, and caches against the file's mtime so the header costs one stat a request.
+ */
+let cachedPolicy = { mtime: -1, value: '' };
+function studioPolicy() {
+  const file = resolve(root, 'public', 'index.html');
+  const mtime = statSync(file).mtimeMs;
+  if (cachedPolicy.mtime !== mtime) cachedPolicy = { mtime, value: contentSecurityPolicy(readFileSync(file, 'utf8')) };
+  return cachedPolicy.value;
+}
 /** The generated documentation site; built on demand, never checked in. */
 const docsDirectory = resolve(root, 'public', 'docs');
 function equal(a, b) {
@@ -82,7 +99,7 @@ export function createApp({
     res.set({
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-xgBhQgo+f9xOkcechLiI6lDe3GhH9jz1gwdm8I7MAQY='; style-src 'self'; img-src 'self' blob: data:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' data: blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'",
+      'Content-Security-Policy': studioPolicy(),
     });
     next();
   });
@@ -564,11 +581,26 @@ export function createApp({
   app.use('/scriptlets', express.static(scriptletsDir, { setHeaders: revalidate }));
   app.use('/vendor/three', express.static(resolve(root, 'node_modules/three/build')));
   app.get('/vendor/rapier/rapier.mjs', (req, res) => res.sendFile(resolve(root, 'node_modules/@dimforge/rapier3d-compat/rapier.mjs')));
-  for (const module of ['loaders/GLTFLoader.js', 'utils/BufferGeometryUtils.js', 'utils/SkeletonUtils.js', 'environments/RoomEnvironment.js']) {
-    app.get(`/vendor/three-addons/${module}`, (req, res) => res.type('application/javascript').send(
-      readFileSync(resolve(root, 'node_modules/three/examples/jsm', module), 'utf8').replaceAll("from 'three'", "from '/vendor/three/three.module.js'")));
-  }
-  app.use('/vendor/three-addons', express.static(resolve(root, 'node_modules/three/examples/jsm')));
+  // Every addon is rewritten, not a hand-picked four: an addon imported by a dependency (the
+  // terrain runtime pulls `controls/OrbitControls.js`) would otherwise reach the bare `three`
+  // specifier, which the import map points at the WebGPU build — and that build has no
+  // `WebGLRenderer` at all. The classic module build is the one both the editor and the addons use.
+  const addonRoot = resolve(root, 'node_modules/three/examples/jsm');
+  app.get(/^\/vendor\/three-addons\/(.+)$/, (req, res, next) => {
+    const module = req.params[0];
+    const file = resolve(addonRoot, module);
+    if (!file.startsWith(addonRoot) || !file.endsWith('.js')) return next();
+    try {
+      res.type('application/javascript').send(
+        readFileSync(file, 'utf8').replaceAll("from 'three'", "from '/vendor/three/three.module.js'"));
+    } catch { next(); }
+  });
+  app.use('/vendor/three-addons', express.static(addonRoot));
+  // Procedural Terrains, served as the package ships it: its ESM entry points, its workers and the
+  // declarations are all under `dist/`. `fflate` is its only dependency, and it is a browser ESM
+  // build of its own.
+  app.use('/vendor/terrain', express.static(resolve(root, 'node_modules/procedural-terrains/dist')));
+  app.use('/vendor/fflate', express.static(resolve(root, 'node_modules/fflate/esm')));
   app.use(express.static(resolve(root, 'public'), { setHeaders: revalidate }));
   app.use((error, req, res, next) => {
     console.error(`${req.method} ${req.path}: ${error.message}`);

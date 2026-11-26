@@ -742,6 +742,27 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     }
   };
 
+  // A terrain the author generated in the Terrain tab: the *recipe*, not the mesh. It is stored so
+  // reopening the tab rebuilds what they were working on, and so the same world can be exported
+  // again at another resolution; the mesh that reaches the level is an ordinary model asset.
+  if (project.terrain !== undefined && project.terrain !== null) {
+    object(project.terrain, 'Terrain');
+    const terrain = project.terrain;
+    if (terrain.name !== undefined) text(terrain.name, 'Terrain name', 100);
+    number(terrain.seed, 'Terrain seed', -2147483648, 2147483647);
+    number(terrain.chunkCount, 'Terrain chunk count', 1, 64);
+    number(terrain.chunkSize, 'Terrain chunk size', 8, 4096);
+    number(terrain.heightScale, 'Terrain height scale', 0, 100000);
+    number(terrain.octaves, 'Terrain octaves', 1, 16);
+    // The runtime refuses anything outside 0.01..1000 for `source.scale`; a project must not be
+    // able to store a recipe its own viewer will not open.
+    number(terrain.scale, 'Terrain noise scale', .01, 1000);
+    number(terrain.meshRes, 'Terrain mesh resolution', 16, 1024);
+    if (terrain.seaLevel !== undefined) number(terrain.seaLevel, 'Terrain sea level', -100000, 100000);
+    for (const flag of ['exportCollision', 'exportWater'])
+      if (terrain[flag] !== undefined) assert(typeof terrain[flag] === 'boolean', `Terrain ${flag} must be a boolean`);
+  }
+
   // PBR materials: the record that says which map is the base colour and which is the normal,
   // which resolution the project plays with and which is only the editor's preview.
   const materials = project.materials || [];
