@@ -9,6 +9,9 @@ the game runs.
 
 ![The Shader tab: the effect stack on the left, the technique picker open, and each technique's sliders](shader_editor.png)
 
+*The stack runs top to bottom: add a technique, tune it with its own sliders, and reorder or remove
+passes without touching the shader source.*
+
 ## How it works
 
 The level is drawn into a render target that keeps its depth. The stack then runs over

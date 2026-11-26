@@ -9,6 +9,9 @@ new runtime command, use [scriptlets](scriptlets.md) instead.
 
 ![The Addons tab, where a project installs or removes an extension](addons.png)
 
+*An addon is one folder or ZIP: new actions, artwork, shaders, HUD content, editor tabs or menu
+buttons, installed per project and removable in one go.*
+
 ## Choose the right mechanism
 
 | Need | Use |

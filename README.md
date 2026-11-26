@@ -16,6 +16,10 @@ visual tools as a hand-built level.
 
 ![The editor workspace: an imported Doom level in 3D with its monsters, the selected object's move gizmo and properties, the project tree and the asset browser](./Docs/editor_overall.png)
 
+*One window for the whole game: edit in 3D or 2D with move gizmos and live properties on the left,
+the campaign's levels and objects on the right, and every texture, flat, sprite and material in the
+asset browser underneath.*
+
 ## See it in action
 
 Every picture below is this editor, on an imported campaign, with nothing mocked up.
@@ -23,16 +27,22 @@ Every picture below is this editor, on an imported campaign, with nothing mocked
 | Build gameplay as events | Design the HUD and menus |
 | --- | --- |
 | ![A visual event sheet: initial stats, movement keys mapped to conditions and actions](./Docs/event_sheets.png) | ![The WYSIWYG HUD designer with the Doom status bar and a pause menu open in the preview](./Docs/hud_designer.png) |
+| *No-code event sheets: conditions on the left, actions on the right, nested groups, comments, AND/OR and reusable scriptlets.* | *WYSIWYG HUD and menus: anchored layouts, nine-patch panels, bitmap fonts, clickable elements and a live preview.* |
 
 | Lay out paths and motion in 3D | Time sequences on the timeline |
 | --- | --- |
 | ![Multi-point path editing in the 3D view, with the asset browser underneath](./Docs/multipurpose_path_system.png) | ![A timesheet with tracks and cues, driving object motion and level timing](./Docs/timeline_editor.png) |
+| *Multi-point paths with a height and a speed per point: objects follow them, or you drag the points in the view.* | *Timesheets hold tracks and cues that move objects, play sounds and time the level as it runs.* |
 
 | Generate and sculpt terrain | Stack full-screen shader effects |
 | --- | --- |
 | ![The Terrain tab: recipes and noise layers on the left, the generated world on the right](./Docs/terrain_editor.png) | ![The Shader tab: the effect stack, technique picker and per-technique sliders](./Docs/shader_editor.png) |
+| *Procedural recipes, noise layers, sculpting and surface painting, exported into the project as a real level surface.* | *An effect stack of full-screen passes — bloom, SSAO, fog, pixelation and more — each with its own sliders and event control.* |
 
 ![Playing the level inside the editor, in the browser, driven by the project's own events](./Docs/ingame_testing.png)
+
+*Play inside the editor or fullscreen in the browser: the level runs on the project's own events and
+assets, so there is no separate build between editing and testing.*
 
 ## Create without starting from code
 
