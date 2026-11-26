@@ -798,6 +798,49 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       if (terrain.stack.normalizeOutput !== undefined)
         assert(typeof terrain.stack.normalizeOutput === 'boolean', 'Terrain normalizeOutput must be a boolean');
     }
+    // The freehand sculpt is a height-delta grid the runtime decodes from base64; a document that
+    // does not hold resolution² float32 is a sculpt the world would silently drop.
+    if (terrain.sculpt !== undefined && terrain.sculpt !== null) {
+      object(terrain.sculpt, 'Terrain sculpt');
+      assert(terrain.sculpt.version === 1, 'A terrain sculpt is version 1');
+      number(terrain.sculpt.resolution, 'Terrain sculpt resolution', 32, 1024);
+      const resolution = Math.round(terrain.sculpt.resolution);
+      text(terrain.sculpt.data, 'Terrain sculpt data', 8 * 1024 * 1024);
+      assert(/^[A-Za-z0-9+/]+={0,2}$/.test(terrain.sculpt.data), 'Terrain sculpt data must be base64');
+      const bytes = Math.floor(terrain.sculpt.data.replace(/=+$/, '').length * 3 / 4);
+      assert(bytes === resolution * resolution * 4,
+        `Terrain sculpt data must hold ${resolution * resolution} float32 values`);
+    }
+    // Painted surface layers, in the runtime's own document: unique slots, and tiles whose keys are
+    // the ones its loader accepts.
+    if (terrain.paint !== undefined && terrain.paint !== null) {
+      object(terrain.paint, 'Terrain paint');
+      assert(terrain.paint.version === 2, 'Terrain paint is version 2');
+      object(terrain.paint.origin, 'Terrain paint origin');
+      object(terrain.paint.span, 'Terrain paint span');
+      number(terrain.paint.origin.x, 'Terrain paint origin X', -100000, 100000);
+      number(terrain.paint.origin.z, 'Terrain paint origin Z', -100000, 100000);
+      number(terrain.paint.span.x, 'Terrain paint span X', 1, 200000);
+      number(terrain.paint.span.z, 'Terrain paint span Z', 1, 200000);
+      array(terrain.paint.layers, 'Terrain paint layers', 32);
+      const slots = new Set();
+      for (const layer of terrain.paint.layers) {
+        object(layer, 'Terrain paint layer');
+        identifier(layer.id, 'Terrain paint layer id');
+        text(layer.materialInstanceId, 'Terrain paint material', 60);
+        text(layer.name, 'Terrain paint layer name', 80);
+        number(layer.slot, 'Terrain paint layer slot', 0, 31);
+        assert(!slots.has(layer.slot), 'Two terrain paint layers cannot share a slot');
+        slots.add(layer.slot);
+        if (layer.opacity !== undefined) number(layer.opacity, 'Terrain paint layer opacity', 0, 1);
+      }
+      array(terrain.paint.tiles || [], 'Terrain paint tiles', 128);
+      for (const tile of terrain.paint.tiles || []) {
+        object(tile, 'Terrain paint tile');
+        assert(/^[0-3],[0-3],[0-7]$/.test(tile.key), `Unknown terrain paint tile ${tile.key}`);
+        text(tile.data, 'Terrain paint tile data', 4 * 1024 * 1024);
+      }
+    }
     // Sculpted shapes are the manual document's stamps; the runtime normalises and clamps them, so
     // what the project guarantees is that the list is shaped the way it reads it.
     if (terrain.shapes !== undefined && terrain.shapes !== null) {

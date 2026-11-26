@@ -71,6 +71,10 @@ async function createWorld(mode, renderer, configuration, signal) {
  * that orbits the camera never moves a shape.
  */
 export function createTerrainViewport(container, { onPick = null } = {}) {
+  // Rebindable: the panel arms a brush only while a sculpt or paint tool is active, and an armed
+  // brush owns the drag so the camera does not orbit underneath it.
+  const interaction = { pick: onPick, stroke: null };
+  let stroking = false;
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(2, globalThis.devicePixelRatio || 1));
   renderer.setClearColor(0x10151c, 1);
@@ -119,23 +123,57 @@ export function createTerrainViewport(container, { onPick = null } = {}) {
     return world.object || world.terrain?.object || null;
   }
 
-  renderer.domElement.addEventListener('pointerdown', event => { downAt = { x: event.clientX, y: event.clientY }; });
-  renderer.domElement.addEventListener('pointerup', event => {
-    if (!onPick || !downAt) { downAt = null; return; }
-    const moved = Math.hypot(event.clientX - downAt.x, event.clientY - downAt.y);
-    downAt = null;
-    // Orbiting the camera is a drag, not a placement.
-    if (moved > 4) return;
+  /**
+   * Where the pointer is on the terrain, or null.
+   *
+   * The same raycast serves two purposes: placing a shape (one click) and stroking a brush (a drag).
+   * A brush tool takes the drag, so the camera must not orbit while one is armed — that is
+   * `interaction.stroke` being set.
+   */
+  function pointUnder(event) {
     const object = target();
-    if (!object) return;
+    if (!object) return null;
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObject(object, true);
-    if (!hits.length) return;
+    if (!hits.length) return null;
     const point = hits[0].point;
-    onPick({ x: point.x, z: point.z, y: point.y });
+    return { x: point.x, z: point.z, y: point.y };
+  }
+
+  renderer.domElement.addEventListener('pointerdown', event => {
+    downAt = { x: event.clientX, y: event.clientY };
+    if (!interaction.stroke) return;
+    const point = pointUnder(event);
+    if (!point) return;
+    stroking = true;
+    controls.enabled = false;
+    renderer.domElement.setPointerCapture?.(event.pointerId);
+    interaction.stroke({ ...point, phase: 'start' });
   });
+  renderer.domElement.addEventListener('pointermove', event => {
+    if (!stroking || !interaction.stroke) return;
+    const point = pointUnder(event);
+    if (point) interaction.stroke({ ...point, phase: 'move' });
+  });
+  for (const type of ['pointerup', 'pointercancel']) {
+    renderer.domElement.addEventListener(type, event => {
+      if (stroking) {
+        stroking = false;
+        controls.enabled = true;
+        const point = pointUnder(event);
+        interaction.stroke?.({ ...(point || { x: 0, z: 0, y: 0 }), phase: 'end' });
+      }
+      if (!interaction.pick || !downAt) { downAt = null; return; }
+      const moved = Math.hypot(event.clientX - downAt.x, event.clientY - downAt.y);
+      downAt = null;
+      // Orbiting the camera is a drag, not a placement.
+      if (moved > 4) return;
+      const point = pointUnder(event);
+      if (point) interaction.pick(point);
+    });
+  }
 
   /** Replaces the world. The previous one is disposed first: two worlds share a GPU. */
   async function setWorld(nextMode, configuration, { signal = null } = {}) {
@@ -176,6 +214,15 @@ export function createTerrainViewport(container, { onPick = null } = {}) {
   return {
     renderer, scene, camera, controls,
     setWorld, dispose,
+    /** `{ pick, stroke }`, either of which may be null. */
+    interact(next) { interaction.pick = next.pick || null; interaction.stroke = next.stroke || null; },
+    /** Pushes a new configuration into the live world; false when the world refuses it. */
+    async reconfigure(configuration) {
+      const current = world;
+      if (!current?.configure) return false;
+      try { await current.configure(configuration); return true; }
+      catch { return false; }
+    },
     world: () => world,
     mode: () => mode,
     /** Frames the whole world, which is what "Generate" should leave you looking at. */

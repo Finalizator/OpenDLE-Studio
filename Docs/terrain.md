@@ -63,9 +63,42 @@ document: a list of parametric stamps over the stack (or over flat ground, with 
 Stamps are a document, not a mesh: `project.terrain.shapes` holds them, so a sculpted world reopens
 for the next author and the export can be repeated at another resolution.
 
-Not ported: the studio's freehand height-field brush (`sculpt` deltas) and its surface painting
-(`surfacePaint`). The runtime's manual document carries both fields, and they are the next step if
-you want pixel-level sculpting rather than stamps.
+## Freehand sculpting and painting
+
+Below the shape list, **Brush** arms a stroke over the terrain. With it off, dragging orbits the
+camera; with it on, the drag belongs to the brush, which is why the two never fight over the pointer.
+
+**Sculpt height** writes the runtime's `sculpt` document — a height-delta grid, one float per cell:
+
+```json
+{ "version": 1, "resolution": 256, "data": "<base64 of resolution² float32>" }
+```
+
+Raise and lower add or subtract `strength` with a smooth radial falloff; **smooth** pulls each cell
+toward its neighbours so a ridge softens without the landmass moving. The status line reports how
+many cells were touched and the height range, which is the only honest way to see a stroke that has
+landed. Resolution (128/256/512) is fixed per project; a stored sculpt at another resolution is
+resampled into the grid rather than dropped.
+
+**Paint surface** writes the runtime's `surfacePaint` document, exactly in its own format: a
+1024 × 1024 grid split into 4 × 4 tiles of 256 × 256, four layer weights packed into the fourth
+channel of each tile group, tiles base64-of-zlib:
+
+```json
+{ "version": 2, "origin": {"x": -512, "z": -512}, "span": {"x": 1024, "z": 1024}, "resolution": 1024,
+  "layers": [{ "id": "paint_1", "materialInstanceId": "grass", "name": "Grass", "slot": 0,
+               "visible": true, "locked": false, "opacity": 1 }],
+  "tiles": [{ "key": "1,1,0", "data": "<base64 of zlib(256·256·4 bytes)>" }] }
+```
+
+Add a layer per surface material (grass, rock, sand, mud, alien — the packs that ship with the tab),
+then paint, erase, blend or erase-all. Only touched tiles are stored, so painting a corner of a
+board stays small; a layer's checkbox and opacity feed the runtime's own per-slot uniforms.
+
+Both documents are written into the project on every stroke and pushed into the **live** world with
+`configure`, which rebuilds the height field without recreating the renderer, scene or camera — a
+stroke refines the terrain under the pointer instead of reloading the tab. During a stroke that
+happens at most every ~320 ms; on release it happens at once.
 
 ## The layer editor
 

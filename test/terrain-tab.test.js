@@ -268,3 +268,115 @@ test('a project stores the world mode, the source and the shapes it was authored
   bad({ shapes: [{ ...newShape('mountain'), mask: { type: 'ring' } }] });
   bad({ shapes: [{ ...newShape('mountain'), position: { x: 0 } }] });
 });
+
+// Freehand sculpting and surface painting: the two documents that are not lists of shapes.
+import { createSculptField, SCULPT_RESOLUTIONS } from '../public/terrain-sculpt.js';
+import { createPaintField, PAINT_RESOLUTION, PAINT_TILE } from '../public/terrain-paint.js';
+import { zlibSync, unzlibSync } from 'fflate';
+
+// The browser has btoa/atob; Node has them too since 16, but be explicit for a clear failure.
+const encode = bytes => Buffer.from(bytes).toString('base64');
+void encode;
+
+test('a sculpt stroke is a height grid that round-trips through the project', () => {
+  const field = createSculptField({ resolution: 256 });
+  const board = { origin: { x: -512, z: -512 }, span: { x: 1024, z: 1024 } };
+  assert.equal(field.isEmpty(), true);
+  const changed = field.stamp({ ...board, x: 0, z: 0, radius: 200, strength: .5, tool: 'raise' });
+  assert.ok(changed > 0, 'a dab inside the board changes cells');
+  assert.equal(field.isEmpty(), false);
+  const extent = field.extent();
+  assert.ok(extent.low > 0 && extent.high > 0, 'a raise lifts every cell it touched');
+
+  const document = field.document();
+  assert.equal(document.version, 1);
+  assert.equal(document.resolution, 256);
+  // The data is exactly resolution² float32, which is what the runtime decodes.
+  const bytes = Buffer.from(document.data, 'base64');
+  assert.equal(bytes.length, 256 * 256 * 4);
+
+  const loaded = createSculptField({ resolution: 256 });
+  loaded.load(document);
+  assert.deepEqual(loaded.extent(), extent, 'the sculpt comes back identical');
+
+  // Lowering goes the other way, and a stroke outside the board is not a change.
+  const lower = createSculptField({ resolution: 128 });
+  lower.stamp({ ...board, x: 0, z: 0, radius: 200, strength: 1, tool: 'lower' });
+  assert.ok(lower.extent().low < 0);
+  const before = lower.extent().touched;
+  assert.equal(lower.stamp({ ...board, x: 90000, z: 90000, radius: 10, strength: 1, tool: 'raise' }), 0);
+  assert.equal(lower.extent().touched, before);
+
+  // A resolution the field does not offer is refused rather than silently applied.
+  assert.deepEqual(SCULPT_RESOLUTIONS, [128, 256, 512]);
+  assert.equal(createSculptField({ resolution: 999 }).resolution(), 256);
+});
+
+test('a paint document is the format the runtime loads, and it round-trips', () => {
+  const board = { origin: { x: -512, z: -512 }, span: { x: 1024, z: 1024 } };
+  const paint = createPaintField(board);
+  const grass = paint.addLayer('grass', 'Grass');
+  const rock = paint.addLayer('rock', 'Rock');
+  assert.notEqual(grass.slot, rock.slot, 'two layers never share a slot');
+
+  assert.ok(paint.stamp({ ...board, x: 0, z: 0, radius: 160, strength: .8, layerId: grass.id }) > 0);
+  const document = paint.document();
+  assert.equal(document.version, 2);
+  assert.equal(document.resolution, PAINT_RESOLUTION);
+  assert.equal(document.layers.length, 2);
+  assert.ok(document.tiles.length >= 1 && document.tiles.length <= 16);
+  for (const tile of document.tiles) {
+    // The keys and the inflated size are the two things the runtime refuses the document over.
+    assert.match(tile.key, /^[0-3],[0-3],[0-7]$/);
+    const bytes = unzlibSync(Buffer.from(tile.data, 'base64'));
+    assert.equal(bytes.length, PAINT_TILE * PAINT_TILE * 4);
+  }
+  // Painting a corner of the board touches a corner of the tiles, not all sixteen.
+  assert.ok(document.tiles.length < 16, `only touched tiles are stored (${document.tiles.length})`);
+
+  const loaded = createPaintField(board);
+  loaded.load(document);
+  assert.ok(Math.abs(loaded.coverage(grass.id) - paint.coverage(grass.id)) < 1e-9, 'coverage survives');
+  assert.equal(loaded.coverage(rock.id), 0, 'the untouched layer is still empty');
+
+  // Erasing takes the paint back out, and a document with nothing painted is not stored at all.
+  loaded.stamp({ ...board, x: 0, z: 0, radius: 400, strength: 1, tool: 'erase', layerId: grass.id });
+  assert.ok(loaded.coverage(grass.id) < paint.coverage(grass.id));
+  const empty = createPaintField(board);
+  empty.addLayer('grass', 'Grass');
+  assert.equal(empty.document(), null);
+});
+
+test('the project refuses a sculpt or paint document the runtime would drop', () => {
+  const base = defaultTerrain();
+  const good = (() => {
+    const field = createSculptField({ resolution: 128 });
+    field.stamp({ origin: { x: -512, z: -512 }, span: { x: 1024, z: 1024 }, x: 0, z: 0, radius: 200, strength: .4 });
+    return field.document();
+  })();
+  const accepted = createProject();
+  accepted.terrain = { ...base, sculpt: good };
+  validateProject(accepted, { unique: new Set() });
+
+  const reject = (change, message) => {
+    const project = createProject();
+    project.terrain = { ...base, ...change };
+    assert.throws(() => validateProject(project, { unique: new Set() }), message);
+  };
+  reject({ sculpt: { ...good, resolution: 256 } }, /float32 values/);
+  reject({ sculpt: { ...good, version: 2 } }, /version 1/);
+  reject({ sculpt: { ...good, data: 'not base64!!' } }, /base64/);
+
+  const paint = createPaintField({ origin: { x: -512, z: -512 }, span: { x: 1024, z: 1024 } });
+  const layer = paint.addLayer('grass', 'Grass');
+  paint.stamp({ origin: { x: -512, z: -512 }, span: { x: 1024, z: 1024 }, x: 0, z: 0, radius: 100, layerId: layer.id });
+  const paintDocument = paint.document();
+  const withPaint = createProject();
+  withPaint.terrain = { ...base, paint: paintDocument };
+  validateProject(withPaint, { unique: new Set() });
+
+  reject({ paint: { ...paintDocument, version: 1 } }, /version 2/);
+  reject({ paint: { ...paintDocument, layers: [...paintDocument.layers, { ...paintDocument.layers[0], id: 'other' }] } },
+    /share a slot/);
+  reject({ paint: { ...paintDocument, tiles: [{ key: '9,0,0', data: 'AA==' }] } }, /Unknown terrain paint tile/);
+});

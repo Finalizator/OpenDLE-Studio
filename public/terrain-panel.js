@@ -12,6 +12,9 @@
  * needs a click that lands on the terrain (`terrain-viewport.js`).
  */
 
+import { createSculptField, SCULPT_TOOLS } from './terrain-sculpt.js';
+import { createPaintField, PAINT_MATERIALS, PAINT_TOOLS } from './terrain-paint.js';
+
 const DEFAULTS = {
   name: 'Terrain',
   mode: 'finite',
@@ -32,6 +35,10 @@ const DEFAULTS = {
   mini: { recipe: 'cove', width: 1024, quality: 'balanced' },
   stack: null,
   shapes: [],
+  // The freehand sculpt (a height-delta grid) and the painted surface layers, both part of the
+  // runtime's manual document and both stored as the document itself.
+  sculpt: null,
+  paint: null,
 };
 
 export function defaultTerrain() { return JSON.parse(JSON.stringify(DEFAULTS)); }
@@ -43,6 +50,8 @@ export function terrainRecipe(project) {
     mini: { ...DEFAULTS.mini, ...(stored.mini || {}) },
     stack: stored.stack || null,
     shapes: Array.isArray(stored.shapes) ? stored.shapes : [],
+    sculpt: stored.sculpt || null,
+    paint: stored.paint || null,
   }));
 }
 
@@ -53,7 +62,8 @@ export function terrainConfiguration(recipe) {
   const source = recipe.source === 'manual'
     ? { kind: 'manual', ...noise, ...stack, resolution: 512,
       document: { version: 5, baseSource: recipe.base === 'flat' ? 'flat' : 'procedural',
-        shapes: recipe.shapes || [], sculpt: null, surfacePaint: null } }
+        shapes: recipe.shapes || [], sculpt: recipe.sculpt || null,
+        surfacePaint: recipe.paint || null } }
     : { kind: 'noise', ...noise, ...stack };
   return {
     heightScale: recipe.heightScale,
@@ -98,6 +108,8 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
   let viewport = null, modules = null, loading = null;
   let recipe = terrainRecipe(getProject());
   let stackEditor = null, shapeEditor = null;
+  const sculptField = createSculptField({ resolution: 256 });
+  const paintField = createPaintField({ origin: { x: -512, z: -512 }, span: { x: 1024, z: 1024 } });
 
   const element = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -196,7 +208,11 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
   layersHost.id = 'terrain-stack';
   const shapesHost = element('div', 'terrain-stack');
   shapesHost.id = 'terrain-shapes';
-  form.append(layersHost, shapesHost);
+  // Sculpt and paint are brush tools over the same manual document: they are built here rather than
+  // in their own editors because both are a toolbar plus a status line, and both need the viewport.
+  const brushHost = element('div', 'terrain-stack');
+  brushHost.id = 'terrain-brushes';
+  form.append(layersHost, shapesHost, brushHost);
 
   void import('./terrain-layers.js').then(({ createStackEditor }) => {
     stackEditor = createStackEditor({
@@ -226,6 +242,245 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
 
   function save() {
     edit(next => { next.terrain = JSON.parse(JSON.stringify(recipe)); }, 'Terrain recipe saved');
+  }
+
+  // ---- brush tools -----------------------------------------------------------------------------
+  //
+  // Both tools write into the manual document and then ask the live world to take the new
+  // configuration: `configure` rebuilds the height field without recreating the renderer, scene or
+  // camera, so a stroke refines the terrain under the pointer instead of reloading the tab.
+  let brushMode = null;            // 'sculpt' | 'paint' | null
+  let sculptTool = 'raise', sculptRadius = 220, sculptStrength = 14;
+  let paintTool = 'paint', paintRadius = 160, paintStrength = .55, paintLayerId = null;
+  let brushTimer = 0, strokeDebounce = 0;
+
+  function boardBounds() {
+    const size = Math.max(1, recipe.chunkCount * recipe.chunkSize);
+    return { origin: { x: -size / 2, z: -size / 2 }, span: { x: size, z: size } };
+  }
+
+  /** The live world takes the new document; a world that refuses falls back to a full build. */
+  function applyBrushChange({ final = false } = {}) {
+    recipe = { ...recipe,
+      sculpt: sculptField.document() || null,
+      paint: paintField.document() || null };
+    save();
+    clearTimeout(brushTimer);
+    const run = async () => {
+      const accepted = await viewport?.reconfigure?.(terrainConfiguration(recipe));
+      if (!accepted) await build();
+      else if (final) viewport?.fit?.();
+    };
+    // During a stroke the world is refined at most every 320 ms; on release it happens at once.
+    if (final) void run();
+    else brushTimer = setTimeout(() => void run(), 320);
+  }
+
+  function onStroke({ x, z, phase }) {
+    if (!brushMode) return;
+    const { origin, span } = boardBounds();
+    if (brushMode === 'sculpt') {
+      sculptField.stamp({ x, z, radius: sculptRadius, strength: sculptStrength / 35, tool: sculptTool, origin, span });
+      paintStatus('sculpt');
+    } else {
+      if (!paintLayerId) { status('Add a paint layer first', true); return; }
+      paintField.stamp({ x, z, radius: paintRadius, strength: paintStrength, tool: paintTool, layerId: paintLayerId });
+      paintStatus('paint');
+    }
+    clearTimeout(strokeDebounce);
+    if (phase === 'end') applyBrushChange({ final: true });
+    else strokeDebounce = setTimeout(() => applyBrushChange(), 260);
+  }
+
+  function paintStatus(kind) {
+    const line = root.querySelector('#terrain-brush-status');
+    if (!line) return;
+    if (kind === 'sculpt') {
+      const extent = sculptField.extent();
+      line.textContent = extent.touched
+        ? `Sculpted ${extent.touched.toLocaleString()} cells, ${extent.low.toFixed(1)}…${extent.high.toFixed(1)} units.`
+        : 'Nothing sculpted yet.';
+    } else if (kind === 'paint') {
+      const layer = paintLayerId ? paintField.layerById(paintLayerId) : null;
+      line.textContent = layer
+        ? `${layer.name}: ${(paintField.coverage(layer.id) * 100).toFixed(1)}% of the board painted.`
+        : 'No paint layer selected.';
+    }
+  }
+
+  function buildBrushes() {
+    brushHost.replaceChildren();
+    const heading = element('h3', 'terrain-brush-heading', 'Brush');
+    const modeRow = element('div', 'terrain-layer-row');
+    const modeSelect = element('select');
+    modeSelect.id = 'terrain-brush-mode';
+    for (const [value, label] of [['', 'Off (orbit)'], ['sculpt', 'Sculpt height'], ['paint', 'Paint surface']]) {
+      const option = element('option', null, label);
+      option.value = value;
+      if ((brushMode || '') === value) option.selected = true;
+      modeSelect.append(option);
+    }
+    modeSelect.addEventListener('change', () => {
+      brushMode = modeSelect.value || null;
+      viewport?.interact({ pick: brushMode ? null : point => shapeEditor?.place(point.x, point.z),
+        stroke: brushMode ? onStroke : null });
+      syncBrushRows();
+    });
+    modeRow.append(element('span', null, 'Use'), modeSelect);
+    brushHost.append(heading, modeRow);
+
+    // Sculpt rows.
+    const sculptRow = element('div', 'terrain-layer-row');
+    sculptRow.id = 'terrain-sculpt-row';
+    const sculptToolSelect = element('select');
+    sculptToolSelect.id = 'terrain-sculpt-tool';
+    for (const [value, label] of SCULPT_TOOLS) {
+      const option = element('option', null, label);
+      option.value = value;
+      if (value === sculptTool) option.selected = true;
+      sculptToolSelect.append(option);
+    }
+    sculptToolSelect.addEventListener('change', () => { sculptTool = sculptToolSelect.value; });
+    const sculptRadiusInput = element('input');
+    sculptRadiusInput.id = 'terrain-sculpt-radius';
+    sculptRadiusInput.type = 'range'; sculptRadiusInput.min = '40'; sculptRadiusInput.max = '900'; sculptRadiusInput.step = '10';
+    sculptRadiusInput.value = String(sculptRadius);
+    const sculptRadiusOut = element('em', null, String(sculptRadius));
+    sculptRadiusInput.addEventListener('input', () => { sculptRadius = Number(sculptRadiusInput.value); sculptRadiusOut.textContent = String(sculptRadius); });
+    const sculptStrengthInput = element('input');
+    sculptStrengthInput.id = 'terrain-sculpt-strength';
+    sculptStrengthInput.type = 'range'; sculptStrengthInput.min = '1'; sculptStrengthInput.max = '60'; sculptStrengthInput.step = '1';
+    sculptStrengthInput.value = String(sculptStrength);
+    sculptStrengthInput.addEventListener('input', () => { sculptStrength = Number(sculptStrengthInput.value); });
+    sculptRow.append(element('span', null, 'Sculpt'), sculptToolSelect, sculptRadiusInput, sculptRadiusOut, sculptStrengthInput);
+    brushHost.append(sculptRow);
+
+    // Paint rows.
+    const paintRow = element('div', 'terrain-layer-row');
+    paintRow.id = 'terrain-paint-row';
+    const paintToolSelect = element('select');
+    paintToolSelect.id = 'terrain-paint-tool';
+    for (const [value, label] of PAINT_TOOLS) {
+      const option = element('option', null, label);
+      option.value = value;
+      if (value === paintTool) option.selected = true;
+      paintToolSelect.append(option);
+    }
+    paintToolSelect.addEventListener('change', () => { paintTool = paintToolSelect.value; });
+    const paintRadiusInput = element('input');
+    paintRadiusInput.id = 'terrain-paint-radius';
+    paintRadiusInput.type = 'range'; paintRadiusInput.min = '24'; paintRadiusInput.max = '600'; paintRadiusInput.step = '8';
+    paintRadiusInput.value = String(paintRadius);
+    paintRadiusInput.addEventListener('input', () => { paintRadius = Number(paintRadiusInput.value); });
+    const paintStrengthInput = element('input');
+    paintStrengthInput.id = 'terrain-paint-strength';
+    paintStrengthInput.type = 'range'; paintStrengthInput.min = '.05'; paintStrengthInput.max = '1'; paintStrengthInput.step = '.05';
+    paintStrengthInput.value = String(paintStrength);
+    paintStrengthInput.addEventListener('input', () => { paintStrength = Number(paintStrengthInput.value); });
+    paintRow.append(element('span', null, 'Paint'), paintToolSelect, paintRadiusInput, paintStrengthInput);
+    brushHost.append(paintRow);
+
+    const layerRow = element('div', 'terrain-layer-row');
+    layerRow.id = 'terrain-paint-layers';
+    const materialSelect = element('select');
+    materialSelect.id = 'terrain-paint-material';
+    for (const [value, label] of PAINT_MATERIALS) {
+      const option = element('option', null, label);
+      option.value = value;
+      materialSelect.append(option);
+    }
+    const addLayer = element('button', null, 'Add layer');
+    addLayer.type = 'button';
+    addLayer.id = 'terrain-add-paint-layer';
+    addLayer.addEventListener('click', () => {
+      const layer = paintField.addLayer(materialSelect.value, materialSelect.options[materialSelect.selectedIndex].text);
+      paintLayerId = layer.id;
+      renderPaintLayers();
+      status(`${layer.name} layer added. Pick Paint and drag on the terrain.`);
+    });
+    layerRow.append(materialSelect, addLayer);
+    brushHost.append(layerRow);
+
+    const layerList = element('div');
+    layerList.id = 'terrain-paint-layer-list';
+    brushHost.append(layerList);
+
+    const clearRow = element('div', 'terrain-layer-row');
+    const clearSculpt = element('button', null, 'Clear sculpt');
+    clearSculpt.type = 'button';
+    clearSculpt.addEventListener('click', () => {
+      sculptField.clear();
+      paintStatus('sculpt');
+      applyBrushChange({ final: true });
+    });
+    const clearPaint = element('button', null, 'Clear paint');
+    clearPaint.type = 'button';
+    clearPaint.addEventListener('click', () => {
+      paintField.clear();
+      paintLayerId = null;
+      renderPaintLayers();
+      applyBrushChange({ final: true });
+    });
+    clearRow.append(clearSculpt, clearPaint);
+    brushHost.append(clearRow);
+
+    const line = element('p', 'terrain-layer-desc');
+    line.id = 'terrain-brush-status';
+    brushHost.append(line);
+    renderPaintLayers();
+    syncBrushRows();
+  }
+
+  function renderPaintLayers() {
+    const list = root.querySelector('#terrain-paint-layer-list');
+    if (!list) return;
+    list.replaceChildren();
+    for (const layer of paintField.layers()) {
+      const row = element('div', `terrain-layer${layer.id === paintLayerId ? ' open' : ''}`);
+      const head = element('div', 'terrain-layer-head');
+      const visible = element('input');
+      visible.type = 'checkbox'; visible.checked = layer.visible !== false;
+      visible.addEventListener('change', () => {
+        paintField.updateLayer(layer.id, { visible: visible.checked });
+        applyBrushChange({ final: true });
+      });
+      const pick = element('button', 'terrain-shape-name', layer.name);
+      pick.type = 'button';
+      pick.addEventListener('click', () => { paintLayerId = layer.id; renderPaintLayers(); });
+      const opacity = element('input');
+      opacity.type = 'range'; opacity.min = '0'; opacity.max = '1'; opacity.step = '.05';
+      opacity.value = String(layer.opacity ?? 1);
+      opacity.className = 'terrain-layer-strength';
+      opacity.addEventListener('change', () => {
+        paintField.updateLayer(layer.id, { opacity: Number(opacity.value) });
+        applyBrushChange({ final: true });
+      });
+      const remove = element('button', 'terrain-icon', '×');
+      remove.type = 'button'; remove.title = 'Remove layer';
+      remove.addEventListener('click', () => {
+        paintField.removeLayer(layer.id);
+        if (paintLayerId === layer.id) paintLayerId = null;
+        renderPaintLayers();
+        applyBrushChange({ final: true });
+      });
+      head.append(visible, pick, opacity, remove);
+      row.append(head);
+      list.append(row);
+    }
+    if (!paintField.layers().length) {
+      list.append(element('p', 'terrain-layer-desc', 'No paint layers. Add one, then paint the terrain.'));
+    }
+  }
+
+  function syncBrushRows() {
+    const sculptRow = root.querySelector('#terrain-sculpt-row');
+    const paintRow = root.querySelector('#terrain-paint-row');
+    const layerRow = root.querySelector('#terrain-paint-layers');
+    const list = root.querySelector('#terrain-paint-layer-list');
+    if (sculptRow) sculptRow.hidden = brushMode !== 'sculpt';
+    for (const row of [paintRow, layerRow, list]) if (row) row.hidden = brushMode !== 'paint';
+    const clear = root.querySelector('#terrain-brush-status');
+    if (clear && !brushMode) clear.textContent = 'The brush is off, so dragging orbits the camera.';
   }
 
   /** What each mode and source offers, said plainly instead of discovered by pressing a dead button. */
@@ -277,10 +532,12 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
       if (!viewport) {
         stage.replaceChildren();
         viewport = viewportModule.createTerrainViewport(stage, {
-          // A click on the terrain places the selected shape: the whole interaction of stamping,
-          // and the reason the viewport is ours rather than the package's viewer.
+          // A click on the terrain places the selected shape; an armed brush takes the drag instead
+          // (see `interact`), which is why the two never fight over the pointer.
           onPick: point => { shapeEditor?.place(point.x, point.z); },
         });
+        viewport.interact({ pick: point => { shapeEditor?.place(point.x, point.z); },
+          stroke: brushMode ? onStroke : null });
       }
       await viewport.setWorld(recipe.mode, terrainConfiguration(recipe));
       viewport.fit();
@@ -361,11 +618,21 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     if (miniWidth) miniWidth.value = String(recipe.mini.width);
     stackEditor?.set(recipe.stack);
     shapeEditor?.set(recipe.shapes);
+    // The brush fields are the project's documents, decoded; the two status lines follow them.
+    sculptField.load(recipe.sculpt);
+    paintField.load(recipe.paint);
+    renderPaintLayers();
+    paintStatus('sculpt'); paintStatus('paint');
     syncVisibility();
     // The viewer is built on demand: a project with no terrain yet should not pay for a WebGL2
     // context or the package's workers until the author asks for one.
     if (!viewport && !loading) void build();
   }
+
+  // A stored sculpt and paint document are loaded into the live fields before the first build.
+  sculptField.load(recipe.sculpt);
+  paintField.load(recipe.paint);
+  buildBrushes();
 
   syncVisibility();
   return { render, dispose() { viewport?.dispose?.(); viewport = null; } };
