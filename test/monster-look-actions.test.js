@@ -40,10 +40,9 @@ test('every monster Spawn state in the imported campaign has a known action', ()
       for (const action of frame.actions || []) if (ACTIONS[action.name] === undefined) unknown.add(action.name);
     }
   }
-  // `A_SorcSpinBalls` builds the Heresiarch's three orbiting satellites, which needs entities the
-  // engine makes and moves itself; it is the one Spawn action of the campaign still unimplemented,
-  // and it is reported rather than faked.
-  assert.deepEqual([...unknown].sort(), ['A_SorcSpinBalls'], 'no look action is left unimplemented');
+  // `A_SorcSpinBalls` builds the Heresiarch's three orbiting satellites, so even the Hexen boss's
+  // Spawn state is answered now.
+  assert.deepEqual([...unknown].sort(), [], 'no spawn action of the campaign is left unanswered');
 });
 
 test('an Acolyte that wakes through A_Look2 hunts the player', () => {

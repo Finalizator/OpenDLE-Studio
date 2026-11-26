@@ -328,6 +328,11 @@ const truthyArg = value => value === true || (typeof value === 'string' ? /^(tru
 const projectilesByName = project => projectActorIndex(project);
 // `sv_corpsequeuesize`'s default: Hexen keeps 64 bodies and destroys the oldest past that.
 const CORPSE_QUEUE_SIZE = 64;
+// The Heresiarch's satellites (heresiarch.zs): they start at 7 degrees a tic and spin up to 25, and a
+// popped ball bounces for half a second at a time for five seconds before it bursts.
+const SORC_INITIAL_SPEED = 7;
+const SORC_TERMINAL_SPEED = 25;
+const SORC_BOUNCE_UNIT = 17;
 // A_SpawnItemEx flags that change how its offsets, angle and velocity are read.
 const SPAWN_FLAGS = { sxf_absoluteposition: 2, sxf_absoluteangle: 4, sxf_absolutemomentum: 8, sxf_absolutevelocity: 8 };
 /** A flags argument written as a number or as `NAME|NAME|4`; unknown names count as 0. */
@@ -1229,6 +1234,115 @@ export const ACTIONS = {
     ctx.state.physics?.remove(ctx.entity.id);
   },
   A_Stop(ctx) { ctx.entity.vx = 0; ctx.entity.vy = 0; },
+  // --------------------------------------------------- the Heresiarch's three satellites
+  // A_SorcSpinBalls: the balls start circling the caster's head, 120 degrees apart, at the caster's
+  // own height. They are the boss's whole attack, so they are things the engine moves rather than a
+  // light show: the player can shoot them, and killing the caster pops them.
+  A_SorcSpinBalls(ctx) {
+    const { project, state, entity } = ctx;
+    const alive = (entity.sorcBalls || []).filter(id => state.entities.some(ball => ball.id === id && !ball.removed));
+    entity.sorcBalls = alive;
+    if (alive.length) return;
+    entity.sorcAngle = 0;
+    entity.sorcSpeed = SORC_INITIAL_SPEED;
+    entity.sorcTarget = SORC_INITIAL_SPEED;
+    entity.sorcMode = 'normal';
+    // A thing the level placed carries no radius of its own; the actor table is where it lives.
+    const actor = actorOf(project, entity);
+    const casterRadius = Number(actor?.radius ?? entity.radius ?? 20);
+    const z = (entity.z ?? floorAt(state, entity)) + Number(actor?.height ?? entity.height ?? 56);
+    entity.sorcBalls = ['SorcBall1', 'SorcBall2', 'SorcBall3'].map((name, index) => {
+      const ball = spawnLiveActor(project, state, name, { x: entity.x, y: entity.y, z });
+      if (!ball) return null;
+      // `speed 10, radius 5`, and health 0 in the actor table: one hit is enough to destroy a ball.
+      ball.health = 1;
+      ball.solid = false;
+      ball.noBlockmap = true;
+      ball.orbit = { of: entity.id, offset: index * 120,
+        radius: Math.max(8, casterRadius - Number(ball.radius ?? 5) * 2) };
+      return ball.id;
+    }).filter(Boolean);
+  },
+  // A_SorcBallOrbit: the ball reads the caster, not the other way round. Each ball advances the shared
+  // angle, which is what makes the ring turn three times as fast as one ball could.
+  A_SorcBallOrbit(ctx) {
+    const { project, state, entity } = ctx;
+    const orbit = entity.orbit;
+    const parent = orbit ? state.entities.find(candidate => candidate.id === orbit.of && !candidate.removed) : null;
+    // GZDoom sends a ball whose caster is gone to its Pain state, which pops it.
+    if (!parent || (parent.health ?? 0) <= 0) { setActorState(project, entity, 'Pain'); return; }
+    const speed = Number.isFinite(parent.sorcSpeed) ? parent.sorcSpeed : SORC_INITIAL_SPEED;
+    if (parent.sorcMode === 'accelerate') {
+      if (speed < (parent.sorcTarget ?? SORC_TERMINAL_SPEED)) parent.sorcSpeed = speed + 1;
+      else parent.sorcMode = 'normal';
+    } else if (parent.sorcMode === 'decelerate') {
+      if (speed > (parent.sorcTarget ?? SORC_INITIAL_SPEED)) parent.sorcSpeed = Math.max(SORC_INITIAL_SPEED, speed - 1);
+      else parent.sorcMode = 'normal';
+    }
+    parent.sorcAngle = ((parent.sorcAngle || 0) + (parent.sorcSpeed ?? SORC_INITIAL_SPEED)) % 360;
+    const angle = (parent.sorcAngle + orbit.offset) * Math.PI / 180;
+    entity.x = parent.x + Math.cos(angle) * orbit.radius;
+    entity.y = parent.y + Math.sin(angle) * orbit.radius;
+    entity.z = (parent.z ?? floorAt(state, parent)) + Number(parent.height ?? actorOf(project, parent)?.height ?? 56);
+    state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
+  },
+  // A_SpeedBalls / A_SlowBalls / A_SorcBossAttack: what the caster's Missile and Attack states say
+  // about the ring — spin up to the terminal speed, ease back down, or start again.
+  A_SpeedBalls(ctx) {
+    ctx.entity.sorcMode = 'accelerate';
+    ctx.entity.sorcTarget = SORC_TERMINAL_SPEED;
+  },
+  A_SlowBalls(ctx) {
+    ctx.entity.sorcMode = 'decelerate';
+    ctx.entity.sorcTarget = SORC_INITIAL_SPEED;
+  },
+  A_SorcBossAttack(ctx) {
+    ctx.entity.sorcMode = 'accelerate';
+    ctx.entity.sorcTarget = SORC_INITIAL_SPEED;
+  },
+  // A_SorcBallPop: the ball leaves the ring and is thrown clear, then bounces until A_BounceCheck
+  // runs out its five seconds.
+  A_SorcBallPop(ctx) {
+    const { state, entity } = ctx;
+    const angle = randomRange(state, 0, 255) * Math.PI / 128;
+    entity.orbit = null;
+    entity.vx = Math.cos(angle) * randomRange(state, 0, 4);
+    entity.vy = Math.sin(angle) * randomRange(state, 0, 4);
+    entity.vz = randomRange(state, 2, 4);
+    entity.sorcBounce = { unit: SORC_BOUNCE_UNIT, seconds: 5 };
+    // `args[3] = 5`: five seconds of bouncing before the ball bursts.
+    entity.sorcFuse = 5;
+    saySound(state, 'SorcererBallPop', entity);
+  },
+  A_BounceCheck(ctx) {
+    const { project, state, entity } = ctx;
+    const bounce = entity.sorcBounce ||= { unit: SORC_BOUNCE_UNIT, seconds: 5 };
+    if (bounce.unit-- > 0) return;
+    if (--bounce.seconds > 0) { bounce.unit = SORC_BOUNCE_UNIT; return; }
+    setActorState(project, entity, 'Death');
+    saySound(state, 'SorcererBigBallExplode', entity);
+  },
+  // A_SorcBallExplode: a 255-damage blast in a 255-unit radius, and then the ball is gone — a
+  // satellite is not a corpse, and its last frame is a flash that would otherwise stay in the level.
+  A_SorcBallExplode(ctx) {
+    const { project, state, entity } = ctx;
+    explodeAt(project, state, entity, 255, 255, null);
+    saySound(state, 'SorcererBigBallExplode', entity);
+    removeLiveActor(state, entity);
+  },
+  // A_SpawnFizzle: the puff of sparks the Heresiarch throws before a spell lands.
+  A_SpawnFizzle(ctx) {
+    const { project, state, entity } = ctx;
+    const facing = facingOf(entity) * Math.PI / 180;
+    const half = (entity.height ?? 110) / 2;
+    for (let spark = 0; spark < 5; spark++) {
+      const angle = facing + randomRange(state, 0, 4) * Math.PI / 2;
+      spawnEffect(project, state, 'SorcSpark1', {
+        x: entity.x + Math.cos(facing) * 5, y: entity.y + Math.sin(facing) * 5,
+        z: (entity.z ?? floorAt(state, entity)) + half,
+        vx: Math.cos(angle) * randomRange(state, 0, 9), vy: Math.sin(angle) * randomRange(state, 0, 9), vz: 2 });
+    }
+  },
   // --------------------------------------------------------------- death dressing
   // A_TossGib (Strife): the death spray. `Meat` is +NOCLIP and never interacts with anything, so it
   // is decoration here too — an effect that flies out and fades, not a thing that can be shot.
@@ -1997,6 +2111,21 @@ export function stepActors(project, state, dt) {
       if (entity.health <= 0 && !entity.actorDeadHandled) {
         entity.actorDeadHandled = true;
         setActorState(project, entity, 'Death');
+      }
+      // A popped satellite is thrown clear and bursts on a fuse. GZDoom counts that down in the
+      // ball's Pain state, but a frame runs its action only when it is entered and that state ends
+      // in `Wait`, so the countdown has to live outside the state machine here.
+      if (Number.isFinite(entity.sorcFuse) && entity.sorcFuse > 0) {
+        entity.sorcFuse = Math.max(0, entity.sorcFuse - 1 / TIC_RATE);
+        const ground = floorAt(state, { x: entity.x, y: entity.y, elevation: 0 });
+        entity.x += (entity.vx || 0) / TIC_RATE;
+        entity.y += (entity.vy || 0) / TIC_RATE;
+        entity.vz = (entity.vz || 0) - TIC_RATE;
+        entity.z = Math.max(ground, (entity.z ?? ground) + (entity.vz || 0) / TIC_RATE);
+        if (entity.sorcFuse <= 0) {
+          setActorState(project, entity, 'Death');
+          saySound(state, 'SorcererBigBallExplode', entity);
+        }
       }
       const runtime = actorStateOf(entity);
       if (runtime.index === null && runtime.initialised) continue;
