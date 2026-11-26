@@ -12,8 +12,9 @@
  * route to add. No dependencies: the markdown renderer below covers what the project's docs use.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS } from '../shared/engine-script.js';
 
 const root = resolve(import.meta.dirname, '..');
@@ -358,6 +359,28 @@ export function referenceFiles(base = root) {
     for (const name of readdirSync(directory)) if (name.endsWith('.js')) files.push(join(directory, name));
   }
   return files.sort();
+}
+
+/**
+ * Whether the generated site is older than something it was built from.
+ *
+ * The site used to be built once, when `public/docs` did not exist yet, so a doc page edited after
+ * the first start — or any module whose comment the reference is read from — stayed stale on disk
+ * for ever: the reader saw the documentation of some earlier build and had no way to tell.
+ */
+export function docsAreStale({ out = join(root, 'public', 'docs'), base = root, self = fileURLToPath(import.meta.url) } = {}) {
+  const index = join(out, 'index.html');
+  if (!existsSync(index)) return true;
+  const built = statSync(index).mtimeMs;
+  const sources = [join(base, 'README.md'), join(base, 'version.ini'), self,
+    ...readdirSync(join(base, 'Docs')).filter(name => name.endsWith('.md') && name !== 'handoff.md')
+      .map(name => join(base, 'Docs', name)),
+    ...referenceFiles(base)];
+  for (const file of sources) {
+    if (!existsSync(file)) continue;
+    if (statSync(file).mtimeMs > built) return true;
+  }
+  return false;
 }
 
 export function buildDocs({ out = join(root, 'public', 'docs'), base = root, quiet = false } = {}) {

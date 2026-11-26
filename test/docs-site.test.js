@@ -6,10 +6,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, readdirSync, existsSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildDocs, escapeHtml, exportedSymbols, inline, linkTarget, renderMarkdown, slug } from '../scripts/docs.js';
+import { buildDocs, docsAreStale, escapeHtml, exportedSymbols, inline, linkTarget, renderMarkdown, slug } from '../scripts/docs.js';
 import { ENGINE_CONDITIONS, ENGINE_ACTIONS } from '../shared/engine-script.js';
 
 test('markdown becomes html with anchored headings, and code keeps its angle brackets', () => {
@@ -89,4 +89,41 @@ test('the built site has a page per guide, a full module reference and the whole
     assert.match(page, /<nav class="side"/, `${name} has no navigation`);
     assert.match(page, /<link rel="stylesheet" href="\/docs\/site\.css">/);
   }
+});
+
+test('a site older than the pages it was built from is reported stale', () => {
+  // The site used to be built once, when `public/docs` did not exist, so a doc page edited after
+  // the first start — or any module whose comment the reference is read from — stayed stale for
+  // ever and the reader saw documentation of an earlier build.
+  const base = mkdtempSync(join(tmpdir(), 'opendle-docs-src-'));
+  const out = join(base, 'public', 'docs');
+  for (const folder of ['Docs', 'shared', 'server', 'public', 'scripts', 'public/docs']) {
+    mkdirSync(join(base, folder), { recursive: true });
+  }
+  const sources = {
+    'README.md': '# Hand written\n',
+    'version.ini': '[engine]\nversion=0.0.1\n',
+    'Docs/guide.md': '# Guide\n',
+    'shared/thing.js': 'export const a = 1;\n',
+    'scripts/docs.js': '// the generator\n',
+  };
+  for (const [name, body] of Object.entries(sources)) writeFileSync(join(base, name), body);
+  const built = Date.now() / 1000;
+  const setTime = (name, time) => utimesSync(join(base, name), time, time);
+  for (const name of Object.keys(sources)) setTime(name, built);
+  writeFileSync(join(out, 'index.html'), '<!doctype html>');
+  setTime('public/docs/index.html', built + 60);
+  const stale = () => docsAreStale({ out, base, self: join(base, 'scripts', 'docs.js') });
+
+  assert.equal(stale(), false, 'a site newer than every source is current');
+  setTime('Docs/guide.md', built + 120);
+  assert.equal(stale(), true, 'an edited guide makes the site stale');
+  setTime('Docs/guide.md', built);
+  setTime('shared/thing.js', built + 120);
+  assert.equal(stale(), true, 'so does a module the reference is read from');
+  setTime('shared/thing.js', built);
+  setTime('version.ini', built + 120);
+  assert.equal(stale(), true, 'and a version bump, which every page prints');
+  rmSync(join(out, 'index.html'));
+  assert.equal(stale(), true, 'and a missing site is always built');
 });

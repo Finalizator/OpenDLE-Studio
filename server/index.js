@@ -2,7 +2,7 @@ import express from 'express';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve, dirname, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ProjectStore, projectSlug } from './store.js';
@@ -19,7 +19,7 @@ import { packageLibrary, localWadBytes, readLocalPackage, readPackageArchive, in
 import { scanLocalMaps, readLocalMapFile, localArchive, describeScan } from './local-maps.js';
 import { compiledMapAssets, describeAssets } from './bsp-textures.js';
 import { bakeChannels, previewChannels } from './material-bake.js';
-import { buildDocs } from '../scripts/docs.js';
+import { buildDocs, docsAreStale } from '../scripts/docs.js';
 import { bspInfo, parseBsp } from '../shared/bsp.js';
 import { createImportCache, importCacheFingerprint, importCacheKey, directorySignature } from './import-cache.js';
 import { createPortableBuild, createZipArchive } from './export-build.js';
@@ -152,6 +152,16 @@ export function createApp({
    * `public/docs` is generated, not checked in: it is built on first start and healed here if it
    * has been deleted, so the menu entry always opens a site rather than a 404.
    */
+  // A site older than the pages it is built from is rebuilt before it is served: otherwise a doc
+  // edited after the first start, or a module comment the reference is read from, stayed stale on
+  // disk for ever and the reader saw documentation of an earlier build. The check is a stat per
+  // source and is only done when the site is actually asked for.
+  app.use('/docs', (req, res, next) => {
+    if (req.path.endsWith('.css') || req.path.endsWith('.js') || req.path.endsWith('.png') || req.path.endsWith('.jpg')) return next();
+    try { if (docsAreStale({ out: docsDirectory, base: root })) buildDocs({ out: docsDirectory, base: root, quiet: true }); }
+    catch (error) { console.warn(`Engine docs were not rebuilt: ${error.message}`); }
+    next();
+  });
   app.use('/docs', express.static(docsDirectory, { index: 'index.html' }));
   app.use('/docs', (req, res) => {
     try {
@@ -576,11 +586,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const port = Number(process.env.PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be an integer between 1 and 65535');
   const { app, token } = createApp({ token: process.env.OPENDLE_TOKEN || undefined });
-  // A first start (or a fresh clone) has no generated docs yet; one build is a fraction of a second.
-  if (!existsSync(resolve(docsDirectory, 'index.html'))) {
-    try { buildDocs({ out: docsDirectory, base: root, quiet: true }); }
-    catch (error) { console.warn(`Engine docs were not built: ${error.message}`); }
-  }
+  // A first start, a fresh clone, or a checkout newer than the last build: one build is a fraction
+  // of a second, and a stale site is worse than a slow start.
+  try {
+    if (docsAreStale({ out: docsDirectory, base: root })) buildDocs({ out: docsDirectory, base: root, quiet: true });
+  } catch (error) { console.warn(`Engine docs were not built: ${error.message}`); }
   const server = app.listen(port, '127.0.0.1', () => {
     console.log(`OpenDLE: http://127.0.0.1:${port}`);
     console.log(`MCP endpoint: http://127.0.0.1:${port}/mcp`);

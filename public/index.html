@@ -39,7 +39,7 @@
   <header>
     <button id="menu-toggle" aria-expanded="false" aria-controls="file-menu">Menu</button>
     <button id="undo" title="Undo last edit">Undo</button><button id="redo">Redo</button>
-    <button id="save">Save</button><button id="play" class="primary">Play level</button><button id="play-game">Play game</button>
+    <button id="save">Save</button><button id="engine-docs" title="Engine documentation: guides and a module reference, as a browsable site (F1)">Docs</button><button id="play" class="primary">Play level</button><button id="play-game">Play game</button>
     <nav class="document-tabs" aria-label="Editors">
       <button data-tab="map" class="active">Layout 1</button>
       <button data-tab="events" id="events-tab">Event sheet 1</button>
@@ -60,7 +60,7 @@
   </header>
   <div id="file-menu" class="filebar" hidden>
     <button id="new">New project</button><button id="open">Open project</button><button id="export">Export project</button>
-    <button id="quick-import" class="primary">Quick import game</button><button id="export-build">Export playable app</button><button id="import-idtech">Import map (Quake / HL / Q2 / Q3)</button><button id="wad">Import WAD + assets</button><button id="local-wad">Local WAD library</button><button id="package-upload">Import PK3 / IPK3</button><button id="package-library">Local package library</button><button id="reload">Reload server</button><button id="engine-docs">Engine docs</button><button id="restore">Restore local draft</button>
+    <button id="quick-import" class="primary">Quick import game</button><button id="export-build">Export playable app</button><button id="import-idtech">Import map (Quake / HL / Q2 / Q3)</button><button id="wad">Import WAD + assets</button><button id="local-wad">Local WAD library</button><button id="package-upload">Import PK3 / IPK3</button><button id="package-library">Local package library</button><button id="reload">Reload server</button><button id="restore">Restore local draft</button>
     <label class="project-picker">Stored project<select id="projects" aria-label="Stored projects"></select></label>
     <button data-tab="addons">Addons</button>
     <button data-tab="about">About</button>
@@ -319,6 +319,9 @@
       <section id="about-panel" class="panel" hidden>
         <p id="engine-version" role="status">OpenDLE: Studio version: not loaded</p>
         <p id="import-cache-status" role="status">Decompiled import cache: not loaded</p>
+        <p><button id="engine-docs-about">Open the engine documentation</button> Guides, every engine module
+          and the event catalogue, as a browsable site. It is generated from the source, so it always
+          matches this build.</p>
         <button id="import-cache-clear">Clear decompiled import cache</button>
         <p>Engine license: OpenDLE: Studio Source-Available Commercial License v1.0, effective 25 October 2026. Licensor: Oleksandr Prokuronov, acting as an individual. Contact and royalty reporting: <a href="mailto:korbazster2@gmail.com">korbazster2@gmail.com</a>. Per game: USD 200 at USD 10,000 in lifetime developer receipts, then 2% of subsequent receipts. Monthly reporting remains required; payment instructions are supplied privately before payment is due. The licensor may waive or reduce payments by written agreement. Bulgarian law applies, subject to mandatory protections. Self-drafted; no legal review claimed. Third-party code and game content retain their own licenses.</p>
         <p>Games generating no receipts throughout their lifetime owe no engine royalties, license fees or royalty reports under this license version. Free-to-download games generating receipts from ads, donations, sponsorships or purchases follow the normal threshold. Government taxes and third-party obligations are unaffected.</p>

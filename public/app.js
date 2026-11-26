@@ -2395,8 +2395,11 @@ function renderEngineTweaks() {
   }
 }
 // The engine documentation is built into `public/docs` by `npm run docs`, so it is a page on the
-// same server rather than a folder to find.
-$('engine-docs').addEventListener('click', () => { window.open('/docs/', '_blank', 'noopener'); });
+// same server rather than a folder to find. Two buttons open it — the header and the About tab,
+// where "where is the manual" gets asked — and F1 is the shortcut every other editor uses.
+const openEngineDocs = () => { window.open('/docs/', '_blank', 'noopener'); };
+$('engine-docs').addEventListener('click', openEngineDocs);
+$('engine-docs-about').addEventListener('click', openEngineDocs);
 $('engine-tweaks-reset').addEventListener('click', guard(() => {
   const tweaks = engineTweaks();
   localStorage.setItem('opendle-engine-tweaks', JSON.stringify(tweaks));
@@ -4572,6 +4575,14 @@ function downloadBakedWorld() {
     status('Level baked to standalone GLB. The editable source project remains unchanged.');
   } catch (error) { status(`World bake failed: ${error.message}`, true); }
 }
+// F1 is the manual, in every editor that has one, and it works wherever the pointer is — a mapper
+// looking for the documentation should not have to know where the button lives. `preventDefault`
+// keeps Chromium's own help window out of the way.
+document.addEventListener('keydown', event => {
+  if (event.code !== 'F1' || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+  event.preventDefault();
+  openEngineDocs();
+});
 document.addEventListener('keydown', event => {
   if (event.defaultPrevented) return;
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
