@@ -129,7 +129,10 @@ export function moveSector(state, action, { authoredDoor = false, authoredElevat
     return;
   }
   if (!sector) throw new Error(`Unknown moving sector ${action.sectorId}`);
-  state.sectorMotions.set(key, { ...action, origin: action.returnHeight ?? sector[action.surface], direction: 'out', waiting: 0 });
+  // `startDelay` holds a plane still before its first stroke, which is how a staircase starts one
+  // step at a time instead of raising every step in the same moment.
+  state.sectorMotions.set(key, { ...action, origin: action.returnHeight ?? sector[action.surface], direction: 'out',
+    waiting: 0, starting: Math.max(0, action.startDelay ?? 0) });
   if (action.sound) soundEvent(state, action.sound, .7);
 }
 
@@ -137,6 +140,11 @@ export function advanceSectors(state, dt) {
   for (const [key, motion] of state.sectorMotions) {
     const sector = state.sectors.find(sector => sector.id === motion.sectorId);
     let remaining = dt;
+    if (motion.starting > 0) {
+      const held = Math.min(motion.starting, remaining);
+      motion.starting -= held; remaining -= held;
+      if (remaining <= 0) continue;
+    }
     if (motion.waiting > 0) {
       const waited = Math.min(motion.waiting, remaining);
       motion.waiting -= waited; remaining -= waited;

@@ -264,7 +264,10 @@ import { PROJECTILE_ACTIONS } from './projectile-script.js';
 import { PROP_FUNCTIONS } from './enemy-script.js';
 
 export const AI_ACTIONS = new Set(['A_Look', 'A_LookEx', 'A_Wander', 'A_Chase', 'A_FaceTarget',
-  'A_AlertMonsters', 'A_CPosRefire', 'A_FastChase', 'A_SmartChase']);
+  'A_AlertMonsters', 'A_CPosRefire', 'A_FastChase', 'A_SmartChase',
+  // The other engines' names for the same decisions: a monster whose AI is driven by rules must
+  // not also wake itself from its own state machine.
+  'A_Look2', 'A_MarineLook', 'A_IceGuyLook', 'A_MinotaurLook', 'A_TurretLook', 'A_StalkerLookInit', 'A_WraithInit']);
 
 function aiSuppressed(state, entity) {
   const name = entity?.actorName;
@@ -1053,6 +1056,32 @@ export const ACTIONS = {
     saySound(state, actor.sounds?.see, entity);
     setActorState(ctx.project, entity, 'See');
   },
+  // Heretic, Strife and Hexen each spell "look for the player" their own way, and every one of
+  // these names was unknown: the Acolyte family (43 actors), the twelve ScriptedMarine variants —
+  // Strife's own player class — and the IceGuy, Maulotaur, ceiling turret, stalker and wraith all
+  // stood in their Spawn frame for the whole level, waiting for an action the engine never ran.
+  A_Look2(ctx) {
+    // Heretic's acolyte: look; failing that, sweep its view 45 degrees left and right, twice.
+    const { state, entity, actor } = ctx;
+    if (entity.dormant) return;
+    if (canSeePlayer(state, entity, SIGHT_RANGE, 180)) {
+      setActorTarget(entity, state.player);
+      saySound(state, actor.sounds?.see, entity);
+      setActorState(ctx.project, entity, 'See');
+      return;
+    }
+    const sweeps = (entity.lookSweeps || 0) + 1;
+    if (sweeps > 2) return;
+    entity.lookSweeps = sweeps;
+    entity.angle = (Number(entity.angle) || 0) + (sweeps === 1 ? -Math.PI / 4 : Math.PI / 4);
+  },
+  A_MarineLook(ctx) { ACTIONS.A_Look(ctx); },
+  A_MarineNoise(ctx) { ACTIONS.A_NoiseAlert?.(ctx); },
+  A_IceGuyLook(ctx) { ACTIONS.A_Look(ctx); },
+  A_MinotaurLook(ctx) { ACTIONS.A_Look(ctx); },
+  A_TurretLook(ctx) { ACTIONS.A_Look(ctx); },
+  A_StalkerLookInit(ctx) { ACTIONS.A_Look(ctx); },
+  A_WraithInit(ctx) { ACTIONS.A_Look(ctx); },
   A_LookEx(ctx) {
     // GZDoom's signature is (flags, minseedist, maxseedist, maxheardist, fov, seestate):
     // argument 0 is a flag bitfield, 2 and 1 bound the sight range, 4 is the view

@@ -358,10 +358,13 @@ function validateRuntime(project, state, baseline) {
           .every(key => Number.isFinite(waggle[key]))) fail('invalid plane waggle');
     }
   }
+  // Saves written before stairs could start one step at a time have no `starting`; it is the same
+  // as a stroke that has already begun.
+  for (const motion of state.sectorMotions.values()) if (motion.starting === undefined) motion.starting = 0;
   for (const [key, motion] of state.sectorMotions) {
     if (!plain(motion) || !sectorIds.has(motion.sectorId) || !['floorHeight', 'ceilingHeight', 'light'].includes(motion.surface) ||
       key !== `${motion.sectorId}:${motion.surface}` || !['out', 'return'].includes(motion.direction) ||
-      !['origin', 'waiting', 'height', 'speed'].every(field => Number.isFinite(motion[field])) ||
+      !['origin', 'waiting', 'starting', 'height', 'speed'].every(field => Number.isFinite(motion[field])) ||
       motion.moveCeiling !== undefined && (typeof motion.moveCeiling !== 'boolean' || motion.surface !== 'floorHeight')) fail('invalid sector motion');
   }
   if (state.hudState.elements.size !== baseline.hudState.elements.size) fail('missing HUD elements');

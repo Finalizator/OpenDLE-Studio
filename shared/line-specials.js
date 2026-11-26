@@ -147,7 +147,7 @@ function planeHeights(state, project, sector, surface) {
 }
 
 /** Starts a plane motion, converting Doom's units-per-tic into the engine's per-second speed. */
-function movePlane(state, sector, surface, target, speedTics, { wait = 0, returnMode = 'stay', sound } = {}) {
+function movePlane(state, sector, surface, target, speedTics, { wait = 0, returnMode = 'stay', sound, startDelay = 0 } = {}) {
   const current = sector[surface];
   if (!Number.isFinite(target) || Math.abs(target - current) < 0.5) return false;
   // SPEED(a) in GZDoom is `a/8` units a tic with no floor: a speed of 0 builds a plane that never
@@ -155,7 +155,7 @@ function movePlane(state, sector, surface, target, speedTics, { wait = 0, return
   if (!(speedTics > 0)) return false;
   moveSector(state, {
     sectorId: sector.id, surface, height: target, speed: speedTics * TIC,
-    wait, returnMode, sound, returnHeight: current,
+    wait, returnMode, sound, returnHeight: current, ...(startDelay ? { startDelay } : {}),
   });
   return true;
 }
@@ -778,13 +778,20 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
     case 82: // ACS_Terminate (script, map)
       scripts?.terminate(arg1);
       return 1;
-    case 26: case 27: case 31: case 32: { // Stairs_BuildDown / BuildUp(+Sync)
+    case 26: case 27: case 31: case 32: { // Stairs_BuildDown / BuildUp(+Sync) (tag, speed, height, delay)
       const rising = special === 27 || special === 32;
-      const step = Math.max(0, arg3 || 8);
+      // A step of zero builds nothing, and GZDoom refuses a stair whose speed is zero.
+      const step = Math.max(0, arg3);
+      if (!step || !(speed > 0)) return 0;
+      const delay = Math.max(0, arg4 || 0) / TIC;
       const ordered = [...sectors].sort((a, b) => stairDistance(project, line, a) - stairDistance(project, line, b));
+      // Doom's staircase ripples: each step waits for the one before it to reach its height (and
+      // for the authored delay) before it starts. Raising every step at once is what a single
+      // `Floor_RaiseByValue` looks like, not a staircase.
+      const stroke = Math.abs(step) / (speed * TIC) + delay;
       ordered.forEach((sector, index) => {
         const target = sector.floorHeight + (rising ? 1 : -1) * step * (index + 1);
-        movePlane(state, sector, 'floorHeight', target, speed, { sound: 'DSPSTART' });
+        movePlane(state, sector, 'floorHeight', target, speed, { sound: 'DSPSTART', startDelay: index ? index * stroke : 0 });
       });
       return ordered.length;
     }

@@ -124,3 +124,33 @@ test('a door’s speed argument is units a tic, eighth by eighth', () => {
   const still = run(249, [1, 0, 0]);
   assert.equal(still.motion('ceilingHeight').speed, 0, 'zero stays zero');
 });
+
+test('a staircase starts one step at a time, not every step at once', () => {
+  // GZDoom's stairs ripple: a step starts when the one before it reaches its height (plus the
+  // authored delay). All of them moving in the same instant is a single rising floor, not a stair.
+  const project = createProject();
+  project.events = [];
+  installEngineScripts(project);
+  project.map.vertices = [[-256, -128], [0, -128], [256, -128], [512, -128], [512, 128], [256, 128], [0, 128], [-256, 128]]
+    .map(([x, y], index) => ({ id: `v${index}`, x, y }));
+  const side = sectorId => ({ sectorId, offsetX: 0, offsetY: 0 });
+  project.map.sectors = [
+    { id: 'a', floorHeight: 0, ceilingHeight: 128, light: 160, sky: false, tag: 1 },
+    { id: 'b', floorHeight: 0, ceilingHeight: 128, light: 160, sky: false, tag: 1 },
+    { id: 'c', floorHeight: 0, ceilingHeight: 128, light: 160, sky: false, tag: 1 },
+  ];
+  project.map.walls = [
+    { id: 'stairs', a: 'v1', b: 'v6', right: side('a'), left: side('b'), solid: false, special: 27, tag: 0,
+      specialFormat: 'zdoom', args: [1, 16, 8, 4, 0], activationModes: ['use'], height: 128, color: '#888888' },
+    { id: 'b-c', a: 'v2', b: 'v5', right: side('b'), left: side('c'), solid: false, height: 128, color: '#888888' },
+    { id: 'edge', a: 'v0', b: 'v1', right: side('a'), left: null, solid: true, height: 128, color: '#888888' },
+  ];
+  project.map.entities = [{ id: 'player', type: 'player', name: 'Player', x: -100, y: 0, angle: 0 }];
+  validateProject(project);
+  const state = createRuntime(project);
+  assert.equal(executeSpecial(project, state, 27, [1, 16, 8, 4], { format: 'zdoom', line: 'stairs' }), 3);
+  const starts = [...state.sectorMotions.values()].map(motion => motion.starting);
+  assert.equal(starts.length, 3, 'every step is queued');
+  assert.equal(starts.filter(value => value === 0).length, 1, 'the step nearest the line starts now');
+  assert.ok(starts.filter(value => value > 0).length === 2, 'and the other two wait their turn');
+});
