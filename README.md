@@ -14,7 +14,7 @@ Doom and GZDoom content is a first-class input rather than the whole point: the 
 its maps, artwork and gameplay definitions, and everything it brings is editable in the same
 visual tools as a hand-built level.
 
-![The editor workspace: properties, the 2D layout view of an imported Doom map, the asset browser and the project tree](./Docs/editor_overall.png)
+![The editor workspace: the 3D view of an imported Doom map with its monsters and pickups, the object tree and the asset browser](./Docs/editor_overall.png)
 
 ## See it in action
 

@@ -46,14 +46,13 @@ const wheel = (selector, notches) => `(() => {
 /**
  * The shots that go into the README, in the order they appear there.
  *
+ * Only the pictures this tool produces belong here. The README's hero image and the terrain figure
+ * were captured by hand and are the author's; a script that rewrites them would silently replace
+ * someone's work with its own framing, which is exactly what happened once.
+ *
  * `steps` runs against the loaded campaign; `wheel` zooms an element before the capture.
  */
 export const SHOTS = [
-  {
-    name: 'editor_overall',
-    what: 'the whole workspace: properties, 2D layout view, asset browser, project tree',
-    steps: [click('[data-tab="map"]'), click('#view-2d')],
-  },
   {
     name: 'event_sheets',
     what: 'a visual event sheet with conditions and actions',
