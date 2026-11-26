@@ -1,7 +1,7 @@
 import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, canSeeTarget, randomDamage, enemyHitscan, moveEnemy, geometryDistance,
   entityDistance, projectileSource, canHearPlayer, checkMeleeRange, sightEyeHeight, SIGHT_RANGE } from './combat.js';
-import { actorIndex, actorForThing, NATIVE_EFFECT_ACTORS, dropItemNumber } from './actors.js';
+import { actorIndex, actorForThing, isBossBrainActor, NATIVE_EFFECT_ACTORS, dropItemNumber } from './actors.js';
 import { actorProjectileClips, actorEffectClip, setSpriteState, spriteAssetNames, applyActorSpriteStates } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 import { actorFunctionSource, runActorFunction } from './actor-functions.js';
@@ -173,6 +173,9 @@ export function currentFrame(actor, state) {
  * machine moved onto. Frame actions run on entry, matching Doom's behaviour.
  */
 export function actorTic(project, state, entity, moveTarget = true) {
+  // A skull cube does not chase anything: it flies a straight line to the spot it was aimed
+  // at, which is what `P_SpawnMissile` sets up in Doom for this one actor.
+  if (entity.flight) advanceFlight(entity);
   const actor = actorOf(project, entity);
   if (!actor) return;
   const runtime = actorStateOf(entity);
@@ -1245,8 +1248,6 @@ export const ACTIONS = {
     entity.charge = { angle, tics: 20, speed: 20 };
     saySound(state, 'DSSKLATK', entity);
   },
-  A_SpawnSound() {},
-  A_SpawnFly() {},
   A_VileChase(ctx) {
     ACTIONS.A_Chase({ ...ctx, args: [], named: {} });
   },
@@ -1272,6 +1273,96 @@ export const ACTIONS = {
     if (state.entities.some(candidate => candidate.type === 'enemy' && candidate.health > 0 && (candidate.actorName || '').toLowerCase() !== (entity.actorName || '').toLowerCase() &&
       candidate.actorId === entity.actorId)) return;
     state.bossDefeated = true;
+  },
+  // ------------------------------------------------------------------ Icon of Sin
+  // The action pointers Doom's finale is written in. The states that call them live in the
+  // imported classes, so these only have to do what their names say.
+  A_BrainAwake(ctx) {
+    const brain = bossBrainState(ctx.state);
+    brain.targets = ctx.state.entities.filter(entity => bossMarker(entity) && !entity.removed).map(entity => entity.id);
+    brain.cursor = 0;
+    brain.awake = true;
+    saySound(ctx.state, 'DSBOSSIT');
+  },
+  A_BrainPain(ctx) { saySound(ctx.state, 'DSBOSPN'); },
+  A_BrainSpit(ctx) {
+    const { project, state, entity } = ctx;
+    const brain = bossBrainState(state);
+    // A class can spit without ever having woken: Doom crashes there, which is not worth
+    // reproducing, so the spots are collected on the first spit instead.
+    if (!brain.awake) {
+      brain.targets = state.entities.filter(candidate => bossMarker(candidate) && !candidate.removed).map(candidate => candidate.id);
+      brain.awake = true;
+    }
+    // Doom skips every other shot on the two easiest skills.
+    brain.easy = !brain.easy;
+    if (brain.easy && easySkill(state)) return;
+    if (!brain.targets.length) return;
+    const target = state.entities.find(candidate => candidate.id === brain.targets[brain.cursor % brain.targets.length]);
+    brain.cursor = (brain.cursor + 1) % brain.targets.length;
+    if (!target) return;
+    const speed = Math.max(1, Number(projectActorIndex(project).byName.get('spawnshot')?.speed) || 10);
+    const from = { x: entity.x, y: entity.y, z: (entity.z ?? floorAt(state, entity)) + Math.min(32, (entity.height || 56) * .5) };
+    const to = { x: target.x, y: target.y, z: (target.z ?? floorAt(state, target)) + Math.min(32, (target.height || 56) * .5) };
+    const cube = spawnLiveActor(project, state, 'SpawnShot', from);
+    if (!cube) return;
+    // The cube flies in a straight line, as P_SpawnMissile aims it; the distance decides how
+    // many of its three-tic state cycles it takes to arrive.
+    const tics = Math.max(1, Math.round(Math.hypot(to.x - from.x, to.y - from.y) / speed));
+    cube.flight = { from, to, tics, elapsed: 0 };
+    cube.bossTargetId = target.id;
+    // A_SpawnSound runs A_SpawnFly on the cube's first frame, so the count starts one short.
+    cube.reactionTime = Math.max(1, Math.ceil(tics / 3) - 1);
+    saySound(state, 'DSBOSPIT');
+  },
+  A_SpawnSound(ctx) {
+    saySound(ctx.state, 'DSBOSCUB', ctx.entity);
+    ACTIONS.A_SpawnFly(ctx);
+  },
+  A_SpawnFly(ctx) {
+    const { project, state, entity } = ctx;
+    if ((entity.health ?? 0) <= 0 || entity.removed) return;
+    if (entity.reactionTime !== undefined && --entity.reactionTime > 0) return;
+    if (entity.flight && entity.flight.elapsed < entity.flight.tics) return;
+    const target = state.entities.find(candidate => candidate.id === entity.bossTargetId) || entity;
+    const at = { x: target.x, y: target.y, z: target.z ?? floorAt(state, target) };
+    // The landing is a fire and a teleport, then the monster steps out of it.
+    spawnEffect(project, state, 'SpawnFire', at);
+    saySound(state, 'DSTELEPT', target);
+    const roll = randomDamage(state, 0, 255);
+    const pick = SPAWN_CUBE_MONSTERS.find(([limit]) => roll < limit);
+    const monster = pick ? spawnLiveActor(project, state, pick[1], at) : null;
+    if (monster) {
+      monster.angle = Math.atan2(state.player.y - monster.y, state.player.x - monster.x) * 180 / Math.PI;
+      if (canSeePlayer(state, monster, SIGHT_RANGE)) setActorState(project, monster, 'See');
+      telefragAt(project, state, monster);
+    }
+    removeLiveActor(state, entity);
+  },
+  // Doom fills the screen with explosions in front of the face; this engine's fire effect is
+  // what it has to draw them with.
+  A_BrainScream(ctx) {
+    const { project, state, entity } = ctx;
+    saySound(state, 'DSBOSDTH');
+    for (let offset = -196; offset < 320; offset += 8) {
+      spawnEffect(project, state, 'SpawnFire', {
+        x: entity.x + offset, y: entity.y - 320, z: 128 + randomDamage(state, 0, 255),
+        vz: randomDamage(state, 0, 512) / 8,
+      });
+    }
+  },
+  A_BrainExplode(ctx) {
+    const { project, state, entity } = ctx;
+    spawnEffect(project, state, 'SpawnFire', {
+      x: entity.x + randomDamage(state, -2048, 2048), y: entity.y, z: 128 + randomDamage(state, 0, 255),
+      vz: randomDamage(state, 0, 512) / 8,
+    });
+  },
+  // The head's last frame: Doom's G_ExitLevel. The hook is the runtime's own intermission
+  // transition, so the level ends exactly where an exit line would have ended it.
+  A_BrainDie(ctx) {
+    ctx.state.bossDefeated = true;
+    ctx.state.finishLevel?.('normal');
   },
   // A_Explode(damage, distance, flags, alertMonsters, fulldamagedistance): Doom's
   // own defaults are 128 damage over a 128-unit radius. A missile's Death state is
@@ -1470,6 +1561,104 @@ export const ACTIONS = {
   A_Raise() {}, A_Lower() {}, A_CheckReload() {}, A_Refire() {},
 };
 
+/**
+ * The Icon of Sin.
+ *
+ * Doom's last boss is not one thing. `BossBrain` is the head on the wall: shootable, and its
+ * death state ends the level. `BossEye` is the invisible spitter at the top of the tower, which
+ * looks at the player, then aims skull cubes at marker spots. `BossTarget` is a marker spot where
+ * a cube lands and a monster steps out of the fire. None of them carries `MF_MONSTER`, so the
+ * import promotes the classes that call the `A_Brain*` actions to live actors (see `actorRoleOf`
+ * in `wad.js`): the behaviour lives in their states, as it does for every other imported class.
+ */
+const BOSS_TARGET_THING = 87;
+
+/** A marker spot a skull cube can land on: GZDoom's `BossTarget`, editor number 87. */
+function bossMarker(entity) {
+  return entity?.bossTarget === true || entity?.doomType === BOSS_TARGET_THING ||
+    /^bosstarget$/i.test(String(entity?.actorName || ''));
+}
+
+/** The state `A_BrainAwake` builds and `A_BrainSpit` walks: spots, a cursor, the easy-skill toggle. */
+function bossBrainState(state) {
+  return state.bossBrain || (state.bossBrain = { targets: [], cursor: 0, easy: false, awake: false });
+}
+
+/** Doom halves the boss's fire rate on the two easiest skills. */
+function easySkill(state) {
+  const difficulty = Number(state.settings?.difficulty);
+  return Number.isFinite(difficulty) && difficulty <= 1;
+}
+
+/**
+ * Spawns an actor that has to *think* rather than fly: a skull cube, a monster out of a cube.
+ *
+ * `spawnProjectileEntity` deliberately keeps only kill-counting actors, because a monster's
+ * projectile is an effect with a clip and nothing else. A cube walks its own states and calls
+ * `A_SpawnFly` from them, so it is a full entity — as is the monster the cube becomes.
+ */
+function spawnLiveActor(project, state, actorName, position) {
+  const actor = projectActorIndex(project).byName.get(String(actorName || '').toLowerCase());
+  if (!actor || state.entities.length >= 900) return null;
+  state.spawnSequence = (state.spawnSequence || 0) + 1;
+  const entity = {
+    id: `spawned_${state.spawnSequence}`, type: 'enemy', name: actor.name,
+    actorId: actor.id, actorName: actor.name, actorResolved: true,
+    x: position.x, y: position.y, z: Number.isFinite(position.z) ? position.z : floorAt(state, position),
+    angle: 0, health: Math.max(1, actor.health || 20), elevation: 0,
+  };
+  entity.maxHealth = entity.health;
+  entity.radius = actor.radius ?? entity.radius;
+  entity.height = actor.height ?? entity.height;
+  state.entities.push(entity);
+  return entity;
+}
+
+/** One tic of a cube's flight between the spitter and its spot. */
+function advanceFlight(entity) {
+  const flight = entity.flight;
+  flight.elapsed++;
+  const done = Math.min(1, flight.elapsed / flight.tics);
+  entity.x = flight.from.x + (flight.to.x - flight.from.x) * done;
+  entity.y = flight.from.y + (flight.to.y - flight.from.y) * done;
+  entity.z = flight.from.z + (flight.to.z - flight.from.z) * done;
+  if (done >= 1) entity.flight = null;
+}
+
+/** Takes a spawned actor out of the level without leaving a hole in the array being walked. */
+function removeLiveActor(state, entity) {
+  entity.removed = true;
+  state.actorRemovals = true;
+}
+
+/**
+ * A cube that lands on something kills it, whoever it is.
+ *
+ * Doom calls `P_TeleportMove` when the monster appears, and a telefrag goes through god mode:
+ * this is the reason a player standing on a boss spot dies with the cube that lands there.
+ */
+function telefragAt(project, state, monster) {
+  const span = Math.max(16, (Number(monster.radius) || 20) * 2);
+  if (Math.hypot(state.player.x - monster.x, state.player.y - monster.y) < span) {
+    damagePlayer(state, Math.max(1000, Number(state.playerStats?.health) || 100));
+  }
+  for (const other of state.entities) {
+    if (other === monster || other.removed || other.type !== 'enemy' || (other.health ?? 0) <= 0) continue;
+    if (Math.hypot(other.x - monster.x, other.y - monster.y) >= span + (Number(other.radius) || 20)) continue;
+    hurtActor(project, state, other, (other.health ?? 0) + 1, null);
+  }
+}
+
+/**
+ * Doom's cube-to-monster table, decreasing likelihood and all: an imp more often than a baron.
+ * The classes are looked up by name so a mod that replaces one spawns its replacement.
+ */
+const SPAWN_CUBE_MONSTERS = [
+  [50, 'DoomImp'], [90, 'ShotgunGuy'], [120, 'Spectre'], [130, 'PainElemental'], [160, 'Cacodemon'],
+  [162, 'Archvile'], [172, 'Revenant'], [192, 'Arachnotron'], [222, 'Mancubus'], [246, 'HellKnight'],
+  [256, 'BaronOfHell'],
+];
+
 /** Hitscan damage from an enemy to the player, using Doom's damage dice. */
 function enemyShot(state, entity, damage, diceSides, spread = 0) {
   enemyHitscan(state, entity, { damage, diceSides, pellets: 1, spread, range: 2048 });
@@ -1521,7 +1710,7 @@ export function stepActors(project, state, dt) {
   state.actorClock -= whole;
   for (let tic = 0; tic < tics; tic++) {
     for (const entity of state.entities) {
-      if (entity.type !== 'enemy') continue;
+      if (entity.type !== 'enemy' || entity.removed) continue;
       // A dead monster finishes its Death state and then rests on its corpse
       // frame; it must keep ticking until the state machine ends.
       if (entity.health <= 0 && !entity.actorDeadHandled) {
@@ -1531,6 +1720,11 @@ export function stepActors(project, state, dt) {
       const runtime = actorStateOf(entity);
       if (runtime.index === null && runtime.initialised) continue;
       actorTic(project, state, entity);
+    }
+    // A cube that landed is gone; compacting here keeps the walk above from seeing a hole.
+    if (state.actorRemovals) {
+      state.entities = state.entities.filter(entity => !entity.removed);
+      state.actorRemovals = false;
     }
   }
 }
@@ -1664,9 +1858,16 @@ export function initialiseActorEntities(project, entities) {
   if (!project.actors?.length) return entities;
   const index = projectActorIndex(project);
   for (const entity of entities) {
-    if (entity.type !== 'enemy' || entity.actorResolved) continue;
+    if (entity.actorResolved) continue;
     const actor = (entity.doomType !== undefined && index.byDoomed.get(entity.doomType)) ||
       (entity.actorName && index.byName.get(String(entity.actorName).toLowerCase())) || null;
+    // A level imported before the Icon of Sin's classes were promoted stores its head and its
+    // spitter as decorations. Their states are the fight, so they become live actors here too —
+    // otherwise an existing campaign could never reach its own ending without a re-import.
+    if (actor && entity.type !== 'enemy' && isBossBrainActor(actor)) entity.type = 'enemy';
+    // Anything that is not an actor keeps its shape: a pickup the level placed is data, and
+    // stamping an actor field on it changes what a save compares against its template.
+    if (entity.type !== 'enemy') continue;
     entity.actorResolved = true;
     if (!actor) continue;
     entity.actorId = actor.id;

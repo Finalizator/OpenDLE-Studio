@@ -34,6 +34,7 @@ import { gameLevelAssetIds } from '/shared/game-levels.js';
 import { skyAssetFor, skyRequestName } from '/shared/sky.js';
 import { skyDomeMapping } from '/shared/sky-dome.js';
 import { createSpriteIndex } from '/shared/sprite-animation.js';
+import { actorIndex, actorForThing, actorSpriteLook } from '/shared/actors.js';
 import { createFrameStats, createDatasetWriter } from '/shared/perf.js';
 import { createSurfaceBatcher, mergePiece } from '/shared/surface-batch.js';
 import { materialById, materialDisplay, materialScale, wallSideMaterial } from '/shared/materials.js';
@@ -1278,6 +1279,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
     // One template per alpha mode: a sprite sheet with partial alpha is blended, a plain one
     // stays alpha-tested, and the mode is baked into the material.
     const spriteTemplates = new Map();
+    // A Spectre shares the Demon's artwork, so what makes it a ghost is its class, not its
+    // picture: the actor table is indexed once and asked per entity.
+    const actors = project.actors?.length ? actorIndex(project.actors) : null;
+    const actorFor = entity => (actors ? actorForThing(actors, entity.doomType, entity.actorName) : null);
     // Sprites and models are created on demand so runtime spawns appear without a
     // rebuild; removed entities are hidden instead of disposed (their objects can
     // be reused when an id comes back).
@@ -1297,16 +1302,21 @@ export async function createPreview(canvas, project, state, { editor = false, on
       const style = { map, color, sizeAttenuation: true };
       // GZDoom blends a sprite texture that has partial alpha instead of testing it away.
       const spriteMode = (entity.spriteAsset && alphaModes.get(entity.spriteAsset)) || 'opaque';
-      const blendedSprite = spriteMode === 'translucent';
-      if (blendedSprite) Object.assign(style, { transparent: true, alphaTest: 0, depthWrite: false });
+      // A ghost is see-through because of its class (`MF_SHADOW`, `RenderStyle Fuzzy`, `Alpha`),
+      // not because of its picture: the Spectre draws the Demon's own frames.
+      const look = actorSpriteLook(actorFor(entity));
+      const blendedSprite = spriteMode === 'translucent' || look.blend !== 'opaque';
+      if (blendedSprite) Object.assign(style, { transparent: true, alphaTest: 0, depthWrite: false, opacity: look.alpha });
       else Object.assign(style, { transparent: false, alphaTest: .5 });
+      if (look.blend === 'add') style.blending = THREE.AdditiveBlending;
       // A shadered sprite cannot share the pre-wrapped template material.
-      const template = spriteTemplates.get(spriteMode);
+      const templateKey = `${spriteMode}|${look.key}`;
+      const template = spriteTemplates.get(templateKey);
       const material = entity.shaderId
         ? withEffectFor(new UprightSpriteMaterial(style), entity)
         : template ? cloneNodeMaterial(template) : withEffect(new UprightSpriteMaterial(style));
-      if (template) { material.map = map; material.color.set(color); }
-      else if (!entity.shaderId) spriteTemplates.set(spriteMode, material);
+      if (template) { material.map = map; material.color.set(color); material.opacity = look.alpha; }
+      else if (!entity.shaderId) spriteTemplates.set(templateKey, material);
       materials.add(material);
       const sprite = new THREE.Sprite(material);
       // A card whose picture was not loaded is a white rectangle if it is drawn at all, so it is

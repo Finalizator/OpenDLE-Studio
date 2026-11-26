@@ -47,6 +47,88 @@ Two scenarios already agree for 140 tics: `map01-idle` and
 `map01-aim`. The harness has also been shown to *detect* a real difference — it caught a
 wrong angle conversion in the tracer itself, which was then fixed.
 
+## Bosses and ghosts
+
+Two pieces of Doom are not geometry, monsters or weapons, and both used to import silently and do
+nothing. They are now driven from the imported classes like everything else.
+
+### The Spectre is see-through because of its class
+
+Doom draws a Spectre through `COLORMAP 32`; the picture is the Demon's own `SARG` frames, so
+nothing in the artwork says "ghost". The property lives on the class — `MF_SHADOW` in vanilla,
+`RenderStyle Fuzzy`/`Alpha` in a DECORATE or ZScript port — and the engine was ignoring it, which
+is why every Spectre came back as a solid pinky.
+
+`actorSpriteLook()` (`shared/actors.js`) turns a class into one of four looks:
+
+| class says | look | drawn as |
+| --- | --- | --- |
+| nothing | opaque | alpha-tested, depth-writing, as before |
+| `MF_SHADOW`, `MF_STEALTH`, `RenderStyle Fuzzy` | fuzz | blended at 0.5 opacity (never more), no depth write |
+| `RenderStyle Translucent` or `Alpha < 1` | blend | blended at the authored alpha |
+| `RenderStyle Add` | add | additive |
+
+A stealth monster's class arrives as `RenderStyle Translucent` with `Alpha 0`, where zero is "the
+class did not say" rather than "invisible" — GZDoom draws those see-through — so a ghost with no
+authored alpha still gets half opacity.
+
+Both viewports ask it: the game view (`public/render.js`) and the editor's 3D view
+(`public/scene-3d-view.js`, which is told the actor table through `callbacks.actors`). A ghost that
+is only a ghost in one of them is still a solid rectangle in the other.
+
+**Not replicated:** Doom's fuzz is a column dither that shifts every tic, not a flat alpha. The
+sprite is drawn as a half-transparent blend, which is what "you can see the wall through it" means
+in practice; the shimmer is cosmetic and currently absent.
+
+### The Icon of Sin: three classes, one fight
+
+MAP30's boss is not a monster with a big health bar. It is:
+
+- **`BossBrain`** (editor number 88) — the head on the wall. `SOLID|SHOOTABLE`, 250 health in the
+  imported data, and its Death states call `A_BrainScream` and finally `A_BrainDie`.
+- **`BossEye`** (89) — the invisible spitter at the top of the tower. Its Spawn state is `A_Look`;
+  its See block calls `A_BrainAwake` once, then `A_BrainSpit` every 150 tics, for ever.
+- **`BossTarget`** (87) — a marker spot. Thirteen of them in MAP30, and nothing else.
+
+None of the three carries `MF_MONSTER`, so all of them imported as decorations and never thought:
+no cubes, no monsters out of them, and shooting the head did nothing. Two changes fix that:
+
+1. `actorRoleOf()` (`shared/wad.js`) promotes a class whose states call an `A_Brain*` action to
+   `enemy`, and `initialiseActorEntities()` does the same at runtime, so a campaign imported before
+   this change plays correctly without a re-import.
+2. The action pointers are implemented in `shared/actor-runtime.js`:
+
+| action | what it does |
+| --- | --- |
+| `A_BrainAwake` | collects every live `BossTarget`, resets the cursor, plays `DSBOSSIT` |
+| `A_BrainSpit` | skips every other shot on the two easiest skills, aims the next spot in turn, spawns a `SpawnShot` cube and sets its flight |
+| `A_SpawnSound` | plays `DSBOSCUB`, then runs `A_SpawnFly` (Doom's first frame does both) |
+| `A_SpawnFly` | on arrival: `SpawnFire` at the spot, `DSTELEPT`, a monster from Doom's decreasing-likelihood table, and a telefrag for anything standing there |
+| `A_BrainScream` / `A_BrainExplode` | the death spectacle: fire effects across the face, `DSBOSDTH` |
+| `A_BrainDie` | `G_ExitLevel` — the runtime's `state.finishLevel`, the same intermission an exit line starts |
+| `A_BrainPain` | `DSBOSPN` |
+
+Details that matter to the fight feeling right:
+
+- **Flight time comes from distance and speed**, not a fixed count: `A_BrainSpit` computes
+  `distance / speed` from the class's own `speed` (10) and gives the cube that many tics of travel,
+  clipped to the three-tic state cycles `A_SpawnFly` runs on. A spot across the map takes longer
+  than one beside the tower.
+- **The cube is a real entity**, not a projectile record: it renders its `BOSF` frames and walks
+  its own states, which is what calls `A_SpawnFly` at all.
+- **The spawn table resolves names**, so a class replaced by a mod is the one that appears:
+  imp, shotgun guy, spectre, pain elemental, cacodemon, arch-vile, revenant, arachnotron, mancubus,
+  hell knight, baron — with the same thresholds Doom uses.
+- **A landing kills what stands there**, the player included, through god mode: that is Doom's
+  telefrag, and it is why a boss spot is a dangerous place to stand.
+- **The spots are marker things**, so `BossTarget` stays a decoration: it is found by its editor
+  number (87), never drawn, never hit.
+
+**Not replicated yet:** `A_BossDeath` still only latches `bossDefeated`, so a Cyberdemon dying on
+E2M8 (or the Spider Mastermind on E3M8) does not end its level — Doom decides that per map, and
+the map-aware rule is not written. MAP07's mancubus/arachnotron triggers are line specials and are
+unaffected.
+
 ## Hard-won facts about driving GZDoom
 
 Each of these cost an hour; none is guessable, all are in comments next to the code:

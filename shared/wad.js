@@ -1,6 +1,7 @@
 import { createProject, validateProject } from './project.js';
 import { LIMITS } from './limits.js';
 import { doomName, createDoomAssets, doomThings } from './doom-assets.js';
+import { isBossBrainActor } from './actors.js';
 import { installWorldScripts } from './world-motion.js';
 import { installSpriteAnimations, installActorSpriteStates, actorSpriteCells } from './sprite-animation.js';
 import { installEngineScripts } from './engine-script.js';
@@ -338,6 +339,10 @@ function actorRoleOf(actor, byName) {
   const marker = [...names].some(name => /^(sectoraction|dynamiclight|waterzone|mapspot|interpolationpoint|pathfollower|movingcamera)$/.test(name));
   if (marker || flags.INVISIBLE) return null;
   if (flags.MONSTER || (flags.COUNTKILL && (actor.health || 0) > 0)) return 'enemy';
+  // The Icon of Sin's classes carry no MF_MONSTER — the head is a shootable wall ornament, the
+  // spitter is an invisible eye — but they have to think all the same: without that, MAP30 has
+  // no cubes, no monsters out of them and no way to end. Their states say what they are.
+  if (isBossBrainActor(actor)) return 'enemy';
   if (names.has('inventory') || names.has('pickup') || names.has('custominventory')) return 'pickup';
   return 'decoration';
 }

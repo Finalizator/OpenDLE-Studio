@@ -1522,7 +1522,7 @@ export function createSceneObjectEditor({ callbacks }) {
     if (!force && signature === view3dSignature) return;
     view3dSignature = signature;
     view3d.setScene(current.entities, callbacks.assets() || [], current.joints || [],
-      callbacks.shaders?.() || []);
+      callbacks.shaders?.() || [], callbacks.actors?.() || []);
     view3d.select(state.selection);
     view3d.setTool(state.tool);
     render3d();

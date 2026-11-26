@@ -875,6 +875,63 @@ export function actorForThing(index, doomType, name) {
   return null;
 }
 
+/**
+ * The action pointers only Doom's finale calls: the brain's death, its scream, the wake-up and the
+ * cube spitter. A class that calls one of these is part of the Icon of Sin even when it carries no
+ * `MF_MONSTER`, and it has to think and be shootable for the fight to happen at all.
+ */
+export const BOSS_BRAIN_ACTIONS = new Set(['A_BrainAwake', 'A_BrainSpit', 'A_BrainPain',
+  'A_BrainScream', 'A_BrainExplode', 'A_BrainDie']);
+
+/** Whether an actor's own states are the Icon of Sin's. */
+export function isBossBrainActor(actor) {
+  const frames = actor?.states?.frames;
+  if (!Array.isArray(frames)) return false;
+  for (const frame of frames) {
+    for (const action of frame?.actions || []) if (BOSS_BRAIN_ACTIONS.has(action?.name)) return true;
+  }
+  return false;
+}
+
+/**
+ * How an actor's sprite is drawn when its class asks to not be fully there.
+ *
+ * Doom's ghosts are a rendering property, not a property of the picture: the Spectre and the
+ * stealth monsters share their artwork with an ordinary Demon (the same SARG frames), and it is
+ * `MF_SHADOW` that makes the renderer draw them through COLORMAP 32. ZDoom turned that into
+ * `RenderStyle`/`Alpha`, which a DECORATE or ZScript import already carries per actor, so the look
+ * is read from the class rather than baked into a texture.
+ *
+ * `fuzz` is Doom's partial invisibility. Its stipple is not reproduced — the sprite is drawn
+ * blended at half opacity — but "you can see the wall through it" is the part that matters, and a
+ * flat alpha is what every other renderer of this engine uses for a see-through picture.
+ */
+export function actorSpriteLook(actor) {
+  if (!actor) return { blend: 'opaque', alpha: 1, key: 'opaque' };
+  const flags = actor.flags || {};
+  const style = String(actor.renderStyle || '').toLowerCase();
+  const authored = Number(actor.alpha);
+  // An `Alpha` of zero is how a stealth monster's class reads after an import: GZDoom draws those
+  // see-through without naming a value, so zero is "not said", not "invisible". A class that
+  // really means invisible draws nothing at all (TNT1), which is a sprite question, not this one.
+  const said = Number.isFinite(authored) && authored > 0 ? Math.min(1, authored) : null;
+  // `MF_SHADOW` is Doom's partial invisibility and `MF_STEALTH` is the same trick for stealth
+  // monsters; `RenderStyle Fuzzy` is how a class asks for it by name.
+  const shadow = flags.SHADOW === true || flags.STEALTH === true;
+  if (shadow || /fuzzy/.test(style)) {
+    // Doom's fuzz tops out at half-opacity: more than that and the ghost reads as solid.
+    const alpha = Math.min(said ?? 0.5, 0.5);
+    return { blend: 'fuzz', alpha, key: `fuzz:${alpha}` };
+  }
+  if (/add/.test(style)) return { blend: 'add', alpha: said ?? 1, key: `add:${said ?? 1}` };
+  // A class that only sets `Alpha` without a style is translucent, the way GZDoom treats it.
+  if (/translucent/.test(style) || (said !== null && said < 1)) {
+    const alpha = said ?? 1;
+    return { blend: 'blend', alpha, key: `blend:${alpha}` };
+  }
+  return { blend: 'opaque', alpha: 1, key: 'opaque' };
+}
+
 /** The barrel tail this build used to generate: a held frame whose sprite letter has no artwork. */
 const HELD_EXPLOSION_TAIL = [
   { kind: 'frame', sprite: 'BEXP', letter: 'F', duration: -1 },

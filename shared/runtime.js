@@ -418,6 +418,15 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     scripts: null,
   };
   if (addons) setAddonHooks(state, addons);
+  // The one thing an actor definition can do that leaves the level: Doom's `G_ExitLevel`, which
+  // the Icon of Sin's last frame calls. An exit line and the boss go through the same transition,
+  // so the intermission, the par time and the next map behave identically. It is a closure, so it
+  // is non-enumerable: a save serialises the state object, and a function in it is a save that
+  // cannot be written at all.
+  Object.defineProperty(state, 'finishLevel', {
+    value: exit => beginIntermission(project, state, exit === 'secret'),
+    enumerable: false, configurable: true, writable: true,
+  });
   state.scripts = createMapScripts(project, state, {
     finishLevel: exit => beginIntermission(project, state, exit === 'secret'),
     changeLevel: () => {},

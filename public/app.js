@@ -7215,6 +7215,8 @@ function ensureSceneObjectEditor() {
       scenes: () => project?.scenes || [],
       openScenes: () => openSceneIds,
       assets: () => project?.assets || [],
+      // The editor's 3D view draws a Spectre as a ghost because this is what says so.
+      actors: () => project?.actors || [],
       shaders: () => project?.shaders || [],
       spriteClips: () => project?.spriteClips || [],
       eventSheets: () => project?.eventSheets || [],

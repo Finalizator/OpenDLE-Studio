@@ -71,6 +71,10 @@ const optional = new Set(['areaEntries', 'intervals', 'decalCounter', 'lastShot'
   // A boss death is a latch the game keeps, and an ACS HudMessage is a caption with a hold time, so
   // both are carried rather than dropped — unlike the transients above.
   'bossDefeated', 'acsMessages',
+  // Where the Icon of Sin is in its fight: the spots it has woken, which one it aims at next and
+  // whether this is the shot an easy skill skips. Without it a save reloaded mid-fight restarts
+  // the sequence from the first spot.
+  'bossBrain',
   'scriptState', 'scriptWarning', 'damageAcc', 'musicRequest', 'skyRequest', 'gravity', 'airControl', 'scriptLog',
   'messageCount', 'buttons', 'prevButtons', 'actorClock', 'thrustClock', 'weaponClock', 'weaponSlot', 'weaponReady', 'playerMorph', 'cameraTextures',
   // A script's screen fade and the things' fall clock outlive a single frame.

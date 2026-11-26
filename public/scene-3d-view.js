@@ -20,6 +20,7 @@ import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 import { compileGLSLEffect } from './shader-effects.js';
 import { mix, output, screenUV, uniform, uv, vec4, viewportUV } from 'three/tsl';
 import { buildGizmo, buildFaceArrows, disposeHandles, handleKey, paintHandles } from './gizmo.js';
+import { actorIndex, actorForThing, actorSpriteLook } from '/shared/actors.js';
 import { axisAmount, ringDegrees, scaleFactorFromDrag, GIZMO_LENGTH } from '/shared/gizmo-math.js';
 import { sceneNodeDimensions, sceneNodePivot, sceneNodeSupportsTilt } from '/shared/scene-nodes.js';
 import { modelOrientation } from '/shared/entity-visuals.js';
@@ -178,6 +179,9 @@ export async function createScene3dView(canvas) {
   const joints = new THREE.Group();
   world.add(joints);
   let assetsById = new Map(), entities = [], selectionId = null, disposed = false;
+  // The actor table decides how a class is drawn, not its artwork: a Spectre uses the Demon's
+  // frames and is still a ghost.
+  let actorLookup = null;
 
   function nodeHeight(entity) {
     if (entity.physics?.body && entity.physics.body !== 'none') return entity.physics.height || 32;
@@ -378,8 +382,12 @@ export async function createScene3dView(canvas) {
       const scale = Number(entity.spriteScale) || 1;
       const width = (art?.width || DEFAULT_SPRITE.width) * scale;
       const height = (art?.height || DEFAULT_SPRITE.height) * scale;
+      const look = actorSpriteLook(actorLookup ? actorForThing(actorLookup, entity.doomType, entity.actorName) : null);
       const material = withShader(new THREE.MeshBasicMaterial({
-        map: art?.src ? spriteTexture(art) : null, color: '#ffffff', transparent: false, alphaTest: .5, side: THREE.DoubleSide,
+        map: art?.src ? spriteTexture(art) : null, color: '#ffffff', side: THREE.DoubleSide,
+        ...(look.blend === 'opaque'
+          ? { transparent: false, alphaTest: .5 }
+          : { transparent: true, alphaTest: 0, opacity: look.alpha, depthWrite: false }),
       }), entity);
       const quad = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
       // Doom sprites hang from their bottom edge, so the quad is raised by half a height.
@@ -570,8 +578,9 @@ export async function createScene3dView(canvas) {
   }
 
   /** Replaces what the viewport draws, keeping the loaded models and textures. */
-  function setScene(sceneEntities, assets, jointList = [], shaderList = []) {
+  function setScene(sceneEntities, assets, jointList = [], shaderList = [], actors = []) {
     entities = sceneEntities || [];
+    actorLookup = actors?.length ? actorIndex(actors) : null;
     const nextAssets = new Map((assets || []).map(asset => [asset.id, asset]));
     for (const [id, texture] of textureCache) if (nextAssets.get(id)?.src !== assetsById.get(id)?.src) {
       texture.dispose(); textureCache.delete(id);

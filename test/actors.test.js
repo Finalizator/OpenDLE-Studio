@@ -1105,3 +1105,40 @@ test('a barrel whose blast ends on an invisible frame leaves the level, and a fr
   for (let i = 0; i < 3; i++) tick();
   assert.equal(state.entities.includes(barrel), false, 'the invisible frame destroys it, as A_BarrelDestroy does');
 });
+
+test('the Spectre is a ghost because its class says so, and its artwork is the Demon\'s', () => {
+  // Doom draws the Spectre through COLORMAP 32: same SARG frames as the Demon, different look.
+  // Nothing in the picture says so, which is why an imported Spectre used to come back solid.
+  const look = actorTables.actorSpriteLook({ name: 'Spectre', flags: { SHADOW: true, MONSTER: true }, alpha: 0.5, renderStyle: 'OptFuzzy' });
+  assert.equal(look.blend, 'fuzz');
+  assert.equal(look.alpha, 0.5);
+
+  const demon = actorTables.actorSpriteLook({ name: 'Demon', flags: { MONSTER: true }, alpha: 1, renderStyle: 'Normal' });
+  assert.deepEqual(demon, { blend: 'opaque', alpha: 1, key: 'opaque' });
+
+  // A stealth monster is the same trick without the flag being called SHADOW. Its class says
+  // `RenderStyle Translucent` and `Alpha 0` after an import, where zero means "not said" rather
+  // than "invisible": a stealth monster you cannot see is not stealthy, it is broken.
+  assert.equal(actorTables.actorSpriteLook({ flags: { STEALTH: true }, alpha: 0, renderStyle: 'Translucent' }).alpha, 0.5);
+  assert.equal(actorTables.actorSpriteLook({ flags: { STEALTH: true } }).blend, 'fuzz');
+  // RenderStyle is how a DECORATE class asks by name, with or without MF_SHADOW.
+  assert.equal(actorTables.actorSpriteLook({ flags: {}, renderStyle: 'Fuzzy' }).blend, 'fuzz');
+  assert.equal(actorTables.actorSpriteLook({ flags: {}, renderStyle: 'OptTranslucent', alpha: 0.35 }).blend, 'blend');
+  assert.equal(actorTables.actorSpriteLook({ flags: {}, alpha: 0.25 }).alpha, 0.25);
+  assert.equal(actorTables.actorSpriteLook({ flags: {}, renderStyle: 'Add' }).blend, 'add');
+  assert.equal(actorTables.actorSpriteLook(null).blend, 'opaque');
+});
+
+test('both viewports ask the actor table before they draw a sprite', () => {
+  // The game view and the editor's 3D view build their own materials; a ghost that is only a
+  // ghost in one of them is still a solid rectangle in the other.
+  const game = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
+  const editor = readFileSync(new URL('../public/scene-3d-view.js', import.meta.url), 'utf8');
+  assert.match(game, /actorSpriteLook\(actorFor\(entity\)\)/);
+  assert.match(game, /opacity: look\.alpha/);
+  assert.match(editor, /actorSpriteLook\(actorLookup \? actorForThing\(/);
+  assert.match(editor, /opacity: look\.alpha/);
+  // The editor's view is only told about actors if the editor passes them on.
+  const objectEditor = readFileSync(new URL('../public/scene-object-editor.js', import.meta.url), 'utf8');
+  assert.match(objectEditor, /callbacks\.actors\?\.\(\)/);
+});
