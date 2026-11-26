@@ -151,9 +151,32 @@ The tab takes the mesh — `*.glb` preferred, `*.obj` accepted — and runs it t
 model import (`bundleModel`), so the terrain lands as:
 
 - one **asset** of kind `model`, with the usual metadata and a generated thumbnail;
-- one **object** of type `decoration` carrying that model, placed at the player's position.
+- one **object** of type `decoration` carrying that model, placed at the player's position, with a
+  `fixed` body whose collider is the mesh's own triangles (`shape: model`, `modelCollision: trimesh`).
 
-The object is an ordinary object: move it, scale it, put a collider on it, attach a visual script.
+The object is an ordinary object: move it, scale it, swap the collider, attach a visual script.
+
+### Walking on it
+
+A decoration carrying a picture is scenery, and a terrain that is scenery is a hole in the floor: the
+player walked through it and every monster stood on the sector floor *under* the hill. Two things make
+it ground:
+
+- **The body.** The exported object is solid, and its own triangles are the collider, so the player's
+  capsule stands on the slope it can see.
+- **The surface.** `createTerrainSurface()` (`shared/terrain-surface.js`) indexes those same
+  triangles into a 16-unit grid once per level, and `floorAt()` answers with the higher of the sector
+  floor and the model surface. That single change is what puts monsters, pickups, bullets, rockets and
+  line-of-sight on the terrain: a walker climbs a slope, refuses a cliff, shoots what it can see and
+  cannot see through a hill.
+
+`state.terrainSurface` is null for a level with no solid model, and every query then costs one
+property read, so nothing gets slower for the campaigns that have no terrain.
+
+What it does **not** do: the surface is sampled every eight units along a trace, so a razor-thin
+ridge can be stepped over by a shot; and a model whose collision is the convex hull of its shape
+(`modelCollision: convex`) contributes no surface, because a hull's triangles are not the ground you
+can see.
 
 ### Ranges the runtime enforces
 

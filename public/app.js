@@ -16,6 +16,8 @@ import { createRampProfileEditor } from './ramp-profile-editor.js';
 import { geometryEdges, snapGeometryPoint, snapGeometrySurface, cutLevelGeometry } from '/shared/geometry-cut.js';
 import { createGeometryCutTool } from './geometry-cut-tool.js';
 import { bundleModel } from '/shared/gltf.js';
+import { terrainEntity, modelBounds } from '/shared/terrain-surface.js';
+import { modelAssetTriangles } from '/shared/model-geometry.js';
 import { measureAssetForward } from '/shared/model-forward.js';
 import { nodeIcon } from './node-icons.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
@@ -6970,15 +6972,17 @@ async function placeTerrainModel({ bytes, binary, name }) {
   const asset = { ...result.asset, name: String(name || 'Terrain').slice(0, 100), ...(preview ? { preview } : {}) };
   const player = project.map.entities.find(entity => entity.type === 'player');
   const id = newId('entity');
+  // The terrain is solid, and its own triangles are the collider: a decoration with a model and no
+  // body is something the player walks through and nothing can stand on.
+  const bounds = modelBounds(modelAssetTriangles(asset, new Map()));
   edit(next => {
     next.assets ||= [];
     next.assets.push(asset);
-    next.map.entities.push({
-      id, name: asset.name, type: 'decoration',
-      x: Math.round(player?.x ?? 0), y: Math.round(player?.y ?? 0), angle: 0,
-      modelAsset: asset.id,
-    });
-  }, `${asset.name} exported to the level`);
+    next.map.entities.push(terrainEntity({
+      id, name: asset.name, assetId: asset.id,
+      x: Math.round(player?.x ?? 0), y: Math.round(player?.y ?? 0), bounds,
+    }));
+  }, `${asset.name} exported to the level: it is solid and walkable`);
   selection = { kind: 'entity', id };
   render();
   return asset.name;

@@ -38,7 +38,12 @@ export function soundEvent(state, name, volume = 1, position) {
 }
 /** The height a thing occupies: its own `z` when set, otherwise its sector floor. */
 export function floorAt(state, position) {
-  return position.z ?? (sectorAt(state.sectors, position.x, position.y)?.floorHeight ?? 0) + (position.elevation || 0);
+  if (position.z !== undefined && position.z !== null) return position.z;
+  const sectorFloor = (sectorAt(state.sectors, position.x, position.y)?.floorHeight ?? 0) + (position.elevation || 0);
+  // A terrain is a model, not a sector: without this the ground under a hill is the sector floor
+  // and a monster stands inside the slope it is standing on.
+  const surface = state?.terrainSurface?.heightAt(position.x, position.y);
+  return surface !== null && surface !== undefined ? Math.max(sectorFloor, surface) : sectorFloor;
 }
 
 export function entityHeight(entity) {
@@ -109,6 +114,21 @@ export function geometryDistance(state, origin, direction, range, movement = fal
     const distance = volumeDistance(brush, origin, direction, nearest);
     if (distance < nearest) nearest = distance;
   };
+  // A terrain is a model, so no sector plane describes it: without this a rocket flies into a
+  // hillside and explodes on the sector floor under it, a bullet aimed at a slope passes through
+  // to whatever is behind, and a monster sees a player standing behind a hill.
+  const testTerrain = () => {
+    const surface = state.terrainSurface;
+    if (!surface || origin.z > surface.maxHeight) return;
+    // Sampled, and coarsely on purpose: a hill is tens of units across and the caller needs a
+    // distance, not the exact triangle. Eight units is finer than any step a body can take.
+    const stride = 8;
+    for (let distance = stride; distance < nearest; distance += stride) {
+      const height = surface.heightAt(origin.x + direction.x * distance, origin.y + direction.y * distance);
+      if (height === null) continue;
+      if (origin.z + vertical * distance <= height) { nearest = distance; return; }
+    }
+  };
   // Two height planes per sector, without building a two element array for each of them.
   const testSector = sector => {
     let distance = (sector.floorHeight - origin.z) / vertical;
@@ -140,11 +160,13 @@ export function geometryDistance(state, origin, direction, range, movement = fal
       if (!visited.has(sector)) testSector(sector);
     }
     for (let index = 0; index < grid.oversizedBrushes.length; index++) testBrush(grid.oversizedBrushes[index]);
+    testTerrain();
     return nearest;
   }
   for (let index = 0; index < state.walls.length; index++) testWall(state.walls[index]);
   if (Math.abs(vertical) > 1e-9) for (const sector of state.sectors) testSector(sector);
   for (const brush of state.brushTrace || []) testBrush(brush);
+  testTerrain();
   return nearest;
 }
 /**
@@ -414,6 +436,12 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
       if (flying ? sector.ceilingHeight - floor < 56
         : sector.ceilingHeight - sector.floorHeight < 56 || Math.abs(sector.floorHeight - entityFloor) > 24) return false;
     }
+    // The next step's ground is the higher of the sector and any model surface over it, so a
+    // monster walks up a slope and is stopped by a cliff instead of wading into it.
+    if (!flying && state.terrainSurface) {
+      const ground = floorAt(state, { x, y });
+      if (Math.abs(ground - entityFloor) > 24) return false;
+    }
     for (const other of state.entities) {
       if (other !== entity && other.type === 'enemy' && other.health > 0 && Math.hypot(other.x - x, other.y - y) < 32) return false;
     }
@@ -447,8 +475,12 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
       // to the ground and made it walk through a level it was supposed to fly over.
       state.physics?.teleport(entity.id, x, y, entity.z);
     } else {
-      entity.z = sector?.floorHeight ?? entityFloor;
-      state.physics?.teleport(entity.id, x, y, sector?.floorHeight);
+      // A walker stands on the ground where it arrived, which is the higher of the sector floor
+      // and any model surface there. Writing `sector.floorHeight` here put every monster that
+      // walked onto a terrain back under it on the next step.
+      const ground = floorAt(state, { x, y, elevation: entity.elevation || 0 });
+      entity.z = ground;
+      state.physics?.teleport(entity.id, x, y, ground);
     }
     return true;
   };
