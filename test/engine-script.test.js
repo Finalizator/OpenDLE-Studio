@@ -185,10 +185,37 @@ test('armor absorption, depletion, stat caps, death and reset are explicit visua
   assert.equal(state.playerStats.armor, 90); assert.equal(state.playerStats.health, 90);
   assert.equal(createRuntime(project).playerStats.health, 100);
 });
+test('a variable comparison whose types disagree is refused instead of stopping the game', () => {
+  const project = fixture();
+  project.variables = { score: 0, name: 'x', flag: false };
+  const compare = (variable, operator, value) => rule(project, { type: 'variableCompare', variable, operator, value },
+    [{ type: 'addVariable', variable: 'score', value: 1 }]);
+  // The runtime compares strictly and throws `incompatible comparison types`, which the exported
+  // game turns into "the game stopped" and a return to the menu — mid-level, with the player's
+  // progress gone. The sheet offered the mismatch and validation accepted it.
+  compare('score', '>', '5');
+  assert.throws(() => validateProject(project), /is a number, compared with a string/);
+  project.events.pop();
+  compare('flag', '>', true);
+  assert.throws(() => validateProject(project), /a boolean variable supports = and != only/);
+  project.events.pop();
+  compare('name', '>=', 3);
+  assert.throws(() => validateProject(project), /is a string, compared with a number/);
+  project.events.pop();
+  compare('score', '>', 5);
+  assert.doesNotThrow(() => validateProject(project), 'a matching comparison is fine');
+  project.events.pop();
+  rule(project, { type: 'variableCompare', variable: 'score', operator: '>', value: { expr: 'global("score") + 1' } },
+    [{ type: 'addVariable', variable: 'score', value: 1 }]);
+  assert.doesNotThrow(() => validateProject(project), 'an expression is typed by what it evaluates to');
+});
+
 test('for-each rules resolve this object, once flags and timers independently for each instance', () => {
   const project = fixture();
   project.map.entities.push({ id: 'enemy1', name: 'First', type: 'enemy', x: 0, y: 100, angle: 0 },
     { id: 'enemy2', name: 'Second', type: 'enemy', x: 100, y: 100, angle: 0 });
+  // A rule that arms the timer it waits on is ready at once (the weapon cadence rule both fires and
+  // re-arms); a rule that only *waits* stays false until the timer is started elsewhere.
   rule(project, { type: 'timerReady', timer: 'test' }, [
     { type: 'addVariable', variable: 'score', value: 1 }, { type: 'startTimer', timer: 'test', seconds: 1 },
   ], { forEachType: 'enemy' });

@@ -6,9 +6,13 @@
  * The runtime executes both in one top-to-bottom order; the split is authoring
  * structure, not a hidden engine difference.
  */
+// Conditions that are true for one frame — an edge, or a sample the runtime consumes. They cannot be
+// inverted: NOT of a consumed sample is true on every frame *but* the one it was sampled, which is a
+// rule that runs two or three times a tic on a fast machine and never on a slow one.
 export const TRIGGER_CONDITIONS = new Set(['onSignal', 'onStart', 'keyPressed', 'mouseMoved',
   'collisionStarted', 'collisionEnded', 'animationFinished', 'hudClicked', 'hudAnimationFinished',
-  'hudStatChanged', 'entityDamaged', 'wallActivated', 'everySeconds', 'playerEnteredArea', 'playerEnteredZone']);
+  'hudStatChanged', 'entityDamaged', 'wallActivated', 'everySeconds', 'playerEnteredArea', 'playerEnteredZone',
+  'oncePerTic']);
 
 export function eventScope(event) {
   return event.ownerId !== undefined || event.forEachType ? 'object' : 'game';

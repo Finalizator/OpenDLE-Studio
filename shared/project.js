@@ -1535,6 +1535,16 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           'Command references a signal not declared by its source object');
       }
       if (definition.variable) assert(Object.hasOwn(project.variables, command.variable), 'Condition references an unknown variable');
+      if (command.type === 'variableCompare' && !isExpression(command.value)) {
+        // The runtime compares strictly (`incompatible comparison types`) and a thrown condition
+        // stops the whole game, mid-level, losing the player's progress — while the sheet and
+        // validation both said the rule was fine. Refuse it here, where the author can see why.
+        const declared = typeof project.variables[command.variable];
+        assert(typeof command.value === declared,
+          `Event "${event.name || event.id}": variable "${command.variable}" is a ${declared}, compared with a ${typeof command.value}`);
+        assert(!(declared === 'boolean' && !['=', '!='].includes(command.operator)),
+          `Event "${event.name || event.id}": a boolean variable supports = and != only`);
+      }
       if (command.type === 'pickByProperty' && !isExpression(command.value))
         compareInstanceProperty(project, null, null, command.property, command.operator, command.value);
       if (['setPickedVariable', 'addPickedVariable', 'pickByVariable'].includes(command.type)) {

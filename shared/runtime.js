@@ -107,6 +107,11 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 
 const PICK_CONDITIONS = new Set(['pickAll', 'pickByProperty', 'pickByVariable', 'pickNearest', 'pickRandom']);
 const PICK_ACTIONS = new Set(['setPickedVariable', 'addPickedVariable', 'setPickedPosition', 'movePicked',
   'setPickedAngle', 'scalePicked', 'setPickedSpriteState', 'removePicked']);
+// Commands that *replace* the pick with what they just made. `Docs/visual-scripting.md` promises
+// "a spawned instance becomes the pick" — the two names tested here (`spawn`, `spawnCamera`) are not
+// command types any action catalogue declares, so the promise never held and a sub-event of a
+// spawner acted on every object of the type: usually moving or deleting authored objects.
+const PICK_WRITING_ACTIONS = new Set(['spawnEntity', 'createCamera']);
 // Written as sets rather than array literals: each of these is asked once per condition of every
 // rule of every frame, and an array literal there was a fresh array per question.
 const SCALAR_TYPES = new Set(['number', 'string', 'boolean']);
@@ -120,7 +125,7 @@ const DOUBLE_AMMO_DIFFICULTIES = new Set([1, 5]);
 /** Whether a command can narrow the rule's pick, and so needs a pick map to narrow. */
 function narrowsPick(command) {
   return Boolean(command) && (PICK_CONDITIONS.has(command.type) || PICK_ACTIONS.has(command.type) ||
-    command.type === 'spawn' || command.type === 'spawnCamera');
+    PICK_WRITING_ACTIONS.has(command.type));
 }
 
 /**
@@ -1034,6 +1039,16 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (entity && entity.health > 0) hurtActor(project, state, entity, hit.amount);
     }
   }
+  // Actors the actor step compacted out of the level (the corpse queue, a popped sorcerer ball):
+  // their ids are forgotten here, where the per-object runtime state lives.
+  if (state.removedActors?.length) {
+    for (const id of state.removedActors.splice(0)) {
+      state.physics?.remove(id);
+      state.animations?.delete?.(id);
+      state.spriteAnimations?.delete?.(id);
+      forgetEntity(state, id);
+    }
+  }
   // A pressed switch shows its other picture for a second, then puts the old one back.
   advanceSwitches(state, dt);
   // Waggling planes and the 3D floors built on them move every frame, not only on an event.
@@ -1872,7 +1887,16 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (condition.type === 'variableCompare') return compare(state.variables[condition.variable], condition.operator, condition.value);
       if (condition.type === 'saveFileExists') return Boolean(state.saveFiles?.has(String(condition.file ?? '').trim()));
       if (condition.type === 'saveFileFailed') return Boolean(state.saveFileError);
-      if (condition.type === 'timerReady') return state.time + 1e-9 >= (state.timers.get(`${event.ownerId || '$scene'}:${condition.timer}`) || 0);
+      if (condition.type === 'timerReady') {
+        const key = `${event.ownerId || '$scene'}:${condition.timer}`;
+        if (state.timers.has(key)) return state.time + 1e-9 >= state.timers.get(key);
+        // A timer that was never started is not ready — `|| 0` read the missing entry as "due at
+        // time zero", so the documented "Timed trap" fired on the level's first frame instead of
+        // after its delay. The exception is a rule that arms the timer itself: the generated weapon
+        // cadence rule both fires and re-arms, and "do this, then not again for a while" is the
+        // same shape. A rule that only *waits* is false until whoever owns the timer starts it.
+        return (event.actions || []).some(action => action.type === 'startTimer' && action.timer === condition.timer);
+      }
       if (condition.type === 'timerExists') return state.timers.has(`${event.ownerId || '$scene'}:${condition.timer}`);
       if (condition.type === 'groupActive') return state.groups.get(condition.groupId);
       if (condition.type === 'playerGrounded') {
@@ -1901,7 +1925,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       try {
         if (!event.enabled || (event.once && state.fired.has(keyOf()))) return;
         const lookup = entityLookup(state);
-        if (event.ownerId && !lookup.byId.has(event.ownerId)) return;
+        // The owner may be a missile: `for each (projectile)` sets each missile as the owner of its
+        // per-instance copy, and a missile lives in `state.projectiles`, not in the entity lookup —
+        // so the guard treated every projectile rule as "the owner is gone" and the rule never ran.
+        if (event.ownerId && !lookup.byId.has(event.ownerId) && !findTarget(event.ownerId)) return;
         // Evaluating the condition list without building it: `eventConditions` allocated a
         // fresh array for every rule on every frame.
         const or = event.conditionMode === 'or';

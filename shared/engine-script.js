@@ -423,9 +423,12 @@ export const ENGINE_ACTIONS = [
   // module the WAD shipped (visible in the Scripts tab).
   { type: 'runScript', label: 'Script: run an ACS script', fields: [
     { name: 'script', value: '1', kind: 'string' },
+    // An ACS script takes up to four arguments and the runtime passes four (`arg1..arg4`); the
+    // fourth had no field, so it was always 0 — a marker id or a distance silently became nothing.
     { ...numeric('arg1', 0, -1000000, 1000000), optional: true },
     { ...numeric('arg2', 0, -1000000, 1000000), optional: true },
-    { ...numeric('arg3', 0, -1000000, 1000000), optional: true }] },
+    { ...numeric('arg3', 0, -1000000, 1000000), optional: true },
+    { ...numeric('arg4', 0, -1000000, 1000000), optional: true }] },
   // The write half of a decompiled script's variables: the same stores the interpreter uses.
   { type: 'setAcsVariable', label: 'Script: set an ACS variable', fields: [
     choice('scope', 'map', ['map', 'world', 'global']), numeric('index', 0, 0, 255),

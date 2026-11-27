@@ -2431,8 +2431,14 @@ export function stepActors(project, state, dt) {
     }
     // A cube that landed is gone; compacting here keeps the walk above from seeing a hole.
     if (state.actorRemovals) {
+      // Everything the runtime remembers about an object is keyed by its id — a rule's per-object
+      // instance, the health it last saw — and the ids are handed to the frame step, which drops
+      // them the way every other removal does. Without that a dequeued corpse left an entry behind
+      // and the next save was refused with "an addon changed the runtime state".
+      const gone = state.entities.filter(entity => entity.removed).map(entity => entity.id);
       state.entities = state.entities.filter(entity => !entity.removed);
       state.actorRemovals = false;
+      if (gone.length) state.removedActors = [...(state.removedActors || []), ...gone];
     }
   }
 }

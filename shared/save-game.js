@@ -72,6 +72,8 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // outright — every save after the first script read of an array, with the message blaming an
   // addon. `acsArrayStore` is the same store reached from the other side.
   'acsScriptArrays', 'acsArrayStore',
+  // Ids compacted out of the level this frame, drained by the same step: transient bookkeeping.
+  'removedActors',
   // `removeLiveActor` leaves `actorRemovals` set on the state after a boss cube lands, and a key
   // the validator does not know makes every save taken afterwards unloadable. It records a moment
   // inside one frame, not the game.
