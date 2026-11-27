@@ -360,8 +360,15 @@ export function hudBinding(binding, state) {
   if (binding === 'game:saveStatus') return state.saveStatus || '';
   // Which controller is plugged in, or the words for the fact that none is: a player looking for
   // a reason their pad does nothing should not have to open the editor to find it.
-  if (binding === 'game:controller') return state.hudState?.controller || state.controllerStatus
-    || (state.settings?.gamepadEnabled === false ? 'Controllers are off' : 'No controller connected');
+  // The exported game writes what a pad is doing to `state.pad` (the runtime's own snapshot); only
+  // the editor ever wrote `hudState.controller`, so every player was told there was no controller —
+  // the exact question this line exists to answer.
+  if (binding === 'game:controller') {
+    const pad = state.pad;
+    const connected = pad?.connected ? `${pad.name || 'Controller'}${pad.standard ? ' (standard mapping)' : ''}` : '';
+    return connected || state.hudState?.controller || state.controllerStatus
+      || (state.settings?.gamepadEnabled === false ? 'Controllers are off' : 'No controller connected');
+  }
   if (binding === 'message') return state.settings?.messages === false ? '' : state.messageTime > 0 ? state.message : '';
   if (binding.startsWith('var:')) return state.variables[binding.slice(4)];
   return playerBinding(binding, state);

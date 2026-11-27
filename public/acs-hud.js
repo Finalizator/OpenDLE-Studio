@@ -127,15 +127,26 @@ export function createAcsHud(host, project) {
 }
 
 /** Doom's CR_ colours, in the order the constants number them. */
-const COLORS = ['#ffffff', '#a03020', '#d8c090', '#a0a0a0', '#00a000', '#a06030',
+const COLORS = ['#a03020', '#d8c090', '#a0a0a0', '#00a000', '#a06030',
   '#f0d000', '#f00000', '#0000f0', '#f07000', '#ffffff', '#ffff00'];
 
 function colourOf(index) {
-  return COLORS[index] || COLORS[0];
+  // `CR_BRICK` is 0 and `CR_WHITE` is 9 (`EColorRange`); anything outside the enum is white.
+  return COLORS[index] || '#ffffff';
 }
 
-/** HUDMSG_FADEOUT eases out; every other type simply expires. */
+/**
+ * How opaque a message is right now.
+ *
+ * `HUDMSG_FADEOUT` (1) eases out over its fade time and `HUDMSG_FADEINOUT` (3) eases in and then
+ * out; `PLAIN` and `TYPEON` do neither. The ramp used to be attached to type 3 alone, so every
+ * fading caption was cut off at full brightness instead of fading.
+ */
 function opacityOf(record, state) {
-  if (record.type !== 3 || !record.hold) return 1;
-  return Math.max(0, Math.min(1, (record.hold - (state.time - record.start)) / Math.min(1, record.hold)));
+  if (record.type !== 1 && record.type !== 3) return 1;
+  const elapsed = Math.max(0, state.time - record.start);
+  const fade = record.fade > 0 ? record.fade : .5;
+  if (record.type === 3 && elapsed < fade) return Math.max(0, elapsed / fade);
+  if (!record.hold) return 1;
+  return Math.max(0, Math.min(1, (record.hold - elapsed) / fade));
 }

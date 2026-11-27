@@ -773,9 +773,15 @@ function defineArithmetic() {
   define(P.UNARYMINUS, '', (vm, script) => { setTop(vm, script, 1, -peek(vm, script, 1)); });
   define(P.FIXEDMUL, '', (vm, script) => binary(vm, script, (a, b) => INT32(Number((BigInt(a) * BigInt(b)) >> 16n))));
   define(P.FIXEDDIV, '', (vm, script) => {
-    // GZDoom terminates the script on a zero divisor, exactly as it does for DIVIDE.
-    if (peek(vm, script, 1) === 0) { fail(vm, 'division by zero'); return; }
-    binary(vm, script, (a, b) => INT32(Number((BigInt(a) << 16n) / BigInt(b))));
+    // GZDoom's `FixedDiv` never divides: it saturates at ±FIXED_MAX when the quotient would not
+    // fit, and its guard catches a zero divisor first (`p_acs.cpp`). Terminating the script on
+    // `FixedDiv(1.0, 0.0)` lost every instruction after the expression, and wrapping at the edges
+    // turned a saturated scale into 0 — an invisible sprite.
+    binary(vm, script, (a, b) => {
+      if (!b) return a < 0 ? -0x80000000 : 0x7fffffff;
+      const quotient = Number((BigInt(a) << 16n) / BigInt(b));
+      return quotient > 0x7fffffff ? 0x7fffffff : quotient < -0x80000000 ? -0x80000000 : INT32(quotient);
+    });
   });
   define(P.SIN, '', (vm, script) => {
     const angle = pop(vm, script);
@@ -973,7 +979,9 @@ function definePrinting() {
         x: read(3) / 65536, y: read(4) / 65536, holdTime: read(5) / 65536,
         bold: code === P.ENDHUDMESSAGEBOLD, text: body,
         width: script.hudWidth || 0, height: script.hudHeight || 0,
-        fade: (script.stack[(script.hudStart ?? script.sp)] | 0) / 65536,
+        // `hudStart` is -1 when the message carried no `OptHudMessage`, and `-1 ?? sp` is -1, so
+        // the fade was read from `stack[-1]` — undefined, i.e. 0. GZDoom's default is 1.0.
+        fade: script.hudStart >= 0 ? (script.stack[script.hudStart] | 0) / 65536 : 1,
         // SetFont names a font, and a name that is only a picture is a one-picture font:
         // that is how a mod draws a title logo without any font definition.
         font: script.hudFontName ?? null, style: script.hudStyle ?? null,

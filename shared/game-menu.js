@@ -386,8 +386,10 @@ export function installGameMenu(project, assets, definitions = [], warnings = []
   });
   if (episodes.length > 1) {
     page('episode', 'Which episode?', 'return', 'M_EPISOD');
-    episodes.forEach((episode, index) => button('episode', episode.name, 50 + index * 20,
-      episodeActions(episode), episode.patch));
+    // `name = "$TXT_EP1"` is a language reference, and GZDoom resolves it (`doommenu.cpp`); the
+    // keyword was baked into the row, and its accessibility label, verbatim.
+    episodes.forEach((episode, index) => button('episode', resolveString(project.strings, episode.name, episode.name),
+      50 + index * 20, episodeActions(episode), episode.patch));
   }
   page('quit', 'Return to editor?', 'return');
   button('quit', 'Return to editor', 80, [{ type: 'quitGame' }]);
