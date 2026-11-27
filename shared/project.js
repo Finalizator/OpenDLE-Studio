@@ -657,6 +657,18 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           'Rule-started ACS script must be a number or a script name');
       }
     }
+    // The scripts a creator wrote in the editor. A source is the whole truth for its script:
+    // it compiles into the module above, so it is kept beside it rather than in place of it.
+    if (scripts.sources !== undefined) {
+      object(scripts.sources, 'ACS sources');
+      const keys = Object.keys(scripts.sources);
+      assert(keys.length <= 512, 'Too many ACS sources');
+      for (const key of keys) {
+        assert(/^(map|lib:.+):[^:]*[^:]$/.test(key) && key.length <= 200,
+          'ACS source keys look like map:5 or lib:NAME:5');
+        text(scripts.sources[key], 'ACS source', 256 * 1024);
+      }
+    }
     if (scripts.libraries !== undefined) {
       array(scripts.libraries, 'ACS libraries', 32);
       for (const library of scripts.libraries) {

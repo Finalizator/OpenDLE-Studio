@@ -12,6 +12,8 @@ import { decompileScript } from './acs-decompile.js';
 import { createAcsVm, createProgram, startScript, startScriptsOfKind, tickAcs, terminateScript, suspendScript,
   parseBehavior, describeBehavior, disassemble, scanBehavior, instructionAt } from './acs.js';
 import { executeSpecial, specialName, unsupportedSpecials } from './line-specials.js';
+import { buildAcsModule, appendCode, moduleParts } from './acs-module.js';
+import { compileAcsSource } from './acs-source.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 import { bindCameraTexture } from './cameratextures.js';
 import { requestSky } from './sky.js';
@@ -121,6 +123,145 @@ export function describeMapScripts(bytes, libraries = []) {
     specials,
     unsupported: unsupportedSpecials(specials),
   };
+}
+
+/**
+ * The key a script's source is stored under: the module it lives in, then its number or name.
+ * A library's key keeps the library's name, so two modules may each own a `script 5`.
+ */
+export function scriptSourceKey(entry) {
+  const library = entry.moduleName && entry.moduleName !== 'BEHAVIOR';
+  return `${library ? `lib:${entry.moduleName}` : 'map'}:${entry.name ?? entry.number}`;
+}
+
+/** A module is the map's own when the project carries a BEHAVIOR lump, whatever load order says. */
+function moduleOf(project, program, libraryName) {
+  if (libraryName) {
+    return program?.modules.find(entry => entry.name.toLowerCase() === libraryName.toLowerCase())?.module || null;
+  }
+  return project?.mapScripts?.data ? program?.primary || null : null;
+}
+
+/** Every script a level runs, with the source the editor keeps for it, if any. */
+export function mapScriptEntries(project) {
+  const program = programFor(project);
+  if (!program) return [];
+  const sources = project?.mapScripts?.sources || {};
+  return program.scripts.map(entry => ({
+    key: scriptSourceKey(entry),
+    moduleIndex: entry.moduleIndex ?? 0,
+    moduleName: entry.moduleName,
+    library: Boolean(entry.moduleName && entry.moduleName !== 'BEHAVIOR'),
+    module: entry.moduleName && entry.moduleName !== 'BEHAVIOR' ? `library ${entry.moduleName}` : 'the map',
+    number: entry.number,
+    name: entry.name ?? null,
+    type: entry.type,
+    argCount: entry.argCount || 0,
+    address: entry.address,
+    source: typeof sources[scriptSourceKey(entry)] === 'string' ? sources[scriptSourceKey(entry)] : null,
+  }));
+}
+
+/** The header a script is written with, so the editor opens on something that compiles. */
+export function scriptSourceStub({ name, number, type, argCount, moduleName }) {
+  const header = name ? `script "${name}" ${type.toUpperCase()}` : `script ${number} ${type.toUpperCase()}`;
+  const params = argCount ? `(${Array.from({ length: argCount }, (_, index) => `int arg${index + 1}`).join(', ')})` : '';
+  return [
+    `// ${moduleName} script ${name ?? number}, ${type}.`,
+    '// Compile replaces this script inside the level’s compiled module; the other scripts',
+    '// in that module are untouched. Builtins and line specials are listed in the editor.',
+    `${header}${params}`,
+    '{',
+    '    ',
+    '}',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Compiles one script and writes it back into the level.
+ *
+ * The module keeps its own p-code and every address in it: the new script is appended after
+ * it, so a level whose other scripts were imported still runs them. A level with no ACS at
+ * all gets a fresh module.
+ */
+export function compileScriptSource(project, key, text) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('The script is empty');
+  const separator = key.lastIndexOf(':');
+  if (separator < 0) throw new Error(`"${key}" is not a script key`);
+  const target = key.slice(0, separator), selector = key.slice(separator + 1);
+  const libraryName = target.startsWith('lib:') ? target.slice(4) : null;
+  const program = programFor(project);
+  const module = moduleOf(project, program, libraryName);
+  const sources = { ...(project?.mapScripts?.sources || {}) };
+  sources[key] = text;
+
+  if (!module) {
+    // Nothing to patch: the source is the module. Named scripts are numbered by their slot.
+    const compiled = compileAcsSource(text, { baseAddress: 8, selector: selector || null });
+    const named = compiled.scripts.map((script, index) => ({
+      ...script,
+      number: script.number ?? -(compiled.scripts.filter((other, at) => other.name && at <= index).length),
+    }));
+    const bytes = buildAcsModule({
+      data: compiled.code,
+      scripts: named.map(script => ({ number: script.number, name: script.name ?? undefined, type: script.type,
+        argCount: script.argCount, address: script.address, varCount: script.varCount })),
+      functions: compiled.functions,
+      functionNames: compiled.functionNames.filter(Boolean),
+      strings: compiled.strings,
+    });
+    const next = { ...(project?.mapScripts || {}), format: 'little', sources };
+    if (libraryName) {
+      const libraries = [...(next.libraries || [])];
+      const existing = libraries.findIndex(entry => entry.name.toLowerCase() === libraryName.toLowerCase());
+      const entry = { name: libraryName, data: encodeBase64(bytes) };
+      if (existing >= 0) libraries[existing] = entry; else libraries.push(entry);
+      next.libraries = libraries;
+    } else next.data = encodeBase64(bytes);
+    return { mapScripts: next, warnings: compiled.warnings, script: named[0] ?? null };
+  }
+
+  const parts = moduleParts(module);
+  const compiled = compileAcsSource(text, { baseAddress: module.dataSize, strings: parts.strings,
+    functionNames: parts.functionNames, selector });
+  const script = compiled.scripts[0];
+  if (!script) throw new Error('The source does not define the script being edited');
+
+  const existing = (module.scripts || []).map(entry => ({ ...entry }));
+  const keyOf = entry => (entry.name ?? entry.number);
+  const at = existing.findIndex(entry => String(keyOf(entry)) === String(selector));
+  if (at < 0 && existing.some(entry => String(keyOf(entry)) === String(script.key))) {
+    throw new Error(`This module already has a script called ${script.key}`);
+  }
+  const replacement = { number: script.number ?? (at >= 0 ? existing[at].number : -1), name: script.name ?? undefined,
+    type: script.type, argCount: script.argCount, address: script.address, varCount: script.varCount };
+  if (at >= 0) existing[at] = replacement; else existing.push(replacement);
+
+  const functions = parts.functions.map(fn => ({ ...fn }));
+  for (const fn of compiled.functions) {
+    const entry = { argCount: fn.argCount, localCount: fn.localCount, returns: fn.returns ? 1 : 0,
+      importNum: 0, address: fn.address };
+    if (fn.index < functions.length) functions[fn.index] = entry; else functions.push(entry);
+  }
+
+  const bytes = buildAcsModule({
+    data: appendCode(module, compiled.code),
+    scripts: existing.map(entry => ({ number: entry.number, name: entry.name, type: entry.type,
+      argCount: entry.argCount, address: entry.address, varCount: entry.varCount, flags: entry.flags })),
+    functions,
+    functionNames: compiled.functionNames,
+    strings: compiled.strings,
+    mapVars: parts.mapVars,
+    requiredLibraries: parts.requiredLibraries,
+    jumps: parts.jumps,
+  });
+  const next = { ...(project?.mapScripts || {}), format: 'little', sources };
+  if (libraryName) {
+    next.libraries = (next.libraries || []).map(entry =>
+      (entry.name.toLowerCase() === libraryName.toLowerCase() ? { ...entry, data: encodeBase64(bytes) } : entry));
+  } else next.data = encodeBase64(bytes);
+  return { mapScripts: next, warnings: compiled.warnings, script: replacement };
 }
 
 /** Every line special a program calls through `LSPEC`, for import warnings. */

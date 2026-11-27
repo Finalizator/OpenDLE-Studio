@@ -54,6 +54,10 @@ The remaining blocker is that rules iterate **entities** while missiles live in
 The compiled map scripts need a decompiler, not a translation pass. Three steps, each
 useful alone:
 
+- [x] **Step 0 — the source can be written.** The Scripts tab opens a script in a text
+      editor, and `shared/acs-source.js` compiles ACS back into the level's p-code
+      (`shared/acs-module.js` writes the module), so the one part of a level with no visual
+      equivalent is now authorable in the editor. See section 11 of `Docs/visual-scripting.md`.
 - [x] **Step 1 — script becomes a rule.** `OPEN`/`ENTER` scripts are rules in the World
       sheet (`runScript`, numbers in `mapScripts.ruleScripts`); linedef-triggered ones
       already ran from their line's rule. The body stays the module, linked in the

@@ -478,6 +478,46 @@ dialog::backdrop { background: #111c; }
 .script-listing li[data-op^="LSPEC"] { color: #8fd6a0; }
 .script-listing li[data-op^="PUSH"] { color: #9fb4c8; }
 .script-strings summary { cursor: pointer; color: #8d99a6; }
+
+/* Game-language code has no visual equivalent, so its entries carry a warm mark and open as text. */
+.scripts-layout .script-row.engine-script { border-left: 2px solid #a89a63; }
+.script-badge { display: inline-block; margin-right: 6px; padding: 0 4px; border-radius: 2px;
+  background: #6a6758; border: 1px solid #8a8160; color: #ecd9a4; font-size: 9px; font-weight: 600;
+  letter-spacing: .08em; vertical-align: middle; }
+.document-tabs button.engine-language:not(.active) { color: #ecd9a4; }
+.document-tabs button.engine-language::after { content: "●"; margin-left: 4px; font-size: 8px; color: var(--accent); }
+.script-empty { display: grid; gap: 8px; }
+.script-source-preview { margin: 4px 0 8px; padding: 8px 10px; max-height: 24vh; overflow: auto;
+  background: #14181d; border: 1px solid #2f3740; border-radius: 4px; color: #c9d2da;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.script-detail h3 { margin: 12px 0 4px; font-size: 12px; color: var(--muted); }
+
+/* The script editor window: one script as source, with its compiled listing beside it. */
+/* A rule that starts an ACS script is a stand-in for game-language code too. */
+.event-actions .engine-script { border-left: 2px solid #a89a63; }
+.engine-script-open { margin-left: 6px; padding: 1px 6px; border-radius: 2px; font-size: 10px;
+  background: #6a6758; border: 1px solid #8a8160; color: #ecd9a4; cursor: pointer; }
+.engine-script-open:hover { background: #7d7962; }
+
+.script-editor { width: min(1100px, 96vw); }
+.script-editor-head { display: flex; align-items: baseline; gap: 10px; }
+.script-editor-head h1 { margin: 0; font-size: 16px; }
+.script-editor-subtitle { margin: 0; color: var(--muted); }
+.script-editor-head .script-editor-badge { margin-left: auto; padding: 1px 6px; border-radius: 2px;
+  background: #6a6758; border: 1px solid #8a8160; color: #ecd9a4; font-size: 10px; letter-spacing: .08em; }
+.script-editor-body { display: grid; gap: 6px; margin: 10px 0; }
+.script-editor-source { min-height: 46vh; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.55; tab-size: 4; background: #14181d; border-color: #2f3740; resize: vertical; }
+.script-editor-listing summary, .script-editor-help summary { cursor: pointer; color: var(--muted); }
+.script-editor-listing-body, .script-editor-help-body { margin: 6px 0 0; padding: 8px 10px; max-height: 30vh;
+  overflow: auto; background: #14181d; border: 1px solid #2f3740; border-radius: 4px; color: #c9d2da;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; }
+.script-editor-toolbar { min-height: 18px; }
+.script-editor-status { margin: 0; color: var(--muted); }
+.script-editor-status.ok { color: #a9d6a0; }
+.script-editor-status.error { color: #ffb5ab; }
+.script-editor-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.script-editor-hint { margin-right: auto; color: var(--muted); font-size: 10px; }
 .script-strings ul { max-height: 24vh; overflow: auto; margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
 .script-specials { display: grid; gap: 2px; margin-top: 6px; }
 .script-special { display: grid; gap: 1px; padding: 4px 8px; border: 1px solid #2f3740; border-radius: 3px; background: #1d2228; }

@@ -51,6 +51,7 @@ import { nodeSignals } from '/shared/signals.js';
 import { importedGameplayGaps } from './gameplay-readiness.js';
 import { createActorsPanel } from './actors-panel.js';
 import { createScriptsPanel } from './scripts-panel.js';
+import { openScriptEditor } from './script-editor.js';
 import { createFrameBudget } from '/shared/perf.js';
 import { LIMITS } from '/shared/limits.js';
 import { INSTANCE_PICKABLE_TYPES } from '/shared/instance-properties.js';
@@ -361,7 +362,12 @@ const playtestLogPanel = createPlaytestLogPanel({
 const scriptsPanel = createScriptsPanel({
   list: $('script-list'), detail: $('script-detail'), summary: $('scripts-summary'),
   specials: $('script-specials'), search: $('script-search'),
-}, { project: () => project });
+}, {
+  project: () => project,
+  edit,
+  openEditor: openScriptEditor,
+  status: (text, isError) => status(text, isError),
+});
 // Addons: the host runs their scripts, the panel manages them. Both read the live project and edit
 // through the same validated path a click in the editor takes.
 addonHost = createAddonHost({
@@ -3176,6 +3182,26 @@ function renderEvents() {
           if (target < 0 || target >= item.actions.length) throw new Error('No adjacent action');
           [item.actions[actionIndex], item.actions[target]] = [item.actions[target], item.actions[actionIndex]];
         })), { waypointName: (pathId, index) => pathPointName(project, pathId, index) });
+      // A rule that starts an ACS script is a stand-in for game-language code, so it carries
+      // the same warm mark the Scripts tab uses and opens the script's source from here.
+      if (action.type === 'runScript' && action.script !== undefined && action.script !== '') {
+        row.classList.add('engine-script');
+        // The row itself is a button, so this is a span that acts like one: nesting a button in a
+        // button is invalid, and the click must not also select the row.
+        const open = make('span', 'Open script', 'engine-script-open');
+        open.setAttribute('role', 'button');
+        open.tabIndex = 0;
+        open.title = 'Open the ACS source this rule starts';
+        const jump = event => {
+          event.stopPropagation();
+          if (!scriptsPanel.openScript(action.script)) {
+            status(`Script ${action.script} is not in this level's compiled module.`, true);
+          }
+        };
+        open.addEventListener('click', jump);
+        open.addEventListener('keydown', event => { if (event.key === 'Enter') jump(event); });
+        row.append(open);
+      }
       row.prepend(grip());
       row.dataset.dragRow = 'action'; row.dataset.dragId = event.id;
       row.dataset.dragKind = 'action'; row.dataset.dragIndex = String(actionIndex);

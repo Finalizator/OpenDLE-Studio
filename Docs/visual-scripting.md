@@ -1027,3 +1027,54 @@ keep their existing global-variable output.
 Object types usable with **For each**: `player`, `enemy`, `pickup`, `light`, `decoration`, `ramp`, `zone`.
 
 Object-type commands that need a wall, sector, HUD element or sprite clip validate those references too; a rule that points at a deleted object fails validation with a specific message instead of silently doing nothing.
+
+## 11. ACS source in the editor
+
+Some of a level is not visual. A compiled ACS module is the game's own language: the import can
+show a disassembly, but nothing in an empty project can author it — so that text is written in a
+window of its own instead. The **Scripts** tab is the list of it, and every entry there is marked
+with the warm gold mark the editor uses for game-language content, because it is the one thing on
+the Layout that has no visual equivalent.
+
+Double-click a script (or press **Edit source**) to open the editor:
+
+```
+script 5 OPEN (int tag)
+{
+    Door_Open(tag, 16);
+    delay(35);
+    if (counter < 3) { counter++; restart; }
+    PrintBold(s:"the door is open, hits: ", d:counter);
+}
+```
+
+**What compiling does.** The text is compiled by `shared/acs-source.js` into the same p-code the
+interpreter already runs (`shared/acs-module.js` writes the module), so a script written here
+behaves exactly like an imported one: it ticks at 35 Hz, saves with the level, can be started by a
+linedef special or `ACS_Execute`, and other scripts can call its functions. The new code is
+appended to the level's existing module, which keeps every address in it valid — editing script 5
+leaves the level's other scripts running their original code rather than dropping them. A level
+with no ACS at all gets a module of its own, and a number the module does not have yet is added
+beside the others.
+
+The source is kept in the project (`mapScripts.sources`, keyed `map:5` or `lib:NAME:5`) and the
+compiled module beside it, so Save, undo and the game build all carry both. A compile that fails
+changes nothing: the error names the line, the caret moves to it, and the level is left as it was.
+
+**The language** is ACC's: `#include` (accepted and ignored), object-like `#define`, `int`/`str`/
+`bool` locals and arrays, `world`/`global` variables with an explicit index (`world int 0:name;`),
+functions with arguments and `return`, `script <number|"name"> OPEN|ENTER|RESPAWN|DEATH|CLOSED|…`
+with arguments, `if`/`else`, `while`, `do…while`, `for`, `switch`/`case`, `break`, `continue`,
+`restart`, `suspend`, `terminate`, the C operators, `?:`, and `s:`/`d:`/`f:`/`c:` message prefixes.
+Fixed-point literals are 16.16 integers, as ACC means them, so `SetGravity(0.5)` is 32768.
+
+**Builtins** compile to the opcodes the interpreter already implements — printing, HUD messages,
+inventory, spawning, actor and sector queries, fades, music, line textures, blocking, gravity — and
+**every line special may be called by its name** (`Door_Open`, `Floor_LowerByValue`, `Teleport`,
+`Thing_Thrust`, …). Arguments are passed in the units a linedef carries, so `Door_Open(tag, 16)`
+is the speed a map's linedef arg 2 means. The editor's **What this window understands** panel
+lists the exact set. Anything outside it — a function-like macro, a builtin this compiler does not
+emit yet — stops the compile with a named line rather than compiling to something else.
+
+A rule in the World sheet that starts a script (`runScript`) carries the same gold mark, and its
+**Open script** button jumps straight to the source.

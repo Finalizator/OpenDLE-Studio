@@ -76,7 +76,7 @@
       <button data-tab="environment">Environment</button>
       <button data-tab="shaders">Shaders</button>
       <button data-tab="actors">Actors</button>
-      <button data-tab="scripts">Scripts</button>
+      <button data-tab="scripts" class="engine-language" title="The level's ACS scripts: game-language code with no visual equivalent, edited as text">Scripts</button>
       <button data-tab="logs">Logs</button>
       <button data-tab="scriptlets">Engine scriptlets</button>
       <button data-tab="timesheet">Timesheet</button>
@@ -294,7 +294,7 @@
         </form>
       </section>
       <section id="scripts-panel" class="panel" hidden>
-        <div class="panel-heading"><div><h1>Map scripts</h1><p>The level's compiled ACS module: scripts, triggers and linedef specials, disassembled.</p></div></div>
+        <div class="panel-heading"><div><h1>Map scripts</h1><p>The level's compiled ACS module: scripts, triggers and linedef specials, disassembled. These are the game's own language — there is no visual equivalent, so each script opens in a text editor and compiles back into the level.</p></div></div>
         <p id="scripts-summary" class="muted" role="status"></p>
         <div class="field-grid">
           <label>Search <input id="script-search" type="search" placeholder="Script name, number or trigger" /></label>

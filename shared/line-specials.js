@@ -17,7 +17,8 @@ import { floorAt, sectorFloorAt, soundEvent } from './combat.js';
 import { sectorAt } from './sectors.js';
 import { actorOf, hurtActor, registerSpecialExecutor } from './actor-runtime.js';
 
-const SPECIAL_NAMES = [
+/** Every special's name in GZDoom's numbering, which is what UDMF and Hexen maps use. */
+export const SPECIAL_NAMES = [
    'NOP', 'NOP', 'Polyobj_RotateLeft', 'Polyobj_RotateRight', 'Polyobj_Move', 'NOP', 'Polyobj_MoveTimes8',
   'Polyobj_DoorSwing', 'Polyobj_DoorSlide', 'NOP', 'Door_Close', 'Door_Open', 'Door_Raise',
   'Door_LockedRaise', 'Door_Animated', 'Autosave', 'NOP', 'Thing_Raise', 'StartConversation', 'Thing_Stop',
