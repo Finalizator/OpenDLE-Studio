@@ -106,3 +106,18 @@ test('A string the module cannot store is refused instead of mangled', async () 
   const project = createProject();
   assert.throws(() => compileScriptSource(project, 'map:1', 'script 1 { Print(s:"Zażółć"); }'), /Latin-1/);
 });
+
+// The shell's own event handlers cannot be imported (they run against a page), so the wiring they
+// are made of is pinned here: every one of these was a feature that existed and was never called.
+test('The exported game reaches the handlers it was given', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const game = await readFile(new URL('../public/game/game.js', import.meta.url), 'utf8');
+  assert.match(game, /bindKey\(game\.engine\.runtime, event\.code\)/, 'the Options sheet can finish a rebind');
+  assert.match(game, /'Enter', 'NumpadEnter', 'Space'/, 'Space presses the focused menu row');
+  assert.match(game, /for \(const code of pad\.pressed\) handleMenuKey\(code\)/, 'a pad navigates the menu');
+  assert.match(game, /pending\.then\(late => late\?\.dispose\?\./, 'a preview that arrives late is thrown away');
+  const studio = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(studio, /refreshTerrainPanel\(\)/, 'undo reaches the terrain panel');
+  const viewport = await readFile(new URL('../public/terrain-viewport.js', import.meta.url), 'utf8');
+  assert.match(viewport, /pause\(\) \{/, 'the terrain loop can be stopped');
+});
