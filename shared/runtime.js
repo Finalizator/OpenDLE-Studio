@@ -1061,6 +1061,10 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // "always run" switch on top of it: with the light on, the player runs whatever else is held.
   const running = keys.has('CapsLock') || state.settings.alwaysRun !== keys.has('ShiftLeft');
   const runMultiplier = running ? 2 : 1;
+  // `GetPlayerInput(INPUT_FORWARDMOVE)` and `INPUT_SIDEMOVE` report what the player is doing this
+  // tic, not what the settings say they could do: a script that waits for a shove to start could
+  // never see one, and a released key still reported movement.
+  state.moveInput = { forward: forwardAxis, side: sideAxis, run: running };
   // Doom ramps a held turn up: the first six tics run at half rate (`SLOWTURNTICS`).
   const turnBam = state.scriptedInput ? (state.turnRequest || 0) * bamPerDegreePerSecond
     : turnAxis * (running ? TURN_SPEED.runFast : TURN_SPEED.walkFast);

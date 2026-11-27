@@ -920,6 +920,11 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
   syncVisibility();
   return {
     render,
+    /** The tab is the only thing that knows whether the viewport is on screen. */
+    setVisible(visible) {
+      if (visible) viewport?.resume?.();
+      else viewport?.pause?.();
+    },
     dispose() {
       foliagePreview?.dispose?.();
       foliagePreview = null;

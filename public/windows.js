@@ -14,7 +14,7 @@
  */
 
 import { mergeFromHub, mergeFromPeer, parseWindowView, panelWindowURL, dialogWindowURL,
-  sectionsForPanel } from '../shared/window-sync.js';
+  sectionsForPanel, conflictingSections } from '../shared/window-sync.js';
 
 const CHANNEL = 'opendle-studio';
 const PANEL_LABELS = {
@@ -237,7 +237,25 @@ export function createStudioWindows({
 
   /** The windows this one opened, so bringing a tab home can close the window itself. */
   const openWindows = new Map();
+  /**
+   * The sections another detached window already writes. Two windows that both write `assets` do
+   * not corrupt the document — each sends its own sections and the hub merges them — but the one
+   * that saves last wins, and nothing used to say so.
+   */
+  function sharedSections(target) {
+    const taken = [];
+    for (const peerView of peers.values()) {
+      if (peerView?.kind !== 'panel' || peerView.panel === target) continue;
+      for (const section of sectionsForPanel(peerView.panel)) if (!taken.includes(section)) taken.push(section);
+    }
+    return conflictingSections(sectionsForPanel(target), taken);
+  }
+
   function openPanel(target) {
+    const shared = sharedSections(target);
+    if (shared.length) {
+      status(`${PANEL_LABELS[target] || target} and a window already open both edit ${shared.join(', ')}; whichever saves last wins.`, true);
+    }
     const url = panelWindowURL(location.href, target);
     const opened = openWindow(url, `opendle-${target}`, 'popup=yes,width=1280,height=900');
     if (!opened) {
@@ -320,7 +338,7 @@ export function createStudioWindows({
     id, view, isMain, panel, dialog: view.kind === 'dialog' ? view.dialog : null,
     arguments: dialogArguments(view),
     sections, label,
-    connect, reset, commit, applyChrome, openPanel, openDialog, dock, drag, whenReady,
+    connect, reset, commit, applyChrome, openPanel, openDialog, dock, drag, whenReady, sharedSections,
     peers: () => new Map(peers),
     onPeers: fn => { listener = fn; },
     close: requestClose,

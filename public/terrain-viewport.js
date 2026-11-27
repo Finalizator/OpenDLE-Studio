@@ -214,6 +214,21 @@ export function createTerrainViewport(container, { onPick = null } = {}) {
   return {
     renderer, scene, camera, controls,
     setWorld, dispose,
+    /**
+     * A hidden canvas still costs a frame's worth of work every time the tab is somewhere else,
+     * and the terrain is the heaviest scene the studio draws. Pausing leaves the camera and the
+     * world exactly as they were.
+     */
+    pause() {
+      if (!frame) return;
+      cancelAnimationFrame(frame);
+      frame = 0;
+    },
+    resume() {
+      if (disposed || frame) return;
+      clock.getDelta(); // the pause is not a frame: drop the elapsed time instead of lurching.
+      frame = requestAnimationFrame(tick);
+    },
     /** `{ pick, stroke }`, either of which may be null. */
     interact(next) { interaction.pick = next.pick || null; interaction.stroke = next.stroke || null; },
     /** Pushes a new configuration into the live world; false when the world refuses it. */

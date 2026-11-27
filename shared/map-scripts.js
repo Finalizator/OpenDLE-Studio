@@ -19,7 +19,7 @@ import { bindCameraTexture } from './cameratextures.js';
 import { requestSky } from './sky.js';
 import { addAmmo } from './player-state.js';
 import { soundEvent, floorAt, launchProjectile, damagePlayer } from './combat.js';
-import { resetMomentum } from './player-motion.js';
+import { NORM_FORWARD, NORM_SIDE, resetMomentum } from './player-motion.js';
 import { sectorAt } from './sectors.js';
 import { actorForThing } from './actors.js';
 import { doomThings, DOOM_SPAWN_NUMBERS } from './doom-assets.js';
@@ -534,7 +534,12 @@ export function createMapScripts(project, state, callbacks = {}) {
       if (input === 2) return angleToBam(state.player.pitch || 0);
       if (input === 3) return angleToBam(state.player.angle || 0);
       if (input === 4) return 0;
-      if (input === 5 || input === 13) return (state.settings?.alwaysRun ? 50 : 25) * 65536;
+      // The numbers `G_BuildTiccmd` would put in a ticcmd: nothing while no key is held, and the
+      // run value when the player is running. Reading the setting instead said "25" to a script
+      // that asked whether the player was pushing forward.
+      const move = state.moveInput || { forward: 0, side: 0, run: false };
+      if (input === 5 || input === 13) return move.forward * (move.run ? NORM_FORWARD.run : NORM_FORWARD.walk) * 65536;
+      if (input === 6 || input === 14) return move.side * (move.run ? NORM_SIDE.run : NORM_SIDE.walk) * 65536;
       return 0;
     },
   };

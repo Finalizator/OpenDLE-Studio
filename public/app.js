@@ -2539,8 +2539,11 @@ function showTab(tab) {
   const tabButton = document.querySelector(`.document-tabs [data-tab="${tab}"]`) || document.querySelector(`[data-tab="${tab}"]`);
   tabButton?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   if (tab === 'assets') {
+    terrainPanel.setVisible(false);
     setAssetExpanded(true); $('asset-search').focus(); return;
   }
+  // The terrain viewport owns a WebGL2 loop; leaving the tab has to stop it.
+  terrainPanel.setVisible(tab === 'terrain');
   for (const name of ['map', 'events', 'environment', 'shaders', 'hud', 'terrain', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'addons', 'about', 'scene'])
     $(name + '-panel').hidden = tab !== name;
   // Tabs an addon added belong to the same strip and must close with it.
@@ -6319,19 +6322,27 @@ $('projects').addEventListener('change', guard(async () => {
     status(`Opened stored project "${project.title}"; it reopens next time`);
   });
 }));
+/**
+ * The terrain panel holds the heights and the paint in live fields, so it only sees a snapshot it
+ * did not produce when the document is restored or replaced — never during an ordinary edit,
+ * where reloading would discard the stroke being painted.
+ */
+function refreshTerrainPanel() {
+  if (!$('terrain-panel').hidden) terrainPanel.render();
+}
 $('undo').addEventListener('click', () => {
   if (!history.length) return;
   // Projects are never mutated in place (see cloneProjectForEdit), so the current
   // value is already a safe snapshot and needs no copy.
   future.push(historySnapshot()); restoreHistory(history.pop()); dirty = true; editVersion++; clearDraft();
-  persistDraft(); render(); status('Undone');
+  persistDraft(); render(); refreshTerrainPanel(); status('Undone');
   // A detached window edits the same document, so an undo has to reach it like any other change.
   globalThis.__opendleWindows?.commit(project);
 });
 $('redo').addEventListener('click', () => {
   if (!future.length) return;
   history.push(historySnapshot()); restoreHistory(future.pop()); dirty = true; editVersion++; clearDraft();
-  persistDraft(); render(); status('Redone');
+  persistDraft(); render(); refreshTerrainPanel(); status('Redone');
   globalThis.__opendleWindows?.commit(project);
 });
 $('new').addEventListener('click', guard(async () => {
@@ -8683,6 +8694,7 @@ function applyRemoteProject(next) {
   dirty = true;
   editVersion++;
   render();
+  refreshTerrainPanel();
   // Work done in another window is work: it belongs in the local project folder like any edit.
   projectAutosave.schedule();
 }

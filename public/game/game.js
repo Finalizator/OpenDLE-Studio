@@ -13,7 +13,7 @@ import { createAudioPlayer } from '/audio.js';
 import { createHUDView } from '/hud-view.js';
 import { createRuntime, stepRuntime, lookPlayer } from '/shared/runtime.js';
 import { controllerSnapshot, gamepadLook, playRumble, readGamepads, rumbleEffect, stopRumble } from '/shared/gamepad.js';
-import { gameSettings, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
+import { bindKey, gameSettings, mappedKeys, validBinding, setGameScreen } from '/shared/game-settings.js';
 import { statusBarHidden } from '/shared/game-view.js';
 import { selectGameLevel, stripInactiveLevels } from '/shared/game-levels.js';
 import { installIntermission } from '/shared/intermission.js';
@@ -498,9 +498,14 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
     // Without a number the bar creeps: the renderer answers when it answers, and a stage that
     // takes seconds must not sit frozen on the mark the previous one left.
     setLoading('Starting the 3D view…');
-    const started = await withDeadline(
-      createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) }),
-      PREVIEW_TIMEOUT);
+    const pending = createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) });
+    const started = await withDeadline(pending, PREVIEW_TIMEOUT);
+    if (!started) {
+      // The renderer may answer after the deadline: nothing will ever draw it, and a preview that
+      // is never disposed holds its WebGL context and every texture it uploaded for the whole
+      // session, so the late one is thrown away as soon as it arrives.
+      pending.then(late => late?.dispose?.(), () => {});
+    }
     if (token !== startToken) {
       // The player gave up on this level while the renderer was coming up: throw the late one away.
       if (started?.value?.dispose) started.value.dispose();
@@ -677,7 +682,8 @@ function handleMenuKey(code) {
   const runtime = game.engine?.runtime;
   if (!runtime || runtime.gameScreen === 'playing') return false;
   if (code === 'Escape') { setGameScreen(runtime, 'return'); return true; }
-  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(code)) return false;
+  // Space is how a Doom menu is used, and a pad's Cross arrives as Enter: both are the same key.
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'NumpadEnter', 'Space'].includes(code)) return false;
   if (code === 'ArrowLeft' || code === 'ArrowRight') {
     if (!game.keys.has(code)) game.pressed.add(code);
     game.keys.add(code);
@@ -687,7 +693,10 @@ function handleMenuKey(code) {
     .filter(node => node.tabIndex === 0 && node.dataset.menuSelectable !== 'false');
   if (!rows.length) return false;
   const focused = rows.findIndex(node => node.dataset.hudId === runtime.hudState.focused);
-  if (code === 'Enter') { (rows[focused < 0 ? 0 : focused])?.click(); return true; }
+  if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+    (rows[focused < 0 ? 0 : focused])?.click();
+    return true;
+  }
   const next = focused < 0
     ? (code === 'ArrowDown' ? 0 : rows.length - 1)
     : (focused + (code === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
@@ -698,6 +707,20 @@ function handleMenuKey(code) {
 window.addEventListener('keydown', event => {
   primeAudio();
   syncCapsLock(event);
+  // The Options sheet asks for the next key it sees (`captureGameBinding`); nothing read that, so
+  // every rebind ended by doing nothing and the menu kept waiting. Escape cancels, as the HUD says.
+  const binding = game.engine?.runtime?.bindingKey;
+  if (binding) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.code === 'Escape') game.engine.runtime.bindingKey = null;
+    else {
+      try { bindKey(game.engine.runtime, event.code); showToast(`Bound to ${event.code}.`); }
+      catch (error) { showToast(error.message, true); }
+    }
+    game.engine.runtime.settingsRevision++;
+    return;
+  }
   if (event.code === 'Escape') {
     if (game.busy) {
       // A start that is taking too long must be escapable: give up on it and go back to the menu.
@@ -814,6 +837,10 @@ function frame(now) {
   try {
     const menu = runtime.gameScreen !== 'playing';
     const pad = pollGamepads(runtime, dt);
+    // A menu screen is navigated by this shell, not by the runtime, so a pad's d-pad and Cross
+    // have to arrive here as well: they were read only by the game loop, which is why a
+    // controller could not move through the menu at all.
+    if (menu) for (const code of pad.pressed) handleMenuKey(code);
     const heldKeys = pad.keys.size ? new Set([...game.keys, ...pad.keys]) : game.keys;
     const pressedKeys = pad.pressed.size ? new Set([...game.pressed, ...pad.pressed]) : game.pressed;
     const held = menu ? heldKeys : mappedKeys(heldKeys, runtime.settings);
