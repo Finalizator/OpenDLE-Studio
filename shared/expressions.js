@@ -4,7 +4,11 @@ import { PLAYER_STATS } from './player-state.js';
 import { readAcsVariable, readAcsString, readAcsArray } from './acs-state.js';
 import { arrayShape, readArrayCell } from './arrays.js';
 
-const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
+// Names an expression reads as something else. `time` in a rule means the level clock, so a
+// variable called `time` could be written and then never read — the expression answered the clock
+// and nothing said why. Refusing the name is honest; silently shadowing the variable was not.
+const forbidden = new Set(['__proto__', 'prototype', 'constructor',
+  'time', 'dt', 'pi', 'e', 'true', 'false']);
 /** The actor values `acsactor(tid, "…")` can read: the ones the ACS opcodes read. */
 export const ACTOR_VALUE_KINDS = ['x', 'y', 'z', 'floorZ', 'ceilingZ', 'angle', 'pitch', 'light'];
 

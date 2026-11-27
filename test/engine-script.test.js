@@ -4,6 +4,7 @@ import { shaderTemplate } from '../shared/shaders.js';
 import { createProject, validateProject, removeEntity } from '../shared/project.js';
 import { installEngineScripts, ENGINE_ACTIONS, ENGINE_CONDITIONS, defaultEngineCommand } from '../shared/engine-script.js';
 import { createRuntime, lookPlayer, stepRuntime } from '../shared/runtime.js';
+import { compileScriptSource } from '../shared/map-scripts.js';
 import { applyTool } from '../server/tools.js';
 import { assembleGameLevels } from '../shared/game-levels.js';
 
@@ -155,6 +156,11 @@ test('every Engine command has shared editor defaults and validates after adding
       value.row = 0;
       value.column = 0;
       if (value.value === undefined) value.value = 0;
+    }
+    // A command that writes the level's ACS variables needs the level to have a module, exactly as
+    // the editor's own script writer leaves one behind.
+    if (['setAcsVariable', 'setAcsArray'].includes(command.type) && !project.mapScripts?.data) {
+      project.mapScripts = compileScriptSource(project, 'map:1', 'script 1 OPEN { }').mapScripts;
     }
     // An area condition is about an interaction volume, so the fixture gives its target one —
     // the same thing a creator does before writing the rule.

@@ -1604,8 +1604,22 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         validateLocalVariableCommand(command, targetEntities(command.entityId));
       }
       if (definition.wall) assert(walls.some(wall => wall.id === command.wallId), 'Command references an unknown wall');
-      if (definition.zone) assert(entities.some(entity => entity.id === command.zoneId && entity.type === 'zone'),
-        'Zone condition must reference an existing zone');
+      if (definition.zone) {
+        const zone = targetEntities(command.zoneId).find(entity => entity.type === 'zone');
+        assert(zone, 'Zone condition must reference an existing zone');
+        // A zone exists to be entered, so it needs the volume that lets anything enter it. The
+        // runtime throws "tests zone X, which has none" for one without, and a thrown condition stops
+        // the whole game mid-level — while the sheet and validation both said the rule was fine.
+        assert(zone.area, `Zone "${zone.name || zone.id}" has no interaction volume`);
+      }
+      if (['setAcsVariable', 'setAcsArray'].includes(command.type)) {
+        // Both write into the level's own compiled module, and the runtime throws "the level has no
+        // ACS variables/arrays" when there is none — a thrown action stops the game. Whether the
+        // module exists is known at validation time, so a rule that cannot work is refused here.
+        const scripts = project.mapScripts;
+        const hasModule = Boolean(scripts && (scripts.data || scripts.libraries?.length));
+        assert(hasModule, `Event "${event.name || event.id}": ${command.type} needs the level to have a compiled ACS module (import the map's BEHAVIOR or write a script)`);
+      }
       if (command.type === 'loadGameLevel')
         assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId), 'Command references an unknown game level');
       if (['saveGame', 'loadGame'].includes(command.type)) assert(Number.isInteger(command.slot), 'Game save slot must be an integer');
