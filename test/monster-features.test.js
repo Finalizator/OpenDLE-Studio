@@ -9,6 +9,7 @@ import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createPhysics } from '../shared/physics.js';
 import { ACTIONS, hurtActor, explodeAt, restoreBlocking } from '../shared/actor-runtime.js';
 import { spritePlacement } from '../shared/entity-visuals.js';
+import { importActors } from '../shared/actors.js';
 
 await R.init();
 const triangulate = (outer, holes) => ShapeUtils.triangulateShape(outer.map(point => new Vector2(point.x, point.y)),
@@ -201,4 +202,51 @@ test('a raised monster gets its collider back, so a corpse is not a wall forever
   assert.doesNotThrow(() => restoreBlocking(state, corpse));
   assert.equal(corpse.health, zombie.health);
   state.physics.dispose();
+});
+
+test('a corpse class that starts in its parent\'s death frames compiles that way', () => {
+  // `DeadShotgunGuy : ShotgunGuy { States { Spawn: Goto Super::Death+4; } }` is how Doom places a
+  // body in a map. The table this campaign was imported with (before `Super::Label+N` was
+  // resolved) gave those classes the *living* monster's states, so their Spawn was its See and
+  // seven hanging corpses in the campaign hunted the player. The compiler gets it right now.
+  const source = `
+class ZombieMan : Actor
+{
+  States
+  {
+  Spawn:
+    POSS AB 10 A_Look;
+    Loop;
+  See:
+    POSS A 4 A_Chase;
+    Loop;
+  Death:
+    POSS H 5;
+    POSS I 5 A_Scream;
+    POSS J 5 A_NoBlocking;
+    POSS K 5;
+    POSS L -1;
+    Stop;
+  }
+}
+class DeadZombieMan : ZombieMan
+{
+  Default { Skip_Super; DropItem "None"; }
+  States
+  {
+  Spawn:
+    Goto Super::Death+2;
+  }
+}
+`;
+  const actors = importActors({ sources: [{ name: 'dead.zs', text: source, language: 'zscript' }], warnings: [] }).actors;
+  const dead = actors.find(actor => actor.name === 'DeadZombieMan');
+  const spawn = dead.states.frames[dead.states.labels.Spawn];
+  assert.equal(spawn.kind, 'goto');
+  // `Super::Death` is the parent's corpse sequence, and `+2` is the frame that stops blocking.
+  const target = dead.states.frames[spawn.targetIndex];
+  assert.equal(target.kind, 'frame');
+  assert.equal(dead.states.frames[dead.states.labels.Spawn].target, 'Super::Death+2');
+  assert.notEqual(dead.states.labels.Spawn, dead.states.labels.See,
+    'a corpse does not start in the living monster\'s See state');
 });

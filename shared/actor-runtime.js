@@ -2175,6 +2175,8 @@ function painShootSkull(ctx, offset) {
  */
 function advanceSkullfly(project, state, entity) {
   const fly = entity.skullfly;
+  // Shot out of the air: the charge simply ends.
+  if ((entity.health ?? 0) <= 0) { entity.skullfly = null; return; }
   fly.tics++;
   const stepX = fly.vx / TIC_RATE, stepY = fly.vy / TIC_RATE, stepZ = fly.vz / TIC_RATE;
   const length = Math.hypot(stepX, stepY);
