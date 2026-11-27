@@ -848,7 +848,10 @@ export function createMapScripts(project, state, callbacks = {}) {
         x: origin.x, y: origin.y, z: floorAt(state, origin),
         dx: total ? Math.cos(yaw) * horizontal / total : Math.cos(yaw), dy: total ? Math.sin(yaw) * horizontal / total : Math.sin(yaw),
         dz: total ? vertical / total : 0,
-        age: 0, speed: total * TIC_RATE, damage: actor?.damage || 8, radius: 12,
+        // Missiles roll 1..8 times their damage (`P_XYMovement`), and every other spawner in the
+        // engine passes 8. Without it the roll multiplied by `undefined` and the hit was NaN,
+        // which `hurtActor` rejects as "not a positive amount": the missile passed through.
+        age: 0, speed: total * TIC_RATE, damage: actor?.damage || 8, diceSides: 8, radius: 12,
         ...(actor ? { actor: actor.id } : {}), ...(newTid ? { tid: newTid } : {}),
       });
     }

@@ -449,7 +449,15 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
   });
   state.scripts = createMapScripts(project, state, {
     finishLevel: exit => beginIntermission(project, state, exit === 'secret'),
-    changeLevel: () => {},
+    // `Teleport_NewMap` and the ACS `ChangeLevel` builtin report success to the script, so a
+    // no-op here told the script a level change had happened when nothing moved. They name a
+    // map, which is either a level id or Doom's 1-based map number.
+    changeLevel: map => {
+      const wanted = String(map ?? '').trim(), levels = project.game?.levels || [];
+      const level = levels.find(candidate => candidate.id.toLowerCase() === wanted.toLowerCase())
+        || (/^\d+$/.test(wanted) ? levels[Number(wanted) - 1] : null);
+      if (level) state.menuRequests.push({ type: 'level', levelId: level.id });
+    },
     onRemove: entity => {
       recordRemovedEntity(state, entity);
       state.physics?.remove(entity.id);
@@ -2384,13 +2392,19 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             }
             // A line's special, executed from a rule: the same table the engine uses when a
             // UDMF line activates natively, so the two cannot drift.
-            case 'runLineSpecial':
-              if (!state.worldTerminalActive) {
-                executeSpecial(project, state, action.special,
-                  [action.arg1, action.arg2, action.arg3, action.arg4, action.arg5],
-                  { scripts: state.scripts, format: 'zdoom', ...(action.line ? { line: action.line } : {}) });
-              }
+            case 'runLineSpecial': {
+              if (state.worldTerminalActive) break;
+              // `SetLineSpecial` and `ClearLineSpecial` write the line's own special and arguments,
+              // so a rule that kept the numbers it was imported with would fire the old special for
+              // ever: the script changed the line and nothing read it. A rule that names its line
+              // therefore runs the line as it is now, falling back to the rule's own numbers when
+              // the line is gone.
+              const wall = action.line ? state.walls.find(candidate => candidate.id === action.line) : null;
+              executeSpecial(project, state, wall ? wall.special : action.special,
+                wall?.args?.length ? wall.args : [action.arg1, action.arg2, action.arg3, action.arg4, action.arg5],
+                { scripts: state.scripts, format: 'zdoom', ...(action.line ? { line: action.line } : {}) });
               break;
+            }
             // A decompiled script's own builtins — `ChangeFloor(tag, "HEX01")`, `SetLineSpecial`,
             // `SetLineBlocking` — run through the interpreter's host functions, so the rule and a
             // script that was not decompiled change the level the same way.
@@ -2429,8 +2443,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
                 String(action.kind ?? ''), 'player');
               break;
             case 'sectorDamage':
+              // The action says "damage every sector with this tag"; with flags 0 the host did
+              // nothing at all, because it damages players only with bit 1 and monsters only
+              // with bit 2. ACS `SectorDamage` passes the flags it was given, and this rule has
+              // no flags field, so it means everyone in the sector.
               hostFor(action).sectorDamage(Number(action.tag) || 0, Number(action.amount) || 0,
-                String(action.kind ?? ''), String(action.protection ?? ''), 0);
+                String(action.kind ?? ''), String(action.protection ?? ''), 1 | 2);
               break;
             case 'setSectorFlat': {
               hostFor(action).changeFlat(Number(action.tag) || 0, String(action.flat ?? ''), action.surface === 'ceiling');

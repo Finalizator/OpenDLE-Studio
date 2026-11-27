@@ -13,7 +13,7 @@ import { startWaggle } from './plane-motion.js';
 import { moveSector, classicSpecialSupported, sectorMotionAllowed, stairDistance } from './world-motion.js';
 import { resetMomentum } from './player-motion.js';
 import { doomSpecialName } from './doom-specials.js';
-import { floorAt, sectorFloorAt, soundEvent } from './combat.js';
+import { damagePlayer, floorAt, sectorFloorAt, soundEvent } from './combat.js';
 import { sectorAt } from './sectors.js';
 import { actorOf, hurtActor, registerSpecialExecutor } from './actor-runtime.js';
 
@@ -196,9 +196,9 @@ function floorLowest(state, project, sector) {
 function damageActor(project, state, entity, amount, options) {
   if (!entity || !(amount > 0)) return false;
   if (entity.type === 'player' || entity === state.player) {
-    state.playerStats.health = Math.max(0, state.playerStats.health - amount);
-    state.feedback.health = state.playerStats.health;
-    state.feedback.damage = { amount, time: state.time };
+    // The player is hurt the way anything else hurts them: armour takes its share and an
+    // invulnerability sphere absorbs the hit. Writing health directly ignored both.
+    damagePlayer(state, amount);
     return true;
   }
   if (entity.type === 'enemy') {

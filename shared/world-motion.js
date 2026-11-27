@@ -409,7 +409,7 @@ export function installWorldScripts(project, warnings) {
       if (raise && [58, 59, 92, 93].includes(special)) height = sector.floorHeight + 24;
       if (!Number.isFinite(height)) { warnings.push(`Linedef ${wall.id}: no neighboring height for special ${special}.`); continue; }
       actions.push({ type: 'moveSector', sectorId: sector.id, surface: ceiling ? 'ceilingHeight' : 'floorHeight', height,
-        speed: special >= 105 && special <= 123 ? 280 : ceiling ? 70 : 35,
+        speed: classicPlaneSpeed(special, Boolean(ceiling)),
         wait: ceiling ? 4 : 3, returnMode: perpetual ? 'cycle' : lift || local && [1, 26, 27, 28, 117].includes(special) || door?.[1] === 'return' ? 'return' : 'stay',
         ...(perpetual ? { returnHeight: Math.max(sector.floorHeight, ...neighbors.map(s => s.floorHeight)) } : {}),
         sound: ceiling ? 'DSDOROPN' : 'DSPSTART' });
@@ -439,6 +439,19 @@ export function installWorldScripts(project, warnings) {
  * Targets are resolved at import because a Doom teleport destination and a stair
  * run are fixed geometry, not runtime state.
  */
+// GZDoom's `wadsrc/static/xlat`: P_SLOW and F_SLOW are 1 unit a tic, P_NORMAL, F_NORMAL and the
+// door's VDOORSPEED are 2, P_FAST and F_FAST are 4, and D_FAST is 8 — at the engine's 35 tics a
+// second, 35, 70, 140 and 280 units a second. Every plane used to get 35, so a fast lift or a
+// fast floor crawled at a quarter speed and only slow floors looked right.
+const SLOW = 35, NORMAL = 70, FAST = 140, DOOR_FAST = 280;
+function classicPlaneSpeed(special, ceiling) {
+  if (special >= 120 && special <= 123) return DOOR_FAST; // P_TURBO lifts
+  if (special >= 105 && special <= 118) return DOOR_FAST; // D_FAST doors
+  if ([10, 21, 62, 88].includes(special)) return FAST;    // P_FAST lifts
+  if ([36, 98].includes(special)) return FAST;            // F_FAST floors
+  return ceiling ? NORMAL : SLOW;
+}
+
 function classicActions(project, wall, behaviour, targets, warnings) {
   const effect = behaviour.effect;
   if (effect.kind === 'teleport') {
