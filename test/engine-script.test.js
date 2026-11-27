@@ -38,13 +38,13 @@ test('Engine defaults are portable editable sheets and installation never overwr
   // The sheet's `forward` is the speed the player settles at, in units per second.
   const reached = (state.player.x - before) / .05;
   assert.ok(Math.abs(reached - 80) < 3, `top speed ${reached}`);
-  // With the default always-run the same sheet settles at twice the typed speed, which is
-  // Doom's own ratio between `normforwardmove` walking and running.
+  // Walking is the default, so holding the speed key is what settles the same sheet at twice the
+  // typed speed — Doom's own ratio between `normforwardmove` walking and running.
   const running = createRuntime(project);
-  for (let frame = 0; frame < 40; frame++) stepRuntime(project, running, .05, new Set(['KeyW']));
+  for (let frame = 0; frame < 40; frame++) stepRuntime(project, running, .05, new Set(['KeyW', 'ShiftLeft']));
   const mark = running.player.x;
-  stepRuntime(project, running, .05, new Set(['KeyW']));
-  assert.ok(Math.abs((running.player.x - mark) / .05 - 160) < 6, 'always-run doubles the sheet speed');
+  stepRuntime(project, running, .05, new Set(['KeyW', 'ShiftLeft']));
+  assert.ok(Math.abs((running.player.x - mark) / .05 - 160) < 6, 'the speed key doubles the sheet speed');
   const input = project.eventSheets.find(sheet => sheet.name === 'Input');
   input.enabled = false;
   const next = createRuntime(project);

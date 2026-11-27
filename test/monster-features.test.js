@@ -7,7 +7,7 @@ import { createProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { createPhysics } from '../shared/physics.js';
-import { ACTIONS, hurtActor, explodeAt, restoreBlocking } from '../shared/actor-runtime.js';
+import { ACTIONS, hurtActor, explodeAt, restoreBlocking, beginWeapon } from '../shared/actor-runtime.js';
 import { spritePlacement } from '../shared/entity-visuals.js';
 import { importActors } from '../shared/actors.js';
 
@@ -249,4 +249,20 @@ class DeadZombieMan : ZombieMan
   assert.equal(dead.states.frames[dead.states.labels.Spawn].target, 'Super::Death+2');
   assert.notEqual(dead.states.labels.Spawn, dead.states.labels.See,
     'a corpse does not start in the living monster\'s See state');
+});
+
+test('a weapon picked up mid-flash clears the muzzle flash the old one left on screen', () => {
+  const project = createProject({ title: 'Flash' });
+  installEngineScripts(project);
+  // A weapon actor with a Flash state, so a shot can start one.
+  const state = createRuntime(project);
+  state.weaponActor = { actor: { states: { frames: [] }, labels: new Map() }, index: 0, tics: 0, entered: false };
+  state.weaponFlash = { index: 0, tics: 0, entered: true, seen: new Set([0]) };
+  state.weaponFlashAsset = 'PISFA0';
+  state.weaponLight = 2;
+  // Whatever slot the project has: beginWeapon is the path every weapon change takes.
+  beginWeapon(project, state, 1);
+  assert.equal(state.weaponFlash, null, 'the flash of the previous weapon is gone');
+  assert.equal(state.weaponFlashAsset, null, 'and its picture with it');
+  assert.equal(state.weaponLight, 0, 'and the light it threw');
 });

@@ -1049,8 +1049,9 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   // read there, the same way they were not before.
   const turnAxis = hud.cursor || state.scriptedInput ? 0
     : (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0);
-  // Shift toggles `alwaysRun`, the same way Doom's `always_run` does.
-  const running = state.settings.alwaysRun !== keys.has('ShiftLeft');
+  // Shift toggles the walk/run default (the way Doom's `always_run` works), and CapsLock is the
+  // "always run" switch on top of it: with the light on, the player runs whatever else is held.
+  const running = keys.has('CapsLock') || state.settings.alwaysRun !== keys.has('ShiftLeft');
   const runMultiplier = running ? 2 : 1;
   // Doom ramps a held turn up: the first six tics run at half rate (`SLOWTURNTICS`).
   const turnBam = state.scriptedInput ? (state.turnRequest || 0) * bamPerDegreePerSecond

@@ -2570,6 +2570,12 @@ export function weaponAmmo(actor) {
 
 /** Puts the player's weapon into `Ready`, or keeps it there. */
 export function beginWeapon(project, state, slot) {
+  // The flash belongs to the weapon that threw it. Picking a weapon up (or switching to an empty
+  // slot) while another one was firing used to leave the old flash picture on screen for ever,
+  // because the next weapon starts in `Ready` and nothing ever ticked the old flash again.
+  state.weaponFlash = null;
+  state.weaponFlashAsset = null;
+  state.weaponLight = 0;
   const actor = weaponActor(project, slot);
   if (!actor) { state.weaponActor = null; return false; }
   state.weaponActor = { actor, index: labelIndex(actor, 'Ready') ?? 0, tics: 0, entered: false, ready: false, flash: null };

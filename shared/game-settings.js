@@ -22,11 +22,10 @@ export const GAME_SETTINGS = {
   materialNormalDistance: { value: 1536, min: 0, max: 32768, step: 32 },
   materialDetailDistance: { value: 768, min: 0, max: 32768, step: 32 },
   messages: { value: true },
-  // Doom's `always_run` is on out of the box (GZDoom's `cl_run` defaults to 1), and the speed
-  // key walks instead of runs. Starting off made the player walk at 291 units a second, which
-  // is a zombie's own chase speed, so every monster in an imported game looked twice as fast as
-  // it does in GZDoom — the player simply never got away from one.
-  alwaysRun: { value: true },
+  // Walk by default, run with the speed key — what a player expects from a modern shooter, and
+  // what OpenDLE's own games ask for. `alwaysRun` turns that around for anyone who prefers Doom's
+  // `cl_run=1`; CapsLock always runs whatever this says.
+  alwaysRun: { value: false },
   jumping: { value: true },
   lowDetail: { value: false },
   viewSize: { value: 10, min: 3, max: 11, step: 1 },

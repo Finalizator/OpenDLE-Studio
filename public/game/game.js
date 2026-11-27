@@ -164,9 +164,49 @@ function saveFileHost() {
 // Chrome: loading, messages, fatal errors
 // ---------------------------------------------------------------------------------------------------
 
-function setLoading(text) {
-  $('loading').hidden = !text;
-  if (text) $('loading-text').textContent = text;
+/**
+ * The splash while the 3D view comes up.
+ *
+ * It shows the stage the engine is at and how far along it is, so a slow start looks like work
+ * rather than a frozen window — the progress creeps towards 88% while a stage is running and
+ * jumps to 100% when it finishes, because that is the honest thing a load with unknown steps can
+ * say.
+ */
+let loadingProgress = 0, loadingCreep = null, loadingStage = null;
+function setLoading(text, progress = null) {
+  const overlay = $('loading');
+  if (!overlay) return;
+  if (!text) {
+    clearInterval(loadingCreep);
+    loadingCreep = null;
+    overlay.hidden = true;
+    return;
+  }
+  overlay.hidden = false;
+  $('loading-text').textContent = text;
+  if (progress !== null) {
+    clearInterval(loadingCreep);
+    loadingCreep = null;
+    loadingStage = progress;
+    setProgress(progress);
+    return;
+  }
+  if (loadingStage === null) return;
+  // A stage with no measurable steps: drift towards 88% of the way to the next one.
+  clearInterval(loadingCreep);
+  const ceiling = Math.min(88, loadingStage + 12);
+  loadingCreep = setInterval(() => {
+    if (loadingProgress >= ceiling) { clearInterval(loadingCreep); loadingCreep = null; return; }
+    setProgress(loadingProgress + Math.max(0.4, (ceiling - loadingProgress) * 0.08));
+  }, 120);
+}
+function setProgress(value) {
+  loadingProgress = Math.max(0, Math.min(100, value));
+  const bar = $('loading')?.querySelector('.bar');
+  if (!bar) return;
+  bar.setAttribute('aria-valuenow', String(Math.round(loadingProgress)));
+  const fill = bar.querySelector('i');
+  if (fill) fill.style.width = `${loadingProgress}%`;
 }
 
 function showToast(message, error = false) {
@@ -355,7 +395,7 @@ function attachHud(engine) {
  */
 async function openMenu() {
   disposeEngine({ releasePointer: true });
-  setLoading('Loading the game…');
+  setLoading('Loading the game…', 4);
   try {
     if (!game.hydrated) {
       await loadArtwork();
@@ -382,7 +422,8 @@ async function openMenu() {
 async function loadArtwork() {
   const failures = [];
   const { loaded, failed } = await hydrateAssets(game.project, (done, total) => {
-    if (total) setLoading(`Loading the artwork… ${done} of ${total}`);
+    // Artwork is the long part of a first start, so it is where most of the bar lives.
+    if (total) setLoading(`Loading the artwork… ${done} of ${total}`, 6 + Math.round((done / total) * 62));
   }, undefined, { concurrency: 8, timeout: 20000, onFailure: (asset, reason) => failures.push(`${asset.name || asset.id}: ${reason}`) });
   if (failed.length) {
     showToast(`${failed.length} of ${loaded + failed.length} artwork files could not be read — first: ${failures[0]}`, true);
@@ -417,7 +458,7 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
   // system's and the cursor sat over the game.
   game.pointerHeld = true;
   hideFatal();
-  setLoading('Loading the level…');
+  setLoading('Loading the level…', 12);
   game.keys.clear(); game.pressed.clear();
   try {
     if (!game.hydrated) {
@@ -451,7 +492,7 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
     disposeEngine();
     game.engine = { ...engine, preview: null, hud: null, audio: null, last: performance.now() };
     let preview = null;
-    setLoading('Starting the 3D view…');
+    setLoading('Starting the 3D view…', 76);
     const started = await withDeadline(
       createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) }),
       PREVIEW_TIMEOUT);
@@ -460,6 +501,7 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
       if (started?.value?.dispose) started.value.dispose();
       return;
     }
+    setLoading(started ? 'Ready' : 'The 3D view is not available', 100);
     if (!started) {
       showToast('The 3D view did not start in time, so the game continues without it.', true);
     } else {
@@ -617,6 +659,15 @@ function onMenu() {
 }
 
 /** The engine's menu screens are keyboard driven: arrows move between rows, Enter clicks one. */
+/**
+ * CapsLock read from the event itself: it is a toggle, so a key held state cannot answer for it.
+ * The runtime sees `CapsLock` in the held set and runs while the light is on.
+ */
+function syncCapsLock(event) {
+  const on = Boolean(event.getModifierState?.('CapsLock'));
+  if (on) game.keys?.add('CapsLock'); else game.keys?.delete('CapsLock');
+}
+
 function handleMenuKey(code) {
   const runtime = game.engine?.runtime;
   if (!runtime || runtime.gameScreen === 'playing') return false;
@@ -641,6 +692,7 @@ function handleMenuKey(code) {
 
 window.addEventListener('keydown', event => {
   primeAudio();
+  syncCapsLock(event);
   if (event.code === 'Escape') {
     if (game.busy) {
       // A start that is taking too long must be escapable: give up on it and go back to the menu.
@@ -670,7 +722,7 @@ window.addEventListener('keydown', event => {
   if (!game.keys.has(event.code)) game.pressed.add(event.code);
   game.keys.add(event.code);
 }, true);
-window.addEventListener('keyup', event => game.keys.delete(event.code));
+window.addEventListener('keyup', event => { syncCapsLock(event); game.keys.delete(event.code); });
 window.addEventListener('blur', () => { game.keys.clear(); game.pressed.clear(); });
 
 canvas.addEventListener('pointerdown', event => {

@@ -413,12 +413,10 @@ ListMenu "Second"
   assert.throws(() => parseMenuDefinitions(absurd, 'mod'), /more than 256 menus/);
 });
 
-test('the player runs by default, as in Doom, so a walking monster cannot keep up', () => {
-  // Doom ships `always_run` on (GZDoom's `cl_run` defaults to 1) and the speed key walks.
-  // OpenDLE started off, which made the player walk at 291 units a second — a zombie's own
-  // chase speed — so every monster in an imported game looked twice as fast as it does in
-  // GZDoom, and read as "enemy movement is broken and too fast".
-  assert.equal(GAME_SETTINGS.alwaysRun.value, true);
+test('the player walks by default, runs with the speed key, and CapsLock always runs', () => {
+  // A modern shooter walks by default and runs with Shift; `alwaysRun` turns that around for
+  // anyone who wants Doom's `cl_run=1`. CapsLock is the always-run switch on top of both.
+  assert.equal(GAME_SETTINGS.alwaysRun.value, false);
   const p = menuProject();
   const walking = createRuntime(p, { settings: { alwaysRun: false } });
   const running = createRuntime(p, { settings: { alwaysRun: true } });
@@ -433,6 +431,21 @@ test('the player runs by default, as in Doom, so a walking monster cannot keep u
   settle(walking); settle(running);
   const walked = perTic(walking), ran = perTic(running);
   assert.ok(Math.abs(ran - walked * 2) < 0.6, `running is twice walking: ${ran.toFixed(1)} vs ${walked.toFixed(1)} a tic`);
+  // CapsLock runs whatever the setting says, and Shift still toggles it.
+  const shiftWalks = createRuntime(p, { settings: { alwaysRun: true } });
+  const shiftKey = createRuntime(p, { settings: { alwaysRun: false } });
+  const capsOn = createRuntime(p, { settings: { alwaysRun: false } });
+  const settleKeys = (state, keys) => { for (let frame = 0; frame < 40; frame++) step(p, state, keys); };
+  const speedWith = (state, keys) => { const before = state.player.x; step(p, state, keys); return state.player.x - before; };
+  settleKeys(shiftWalks, ['KeyW', 'ShiftLeft']);
+  settleKeys(shiftKey, ['KeyW', 'ShiftLeft']);
+  settleKeys(capsOn, ['KeyW', 'CapsLock']);
+  assert.ok(Math.abs(speedWith(shiftWalks, ['KeyW', 'ShiftLeft']) - walked) < 0.6,
+    'with always-run on, the speed key walks');
+  assert.ok(Math.abs(speedWith(shiftKey, ['KeyW', 'ShiftLeft']) - ran) < 0.6,
+    'with always-run off, the speed key runs');
+  assert.ok(Math.abs(speedWith(capsOn, ['KeyW', 'CapsLock']) - ran) < 0.6,
+    'CapsLock runs even with always-run off');
   assert.ok(ran * 35 > 500, `a running player covers ${(ran * 35).toFixed(0)} units a second`);
 });
 test('imported menu artwork is centred and never runs past the canvas', { skip: !existsSync(freedoom) }, () => {

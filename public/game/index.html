@@ -19,7 +19,20 @@
   <div id="hud" aria-live="off"></div>
   <p id="message" hidden></p>
 
-  <div id="loading"><div><span id="loading-text">Loading the game…</span><div class="bar"><i></i></div></div></div>
+  <!-- The splash the game shows while its 3D view comes up: the OpenDLE mark, the stage it is at,
+       and a progress bar that actually moves. -->
+  <div id="loading">
+    <div class="splash">
+      <svg class="splash-mark" viewBox="0 0 128 128" aria-hidden="true">
+        <rect width="128" height="128" rx="24" fill="#101418"></rect>
+        <path d="M25 25h47l31 39-31 39H25V25zm17 17v44h22l18-22-18-22H42z" fill="#62b4ed"></path>
+      </svg>
+      <p class="splash-word">OpenDLE</p>
+      <p class="splash-tag">a local-first game engine</p>
+      <div class="bar" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+      <span id="loading-text">Loading the game…</span>
+    </div>
+  </div>
   <div id="fatal" hidden>
     <div class="frame" role="alertdialog" aria-labelledby="fatal-title">
       <p class="kicker">OpenDLE</p>
