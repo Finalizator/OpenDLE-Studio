@@ -7,6 +7,7 @@ import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { installAddon, removeAddon } from '../shared/addons.js';
 import { installGameMenu } from '../shared/game-menu.js';
+import { defaultTerrain } from '../public/terrain-panel.js';
 import { assembleGameLevels, selectGameLevel, nextGameLevel, parseLevelRoutes, gameLevelAssetIds, cloneForLevelSwitch, stripInactiveLevels } from '../shared/game-levels.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
 import { continueIntermission } from '../shared/intermission.js';
@@ -80,6 +81,33 @@ test('shared assets deduplicate and conflicting generated atlases retain correct
   assert.equal(p.assets.filter(asset => asset.name === 'Atlas').length, 2);
   for (const sound of p.assets.filter(asset => asset.kind === 'sound'))
     assert.equal(p.assets.filter(asset => asset.name === sound.name && asset.kind === 'sound').length, 1);
+});
+
+test('a colliding asset is renamed everywhere a level points at it, materials and foliage included', () => {
+  const a = level(), b = level();
+  const image = pixels => ({ id: 'same_atlas', name: 'Atlas', kind: 'sprite', width: 1, height: 1,
+    src: encodeImage({ width: 1, height: 1, pixels: new Uint8Array(pixels) }) });
+  a.assets.push(image([255, 0, 0, 255])); b.assets.push(image([0, 255, 0, 255]));
+  // A PBR material and a foliage layer on the second level both name that asset. The assembly
+  // renames the collision so the two levels keep their own artwork, and every reference has to
+  // follow — a material that kept the old id drew the other level's texture, and a foliage layer
+  // pointed at an asset its level no longer carried.
+  b.materials = [{ id: 'mat_b', name: 'Brick', channels: { baseColor: 'same_atlas', normal: 'same_atlas' },
+    preview: { size: 64, channels: { baseColor: 'same_atlas' } }, scale: { u: 1, v: 1 } }];
+  b.terrain = { ...defaultTerrain(), foliage: { version: 1, chunkSize: 128, layers: [
+    { id: 'grass', name: 'Grass', kind: 'sprite', assetId: 'same_atlas', visible: true, density: .6,
+      scale: { min: 1, max: 1 }, tilt: 0, uneven: 0, height: 64, instances: [] }] } };
+  const p = assembleGameLevels([{ id: 'MAP01', project: a }, { id: 'MAP02', project: b }], 'MAP01', 'Collision').project;
+  validateProject(p);
+  selectGameLevel(p, 'MAP02');
+  const material = p.materials.find(item => item.id === 'mat_b');
+  assert.ok(material, 'the material travels with its level');
+  assert.notEqual(material.channels.baseColor, 'same_atlas', 'the renamed asset is used');
+  assert.ok(p.assets.some(asset => asset.id === material.channels.baseColor), 'and it exists in the project');
+  assert.equal(material.channels.normal, material.channels.baseColor, 'every channel follows the same rename');
+  const layer = p.terrain.foliage.layers.find(item => item.id === 'grass');
+  assert.notEqual(layer.assetId, 'same_atlas');
+  assert.ok(p.assets.some(asset => asset.id === layer.assetId), 'the foliage layer points at artwork it carries');
 });
 
 test('campaign routing follows conventional normal/secret exits and declarative MAPINFO overrides', () => {

@@ -691,7 +691,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // alpha test, wrapping — reading the moved picture; the offset is the same value GZDoom's
       // `GetTextureXOffset` reports, which on TITLEMAP advances by exactly 0.5 texels per tic.
       // Each scrolled material gets its own copy of the picture so its offset moves alone.
-      let map = imageTexture(assetId);
+      // A picture the level did not reference when it was loaded comes from a *script* —
+      // `setLineTexture` / `SetSectorFlat` naming artwork this level never used — and only the
+      // level's own pictures are decoded up front. Throwing here ended the game and dropped the
+      // player to the menu ("could not load textures"); the wall is drawn untextured and the miss is
+      // reported instead, the same tolerance `spriteTexture` gives a thing's artwork.
+      let map = spriteTexture(assetId);
       let scrolledMap = null;
       if (scroll && map) { scrolledMap = map = map.clone(); scrolledTextures.set(map, scroll); }
       // A surface drawn with a PBR material is lit instead of tinted: three's standard material

@@ -194,6 +194,15 @@ function remapLevelAssets(data, replacements, project) {
       for (const cue of sheet.cues || []) for (const action of cue.actions || []) command(action);
     for (const clip of holder.spriteClips || []) clip.frames = clip.frames.map(ref);
     for (const mapping of holder.materialAnimations || []) fields(mapping, ['assetId']);
+    // A PBR material's maps and a foliage layer's artwork are asset references too. A collision
+    // renames the asset the level carries and left these pointing at the other level's copy, so a
+    // material showed the wrong texture and a foliage layer drew nothing.
+    for (const material of holder.materials || []) {
+      fields(material.channels, ['baseColor', 'normal', 'roughness', 'metallic']);
+      fields(material.preview?.channels, ['baseColor', 'normal', 'roughness', 'metallic']);
+    }
+    for (const layer of holder.terrain?.foliage?.layers || []) fields(layer, ['assetId']);
+    for (const layer of holder.foliage?.layers || []) fields(layer, ['assetId']);
   }
   for (const wall of data.map?.walls || []) {
     fields(wall, ['assetId']);
