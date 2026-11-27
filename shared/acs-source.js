@@ -647,7 +647,6 @@ export function compileAcsSource(text, { baseAddress = 8, strings = [], function
   const globals = new Map();
   const compiledFunctions = [];
   const compiledScripts = [];
-  const errors = [];
 
   const intern = value => {
     if (stringIndex.has(value)) return stringIndex.get(value);
@@ -1237,5 +1236,5 @@ export function compileAcsSource(text, { baseAddress = 8, strings = [], function
   }
 
   return { code, strings: table, functionNames: names, scripts: compiledScripts,
-    functions: compiledFunctions, warnings, program, errors };
+    functions: compiledFunctions, warnings, program };
 }
