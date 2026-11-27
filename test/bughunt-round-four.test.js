@@ -119,3 +119,20 @@ test('Brush boolean and formation defects are gone', async () => {
   const merged = mergeBrushes(project, [left.id, right.id]);
   assert.equal(merged.faces.length, 6, 'a convex solid has one face per plane');
 });
+
+test('GZDoom 4.x language.csv becomes a string table', async () => {
+  const { parseLanguage, resolveString } = await import('../shared/language.js');
+  const csv = [
+    'default,Identifier,Remarks,Filter,eng,cs',
+    '"Are you sure you want to\nquit this great game?",QUITMSG,,,,',
+    '"A quote, and a comma",TXT_ODD,,,,',
+    ',,Miscellaneous,,,,',
+    'Press Y or N.,PRESSYN,,,,Stiskni Y',
+  ].join('\n');
+  const strings = parseLanguage(csv);
+  assert.equal(strings.QUITMSG, 'Are you sure you want to\nquit this great game?', 'a quoted field keeps its line breaks');
+  assert.equal(strings.TXT_ODD, 'A quote, and a comma');
+  assert.equal(strings.PRESSYN, 'Press Y or N.', 'the default column is the text');
+  assert.equal(resolveString(strings, '$PRESSYN'), 'Press Y or N.');
+  assert.equal('Miscellaneous' in strings, false, 'a remarks-only row is not a string');
+});

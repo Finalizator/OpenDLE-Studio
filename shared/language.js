@@ -23,6 +23,11 @@ function findClosingQuote(text) {
  * how GZDoom's per-language tables layer over the defaults.
  */
 export function parseLanguage(text) {
+  const source = String(text ?? '');
+  // GZDoom 4.x ships `language.csv` instead of `language.def`: a header row naming the columns and
+  // then one row per string. Reading it as `KEY = "value"` produced nothing at all, so every
+  // `$KEYWORD` in such a mod fell back to its own name.
+  if (/^[^\n]*, *Identifier *[,\r\n]/i.test(source)) return parseLanguageCsv(source);
   const strings = {};
   const priorities = new Map();
   let section = 'default';
@@ -73,6 +78,52 @@ export function parseLanguage(text) {
       strings[assignment[1]] = value;
       priorities.set(assignment[1], priority);
     }
+  }
+  return strings;
+}
+
+/**
+ * The rows of a CSV table, with quoted fields that may hold commas and line breaks.
+ *
+ * GZDoom's file quotes any translation containing a comma or a quote, and several hold a line
+ * break inside the quotes, so splitting on commas and lines would cut a string in half.
+ */
+function csvRows(text) {
+  const rows = [];
+  let row = [], field = '', quoted = false;
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (quoted) {
+      if (character === '"' && text[index + 1] === '"') { field += '"'; index++; continue; }
+      if (character === '"') { quoted = false; continue; }
+      field += character;
+      continue;
+    }
+    if (character === '"') { quoted = true; continue; }
+    if (character === ',') { row.push(field); field = ''; continue; }
+    if (character === '\n') { row.push(field.replace(/\r$/, '')); rows.push(row); row = []; field = ''; continue; }
+    field += character;
+  }
+  if (field || row.length) { row.push(field.replace(/\r$/, '')); rows.push(row); }
+  return rows;
+}
+
+/**
+ * A `language.csv` table: `default, Identifier, Remarks, Filter, <language columns…>`.
+ *
+ * Column 0 is the string itself and column 1 the `$KEYWORD` other files refer to; the rest are
+ * per-language translations, which this engine has no selector for, so the default text is what a
+ * keyword resolves to.
+ */
+function parseLanguageCsv(text) {
+  const strings = {};
+  const rows = csvRows(text);
+  for (const row of rows.slice(1)) {
+    const identifier = String(row[1] ?? '').trim().replace(/^\$/, '');
+    if (!/^[A-Za-z0-9_]+$/.test(identifier)) continue;
+    const value = row[0];
+    if (value === undefined || value === '') continue;
+    strings[identifier] = value;
   }
   return strings;
 }

@@ -606,7 +606,7 @@ export function importPackage(files, { map, paths, baseBytes, fullGame = false, 
       continue;
     } else if (/(^|\/)DEHACKED$/i.test(name) || /\.(deh|bex)$/i.test(name)) {
       dehackedSources.push({ name, text: Buffer.from(file.data).toString('latin1') });
-    } else if (/(^|\/)language(\.[a-z]{2,3})?(\.txt)?$/i.test(name) || /\.(enu|ita|deu|fra|spa)$/i.test(name)) {
+    } else if (/(^|\/)language(\.[a-z]{2,3}|\.csv)?(\.txt)?$/i.test(name) || /\.(enu|ita|deu|fra|spa)$/i.test(name)) {
       languageSources.push({ name, text: Buffer.from(file.data).toString('latin1') });
     }
   }
