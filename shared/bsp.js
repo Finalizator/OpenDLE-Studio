@@ -14,7 +14,7 @@
 // The result is the same shape `parseIdTechMap` returns, so everything downstream — brush
 // conversion, entity handling, the layout importer — is shared with `.map` and cannot drift.
 
-import { faceFromPlane } from './brushes.js';
+
 import { parseIdTechMap } from './idtech-map.js';
 
 /** `CONTENTS_SOLID` in Quake, Half-Life and Quake 2; every other leaf is air, water, slime or sky. */
@@ -195,15 +195,29 @@ function planesToBrush(planes) {
   if (corners.some(point => magnitude(point) > MAX_CORNER)) return null;
   const faces = [];
   for (const plane of unique) {
-    let on = 0;
-    for (const point of corners) {
-      if (Math.abs(dot(plane.normal, point) - plane.distance) <= CORNER_TOLERANCE) on++;
-    }
-    if (on < 3) continue;
-    const face = faceFromPlane(plane.normal, plane.distance, { textureName: plane.texture ?? undefined });
-    faces.push({ points: face.points, texture: plane.texture ?? DEFAULT_TEXTURE });
+    const onPlane = corners.filter(point =>
+      Math.abs(dot(plane.normal, point) - plane.distance) <= CORNER_TOLERANCE);
+    if (onPlane.length < 3) continue;
+    // The polygon is the corners of that plane in order around it. `faceFromPlane` returns three
+    // points one unit apart — a seed that *defines* a plane, not the face's real outline — and
+    // using it here gave every brush from a compiled map a one-unit triangle per side: the planes
+    // were right (so collision worked) and the geometry was not, which is why a Quake 3 door
+    // imported with bounds a thousand units wide.
+    faces.push({ points: orderAroundPlane(onPlane, plane.normal), texture: plane.texture ?? DEFAULT_TEXTURE });
   }
   return faces.length >= 4 ? { faces } : null;
+}
+
+/** Points on one plane, in order around their centre, so the polygon is the face and not a fan. */
+function orderAroundPlane(points, normal) {
+  const centre = points.reduce((sum, point) => add(sum, point), [0, 0, 0]).map(value => value / points.length);
+  const u = normalize(Math.abs(normal[0]) < .9 ? cross(normal, [1, 0, 0]) : cross(normal, [0, 1, 0]));
+  const v = normalize(cross(normal, u));
+  const angle = point => {
+    const offset = sub(point, centre);
+    return Math.atan2(dot(offset, v), dot(offset, u));
+  };
+  return [...points].sort((a, b) => angle(a) - angle(b));
 }
 
 function planeIntersection(a, b, c) {

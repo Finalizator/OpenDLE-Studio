@@ -226,6 +226,16 @@ test('a Quake 3 brush lump imports as brushes and keeps its shader name', () => 
   assert.equal(brush.visible, true);
   assert.equal(brushVertices(brush).length, 8);
   assert.equal(facePolygon(brush, 0).length, 4, 'every face of the box is a quad');
+  // The stored points are the face, not a seed that merely defines its plane. Building them with
+  // `faceFromPlane` gave every face of every brush from a compiled map three points one unit
+  // apart: the planes were right, so this map walked and the derived geometry passed, while the
+  // geometry itself was a thousand units wrong.
+  for (const face of brush.faces) {
+    assert.ok(face.points.length >= 3, 'a face has a polygon');
+    for (const point of face.points) {
+      for (const value of point) assert.ok(Math.abs(value) <= BOX + 1e-6, `a corner of the box: ${point}`);
+    }
+  }
 });
 
 test('a level made of brushes is walkable: the player lands on solid space, not through it', t => {
