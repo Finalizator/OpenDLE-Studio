@@ -79,3 +79,43 @@ test('Classic platforms and ceilings use the speeds and targets the xlat table n
   assert.ok(ceilingOnly.every(m => m.surface === 'ceilingHeight'), 'special 40 moves the ceiling alone');
   assert.deepEqual(ceilingOnly.map(m => m.height).sort((a, b) => a - b), [128, 192], 'up to the highest neighbouring ceiling');
 });
+
+test('The parser and renderer defects a fourth round of hunting found', async () => {
+  const { parseSurfaceAnimations } = await import('../shared/animdefs.js');
+  const { parseSndInfo, soundTable, soundCandidates, VANILLA_SOUNDS } = await import('../shared/sndinfo.js');
+  // ANIMDEFS: a `sound` clause between `on` and `pic` is valid, and a braceless declaration
+  // continues with `pic` frames. Both were dropped, so the switches did nothing and every
+  // such animation was one frozen frame.
+  const animdefs = parseSurfaceAnimations([`
+texture M_SLCTR1 pic M_SLCTR1 tics 16 pic M_SLCTR2 tics 16
+switch HEXASWA1 on sound Switch1 pic HEXASWA2 tics 0
+`]);
+  assert.deepEqual(animdefs.switchPairs, [{ off: 'HEXASWA1', on: 'HEXASWA2' }]);
+  assert.equal(animdefs.sequences[0].frames.length, 2, 'a braceless declaration keeps its pictures');
+  // SNDINFO: a quoted path is a target, and the asset a pack keeps is the file name alone.
+  const table = soundTable(VANILLA_SOUNDS, parseSndInfo('qgrunt/sight\t"sounds/grunt/grunt-sight.wav"\n'));
+  const candidates = soundCandidates('qgrunt/sight', table).map(name => name.toUpperCase());
+  assert.ok(candidates.includes('GRUNT-SIGHT'), `resolves to the file name: ${candidates.join(', ')}`);
+});
+
+test('Brush boolean and formation defects are gone', async () => {
+  const { createBoxBrush, subtractBrush, brushContains, brushSurfaceAt, mergeBrushes } = await import('../shared/brushes.js');
+  const { createProject } = await import('../shared/project.js');
+  const project = createProject();
+  project.map.brushes = [];
+  const target = createBoxBrush(project, { x: 0, y: 0, z: 0, width: 64, height: 64, depth: 64 });
+  const cutterA = createBoxBrush(project, { x: 0, y: 20, z: 0, width: 64, height: 20, depth: 20 });
+  const cutterB = createBoxBrush(project, { x: 20, y: 0, z: 0, width: 20, height: 20, depth: 64 });
+  subtractBrush(project, target.id, [cutterA.id, cutterB.id]);
+  const pieces = project.map.brushes.filter(brush => brush.id !== cutterA.id && brush.id !== cutterB.id);
+  // Both cutters must be gone, not only the box where they overlap.
+  for (const point of [[32, 20, 20], [20, 32, 32]]) {
+    assert.ok(!pieces.some(brush => brushContains(brush, point, -1e-6)), `(${point}) is carved out`);
+  }
+  // Two boxes side by side merge into six faces, not ten with a doubled wall.
+  project.map.brushes = [];
+  const left = createBoxBrush(project, { x: 0, y: 0, z: 0, width: 64, height: 64, depth: 64 });
+  const right = createBoxBrush(project, { x: 64, y: 0, z: 0, width: 64, height: 64, depth: 64 });
+  const merged = mergeBrushes(project, [left.id, right.id]);
+  assert.equal(merged.faces.length, 6, 'a convex solid has one face per plane');
+});
