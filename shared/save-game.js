@@ -5,6 +5,7 @@ import { HL2_MOVEMENT } from './source-motion.js';
 import { selectGameLevel, levelData } from './game-levels.js';
 import { validatePhysicsState, physicsEntityIds } from './physics.js';
 import { gameSettings } from './game-settings.js';
+import { doomThings } from './doom-assets.js';
 import { MAIN_HUD_SCREEN } from './hud.js';
 import { KEYS, WEAPONS } from './player-state.js';
 import { WORLD_UP } from './gravity.js';
@@ -270,8 +271,15 @@ function validateRuntime(project, state, baseline) {
     // table entry it was built from is enough to know it is the engine's own thing rather than an
     // addon's; without this, every save taken after a monster spawned another was refused as
     // "an addon changed the runtime state".
-    const spawnedThing = !template && typeof entity.id === 'string' && entity.id.startsWith('spawned_') &&
-      (project.actors || []).some(actor => actor.id === entity.actorId);
+    // Both of the engine's own spawners use a name of their own: an actor action makes `spawned_N`,
+    // and a script's `SpawnSpot`/`Thing_Spawn` makes `acs_spawn_N`. Only the first was accepted, so
+    // every save taken after a script had spawned anything was refused as if an addon had done it.
+    // The actor table is what explains it when the project has one; a hand-made level has none and
+    // still spawns things by Doom editor number, which is the other way the engine knows a thing.
+    const spawnedThing = !template && typeof entity.id === 'string' &&
+      (entity.id.startsWith('spawned_') || entity.id.startsWith('acs_spawn_')) &&
+      ((project.actors || []).some(actor => actor.id === (entity.actorId || entity.actor)) ||
+        (Number.isFinite(entity.doomType) && Object.hasOwn(doomThings, entity.doomType)));
     if (!template && !spawnedThing) fail(`unknown entity ${entity.id}`);
     seen.add(entity.id);
     if (template) matchShape(entity, template, `entity ${entity.id}`);

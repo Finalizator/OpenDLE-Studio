@@ -193,9 +193,9 @@ export function advanceSectors(state, dt) {
 
 const manual = new Map([[1, null], [26, 'blue'], [27, 'yellow'], [28, 'red'], [31, null], [32, 'blue'], [33, 'red'], [34, 'yellow'], [117, null], [118, null]]);
 const doors = new Map([
-  [2, ['cross', 'stay']], [3, ['cross', 'close']], [4, ['cross', 'return']], [16, ['cross', 'close']],
+  [2, ['cross', 'stay']], [3, ['cross', 'close']], [4, ['cross', 'return']], [16, ['cross', 'closeOpen']],
   [29, ['use', 'return']], [42, ['use', 'close']], [46, ['shoot', 'stay']], [50, ['use', 'close']], [61, ['use', 'stay']],
-  [63, ['use', 'return']], [75, ['cross', 'close']], [76, ['cross', 'close']], [86, ['cross', 'stay']], [90, ['cross', 'return']],
+  [63, ['use', 'return']], [75, ['cross', 'close']], [76, ['cross', 'closeOpen']], [86, ['cross', 'stay']], [90, ['cross', 'return']],
   [103, ['use', 'stay']], [105, ['cross', 'return']], [106, ['cross', 'stay']], [107, ['cross', 'close']],
   [108, ['cross', 'return']], [109, ['cross', 'stay']], [110, ['cross', 'close']], [111, ['use', 'return']], [112, ['use', 'stay']],
   [113, ['use', 'close']], [114, ['use', 'return']], [115, ['use', 'stay']], [116, ['use', 'close']],
@@ -401,7 +401,11 @@ export function installWorldScripts(project, warnings) {
       const neighbors = project.map.sectors.filter(s => adjacentIds.has(s.id));
       if (!neighbors.length) continue;
       const ceiling = local || door;
-      const closing = door?.[1] === 'close';
+      // `Door_CloseWaitOpen` (16 and 76) is a timer: it shuts the door, waits 240 tics and opens it
+      // again. Reading it as a plain close left the door shut for ever, so a level using one as a
+      // timed door could not be finished after the first crossing.
+      const closing = door?.[1] === 'close' || door?.[1] === 'closeOpen';
+      const closeOpen = door?.[1] === 'closeOpen';
       let height = ceiling ? closing ? sector.floorHeight : Math.min(...neighbors.map(s => s.ceilingHeight)) - 4
         : lower || lift || perpetual ? Math.min(sector.floorHeight, ...neighbors.map(s => s.floorHeight))
           : Math.min(...neighbors.map(s => s.floorHeight).filter(height => height > sector.floorHeight));
@@ -410,7 +414,9 @@ export function installWorldScripts(project, warnings) {
       if (!Number.isFinite(height)) { warnings.push(`Linedef ${wall.id}: no neighboring height for special ${special}.`); continue; }
       actions.push({ type: 'moveSector', sectorId: sector.id, surface: ceiling ? 'ceilingHeight' : 'floorHeight', height,
         speed: classicPlaneSpeed(special, Boolean(ceiling)),
-        wait: ceiling ? 4 : 3, returnMode: perpetual ? 'cycle' : lift || local && [1, 26, 27, 28, 117].includes(special) || door?.[1] === 'return' ? 'return' : 'stay',
+        wait: closeOpen ? 240 / 35 : ceiling ? 4 : 3,
+        returnMode: perpetual ? 'cycle'
+          : lift || closeOpen || local && [1, 26, 27, 28, 117].includes(special) || door?.[1] === 'return' ? 'return' : 'stay',
         ...(perpetual ? { returnHeight: Math.max(sector.floorHeight, ...neighbors.map(s => s.floorHeight)) } : {}),
         sound: ceiling ? 'DSDOROPN' : 'DSPSTART' });
     }
@@ -448,7 +454,9 @@ function classicPlaneSpeed(special, ceiling) {
   if (special >= 120 && special <= 123) return DOOR_FAST; // P_TURBO lifts
   if (special >= 105 && special <= 118) return DOOR_FAST; // D_FAST doors
   if ([10, 21, 62, 88].includes(special)) return FAST;    // P_FAST lifts
-  if ([36, 98].includes(special)) return FAST;            // F_FAST floors
+  // F_FAST floors: the fast "lower to highest" pair, its two repeats, and the four
+  // "raise to nearest" variants that name the fast floor speed in the xlat table.
+  if ([36, 70, 71, 98, 129, 130, 131, 132].includes(special)) return FAST;
   return ceiling ? NORMAL : SLOW;
 }
 
@@ -492,9 +500,12 @@ function classicActions(project, wall, behaviour, targets, warnings) {
     const neighbours = neighbouringSectors(project, sector);
     const heights = neighbours.length ? neighbours : [sector];
     if (effect.kind === 'ceiling' || effect.kind === 'ceilingThenFloor') {
-      const target = effect.target === 'floor' ? sector.floorHeight : Math.min(...heights.map(s => s.ceilingHeight)) - 4;
+      const target = effect.target === 'floor' ? sector.floorHeight
+        : effect.target === 'highest' ? Math.max(...heights.map(s => s.ceilingHeight))
+          : Math.min(...heights.map(s => s.ceilingHeight)) - 4;
+      // Doom's ceiling speed is CEILSPEED, one unit a tic; the fast crusher of line 6 names its own.
       actions.push({ type: 'moveSector', sectorId: sector.id, surface: 'ceilingHeight', height: target,
-        speed: effect.speed || 70, wait: effect.wait || 0, returnMode: effect.cycle ? 'cycle' : 'stay',
+        speed: effect.speed || 35, wait: effect.wait || 0, returnMode: effect.cycle ? 'cycle' : 'stay',
         ...(effect.cycle ? { returnHeight: Math.max(sector.ceilingHeight, ...heights.map(s => s.ceilingHeight)) } : {}),
         ...(effect.bottomWait !== undefined ? { bottomWait: effect.bottomWait } : {}),
         sound: 'DSDOROPN' });

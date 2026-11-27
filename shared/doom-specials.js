@@ -109,14 +109,21 @@ export const DOOM_SPECIAL_BEHAVIOUR = new Map([
   [6, crushAndRaise('cross', true, 70)], [25, crushAndRaise('cross', true, 35)],
   [141, crushAndRaise('cross', true, 35)], [73, crushAndRaise('cross', false, 35)],
   [49, crushAndRaise('use', true, 35)],
-  [44, { mode: 'cross', once: true, effect: { kind: 'ceiling', target: 'floor', speed: 70 } }],
+  // `Ceiling_LowerAndCrush (tag, C_SLOW, 0, 2)`: C_SLOW is one unit a tic, the same as every other
+  // ceiling here; only line 6's crusher is fast.
+  [44, { mode: 'cross', once: true, effect: { kind: 'ceiling', target: 'floor', speed: 35 } }],
   // Floors that rise to a neighbouring height.
-  [20, { mode: 'use', once: true, effect: { kind: 'floor', target: 'nearest', speed: 35 } }],
-  [22, { mode: 'cross', once: true, effect: { kind: 'floor', target: 'nearest', speed: 35 } }],
-  [68, { mode: 'use', once: false, effect: { kind: 'floor', target: 'nearest', speed: 35 } }],
-  [14, { mode: 'use', once: true, effect: { kind: 'floor', by: 32 } }],
+  // `Plat_RaiseAndStayTx0 (tag, P_SLOW/2)` and `Plat_UpByValueStayTx (tag, P_SLOW/2, 4)`: P_SLOW is
+  // one unit a tic, so half of it is half that — 17.5 units a second, not the 35 of a plain floor.
+  [20, { mode: 'use', once: true, effect: { kind: 'floor', target: 'nearest', speed: 17.5 } }],
+  [22, { mode: 'cross', once: true, effect: { kind: 'floor', target: 'nearest', speed: 17.5 } }],
+  [68, { mode: 'use', once: false, effect: { kind: 'floor', target: 'nearest', speed: 17.5 } }],
+  [14, { mode: 'use', once: true, effect: { kind: 'floor', by: 32, speed: 17.5 } }],
   [140, { mode: 'use', once: true, effect: { kind: 'floor', by: 512 } }],
-  [40, { mode: 'cross', once: true, effect: { kind: 'ceilingThenFloor' } }],
+  // `Generic_Ceiling (tag, C_SLOW, 0, 1, 8)` is `ceilRaiseToHighest`: the ceiling only, up to the
+  // highest neighbouring ceiling. It was translated as a ceiling-and-floor move, which raised the
+  // floor to the ceiling it had just found and left the sector taller than it is.
+  [40, { mode: 'cross', once: true, effect: { kind: 'ceiling', target: 'highest', speed: 35 } }],
   // Stairs are built outward from the line, one step per tagged sector.
   [7, { mode: 'use', once: true, effect: { kind: 'stairs', step: 8 } }],
   [8, { mode: 'cross', once: true, effect: { kind: 'stairs', step: 8 } }],

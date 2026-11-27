@@ -61,7 +61,9 @@ test('Classic plane specials move at the speed the xlat table gives them', () =>
       .filter(action => action.type === 'moveSector').map(action => action.speed));
   };
   // P_FAST and F_FAST are four units a tic; F_SLOW is one; D_FAST is eight (280 a second).
-  for (const special of [10, 21, 62, 88, 36, 98]) assert.ok(speeds([special]).every(speed => speed === 140), `special ${special}`);
+  for (const special of [10, 21, 62, 88, 36, 70, 71, 98, 129, 130, 131, 132]) {
+    assert.ok(speeds([special]).every(speed => speed === 140), `special ${special}`);
+  }
   for (const special of [5, 18, 19, 23, 119]) assert.ok(speeds([special]).every(speed => speed === 35), `special ${special}`);
   for (const special of [105, 112, 120]) assert.ok(speeds([special]).every(speed => speed === 280), `special ${special}`);
 });
