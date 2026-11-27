@@ -476,6 +476,9 @@ function draftTooLarge() {
 }
 let draftSkipNoted = false;
 function persistDraft() {
+  // A detached window is a view: the main window owns the browser draft, and a second writer would
+  // overwrite it with a copy that is missing whatever the other window changed.
+  if (globalThis.__opendleWindows?.isMain === false) return;
   projectAutosave.schedule();
   if (draftTooLarge()) {
     if (!draftSkipNoted) {
@@ -5246,7 +5249,9 @@ async function reloadProject(initial = false) {
       localStorage.removeItem('opendle-draft-metadata');
     }
     let recovery;
-    if (initial) {
+    // Only the window that owns the document offers a draft: a detached panel showing the main
+    // window's project has no draft of its own to restore, and asking on every window was noise.
+    if (initial && globalThis.__opendleWindows?.isMain !== false) {
       recovery = recoverProject(result, localStorage.getItem('opendle-draft'), localStorage.getItem('opendle-draft-metadata'));
       if (recovery.recovery === 'conflict' && confirm('A different unsaved browser draft exists. Restore it instead of the server project? Choose Cancel to load the server project; the draft remains available in Restore draft.')) {
         project = recovery.draft; dirty = true;
@@ -5276,7 +5281,7 @@ async function reloadProject(initial = false) {
     // The 3D view of a different map starts framed on that map, not on the last one's camera.
     scenePose = null;
     render(); fitMap();
-    projectAutosave.schedule();
+    if (globalThis.__opendleWindows?.isMain !== false) projectAutosave.schedule();
     status(dirty ? 'Unsaved browser draft restored; save to keep it on the server'
       : recovery?.warning || 'Server project loaded', Boolean(recovery?.warning));
   });
@@ -6306,7 +6311,7 @@ $('projects').addEventListener('change', guard(async () => {
     history = []; future = []; selection = null; scriptScope = '$all';
     $('dirty').textContent = badgeText();
     render(); fitMap();
-    projectAutosave.schedule();
+    if (globalThis.__opendleWindows?.isMain !== false) projectAutosave.schedule();
     await refreshProjects();
     status(`Opened stored project "${project.title}"; it reopens next time`);
   });

@@ -135,7 +135,10 @@ export function createStudioWindows({
         if (!isMain) return;
         peers.set(message.id, message.view);
         send({ type: 'here', id, view });
-        if (ready) send({ type: 'state', id, document: getProject() });
+        // Answer with whatever document the hub holds right now: a window opened before the first
+        // edit must not wait for one, which is what made every detached window fall back.
+        const document = getProject();
+        if (document) { ready = true; send({ type: 'state', id, document }); }
         listener(peers);
         return;
       }
