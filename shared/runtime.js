@@ -287,7 +287,10 @@ export function postFxParamValue(state, kind, name) {
 /** Places every `+SPAWNCEILING` thing at the ceiling of the sector it was placed in. */
 function settleSpawnCeiling(project, entities, sectors) {
   for (const entity of entities) {
-    if (entity.type !== 'enemy' || !entity.actorId) continue;
+    // Every thing with an actor record, not only the monsters: the hanging corpses, stalactites
+    // and chandeliers of a Doom or Heretic level are decorations, and they were the ones left
+    // standing on the floor (65 of them in the imported campaign).
+    if (!entity.actorId || entity.type === 'player') continue;
     const actor = projectActorIndex(project).byId.get(entity.actorId);
     if (!actor || actorFlag(actor, 'SPAWNCEILING', entity) !== true) continue;
     if (Number.isFinite(entity.z) || entity.elevation) continue;
