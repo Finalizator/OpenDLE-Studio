@@ -1,4 +1,6 @@
 const contextRestorations = new WeakMap();
+/** How long a disposed canvas gets to report its context back before a start stops waiting. */
+const RESTORE_DEADLINE_MS = 5000;
 
 function restoreDisposedContext(renderer, canvas) {
   if (!renderer.backend.isWebGLBackend) return;
@@ -22,7 +24,15 @@ function restoreDisposedContext(renderer, canvas) {
   function ready() { complete(); }
   canvas.addEventListener('webglcontextlost', lost);
   canvas.addEventListener('webglcontextrestored', ready);
-  timeout = setTimeout(() => complete(new Error('The disposed WebGL 2 context could not be restored on this canvas. Reload the preview to retry.')), 5000);
+  timeout = setTimeout(() => {
+    // The restoration never reported back. Remembering the failure is what made a level
+    // transition fail exactly once — "it could not load textures, back to the menu, but the
+    // second attempt was fine": the entry stayed in the map and the *next*, unrelated level
+    // start threw it before trying anything. Any waiter already holding the promise still gets
+    // the error; a later start gets a fresh attempt.
+    contextRestorations.delete(canvas);
+    complete(new Error('The disposed WebGL 2 context could not be restored on this canvas. Reload the preview to retry.'));
+  }, RESTORE_DEADLINE_MS);
 }
 
 export function selectRendererBackend({ secureContext = globalThis.isSecureContext, gpu = globalThis.navigator?.gpu } = {}) {

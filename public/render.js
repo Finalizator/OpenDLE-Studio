@@ -1940,11 +1940,16 @@ export async function createPreview(canvas, project, state, { editor = false, on
     // when it moves; on a 13,000-sector level the uncached test was the frame's whole cost.
     const sectorOf = entity => entitySector(sectorIndex.sectors, entity);
     let spriteIndex = createSpriteIndex(project);
-    // A sector's own planes plus the 3D floors that ride on its control sectors: a waggle
-    // moves the control sector, so watching only the heights here would never rebuild.
-    const heightKey = sector => `${sector.floorHeight}/${sector.ceilingHeight}` +
+    // What a sector's drawn part is built from: its planes, the 3D floors that ride on its
+    // control sectors, and the light and flats baked into its walls and floor. A waggle moves the
+    // control sector, and `Light_ChangeToValue` or `SetSectorFlat` change the light and the
+    // pictures without moving a vertex — watching only the heights rebuilt for the first and not
+    // for the second, so a script dimmed a room and every sprite and model in it dimmed while its
+    // walls and flats stayed exactly as bright as they were built.
+    const sectorDrawKey = sector => `${sector.floorHeight}/${sector.ceilingHeight}/${sector.light ?? ''}` +
+      `/${sector.floorAsset || ''}/${sector.ceilingAsset || ''}${sector.sky ? '/sky' : ''}` +
       (sector.threeDFloors || []).map(floor => `/${floor.top}/${floor.bottom}`).join('');
-    let sectorHeights = new Map(geometry.map(sector => [sector.id, heightKey(sector)]));
+    let sectorHeights = new Map(geometry.map(sector => [sector.id, sectorDrawKey(sector)]));
     // The pictures a wall's two sidedefs carry. A switch press or a script's `ReplaceTextures`
     // changes one without moving a vertex or a plane, so this is what tells those walls that
     // their part has to be built again.
@@ -2074,7 +2079,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
           // elevation), so reading it as absolute filmed from up to a map-unit under the floor.
           view.camera.position.set(subject.x,
             (subject.z ?? (sectorOf(subject)?.floorHeight ?? 0) + (subject.elevation || 0)) + 41, subject.y);
-          view.camera.rotation.set(0, -subject.angle * Math.PI / 180, 0, 'YXZ');
+          // A camera's forward is -Z, a thing's drawn nose is +X (`facingArrowPose` uses
+          // `yaw = -angle`), so the same yaw leaves the feed looking 90 degrees to the side.
+          view.camera.rotation.set(0, -subject.angle * Math.PI / 180 - Math.PI / 2, 0, 'YXZ');
           // The main pass leaves autoClear off, so the feed clears itself explicitly.
           renderer.autoClear = true;
           renderer.setClearColor(clearColor(project.environment.sky));
@@ -2335,7 +2342,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
         const rebuildStarted = clock();
         const changed = new Set();
         for (const sector of geometry) {
-          const key = heightKey(sector);
+          const key = sectorDrawKey(sector);
           if (sectorHeights.get(sector.id) !== key) { changed.add(sector.id); sectorHeights.set(sector.id, key); }
         }
         for (const entry of worldParts) if (entry.sectorIds.some(id => changed.has(id))) rebuildPart(entry);
@@ -2477,8 +2484,11 @@ export async function createPreview(canvas, project, state, { editor = false, on
           : eyePosition(state.player, state.player.z ?? sectorOf(state.player)?.floorHeight ?? 0);
         // An object's angle is stored negated (Doom's Y axis is flipped for the world), so the
         // world-space heading is its negative — the same conversion the sprite facing uses.
+        // `viewDirection` works in map space, where a thing's heading *is* its stored angle
+        // (the 2D view draws `cos(angle), sin(angle)`). Negating it again mirrored every
+        // `ChangeCamera` view: an actor facing east filmed west.
         const direction = spectator
-          ? viewDirection({ angle: -(spectator.angle || 0) * Math.PI / 180,
+          ? viewDirection({ angle: (spectator.angle || 0) * Math.PI / 180,
             // `cameraPitch` is degrees, like every other pitch in the project; passing it to a
             // radians function made any camera actor with a pitch look almost straight down.
             pitch: (spectator.cameraPitch || 0) * Math.PI / 180,
@@ -2966,7 +2976,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
       canvas.dataset.batches = String(batchMeshes.size);
       sectorIndex = createSectorIndex(geometry);
       spriteIndex = createSpriteIndex(project);
-      sectorHeights = new Map(geometry.map(sector => [sector.id, heightKey(sector)]));
+      sectorHeights = new Map(geometry.map(sector => [sector.id, sectorDrawKey(sector)]));
       wallSidedefs = new Map(wallLines.map(wall => [wall.id, sidedefKey(wall)]));
       scene.background = new THREE.Color(project.environment.sky);
       // Objects that gained or lost their model swap representation, and new objects

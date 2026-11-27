@@ -75,10 +75,14 @@ test('Teleport_NewMap and ChangeLevel ask for the level they name', () => {
   const state = createRuntime(project);
   state.menuRequests = [];
   state.scripts.host.changeLevel('MAP02');
-  assert.deepEqual(state.menuRequests, [{ type: 'level', levelId: 'MAP02' }]);
+  // A scripted change travels the ordinary path, so the request carries the player's progress
+  // (`G_PlayerFinishLevel` strips the keys and nothing else); without it the next level started at
+  // a pistol start.
+  assert.deepEqual(state.menuRequests, [{ type: 'level', levelId: 'MAP02', carryProgress: true }]);
   state.menuRequests = [];
   assert.equal(state.scripts.special(74, [2, 0, 0, 0, 0], { activator: 'player' }), 1);
-  assert.deepEqual(state.menuRequests, [{ type: 'level', levelId: 'MAP02' }], 'the map number is 1-based');
+  assert.deepEqual(state.menuRequests, [{ type: 'level', levelId: 'MAP02', carryProgress: true }],
+    'the map number is 1-based');
 });
 
 test('The sector damage rule action damages what stands in the sector', () => {

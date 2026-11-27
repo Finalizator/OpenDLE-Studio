@@ -69,7 +69,10 @@ export function createMaterialPanel({ root, project: getProject, edit, status, a
       facts.textContent = `${Object.keys(material.channels).length} map(s) · ${baked} · ${shown}`
         + (scale.u !== 1 || scale.v !== 1 ? ` · tiled ${scale.u}×${scale.v}` : '')
         + (material.source?.name ? ` · from ${material.source.name}` : '');
-      const apply = button('Apply to selection', () => apply(material.id));
+      // Not `const apply`: that shadowed the `apply` function below, so the click handler called
+      // the button element as if it were a function — "apply is not a function" — and PBR
+      // materials could never be attached to a wall side or a brush face at all.
+      const applyButton = button('Apply to selection', () => apply(material.id));
       // The preview size belongs to the material, not to the panel: one material can be looked at
       // 64 px to the tile while another is worth 512, and the choice survives a bake.
       const preview = sizeSelect(`${material.name} preview resolution`, PREVIEW_SIZES, material.preview?.size || PREVIEW_SIZE);
@@ -80,7 +83,7 @@ export function createMaterialPanel({ root, project: getProject, edit, status, a
       const remove = button('Delete', () => edit(next => removeMaterial(next, material.id), `${material.name} deleted`), 'danger');
       const controls = document.createElement('span');
       controls.className = 'material-controls';
-      controls.append(apply, preview, previewButton, bake, bakeButton, remove);
+      controls.append(applyButton, preview, previewButton, bake, bakeButton, remove);
       row.append(title, facts, controls);
       row.title = display.baseColor ? 'Base colour, normal, roughness and metalness are all drawn' : 'No base colour map';
       list.append(row);

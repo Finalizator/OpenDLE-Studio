@@ -459,7 +459,12 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
       const wanted = String(map ?? '').trim(), levels = project.game?.levels || [];
       const level = levels.find(candidate => candidate.id.toLowerCase() === wanted.toLowerCase())
         || (/^\d+$/.test(wanted) ? levels[Number(wanted) - 1] : null);
-      if (level) state.menuRequests.push({ type: 'level', levelId: level.id });
+      // GZDoom's `ChangeLevel` goes through the ordinary travel path (`P_SetupLevel` after
+      // `G_PlayerFinishLevel`, which strips only the keys), so the player keeps health, armour,
+      // weapons and ammo. Requesting the level without `carryProgress` built the next runtime from
+      // `initialPlayerStats()`: a scripted level change silently dropped the player to a pistol
+      // start mid-campaign. `loadGameLevel` is the action that means "start over".
+      if (level) state.menuRequests.push({ type: 'level', levelId: level.id, carryProgress: true });
     },
     onRemove: entity => {
       recordRemovedEntity(state, entity);
