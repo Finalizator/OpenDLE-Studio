@@ -1089,6 +1089,21 @@ function actorMissile(ctx, fallback) {
 }
 
 /**
+ * Doom's `A_CPosRefire`/`A_SpidRefire`: the roll *continues* firing — it is the early return in
+ * `p_enemy.c`, not a chance of giving up — and only a failed sight check, or a dead target, sends
+ * the monster back to its See state. Read the other way round, a chaingunner stopped firing for
+ * no reason while the player stood in front of it.
+ */
+function refire(ctx, roll) {
+  const { state, entity } = ctx;
+  if (randomDamage(state, 1, 256) < roll) return;
+  const target = actorTarget(state, entity);
+  if (!target || (target.health ?? 1) <= 0 || !canSeeTarget(state, entity, target, 2048)) {
+    setActorState(ctx.project, entity, 'See');
+  }
+}
+
+/**
  * The action function table. Only actions with real gameplay meaning are
  * implemented; everything else is tracked so the importer can report exactly
  * which functions a mod uses that the runtime does not emulate yet.
@@ -1507,11 +1522,10 @@ export const ACTIONS = {
   // spellings are in the wild (`SPos` and `Spos`), so both are answered.
   A_SPosAttackUseAtkSound(ctx) { ACTIONS.A_SPosAttack(ctx); },
   A_SposAttackUseAtkSound(ctx) { ACTIONS.A_SPosAttack(ctx); },
-  // Whether the Spider keeps firing: GZDoom's `A_SpidRefire` is `A_CPosRefire` with a
-  // one-in-twenty-five chance of stopping instead of one-in-six.
+  // Whether the Spider keeps firing: `A_SpidRefire` is `A_CPosRefire` with a one-in-twenty-five
+  // chance of looking again instead of one-in-six (p_enemy.c).
   A_SpidRefire(ctx) {
-    const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, 2048) || randomDamage(state, 1, 256) < 10) setActorState(ctx.project, entity, 'See');
+    refire(ctx, 10);
   },
   // The Revenant's punch. `A_SkelWhoosh` is the swing before it lands.
   A_SkelWhoosh(ctx) { saySound(ctx.state, 'skeleton/swing', ctx.entity); },
@@ -1543,8 +1557,7 @@ export const ACTIONS = {
     saySound(ctx.state, 'DSPISTOL', ctx.entity, 80);
   },
   A_CPosRefire(ctx) {
-    const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, 2048) || randomDamage(state, 1, 256) < 40) setActorState(ctx.project, entity, 'See');
+    refire(ctx, 40);
   },
   A_TroopAttack(ctx) {
     const { state, entity } = ctx;
@@ -1597,8 +1610,15 @@ export const ACTIONS = {
   // unanswered the state machine never took that exit and a marine fired for ever.
   A_M_Refire(ctx) {
     const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, SIGHT_RANGE)) { entity.lookSweeps = 0; setActorState(ctx.project, entity, 'See'); return; }
-    if (randomDamage(state, 1, 256) < 40) setActorState(ctx.project, entity, 'See');
+    // The scripted marine's own action (`scriptedmarine.zs`): a dead or missing target stops the
+    // burst, and otherwise a lost sight or a one-in-sixty-four roll does. The chance was read as
+    // one-in-six, so a marine broke off its burst every few shots with the player in plain view.
+    const label = arg(ctx, 1) || 'See';
+    const target = actorTarget(state, entity);
+    if (!target || (target.health ?? 1) <= 0) { setActorState(ctx.project, entity, label); return; }
+    if (!canSeeTarget(state, entity, target, SIGHT_RANGE) || randomDamage(state, 1, 256) < 4) {
+      setActorState(ctx.project, entity, label);
+    }
   },
   // The melee-or-missile decision every derived engine spells `A_CustomComboAttack`.
   A_CustomComboAttack(ctx) {
