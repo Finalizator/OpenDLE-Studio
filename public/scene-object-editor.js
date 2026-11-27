@@ -8,6 +8,7 @@ import {
 } from '/shared/scenes.js';
 import { ENTITY_TYPES, standInFor } from '/shared/project.js';
 import { assetField, openAssetPicker, MODEL_KINDS, PICTURE_KINDS } from './asset-picker.js';
+import { consumeDragPayload } from './windows.js';
 import { contextMenu } from './context-menu.js';
 import { JOINT_TYPES, JOINT_LABELS, AXIS_JOINTS, newJoint, jointAnchorBetween, jointsOf } from '/shared/joints.js';
 import { PANEL_LIMITS, curtainStrips, newPanel, panelPhysics } from '/shared/panel.js';
@@ -365,11 +366,13 @@ export function createSceneObjectEditor({ callbacks }) {
     });
     row.addEventListener('dragleave', clear);
     row.addEventListener('drop', event => {
-      if (!state.treeDrag) return;
+      // A drag that started in another window is announced over the editor's channel, because a
+      // data transfer does not cross windows; the first `text/plain` id is this window's own drag.
+      const moving = state.treeDrag || consumeDragPayload();
+      if (!moving) return;
       event.preventDefault(); event.stopPropagation();
       const before = row.classList.contains('drop-before'), after = row.classList.contains('drop-after');
       clear();
-      const moving = state.treeDrag;
       state.treeDrag = null;
       if (!moving || moving === entity?.id) return;
       try {

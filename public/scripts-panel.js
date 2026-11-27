@@ -45,7 +45,7 @@ function action(label, onClick, className = '') {
   return button;
 }
 
-export function createScriptsPanel(nodes, { project, edit, openEditor, status }) {
+export function createScriptsPanel(nodes, { project, edit, openEditor, detach, status }) {
   let selected = null, search = '';
 
   const program = () => programFor(project());
@@ -174,6 +174,8 @@ export function createScriptsPanel(nodes, { project, edit, openEditor, status })
         return result;
       },
       onCompiled: () => { selected = entry?.key ?? key; render(); },
+      // The window can be moved to another monitor; it reopens on the same script there.
+      detach: detach ? () => detach(key) : null,
       status,
     });
   }

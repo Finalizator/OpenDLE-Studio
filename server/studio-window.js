@@ -22,7 +22,7 @@ function withAutomationFlag(url) {
   return target.href;
 }
 
-export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, shell }, args) {
+export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, shell, screen = null }, args) {
   const { values } = parseArgs({ args, options: {
     url: { type: 'string' }, profile: { type: 'string' }, 'automation-port': { type: 'string' },
     hidden: { type: 'boolean' }, show: { type: 'boolean' }, 'no-close-prompt': { type: 'boolean' },
@@ -58,6 +58,25 @@ export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, she
   app.setPath('userData', profile);
   app.setPath('sessionData', join(profile, 'session'));
   const windows = new Map();
+  /**
+   * Where a detached panel goes: the next display when there is one, which is the whole point of
+   * detaching, and otherwise a cascaded window on the same screen.
+   */
+  function childPlacement(parent) {
+    if (!screen || !parent || parent.isDestroyed()) return {};
+    try {
+      const current = screen.getDisplayMatching(parent.getBounds());
+      const other = screen.getAllDisplays().find(display => display.id !== current.id);
+      if (!other) return {};
+      const area = other.workArea;
+      return {
+        x: Math.round(area.x + Math.min(60, area.width * 0.05)),
+        y: Math.round(area.y + Math.min(60, area.height * 0.05)),
+        width: Math.max(520, Math.min(1280, area.width - 120)),
+        height: Math.max(360, Math.min(960, area.height - 120)),
+      };
+    } catch { return {}; }
+  }
   const report = error => {
     console.error(`OpenDLE Studio: ${error.message}`);
     // An error box is modal and waits for a click; an unattended window reports and moves on.
@@ -140,7 +159,37 @@ export async function startStudioDesktop({ app, BrowserWindow, Menu, dialog, she
     const external = target => {
       if (/^https?:$/.test(new URL(target).protocol)) shell.openExternal(target).catch(report);
     };
-    window.webContents.setWindowOpenHandler(({ url: target }) => { external(target); return { action: 'deny' }; });
+    // A same-origin `window.open` is a detached panel or dialog: it becomes a real window, on
+    // another display when one exists, and it closes with the window that opened it.
+    const children = new Set();
+    window.on('closed', () => {
+      for (const child of children) if (!child.isDestroyed()) child.destroy();
+      children.clear();
+    });
+    window.webContents.on('did-create-window', child => {
+      children.add(child);
+      child.on('closed', () => children.delete(child));
+      const placement = childPlacement(window);
+      if (Object.keys(placement).length) child.setBounds(placement);
+      // A window opened from a hidden automation window stays hidden: a scenario may detach a
+      // panel, and showing it would put a window on the screen of whoever is working there.
+      child.once('ready-to-show', () => { if (!child.isDestroyed() && window.isVisible()) child.show(); });
+    });
+    window.webContents.setWindowOpenHandler(({ url: target }) => {
+      let parsed = null;
+      try { parsed = new URL(target); } catch { /* a malformed target is not ours to open */ }
+      if (!parsed || parsed.origin !== origin) { external(target); return { action: 'deny' }; }
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          title: 'OpenDLE: Studio', icon: join(root, 'public', 'studio-icon.png'), show: false,
+          autoHideMenuBar: true, backgroundColor: '#101418', minWidth: 520, minHeight: 360,
+          // A detached window is often behind the main one and must still keep up with it.
+          webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
+            backgroundThrottling: false },
+        },
+      };
+    });
     const navigate = (event, target) => {
       if (new URL(target).origin !== origin) { event.preventDefault(); external(target); }
     };

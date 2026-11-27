@@ -485,6 +485,22 @@ dialog::backdrop { background: #111c; }
   background: #6a6758; border: 1px solid #8a8160; color: #ecd9a4; font-size: 9px; font-weight: 600;
   letter-spacing: .08em; vertical-align: middle; }
 .document-tabs button.engine-language:not(.active) { color: #ecd9a4; }
+.document-tabs button.in-other-window:not(.active) { color: #a9d6a0; }
+.document-tabs button.in-other-window::after { content: "⧉"; margin-left: 4px; font-size: 8px; color: #a9d6a0; }
+
+/* A detached window keeps one panel and a slim bar; the document-level chrome stays behind. */
+#detached-bar { display: none; align-items: center; gap: 10px; padding: 6px 10px;
+  background: var(--panel); border-bottom: 1px solid var(--border); }
+#detached-bar strong { font-size: 12px; }
+.detached-hint { color: var(--muted); font-size: 10px; margin-right: auto; }
+body.detached { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+/* `#editor-shell` is `display: contents`, so the header and footer are laid out by <body>. */
+body.detached #editor-shell > header, body.detached main > aside.left, body.detached main > aside.right,
+body.detached #splitter-left, body.detached #splitter-right, body.detached #editor-shell > footer { display: none; }
+body.detached #detached-bar { display: flex; }
+body.detached main { display: block; overflow: auto; }
+body.detached .workspace { display: block; }
+body.detached-dialog #editor-shell { display: none !important; }
 .document-tabs button.engine-language::after { content: "●"; margin-left: 4px; font-size: 8px; color: var(--accent); }
 .script-empty { display: grid; gap: 8px; }
 .script-source-preview { margin: 4px 0 8px; padding: 8px 10px; max-height: 24vh; overflow: auto;

@@ -52,6 +52,7 @@ import { importedGameplayGaps } from './gameplay-readiness.js';
 import { createActorsPanel } from './actors-panel.js';
 import { createScriptsPanel } from './scripts-panel.js';
 import { openScriptEditor } from './script-editor.js';
+import { createStudioWindows } from './windows.js';
 import { createFrameBudget } from '/shared/perf.js';
 import { LIMITS } from '/shared/limits.js';
 import { INSTANCE_PICKABLE_TYPES } from '/shared/instance-properties.js';
@@ -125,6 +126,8 @@ materialBrowser.id = 'material-browser';
 $('assets-panel').append(materialBrowser);
 let materialPanel = null;
 let project, token, revision = 0, dirty = false, selection = null, editVersion = 0;
+/** The link to the other windows; null until `start` has run, so an early render stays quiet. */
+let studioWindows = null;
 const scriptletLibrary = createScriptletRegistry();
 let scriptletsLoading = false, scriptletsLoaded = false, scriptletLoadError = '';
 // The stored project this document belongs to. Null means the document has no file of
@@ -366,6 +369,7 @@ const scriptsPanel = createScriptsPanel({
   project: () => project,
   edit,
   openEditor: openScriptEditor,
+  detach: key => studioWindows?.openDialog('script-editor', { key }),
   status: (text, isError) => status(text, isError),
 });
 // Addons: the host runs their scripts, the panel manages them. Both read the live project and edit
@@ -532,6 +536,9 @@ function render() {
   // only re-drawn while it is the visible panel.
   if (!$('scene-panel').hidden) sceneObjectEditor?.render();
   $('dirty').textContent = badgeText();
+  // A detached window shows one panel; a render rebuilds the tab strip, so the chrome is
+  // re-applied here rather than only once at start.
+  globalThis.__opendleWindows?.applyChrome();
   // Every way the project can change — an edit, undo, redo, a live drag, a reload, a level switch —
   // ends here, so this is the one place that keeps the running addon scripts in step with the
   // project's list. It is a signature comparison unless the set of enabled addons actually moved.
@@ -890,6 +897,7 @@ function liveFinish(message, { revert = false } = {}) {
   persistDraft();
   render();
   status(message || 'Edit applied');
+  globalThis.__opendleWindows?.commit(project);
 }
 // Panels, the asset browser and the HUD designer are skipped while dragging; the
 // 3D view and the scene stats are what has to keep up with the pointer.
@@ -932,6 +940,9 @@ function commit(next, message = 'Project updated', limit = historyLimit(next), n
   persistDraft();
   status(message);
   render();
+  // A detached panel owns part of the project; the hub broadcasts the merged document, a peer
+  // sends its own sections and receives the result.
+  globalThis.__opendleWindows?.commit(project);
 }
 function edit(fn, message, { deepGame = false, cloneActors = false, cloneAll = false } = {}) {
   const next = cloneAll ? cloneProjectData(project) : cloneProjectForEdit(project, { deepGame, shareActors: !cloneActors });
@@ -2504,6 +2515,14 @@ function renderScriptlets() {
 }
 
 function showTab(tab) {
+  // A panel shown in another window is edited there: opening its tab here brings it back rather
+  // than giving two windows the same section to write.
+  if (globalThis.__opendleWindows?.isMain && globalThis.__opendleWindows.detachedPanels().has(tab)) {
+    // The window closes first (it keeps editing until it does), then the tab comes home.
+    globalThis.__opendleWindows.dock(tab, () => showTab(tab));
+    status(`Bringing ${tab} back from its window.`);
+    return;
+  }
   if (tab !== 'hud') hudEditor.stopPreview();
   // Eleven tabs do not fit a narrow window: opening one by name has to bring it into view, or
   // "Timesheet" can be selected and still be off the edge of the strip. Marking and scrolling
@@ -8640,6 +8659,63 @@ window.addEventListener('beforeunload', event => {
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) projectAutosave.schedule(); });
 
+/**
+ * A change that arrived from another window.
+ *
+ * It takes the path a local edit takes once it lands — the project is replaced, the version bumps
+ * and everything redraws — so no panel has to know where a change came from. History is left
+ * alone: undo undoes the edits this window made.
+ */
+function applyRemoteProject(next) {
+  if (!next) return;
+  project = next;
+  dirty = true;
+  editVersion++;
+  render();
+}
+
+/**
+ * Right-click a tab, or the body of a panel, to move that editor into a window of its own.
+ *
+ * It is the editor's ordinary context menu, offered only when nothing inside the panel claimed
+ * the right click first: tiles, rows, trees and lists all have their own.
+ */
+function installWindowMenus() {
+  const items = panel => {
+    const detached = studioWindows.detachedPanels().has(panel);
+    return [
+      { label: 'Open', run: () => showTab(panel) },
+      detached
+        ? { label: 'Bring back to this window', run: () => { studioWindows.dock(panel); showTab(panel); } }
+        : { label: 'Open in a new window', run: () => studioWindows.openPanel(panel) },
+    ];
+  };
+  document.addEventListener('contextmenu', event => {
+    if (event.defaultPrevented || !studioWindows?.isMain) return;
+    const tab = event.target.closest?.('.document-tabs [data-tab]');
+    const section = event.target.closest?.('.panel');
+    const panel = tab ? tab.dataset.tab : section ? section.id.replace(/-panel$/, '') : null;
+    if (!panel) return;
+    event.preventDefault();
+    contextMenu(event, items(panel));
+  });
+  // A drag inside this window is announced to the others; a drop there reads it back, because a
+  // data transfer does not cross windows by itself.
+  document.addEventListener('dragstart', event => {
+    const value = event.dataTransfer?.getData('text/plain');
+    if (value) studioWindows.drag.announce(value);
+  });
+  studioWindows.onPeers(() => {
+    const detached = studioWindows.detachedPanels();
+    for (const button of document.querySelectorAll('.document-tabs [data-tab]')) {
+      const away = detached.has(button.dataset.tab);
+      button.classList.toggle('in-other-window', away);
+      if (away) button.title = `${button.textContent} is open in another window — click to bring it back`;
+      else button.removeAttribute('title');
+    }
+  });
+}
+
 async function start() {
   const accepted = await requireLicenseAgreement({
     dialog: $('license-dialog'), text: $('license-text'), accept: $('license-accept'),
@@ -8651,6 +8727,16 @@ async function start() {
     window.close();
     return;
   }
+  // One document, several windows: this page is the hub unless the URL asked for a detached
+  // panel, in which case the main window sends the document and takes back what this one edits.
+  studioWindows = createStudioWindows({
+    getProject: () => project,
+    applyProject: applyRemoteProject,
+    status: (text, isError) => status(text, isError),
+  });
+  globalThis.__opendleWindows = studioWindows;
+  studioWindows.connect();
+  installWindowMenus();
   const response = await fetch('/api/session');
   if (!response.ok) throw new Error(`Local session failed (HTTP ${response.status})`);
   const session = await response.json(); token = session.token;
@@ -8663,13 +8749,25 @@ async function start() {
     // A blank document keeps a test run small: the stored campaign is ~100 MB of artwork and a
     // scenario only needs geometry. Nothing is saved, so the library is untouched.
     replace(installEngineScripts(createProject(), { organizeStarter: true }), 'Automation project');
-  } else {
+  } else if (studioWindows.isMain) {
     await reloadProject(true);
     await refreshProjects();
+  } else {
+    // A detached window is a view of the hub's document, unsaved edits included: it waits for
+    // that document instead of loading the last save of its own.
+    await studioWindows.whenReady();
   }
   // The version is part of every playtest log header, so read it before any play.
   await loadEngineVersion().catch(() => {});
   $('editor-shell').hidden = false; $('editor-shell').inert = false;
+  studioWindows.applyChrome();
+  if (studioWindows.view.kind === 'dialog') {
+    if (studioWindows.dialog === 'script-editor' && studioWindows.arguments?.key) {
+      scriptsPanel.edit(studioWindows.arguments.key);
+    } else {
+      status('This window does not know which editor to open. Close it and detach again.', true);
+    }
+  }
   fitMap();
 }
 /**

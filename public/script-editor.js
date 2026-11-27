@@ -12,6 +12,7 @@
  */
 
 import { acsBuiltinReference } from '../shared/acs-source.js';
+import { contextMenu } from './context-menu.js';
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
@@ -50,7 +51,7 @@ function selectLine(textarea, line) {
  * shows it, selects the line and leaves the project untouched. `onCompiled()` runs after a
  * successful compile so the caller can re-render whatever showed the old script.
  */
-export function openScriptEditor({ title, subtitle, text, listing = [], compile, onCompiled, status } = {}) {
+export function openScriptEditor({ title, subtitle, text, listing = [], compile, onCompiled, status, detach = null } = {}) {
   const dialog = node('dialog', 'script-editor');
   const head = node('div', 'script-editor-head');
   head.append(node('h1', '', title), node('p', 'script-editor-subtitle', subtitle || ''));
@@ -94,6 +95,15 @@ export function openScriptEditor({ title, subtitle, text, listing = [], compile,
     revertButton, closeButton, compileButton);
 
   dialog.append(head, body, toolbar, actions);
+
+  if (detach) {
+    // A script editor is as detachable as a panel: right-click its header to move it to a window
+    // of its own, which reopens on the same script.
+    head.addEventListener('contextmenu', event => {
+      event.preventDefault();
+      contextMenu(event, [{ label: 'Open this editor in a new window', run: detach }]);
+    });
+  }
 
   function run() {
     try {
