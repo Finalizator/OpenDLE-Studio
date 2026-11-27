@@ -22,7 +22,9 @@ test('palette ranges, single targets and one-to-one pairs remap as Doom defines 
   assert.deepEqual(unsupported, []);
   assert.equal(lookup.size, 24 + 16 + 1);
   assert.equal(lookup.get(colourOf(colors, 128)), colourOf(colors, 80));
-  assert.equal(lookup.get(colourOf(colors, 151)), colourOf(colors, 103), 'the range keeps its stride');
+  // GZDoom's `AddIndexRange` stretches the source range across the whole target range, so 24 source
+  // colours spread over the 32 of `80:111`; a straight shift stopped at 103 and never reached 111.
+  assert.equal(lookup.get(colourOf(colors, 151)), colourOf(colors, 111), 'the range fills its target span');
   assert.equal(lookup.get(colourOf(colors, 210)), colourOf(colors, 1), 'a single target collapses the range');
   assert.equal(lookup.get(colourOf(colors, 5)), colourOf(colors, 9));
   assert.equal(lookup.get(colourOf(colors, 200)), undefined, 'colours outside the spec are untouched');
@@ -46,7 +48,7 @@ test('applying a translation keeps transparency and unmapped pixels', () => {
     ...uint32(colourOf(colors, 130), 0),
   ]);
   const result = applyTranslation(pixels, lookup);
-  assert.deepEqual([...result.subarray(0, 3)], [...uint32(colourOf(colors, 82), 255).subarray(0, 3)]);
+  assert.deepEqual([...result.subarray(0, 3)], [...uint32(colourOf(colors, 83), 255).subarray(0, 3)]);
   assert.deepEqual([...result.subarray(4, 7)], [...uint32(colourOf(colors, 200), 255).subarray(0, 3)]);
   assert.equal(result[11], 0, 'transparent pixels stay transparent');
   assert.deepEqual([...pixels.subarray(0, 3)], [...uint32(colourOf(colors, 130), 255).subarray(0, 3)],

@@ -14,7 +14,10 @@
 const COMMAND = /^\$/;
 // Logical names may start with `*` (`*pain`, `*death`), which marks engine-wide
 // player sounds rather than actor sounds.
+const unquote = value => String(value ?? '').replace(/^"|"$/g, '');
 const IDENTIFIER = /^\*?[a-z0-9_][a-z0-9_/*#-]*$/i;
+/** A lump name, or a path to a sound file: `sounds/grunt/grunt-sight.wav` is a valid target. */
+const LUMP_OR_PATH = /^\*?[a-z0-9_][a-z0-9_/*#.\\-]*$/i;
 
 /**
  * Splits SNDINFO text into assignments. `$random` groups are kept as member lists
@@ -60,16 +63,23 @@ export function parseSndInfo(text) {
     }
     const alias = /^\$alias\s+(\S+)\s+(\S+)/i.exec(line);
     if (alias) {
-      const [, name, target] = alias;
-      if (IDENTIFIER.test(name) && IDENTIFIER.test(target)) {
+      // A quoted name or path keeps its quotes only until here: `$alias x "SOUNDS/A/B.WAV"` is a
+      // real spelling (PK3Tools writes it), and a token ending in `"` failed every later test.
+      const name = unquote(alias[1]), target = unquote(alias[2]);
+      if (IDENTIFIER.test(name) && LUMP_OR_PATH.test(target)) {
         delete random[name.toLowerCase()];
         aliases[name.toLowerCase()] = target;
       }
       continue;
     }
     if (COMMAND.test(line)) continue;
-    const [name, target] = line.split(/\s+/);
-    if (!name || !target || !IDENTIFIER.test(name) || /\.(wav|ogg|flac|mp3)$/i.test(target)) continue;
+    const parts = line.split(/\s+/);
+    const name = unquote(parts[0]), target = unquote(parts[1]);
+    if (!name || !target || !IDENTIFIER.test(name)) continue;
+    // `qgrunt/sight "sounds/grunt/grunt-sight.wav"` is a valid alias — the guard here used to skip
+    // anything whose *target* looked like a file, which dropped every path-style sound a pack ships.
+    // A line that *is* a file name is not an alias, so the test belongs on the name.
+    if (/\.(wav|ogg|flac|mp3)$/i.test(name)) continue;
     if (target === '{' || target === '}') continue;
     delete random[name.toLowerCase()];
     aliases[name.toLowerCase()] = target.toUpperCase();
@@ -147,7 +157,16 @@ export function soundCandidates(name, table, limit = 12) {
     if (members?.length) { for (const member of members) walk(member, depth + 1); return; }
     const alias = table?.aliases?.[key];
     if (alias && alias.toLowerCase() !== key) { walk(alias, depth + 1); return; }
-    results.push(current);
+    // A `$alias` may name a path (`sounds/grunt/grunt-sight.wav`) while the asset the packer kept
+    // is the file name alone (`GRUNT-SIGHT`), so the name, its file name and that without an
+    // extension are all candidates. Keeping only the path is why every such sound was "unknown".
+    const push = value => {
+      for (const candidate of [value, value.split(/[\\/]/).pop(), value.split(/[\\/]/).pop().replace(/\.(wav|ogg|flac|mp3)$/i, '')]) {
+        if (!candidate || results.length >= limit) continue;
+        if (!results.some(existing => existing.toLowerCase() === candidate.toLowerCase())) results.push(candidate);
+      }
+    };
+    push(current);
   };
   walk(name.trim(), 0);
   return results;

@@ -577,7 +577,10 @@ export function compileActorStates(actor, { parentLookup = () => null } = {}) {
         const sprite = /^(#+|-+)$/.test(String(frame.sprite)) ? lastSprite : frame.sprite;
         if (sprite) lastSprite = sprite;
         for (const rawLetter of String(frame.letters || '')) {
-          const letter = rawLetter === '#' || rawLetter === '-' ? lastLetter : rawLetter;
+          // `#`/`-` means "the same frame as the last one". With no previous frame GZDoom keeps
+          // frame index 0, which is letter `A`; dropping the frame instead made the state vanish
+          // and every later index in that actor shift by one.
+          const letter = rawLetter === '#' || rawLetter === '-' ? (lastLetter ?? 'A') : rawLetter;
           if (!letter) continue;
           lastLetter = letter;
           frames.push({ kind: 'frame', sprite: sprite || lastSprite, letter, duration: frame.duration,

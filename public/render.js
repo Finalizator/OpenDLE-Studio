@@ -690,7 +690,8 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // `GetTextureXOffset` reports, which on TITLEMAP advances by exactly 0.5 texels per tic.
       // Each scrolled material gets its own copy of the picture so its offset moves alone.
       let map = imageTexture(assetId);
-      if (scroll && map) { map = map.clone(); scrolledTextures.set(map, scroll); }
+      let scrolledMap = null;
+      if (scroll && map) { scrolledMap = map = map.clone(); scrolledTextures.set(map, scroll); }
       // A surface drawn with a PBR material is lit instead of tinted: three's standard material
       // brings the normal, roughness and metalness response, and the sector light multiplies the
       // base colour underneath so a dark room still reads as dark. The lights it needs are added
@@ -704,9 +705,17 @@ export async function createPreview(canvas, project, state, { editor = false, on
         : assetId ? pbrByBaseColor.get(assetId) : null;
       if (pbr && map) {
         const scale = materialScale(pbr.record);
-        map = map.clone();
-        map.repeat.set(scale.u, scale.v);
-        map.needsUpdate = true;
+        // The clone that moves is the one the frame loop animates: cloning again here (which a
+        // material whose base colour happens to be this picture does) left the scroller driving a
+        // texture nothing draws, so a scrolled wall with a PBR material stood still.
+        if (scrolledMap) {
+          scrolledMap.repeat.set(scale.u, scale.v);
+          scrolledMap.needsUpdate = true;
+        } else {
+          map = map.clone();
+          map.repeat.set(scale.u, scale.v);
+          map.needsUpdate = true;
+        }
       }
       // The same surface at three levels of detail, chosen by distance every frame: the base colour
       // alone far away, base colour and normal in the middle, everything close up. A normal map and
@@ -2745,7 +2754,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // `state.time` is the level's own second counter, and it stops when the level pauses.
       const scrollerTics = Math.max(0, (Number(state.time) || 0) * TICRATE);
       for (const [scrolled, scroll] of scrolledTextures) {
-        scrolled.offset.set(scroll.u * scrollerTics, scroll.v * scrollerTics);
+        // A positive sidedef Y offset *raises* the picture (`hw_walls.cpp` adds it to `texturetop`),
+        // while three adds its offset to `v`, and `v` grows downwards here — so the vertical part
+        // of a Boom scroller has to be negated or 102/103 slide the wrong way.
+        scrolled.offset.set(scroll.u * scrollerTics, -scroll.v * scrollerTics);
       }
       // Readable from the DOM (`canvas.dataset.scrollTics`): the tic clock a scroller runs on
       // and the offset it has put on the first scrolled picture, which is the one number that

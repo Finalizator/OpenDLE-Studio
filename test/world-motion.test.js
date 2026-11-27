@@ -186,9 +186,12 @@ test('imported Doom sprite frames select all eight camera-relative views includi
   for (let i = 0; i < 8; i++) {
     const angle = -i * Math.PI / 4, view = spriteView(p, s, guard,
       { x: guard.x + Math.cos(angle) * 128, y: guard.y + Math.sin(angle) * 128 });
-    assert.deepEqual(view, front.rotations[i], `rotation ${i + 1}`);
+    // A viewer on the guard's `-i*45°` side sees rotation `8 - i`: the eight views run the other
+    // way round from rotation 1 (front), as `spritedef_t::GetSpriteFrame` computes them.
+    const rotation = (8 - i) % 8;
+    assert.deepEqual(view, front.rotations[rotation], `rotation ${rotation + 1}`);
     const asset = p.assets.find(asset => asset.id === view.assetId);
-    assert.ok(asset.name.slice(view.flip ? 6 : 4).startsWith(`A${i + 1}`));
+    assert.ok(asset.name.slice(view.flip ? 6 : 4).startsWith(`A${rotation + 1}`));
   }
   assert.equal(front.rotations[1].assetId, front.rotations[7].assetId);
   assert.notEqual(front.rotations[1].flip, front.rotations[7].flip);

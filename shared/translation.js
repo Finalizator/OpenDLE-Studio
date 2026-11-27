@@ -90,10 +90,17 @@ export function translationLookup(specs, palette) {
       continue;
     }
     if ((match = RANGE.exec(entry))) {
-      const [from, to, targetFrom, targetTo] = match.slice(1).map(Number);
-      if (from > to || targetFrom > targetTo) { unsupported.push(entry); continue; }
-      const span = Math.min(to - from, targetTo - targetFrom);
-      for (let offset = 0; offset <= span; offset++) remap.set(from + offset, targetFrom + offset);
+      let [from, to, targetFrom, targetTo] = match.slice(1).map(Number);
+      // GZDoom's `AddIndexRange` swaps a reversed pair instead of refusing it, and spreads the
+      // source range across the *whole* target range: `160:167=176:191` is 8 colours stretched
+      // over 16. Copying one for one left the far end of every such ramp unreached.
+      if (from > to) [from, to] = [to, from];
+      if (targetFrom > targetTo) [targetFrom, targetTo] = [targetTo, targetFrom];
+      if (to > 255 || targetTo > 255) { unsupported.push(entry); continue; }
+      const span = to - from, targetSpan = targetTo - targetFrom;
+      for (let offset = 0; offset <= span; offset++) {
+        remap.set(from + offset, span ? Math.round(targetFrom + targetSpan * offset / span) : targetFrom);
+      }
       continue;
     }
     if ((match = RANGE_TO_ONE.exec(entry))) {

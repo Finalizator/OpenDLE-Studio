@@ -73,7 +73,12 @@ export function createSpriteIndex(project) {
     const rotations = assetById.get(assetId)?.rotations;
     if (!rotations) { viewResult.assetId = assetId; viewResult.flip = false; return viewResult; }
     const bearing = Math.atan2(viewer.y - entity.y, viewer.x - entity.x) * 180 / Math.PI;
-    const rotation = ((Math.floor(((entity.angle || 0) - bearing + 22.5) / 45) % 8) + 8) % 8;
+    // The index counts the other way round: rotation 1 is the sprite facing the viewer, and the
+    // eight views run clockwise from it. GZDoom picks it as `(202.5° - (yaw - viewangle)) / 45°`
+    // (`spritedef_t::GetSpriteFrame`, `- ang + 360 + 45/2*9`), so `yaw - bearing` has to be
+    // *subtracted* — increasing it picked the mirror-image frame, which put every monster's weapon
+    // in the wrong hand.
+    const rotation = ((Math.floor((22.5 - ((entity.angle || 0) - bearing)) / 45) % 8) + 8) % 8;
     const sprite = rotations[rotation];
     viewResult.assetId = sprite.assetId;
     viewResult.flip = Boolean(sprite.flip);

@@ -90,8 +90,25 @@ export function parseSurfaceAnimations(sources = [], { warn } = {}) {
             else if (directive === 'rand') cursor++;   // GZDoom random frames: keep the order it lists
           }
         } else {
-          if ((tokens[cursor] || '').toLowerCase() === 'tics') { tics = Number(tokens[cursor + 1]) || DEFAULT_TICS; cursor += 2; }
-          frames.push({ name, tics });
+          // No braces: the declaration is followed by any number of `pic <name> tics <n>` keywords,
+          // which is how GZDoom's own `animdefs.txt` is written. Reading only the base name gave
+          // every such animation a single frozen frame and skipped its pictures as unknown words.
+          const pictures = [];
+          let look = cursor;
+          for (;;) {
+            if ((tokens[look] || '').toLowerCase() !== 'pic') break;
+            const frame = tokens[look + 1] || null;
+            let frameTics = tics;
+            if ((tokens[look + 2] || '').toLowerCase() === 'tics') { frameTics = Number(tokens[look + 3]) || tics; look += 4; }
+            else look += 2;
+            if (frame) pictures.push({ name: frame, tics: frameTics });
+            if (pictures.length > 64) break;
+          }
+          if (pictures.length) { frames.push(...pictures); cursor = look; }
+          else {
+            if ((tokens[cursor] || '').toLowerCase() === 'tics') { tics = Number(tokens[cursor + 1]) || DEFAULT_TICS; cursor += 2; }
+            frames.push({ name, tics });
+          }
         }
         index = Math.max(index, cursor - 1);
         framesSeen += frames.length;
@@ -109,9 +126,17 @@ export function parseSurfaceAnimations(sources = [], { warn } = {}) {
         // The declaration is consumed whole so its pictures are not read as animation frames.
         let cursor = index + 1, off = null, on = null;
         while (cursor < tokens.length && !/^(switch|flat|texture|warp|warp2|fbm|noise|stripe)$/i.test(tokens[cursor])) {
-          if (!off && (tokens[cursor] || '').toLowerCase() === 'on' && (tokens[cursor + 1] || '').toLowerCase() === 'pic') {
+          if (!off && (tokens[cursor] || '').toLowerCase() === 'on') {
+            // The picture before `on` is the off state; the pressed one is the first `pic` after
+            // it. A `sound <name>` clause may come first — every switch in Furdoom's real
+            // ANIMDEFS is written `on sound Switch1 pic HEXASWA2` — so the next token is not
+            // always `pic`, and requiring it dropped the whole declaration.
             off = tokens[cursor - 1] || null;
-            on = tokens[cursor + 2] || null;
+            let look = cursor + 1;
+            while (look < tokens.length && !/^(off|on|switch|flat|texture|warp|warp2|fbm|noise|stripe)$/i.test(tokens[look])) {
+              if ((tokens[look] || '').toLowerCase() === 'pic') { on = tokens[look + 1] || null; break; }
+              look++;
+            }
           }
           cursor++;
         }

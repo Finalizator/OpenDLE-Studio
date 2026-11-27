@@ -619,7 +619,7 @@ export function importWadMap(wad, mapName, { encodeImage, images, sounds = new M
         'playercross', 'playeruse', 'playeruseback', 'impact', 'missilecross'],
       sidedef: ['sector', 'offsetx', 'offsety', 'texturetop', 'texturebottom', 'texturemiddle',
         'offsetx_top', 'offsety_top', 'offsetx_mid', 'offsety_mid', 'offsetx_bottom', 'offsety_bottom',
-        'scalex_mid', 'scaley_mid', 'scalex'],
+        'scalex_mid', 'scaley_mid', 'scalex', 'scalex_top', 'scaley_top', 'scalex_bottom', 'scaley_bottom'],
       sector: ['heightfloor', 'heightceiling', 'texturefloor', 'textureceiling', 'lightlevel', 'special', 'gravity'],
       thing: ['x', 'y', 'angle', 'height', 'type', 'skill1', 'skill2', 'skill3', 'skill4', 'skill5', 'single', 'coop', 'dm',
         'ambush', 'id'],
