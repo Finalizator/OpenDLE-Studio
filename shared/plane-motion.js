@@ -21,9 +21,14 @@ const BOB_RADIANS_PER_UNIT = Math.PI / 32;
 
 /** Starts a waggle on every sector carrying `tag`; returns how many sectors took it. */
 export function startWaggle(state, { tag, amplitude, speed, offset = 0, timer = 0, ceiling = false }) {
-  const sectors = tag ? (state.sectors || []).filter(sector => sector.tag === tag) : [];
-  if (!sectors.length) return 0;
   const property = ceiling ? 'ceilingHeight' : 'floorHeight';
+  // A plane has one owner. A waggle that took a plane a door, lift or crusher was moving wrote its
+  // own height every frame, so the mover never reached its target and never cleared its entry:
+  // the lift silently stopped happening and `TagWait` on that sector hung for the level. GZDoom
+  // refuses a busy plane the same way (`EV_StartWaggle`: "Already busy with another thinker").
+  const sectors = tag ? (state.sectors || [])
+    .filter(sector => sector.tag === tag && !state.sectorMotions?.has(`${sector.id}:${property}`)) : [];
+  if (!sectors.length) return 0;
   const targetScale = amplitude / 64;
   const waggle = {
     sectorIds: sectors.map(sector => sector.id),

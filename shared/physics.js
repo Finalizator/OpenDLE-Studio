@@ -509,6 +509,18 @@ export function createPhysics(project, state, R, triangulate) {
       cast([from.x + up[0] * axisLength * along, from.y + up[1] * axisLength * along,
         from.z + up[2] * axisLength * along], false);
     }
+    // The sphere's curved side is what meets a pillar or an outside corner; three rays along the
+    // axis pass within a radius of it and report nothing, so the player walked straight through
+    // props and clipped corners in a Source-movement map. Two samples on the sphere's own surface,
+    // across the direction of travel, close that hole — the sample point being on the surface is
+    // why they stop at their own impact and not a radius short of it.
+    const flatSpeed = Math.hypot(dir[0], dir[1]);
+    if (flatSpeed > 1e-6) {
+      const side = [dir[1] / flatSpeed, -dir[0] / flatSpeed, 0];
+      for (const sign of [1, -1]) {
+        cast([from.x + side[0] * radius * sign, from.y + side[1] * radius * sign, from.z], true);
+      }
+    }
     // Ground is asked about through the **hull** instead: a capsule's own footprint is its centre
     // line, so a player standing beside a 16-unit step would find only the floor under them and
     // never step up. Source traces the player hull for this, and a hull is four corners: casting

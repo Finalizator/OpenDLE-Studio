@@ -84,20 +84,23 @@ test('crossing the line sets the piston going, and it cycles on its own', () => 
   assert.ok(closedAgain > 0, 'and comes down once more, so the movement repeats like an animation');
 });
 
-test('a crusher reverses on a thing instead of closing on it, like Doom', () => {
+test('a crusher presses on what stands under it and hurts it, like Doom', () => {
   const project = pistonRoom();
   const state = createRuntime(project);
   const keys = new Set();
   const step = count => { for (let i = 0; i < count; i++) stepRuntime(project, state, 1 / 35, keys, new Set()); };
   step(5);
   crossLine(project, state);
-  // The player stays in the doorway: the ceiling must never reach them.
+  // The player stays in the doorway: GZDoom's crusher does not back off a thing, it keeps its
+  // stroke (`dsectoreffect.cpp` reports "crushed" instead of blocking) and damages what it presses
+  // on every tic. Reversing at the player's head left every piston a twitch and killed nobody.
   state.entities.find(entity => entity.type === 'player').x = 0;
   state.player.x = 0;
+  const health = state.playerStats.health;
   let lowest = Infinity;
   for (let tic = 0; tic < 420; tic++) { step(1); lowest = Math.min(lowest, ceilingOf(state)); }
-  assert.ok(lowest > 24, `the piston stops above the player (lowest ${lowest})`);
-  assert.ok(lowest < 72, 'but it did travel down towards them');
+  assert.ok(lowest <= 32, `the piston reaches its gap of eight above the floor (lowest ${lowest})`);
+  assert.ok(state.playerStats.health < health, `the player was crushed (${health} -> ${state.playerStats.health})`);
 });
 
 test('an imported crusher is repaired on the snapshot, without a re-import', () => {

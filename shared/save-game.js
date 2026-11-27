@@ -65,6 +65,8 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   // What the movement keys asked for this tic, which `GetPlayerInput` reports: the next step
   // writes it again, and a save carries the keys it was taken with, not their translation.
   'moveInput',
+  // What a crushing ceiling touched this tic, before it is turned into damage: a moment, not state.
+  'crushHits',
   // `removeLiveActor` leaves `actorRemovals` set on the state after a boss cube lands, and a key
   // the validator does not know makes every save taken afterwards unloadable. It records a moment
   // inside one frame, not the game.

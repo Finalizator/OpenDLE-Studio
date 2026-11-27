@@ -23,7 +23,7 @@ const MODEL_UNIT = 32;
 const cellSize = 16;
 
 /** A centroid-bucketed index of triangles, so a vertical query touches a handful of them. */
-function indexTriangles(positions, indices, { offsetX, offsetY, scale, angle = 0 }) {
+function indexTriangles(positions, indices, { offsetX, offsetY, scale, angle = 0, baseZ = 0 }) {
   const triangles = [];
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, maxHeight = -Infinity;
   // A model names its triangles through its index buffer. Reading every three consecutive vertices
@@ -43,9 +43,12 @@ function indexTriangles(positions, indices, { offsetX, offsetY, scale, angle = 0
     const [ax, ay] = turn(positions[at] * scale, positions[at + 2] * scale);
     const [bx, by] = turn(positions[mid] * scale, positions[mid + 2] * scale);
     const [cx, cy] = turn(positions[last] * scale, positions[last + 2] * scale);
-    const x0 = ax + offsetX, y0 = ay + offsetY, h0 = positions[at + 1] * scale;
-    const x1 = bx + offsetX, y1 = by + offsetY, h1 = positions[mid + 1] * scale;
-    const x2 = cx + offsetX, y2 = cy + offsetY, h2 = positions[last + 1] * scale;
+    // The mesh origin is the object's own Z (`physics.js` gives a model body a lift of 0), so the
+    // ground over it is the object's Z plus the local height. Returning the local height alone put
+    // every monster, pickup and sight trace at the wrong place under a hill standing on a floor.
+    const x0 = ax + offsetX, y0 = ay + offsetY, h0 = positions[at + 1] * scale + baseZ;
+    const x1 = bx + offsetX, y1 = by + offsetY, h1 = positions[mid + 1] * scale + baseZ;
+    const x2 = cx + offsetX, y2 = cy + offsetY, h2 = positions[last + 1] * scale + baseZ;
     minX = Math.min(minX, x0, x1, x2); maxX = Math.max(maxX, x0, x1, x2);
     minY = Math.min(minY, y0, y1, y2); maxY = Math.max(maxY, y0, y1, y2);
     maxHeight = Math.max(maxHeight, h0, h1, h2);
@@ -108,7 +111,7 @@ export function createTerrainSurface(project, cache) {
     // collider that stands in the level.
     const scale = Number(entity.modelScale) || MODEL_UNIT;
     const index = indexTriangles(triangles.positions, triangles.indices,
-      { offsetX: entity.x || 0, offsetY: entity.y || 0, scale, angle: entity.angle || 0 });
+      { offsetX: entity.x || 0, offsetY: entity.y || 0, scale, angle: entity.angle || 0, baseZ: Number(entity.z) || 0 });
     if (index) surfaces.push({ entity, index });
   }
   if (!surfaces.length) return null;

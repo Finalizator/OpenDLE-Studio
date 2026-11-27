@@ -419,7 +419,12 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
   const hovered = flying && floatTowards(state, entity, target, distance, entityFloor, dt);
   // A flyer's own height is what its body occupies; a walker's is the floor it stands on.
   const floor = flying ? entity.z : entityFloor;
-  const origin = { x: entity.x, y: entity.y, z: floor + 28 };
+  // Doom refuses a step into an opening smaller than the thing itself (`P_CheckPosition`:
+  // `ceilingz - floorz < thing->Height`), and a walker's head is its own height above the floor.
+  // A hard-coded 56 let a 110-unit Cyberdemon and the 64-unit Arachnotron and Baron walk into
+  // passages they do not fit in.
+  const bodyHeight = entityHeight(entity) || 56;
+  const origin = { x: entity.x, y: entity.y, z: floor + bodyHeight / 2 };
   const previous = state.enemyMoves.get(entity.id);
   const toward = ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
   const reverse = previous ? (previous.direction + 4) % 8 : -1;
@@ -433,8 +438,8 @@ export function moveEnemy(state, entity, speed, dt, target = state.player) {
       if (!sector) return false;
       // A walker needs a room it fits in and no step it cannot climb. A flyer only needs the
       // air it occupies: the pit under it and the floor on the far side are not in its way.
-      if (flying ? sector.ceilingHeight - floor < 56
-        : sector.ceilingHeight - sector.floorHeight < 56 || Math.abs(sector.floorHeight - entityFloor) > 24) return false;
+      if (flying ? sector.ceilingHeight - floor < bodyHeight
+        : sector.ceilingHeight - sector.floorHeight < bodyHeight || Math.abs(sector.floorHeight - entityFloor) > 24) return false;
     }
     // The next step's ground is the higher of the sector and any model surface over it, so a
     // monster walks up a slope and is stopped by a cliff instead of wading into it.

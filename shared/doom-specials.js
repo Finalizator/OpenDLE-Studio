@@ -86,8 +86,10 @@ const CEIL_WAIT = 150 / TIC;
  * it. It then rises back to the ceiling it started at, waits `CEILWAIT`, and comes down again,
  * forever.
  */
+// `crush: 10` is the damage the xlat passes every classic crusher (`Ceiling_CrushAndRaiseDist
+// (tag, 8, C_*, 10)`); a crusher that presses on a thing hurts it every tic instead of backing off.
 const crushAndRaise = (mode, once, speed) => ({ mode, once,
-  effect: { kind: 'ceiling', target: 'floor', speed, wait: CEIL_WAIT, bottomWait: 0, cycle: true } });
+  effect: { kind: 'ceiling', target: 'floor', speed, wait: CEIL_WAIT, bottomWait: 0, cycle: true, crush: 10 } });
 
 /**
  * Specials this runtime performs, as data instead of a switch. `mode` is the

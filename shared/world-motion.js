@@ -151,11 +151,23 @@ export function advanceSectors(state, dt) {
       if (remaining <= 0) continue;
     }
     const old = sector[motion.surface], target = motion.direction === 'out' ? motion.height : motion.origin;
-    const next = old + Math.sign(target - old) * Math.min(Math.abs(target - old), motion.speed * remaining);
+    // A crush-and-raise ceiling rises at half the speed it descends: GZDoom's `DCeiling` switches to
+    // `m_Speed2` on the way up, which the crusher specials set to half of `speed`.
+    const travel = motion.direction === 'out' ? motion.speed : (motion.returnSpeed ?? motion.speed);
+    const next = old + Math.sign(target - old) * Math.min(Math.abs(target - old), travel * remaining);
     const occupants = [...state.entities.filter(entity => entity.type === 'enemy' && entity.health > 0), state.player]
       .filter(entity => sectorAt(state.sectors, entity.x, entity.y)?.id === sector.id);
     if (motion.surface === 'ceilingHeight' && next < old && occupants.some(entity => floorAt(state, entity) + entityHeight(entity) > next)) {
-      motion.direction = motion.direction === 'out' ? 'return' : 'out'; continue;
+      if (!(motion.crush > 0)) { motion.direction = motion.direction === 'out' ? 'return' : 'out'; continue; }
+      // A crushing ceiling does not back out of the way: GZDoom keeps the plane where it is and
+      // damages whatever it is pressing on (`dsectoreffect.cpp` returns "crushed" instead of
+      // blocking). Backing out stopped every piston at the first monster's head and killed nobody.
+      const damage = motion.crush;
+      for (const entity of occupants) {
+        if (!(floorAt(state, entity) + entityHeight(entity) > next)) continue;
+        state.crushHits ||= [];
+        state.crushHits.push({ ...(entity === state.player || entity.type === 'player' ? { player: true } : { entityId: entity.id }), amount: damage });
+      }
     }
     const ceiling = sector.ceilingHeight + (motion.moveCeiling ? next - old : 0);
     if (motion.surface === 'floorHeight' && next > old && occupants.some(entity => Math.max(floorAt(state, entity), next) + entityHeight(entity) > ceiling)) {
@@ -506,8 +518,10 @@ function classicActions(project, wall, behaviour, targets, warnings) {
       // Doom's ceiling speed is CEILSPEED, one unit a tic; the fast crusher of line 6 names its own.
       actions.push({ type: 'moveSector', sectorId: sector.id, surface: 'ceilingHeight', height: target,
         speed: effect.speed || 35, wait: effect.wait || 0, returnMode: effect.cycle ? 'cycle' : 'stay',
+        ...(effect.cycle ? { returnSpeed: (effect.speed || 35) / 2 } : {}),
         ...(effect.cycle ? { returnHeight: Math.max(sector.ceilingHeight, ...heights.map(s => s.ceilingHeight)) } : {}),
         ...(effect.bottomWait !== undefined ? { bottomWait: effect.bottomWait } : {}),
+        ...(effect.crush ? { crush: effect.crush } : {}),
         sound: 'DSDOROPN' });
     }
     if (effect.kind === 'floor' || effect.kind === 'ceilingThenFloor') {

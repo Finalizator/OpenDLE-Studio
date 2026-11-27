@@ -468,8 +468,12 @@ export function executeSpecial(project, state, special, rawArgs = [], options = 
       for (const sector of sectors) {
         // GZDoom passes a gap of 8 to EV_DoCeiling and DCeiling::Tick reverses in both directions
         // without waiting, so the piston hammers instead of resting a second at each end.
+        // `arg2` is the damage a tic while the ceiling presses on something; the classic types pass
+        // 10. It is also what tells the mover this is a crusher rather than a plane that must back
+        // off, which is why a piston used to stop at the first monster's head and hurt nobody.
         moveSector(state, { sectorId: sector.id, surface: 'ceilingHeight', height: sector.floorHeight + 8,
-          speed: speed * TIC, wait: 0, bottomWait: 0, returnMode: 'cycle', returnHeight: sector.ceilingHeight, sound: 'DSCNSTRT' });
+          speed: speed * TIC, returnSpeed: speed * TIC / 2, wait: 0, bottomWait: 0, returnMode: 'cycle',
+          returnHeight: sector.ceilingHeight, crush: Math.max(0, Math.round(arg2)) || 10, sound: 'DSCNSTRT' });
       }
       return 1;
     case 43: // Ceiling_LowerAndCrush
