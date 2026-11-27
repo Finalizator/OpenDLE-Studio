@@ -312,7 +312,7 @@ export function scriptSummary(project) {
  * system already running.
  */
 /** ACS message colours, in the CR_ order the constant numbers use. */
-export const HUD_MESSAGE_COLORS = ['#ffffff', '#a03020', '#d8c090', '#a0a0a0', '#00a000', '#a06030',
+export const HUD_MESSAGE_COLORS = ['#a03020', '#d8c090', '#a0a0a0', '#00a000', '#a06030',
   '#f0d000', '#f00000', '#0000f0', '#f07000', '#ffffff', '#ffff00'];
 
 /**
@@ -332,6 +332,9 @@ function pushHudMessage(state, body) {
     color: Number.isFinite(body.color) ? body.color | 0 : 0,
     hold: Number.isFinite(body.holdTime) && body.holdTime > 0 ? body.holdTime : 0,
     type: Number.isFinite(body.type) ? body.type | 0 : 0,
+    // How long the fade takes, in seconds (`OptHudMessage`'s fade time, 1.0 when the message has
+    // none). Dropping it here forced the renderer to invent a ramp.
+    fade: Number.isFinite(body.fade) && body.fade > 0 ? body.fade : 1,
     bold: Boolean(body.bold),
     font: typeof body.font === 'string' ? body.font : null,
     hudWidth: Number.isFinite(body.width) && body.width > 0 ? body.width : 0,
@@ -587,6 +590,9 @@ export function createMapScripts(project, state, callbacks = {}) {
     const spawnClass = type ? DOOM_SPAWN_NUMBERS[type] : null;
     const className = String(name || spawnClass || '').toLowerCase();
     return state.entities.filter(entity => {
+      // P_ThingCount only counts a thing that is still alive: a corpse kept its type and its tid,
+      // so "every monster is dead" counted the dead ones too and never became true.
+      if ((entity.health ?? 1) <= 0) return false;
       if (tid && entity.tid !== tid) return false;
       if (type && !spawnClass && entity.doomType !== type) return false;
       if (className && entityClass(entity) !== className) return false;

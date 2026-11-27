@@ -1,6 +1,6 @@
 import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, canSeeTarget, randomDamage, enemyHitscan, moveEnemy, geometryDistance,
-  entityDistance, projectileSource, canHearPlayer, checkMeleeRange, sightEyeHeight, SIGHT_RANGE } from './combat.js';
+  entityDistance, entityHeight, projectileSource, canHearPlayer, checkMeleeRange, sightEyeHeight, SIGHT_RANGE } from './combat.js';
 import { actorIndex, actorForThing, isBossBrainActor, NATIVE_EFFECT_ACTORS, dropItemNumber } from './actors.js';
 import { actorProjectileClips, actorEffectClip, setSpriteState, spriteAssetNames, applyActorSpriteStates } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
@@ -222,7 +222,15 @@ export function actorTic(project, state, entity, moveTarget = true) {
   if (frame.kind === 'null') { runtime.index = null; runtime.stopped = true; runtime.gone = true; return; }
   if (frame.kind === 'goto' || frame.kind === 'loop') {
     const target = frame.kind === 'loop' ? frame.label : frame.target;
-    const resolved = labelIndex(actor, target);
+    let resolved = labelIndex(actor, target);
+    // A relative target (`Goto Missile+2`) or one inherited through `Super::X` is not a label of
+    // this actor, so the lookup returned null and the state machine stopped dead mid-fight. The
+    // importer had already worked the destination out and stored it as `targetIndex`, and nothing
+    // ever read that number. The self-index it falls back to is refused, because following it
+    // would spin the same tic for ever instead of freezing the actor.
+    if (resolved === null && Number.isInteger(frame.targetIndex) && frame.targetIndex !== runtime.index) {
+      resolved = frame.targetIndex;
+    }
     runtime.index = resolved === null ? null : resolved;
     // A rule asks which state an actor is in; a `goto` back into a label counts.
     if (resolved !== null) entity.stateLabel = String(target);
@@ -1050,7 +1058,12 @@ function monsterHitscan(ctx, damage, diceSides, spread = 0) {
   const reach = canSeeTarget(state, entity, target, SIGHT_RANGE) ? 2048 : 0;
   if (!reach) return;
   const offset = spread ? (randomDamage(state, 1, 256) - randomDamage(state, 1, 256)) * spread / 256 * Math.PI / 180 : 0;
-  const direction = { x: Math.cos(aim + offset), y: Math.sin(aim + offset), z: 0 };
+  // P_AimLineAttack fires at the middle of the target's body rather than level: a flat shot from a
+  // ledge, a balcony or a raised platform stayed at the shooter's eye height and never reached the
+  // player below it, so a monster on a step above the player could not hit at all.
+  const middle = floorAt(state, target) + (entityHeight(target) || 56) / 2;
+  const pitch = Math.atan2(middle - origin.z, Math.max(1e-6, Math.hypot(target.x - entity.x, target.y - entity.y)));
+  const direction = { x: Math.cos(aim + offset) * Math.cos(pitch), y: Math.sin(aim + offset) * Math.cos(pitch), z: Math.sin(pitch) };
   const limit = geometryDistance(state, origin, direction, reach);
   const hits = entityDistance(state, origin, direction, target, limit, 16);
   if (hits === null) return;
@@ -1176,7 +1189,11 @@ export const ACTIONS = {
     // every monster further than 392 units fired on every single chase tic, which turned the
     // Zombiemen of a big room into a firing squad. The MISSILEMORE flags bias the same roll.
     if (!canSeeTarget(state, entity, target, SIGHT_RANGE)) return;
-    let reach = Math.max(0, distance - 64) - 128;
+    // P_CheckMissileRange: "no melee attack, so fire more" — the 128 is subtracted only from a
+    // monster that cannot punch, and subtracting it from all of them let every ranged-only type
+    // (Zombieman, chaingunner, arachnotron, mancubus) open fire from twice the distance Doom allows.
+    let reach = Math.max(0, distance - 64);
+    if (labelIndex(actor, meleeLabel) === null) reach = Math.max(0, reach - 128);
     if (actorFlag(actor, 'MISSILEMORE', entity)) reach += 100;
     if (actorFlag(actor, 'MISSILEEVENMORE', entity)) reach += 200;
     // The Archvile, Revenant, Cyberdemon, Spider and Lost Soul adjust the same distance: the
@@ -1478,11 +1495,11 @@ export const ACTIONS = {
   // so every zombie, chaingunner and spider hit for the wrong amount, and the Archvile's flat 20
   // was rolled as 20 with eight sides — up to 160 damage from one attack.
   A_PosAttack(ctx) {
-    monsterHitscan(ctx, 3, 5);
+    monsterHitscan(ctx, 3, 5, 22.5);
     saySound(ctx.state, 'DSPISTOL', ctx.entity, 90);
   },
   A_SPosAttack(ctx) {
-    for (let pellet = 0; pellet < 3; pellet++) monsterHitscan(ctx, 3, 5, 11.25);
+    for (let pellet = 0; pellet < 3; pellet++) monsterHitscan(ctx, 3, 5, 22.5);
     saySound(ctx.state, 'DSSHOTGN', ctx.entity, 90);
   },
   // GZDoom renamed the Spider Mastermind's attack and its states call the new name: the old one

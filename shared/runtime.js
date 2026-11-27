@@ -1011,6 +1011,17 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   updateProximityDoors(project, state);
   updateProximityElevators(project, state);
   advanceSectors(state, dt);
+  // What a crushing ceiling pressed on this tic. The mover cannot hurt anything itself (it has no
+  // project and no business importing the actor runtime), so it leaves the hits here and they are
+  // taken the way every other hit is: armour and invulnerability for the player, `hurtActor` for
+  // everything else.
+  if (state.crushHits?.length) {
+    for (const hit of state.crushHits.splice(0)) {
+      if (hit.player) { damagePlayer(state, hit.amount); continue; }
+      const entity = state.entities.find(candidate => candidate.id === hit.entityId);
+      if (entity && entity.health > 0) hurtActor(project, state, entity, hit.amount);
+    }
+  }
   // A pressed switch shows its other picture for a second, then puts the old one back.
   advanceSwitches(state, dt);
   // Waggling planes and the 3D floors built on them move every frame, not only on an event.
