@@ -139,14 +139,43 @@ answers these (each has a test in `test/monster-attacks.test.js`):
 | `A_PainDie` | Pain Elemental | a killing produced none of the three Lost Souls it is famous for |
 | `A_FatRaise`, `A_Metal`, `A_BabyMetal`, `A_Hoof` | Mancubus, Spider, Arachnotron, Cyberdemon | the heavies walked and raised their guns in silence |
 
-`A_SetFloorClip`/`A_UnSetFloorClip` are still unanswered on purpose: they change how a death sprite
-sits on the floor, which this renderer does not do, and answering them would hide that from the
-unsupported-action report the editor shows.
+`A_SetFloorClip`/`A_UnSetFloorClip` are answered too: the flag is stored and the sprite is cut at
+the sector floor in `spritePlacement`. They were the last two action names the campaign's placed
+monsters called.
 
-**Not replicated yet:** `A_BossDeath` still only latches `bossDefeated`, so a Cyberdemon dying on
-E2M8 (or the Spider Mastermind on E3M8) does not end its level — Doom decides that per map, and
-the map-aware rule is not written. MAP07's mancubus/arachnotron triggers are line specials and are
-unaffected.
+`A_BossDeath` runs the level's own ending rather than only latching `bossDefeated`: it lowers the
+sectors tagged 666, which is what E1M8's Barons, MAP07's Mancubi and Arachnotron pair and the
+Cyberdemon's E2M8 exit all ask for. A map with no such tag keeps playing, as it does in Doom.
+
+### The audit of every monster a level places
+
+Twenty-two classes appear in the campaign's maps. Their action names were all answered, so the
+missing features were in *how* an answered action behaved. Each row is a test in
+`test/monster-features.test.js`, driven by the campaign's own actor table rather than a fixture.
+
+| monster | what was missing |
+| --- | --- |
+| Archvile | `A_VileChase` was `A_Chase`: no corpse ever stood up, and the Heal state was unreachable. `P_CheckForResurrection` is implemented now — a body in reach whose class has a Raise state returns at full health, blocking again through a rebuilt collider, and the Archvile spends Heal doing it |
+| Archvile | `A_VileStart` and `A_VileTarget` were empty stubs and `A_VileAttack` was a plain 20-damage hitscan. The flame is dropped on the target, follows the player while the Archvile holds sight, and bursts for 20 direct plus 70 in a 70-unit radius — 66 damage at the 24 units Doom places it |
+| Mancubus | one shot per attack instead of two, with no `FATSPREAD` fan: every volley did half damage |
+| Lost Soul | `A_SkullAttack` wrote an `entity.charge` that nothing read, so the lunge was silent. It is a real flight at `DEFSKULLSPEED` (20 units a tic) that slams for `3 * (1..8)` on contact |
+| Pain Elemental | the spit appeared at the Elemental's own centre with no target and no charge. It spawns `4 + (r1+r2)*1.5` ahead, is sent at the player and charges on the tic it appears, with Doom's ceiling check and 21-skull limit |
+| Cyberdemon, Spider Mastermind | `+NORADIUSDMG` was ignored, so a rocket at their feet hurt them |
+| Zombieman, Shotgun Guy, Chaingunner, Imp, Wolfenstein SS | health was clamped at zero, so `XDeath` could never be chosen and nothing ever gibbed |
+| Cacodemon | `A_SetFloorClip`/`A_UnSetFloorClip` unanswered |
+| CommanderKeen | `+SPAWNCEILING` ignored: he stood on the floor instead of hanging from the ceiling |
+
+Two known-accepted differences remain, both in AI detail rather than in what a player sees: Doom
+only switches a monster's target when hurt if it has `+QUICKTORETALIATE` (this engine always does,
+which is the more responsive of the two), and `+NOTARGET` does not exempt a thing from another
+monster's autoaim.
+
+**The campaign's stored actor table is older than the compiler.** Three of the twenty-two classes
+are corpses — `DeadZombieMan`, `DeadShotgunGuy`, `DeadCacodemon`, seven of which hang in Doom II's
+maps — and the table on disk gives them the *living* monster's states, so `Spawn` is its `See` and
+a hanging corpse walks at the player. The compiler resolves `Spawn: Goto Super::Death+4` correctly
+now (verified against a fresh import of `gzdoom.pk3`), so re-importing the game fixes it. Every
+other placed monster in the stored table matches a fresh import field for field.
 
 ## Hard-won facts about driving GZDoom
 
