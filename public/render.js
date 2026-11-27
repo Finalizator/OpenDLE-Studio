@@ -41,6 +41,7 @@ import { materialById, materialDisplay, materialScale, wallSideMaterial } from '
 import { viewBob, weaponBob } from '/shared/player-motion.js';
 import { WEDGE_INDICES, wedgeCorners } from '/shared/ramp.js';
 import { createWorldNodeObject, createWorldTerminalController, gameplayCrosshairVisible, setWorldNodePose } from './world-media.js';
+import { chunkFoliage, chunkVisible, foliageInstanceCount, foliageOf, instanceTransform, transformQuaternion } from '../shared/foliage.js';
 
 /**
  * A sprite that stands up, the way every Doom sprite does.
@@ -188,6 +189,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
     return null;
   }
   const materials = new Set(), geometries = new Set();
+  // Painted foliage: one InstancedMesh per chunk per layer, built once and culled per frame.
+  const foliageGroup = new THREE.Group();
+  foliageGroup.name = 'foliage';
+  scene.add(foliageGroup);
+  const foliageChunks = [];
+  const foliageSignature = { value: null };
   // Which wall textures are see-through, and how. Doom draws a picture's transparent pixels as
   // holes (alpha test), while a texture that is *partly* transparent everywhere — Lullaby's sky
   // glow, its panes of glass — is blended instead. Testing those away erases them completely.
@@ -521,7 +528,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
     const modelBounds = new Map();
     const modelImages = new Set();
     let modelPixels = 0;
-    const usedModels = new Set(project.map.entities.map(entity => entity.modelAsset).filter(Boolean));
+    // Painted foliage can name a model the level places nowhere, so its art has to be loaded too.
+    const paintedFoliage = foliageOf(project);
+    const foliageModelIds = paintedFoliage.layers
+      .filter(layer => layer.kind === 'model' && layer.assetId).map(layer => layer.assetId);
+    const usedModels = new Set([...project.map.entities.map(entity => entity.modelAsset).filter(Boolean),
+      ...foliageModelIds.filter(id => assetMap.has(id))]);
     for (const id of usedModels) {
       const asset = assetMap.get(id), bytes = decodeDataURI(asset.src), { json, binary } = readModel(bytes, asset.format);
       validateModelDocument(json, binary?.length);
@@ -1727,7 +1739,123 @@ export async function createPreview(canvas, project, state, { editor = false, on
       }
       return null;
     }
+    /**
+     * Painted foliage as instanced chunks.
+     *
+     * A layer of ten thousand tufts is not ten thousand objects: each chunk of the board is one
+     * `InstancedMesh`, so the whole field costs a few dozen draws, each with the bounding sphere
+     * its own chunk computed — which is what lets three cull a chunk behind the camera and lets
+     * `cullFoliage` drop the ones past the distance budget.
+     */
+    const foliageGeometries = new Map();
+    function foliageCrossGeometry(width, height) {
+      const key = `${Math.round(width)}x${Math.round(height)}`;
+      const cached = foliageGeometries.get(key);
+      if (cached) return cached;
+      const halfWidth = Math.max(1, width) / 2;
+      const positions = [], uvs = [], indices = [];
+      const quad = (ax, az, bx, bz) => {
+        const at = positions.length / 3;
+        positions.push(ax * halfWidth, 0, az * halfWidth, bx * halfWidth, 0, bz * halfWidth,
+          bx * halfWidth, height, bz * halfWidth, ax * halfWidth, height, az * halfWidth);
+        uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+        indices.push(at, at + 1, at + 2, at, at + 2, at + 3);
+      };
+      quad(-1, 0, 1, 0);
+      quad(0, -1, 0, 1);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      geometries.add(geometry);
+      foliageGeometries.set(key, geometry);
+      return geometry;
+    }
+
+    function buildFoliageMeshes() {
+      const field = foliageOf(project);
+      for (const entry of foliageChunks) {
+        foliageGroup.remove(entry.mesh);
+        entry.mesh.dispose?.();
+      }
+      foliageChunks.length = 0;
+      if (!field.layers.length) return;
+      // Where the board sits in the level: the object the terrain was exported as.
+      const originEntity = field.origin.entityId
+        ? project.map.entities.find(entity => entity.id === field.origin.entityId) : null;
+      const origin = { x: originEntity?.x ?? 0, y: originEntity?.y ?? 0,
+        height: originEntity ? (originEntity.z ?? sectorIndex.at(originEntity.x, originEntity.y)?.floorHeight ?? 0) : 0 };
+      const matrix = new THREE.Matrix4(), turn = new THREE.Quaternion(), scale = new THREE.Vector3();
+      const position = new THREE.Vector3();
+      // Degrees, which `instanceTransform` takes; the object's angle is in degrees in the map.
+      const boardOrigin = { x: origin.x, z: origin.y, height: origin.height, yaw: originEntity?.angle || 0 };
+
+      for (const chunk of chunkFoliage(field)) {
+        const layer = field.layers.find(item => item.id === chunk.layerId);
+        if (!layer?.assetId) continue;
+        let geometry = null, material = null;
+        if (layer.kind === 'model') {
+          const loaded = modelAssets.get(layer.assetId);
+          loaded?.scene?.traverse(node => {
+            if (geometry || !node.geometry) return;
+            geometry = node.geometry;
+            material = Array.isArray(node.material) ? node.material[0] : node.material;
+          });
+        } else {
+          const asset = assetMap.get(layer.assetId);
+          const texture = spriteTexture(layer.assetId);
+          if (!texture || !asset) continue;
+          geometry = foliageCrossGeometry(asset.width || 32, asset.height || 32);
+          material = withEffect(new THREE.MeshBasicNodeMaterial({ map: texture, transparent: true,
+            alphaTest: .35, side: THREE.DoubleSide, depthWrite: false }));
+          materials.add(material);
+        }
+        if (!geometry || !material) continue;
+        const count = chunk.instances.length;
+        const mesh = new THREE.InstancedMesh(geometry, material, count);
+        mesh.name = `foliage ${chunk.key}`;
+        mesh.frustumCulled = true;
+        for (let index = 0; index < count; index++) {
+          // One shared placement rule for both renderers, so the game draws the field the tab
+          // showed. The board is turned with the object that carries it; its tufts follow.
+          const placed = instanceTransform(chunk.instances[index], boardOrigin);
+          const quaternion = transformQuaternion(placed);
+          position.set(placed.position.x, placed.position.y, placed.position.z);
+          turn.set(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
+          scale.set(placed.scale, placed.scale, placed.scale);
+          mesh.setMatrixAt(index, matrix.compose(position, turn, scale));
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        // The chunk's own bounds, turned with the board, are the frustum test's sphere.
+        const placedCentre = instanceTransform([chunk.centre.x, chunk.centre.y, chunk.centre.z, 0, 1, 0, 0], boardOrigin);
+        const centre = new THREE.Vector3(placedCentre.position.x, placedCentre.position.y, placedCentre.position.z);
+        mesh.boundingSphere = new THREE.Sphere(centre, chunk.radius);
+        mesh.userData.chunk = { centre: { x: centre.x, z: centre.z }, radius: chunk.radius, instances: count };
+        foliageGroup.add(mesh);
+        foliageChunks.push({ mesh, chunk });
+      }
+      foliageSignature.value = `${field.chunkSize}|${field.layers.length}|${foliageChunks.length}`;
+      writeDataset('foliageChunks', String(foliageChunks.length));
+      writeDataset('foliageInstances', String(foliageInstanceCount(field)));
+    }
+
+    /** Hides the chunks past the distance budget; the frustum test is three's own. */
+    const FOLIAGE_DISTANCE = 6000;
+    function cullFoliage() {
+      if (!foliageChunks.length) return;
+      let drawn = 0;
+      for (const entry of foliageChunks) {
+        const visible = chunkVisible(entry.mesh.userData.chunk,
+          { x: camera.position.x, z: camera.position.z, maxDistance: FOLIAGE_DISTANCE });
+        entry.mesh.visible = visible;
+        if (visible) drawn++;
+      }
+      writeDataset('foliageDrawn', String(drawn));
+    }
+
     for (const entity of project.map.entities) if (editor || entity.type !== 'player') addEntity(entity);
+    buildFoliageMeshes();
     const weaponOverlays = new Map();
     const weaponIds = new Set([project.environment.weaponAsset, ...Object.values(project.environment.weaponAssets || {}),
       ...project.events.flatMap(event => event.actions.filter(action => action.type === 'playWeaponClip')
@@ -2608,6 +2736,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
         effectMeshes.delete(entry.id);
         effectList.splice(index, 1);
       }
+      cullFoliage();
       frameUpdateMs = clock() - frameStarted;
       const drawStarted = clock();
       renderCameraTextures(state);

@@ -15,7 +15,9 @@ built from Terrain Studio 2.0.
 
 The runtime is a viewer, not the studio: it ships `createTerrain`, `createTerrainViewer`, an
 exporter (`GLB`/`OBJ`), document loading and the generation helpers. It does not ship the studio's
-editor chrome, vegetation painting or the account/back-end pieces.
+editor chrome, vegetation painting or the account/back-end pieces; **foliage** here is this
+editor's own (`shared/foliage.js`), painted in the tab and drawn as instanced chunks, not the
+studio's vegetation system.
 
 ### How the modules reach the page
 
@@ -100,6 +102,52 @@ Both documents are written into the project on every stroke and pushed into the 
 stroke refines the terrain under the pointer instead of reloading the tab. During a stroke that
 happens at most every ~320 ms; on release it happens at once.
 
+## Foliage
+
+**Brush → Paint foliage** scatters grass, bushes and rocks over the board. A foliage *layer* is one
+piece of art — a 2D sprite or a 3D model — plus the rules a stroke paints with:
+
+| Setting | What it decides |
+| --- | --- |
+| **Density** | how far apart candidate tufts stand, from 96 units (0.02) to 10 units (1) |
+| **Scale min/max** | the random size range each tuft gets |
+| **Random turn** | a per-tuft yaw instead of the layer's own |
+| **Uneven tilt°** | how far each tuft leans, in degrees, in both directions |
+| **Uneven patches** | 0 paints an even wash, 1 leaves bare ground between clumps |
+| **Tuft height** | what the culling sphere has to cover |
+| **Chunk size** | the square of board one instanced mesh covers (16–1024 units) |
+
+Paint by dragging on the terrain. The brush fades at its rim, never places two tufts on the same
+spot, and a second stroke over the same ground fills the cells the first one skipped rather than
+doubling it. Every tuft takes the height of the slope under it, so a hillside's grass follows the
+hill.
+
+### Chunking, the Godot multimesh way
+
+A field is **instances, not objects**: an instance is seven numbers — `[x, height, z, yaw, scale,
+tiltX, tiltZ]` — and `shared/foliage.js` groups them into one square chunk per `chunkSize` of the
+board. Each chunk is drawn as a single `THREE.InstancedMesh`:
+
+- **2D sprites** are two quads crossed at right angles, so a tuft never disappears when seen
+  edge-on, and the whole chunk is one draw with one texture;
+- **3D models** are the asset's own geometry, instanced the same way.
+
+`chunkSize` is the trade: 64 makes many small chunks with tight culling, 512 makes few big draws
+that are culled less precisely. The field is capped at 20 000 instances per layer and 32 layers.
+
+### Culling
+
+Every chunk mesh carries the bounding sphere its own chunk computed, so the renderer frustum-culls
+it for free, and `chunkFoliage` / `chunkVisible` in `shared/foliage.js` are what the game's
+renderer uses for the distance budget (`foliageDrawn` and `foliageChunks` on the canvas dataset say
+what survived). The same module answers `visibleChunks()`, which is what a future LOD step or an
+imposter pass would build on.
+
+The painted field is stored with the recipe (`project.terrain.foliage`), so it travels with the
+level and the exported game draws it with the same renderer. Its `origin.entityId` is the object
+the terrain was exported as: instances are in the board's own coordinates, and moving the terrain in
+the editor moves its grass with it.
+
 ## The layer editor
 
 The recipe's shape is a **noise stack**: an ordered list of layers, each one blended into what the
@@ -137,7 +185,8 @@ adding its manifest row.
    defaults (`seed 1337`, 8 × 8 chunks of 128, height 560) when it has none.
 2. Set the recipe: seed, chunks, chunk size, height scale, noise octaves, noise scale and mesh
    resolution. **Generate** rebuilds the world; **Reset** restores the defaults.
-3. **Export to level** meshes it and places the result.
+3. **Export to level** meshes it and places the result. If the board carries painted foliage, the
+   exported object becomes the field's origin: move the terrain and its grass follows.
 
 The recipe is saved **with the project** (`project.terrain`), not in the browser: reopening the tab
 rebuilds the same world, and another author opening the project sees the same one. The mesh is
@@ -207,6 +256,10 @@ will not open:
   the export exceeds it.
 - `project.terrain` stores the recipe only. Deleting the object does not delete the recipe, and
   deleting the recipe does not remove an exported asset.
+- Foliage is decoration: it is not collidable, not saved into a game save, and not drawn past 6 000
+  units from the camera. A tuft is a picture or a mesh, never an object the runtime ticks.
+- A foliage layer with no art selected paints nothing and says so; the same is true of a stroke
+  made before any layer exists.
 
 ## Regenerating or upgrading
 

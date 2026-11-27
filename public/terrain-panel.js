@@ -14,6 +14,11 @@
 
 import { createSculptField, SCULPT_TOOLS } from './terrain-sculpt.js';
 import { createPaintField, PAINT_MATERIALS, PAINT_TOOLS } from './terrain-paint.js';
+import {
+  FOLIAGE_KINDS, addFoliageLayer, chunkFoliage, clearFoliageLayer, createFoliageScatter,
+  defaultFoliage, foliageInstanceCount, foliageLayerDefaults, foliageOf, removeFoliageLayer,
+  updateFoliageLayer, validateFoliage,
+} from '../shared/foliage.js';
 
 const DEFAULTS = {
   name: 'Terrain',
@@ -39,6 +44,9 @@ const DEFAULTS = {
   // runtime's manual document and both stored as the document itself.
   sculpt: null,
   paint: null,
+  // Painted foliage: layers of instanced tufts, chunked for drawing and culling. It lives with the
+  // recipe, so it travels with the level and is redrawn in play by the game's own renderer.
+  foliage: null,
 };
 
 export function defaultTerrain() { return JSON.parse(JSON.stringify(DEFAULTS)); }
@@ -52,6 +60,7 @@ export function terrainRecipe(project) {
     shapes: Array.isArray(stored.shapes) ? stored.shapes : [],
     sculpt: stored.sculpt || null,
     paint: stored.paint || null,
+    foliage: stored.foliage || null,
   }));
 }
 
@@ -241,7 +250,12 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
   }).catch(error => { shapesHost.textContent = 'The shape editor could not load: ' + error.message; });
 
   function save() {
-    edit(next => { next.terrain = JSON.parse(JSON.stringify(recipe)); }, 'Terrain recipe saved');
+    const stored = JSON.parse(JSON.stringify(recipe));
+    if (stored.foliage) {
+      try { validateFoliage(stored.foliage); }
+      catch (error) { status('Foliage not saved: ' + error.message, true); return; }
+    }
+    edit(next => { next.terrain = stored; }, 'Terrain recipe saved');
   }
 
   // ---- brush tools -----------------------------------------------------------------------------
@@ -249,10 +263,20 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
   // Both tools write into the manual document and then ask the live world to take the new
   // configuration: `configure` rebuilds the height field without recreating the renderer, scene or
   // camera, so a stroke refines the terrain under the pointer instead of reloading the tab.
-  let brushMode = null;            // 'sculpt' | 'paint' | null
+  let brushMode = null;            // 'sculpt' | 'paint' | 'foliage' | null
   let sculptTool = 'raise', sculptRadius = 220, sculptStrength = 14;
   let paintTool = 'paint', paintRadius = 160, paintStrength = .55, paintLayerId = null;
   let brushTimer = 0, strokeDebounce = 0;
+
+  // ---- foliage ---------------------------------------------------------------------------------
+  //
+  // Foliage is painted, not generated: a stroke scatters tufts of the selected layer over the
+  // ground under the pointer, and the preview redraws the chunk that changed. The field itself is
+  // `shared/foliage.js`, which the game's renderer also builds its instanced meshes from.
+  let foliage = foliageOf({ terrain: recipe });
+  let foliageLayerId = foliage.layers[0]?.id || null;
+  let foliageRadius = 180, foliageStrength = .9, foliageSalt = 1, foliagePreview = null;
+  let foliageScatter = null, foliagePreviewTimer = 0;
 
   function boardBounds() {
     const size = Math.max(1, recipe.chunkCount * recipe.chunkSize);
@@ -276,9 +300,39 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     else brushTimer = setTimeout(() => void run(), 320);
   }
 
-  function onStroke({ x, z, phase }) {
+  /**
+   * One sample of the foliage brush.
+   *
+   * Kept apart from `onStroke` because this is the whole interaction and the rest is plumbing:
+   * the tests drive this directly, and the viewport calls it through a stroke.
+   */
+  function paintFoliage({ x, z, y = 0, phase = 'move' }) {
+    const layer = foliage.layers.find(item => item.id === foliageLayerId);
+    if (!layer) { status('Add a foliage layer first', true); return 0; }
+    if (!layer.assetId) { status('Pick a sprite or a model for the foliage layer', true); return 0; }
+    if (phase === 'start') {
+      foliageScatter = createFoliageScatter(layer);
+      foliageSalt = (foliageSalt * 31 + 17) % 2147483647;
+    }
+    foliageScatter ||= createFoliageScatter(layer);
+    const added = foliageScatter.sample({ x, z, y, radius: foliageRadius, strength: foliageStrength, salt: foliageSalt });
+    recipe = { ...recipe, foliage };
+    paintStatus('foliage');
+    scheduleFoliagePreview();
+    if (phase === 'end') {
+      foliageScatter = null;
+      save();
+    }
+    return added;
+  }
+
+  function onStroke({ x, z, phase, y }) {
     if (!brushMode) return;
     const { origin, span } = boardBounds();
+    if (brushMode === 'foliage') {
+      paintFoliage({ x, z, y: y || 0, phase });
+      return;
+    }
     if (brushMode === 'sculpt') {
       sculptField.stamp({ x, z, radius: sculptRadius, strength: sculptStrength / 35, tool: sculptTool, origin, span });
       paintStatus('sculpt');
@@ -305,7 +359,36 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
       line.textContent = layer
         ? `${layer.name}: ${(paintField.coverage(layer.id) * 100).toFixed(1)}% of the board painted.`
         : 'No paint layer selected.';
+    } else if (kind === 'foliage') {
+      const layer = foliage.layers.find(item => item.id === foliageLayerId);
+      const chunks = chunkFoliage(foliage).length;
+      line.textContent = layer
+        ? `${layer.name}: ${layer.instances.length.toLocaleString()} tufts in ${chunks} chunk${chunks === 1 ? '' : 's'} of ${foliage.chunkSize}.`
+        : 'No foliage layer selected.';
     }
+  }
+
+  // ---- foliage preview -------------------------------------------------------------------------
+
+  /** Redraws the preview at most every 120 ms while a stroke is running. */
+  function scheduleFoliagePreview({ final = false } = {}) {
+    clearTimeout(foliagePreviewTimer);
+    const run = () => void refreshFoliagePreview();
+    if (final) { run(); return; }
+    foliagePreviewTimer = setTimeout(run, 120);
+  }
+
+  async function refreshFoliagePreview() {
+    if (!viewport?.scene) return;
+    if (!foliagePreview) {
+      const module = await import('./terrain-foliage.js');
+      foliagePreview = module.createFoliagePreview({
+        resolveAsset: layer => (getProject()?.assets || []).find(asset => asset.id === layer.assetId) || null,
+      });
+      viewport.scene.add(foliagePreview.object);
+    }
+    await foliagePreview.update(foliage, getProject());
+    paintStatus('foliage');
   }
 
   function buildBrushes() {
@@ -314,7 +397,8 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     const modeRow = element('div', 'terrain-layer-row');
     const modeSelect = element('select');
     modeSelect.id = 'terrain-brush-mode';
-    for (const [value, label] of [['', 'Off (orbit)'], ['sculpt', 'Sculpt height'], ['paint', 'Paint surface']]) {
+    for (const [value, label] of [['', 'Off (orbit)'], ['sculpt', 'Sculpt height'], ['paint', 'Paint surface'],
+      ['foliage', 'Paint foliage']]) {
       const option = element('option', null, label);
       option.value = value;
       if ((brushMode || '') === value) option.selected = true;
@@ -380,6 +464,65 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     paintRow.append(element('span', null, 'Paint'), paintToolSelect, paintRadiusInput, paintStrengthInput);
     brushHost.append(paintRow);
 
+    // Foliage rows: the brush, the field's chunker, and the layer being painted.
+    const foliageRow = element('div', 'terrain-layer-row');
+    foliageRow.id = 'terrain-foliage-row';
+    const foliageRadiusInput = element('input');
+    foliageRadiusInput.id = 'terrain-foliage-radius';
+    foliageRadiusInput.type = 'range'; foliageRadiusInput.min = '40'; foliageRadiusInput.max = '600'; foliageRadiusInput.step = '10';
+    foliageRadiusInput.value = String(foliageRadius);
+    foliageRadiusInput.addEventListener('input', () => { foliageRadius = Number(foliageRadiusInput.value); });
+    const foliageStrengthInput = element('input');
+    foliageStrengthInput.id = 'terrain-foliage-strength';
+    foliageStrengthInput.type = 'range'; foliageStrengthInput.min = '.05'; foliageStrengthInput.max = '1'; foliageStrengthInput.step = '.05';
+    foliageStrengthInput.value = String(foliageStrength);
+    foliageStrengthInput.addEventListener('input', () => { foliageStrength = Number(foliageStrengthInput.value); });
+    foliageRow.append(element('span', null, 'Foliage'), foliageRadiusInput, foliageStrengthInput);
+    brushHost.append(foliageRow);
+
+    const foliageChunkRow = element('div', 'terrain-layer-row');
+    foliageChunkRow.id = 'terrain-foliage-chunk-row';
+    const chunkInput = element('input');
+    chunkInput.id = 'terrain-foliage-chunk';
+    chunkInput.type = 'number'; chunkInput.min = '16'; chunkInput.max = '1024'; chunkInput.step = '16';
+    chunkInput.value = String(foliage.chunkSize);
+    chunkInput.addEventListener('change', () => {
+      const value = Math.round(Number(chunkInput.value));
+      if (!Number.isFinite(value)) { chunkInput.value = String(foliage.chunkSize); return; }
+      foliage = { ...foliage, chunkSize: Math.max(16, Math.min(1024, value)) };
+      recipe = { ...recipe, foliage };
+      save();
+      scheduleFoliagePreview({ final: true });
+      paintStatus('foliage');
+    });
+    const addFoliage = element('button', null, 'Add layer');
+    addFoliage.type = 'button';
+    addFoliage.id = 'terrain-foliage-add';
+    const kindSelect = element('select');
+    kindSelect.id = 'terrain-foliage-kind';
+    for (const [value, label] of FOLIAGE_KINDS) {
+      const option = element('option', null, label);
+      option.value = value;
+      kindSelect.append(option);
+    }
+    addFoliage.addEventListener('click', () => {
+      try {
+        const created = addFoliageLayer(foliage, { kind: kindSelect.value, ...foliageLayerDefaults(kindSelect.value) });
+        foliage = created.foliage;
+        foliageLayerId = created.layer.id;
+      } catch (error) { status(error.message, true); return; }
+      recipe = { ...recipe, foliage };
+      save();
+      renderFoliageLayers();
+      paintStatus('foliage');
+    });
+    foliageChunkRow.append(element('span', null, 'Chunk size'), chunkInput, kindSelect, addFoliage);
+    brushHost.append(foliageChunkRow);
+
+    const foliageList = element('div');
+    foliageList.id = 'terrain-foliage-layers';
+    brushHost.append(foliageList);
+
     const layerRow = element('div', 'terrain-layer-row');
     layerRow.id = 'terrain-paint-layers';
     const materialSelect = element('select');
@@ -421,14 +564,140 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
       renderPaintLayers();
       applyBrushChange({ final: true });
     });
-    clearRow.append(clearSculpt, clearPaint);
+    const clearFoliage = element('button', null, 'Clear foliage');
+    clearFoliage.type = 'button';
+    clearFoliage.addEventListener('click', () => {
+      if (!foliageLayerId) { status('Select a foliage layer first', true); return; }
+      foliage = clearFoliageLayer(foliage, foliageLayerId);
+      recipe = { ...recipe, foliage };
+      save();
+      scheduleFoliagePreview({ final: true });
+      paintStatus('foliage');
+    });
+    clearRow.append(clearSculpt, clearPaint, clearFoliage);
     brushHost.append(clearRow);
 
     const line = element('p', 'terrain-layer-desc');
     line.id = 'terrain-brush-status';
     brushHost.append(line);
     renderPaintLayers();
+    renderFoliageLayers();
     syncBrushRows();
+  }
+
+  /** The foliage layer list: pick one, set what it paints, and say what it is worth. */
+  function renderFoliageLayers() {
+    const list = root.querySelector('#terrain-foliage-layers');
+    if (!list) return;
+    list.replaceChildren();
+    // The panel is built before the project is loaded, so an empty tab must render without one.
+    const assets = getProject()?.assets || [];
+    for (const layer of foliage.layers) {
+      const row = element('div', `terrain-layer${layer.id === foliageLayerId ? ' open' : ''}`);
+      row.dataset.foliageLayer = layer.id;
+      const head = element('div', 'terrain-layer-head');
+      const visible = element('input');
+      visible.type = 'checkbox'; visible.checked = layer.visible !== false;
+      visible.title = 'Draw this layer';
+      visible.addEventListener('change', () => {
+        foliage = updateFoliageLayer(foliage, layer.id, { visible: visible.checked });
+        recipe = { ...recipe, foliage };
+        save();
+        scheduleFoliagePreview({ final: true });
+      });
+      const pick = element('button', 'terrain-shape-name', `${layer.name} · ${layer.instances.length.toLocaleString()}`);
+      pick.type = 'button';
+      pick.id = `terrain-foliage-pick-${layer.id}`;
+      pick.addEventListener('click', () => {
+        foliageLayerId = layer.id;
+        renderFoliageLayers();
+        paintStatus('foliage');
+      });
+      const remove = element('button', 'terrain-icon', '×');
+      remove.type = 'button'; remove.title = 'Remove layer';
+      remove.addEventListener('click', () => {
+        foliage = removeFoliageLayer(foliage, layer.id);
+        if (foliageLayerId === layer.id) foliageLayerId = foliage.layers[0]?.id || null;
+        recipe = { ...recipe, foliage };
+        save();
+        renderFoliageLayers();
+        scheduleFoliagePreview({ final: true });
+      });
+      head.append(visible, pick, remove);
+      row.append(head);
+
+      if (layer.id === foliageLayerId) {
+        const settings = element('div', 'terrain-layer-settings');
+        // Art: a model asset for a 3D layer, a sprite or texture for a 2D one.
+        const assetSelect = element('select');
+        assetSelect.id = `terrain-foliage-asset-${layer.id}`;
+        const wanted = layer.kind === 'model' ? ['model'] : ['sprite', 'texture', 'image'];
+        const options = assets.filter(asset => wanted.includes(asset.kind));
+        const none = element('option', null, options.length ? 'Choose art…' : 'No matching art in this project');
+        none.value = '';
+        assetSelect.append(none);
+        for (const asset of options) {
+          const option = element('option', null, asset.name);
+          option.value = asset.id;
+          if (asset.id === layer.assetId) option.selected = true;
+          assetSelect.append(option);
+        }
+        assetSelect.addEventListener('change', () => {
+          foliage = updateFoliageLayer(foliage, layer.id, { assetId: assetSelect.value || null });
+          recipe = { ...recipe, foliage };
+          save();
+          renderFoliageLayers();
+          scheduleFoliagePreview({ final: true });
+        });
+
+        const numberField = (id, label, value, min, max, step, apply) => {
+          const labelNode = element('label', 'terrain-field');
+          labelNode.append(element('span', null, label));
+          const input = element('input');
+          input.type = 'number'; input.id = `terrain-foliage-${id}-${layer.id}`;
+          input.min = String(min); input.max = String(max); input.step = String(step);
+          input.value = String(value);
+          input.addEventListener('change', () => {
+            const parsed = Number(input.value);
+            if (!Number.isFinite(parsed)) { input.value = String(value); return; }
+            foliage = updateFoliageLayer(foliage, layer.id, apply(parsed));
+            recipe = { ...recipe, foliage };
+            save();
+            paintStatus('foliage');
+          });
+          labelNode.append(input);
+          return labelNode;
+        };
+        const randomTile = element('label', 'terrain-field');
+        randomTile.append(element('span', null, 'Random turn'));
+        const randomYaw = element('input');
+        randomYaw.type = 'checkbox'; randomYaw.checked = layer.randomYaw !== false;
+        randomYaw.id = `terrain-foliage-randomYaw-${layer.id}`;
+        randomYaw.addEventListener('change', () => {
+          foliage = updateFoliageLayer(foliage, layer.id, { randomYaw: randomYaw.checked });
+          recipe = { ...recipe, foliage };
+          save();
+        });
+        randomTile.append(randomYaw);
+
+        settings.append(
+          assetSelect,
+          numberField('density', 'Density', layer.density, .02, 1, .02, value => ({ density: value })),
+          numberField('scaleMin', 'Scale min', layer.scale.min, .05, 8, .05, value => ({ scale: { min: value } })),
+          numberField('scaleMax', 'Scale max', layer.scale.max, .05, 8, .05, value => ({ scale: { max: value } })),
+          numberField('tilt', 'Uneven tilt°', layer.tilt, 0, 60, 1, value => ({ tilt: value })),
+          numberField('uneven', 'Uneven patches', layer.uneven, 0, 1, .05, value => ({ uneven: value })),
+          numberField('height', 'Tuft height', layer.height, 1, 512, 1, value => ({ height: value })),
+          randomTile);
+        row.append(settings);
+      }
+      list.append(row);
+    }
+    if (!foliage.layers.length) {
+      const empty = element('p', 'terrain-layer-desc',
+        'No foliage yet. Pick 2D sprite or 3D model, press Add layer, choose its art, then paint on the terrain.');
+      list.append(empty);
+    }
   }
 
   function renderPaintLayers() {
@@ -479,6 +748,9 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     const list = root.querySelector('#terrain-paint-layer-list');
     if (sculptRow) sculptRow.hidden = brushMode !== 'sculpt';
     for (const row of [paintRow, layerRow, list]) if (row) row.hidden = brushMode !== 'paint';
+    const foliageRows = [root.querySelector('#terrain-foliage-row'), root.querySelector('#terrain-foliage-chunk-row'),
+      root.querySelector('#terrain-foliage-layers')];
+    for (const row of foliageRows) if (row) row.hidden = brushMode !== 'foliage';
     const clear = root.querySelector('#terrain-brush-status');
     if (clear && !brushMode) clear.textContent = 'The brush is off, so dragging orbits the camera.';
   }
@@ -540,6 +812,10 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
           stroke: brushMode ? onStroke : null });
       }
       await viewport.setWorld(recipe.mode, terrainConfiguration(recipe));
+      // Foliage is drawn over the board and lives in the viewport's own scene, so it survives a
+      // world rebuild; only a mode without a board hides it.
+      if (foliage.layers.length) void refreshFoliagePreview();
+      if (foliagePreview) foliagePreview.object.visible = recipe.mode === 'finite';
       viewport.fit();
       const detail = recipe.mode === 'mini' ? 'mini ' + recipe.mini.recipe
         : recipe.chunkCount + ' × ' + recipe.chunkCount + ' chunks of ' + recipe.chunkSize;
@@ -588,6 +864,10 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
   generate.addEventListener('click', () => void build());
   reset.addEventListener('click', () => {
     recipe = defaultTerrain();
+    foliage = defaultFoliage();
+    foliageLayerId = null;
+    foliagePreview?.dispose?.();
+    foliagePreview = null;
     for (const [key, value] of Object.entries(recipe)) {
       if (typeof value === 'object') continue;
       const input = root.querySelector('#terrain-' + key);
@@ -621,8 +901,11 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     // The brush fields are the project's documents, decoded; the two status lines follow them.
     sculptField.load(recipe.sculpt);
     paintField.load(recipe.paint);
+    foliage = foliageOf({ terrain: recipe });
+    if (!foliage.layers.some(layer => layer.id === foliageLayerId)) foliageLayerId = foliage.layers[0]?.id || null;
     renderPaintLayers();
-    paintStatus('sculpt'); paintStatus('paint');
+    renderFoliageLayers();
+    paintStatus('sculpt'); paintStatus('paint'); paintStatus('foliage');
     syncVisibility();
     // The viewer is built on demand: a project with no terrain yet should not pay for a WebGL2
     // context or the package's workers until the author asks for one.
@@ -635,5 +918,17 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
   buildBrushes();
 
   syncVisibility();
-  return { render, dispose() { viewport?.dispose?.(); viewport = null; } };
+  return {
+    render,
+    dispose() {
+      foliagePreview?.dispose?.();
+      foliagePreview = null;
+      viewport?.dispose?.();
+      viewport = null;
+    },
+    /** The painted field, for the tests and for anything that wants to draw it elsewhere. */
+    foliage: () => foliage,
+    /** One brush sample, the same one the viewport's stroke makes. */
+    paintFoliage,
+  };
 }

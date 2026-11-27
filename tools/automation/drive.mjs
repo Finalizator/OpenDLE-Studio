@@ -106,10 +106,11 @@ async function runStep(page, step) {
     case 'drag': {
       // Pixels: `drag:10,20,60,20`. World: `drag:w:-160,-96|w:96,96` — the page converts, so a
       // caller never has to reproduce the camera maths.
-      const [from, to] = argument.includes('|') ? argument.split('|') : null;
-      const start = from ? await pointOf(page, from) : await pointOf(page, parsePoint(argument, 'drag').slice(0, 2).join(','));
-      const end = to ? await pointOf(page, to)
-        : await pointOf(page, parsePoint(argument, 'drag').slice(2, 4).join(','));
+      // `null` here would be destructured, which throws: a pixel drag has no `|` at all.
+      const [from, to] = argument.includes('|') ? argument.split('|') : [];
+      const numbers = from ? null : parsePoint(argument, 'drag');
+      const start = from ? await pointOf(page, from) : { x: numbers[0], y: numbers[1] };
+      const end = to ? await pointOf(page, to) : { x: numbers[2], y: numbers[3] };
       await page.drag(start, end);
       return { dragged: [start, end] };
     }

@@ -7002,6 +7002,12 @@ async function placeTerrainModel({ bytes, binary, name }) {
       id, name: asset.name, assetId: asset.id,
       x: Math.round(player?.x ?? 0), y: Math.round(player?.y ?? 0), bounds,
     }));
+    // The foliage painted in the tab is stored in the board's own coordinates, so it has to know
+    // which object carries that board: this one. Move the terrain and its grass moves with it.
+    if (next.terrain?.foliage && next.terrain.foliage.layers?.length) {
+      next.terrain = { ...next.terrain,
+        foliage: { ...next.terrain.foliage, origin: { entityId: id } } };
+    }
   }, `${asset.name} exported to the level: it is solid and walkable`);
   selection = { kind: 'entity', id };
   render();
