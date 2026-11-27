@@ -82,10 +82,14 @@ function parseModelBlock(name, body) {
         if (args.length >= 2) record.models.push({ index: Number(args[0]) || 0, file: args[1] });
         break;
       case 'frameindex':
-        // FrameIndex <sprite> <letter> <model index> <frame number>
+        // FrameIndex <sprite> <letters> <model index> <frame number>: one frame per letter, so
+        // `FrameIndex HEAD ABCD 0 0` covers A, B, C and D with the same model (`r_data/models.cpp`
+        // pushes a sprite model frame per character, deduplicated). Keeping "ABCD" as a single
+        // letter meant no state ever matched it and the model never showed.
         if (args.length >= 4) {
-          record.frames.push({ sprite: String(args[0]).toUpperCase(), letter: String(args[1]).toUpperCase(),
-            frame: Number(args[3]) || 0, model: Number(args[2]) || 0 });
+          const sprite = String(args[0]).toUpperCase(), letters = String(args[1]).toUpperCase();
+          const model = Number(args[2]) || 0, frame = Number(args[3]) || 0;
+          for (const letter of new Set(letters)) if (letter >= 'A' && letter <= '\u005a') record.frames.push({ sprite, letter, frame, model });
         }
         break;
       case 'rotating': record.rotating = true; break;

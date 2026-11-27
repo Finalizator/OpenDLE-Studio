@@ -136,3 +136,12 @@ test('GZDoom 4.x language.csv becomes a string table', async () => {
   assert.equal(resolveString(strings, '$PRESSYN'), 'Press Y or N.');
   assert.equal('Miscellaneous' in strings, false, 'a remarks-only row is not a string');
 });
+
+test('A FrameIndex with several letters registers a frame for each, like GZDoom', async () => {
+  const { parseModelDefs, modelForFrame } = await import('../shared/modeldef.js');
+  const [definition] = parseModelDefs(['Model HeadModel\n{\n  Model 0 "head.md3"\n  FrameIndex HEAD ABCD 0 0\n}']);
+  // `FrameIndex HEAD ABCD 0 0` covers A, B, C and D (`r_data/models.cpp` pushes one sprite model
+  // frame per character). Storing "ABCD" as one letter meant no state ever matched it.
+  assert.deepEqual(definition.frames.map(frame => frame.letter), ['A', 'B', 'C', 'D']);
+  assert.deepEqual(modelForFrame(definition, 'HEAD', 'B'), { index: 0, file: 'head.md3' });
+});
