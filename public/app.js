@@ -937,6 +937,9 @@ function commit(next, message = 'Project updated', limit = historyLimit(next), n
   project = next;
   dirty = true;
   editVersion++;
+  // A replaced document replaces every section, so the other windows are told to adopt it whole
+  // (`reset`); an ordinary edit is a merge and goes out through `commit` below.
+  if (newDocument) globalThis.__opendleWindows?.reset(next);
   clearDraft();
   // The draft backup can report its own notice (large projects skip it), so it
   // runs before the edit message instead of replacing it.
@@ -6322,11 +6325,14 @@ $('undo').addEventListener('click', () => {
   // value is already a safe snapshot and needs no copy.
   future.push(historySnapshot()); restoreHistory(history.pop()); dirty = true; editVersion++; clearDraft();
   persistDraft(); render(); status('Undone');
+  // A detached window edits the same document, so an undo has to reach it like any other change.
+  globalThis.__opendleWindows?.commit(project);
 });
 $('redo').addEventListener('click', () => {
   if (!future.length) return;
   history.push(historySnapshot()); restoreHistory(future.pop()); dirty = true; editVersion++; clearDraft();
   persistDraft(); render(); status('Redone');
+  globalThis.__opendleWindows?.commit(project);
 });
 $('new').addEventListener('click', guard(async () => {
   if (confirm('Create a new project? You can undo this change.')) await replaceDocument(installEngineScripts(createProject(), { organizeStarter: true }), 'New project created with editable Engine sheets');
@@ -8677,6 +8683,8 @@ function applyRemoteProject(next) {
   dirty = true;
   editVersion++;
   render();
+  // Work done in another window is work: it belongs in the local project folder like any edit.
+  projectAutosave.schedule();
 }
 
 /**

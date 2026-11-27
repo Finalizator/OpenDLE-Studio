@@ -59,7 +59,10 @@ export function createStudioWindows({
   const view = parseWindowView(location?.search || '');
   const isMain = view.kind === 'main';
   const panel = view.kind === 'panel' ? view.panel : null;
-  const sections = panel ? sectionsForPanel(panel) : [];
+  // A detached dialog is the editor of a section too: the script editor writes the level's scripts.
+  const DIALOG_SECTIONS = { 'script-editor': ['mapScripts'] };
+  const sections = view.kind === 'panel' ? sectionsForPanel(panel)
+    : view.kind === 'dialog' ? [...(DIALOG_SECTIONS[view.dialog] || [])] : [];
   const id = uid();
   const link = channel || (typeof BroadcastChannel === 'function' ? new BroadcastChannel(channelName) : null);
   /** Detached windows this one knows about: id → view. */
@@ -118,11 +121,10 @@ export function createStudioWindows({
     for (const element of document.querySelectorAll('.panel')) {
       element.hidden = element.id !== `${panel}-panel`;
     }
+    // The dock is what the Assets tab shows beside a level panel; a window showing a panel of its
+    // own never wants it, and the Assets tab is `#assets-panel` rather than the dock.
     const dock = document.getElementById('asset-dock');
-    if (panel === 'assets') {
-      if (dock) dock.hidden = false;
-      for (const element of document.querySelectorAll('.panel')) element.hidden = true;
-    } else if (dock) dock.hidden = true;
+    if (dock) dock.hidden = true;
   }
 
   /* --- messaging ------------------------------------------------------ */
@@ -167,7 +169,10 @@ export function createStudioWindows({
       }
       case 'state': {
         if (isMain || !message.document) return;
-        applyProject(mergeFromHub(getProject(), message.document, sections), { remote: true });
+        // A replaced document (New, Open, import) is not a merge: nothing of the previous one may
+        // survive, so the peer takes it whole.
+        const next = message.replace ? message.document : mergeFromHub(getProject(), message.document, sections);
+        applyProject(next, { remote: true });
         settleFirstDocument(true);
         return;
       }
@@ -204,7 +209,7 @@ export function createStudioWindows({
   /** The document is loaded (or replaced): the hub is now able to answer, and tells everyone. */
   function reset(project) {
     ready = Boolean(project);
-    if (ready && isMain) send({ type: 'state', id, document: project });
+    if (ready && isMain) send({ type: 'state', id, document: project, replace: true });
   }
 
   /**
