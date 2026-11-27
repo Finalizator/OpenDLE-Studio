@@ -278,22 +278,58 @@ export function mergeDehackedPatches(patches) {
 }
 
 /**
- * DEHACKED `Thing N` blocks index Doom's internal `mobjinfo` table, not editor
- * (doomed) numbers, so `Thing 11` is the Imp while `Thing 3001` does not exist.
- * This is the gameplay-relevant part of that table in index order.
+ * DEHSUPP's `InfoNames`: the actor order DEHACKED `Thing N` numbers index, in original Doom 2
+ * order. `Thing N` is 1-based, so the table is read at `N - 1` (GZDoom's `FindInfoName(num - 1)`
+ * in `d_dehacked.cpp`); `Thing 3001` is not in it, and an editor number resolves through
+ * `VANILLA_THINGS` instead.
+ *
+ * The list is copied from `wadsrc/static/dehsupp.txt` rather than typed from memory: the hand-kept
+ * one stopped at 78 entries (so `Thing 79` and later were dropped), had `Demon` and `Spectre`
+ * swapped, and had no `Berserk` at all — which shifted every entry after 56 by one.
  */
 export const MOBJINFO_NAMES = [
-  'Player', 'ZombieMan', 'ShotgunGuy', 'Archvile', 'ArchvileFire', 'Revenant', 'RevenantTracer', 'RevenantTracerSmoke',
-  'Fatso', 'FatShot', 'ChaingunGuy', 'DoomImp', 'Spectre', 'Demon', 'Cacodemon', 'BaronOfHell',
-  'BaronBall', 'HellKnight', 'LostSoul', 'SpiderMastermind', 'Arachnotron', 'Cyberdemon', 'PainElemental',
-  'WolfensteinSS', 'CommanderKeen', 'BossBrain', 'BossEye', 'BossTarget', 'SpawnShot', 'SpawnFire', 'ExplosiveBarrel',
-  'DoomImpBall', 'CacodemonBall', 'Rocket', 'PlasmaBall', 'BFGBall', 'ArachnotronPlasma', 'BulletPuff', 'Blood',
-  'TeleportFog', 'ItemFog', 'TeleportDestination', 'BFGExtra',
-  'GreenArmor', 'BlueArmor', 'HealthBonus', 'ArmorBonus', 'BlueCard', 'RedCard', 'YellowCard', 'YellowSkull',
-  'RedSkull', 'BlueSkull', 'Stimpack', 'Medikit', 'Soulsphere', 'InvulnerabilitySphere', 'BlurSphere',
-  'RadSuit', 'Allmap', 'Infrared', 'Megasphere', 'Clip', 'ClipBox', 'RocketAmmo', 'RocketBox',
-  'Cell', 'CellPack', 'Shell', 'ShellBox', 'Backpack', 'BFG9000', 'Chaingun', 'Chainsaw',
-  'RocketLauncher', 'PlasmaRifle', 'Shotgun', 'SuperShotgun',
+  'DoomPlayer', 'ZombieMan', 'ShotgunGuy', 'Archvile', 'ArchvileFire', 'Revenant',
+  'RevenantTracer', 'RevenantTracerSmoke', 'Fatso', 'FatShot', 'ChaingunGuy', 'DoomImp',
+  'Demon', 'Spectre', 'Cacodemon', 'BaronOfHell', 'BaronBall', 'HellKnight',
+  'LostSoul', 'SpiderMastermind', 'Arachnotron', 'Cyberdemon', 'PainElemental', 'WolfensteinSS',
+  'CommanderKeen', 'BossBrain', 'BossEye', 'BossTarget', 'SpawnShot', 'SpawnFire',
+  'ExplosiveBarrel', 'DoomImpBall', 'CacodemonBall', 'Rocket', 'PlasmaBall', 'BFGBall',
+  'ArachnotronPlasma', 'BulletPuff', 'Blood', 'TeleportFog', 'ItemFog', 'TeleportDest',
+  'BFGExtra', 'GreenArmor', 'BlueArmor', 'HealthBonus', 'ArmorBonus', 'BlueCard',
+  'RedCard', 'YellowCard', 'YellowSkull', 'RedSkull', 'BlueSkull', 'Stimpack',
+  'Medikit', 'Soulsphere', 'InvulnerabilitySphere', 'Berserk', 'BlurSphere', 'RadSuit',
+  'Allmap', 'Infrared', 'Megasphere', 'Clip', 'ClipBox', 'RocketAmmo',
+  'RocketBox', 'Cell', 'CellPack', 'Shell', 'ShellBox', 'Backpack',
+  'BFG9000', 'Chaingun', 'Chainsaw', 'RocketLauncher', 'PlasmaRifle', 'Shotgun',
+  'SuperShotgun', 'TechLamp', 'TechLamp2', 'Column', 'TallGreenColumn', 'ShortGreenColumn',
+  'TallRedColumn', 'ShortRedColumn', 'SkullColumn', 'HeartColumn', 'EvilEye', 'FloatingSkull',
+  'TorchTree', 'BlueTorch', 'GreenTorch', 'RedTorch', 'ShortBlueTorch', 'ShortGreenTorch',
+  'ShortRedTorch', 'Stalagtite', 'TechPillar', 'Candlestick', 'Candelabra', 'BloodyTwitch',
+  'Meat2', 'Meat3', 'Meat4', 'Meat5', 'NonsolidMeat2', 'NonsolidMeat4',
+  'NonsolidMeat3', 'NonsolidMeat5', 'NonsolidTwitch', 'DeadCacodemon', 'DeadMarine', 'DeadZombieMan',
+  'DeadDemon', 'DeadLostSoul', 'DeadDoomImp', 'DeadShotgunGuy', 'GibbedMarine', 'GibbedMarineExtra',
+  'HeadsOnAStick', 'Gibs', 'HeadOnAStick', 'HeadCandles', 'DeadStick', 'LiveStick',
+  'BigTree', 'BurningBarrel', 'HangNoGuts', 'HangBNoBrain', 'HangTLookingDown', 'HangTSkull',
+  'HangTLookingUp', 'HangTNoBrain', 'ColonGibs', 'SmallBloodPool', 'BrainStem', 'PointPusher',
+  'PointPuller', 'MBFHelperDog', 'PlasmaBall1', 'PlasmaBall2', 'EvilSceptre', 'UnholyBible',
+  'MusicChanger', 'Deh_Actor_145', 'Deh_Actor_146', 'Deh_Actor_147', 'Deh_Actor_148', 'Deh_Actor_149',
+  'Deh_Actor_150', 'Deh_Actor_151', 'Deh_Actor_152', 'Deh_Actor_153', 'Deh_Actor_154', 'Deh_Actor_155',
+  'Deh_Actor_156', 'Deh_Actor_157', 'Deh_Actor_158', 'Deh_Actor_159', 'Deh_Actor_160', 'Deh_Actor_161',
+  'Deh_Actor_162', 'Deh_Actor_163', 'Deh_Actor_164', 'Deh_Actor_165', 'Deh_Actor_166', 'Deh_Actor_167',
+  'Deh_Actor_168', 'Deh_Actor_169', 'Deh_Actor_170', 'Deh_Actor_171', 'Deh_Actor_172', 'Deh_Actor_173',
+  'Deh_Actor_174', 'Deh_Actor_175', 'Deh_Actor_176', 'Deh_Actor_177', 'Deh_Actor_178', 'Deh_Actor_179',
+  'Deh_Actor_180', 'Deh_Actor_181', 'Deh_Actor_182', 'Deh_Actor_183', 'Deh_Actor_184', 'Deh_Actor_185',
+  'Deh_Actor_186', 'Deh_Actor_187', 'Deh_Actor_188', 'Deh_Actor_189', 'Deh_Actor_190', 'Deh_Actor_191',
+  'Deh_Actor_192', 'Deh_Actor_193', 'Deh_Actor_194', 'Deh_Actor_195', 'Deh_Actor_196', 'Deh_Actor_197',
+  'Deh_Actor_198', 'Deh_Actor_199', 'Deh_Actor_200', 'Deh_Actor_201', 'Deh_Actor_202', 'Deh_Actor_203',
+  'Deh_Actor_204', 'Deh_Actor_205', 'Deh_Actor_206', 'Deh_Actor_207', 'Deh_Actor_208', 'Deh_Actor_209',
+  'Deh_Actor_210', 'Deh_Actor_211', 'Deh_Actor_212', 'Deh_Actor_213', 'Deh_Actor_214', 'Deh_Actor_215',
+  'Deh_Actor_216', 'Deh_Actor_217', 'Deh_Actor_218', 'Deh_Actor_219', 'Deh_Actor_220', 'Deh_Actor_221',
+  'Deh_Actor_222', 'Deh_Actor_223', 'Deh_Actor_224', 'Deh_Actor_225', 'Deh_Actor_226', 'Deh_Actor_227',
+  'Deh_Actor_228', 'Deh_Actor_229', 'Deh_Actor_230', 'Deh_Actor_231', 'Deh_Actor_232', 'Deh_Actor_233',
+  'Deh_Actor_234', 'Deh_Actor_235', 'Deh_Actor_236', 'Deh_Actor_237', 'Deh_Actor_238', 'Deh_Actor_239',
+  'Deh_Actor_240', 'Deh_Actor_241', 'Deh_Actor_242', 'Deh_Actor_243', 'Deh_Actor_244', 'Deh_Actor_245',
+  'Deh_Actor_246', 'Deh_Actor_247', 'Deh_Actor_248', 'Deh_Actor_249', 'Deh_Actor_250',
 ];
 
 /** Editor-number to actor-name map, for `Thing N` blocks written using doomednums. */
@@ -313,6 +349,8 @@ export const VANILLA_THINGS = {
 
 /** Resolves a DEHACKED `Thing N` number to an actor name. */
 export function thingName(number) {
-  if (MOBJINFO_NAMES[number]) return MOBJINFO_NAMES[number];
+  // `Thing N` is 1-based (DEHSUPP's own numbering: Thing 1 is the player), so the table is read
+  // at `N - 1`. Read at `N`, every patch landed on the class after the one it named.
+  if (MOBJINFO_NAMES[number - 1]) return MOBJINFO_NAMES[number - 1];
   return VANILLA_THINGS[number] || null;
 }

@@ -189,18 +189,23 @@ test('inline frame bodies with statements report exactly what cannot run', () =>
 });
 
 test('DEHACKED patches bind through mobjinfo indexes and editor numbers', () => {
-  assert.equal(thingName(11), 'DoomImp', 'mobjinfo index 11 is the Imp');
+  // `Thing N` is 1-based over DEHSUPP's InfoNames, exactly as `FindInfoName(num - 1)` reads it
+  // (d_dehacked.cpp): Thing 12 is the Imp, Thing 13 the Demon and Thing 14 the Spectre.
+  assert.equal(thingName(12), 'DoomImp', 'Thing 12 is the Imp');
+  assert.equal(thingName(13), 'Demon', 'Thing 13 is the Demon');
+  assert.equal(thingName(14), 'Spectre', 'Thing 14 is the Spectre');
+  assert.equal(thingName(58), 'Berserk', 'Thing 58 is the Berserk, which the old table did not have');
   assert.equal(thingName(3001), 'DoomImp', 'editor numbers still resolve');
   assert.equal(thingName(999999), null);
   const patch = parseDehacked([
     'Patch File for DeHackEd v3.0', 'Doom version = 21', 'Patch format = 6', '',
-    'Thing 11 (Imp)', 'Hit points = 999', 'Pain chance = 0', 'Speed = 20', '',
+    'Thing 12 (Imp)', 'Hit points = 999', 'Pain chance = 0', 'Speed = 20', '',
     '[CODEPTR]', 'Frame 100 = A_Look', '',
     'Misc', 'Initial Health = 150',
   ].join('\n'));
   assert.deepEqual(patch.warnings, []);
   const changes = dehackedChanges(patch);
-  assert.equal(changes.things.get(11).health, 999);
+  assert.equal(changes.things.get(12).health, 999);
   assert.equal(changes.misc.initialHealth, 150);
   const merged = mergeDehackedPatches([{ name: 'test', patch }]);
   const actors = structuredClone(buildVanillaActors());

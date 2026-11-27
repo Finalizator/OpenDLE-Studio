@@ -95,6 +95,24 @@ test('campaign routing follows conventional normal/secret exits and declarative 
   selectGameLevel(p, 'MAP30'); assert.equal(nextGameLevel(p.game), null);
 });
 
+test('a MAPINFO map header written with lookup or a keyword still routes', () => {
+  // GZDoom's own mapinfo files spell every block `map MAP01 lookup "HUSTR_1"`, and the parser's
+  // header regex allowed only a quoted literal — so gzdoom.pk3's MAPINFO parsed to zero routes and
+  // an imported mod lost every exit, sky, music and light mode it declared.
+  const routes = parseLevelRoutes([[
+    'map MAP01 lookup "HUSTR_1" { next = "MAP03"\n secretnext = "MAP02" }',
+    'map MAP02 $HUSTR_2 { next = MAP04 }',
+    'map MAP03 "Arrival" { next = EndGameC }',
+  ].join('\n')]);
+  assert.equal(routes.size, 3);
+  assert.equal(routes.get('MAP01').next, 'MAP03');
+  assert.equal(routes.get('MAP01').secretNext, 'MAP02');
+  assert.equal(routes.get('MAP02').next, 'MAP04');
+  // A lookup key is not a display name; only the quoted form names the level.
+  assert.equal(routes.get('MAP01').name, undefined);
+  assert.equal(routes.get('MAP03').name, 'Arrival');
+});
+
 test('active-level images include indirect rotation views across switching and saved snapshots', () => {
   const a = level(), b = level();
   const frame = id => ({ id, name: id, kind: 'sprite', width: 1, height: 1, offsetX: 0, offsetY: 1,

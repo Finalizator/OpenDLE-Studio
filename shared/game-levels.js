@@ -310,7 +310,11 @@ export function parseLevelRoutes(sources) {
     if (source.length > LIMITS.textBytes) throw new Error(`MAPINFO exceeds ${LIMITS.textBytes / 1024 / 1024} MiB`);
     const clean = source.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, token =>
       token.startsWith('"') ? token : ' ');
-    const map = /\bmap\s+("[^"]+"|[a-zA-Z0-9_-]+)\s*(?:"([^"]*)")?\s*\{/gi;
+    // The header has three forms in GZDoom's `ParseMapHeader`: `map MAP01 "Title"`, `map MAP01
+    // lookup "HUSTR_1"` and `map MAP01 $HUSTR_1`. The regex allowed only the quoted title, so
+    // every block of gzdoom.pk3's own MAPINFO (all of them use `lookup`) was skipped: the map
+    // kept no exit, no secret exit, no sky, no music and no light mode from the file.
+    const map = /\bmap\s+("[^"]+"|[a-zA-Z0-9_-]+)\s*(?:lookup\s+"[^"]*"|"([^"]*)"|\$[a-zA-Z0-9_]+)?\s*\{/gi;
     let match;
     while ((match = map.exec(clean))) {
       let end = map.lastIndex, depth = 1;
