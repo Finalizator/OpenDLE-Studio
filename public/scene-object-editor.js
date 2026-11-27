@@ -1,5 +1,6 @@
 import { entityColors } from './render.js';
 import { noseAngle } from '/shared/entity-visuals.js';
+import { askText } from './text-prompt.js';
 import {
   sceneChildren, sceneDepths, sceneSubtree, sceneDescendants, sceneBounds, sceneOrigin,
   addSceneObject, removeSceneObjects, duplicateSceneObject, reparentSceneObject, placeSceneObject, moveSceneObject,
@@ -2260,11 +2261,11 @@ export function createSceneObjectEditor({ callbacks }) {
   }
 
   /** Asks which node to connect this one to, the way the scene picker asks for a number. */
-  function connectNodePrompt(entity) {
+  async function connectNodePrompt(entity) {
     const current = scene();
     const others = (current?.entities || []).filter(candidate => candidate.id !== entity.id);
     if (!others.length) { callbacks.status('A joint needs a second node; add one first', true); return; }
-    const answer = prompt(`Connect ${entity.name} to which node?\n${others.map((item, index) => `${index + 1}. ${item.name}`).join('\n')}\n\nType a number.`, '1');
+    const answer = await askText(`Connect ${entity.name} to which node?\n${others.map((item, index) => `${index + 1}. ${item.name}`).join('\n')}\n\nType a number.`, '1');
     if (!answer) return;
     const target = others[Number(answer) - 1];
     if (!target) { callbacks.status('That is not a node number', true); return; }

@@ -7,6 +7,7 @@ import { GAME_HUD_BINDINGS } from '/shared/game-settings.js';
 import { createRuntime, stepRuntime } from '/shared/runtime.js';
 import { attachMenuElement } from '/shared/game-menu.js';
 import { createHUDView } from './hud-view.js';
+import { askText } from './text-prompt.js';
 
 const node = (tag, text, className) => {
   const result = document.createElement(tag);
@@ -118,9 +119,9 @@ export function createHUDEditor(host, { project: getProject, edit, script, error
         (hud.screens ||= []).push({ id, name: `Screen ${index}` });
         previewHudScreen = id; selectedId = null;
       })),
-      button('Rename screen', () => {
+      button('Rename screen', async () => {
         if (!screen || screen.id === MAIN_HUD_SCREEN) throw new Error('The main HUD screen cannot be renamed; it is the game HUD');
-        const name = prompt('Screen name', screen.name);
+        const name = await askText('Screen name', screen.name);
         if (name) update(hud => { hud.screens.find(item => item.id === screen.id).name = name.slice(0, 100); });
       }),
       button('Delete screen', () => {

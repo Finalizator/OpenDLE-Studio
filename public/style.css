@@ -910,3 +910,17 @@ body.scene-dragging { cursor: grabbing; }
 .terrain-shape-type { flex: 0 0 auto; font-size: 9px; color: var(--muted); }
 .terrain-layer.open { border-color: #7d7454; background: #474441; }
 .terrain-form select { font-size: 10px; }
+
+/* One-line text entry that also works in the desktop build, where `prompt()` throws. */
+.text-prompt { position: fixed; inset: 0; z-index: 9500; display: flex; align-items: center;
+  justify-content: center; background: #0009; }
+.text-prompt-panel { width: 360px; max-width: calc(100vw - 32px); padding: 12px; background: #2f3a42;
+  border: 1px solid #7fe6ff77; border-radius: 3px; box-shadow: 0 10px 30px #000a; }
+.text-prompt-message { display: block; font-size: 11px; color: #e8fbff; white-space: pre-wrap; }
+.text-prompt-input { width: 100%; margin-top: 8px; padding: 4px 6px; font: inherit; font-size: 12px;
+  color: #e8fbff; background: #1d2429; border: 1px solid #5a6a75; border-radius: 2px; }
+.text-prompt-input:focus { outline: none; border-color: #7fe6ff; }
+.text-prompt-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+.text-prompt-buttons button { font: inherit; font-size: 11px; padding: 4px 12px; color: #e8fbff;
+  background: #3c4a54; border: 1px solid #5a6a75; border-radius: 2px; cursor: pointer; }
+.text-prompt-buttons button.primary { background: #2e6d86; border-color: #7fe6ff; }

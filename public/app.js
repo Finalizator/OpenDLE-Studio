@@ -6,6 +6,7 @@ import { unsupportedActorActions } from '/shared/actor-runtime.js';
 import { readWad } from '/shared/wad.js';
 import { sectorGeometry, sectorAt } from '/shared/sectors.js';
 import { createPreview, entityColors } from './render.js';
+import { askText } from './text-prompt.js';
 import { undoDepthFor, UNDO_DEEP_GAME_STEPS } from '/shared/undo-depth.js';
 import { entityOrigin, hasModelFacing, noseAngle } from '/shared/entity-visuals.js';
 import { doorHeights } from '/shared/doors.js';
@@ -6653,9 +6654,9 @@ async function exportBuild(runtime, platform = exportPlatform()) {
  * e_version` says which studio build made it, `[game] g_version` says which release of the game it
  * is — and a bug report needs both. The value belongs to the project, so it is saved with it.
  */
-function editGameVersion() {
+async function editGameVersion() {
   const current = gameVersionOf(project);
-  const answer = prompt(`Game version (SemVer, for example 1.0.0 or 1.2.0-beta.1)\n\n` +
+  const answer = await askText(`Game version (SemVer, for example 1.0.0 or 1.2.0-beta.1)\n\n` +
     `Written into the exported game as version.ini: [game] g_version.\nThe studio's own version stays [engine] e_version.`, current);
   if (answer === null) return;
   const next = answer.trim();
@@ -6672,7 +6673,7 @@ $('export-build').addEventListener('click', guard(async event => {
     { label: 'Small build', hint: 'A few MB plus your assets. The computer needs Node.js 22.2+ and a browser.',
       run: guard(async () => { $('export-build').disabled = true; try { await exportBuild('portable'); } finally { $('export-build').disabled = false; } }) },
     { label: `Game version: ${gameVersionOf(project)}`, hint: 'Written into the build as [game] g_version, beside the engine\'s [engine] e_version.',
-      run: guard(async () => { editGameVersion(); }) },
+      run: guard(async () => { await editGameVersion(); }) },
   ], { label: 'Export playable app — the game only, no editor' });
   return menu;
 }));
@@ -7353,11 +7354,11 @@ function ensureSceneObjectEditor() {
         renderSceneObjects();
         renderSceneObjectTabs();
       },
-      chooseScene: () => {
+      chooseScene: async () => {
         const scenes = project?.scenes || [];
         if (!scenes.length) { status('There are no scene objects yet; press + Scene Object to make one.', true); return; }
         const names = scenes.map((scene, index) => `${index + 1}. ${scene.name}`);
-        const answer = prompt(`Open which scene object?\n${names.join('\n')}\n\nType a number.`,
+        const answer = await askText(`Open which scene object?\n${names.join('\n')}\n\nType a number.`,
           String(scenes.findIndex(scene => scene.id === activeSceneId) + 1 || 1));
         if (!answer) return;
         const index = Number(answer) - 1;
@@ -7431,11 +7432,11 @@ function renderSceneObjectTabs() {
   }
   const add = make('button', '+', 'scene-tab-add');
   add.title = 'Open another scene object';
-  add.addEventListener('click', guard(() => {
+  add.addEventListener('click', guard(async () => {
     const scenes = project?.scenes || [];
     if (!scenes.length) { createSceneObject(); return; }
     const names = scenes.map((scene, index) => `${index + 1}. ${scene.name}`);
-    const answer = prompt(`Open which scene object?\n${names.join('\n')}\n\nType a number.`, '1');
+    const answer = await askText(`Open which scene object?\n${names.join('\n')}\n\nType a number.`, '1');
     if (!answer) return;
     const scene = scenes[Number(answer) - 1];
     if (scene) openSceneObject(scene.id);
@@ -7652,18 +7653,18 @@ function assignAssetToSelection(asset) {
   render();
 }
 
-function renameAsset(asset) {
-  const answer = prompt('Asset name', asset.name);
+async function renameAsset(asset) {
+  const answer = await askText('Asset name', asset.name);
   if (answer === null) return;
   const clean = answer.trim().slice(0, 100);
   if (!clean || clean === asset.name) return;
   edit(next => updateAsset(next, asset.id, { name: clean }), `Asset renamed to ${clean}`);
 }
 
-function renameSceneObject(id) {
+async function renameSceneObject(id) {
   const scene = (project.scenes || []).find(item => item.id === id);
   if (!scene) throw new Error('That scene object no longer exists');
-  const answer = prompt('Scene object name', scene.name);
+  const answer = await askText('Scene object name', scene.name);
   if (answer === null) return;
   const clean = answer.trim().slice(0, 100);
   if (!clean || clean === scene.name) return;
@@ -7909,8 +7910,8 @@ function deleteSelectedEntities(primaryId) {
   return deleteObjects(targets);
 }
 
-function setSectorLight(sector) {
-  const answer = prompt(`Light level of ${sector.id} (0-255)`, String(sector.light ?? 160));
+async function setSectorLight(sector) {
+  const answer = await askText(`Light level of ${sector.id} (0-255)`, String(sector.light ?? 160));
   if (answer === null) return;
   const value = Math.round(Number(answer));
   if (!Number.isFinite(value)) { status('A light level is a number between 0 and 255', true); return; }
