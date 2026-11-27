@@ -1800,7 +1800,14 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // Degrees, which `instanceTransform` takes; the object's angle is in degrees in the map.
       const boardOrigin = { x: origin.x, z: origin.y, height: origin.height, yaw: originEntity?.angle || 0 };
 
-      for (const chunk of chunkFoliage(field)) {
+      // The bounds need the artwork's size, which only the asset table knows: a 128-pixel sprite on
+      // a 64-unit layer used to be measured as 64 tall, and its chunk was culled with its tips
+      // still on screen.
+      const foliageExtent = layer => {
+        const asset = assetMap.get(layer.assetId);
+        return asset ? { width: asset.width || 32, height: asset.height || 32 } : null;
+      };
+      for (const chunk of chunkFoliage(field, { extent: foliageExtent })) {
         const layer = field.layers.find(item => item.id === chunk.layerId);
         if (!layer?.assetId) continue;
         let geometry = null, material = null;

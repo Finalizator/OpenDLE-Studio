@@ -325,9 +325,19 @@ export function transformQuaternion({ yaw = 0, tiltX = 0, tiltZ = 0 } = {}) {
  * This is the Godot "multimesh" shape: a layer of a hundred thousand tufts becomes a few hundred
  * draws, each with the bounding sphere a frustum test needs.
  */
-export function chunkFoliage(foliage) {
+export function chunkFoliage(foliage, { extent = null } = {}) {
   const chunks = [];
   if (!foliage) return chunks;
+  // The drawn size of a tuft is the artwork's, not the layer's `height`: a 128-pixel sprite on a
+  // 64-unit layer is drawn twice the height the bounds assumed, and a tilted tuft leans its top
+  // corner out by most of its height again. The caller knows the asset table, so it answers
+  // `extent(layer) -> { width, height }`; without it a square of `layer.height` is assumed.
+  const drawnSize = layer => {
+    const asked = typeof extent === 'function' ? extent(layer) : null;
+    const width = finite(asked?.width, finite(layer.height, 64));
+    const height = finite(asked?.height, finite(layer.height, 64));
+    return { halfWidth: Math.max(1, width) / 2, height: Math.max(1, height) };
+  };
   const defaultSize = clamp(Math.round(finite(foliage.chunkSize, 128)),
     FOLIAGE_LIMITS.chunkSize.min, FOLIAGE_LIMITS.chunkSize.max);
   for (const layer of foliage.layers || []) {
@@ -349,10 +359,17 @@ export function chunkFoliage(foliage) {
       let minY = Infinity, maxY = -Infinity;
       for (const instance of group.instances) {
         const scale = Math.abs(instance[4]) || 1;
-        minX = Math.min(minX, instance[0]); maxX = Math.max(maxX, instance[0]);
-        minZ = Math.min(minZ, instance[2]); maxZ = Math.max(maxZ, instance[2]);
+        const size = drawnSize(layer);
+        // How far the tuft can reach sideways: half its width, plus the lean of its top edge at the
+        // tilt it was placed with (the two tilt components add in the worst case).
+        const tilt = (Math.abs(finite(instance[5], 0)) + Math.abs(finite(instance[6], 0))) * Math.PI / 180;
+        const lean = Math.sin(Math.min(tilt, Math.PI / 2)) * size.height * scale;
+        const reach = Math.hypot(size.halfWidth * scale, lean) + size.halfWidth * scale * 0.5;
+        minX = Math.min(minX, instance[0] - reach); maxX = Math.max(maxX, instance[0] + reach);
+        minZ = Math.min(minZ, instance[2] - reach); maxZ = Math.max(maxZ, instance[2] + reach);
+        const rise = Math.cos(tilt) * size.height * scale + size.halfWidth * scale;
         minY = Math.min(minY, instance[1]);
-        maxY = Math.max(maxY, instance[1] + layer.height * scale);
+        maxY = Math.max(maxY, instance[1] + rise);
       }
       const centre = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: (minZ + maxZ) / 2 };
       const radius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2;

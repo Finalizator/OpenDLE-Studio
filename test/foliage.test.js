@@ -137,6 +137,22 @@ test('the field chunks into instanced meshes sized by the chunk setting', () => 
   assert.ok(big.length < chunks.length, `${big.length} chunks at 512 against ${chunks.length} at 64`);
 });
 
+test('a chunk sphere covers the drawn tuft, not just its base point', () => {
+  const field = { chunkSize: 256, layers: [{ id: 'grass', visible: true, kind: 'sprite', assetId: 'grass',
+    height: 64, density: .6, scale: { min: 1, max: 1 }, tilt: 60, instances: [[10, 0, 10, 0, 1, 60, 0]] }] };
+  // The artwork is 128 square, so the tuft's top corner sits `height` away from its base once it is
+  // tilted 60 degrees — outside a sphere sized from the base point and a 64-unit height, which is
+  // why grass disappeared at the edge of the screen.
+  const chunk = chunkFoliage(field, { extent: () => ({ width: 128, height: 128 }) })[0];
+  const corner = Math.hypot(128 * Math.sin(Math.PI / 3), 128 * Math.cos(Math.PI / 3));
+  assert.ok(chunk.radius >= corner, `radius ${chunk.radius.toFixed(1)} covers the top corner at ${corner.toFixed(1)}`);
+  const small = chunkFoliage(field)[0];
+  assert.ok(small.radius < chunk.radius, 'the artwork size widens the sphere');
+  const upright = chunkFoliage({ ...field, layers: [{ ...field.layers[0], instances: [[10, 0, 10, 0, 1, 0, 0]] }] },
+    { extent: () => ({ width: 128, height: 64 }) })[0];
+  assert.ok(upright.radius >= 64, 'half the width of the cross is inside the sphere');
+});
+
 test('hidden layers and empty fields draw nothing', () => {
   const { field } = painted();
   const hidden = updateFoliageLayer(field, field.layers[0].id, { visible: false });

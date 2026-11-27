@@ -231,6 +231,20 @@ export function createTerrainViewport(container, { onPick = null } = {}) {
     },
     /** `{ pick, stroke }`, either of which may be null. */
     interact(next) { interaction.pick = next.pick || null; interaction.stroke = next.stroke || null; },
+    /**
+     * The terrain's own surface height at a board coordinate.
+     *
+     * A paint stroke only knows the height under the pointer; a tuft placed 300 units away needs
+     * the height *there*, or a field painted on a slope is a flat sheet at the brush centre's
+     * height. Null when the world cannot answer — a planet terrain samples in 3D, and a world that
+     * is still being generated has no source yet — and the caller falls back to the pointer's.
+     */
+    heightAt(x, z) {
+      try {
+        const height = world?.sampleHeight?.(x, z);
+        return Number.isFinite(height) ? height : null;
+      } catch { return null; }
+    },
     /** Pushes a new configuration into the live world; false when the world refuses it. */
     async reconfigure(configuration) {
       const current = world;

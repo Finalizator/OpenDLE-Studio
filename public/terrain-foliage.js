@@ -102,7 +102,7 @@ export function createFoliagePreview({ resolveAsset = () => null, maxDistance = 
         kind: 'sprite', geometry,
         material: new THREE.MeshBasicMaterial({ map: texture, transparent: true, alphaTest: .35,
           side: THREE.DoubleSide, depthWrite: false }),
-        height,
+        height, width,
       };
     } else {
       try {
@@ -122,7 +122,8 @@ export function createFoliagePreview({ resolveAsset = () => null, maxDistance = 
         if (!geometry) return null;
         const box = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
         height = Number.isFinite(box.max.y) ? Math.max(1, box.max.y) : 64;
-        entry = { kind: 'model', geometry, material, height };
+        const width = Number.isFinite(box.max.x - box.min.x) ? Math.max(1, box.max.x - box.min.x) : height;
+        entry = { kind: 'model', geometry, material, height, width };
       } catch { return null; }
     }
     assetCache.set(`${layer.kind}:${id}`, entry);
@@ -160,7 +161,13 @@ export function createFoliagePreview({ resolveAsset = () => null, maxDistance = 
     if (nextSignature === signature) return;
     signature = nextSignature;
     const seen = new Set();
-    for (const chunk of chunkFoliage(next)) {
+    // The tuft's drawn size comes from the artwork, which the preview has already resolved for
+    // every layer it drew before; a layer that has never been drawn yet falls back to the layer's
+    // own height until its first rebuild.
+    for (const chunk of chunkFoliage(next, { extent: layer => {
+      const cached = assetCache.get(`${layer.kind}:${layer.assetId}`);
+      return cached ? { width: cached.width ?? cached.height, height: cached.height } : null;
+    } })) {
       seen.add(chunk.key);
       const layer = next.layers.find(item => item.id === chunk.layerId);
       if (!layer) continue;

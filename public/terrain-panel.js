@@ -324,7 +324,13 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
       foliageSalt = (foliageSalt * 31 + 17) % 2147483647;
     }
     foliageScatter ||= createFoliageScatter(layer);
-    const added = foliageScatter.sample({ x, z, y, radius: foliageRadius, strength: foliageStrength, salt: foliageSalt });
+    // The sampler can ask the ground where each tuft lands (`ground(x, z)`), which is what keeps a
+    // field on a slope instead of a flat sheet at the brush centre's height.
+    const ground = typeof viewport?.heightAt === 'function'
+      ? (px, pz) => viewport.heightAt(px, pz)
+      : null;
+    const added = foliageScatter.sample({ x, z, y, radius: foliageRadius, strength: foliageStrength,
+      salt: foliageSalt, ground });
     recipe = { ...recipe, foliage };
     paintStatus('foliage');
     scheduleFoliagePreview();
