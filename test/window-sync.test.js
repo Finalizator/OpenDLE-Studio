@@ -92,3 +92,18 @@ test('a second editor for the same section is a conflict that can be refused', (
   assert.deepEqual(conflictingSections(sectionsForPanel('scripts'), sectionsForPanel('terrain')), []);
   assert.deepEqual(conflictingSections(sectionsForPanel('actors'), sectionsForPanel('scene')), ['actors', 'assets']);
 });
+
+test('A peer keeps only the sections it has changed, so a hub deletion is not undone', async () => {
+  const { sectionsToKeep, mergeFromHub } = await import('../shared/window-sync.js');
+  const released = { title: 'Campaign', assets: [{ id: 'a1' }, { id: 'a2' }], environment: { sky: 'red' } };
+  // The main window deletes `a2` while the Environment panel is detached in another window.
+  const hub = { title: 'Campaign', assets: [{ id: 'a1' }], environment: { sky: 'blue' } };
+  // The peer has not touched its section since the last exchange: it follows the hub, deletion
+  // and all. Owning `assets` outright meant the next edit there put `a2` back.
+  const clean = mergeFromHub(released, hub, sectionsToKeep(['assets', 'environment'], new Set()));
+  assert.deepEqual(clean.assets, [{ id: 'a1' }]);
+  // The peer did change them, so its copy is the newer one.
+  const dirty = mergeFromHub(released, hub, sectionsToKeep(['assets', 'environment'], new Set(['assets'])));
+  assert.deepEqual(dirty.assets, [{ id: 'a1' }, { id: 'a2' }]);
+  assert.deepEqual(dirty.environment, { sky: 'blue' });
+});

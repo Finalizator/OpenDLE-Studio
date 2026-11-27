@@ -14,7 +14,7 @@
  */
 
 import { mergeFromHub, mergeFromPeer, parseWindowView, panelWindowURL, dialogWindowURL,
-  sectionsForPanel, conflictingSections } from '../shared/window-sync.js';
+  sectionsForPanel, conflictingSections, sectionsToKeep } from '../shared/window-sync.js';
 
 const CHANNEL = 'opendle-studio';
 const PANEL_LABELS = {
@@ -68,6 +68,8 @@ export function createStudioWindows({
   /** Detached windows this one knows about: id → view. */
   const peers = new Map();
   let connected = false, ready = false;
+  /** The peer's own sections it has edited since the last exchange with the hub. */
+  const dirtySections = new Set();
   let listener = () => {};
   // A detached window has no document of its own to load: it waits for the hub's, which is the
   // only copy that includes edits nobody saved yet.
@@ -171,7 +173,11 @@ export function createStudioWindows({
         if (isMain || !message.document) return;
         // A replaced document (New, Open, import) is not a merge: nothing of the previous one may
         // survive, so the peer takes it whole.
-        const next = message.replace ? message.document : mergeFromHub(getProject(), message.document, sections);
+        // Only what this window has changed since the last exchange is its own to keep; everything
+        // else follows the hub, deletions included (`sectionsToKeep`).
+        const next = message.replace ? message.document
+          : mergeFromHub(getProject(), message.document, sectionsToKeep(sections, dirtySections));
+        dirtySections.clear();
         applyProject(next, { remote: true });
         settleFirstDocument(true);
         return;
@@ -209,6 +215,7 @@ export function createStudioWindows({
   /** The document is loaded (or replaced): the hub is now able to answer, and tells everyone. */
   function reset(project) {
     ready = Boolean(project);
+    dirtySections.clear();
     if (ready && isMain) send({ type: 'state', id, document: project, replace: true });
   }
 
@@ -230,6 +237,7 @@ export function createStudioWindows({
   function commit(project) {
     if (!project) return;
     if (isMain) { ready = true; send({ type: 'state', id, document: project }); return; }
+    for (const key of sections) dirtySections.add(key);
     send({ type: 'commit', id, view, owned: sections, document: project });
   }
 

@@ -117,6 +117,18 @@ export function mergeFromHub(peerProject, hubProject, peerOwned) {
 }
 
 /**
+ * Which of a peer's own sections it may keep when the hub broadcasts.
+ *
+ * Only the ones it has changed since the last exchange. Ownership alone was not enough: a panel
+ * owns `assets`, so a detached Environment window kept its copy of the asset list through every
+ * broadcast — and the next edit there put back an asset the main window had just deleted.
+ */
+export function sectionsToKeep(owned, dirty) {
+  const changed = dirty instanceof Set ? dirty : new Set(dirty || []);
+  return (owned || []).filter(key => changed.has(key));
+}
+
+/**
  * Sections two windows would both own, so opening a second editor for the same part of the
  * project can be refused instead of letting them overwrite each other.
  */
