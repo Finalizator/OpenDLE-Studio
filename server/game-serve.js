@@ -71,8 +71,14 @@ function sendFile(request, response, file) {
     createReadStream(file).on('error', () => response.destroy()).pipe(response);
     return;
   }
-  const start = range[1] ? Number(range[1]) : 0;
-  const end = range[2] ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
+  // `bytes=-N` asks for the *last* N bytes (RFC 9110 14.1.2), and the empty first group used to
+  // read as "from the start": a tail request was answered with the head of the file, labelled as
+  // if it were the tail. Media loaders and resumable fetchers ask this way.
+  const suffix = range[1] === '' && range[2] !== '';
+  const start = suffix ? Math.max(0, info.size - Number(range[2]))
+    : range[1] ? Number(range[1]) : 0;
+  const end = suffix ? info.size - 1
+    : range[2] ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
   if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= info.size) {
     response.writeHead(416, { 'Content-Range': `bytes */${info.size}` }).end();
     return;
@@ -125,7 +131,7 @@ export async function startGameServer({ root = process.cwd(), port = null, slug 
   const wanted = Number.isSafeInteger(port) && port >= 0 ? port : null;
   const candidates = wanted === null ? gamePortCandidates(slug || basename(resolve(root))) : [wanted];
   let lastError = null;
-  for (const candidate of candidates) {
+  for (const [index, candidate] of candidates.entries()) {
     const server = createServer(createGameHandler({ root, log }));
     try {
       await new Promise((done, fail) => {
@@ -139,7 +145,12 @@ export async function startGameServer({ root = process.cwd(), port = null, slug 
       if (error.code !== 'EADDRINUSE') throw error;
       // The game's own port is taken by something else. Walk to the next one: a game that refuses
       // to start is worse than a game whose saves this one session do not keep, but say so.
-      log(`Port ${candidate} is in use; trying ${gamePortFor(slug || basename(resolve(root)))}…`);
+      // Name the port it will try *next*, not the one it just failed on: the old message printed
+      // `gamePortFor()`, which is the first candidate, so a player whose game found two ports busy
+      // was told to look at a port that was already known to be taken.
+      const next = candidates[index + 1];
+      log(next === undefined ? `Port ${candidate} is in use, and no port is left to try.`
+        : `Port ${candidate} is in use; trying ${next}…`);
       continue;
     }
     const address = server.address();

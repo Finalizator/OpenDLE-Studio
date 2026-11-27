@@ -2,7 +2,7 @@ import express from 'express';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve, dirname, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ProjectStore, projectSlug } from './store.js';
@@ -181,9 +181,17 @@ export function createApp({
   });
   app.use('/docs', express.static(docsDirectory, { index: 'index.html' }));
   app.use('/docs', (req, res) => {
+    // The fallback exists to *build* a site that is not there yet, not to answer for every path
+    // inside it: a renamed asset came back as the front page with `200 text/html`, so the browser
+    // reported a MIME error instead of a missing file and the docs page lost its script silently.
+    const index = resolve(docsDirectory, 'index.html');
+    const known = resolve(docsDirectory, `.${req.path}`);
+    if (existsSync(known) && !known.endsWith('/')) return res.sendFile(known);
     try {
       buildDocs({ out: docsDirectory, base: root, quiet: true });
-      return res.sendFile(resolve(docsDirectory, 'index.html'));
+      if (!existsSync(index)) return res.status(404).json({ error: 'The documentation site is empty' });
+      if (req.path !== '/' && !existsSync(known)) return res.status(404).json({ error: `No documentation page at ${req.path}` });
+      return res.sendFile(index);
     } catch (error) {
       return res.status(500).json({ error: `The documentation could not be built: ${error.message}` });
     }
@@ -486,7 +494,10 @@ export function createApp({
   });
   app.get('/api/addons/:id/*name', (req, res) => {
     pruneStagedAddons();
-    const name = String(req.params.name || '');
+    // Express 5 hands a `*name` wildcard back as an array of path segments, so `String()` on it
+    // joined them with commas: `lib/util.js` became `lib,util.js`, a key no addon has, and every
+    // addon with a file in a folder answered 404 while the staging route accepted it.
+    const name = [].concat(req.params.name ?? []).join('/');
     const body = addonFile(store.snapshot().project, req.params.id, name) ?? stagedAddons.get(String(req.params.id))?.files?.[name] ?? null;
     if (body === null) return res.status(404).json({ error: 'That addon file is not in this project' });
     const extension = name.toLowerCase().split('.').pop();

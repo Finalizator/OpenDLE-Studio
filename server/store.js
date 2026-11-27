@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { ASSET_DIRECTORY, PROJECT_FILE, documentBytes, isFolderDocument, packProject, readFolderFile, unpackProject } from './project-folder.js';
 import { migrateModelFacing } from '../shared/entity-visuals.js';
@@ -173,7 +173,18 @@ export class ProjectStore {
       return;
     }
     const file = this.fileFor(active);
-    if (!existsSync(file)) throw new Error(`Project file is missing: ${active.file}`);
+    if (!existsSync(file)) {
+      // The active project's folder is gone (cleaned up, or a copy that failed halfway). That
+      // costs that one project, not the editor: fall back to whichever project is still on disk
+      // and let the next save write the index again.
+      const survivor = (this.index.projects || []).find(item => item && item.id !== active.id && existsSync(this.fileFor(item)));
+      if (!survivor) throw new Error(`Project file is missing: ${active.file}`);
+      const { project, revision } = readSaved(this.fileFor(survivor));
+      this.index = { version: 1, active: survivor.id, projects: this.index.projects };
+      this.project = project;
+      this.revision = revision;
+      return;
+    }
     const { project, revision } = readSaved(file);
     this.project = project;
     this.revision = revision;
@@ -210,7 +221,10 @@ export class ProjectStore {
       written.add(payload.path);
       const target = join(directory, payload.path);
       // Hashed sections leave the old document's campaign and actors untouched until commit.
-      if (existsSync(target)) continue;
+      // Existence is not enough: the name is the content hash, so a payload damaged outside the
+      // studio (an interrupted copy of the data folder, a sync tool, a quarantine stub) keeps the
+      // name the document asks for, and every later save skipped it — the file was permanent.
+      if (existsSync(target) && statSync(target).size === payload.bytes.length) continue;
       writeFileSync(`${target}.tmp`, payload.bytes, { mode: 0o600 });
       renameSync(`${target}.tmp`, target);
     }
