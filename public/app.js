@@ -6219,7 +6219,11 @@ function frame(now) {
       const levelRequest = requests.find(request => request?.type === 'level');
       if (levelRequest) {
         const settings = structuredClone(runtime.settings), mode = runtime.gameMode;
-        const progress = levelRequest.carryProgress ? { playerStats: runtime.playerStats, inventory: runtime.inventory } : null;
+        // The ACS globals travel with the player (GZDoom clears only map and world variables when a
+        // new map is set up); a campaign counter kept in a `global` variable used to reset on every
+        // level change, so a hub's tally restarted each time the player came back.
+        const progress = levelRequest.carryProgress ? { playerStats: runtime.playerStats,
+          inventory: runtime.inventory, scriptGlobals: runtime.scripts?.globals?.() ?? null } : null;
         beginPreview(mode, settings, true, levelRequest.levelId, progress)
           .catch(error => { stopPreview(); status(`Level change failed: ${error.message}`, true); });
         requestAnimationFrame(frame); return;

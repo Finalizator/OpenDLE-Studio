@@ -377,6 +377,8 @@ export function createMapScripts(project, state, callbacks = {}) {
     summary: () => scriptSummary(project),
     capture,
     restore,
+    globals: captureGlobals,
+    restoreGlobals,
   };
 
   // Radians to a 32-bit binary angle (`angle_t`): one full turn is 2^32.
@@ -1033,7 +1035,40 @@ export function createMapScripts(project, state, callbacks = {}) {
     }
   }
 
-  /** Plain snapshot of the interpreter: variables plus every live script's position. */
+  /**
+ * The state that survives a level change: ACS `global` variables and global arrays.
+ *
+ * GZDoom clears world and map variables when a new map is set up (`P_ClearACSVars(false)`) and only
+ * a new hub clears globals, so a campaign's counters live in globals and travel with the player.
+ * Everything else in `capture()` — map variables, the string pool, every running script's position —
+ * belongs to the level that is being left, and its addresses mean nothing in the next level's
+ * module, so it must not be carried.
+ */
+function captureGlobals() {
+  if (!api.vm) return null;
+  const arrays = bag => [...(bag || [])].map(([slot, values]) => [slot, [...values]]);
+  return { globalVars: Array.from(api.vm.globalVars), globalArrays: arrays(api.vm.globalArrays) };
+}
+
+function restoreGlobals(saved) {
+  if (!api.vm || !saved || typeof saved !== 'object') return 0;
+  let applied = 0;
+  if (Array.isArray(saved.globalVars)) {
+    saved.globalVars.forEach((value, index) => {
+      if (index < api.vm.globalVars.length && Number.isInteger(value)) { api.vm.globalVars[index] = value; applied++; }
+    });
+  }
+  if (Array.isArray(saved.globalArrays) && api.vm.globalArrays?.set) {
+    for (const [slot, values] of saved.globalArrays) {
+      if (!Array.isArray(values)) continue;
+      api.vm.globalArrays.set(slot, values.filter(value => Number.isInteger(value)));
+      applied++;
+    }
+  }
+  return applied;
+}
+
+/** Plain snapshot of the interpreter: variables plus every live script's position. */
   function capture() {
     if (!api.vm) return null;
     const arrays = bag => [...(bag || [])].map(([slot, values]) => [slot, [...values]]);

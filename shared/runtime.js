@@ -475,6 +475,10 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     initialiseEntities: entities => initialiseActorEntities(project, entities),
   });
   state.scripts?.restore(progress?.scriptState);
+  // A level change carries the ACS globals and nothing else of the old level's interpreter: world
+  // and map variables belong to the level being left, and a running script's addresses mean nothing
+  // in the next level's module. GZDoom clears map and world vars per level exactly this way.
+  if (progress?.scriptGlobals) state.scripts?.restoreGlobals(progress.scriptGlobals);
   // ACS VM state is captured on demand: snapshotting it after
   // every step allocated a copy of every map/global variable, the string pool and each
   // running script's locals per frame. The accessor keeps `state.scriptState` working

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { createRuntime, stepRuntime } from '../shared/runtime.js';
@@ -76,6 +77,61 @@ test('a save file can carry only the variables a rule names', () => {
   assert.deepEqual(saveVariableNames(value, 'score, score'), ['score']);
   for (const name of ['', ' ', '-leading', 'a'.repeat(61), 'has/slash']) assert.throws(() => saveFileName(name), /save file needs a name/);
   assert.equal(saveFileName('  checkpoint_1 '), 'checkpoint_1');
+});
+
+test('a restored runtime carries no save-file host, and re-attaching it revives the rules', () => {
+  const value = project();
+  value.events = rule([{ type: 'saveVariables', file: 'checkpoint', variables: 'score' }]);
+  validateProject(value);
+  const files = new Map();
+  const host = {
+    read: name => files.get(name) ?? null,
+    write: (name, text) => { files.set(name, text); },
+    list: () => [...files.keys()],
+    identity: 'identity',
+  };
+  const state = createRuntime(value, { saveFiles: host });
+  state.hasGame = true;
+  tick(value, state);
+  assert.deepEqual([...files.keys()], ['checkpoint'], 'the first save goes through the host');
+
+  // The host is a set of functions, so it cannot travel inside a save. Both hosts — the studio and
+  // the exported game — have to attach it again; the exported game did not, and every
+  // `saveVariables` rule then failed for the rest of the level with "save files are not available
+  // in this context".
+  const restored = restoreGameSave(value, JSON.parse(JSON.stringify(captureGameSave(value, state, 'identity'))), 'identity').runtime;
+  assert.ok(!restored.saveFileHost?.write, 'a save cannot carry functions');
+  tick(value, restored);
+  assert.match(restored.saveStatus, /save files are not available in this context/);
+
+  restored.saveFileHost = host;
+  files.clear();
+  restored.events = value.events;
+  tick(value, restored);
+  assert.match(restored.saveStatus, /Saved 1 variable/);
+  assert.deepEqual([...files.keys()], ['checkpoint']);
+});
+
+test('a failed artwork pass is not remembered as hydrated', () => {
+  // `hydrateAssets` answers `{loaded, failed}` and is written to be retryable; latching "hydrated"
+  // after a pass that had failures made one 20-second timeout permanent, and a model that failed to
+  // decode then sent the player back to the menu on every attempt.
+  const source = readFileSync(new URL('../public/game/game.js', import.meta.url), 'utf8');
+  const latches = [...source.matchAll(/game\.hydrated\s*=/g)].length;
+  assert.ok(latches >= 2, 'both hydration sites decide');
+  assert.equal(/game\.hydrated\s*=\s*true/.test(source), false, 'never latch unconditionally');
+  assert.equal([...source.matchAll(/game\.hydrated = failed\.length === 0/g)].length, latches,
+    'every site latches only on a clean pass');
+});
+
+test('the exported game re-attaches the save-file host after a restore', () => {
+  // A source-level check: the studio does this next to its own restore, and the shipped player
+  // has to do the same or its variable checkpointing dies on the first "Load game".
+  const source = readFileSync(new URL('../public/game/game.js', import.meta.url), 'utf8');
+  const restore = source.indexOf('restoreGameSave(engine.snapshot, record, identity())');
+  assert.notEqual(restore, -1, 'the restore is where it was');
+  const after = source.slice(restore, restore + 1200);
+  assert.match(after, /saveFileHost\(\)/, 'the host is attached again right after the restore');
 });
 
 test('the save actions write through the host at once and report the outcome', () => {

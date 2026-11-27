@@ -398,8 +398,13 @@ async function openMenu() {
   setLoading('Loading the game…', 4);
   try {
     if (!game.hydrated) {
-      await loadArtwork();
-      game.hydrated = true;
+      // `hydrateAssets` reports failures instead of throwing, and an asset it could not fetch keeps
+      // its relative URL — so a second pass can still succeed. Latching "hydrated" after a pass that
+      // had failures made one 20-second timeout permanent for the session (the level-start retry
+      // skipped hydration entirely, and a model that fails to decode sends the player back to the
+      // menu). Only a clean pass is remembered.
+      const { failed } = await loadArtwork();
+      game.hydrated = failed.length === 0;
     }
     const engine = buildRuntime({ screen: game.project.gameMenus?.entry || 'playing' });
     game.engine = { ...engine, preview: null, hud: null, audio: null, last: performance.now() };
@@ -464,8 +469,8 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
   game.keys.clear(); game.pressed.clear();
   try {
     if (!game.hydrated) {
-      await loadArtwork();
-      game.hydrated = true;
+      const { failed } = await loadArtwork();
+      game.hydrated = failed.length === 0;
       if (token !== startToken) return;
     }
     setLoading('Loading the level…', 70);
@@ -479,6 +484,11 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
       const restored = restoreGameSave(engine.snapshot, record, identity());
       physicsData = restored.physicsData;
       engine = { ...engine, runtime: restored.runtime };
+      // A restored runtime is built inside `restoreGameSave`, which has no host — the same
+      // re-attachment `public/app.js` does right after its own restore. Without it every
+      // `saveVariables`/`loadVariables` rule reported "save files are not available in this
+      // context" for the rest of the level, so variable-based checkpointing died on first load.
+      engine.runtime.saveFileHost = saveFileHost();
       engine.runtime.hudState.cursor = engine.runtime.gameScreen !== 'playing';
       publishSaves(engine.runtime);
       engine.runtime.saveStatus = `Loaded the game${record.levelId ? ` at ${record.levelId}` : ''}.`;
@@ -580,7 +590,8 @@ function handleRequests(runtime) {
     }
     if (request?.type === 'level') {
       const carried = request.carryProgress
-        ? { playerStats: runtime.playerStats, inventory: runtime.inventory } : null;
+        ? { playerStats: runtime.playerStats, inventory: runtime.inventory,
+          scriptGlobals: runtime.scripts?.globals?.() ?? null } : null;
       void playLevel(request.levelId, { progress: carried });
       return;
     }
