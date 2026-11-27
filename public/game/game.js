@@ -458,7 +458,9 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
   // system's and the cursor sat over the game.
   game.pointerHeld = true;
   hideFatal();
-  setLoading('Loading the level…', 12);
+  // The artwork loader owns most of the bar, so a first start shows it from the start instead of
+  // jumping back from the level's own percentage to a smaller one.
+  setLoading('Loading the level…', 4);
   game.keys.clear(); game.pressed.clear();
   try {
     if (!game.hydrated) {
@@ -466,6 +468,7 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
       game.hydrated = true;
       if (token !== startToken) return;
     }
+    setLoading('Loading the level…', 70);
     let engine = buildRuntime({ levelId, screen: 'playing', progress });
     // A record rebuilds the runtime the save was written from: same level, same carried stats, same
     // place on the map. Its physics is restored once the collision world exists, which is after the
@@ -492,7 +495,7 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
     disposeEngine();
     game.engine = { ...engine, preview: null, hud: null, audio: null, last: performance.now() };
     let preview = null;
-    setLoading('Starting the 3D view…', 76);
+    setLoading('Starting the 3D view…', 84);
     const started = await withDeadline(
       createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) }),
       PREVIEW_TIMEOUT);
