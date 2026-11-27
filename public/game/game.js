@@ -495,7 +495,9 @@ async function startLevel(levelId, { progress = null, record = null, attempt = 1
     disposeEngine();
     game.engine = { ...engine, preview: null, hud: null, audio: null, last: performance.now() };
     let preview = null;
-    setLoading('Starting the 3D view…', 84);
+    // Without a number the bar creeps: the renderer answers when it answers, and a stage that
+    // takes seconds must not sit frozen on the mark the previous one left.
+    setLoading('Starting the 3D view…');
     const started = await withDeadline(
       createPreview(canvas, engine.snapshot, engine.runtime, { onMediaError: message => showToast(message, true) }),
       PREVIEW_TIMEOUT);
@@ -725,7 +727,12 @@ window.addEventListener('keydown', event => {
   if (!game.keys.has(event.code)) game.pressed.add(event.code);
   game.keys.add(event.code);
 }, true);
-window.addEventListener('keyup', event => { syncCapsLock(event); game.keys.delete(event.code); });
+window.addEventListener('keyup', event => {
+  syncCapsLock(event);
+  // CapsLock raised its own keyup the moment it was pressed; deleting it here would drop the
+  // always-run flag until some other key repeated.
+  if (event.code !== 'CapsLock') game.keys.delete(event.code);
+});
 window.addEventListener('blur', () => { game.keys.clear(); game.pressed.clear(); });
 
 canvas.addEventListener('pointerdown', event => {

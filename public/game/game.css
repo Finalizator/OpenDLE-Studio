@@ -71,5 +71,6 @@ body { -webkit-user-select: none; user-select: none; }
 #toast.error { border-color: #7a4440; color: var(--danger); }
 
 @media (prefers-reduced-motion: reduce) {
-  #loading .bar i { animation: none; width: 100%; }
+  /* The fill moves by transition, not by animation, and its width is written inline. */
+  #loading .bar i { transition: none; }
 }

@@ -206,9 +206,19 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
       return Promise.resolve(null);
     }
     if (!buffers.has(asset.id)) {
-      const binary = atob(asset.src.split(',')[1]);
-      const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
-      buffers.set(asset.id, context.decodeAudioData(bytes.buffer).then(undefined, error => {
+      // An asset whose bytes could not be read keeps its plain URL (`data/sound/x.wav`), which is
+      // not base64: decoding it here threw inside the frame loop and quit the level, where the
+      // promise below is the place a missing sound is reported and skipped.
+      let bytes = null;
+      try { bytes = bytesFromDataUri(asset.src); }
+      catch (error) {
+        if (!decodeFailed.has(asset.id)) {
+          decodeFailed.add(asset.id);
+          report(new Error(`${asset.name}: ${error.message}`));
+        }
+        return Promise.resolve(null);
+      }
+      buffers.set(asset.id, context.decodeAudioData(bytes).then(undefined, error => {
         // A corrupt or unsupported sound must not flood the log on every play:
         // report once per asset, then stay silent like a missing name does.
         buffers.delete(asset.id);
