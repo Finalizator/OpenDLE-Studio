@@ -567,7 +567,9 @@ test('hunt 90: a monster killed by a special stops blocking like one shot dead',
   const state = createRuntime(project);
   executeSpecial(project, state, 119, [2, 50], { format: 'zdoom' });
   const imp = state.entities.find(entity => entity.id === 'imp');
-  assert.equal(imp.health, 0);
+  // Doom leaves a corpse at negative health (`health < -SpawnHealth()` is what picks the gib
+  // state), so 50 damage on 20 health leaves -30, exactly as a shot would.
+  assert.equal(imp.health, -30);
   assert.equal(imp.solid, false);
 });
 

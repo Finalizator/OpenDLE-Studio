@@ -139,15 +139,24 @@ export function spritePlacement(entity, asset, floorHeight = 0, { flip = false }
   const scaleX = entity.spriteScaleX ?? entity.spriteScale ?? 1;
   const scaleY = entity.spriteScaleY ?? entity.spriteScale ?? 1;
   const width = (asset?.width || 24) * scaleX;
-  const height = (asset?.height || 40) * scaleY;
+  let height = (asset?.height || 40) * scaleY;
   // A Doom patch's top offset can legitimately be 0 (origin on the top row); `||` would
   // read that as "missing" and anchor the sprite by its feet instead of its top.
   const artworkOffsetY = (asset ? asset.offsetY ?? (asset.height || 40) : 40) * scaleY;
   const shift = spriteAnchor({ width: Math.abs(width), height, offsetX: (asset?.offsetX || 0) * scaleX, offsetY: artworkOffsetY });
   const anchor = entity.z ?? floorHeight + (entity.elevation || 0);
+  const centre = { x: entity.x + shift.dx, y: anchor + shift.dy, z: entity.y };
+  // `A_SetFloorClip`: the card is cut at the floor rather than drawn through it. The top stays
+  // where it was, so the part above the floor is exactly what the unclipped sprite showed there.
+  if (entity.floorClip) {
+    const clip = floorHeight - (centre.y - height / 2);
+    if (clip > 0 && clip < height) {
+      height -= clip;
+      centre.y += clip / 2;
+    } else if (clip >= height) height = 0;
+  }
   return {
-    drawWidth: width * (flip ? -1 : 1), height, offsetY: artworkOffsetY, shift,
-    centre: { x: entity.x + shift.dx, y: anchor + shift.dy, z: entity.y },
+    drawWidth: width * (flip ? -1 : 1), height, offsetY: artworkOffsetY, shift, centre,
   };
 }
 

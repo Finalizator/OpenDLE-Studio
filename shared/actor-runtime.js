@@ -660,6 +660,10 @@ export function explodeAt(project, state, entity, damage = 128, radius = 128, da
   if (playerDistance < radius && reaches(state.player)) damagePlayer(state, falloff(playerDistance));
   for (const other of state.entities) {
     if (other === entity || other.type !== 'enemy' || other.health <= 0) continue;
+    // `+NORADIUSDMG` is the Cyberdemon's and the Spider Mastermind's armour: a rocket that lands
+    // beside one does nothing at all. Without it a rocket at their feet killed them, which is the
+    // one thing Doom deliberately makes impossible.
+    if (actorFlag(actorOf(project, other), 'NORADIUSDMG', other)) continue;
     const distance = Math.hypot(other.x - entity.x, other.y - entity.y);
     if (!(distance < radius) || !reaches(other)) continue;
     const amount = falloff(distance);
@@ -779,6 +783,21 @@ export function homeMissile(project, state, missile, { turn = 16.875, everyTics 
   spawnEffect(project, state, 'BulletPuff', { x: missile.x, y: missile.y, z: missile.z });
   spawnEffect(project, state, 'RevenantTracerSmoke', { x: missile.x, y: missile.y, z: missile.z, vz: 1 });
   return tracerStep({ project, state, entity: missile }, turn);
+}
+
+/**
+ * One Mancubus attack: two FatShots thrown `spread` steps off the aim.
+ *
+ * The angle is a rotation of the *shooter's* facing, not the aim line, exactly as GZDoom's
+ * `Angle += FATSPREAD; SpawnMissile(...)` reads.
+ */
+function mancubusVolley(ctx, first, second) {
+  const { project, state, entity } = ctx;
+  const spread = 90 / 8;                       // FATSPREAD, in degrees
+  for (const offset of [first, second]) {
+    const angle = ((entity.angle || 0) + spread * offset) * Math.PI / 180;
+    spawnActorProjectile(project, state, entity, actorMissile(ctx, 'FatShot'), { angle });
+  }
 }
 
 /** Spawns a projectile actor owned by an enemy, aimed at the player. */
@@ -978,7 +997,9 @@ export function hurtActor(project, state, entity, amount, source = null, damageT
     if (factor !== 1) amount = Math.max(0, Math.floor(amount * factor));
     if (!(amount > 0)) return false;
   }
-  entity.health = Math.max(0, entity.health - amount);
+  // Doom never clamps a corpse's health: `health < -SpawnHealth()` is exactly what makes a body
+  // gib, so a shotgun that does 60 to a 20-health Zombieman has to leave it at -40.
+  entity.health -= amount;
   // Doom's `MF_JUSTHIT`: a monster that has just been hurt answers with an attack the next time
   // it is allowed to make one, whatever the distance roll would have said.
   entity.justHit = true;
@@ -1130,6 +1151,8 @@ export const ACTIONS = {
   A_Chase(ctx) {
     const { state, entity, actor } = ctx;
     if (entity.health <= 0 || entity.dormant) return;
+    // A charging Lost Soul is flown by `advanceSkullfly`, not walked by its AI.
+    if (entity.skullfly) return;
     const runtime = actorStateOf(entity);
     // Doom's chase ticks move the monster, then decide whether it may attack.
     const speed = (entity.actorSpeed || actor.speed || 8) * TIC_RATE * (ctx.fast || state.settings?.fastMonsters ? 2 : 1);
@@ -1218,8 +1241,7 @@ export const ACTIONS = {
   A_Respawn(ctx) {
     const { project, state, entity, actor } = ctx;
     entity.health = actor.health ?? entity.health;
-    entity.solid = true;
-    entity.noBlockmap = false;
+    restoreBlocking(state, entity);
     const runtime = actorStateOf(entity);
     runtime.gone = false; runtime.stopped = false;
     entity.actorDeadHandled = true;
@@ -1237,6 +1259,10 @@ export const ACTIONS = {
     ctx.state.physics?.remove(ctx.entity.id);
   },
   A_Stop(ctx) { ctx.entity.vx = 0; ctx.entity.vy = 0; },
+  // A_SetFloorClip / A_UnSetFloorClip: draw the sprite clipped at the sector floor instead of
+  // letting it sink into it. Doom sets this on a floater's corpse, whose last frames hang low.
+  A_SetFloorClip(ctx) { ctx.entity.floorClip = true; },
+  A_UnSetFloorClip(ctx) { ctx.entity.floorClip = false; },
   // --------------------------------------------------- the Heresiarch's three satellites
   // A_SorcSpinBalls: the balls start circling the caster's head, 120 degrees apart, at the caster's
   // own height. They are the boss's whole attack, so they are things the engine moves rather than a
@@ -1482,14 +1508,12 @@ export const ACTIONS = {
   // reason killing one in a corridor is a mistake. Without this its death was silent in the way
   // that matters — nothing came out.
   A_PainDie(ctx) {
-    const { project, state, entity } = ctx;
     ACTIONS.A_NoBlocking(ctx);
-    const z = entity.z ?? floorAt(state, entity);
-    for (const [dx, dy] of [[24, 0], [-24, 0], [0, 24]]) {
-      const soul = spawnLiveActor(project, state, 'LostSoul', { x: entity.x + dx, y: entity.y + dy, z: z + 24 });
-      if (soul) setActorState(project, soul, 'See');
-    }
-    saySound(state, 'skeleton/swing', entity);
+    // Three souls, 90 degrees apart, each thrown clear and charging — GZDoom's `angle + 90/180/270`.
+    painShootSkull(ctx, 90);
+    painShootSkull(ctx, 180);
+    painShootSkull(ctx, 270);
+    saySound(ctx.state, 'skeleton/swing', ctx.entity);
   },
   // The Mancubus raising its guns, and the heavy footsteps that make a Cyberdemon, an
   // Arachnotron and the Mancubus heard before they are seen.
@@ -1610,36 +1634,100 @@ export const ACTIONS = {
       spread: numArg(ctx, 3, 90), range: numArg(ctx, 4, 0), damage: numArg(ctx, 6, 0),
       damageType: ctx.actor?.damageType || null });
   },
-  A_FatAttack1(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'FatShot')); saySound(ctx.state, 'DSFIRSHT', ctx.entity); },
-  A_FatAttack2(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'FatShot')); },
-  A_FatAttack3(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'FatShot')); },
+  // The Mancubus fires **two** shots per attack, fanned by FATSPREAD (11.25 degrees): the first
+  // pair swings right, the second left, the third straddles the aim. One shot per attack halved
+  // every Mancubus volley in the game and cost it the fan that makes the attack readable.
+  A_FatAttack1(ctx) {
+    ACTIONS.A_FaceTarget(ctx);
+    mancubusVolley(ctx, 1, 2);
+    saySound(ctx.state, 'DSFIRSHT', ctx.entity);
+  },
+  A_FatAttack2(ctx) {
+    ACTIONS.A_FaceTarget(ctx);
+    mancubusVolley(ctx, -1, -2);
+  },
+  A_FatAttack3(ctx) {
+    ACTIONS.A_FaceTarget(ctx);
+    mancubusVolley(ctx, -.5, .5);
+  },
   A_CyberAttack(ctx) { spawnActorProjectile(ctx.project, ctx.state, ctx.entity, actorMissile(ctx, 'Rocket')); saySound(ctx.state, 'DSRLAUNC', ctx.entity); },
+  // A_PainAttack: the Pain Elemental spits a Lost Soul **in front of itself** and that soul
+  // charges at once. The soul used to appear at the Elemental's own centre — inside its own
+  // hitbox — with no target and no charge, so the attack did nothing at all.
   A_PainAttack(ctx) {
-    const { state, entity } = ctx;
-    if (state.entities.filter(candidate => candidate.type === 'enemy' && candidate.health > 0).length > 40) return;
-    const index = projectilesByName(ctx.project);
-    const lost = index.byName.get('lostsoul');
-    if (!lost) return;
-    spawnProjectileEntity(ctx.project, state, entity, lost);
+    ACTIONS.A_FaceTarget(ctx);
+    painShootSkull(ctx, 0);
   },
+  // A_DualPainAttack: the MBF version, two souls thrown wide to either side.
+  A_DualPainAttack(ctx) {
+    ACTIONS.A_FaceTarget(ctx);
+    painShootSkull(ctx, 45);
+    painShootSkull(ctx, -45);
+  },
+  // A_SkullAttack: the Lost Soul's charge. GZDoom sets `MF_SKULLFLY`, points the thing at its
+  // target with `VelFromAngle(20)` and gives it the vertical speed that arrives at the target's
+  // middle; the slam itself happens in `PIT_CheckThing`, which damages what the flying thing
+  // hits. Writing a `charge` field that nothing read made the whole attack silent.
   A_SkullAttack(ctx) {
-    const { state, entity } = ctx;
+    const { state, entity, actor } = ctx;
     const target = targetPosition(state, entity);
+    const distance = Math.hypot(target.x - entity.x, target.y - entity.y);
+    // `DEFSKULLSPEED`: Doom charges at 20 units a tic whatever the actor's walking speed is, which
+    // is why a Lost Soul crosses a room faster than anything else in the game.
+    const speed = 20;
     const angle = Math.atan2(target.y - entity.y, target.x - entity.x);
-    entity.charge = { angle, tics: 20, speed: 20 };
-    saySound(state, 'DSSKLATK', entity);
+    const tics = Math.max(1, distance / speed);
+    entity.angle = angle * 180 / Math.PI;
+    entity.skullfly = {
+      vx: Math.cos(angle) * speed * TIC_RATE,
+      vy: Math.sin(angle) * speed * TIC_RATE,
+      vz: (sightEyeHeight(state, target) - (entity.z ?? floorAt(state, entity))) / tics * TIC_RATE,
+      tics: 0,
+    };
+    saySound(state, actor?.sounds?.attack || 'DSSKLATK', entity);
   },
+  // A_VileChase is A_Chase **with resurrection**: before it moves, an Archvile looks at the spot
+  // it is about to step onto, and a corpse there with a Raise state stands up and fights for it.
+  // Without it the Heal state was unreachable and the Archvile was just a fast, hard-hitting
+  // monster — the one thing it is famous for never happened.
   A_VileChase(ctx) {
+    if (raiseCorpse(ctx)) return;
     ACTIONS.A_Chase({ ...ctx, args: [], named: {} });
   },
+  // The Archvile's fire. `A_VileStart` is the wind-up sound, `A_VileTarget` drops the flame on the
+  // target, and the flame follows the player while the Archvile keeps sight of them (`A_Fire`).
+  A_VileStart(ctx) { saySound(ctx.state, 'vile/start', ctx.entity); },
+  A_VileTarget(ctx) {
+    const { project, state, entity } = ctx;
+    ACTIONS.A_FaceTarget(ctx);
+    const target = targetPosition(state, entity);
+    if (!canSeeTarget(state, entity, target, SIGHT_RANGE)) return;
+    entity.vileFire = { x: target.x, y: target.y, z: floorAt(state, target) };
+    spawnEffect(project, state, 'ArchvileFire', { ...entity.vileFire });
+  },
+  // The fire actor's own frames. Here the flame is the Archvile's `vileFire` point, drawn by the
+  // actor tick, so these only own their sounds.
+  A_StartFire(ctx) { saySound(ctx.state, 'vile/firestrt', ctx.entity); },
+  A_Fire() {},
+  A_FireCrackle() {},
   A_VileAttack(ctx) {
-    const { state, entity } = ctx;
-    if (!canSeePlayer(state, entity, SIGHT_RANGE)) return;
-    monsterHitscan(ctx, 20, 1);
+    const { project, state, entity } = ctx;
+    const target = targetPosition(state, entity);
+    if (!canSeeTarget(state, entity, target, SIGHT_RANGE)) return;
+    ACTIONS.A_FaceTarget(ctx);
+    saySound(state, 'vile/stop', entity);
+    // 20 damage straight down the Archvile's line of sight, then the flame — moved to 24 units in
+    // front of the player — bursts for 70 in a 70-unit radius. This is why standing in the fire
+    // is fatal and why breaking line of sight is the only answer.
+    damagePlayer(state, 20);
+    const fire = entity.vileFire || { x: target.x, y: target.y, z: floorAt(state, target) };
+    const angle = Math.atan2(entity.y - target.y, entity.x - target.x);
+    const blast = { x: target.x + Math.cos(angle) * 24, y: target.y + Math.sin(angle) * 24,
+      z: floorAt(state, target), name: 'ArchvileFire' };
+    explodeAt(project, state, blast, 70, 70, 'Fire');
+    entity.vileFire = null;
     saySound(state, 'DSVILATK', entity);
   },
-  A_VileTarget() {},
-  A_VileStart() {},
   // A_KeenDie(doortag = 666): when no other thing of the same class is alive, open the
   // tagged doors. It never touches other monsters.
   A_KeenDie(ctx) {
@@ -2012,6 +2100,120 @@ function spawnLiveActor(project, state, actorName, position) {
   return entity;
 }
 
+/**
+ * `P_CheckForResurrection`: the corpse an Archvile raises.
+ *
+ * Doom looks at the square the Archvile is stepping into, and a dead body there whose class has a
+ * Raise state stands up at full health, in its Raise state, hating what the Archvile hates. The
+ * Archvile then enters its Heal state, which is a long, defenceless animation — the window a
+ * player uses to kill it.
+ */
+function raiseCorpse(ctx) {
+  const { project, state, entity } = ctx;
+  const reach = Math.max(40, (Number(entity.radius) || 20) * 2 + 16);
+  for (const corpse of state.entities) {
+    if (corpse === entity || corpse.removed || corpse.type !== 'enemy' || (corpse.health ?? 0) > 0) continue;
+    if (Math.hypot(corpse.x - entity.x, corpse.y - entity.y) > reach) continue;
+    const actor = actorOf(project, corpse);
+    if (!actor || actor.states?.labels?.Raise === undefined) continue;
+    if (!canSeeTarget(state, entity, corpse, reach + 64)) continue;
+    corpse.health = Math.max(1, Number(actor.health) || 20);
+    corpse.solid = true;
+    corpse.noBlockmap = false;
+    corpse.gibbed = false;
+    corpse.actorDeadHandled = false;
+    corpse.queuedCorpse = false;
+    const runtime = actorStateOf(corpse);
+    runtime.gone = false; runtime.stopped = false;
+    setActorState(project, corpse, 'Raise', { restart: true });
+    setActorTarget(corpse, state.player);
+    saySound(state, 'vile/raise', corpse);
+    restoreBlocking(state, corpse);
+    state.worldRevision++;
+    return setActorState(project, entity, 'Heal') || true;
+  }
+  return false;
+}
+
+/**
+ * `A_PainShootSkull`: spawn a Lost Soul `prestep` units away at `offset` degrees and send it at
+ * the player.
+ *
+ * The distance matters: Doom spawns `4 + (radius + soulradius) * 1.5` ahead so the new thing is
+ * outside the Elemental's own body, and it checks the ceiling first, because a soul spawned into
+ * a ceiling is a soul stuck in the floor.
+ */
+function painShootSkull(ctx, offset) {
+  const { project, state, entity } = ctx;
+  const index = projectilesByName(project);
+  const soulActor = index.byName.get('lostsoul');
+  if (!soulActor) return null;
+  const height = Number(entity.height ?? actorOf(project, entity)?.height ?? 56);
+  const z = entity.z ?? floorAt(state, entity);
+  const sector = state.sectors.length ? sectorAt(state.sectors, entity.x, entity.y) : null;
+  if (sector && z + height + 8 > sector.ceilingHeight) return null;
+  // Doom's `COMPATF_LIMITPAIN`: twenty-one skulls is the most a level holds.
+  if (state.entities.filter(candidate => !candidate.removed && candidate.actorName === soulActor.name).length >= 21) return null;
+  const radius = Number(entity.radius ?? actorOf(project, entity)?.radius ?? 20);
+  const prestep = 4 + (radius + Number(soulActor.radius ?? 16)) * 1.5;
+  const angle = ((entity.angle || 0) + offset) * Math.PI / 180;
+  const soul = spawnLiveActor(project, state, soulActor.name,
+    { x: entity.x + Math.cos(angle) * prestep, y: entity.y + Math.sin(angle) * prestep, z: z + 8 });
+  if (!soul) return null;
+  setActorTarget(soul, state.player);
+  setActorState(project, soul, 'See');
+  // `other.A_SkullAttack()` — the soul is already flying at the player on the tic it appears.
+  ACTIONS.A_SkullAttack({ project, state, entity: soul, actor: soulActor, args: [], named: {} });
+  return soul;
+}
+
+/**
+ * One tic of a `MF_SKULLFLY` charge, and what it hits.
+ *
+ * Doom's `P_SkullFly` moves the thing by its momentum and lets `PIT_CheckThing` damage whatever
+ * it lands on with `((P_Random()&7)+1)*3`; a wall or a floor stops it, and it goes back to See.
+ */
+function advanceSkullfly(project, state, entity) {
+  const fly = entity.skullfly;
+  fly.tics++;
+  const stepX = fly.vx / TIC_RATE, stepY = fly.vy / TIC_RATE, stepZ = fly.vz / TIC_RATE;
+  const length = Math.hypot(stepX, stepY);
+  const radius = Number(entity.radius) || 16;
+  const stop = () => {
+    entity.skullfly = null;
+    if (entity.health > 0) setActorState(project, entity, 'See');
+  };
+  // A thing in the charge's path takes the slam; the charge ends on it, as `PIT_CheckThing` does.
+  const victim = () => {
+    if (Math.hypot(state.player.x - entity.x, state.player.y - entity.y) <= radius + 16) return state.player;
+    for (const other of state.entities) {
+      if (other === entity || other.removed || other.type !== 'enemy' || (other.health ?? 0) <= 0) continue;
+      if (Math.hypot(other.x - entity.x, other.y - entity.y) <= radius + (Number(other.radius) || 20)) return other;
+    }
+    return null;
+  };
+  const slam = () => {
+    const target = victim();
+    if (!target) return false;
+    const damage = randomDamage(state, 3, 8);
+    if (target === state.player) damagePlayer(state, damage);
+    else hurtActor(project, state, target, damage, entity, null);
+    return true;
+  };
+  if (slam()) { stop(); return; }
+  // A wall stops the charge where it stands: `geometryDistance` is the same trace the AI uses.
+  if (length > 0 && geometryDistance(state, { x: entity.x, y: entity.y, z: (entity.z ?? 0) + 28 },
+    { x: stepX / length, y: stepY / length, z: 0 }, length + .01, true) < length) { stop(); return; }
+  entity.x += stepX; entity.y += stepY;
+  const ground = floorAt(state, { x: entity.x, y: entity.y, elevation: 0 });
+  const ceiling = state.sectors.length ? (sectorAt(state.sectors, entity.x, entity.y)?.ceilingHeight ?? ground + 128) : ground + 128;
+  const next = (entity.z ?? ground) + stepZ;
+  entity.z = Math.max(ground, Math.min(ceiling - (Number(entity.height) || 56), next));
+  state.physics?.teleport(entity.id, entity.x, entity.y, entity.z);
+  // A charge that hits nothing at all runs out, and one that ground itself stops there.
+  if (fly.tics > 40 || (next < ground && stepZ < 0)) stop();
+}
+
 /** One tic of a cube's flight between the spitter and its spot. */
 function advanceFlight(entity) {
   const flight = entity.flight;
@@ -2021,6 +2223,21 @@ function advanceFlight(entity) {
   entity.y = flight.from.y + (flight.to.y - flight.from.y) * done;
   entity.z = flight.from.z + (flight.to.z - flight.from.z) * done;
   if (done >= 1) entity.flight = null;
+}
+
+/**
+ * Gives a body that stopped blocking its collider back.
+ *
+ * `A_NoBlocking` takes the collider out of the physics world, and Rapier frees it on removal, so
+ * a monster that stands up again needs a new one: the body is dropped and rebuilt from the actor
+ * table, which is exactly what a spawn does.
+ */
+export function restoreBlocking(state, entity) {
+  if (!state.physics?.add) return;
+  entity.solid = true;
+  entity.noBlockmap = false;
+  state.physics.remove(entity.id);
+  state.physics.add(entity.id);
 }
 
 /** Takes a spawned actor out of the level without leaving a hole in the array being walked. */
@@ -2113,7 +2330,25 @@ export function stepActors(project, state, dt) {
       // frame; it must keep ticking until the state machine ends.
       if (entity.health <= 0 && !entity.actorDeadHandled) {
         entity.actorDeadHandled = true;
-        setActorState(project, entity, 'Death');
+        // `health < GetGibHealth()`, and GetGibHealth is minus the spawn health: a body that took
+        // more than twice its health in one hit comes apart in its XDeath ("Extreme") state, which
+        // is the difference between a pistol corpse and a shotgun corpse.
+        const actor = actorOf(project, entity);
+        const gibHealth = -(Number(actor?.health) || 20);
+        if (entity.health < gibHealth && setActorState(project, entity, 'XDeath')) {
+          entity.gibbed = true;
+        } else setActorState(project, entity, 'Death');
+      }
+      if (entity.skullfly) advanceSkullfly(project, state, entity);
+      // The Archvile's flame burns where the player is while the Archvile can see them (A_Fire),
+      // and is drawn by repeating its two-tic frame — there is no fire actor to tick.
+      if (entity.vileFire) {
+        if (canSeeTarget(state, entity, state.player, SIGHT_RANGE)) {
+          entity.vileFire.x = state.player.x;
+          entity.vileFire.y = state.player.y;
+          entity.vileFire.z = floorAt(state, state.player);
+        }
+        spawnEffect(project, state, 'ArchvileFire', { ...entity.vileFire });
       }
       // A popped satellite is thrown clear and bursts on a fuse. GZDoom counts that down in the
       // ball's Pain state, but a frame runs its action only when it is entered and that state ends

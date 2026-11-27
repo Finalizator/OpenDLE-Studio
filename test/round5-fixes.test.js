@@ -138,7 +138,10 @@ test('monster attacks do Doom’s damage, not a profile written the other way ro
   assert.deepEqual(sample('A_CPosAttack'), { low: 3, high: 15 });
   assert.deepEqual(sample('A_SargAttack'), { low: 4, high: 40 });
   assert.deepEqual(sample('A_SkelFist'), { low: 6, high: 60 });
-  assert.deepEqual(sample('A_VileAttack'), { low: 20, high: 20 });
+  // The Archvile is the exception, and the test keeps it honest: 20 damage straight down its line
+  // of sight, then the flame it dropped on the player bursts for up to 70 more — 46 at the 24
+  // units the blast is placed from the player, so a hit lands for 66.
+  assert.deepEqual(sample('A_VileAttack'), { low: 66, high: 66 });
 });
 
 test('a secret exit you walk through is a walk line, not a switch', () => {

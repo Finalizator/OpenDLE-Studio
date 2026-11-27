@@ -284,6 +284,19 @@ export function postFxParamValue(state, kind, name) {
   return Number.isFinite(stored) ? stored : postFxParamDefault(kind, name);
 }
 
+/** Places every `+SPAWNCEILING` thing at the ceiling of the sector it was placed in. */
+function settleSpawnCeiling(project, entities, sectors) {
+  for (const entity of entities) {
+    if (entity.type !== 'enemy' || !entity.actorId) continue;
+    const actor = projectActorIndex(project).byId.get(entity.actorId);
+    if (!actor || actorFlag(actor, 'SPAWNCEILING', entity) !== true) continue;
+    if (Number.isFinite(entity.z) || entity.elevation) continue;
+    const sector = sectorAt(sectors, entity.x, entity.y);
+    if (!sector) continue;
+    entity.z = Math.max(sector.floorHeight, sector.ceilingHeight - Number(entity.height ?? actor.height ?? 56));
+  }
+}
+
 export function createRuntime(project, { settings = {}, screen = 'playing', gameMode = false, progress, addons = null,
   saveFiles = null } = {}) {
   // Missile artwork has to exist before the renderer builds its sprite index.
@@ -296,6 +309,9 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
   const playerStats = progress ? structuredClone(progress.playerStats) : initialPlayerStats();
   const entities = initialiseActorEntities(project, runtimeEntities(project, settings));
   const sectors = sectorGeometry(project);
+  // `+SPAWNCEILING` hangs a thing from the ceiling instead of standing it on the floor: it is
+  // where CommanderKeen has to be, and Doom's `P_SpawnMapThing` puts it there.
+  settleSpawnCeiling(project, entities, sectors);
   initialiseAuthoredDoors(project, sectors);
   initialiseElevators(project, sectors);
   const state = {

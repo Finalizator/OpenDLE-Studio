@@ -168,7 +168,9 @@ test('damage from one monster makes the victim fight back instead of the player'
   guard.health = 1;
   guard.solid = true;
   hurtActor(project, state, guard, 10, state.player);
-  assert.equal(guard.health, 0);
+  // Doom leaves a corpse at negative health, because `health < -SpawnHealth()` is what picks the
+  // gib state; going nine past zero is what a 10-damage hit on 1 health leaves.
+  assert.equal(guard.health, -9);
   assert.equal(guard.solid, false);
 });
 
