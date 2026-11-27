@@ -19,7 +19,12 @@ test('a monster sound is attenuated by where the monster is', () => {
   // the mixing path needs a real Web Audio context; `npm run automation:game` covers the rest.
   const source = readFileSync(new URL('../public/audio.js', import.meta.url), 'utf8');
   assert.match(source, /const at = event\.position \|\| \(event\.x === undefined \? null : event\);/);
-  assert.match(source, /Math\.hypot\(at\.x - state\.player\.x, at\.y - state\.player\.y\)/);
+  // The distance is the real 3D one on Doom's own curve: a sound 5000 units overhead used to be as
+  // loud as one at the player's feet, and the shape was a straight line where GZDoom's is
+  // `(10^v - 1) / 9` with a 200-unit plateau.
+  assert.match(source, /const effectGain = distance =>/);
+  assert.match(source, /at\.z \|\| 0\) - \(state\.player\.z \|\| 0\)\)\)/);
+  assert.match(source, /\(Math\.pow\(10, v\) - 1\) \/ 9/);
 });
 
 test('a camera actor’s pitch is read as degrees', () => {

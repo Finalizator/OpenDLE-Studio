@@ -58,6 +58,8 @@ export function createMusicScheduler(context, { destination, onError = () => {},
   // Created on first percussion hit so a context without buffer support (or a
   // silent track) never pays for it.
   let noise = null;
+  /** Every scheduled source, so a track change can silence the one it replaces. */
+  const live = new Set();
   function noiseBuffer() {
     if (noise) return noise;
     const length = Math.floor(context.sampleRate * .35), buffer = context.createBuffer(1, length, context.sampleRate);
@@ -86,6 +88,11 @@ export function createMusicScheduler(context, { destination, onError = () => {},
       filter.Q.value = .9;
       source.connect(filter); filter.connect(gain);
       source.start(when); source.stop(when + Math.min(.35, duration + .05));
+      // A drum is a voice like any other: it counts against the budget and it has to release
+      // itself, or a dense passage schedules unbounded sources that no track change can stop.
+      voices++;
+      live.add(source);
+      source.onended = () => { live.delete(source); voices = Math.max(0, voices - 1); };
       return;
     }
     const oscillator = context.createOscillator();
@@ -107,7 +114,14 @@ export function createMusicScheduler(context, { destination, onError = () => {},
     }
     oscillator.start(when); oscillator.stop(when + duration + patch.release + .05);
     voices++;
-    oscillator.onended = () => { voices = Math.max(0, voices - 1); harmonic = null; };
+    live.add(oscillator);
+    if (harmonic) live.add(harmonic.oscillator);
+    oscillator.onended = () => {
+      voices = Math.max(0, voices - 1);
+      live.delete(oscillator);
+      if (harmonic) live.delete(harmonic.oscillator);
+      harmonic = null;
+    };
   }
   /** When the next un-played note should sound, or null when the score is done. */
   function pendingTime() {
@@ -161,8 +175,14 @@ export function createMusicScheduler(context, { destination, onError = () => {},
     stop() {
       if (timer) clearInterval(timer);
       timer = null; current = null; index = 0; loop = 0;
+      // Clearing the clock is not stopping the music: every oscillator and drum already scheduled
+      // kept sounding to its own stop time, so the previous track played over the new one for
+      // seconds after a change and after a level exit.
+      for (const source of live) { try { source.stop(); } catch { /* already ended */ } }
+      live.clear(); voices = 0;
     },
     dispose() {
+      if (!disposed) this.stop();
       disposed = true;
       if (timer) clearInterval(timer);
       timer = null; current = null;

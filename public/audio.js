@@ -2,6 +2,25 @@ import { parseMusic } from '../shared/music.js';
 import { soundCandidates, soundTable, VANILLA_SOUNDS } from '../shared/sndinfo.js';
 import { createMusicScheduler, musicBytes } from './music-player.js';
 
+/** Doom's default `$rolloff`: full volume within 200 units, silent past 1200. */
+const SFX_NEAR = 200;
+const SFX_FAR = 1200;
+
+/**
+ * Doom's distance attenuation, as `s_sound.cpp` computes it.
+ *
+ * An effect is at full volume inside 200 units and fades to nothing at 1200, on the `(10^v - 1)/9`
+ * curve rather than a straight line, and the distance is the real 3D one — a sound 5000 units
+ * overhead used to be as loud as one at the player's feet.
+ */
+const effectGain = distance => {
+  if (!(distance > 0)) return 1;
+  if (distance <= SFX_NEAR) return 1;
+  if (distance >= SFX_FAR) return 0;
+  const v = (SFX_FAR - distance) / 1000;
+  return (Math.pow(10, v) - 1) / 9;
+};
+
 function bytesFromDataUri(src) {
   const comma = src.indexOf(',');
   if (comma < 0) throw new Error('Embedded sound data is malformed');
@@ -50,6 +69,21 @@ export function createEntityAudioRuntime(project, context, destination, onError 
     try { entry.gain?.disconnect(); } catch { /* already disconnected */ }
     entry.panner = entry.gain = null;
   };
+  /** The direction the player faces, so a panner puts a sound on the right side of them. */
+  const orientListener = (listener, player) => {
+    if (!listener || !player) return;
+    const yaw = Number(player.angle) || 0, pitch = Number(player.pitch) || 0;
+    const flat = Math.cos(pitch);
+    const forward = [Math.cos(yaw) * flat, Math.sin(pitch), Math.sin(yaw) * flat];
+    if (listener.forwardX) {
+      setAudioPosition(listener.forwardX, forward[0], context);
+      setAudioPosition(listener.forwardY, forward[1], context);
+      setAudioPosition(listener.forwardZ, forward[2], context);
+      setAudioPosition(listener.upX, 0, context);
+      setAudioPosition(listener.upY, 1, context);
+      setAudioPosition(listener.upZ, 0, context);
+    } else listener.setOrientation?.(...forward, 0, 1, 0);
+  };
   const positionNode = (node, x, y, z) => {
     if (!node) return;
     if (node.positionX) {
@@ -65,6 +99,9 @@ export function createEntityAudioRuntime(project, context, destination, onError 
     const player = state.player || {};
     const listener = context.listener;
     positionNode(listener, player.x || 0, player.z || 0, player.y || 0);
+    // Only the position used to be written, so the listener kept the spec default `(0,0,-1)` and
+    // every panned sound was rotated by the player's yaw — correct only when facing south.
+    orientListener(listener, player);
     const seen = new Set();
     for (const entity of state.entities || []) {
       const sound = entity.sound;
@@ -188,11 +225,18 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
    */
   function assetFor(name) {
     const key = String(name ?? '').toUpperCase();
+    const options = [], seen = new Set();
     for (const candidate of soundCandidates(key, aliases)) {
       const asset = assets.get(candidate.toUpperCase());
-      if (asset) return asset;
+      if (!asset || seen.has(asset.id)) continue;
+      seen.add(asset.id);
+      options.push(asset);
     }
-    return null;
+    if (!options.length) return null;
+    // A `$random` group is a set of alternatives, not a priority list: GZDoom rolls one per play
+    // (`pr_randsound`, `s_doomsound.cpp`). Taking the first that exists made every monster's sight,
+    // pain and death sound the same lump for the whole session — the group was only a lookup order.
+    return options.length === 1 ? options[0] : options[Math.floor(Math.random() * options.length)];
   }
   function load(name) {
     const asset = assetFor(name);
@@ -257,10 +301,14 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
       }
       const requested = musicRequested || project.environment?.musicAsset || project.environment?.music;
       musicRequested ??= requested || null;
-      const track = project.assets.find(asset => asset.kind === 'music' &&
-        (asset.id === requested || asset.name === requested)) ||
-        project.assets.find(asset => asset.kind === 'sound' && asset.music &&
-          (asset.id === requested || asset.name === requested)) ||
+      // GZDoom compares music names case-insensitively (`mus_playing.name.CompareNoCase`) and so
+      // does the sound lookup above; a case-sensitive test here let `SetMusic("d_test")` leave the
+      // previous track playing with no error at all.
+      const sameName = asset => typeof requested === 'string' && requested.length > 0 &&
+        (String(asset.id).toLowerCase() === requested.toLowerCase() ||
+          String(asset.name ?? '').toLowerCase() === requested.toLowerCase());
+      const track = project.assets.find(asset => asset.kind === 'music' && sameName(asset)) ||
+        project.assets.find(asset => asset.kind === 'sound' && asset.music && sameName(asset)) ||
         project.assets.find(asset => asset.kind === 'sound' && asset.music);
       if (track && track.kind === 'music' && !musicStarted) {
         musicStarted = true;
@@ -300,8 +348,8 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
         // `x`/`y` (a combat event). Reading only `x`/`y` left every monster sound — sight, pain,
         // death, every attack — at full volume from anywhere on the map.
         const at = event.position || (event.x === undefined ? null : event);
-        const attenuation = at === null ? 1
-          : Math.max(0, 1 - Math.hypot(at.x - state.player.x, at.y - state.player.y) / 1200);
+        const attenuation = at === null ? 1 : effectGain(Math.hypot(
+          at.x - (state.player.x || 0), at.y - (state.player.y || 0), (at.z || 0) - (state.player.z || 0)));
         if (!attenuation) continue;
         load(event.name).then(buffer => {
           if (disposed || !buffer) return;
@@ -311,8 +359,26 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
           }
           const source = context.createBufferSource(), gain = context.createGain();
           source.buffer = buffer; gain.gain.value = event.volume * attenuation;
-          source.connect(gain); gain.connect(master);
-          source.onended = () => { voices.delete(source); source.disconnect(); gain.disconnect(); };
+          // A sound with a place is panned there; the distance response is the gain above, so the
+          // panner does no attenuating of its own (`rolloffFactor 0`). Without it a monster firing
+          // from the left was identical to one firing from the right.
+          let panner = null;
+          if (at !== null) panner = context.createPanner?.() || null;
+          if (panner) {
+            panner.panningModel = 'equalpower';
+            panner.distanceModel = 'linear';
+            panner.rolloffFactor = 0;
+            panner.refDistance = 1;
+            panner.maxDistance = 1e6;
+            positionNode(panner, at.x, at.z || 0, at.y);
+            source.connect(gain); gain.connect(panner); panner.connect(master);
+          } else {
+            source.connect(gain); gain.connect(master);
+          }
+          source.onended = () => {
+            voices.delete(source);
+            try { source.disconnect(); gain.disconnect(); panner?.disconnect(); } catch { /* already gone */ }
+          };
           voices.add(source); source.start();
         }).catch(report);
       }
