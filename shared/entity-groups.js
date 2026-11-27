@@ -263,6 +263,15 @@ export function cloneEntitiesForPaste(project, entities, point, {
     }
     for (const member of members) instanceIds.add(member.id);
   }
+  // A joint is part of what a group *is*: duplicating a hinged pair without its hinge gave a copy
+  // that looks right and does not move. Every copied group counts, not only a scene instance.
+  for (const original of groups) {
+    if (original.kind === 'scene') continue;
+    for (const entity of source) {
+      if (entity.groupId !== original.id || !mapping.has(entity.id)) continue;
+      instanceIds.add(entity.id);
+    }
+  }
   const copiedEvents = sceneEventsForEntities(events, instanceIds);
   const eventMapping = new Map(copiedEvents.map(event => [event.id, newId('event')]));
   const copiedJoints = joints.filter(joint => jointWithin(joint, instanceIds));

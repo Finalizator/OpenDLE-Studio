@@ -43,6 +43,18 @@ function resizeVolume(item, mode, delta) {
       if (delta.sizes[key] === undefined) continue;
       area[key] = sizeOf(delta.sizes[key]);
     }
+    // A round volume is drawn, tested and collided by its radius, so forming its width has to move
+    // the radius as well — otherwise the 3D grip reported a new size and nothing changed. The 2D
+    // grip and the layout scale path both derive it this way.
+    const round = area.shape && area.shape !== 'box';
+    if (round && delta.sizes.width !== undefined) {
+      area.radius = sizeOf((delta.sizes.width || 0) / 2);
+      if (area.shape === 'sphere' || area.shape === 'ball') {
+        area.height = area.radius * 2;
+        if (delta.sizes.depth === undefined) area.depth = area.radius * 2;
+      }
+      if (area.shape === 'capsule') area.height = Math.max(area.height || 0, area.radius * 2);
+    }
     item.area = area;
     return true;
   }

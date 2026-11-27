@@ -130,11 +130,20 @@ function dimensions(entity) {
   // Whether the shape is round is a property of the record that was picked: an object with both a
   // mesh node and a sphere area has its dimensions read from the *area*, which ignores width and
   // depth entirely, so testing `entity.mesh` reported 96 for a 400-unit sphere.
-  const round = fromArea && ['sphere', 'ball', 'capsule', 'cylinder', 'cone'].includes(size.shape);
+  // Only the shapes a volume honours are round: `AREA_SHAPES` has no ball, cylinder or cone, and
+  // `areaSpec` reads those as a box, so reporting a diameter for one described a volume the object
+  // does not have. A capsule is never shorter than its own diameter — the collider and the drawing
+  // both clamp it — so its height is the clamped one, or `Height` named a size nothing collides with.
+  const shape = fromArea ? size.shape : null;
+  const round = shape === 'sphere' || shape === 'capsule';
+  const radius = round ? size.radius ?? 0 : 0;
+  const height = shape === 'sphere' ? radius * 2
+    : shape === 'capsule' ? Math.max(radius * 2, size.height ?? 0)
+      : size.height ?? 0;
   return {
-    width: round ? (size.radius ?? 0) * 2 : size.width ?? 0,
-    height: ['sphere', 'ball'].includes(size.shape) ? (size.radius ?? 0) * 2 : size.height ?? 0,
-    depth: round ? (size.radius ?? 0) * 2 : size.depth ?? size.thickness ?? 0,
+    width: round ? radius * 2 : size.width ?? 0,
+    height,
+    depth: round ? radius * 2 : size.depth ?? size.thickness ?? 0,
     radius: size.radius ?? 0,
   };
 }

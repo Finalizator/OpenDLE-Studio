@@ -263,7 +263,13 @@ export function brushSurfaceAt(brushes, x, y) {
       if (z < box.z - .01 || z > box.z + box.height + .01) continue;
       if (top === null || z > top) top = z;
     }
-    const height = top ?? box.z + box.height;
+    // A box test is not a coverage test: a wedge or a prism is smaller than its bounding box, so a
+    // point beside the slope passed the box test and was told to stand on the brush top — an
+    // object placed there floated in the air. The candidate height only counts when the point is
+    // actually inside the solid at that height.
+    if (top !== null && !brushContains(brush, [x, y, top], .01)) top = null;
+    const height = top ?? (brushContains(brush, [x, y, box.z + box.height / 2], .01) ? box.z + box.height : null);
+    if (height === null) continue;
     if (best === null || height > best) best = height;
   }
   return best;
@@ -485,20 +491,26 @@ export function subtractBrush(project, brushId, cutterIds) {
   const target = findBrush(project, brushId);
   const cutters = (project.map.brushes || []).filter(brush => cutterIds.includes(brush.id) && brush.id !== brushId);
   if (!cutters.length) throw new Error('Select a second brush to subtract');
-  let inside = [copyBrush(target)], outside = [];
+  // A piece in front of one of a cutter's planes is outside *that* cutter for good, but not
+  // outside the next one: subtracting several cutters has to carve what survived each of them, or
+  // the result is A − (B ∩ C) and the hole is only as big as the cutters' overlap.
+  let pieces = [copyBrush(target)];
   for (const cutter of cutters) {
+    const survivors = [];
     for (const face of facesOf(cutter)) {
-      if (!inside.length) break;
+      if (!pieces.length) break;
       const plane = facePlane(face);
       const nextInside = [];
-      for (const piece of inside) {
+      for (const piece of pieces) {
         const { front, back } = splitBrush(piece, plane);
-        if (front) outside.push(front);
+        if (front) survivors.push(front);
         if (back) nextInside.push(back);
       }
-      inside = nextInside;
+      pieces = nextInside;
     }
+    pieces = survivors;
   }
+  const outside = pieces;
   if (outside.length > MAX_CSG_PIECES) throw new Error(`Subtracting would create ${outside.length} brushes; simplify the selection`);
   const index = project.map.brushes.findIndex(brush => brush.id === brushId);
   const results = outside.map((piece, order) => ({
@@ -521,6 +533,11 @@ export function mergeBrushes(project, brushIds) {
   if (brushes.length < 2) throw new Error('Select at least two brushes to merge');
   const others = id => brushes.filter(brush => brush.id !== id);
   const faces = [];
+  // A convex solid has one face per plane, so two faces on the same plane are the same wall seen
+  // twice: two boxes side by side keep their coplanar outer faces and the merged brush then draws
+  // that wall twice, which texturing one of them does not fix.
+  const seenPlanes = new Set();
+  const planeKey = plane => `${plane.normal.map(value => value.toFixed(4)).join(',')}|${plane.distance.toFixed(3)}`;
   for (const brush of brushes) {
     facesOf(brush).forEach((face, index) => {
       const plane = facePlane(face);
@@ -537,7 +554,11 @@ export function mergeBrushes(project, brushIds) {
         if (mirrored) return true;
         return polygon.length >= 3 && polygon.every(point => brushContains(other, point, -EPS));
       });
-      if (!hidden) faces.push(copyFace(face));
+      if (hidden) return;
+      const key = planeKey(plane);
+      if (seenPlanes.has(key)) return;
+      seenPlanes.add(key);
+      faces.push(copyFace(face));
     });
   }
   const candidate = { faces };

@@ -12,33 +12,60 @@ export function selectedBounds(project, ids) {
   };
 }
 
+/**
+ * The things a selection moves as.
+ *
+ * A grouped set — a scene instance above all — is one unit: aligning or flipping its members one
+ * by one smeared them onto a single line and pulled the arrangement apart, which is the opposite
+ * of what grouping is for. An object with no group is a unit of its own.
+ */
+function selectionUnits(project, ids) {
+  const wanted = new Set(ids);
+  const units = [], seenGroups = new Set();
+  for (const entity of project.map.entities || []) {
+    if (!wanted.has(entity.id)) continue;
+    if (entity.groupId) {
+      if (seenGroups.has(entity.groupId)) continue;
+      seenGroups.add(entity.groupId);
+      const members = membersOf(project, entity.groupId);
+      if (members.length) { units.push({ members, bounds: selectedBounds(project, members.map(member => member.id)) }); continue; }
+    }
+    units.push({ members: [entity], bounds: selectedBounds(project, [entity.id]) });
+  }
+  return units;
+}
+const centreOf = (bounds, axis) => axis === 'x' ? (bounds.minX + bounds.maxX) / 2 : (bounds.minY + bounds.maxY) / 2;
+function moveUnit(unit, dx, dy) {
+  for (const member of unit.members) {
+    member.x = (member.x || 0) + dx;
+    member.y = (member.y || 0) + dy;
+  }
+}
+
 export function alignWorldSelection(project, ids, mode) {
   if (!ids.length) throw new Error('Select objects before aligning');
   const bounds = selectedBounds(project, ids);
   if (!bounds) throw new Error('Select objects before aligning');
-  const wanted = new Set(ids);
-  for (const entity of project.map.entities) {
-    if (!wanted.has(entity.id)) continue;
-    if (mode === 'left') entity.x = bounds.minX;
-    if (mode === 'right') entity.x = bounds.maxX;
-    if (mode === 'top') entity.y = bounds.minY;
-    if (mode === 'bottom') entity.y = bounds.maxY;
-    if (mode === 'centerX') entity.x = (bounds.minX + bounds.maxX) / 2;
-    if (mode === 'centerY') entity.y = (bounds.minY + bounds.maxY) / 2;
+  for (const unit of selectionUnits(project, ids)) {
+    const unitBounds = unit.bounds;
+    if (mode === 'left') moveUnit(unit, bounds.minX - unitBounds.minX, 0);
+    if (mode === 'right') moveUnit(unit, bounds.maxX - unitBounds.maxX, 0);
+    if (mode === 'top') moveUnit(unit, 0, bounds.minY - unitBounds.minY);
+    if (mode === 'bottom') moveUnit(unit, 0, bounds.maxY - unitBounds.maxY);
+    if (mode === 'centerX') moveUnit(unit, (bounds.minX + bounds.maxX) / 2 - centreOf(unitBounds, 'x'), 0);
+    if (mode === 'centerY') moveUnit(unit, 0, (bounds.minY + bounds.maxY) / 2 - centreOf(unitBounds, 'y'));
   }
 }
 
 export function distributeWorldSelection(project, ids, axis) {
   if (ids.length < 3) throw new Error('Select at least three objects to distribute');
-  const entities = project.map.entities.filter(entity => ids.includes(entity.id));
-  entities.sort((a, b) => (axis === 'x' ? (a.x || 0) - (b.x || 0) : (a.y || 0) - (b.y || 0)));
-  const first = entities[0], last = entities.at(-1);
-  const start = axis === 'x' ? first.x || 0 : first.y || 0;
-  const end = axis === 'x' ? last.x || 0 : last.y || 0;
-  for (let index = 0; index < entities.length; index++) {
-    const value = start + (end - start) * index / (entities.length - 1);
-    if (axis === 'x') entities[index].x = value;
-    else entities[index].y = value;
+  const units = selectionUnits(project, ids).sort((a, b) => centreOf(a.bounds, axis) - centreOf(b.bounds, axis));
+  if (units.length < 3) throw new Error('Select at least three objects to distribute');
+  const start = centreOf(units[0].bounds, axis), end = centreOf(units.at(-1).bounds, axis);
+  for (let index = 0; index < units.length; index++) {
+    const value = start + (end - start) * index / (units.length - 1);
+    const delta = value - centreOf(units[index].bounds, axis);
+    moveUnit(units[index], axis === 'x' ? delta : 0, axis === 'x' ? 0 : delta);
   }
 }
 
@@ -46,11 +73,18 @@ export function flipWorldSelection(project, ids, axis) {
   if (!ids.length) throw new Error('Select objects before flipping');
   const bounds = selectedBounds(project, ids);
   if (!bounds) throw new Error('Select objects before flipping');
-  const wanted = new Set(ids);
-  for (const entity of project.map.entities) {
-    if (!wanted.has(entity.id)) continue;
-    if (axis === 'x') entity.x = bounds.minX + bounds.maxX - (entity.x || 0);
-    else entity.y = bounds.minY + bounds.maxY - (entity.y || 0);
+  const mirror = axis === 'x' ? bounds.minX + bounds.maxX : bounds.minY + bounds.maxY;
+  for (const unit of selectionUnits(project, ids)) {
+    for (const member of unit.members) {
+      // A reflection moves each part to the other side of the selection's centre and turns it
+      // round, which is what makes a mirrored instance look mirrored rather than rearranged.
+      if (axis === 'x') member.x = mirror - (member.x || 0);
+      else member.y = mirror - (member.y || 0);
+      if (Number.isFinite(member.angle)) {
+        const angle = axis === 'x' ? 180 - member.angle : -member.angle;
+        member.angle = ((angle % 360) + 360) % 360;
+      }
+    }
   }
 }
 
