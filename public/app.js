@@ -8753,9 +8753,13 @@ async function start() {
     await reloadProject(true);
     await refreshProjects();
   } else {
-    // A detached window is a view of the hub's document, unsaved edits included: it waits for
-    // that document instead of loading the last save of its own.
-    await studioWindows.whenReady();
+    // A detached window is a view of the hub's document, unsaved edits included. It shows its own
+    // chrome at once — a window that waits with nothing on it looks broken — and if the hub does
+    // not answer, the saved document is loaded so the panel still works on its own.
+    studioWindows.applyChrome();
+    status(`Waiting for the main window…`);
+    try { await studioWindows.whenReady(4000); status(`${studioWindows.label()} is sharing the main window's document`); }
+    catch { await reloadProject(true); status('The main window did not answer; showing the last saved project. Save from the main window to keep them in step.', true); }
   }
   // The version is part of every playtest log header, so read it before any play.
   await loadEngineVersion().catch(() => {});

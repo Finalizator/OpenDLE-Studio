@@ -185,6 +185,16 @@ export function createStudioWindows({
     // One dispatcher, so a drag announcement and a document message are read once each.
     if (link) link.onmessage = event => { rememberDrag(event); receive(event); };
     send({ type: 'hello', id, view });
+    if (!isMain) {
+      // The hub may still be loading, or its tab may have been opened before this window: keep
+      // asking until it answers, so a detached window is never left waiting on one lost message.
+      let tries = 0;
+      const ask = setInterval(() => {
+        if (tries++ > 8 || getProject()) { clearInterval(ask); return; }
+        send({ type: 'hello', id, view });
+      }, 700);
+      ask?.unref?.();
+    }
     if (windowRef?.addEventListener) windowRef.addEventListener('beforeunload', () => send({ type: 'bye', id, panel }));
   }
 
@@ -199,12 +209,12 @@ export function createStudioWindows({
    * and on the hub's first message in a detached one. A hub that never answers is reported instead
    * of leaving a blank window waiting.
    */
-  function whenReady(timeout = 20000) {
+  function whenReady(timeout = 4000) {
     if (isMain || getProject()) return Promise.resolve(true);
     return Promise.race([
       firstDocument,
       new Promise((_, reject) => setTimeout(() => reject(new Error(
-        'The main OpenDLE window did not send its project. Keep it open, or reopen this window from its tab.')), timeout)),
+        'The main OpenDLE window did not send its project')), timeout)),
     ]);
   }
 
