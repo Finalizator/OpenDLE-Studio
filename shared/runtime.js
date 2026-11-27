@@ -1887,16 +1887,12 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       if (condition.type === 'variableCompare') return compare(state.variables[condition.variable], condition.operator, condition.value);
       if (condition.type === 'saveFileExists') return Boolean(state.saveFiles?.has(String(condition.file ?? '').trim()));
       if (condition.type === 'saveFileFailed') return Boolean(state.saveFileError);
-      if (condition.type === 'timerReady') {
-        const key = `${event.ownerId || '$scene'}:${condition.timer}`;
-        if (state.timers.has(key)) return state.time + 1e-9 >= state.timers.get(key);
-        // A timer that was never started is not ready — `|| 0` read the missing entry as "due at
-        // time zero", so the documented "Timed trap" fired on the level's first frame instead of
-        // after its delay. The exception is a rule that arms the timer itself: the generated weapon
-        // cadence rule both fires and re-arms, and "do this, then not again for a while" is the
-        // same shape. A rule that only *waits* is false until whoever owns the timer starts it.
-        return (event.actions || []).some(action => action.type === 'startTimer' && action.timer === condition.timer);
-      }
+      // A timer that was never started reads as due at time zero, which is what the engine's own
+      // generated rules rely on: the weapon cadence rule primes its timer and fires on the first
+      // press, and a monster's chase rule waits on an `attackPose` timer that only exists once an
+      // attack has played. A rule that must wait for a timer to have *been* started asks
+      // `timerExists` beside it (the Timed trap recipe in Docs/visual-scripting.md does).
+      if (condition.type === 'timerReady') return state.time + 1e-9 >= (state.timers.get(`${event.ownerId || '$scene'}:${condition.timer}`) || 0);
       if (condition.type === 'timerExists') return state.timers.has(`${event.ownerId || '$scene'}:${condition.timer}`);
       if (condition.type === 'groupActive') return state.groups.get(condition.groupId);
       if (condition.type === 'playerGrounded') {

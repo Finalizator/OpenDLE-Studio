@@ -360,12 +360,15 @@ test('invalid versions, platforms and projects are rejected', async () => {
 });
 
 test('identical inputs produce identical archive bytes apart from timestamp fields', async () => {
-  const first = await build(), second = await build();
+  // One project, two exports: a project carries its own id (the player keys saves by it), so two
+  // separately created projects are not the same input.
+  const project = createProject();
+  const first = await build({ project }), second = await build({ project });
   assert.equal(first.filename, second.filename);
   assert.deepEqual(first.files, second.files);
   assert.ok(first.bytes.equals(second.bytes), 'same input and timestamp yields identical bytes');
 
-  const later = await build({ now: new Date('2026-10-26T08:30:00.000Z') });
+  const later = await build({ project, now: new Date('2026-10-26T08:30:00.000Z') });
   assert.deepEqual(later.files, first.files);
   assert.equal(later.bytes.equals(first.bytes), false);
   const a = await readZip(first.bytes), b = await readZip(later.bytes);

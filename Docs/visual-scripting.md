@@ -302,8 +302,13 @@ must run before a further pick.
 condition: wallActivated(mode use, wall w12)
 actions:   startTimer trap 2
            moveSector(room0.ceilingHeight, height 0, speed 40, wait 3, return)
-condition: timerReady trap        → showMessage "The ceiling lowers!"
+condition: timerReady trap AND timerExists trap → showMessage "The ceiling lowers!"
 ```
+
+`timerReady` alone is true for a timer that was never started — the engine's own weapon and monster
+rules prime their timers from the rule that uses them, so "not started yet" has to read as ready.
+A rule that must wait for *someone else* to start its timer asks `timerExists` beside `timerReady`,
+which is what keeps this trap from firing on the level's first frame.
 
 **HUD button** (game scope, interface phase)
 

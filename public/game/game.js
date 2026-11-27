@@ -114,7 +114,10 @@ async function loadProject() {
 }
 
 function identity() {
-  return String(game.project?.title || 'OpenDLE game');
+  // The project's own id, not its title: renaming a game used to orphan every save and reset the
+  // player's settings, and two games that happened to share a title shared both. A project written
+  // before the id existed still falls back to the title.
+  return String(game.project?.gameId || game.project?.title || 'OpenDLE game');
 }
 
 function settingsKey() {

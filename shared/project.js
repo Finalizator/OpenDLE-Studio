@@ -581,6 +581,13 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
   if (project.modelFacingSemantics !== undefined)
     assert(project.modelFacingSemantics === MODEL_FACING_SEMANTICS, 'Unknown model facing semantics');
   text(project.title, 'Title', 100);
+  // A stable name for this game, independent of its title: the exported player keys its saves and
+  // its settings by it, so renaming a game keeps them and two games that share a title do not. Old
+  // projects have none and fall back to the title.
+  if (project.gameId !== undefined) {
+    assert(typeof project.gameId === 'string' && /^[A-Za-z0-9_-]{4,80}$/.test(project.gameId),
+      'Game id must be 4-80 letters, digits, dashes or underscores');
+  }
   // The game's own release number, which the exported build writes into its `version.ini` beside the
   // engine's. Optional: a project written before it existed exports as DEFAULT_GAME_VERSION.
   if (project.gameVersion !== undefined) {
@@ -1605,7 +1612,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
       }
       if (definition.wall) assert(walls.some(wall => wall.id === command.wallId), 'Command references an unknown wall');
       if (definition.zone) {
-        const zone = targetEntities(command.zoneId).find(entity => entity.type === 'zone');
+        const zone = entities.find(entity => entity.id === command.zoneId && entity.type === 'zone');
         assert(zone, 'Zone condition must reference an existing zone');
         // A zone exists to be entered, so it needs the volume that lets anything enter it. The
         // runtime throws "tests zone X, which has none" for one without, and a thrown condition stops
@@ -1930,6 +1937,8 @@ export function createProject() {
     // Which meaning of a declared model facing this project is written in; see `migrateModelFacing`.
     modelFacingSemantics: MODEL_FACING_SEMANTICS,
     title: 'My first OpenDLE world',
+    // Fixed for the life of the project: the exported game stores its saves and settings under it.
+    gameId: newId('game'),
     gameVersion: DEFAULT_GAME_VERSION,
     map: {
       brushes: [],
