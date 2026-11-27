@@ -271,7 +271,10 @@ function readStrings(behavior, chunks) {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = view.getInt32(4, true);
     for (let index = 0; index < count; index++) {
-      const offset = view.getInt32(8 + index * 4, true);
+      // `UnencryptStrings` (p_acs.cpp) reads the count at content word 1 and the first offset at
+      // content word 3 — one gap word follows the count. Read at word 2, every offset was shifted
+      // by one entry, so an encrypted STRE table handed the wrong bytes to every string.
+      const offset = view.getInt32(12 + index * 4, true);
       if (offset <= 0 || offset >= bytes.length) continue;
       const key = (offset * 157135) & 0xff;
       for (let cursor = offset; cursor < bytes.length; cursor++) {
