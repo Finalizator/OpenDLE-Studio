@@ -1,4 +1,5 @@
 import { createTrack, removeTimesheet, TIMESHEET_LIMITS, TIMESHEET_TRACK_COLORS } from '/shared/timesheet.js';
+import { newId } from '/shared/project.js';
 import { commandRow, openCommandDialog } from './event-sheet.js';
 
 /**
@@ -82,7 +83,10 @@ export function createTimesheetPanel(nodes, {
 
   /** Every mutation goes through the app's `edit`, so a timeline edit is one undo step. */
   function change(mutate, message) {
-    edit(next => { mutate(next); }, message);
+    // `edit` validates and throws, and the throw used to escape the click handler: a refused
+    // change looked like a button that did nothing. Say why, then redraw from the real project.
+    try { edit(next => { mutate(next); }, message); }
+    catch (error) { status(error.message, true); }
     render();
   }
 
@@ -457,8 +461,11 @@ export function createTimesheetPanel(nodes, {
     addTrack.disabled = sheet.tracks.length >= TIMESHEET_LIMITS.tracks;
     addTrack.addEventListener('click', () => change(next => {
       const target = next.timesheets.find(item => item.id === sheet.id);
+      // The id was `track_<index>_<cue count>`, so after removing a middle track the next one
+      // reused an index that was still in the sheet and the save was refused (silently). Ids are
+      // unique, not positional.
       const index = target.tracks.length;
-      target.tracks.push({ id: `track_${index + 1}_${target.cues.length}`, name: `Track ${index + 1}` });
+      target.tracks.push({ id: newId('track'), name: `Track ${index + 1}` });
     }, 'Track added'));
     body.append(rows, addTrack);
     wrap.append(ruler, body);

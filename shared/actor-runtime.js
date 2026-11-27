@@ -162,6 +162,27 @@ export function setActorState(project, entity, label, { restart = false, ifDiffe
   return true;
 }
 
+/**
+ * Resolves a state target — `See`, `Missile+2`, `Super::Missile` — to a frame index.
+ *
+ * The editor writes a state machine back as text, and the text carries the target's *name*: a
+ * relative target was then stored with no `targetIndex` at all, so an edited actor's `Goto
+ * Missile+2` could never resolve and its state machine stopped dead. `labels` is the actor's own
+ * table (`states.labels`), which already contains the labels it inherited.
+ */
+export function stateTargetIndex(labels, target) {
+  if (!labels || !target) return null;
+  const clean = String(target).trim();
+  const base = clean.replace(/[+-]\d+$/, '');
+  const offset = Number(clean.slice(base.length)) || 0;
+  const scoped = /^super::([\w.]+)$/i.exec(base);
+  const wanted = (scoped ? `super::${scoped[1]}` : base).toLowerCase();
+  const key = Object.keys(labels).find(name => name.toLowerCase() === wanted);
+  if (key === undefined) return null;
+  const index = Number(labels[key]);
+  return Number.isFinite(index) ? index + offset : null;
+}
+
 /** Current frame record, or null when the machine has stopped. */
 export function currentFrame(actor, state) {
   if (!actor || state.index === null) return null;

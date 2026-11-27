@@ -2640,6 +2640,10 @@ document.addEventListener('keydown', event => {
   // The 3D view listens on its own canvas for this key, so it must not delete twice.
   if (sceneMode === '3d' || (runtime && $('play-dialog').open)) return;
   if (!['entity', 'path', 'pathPoint', 'brush', 'brushFace', 'brushVertex'].includes(selection?.kind)) return;
+  // The map has to be the tab the user is looking at: Delete in the Events, Actors, Scripts or
+  // Timeline tab deleted an object on a layout nobody could see (recoverable with Ctrl+Z, but with
+  // no visible reason). Its neighbours — the brush-mode digits and the cut tools — already check.
+  if ($('map-panel').hidden) return;
   if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
   event.preventDefault();
   guard(() => deleteSelectionObject(selection))();
@@ -4616,10 +4620,20 @@ function renderWorldLayers() {
     const name = document.createElement('input');
     name.type = 'text'; name.value = layer.name;
     name.addEventListener('change', () => edit(next => { setWorldLayer(next, layer.id, { name: name.value }); }, 'World layer renamed'));
+    // The row is drawn from the project as it was when the browser opened, and `edit` replaces the
+    // project with a fresh clone: reading `layer.visible` inside the handler toggled a stale copy,
+    // so hiding a layer could never be undone and the label never followed either.
+    const live = () => worldLayers(project).find(item => item.id === layer.id) || layer;
     const visible = make('button', layer.visible ? 'Visible' : 'Hidden');
-    visible.addEventListener('click', () => edit(next => { setWorldLayer(next, layer.id, { visible: !layer.visible }); }, 'World layer visibility changed'));
+    visible.addEventListener('click', () => {
+      edit(next => { setWorldLayer(next, layer.id, { visible: !live().visible }); }, 'World layer visibility changed');
+      renderWorldLayers();
+    });
     const locked = make('button', layer.locked ? 'Locked' : 'Open');
-    locked.addEventListener('click', () => edit(next => { setWorldLayer(next, layer.id, { locked: !layer.locked }); }, 'World layer lock changed'));
+    locked.addEventListener('click', () => {
+      edit(next => { setWorldLayer(next, layer.id, { locked: !live().locked }); }, 'World layer lock changed');
+      renderWorldLayers();
+    });
     row.append(name, visible, locked);
     list.append(row);
   }
@@ -8158,7 +8172,15 @@ function renameGroupInline(groupId) {
   input.className = 'group-rename';
   label.replaceWith(input);
   input.focus(); input.select();
-  const commit = () => {
+  // Escape cancels, and cancelling has to stick: `renderEntities()` early-returns when nothing
+  // changed, so the field stayed on screen and the name the user had just abandoned was committed
+  // by the first click anywhere else. `finish` detaches the field (and its blur listener) first.
+  let settled = false;
+  const finish = keep => {
+    if (settled) return;
+    settled = true;
+    input.removeEventListener('blur', onBlur);
+    if (!keep || !input.isConnected) { renderEntities(); return; }
     const name = input.value.trim();
     if (name && name !== project.map.entityGroups?.find(group => group.id === groupId)?.name) {
       try { edit(next => { const group = next.map.entityGroups.find(item => item.id === groupId); if (group) group.name = name.slice(0, 100); }, 'Group renamed'); }
@@ -8166,11 +8188,12 @@ function renameGroupInline(groupId) {
     }
     renderEntities();
   };
+  const onBlur = () => finish(true);
   input.addEventListener('keydown', event => {
-    if (event.key === 'Enter') { event.preventDefault(); commit(); }
-    if (event.key === 'Escape') { event.preventDefault(); renderEntities(); }
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
   });
-  input.addEventListener('blur', commit);
+  input.addEventListener('blur', onBlur);
 }
 function groupMenuItems(entity) {
   const chosen = selectedEntityIds();

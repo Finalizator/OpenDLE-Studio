@@ -139,8 +139,17 @@ export function createTerrainPanel({ root, project: getProject, edit, status, ad
     input.step = String(step);
     input.addEventListener('change', () => {
       const value = Number(input.value);
-      if (!Number.isFinite(value)) { input.value = String(read()); return; }
-      change(value);
+      // `Number('')` is 0, which is finite, so an emptied field used to commit 0 into the panel's
+      // own recipe before `save()` refused it — and the recipe kept it, so every later save from
+      // this tab failed until the tab was rebuilt. An out-of-range or unreadable value simply does
+      // not change anything, and a refused save puts the recipe back the way it was.
+      if (!Number.isFinite(value) || (min !== undefined && value < min) || (max !== undefined && value > max)) {
+        input.value = String(read());
+        return;
+      }
+      const previous = recipe;
+      try { change(value); }
+      catch (error) { recipe = previous; input.value = String(read()); status(error.message, true); }
     });
     row.append(input);
     return row;

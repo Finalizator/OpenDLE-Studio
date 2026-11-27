@@ -6,6 +6,8 @@
  * rewrite its state frames in DECORATE syntax.
  */
 
+import { stateTargetIndex } from '../shared/actor-runtime.js';
+
 /** Serializes one action's argument list the way DECORATE writes it. */
 function formatArgValue(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'null';
@@ -89,7 +91,9 @@ export function textToFrames(text) {
   for (const raw of String(text).split('\n')) {
     const line = raw.trim();
     if (!line) continue;
-    const labelMatch = /^([A-Za-z_]\w*)\s*:$/.exec(line);
+    // A label may be inherited (`Super::Missile`) — 30 actors in the imported table carry one, and
+    // the editor writes exactly that text back — so `::` is part of a label, not a syntax error.
+    const labelMatch = /^([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*:$/.exec(line);
     if (labelMatch) { label = labelMatch[1]; labels[label] = frames.length; continue; }
     if (/^goto\b/i.test(line)) { frames.push({ kind: 'goto', target: line.split(/\s+/)[1], label }); continue; }
     if (/^loop$/i.test(line)) { frames.push({ kind: 'loop', target: label, label }); continue; }
@@ -258,9 +262,19 @@ export function createActorsPanel({ list, summary, gaps: gapNote, search, filter
       try { parsed = textToFrames(textarea.value); }
       catch (error) { apply.textContent = error.message; return; }
       apply.textContent = 'Apply state frames';
+      // Two things the compiler needs and the text cannot carry on its own: the labels this actor
+      // *inherits* (a `Melee` that came from its parent would otherwise be dropped, and the actor
+      // stops meleeing), and the frame index behind a named target — `Goto Missile+2` is not a
+      // label, so without `targetIndex` the state machine halts on its first relative jump.
+      const labels = { ...(actor.states?.labels || {}), ...parsed.labels };
+      const frames = parsed.frames.map((frame, index) => {
+        if (frame.kind !== 'goto' && frame.kind !== 'loop') return frame;
+        const resolved = stateTargetIndex(labels, frame.kind === 'loop' ? frame.label : frame.target);
+        return { ...frame, targetIndex: resolved === null ? index : resolved };
+      });
       edit(next => {
         const target = next.actors.find(candidate => candidate.name === actor.name);
-        target.states = parsed; target.edited = true;
+        target.states = { frames, labels }; target.edited = true;
       }, `${actor.name} state machine updated`);
     });
     label.append(textarea, apply);
