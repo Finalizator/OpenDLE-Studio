@@ -361,11 +361,14 @@ function runAcs(ops, host = {}) {
   return vm;
 }
 
-test('hunt 73: FixedDiv by zero terminates the script like integer division', () => {
+test('hunt 73: FixedDiv by zero saturates instead of ending the script', () => {
   const calls = [];
-  const vm = runAcs([65536, 0, 'FIXEDDIV', 'DROP', 7, 2, 'SETLINEBLOCKING'], { setLineBlocking: (...args) => calls.push(args) });
-  assert.deepEqual(calls, [], 'the script stops at the division');
-  assert.ok(vm.errors.some(error => /division by zero/.test(error)), vm.errors.join('\n'));
+  // GZDoom's PCD_FIXEDDIV checks `abs(a) >> 15 >= abs(b)` before dividing, so a zero divisor takes
+  // the overflow branch and the script carries on; the earlier code terminated the run and lost
+  // every instruction after the expression.
+  const vm = runAcs([65536, 0, 'FIXEDDIV', 7, 'SETLINEBLOCKING'], { setLineBlocking: (...args) => calls.push(args) });
+  assert.deepEqual(calls, [[0x7fffffff, 7]], 'the quotient saturates at FIXED_MAX');
+  assert.deepEqual(vm.errors, [], 'the script carries on past the division');
 });
 
 test('hunt 74: ThingCountSector counts things in every sector with the tag', () => {
