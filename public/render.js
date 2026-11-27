@@ -107,8 +107,10 @@ export async function createPreview(canvas, project, state, { editor = false, on
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.info.autoReset = false;
   // The map's own lighting model (`lightmode` in MAPINFO), which decides how a sector's light
-  // number becomes a brightness. Doom's mode crushes it; the standard mode does not.
-  const lightMode = Number(project.environment.lightMode) || 0;
+  // number becomes a brightness. Doom's mode crushes it; the standard mode does not. It is a `let`
+  // because the editor keeps one preview across `switchLevel`: a level with a different mode used
+  // to keep drawing the first level's curve for the whole session.
+  let lightMode = Number(project.environment.lightMode) || 0;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(project.environment.sky);
   const camera = new THREE.PerspectiveCamera(70, 800 / 450, 1, 40000);
@@ -791,8 +793,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
       for (const mesh of [...batchMeshes.values(), ...brushPbrMeshes]) {
         const variants = mesh.userData.pbrVariants;
         if (!variants) continue;
-        const centre = mesh.geometry.boundingSphere?.center;
-        const distance = centre ? camera.position.distanceTo(centre) : 0;
+        // The distance that matters is to the *nearest* part of the merged buffer, not to its
+        // centre: a piece of a 3000-unit batch can be a wall 200 units away, and measuring to the
+        // centre threw every surface of a big map onto the cheapest material, so the PBR sliders
+        // acted as one global switch and detail popped as the player crossed a radius.
+        const sphere = mesh.geometry.boundingSphere;
+        const distance = sphere ? Math.max(0, camera.position.distanceTo(sphere.center) - (sphere.radius || 0)) : 0;
         const wanted = distance > normalDistance ? variants.baseOnly
           : distance > detailDistance ? variants.normalOnly : variants.full;
         if (mesh.material !== wanted) mesh.material = wanted;
@@ -2578,8 +2584,11 @@ export async function createPreview(canvas, project, state, { editor = false, on
         if (entity.modelOffset) entry.object.position.set(entity.modelOffset[0], entity.modelOffset[1], entity.modelOffset[2]);
         else if (entry.object.position.lengthSq() !== 0) entry.object.position.set(0, 0, 0);
         applyModelTexture(entry, entity);
-        // Doom light levels still tint a model, but a dark room must not erase it.
-        const shade = Math.max(MODEL_LIGHTING.ambientFloor, (sector?.light ?? 255) / 255);
+        // Doom light levels still tint a model, but a dark room must not erase it — and the model
+        // has to use the same curve as the walls, sprites and boxes around it. Reading the raw
+        // level made a model in a `lightmode 2` room up to five times brighter than its own floor.
+        const surface = surfaceBrightness(sector?.light ?? 255, lightMode);
+        const shade = Math.max(MODEL_LIGHTING.ambientFloor, surface);
         if (entry.shade !== shade) {
           entry.shade = shade;
           for (let tint = 0; tint < entry.tinted.length; tint++) {
@@ -2965,6 +2974,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
       if (plan.needsReload) return false;
       project = next;
       assetMap = new Map((project.assets || []).map(asset => [asset.id, asset]));
+      // A different level can declare a different `lightmode`; every surface is rebuilt below, so
+      // the curve they are built with has to follow.
+      lightMode = Number(project.environment?.lightMode) || 0;
       geometry = sectorGeometry(project);
       levelCentre = null;
       const nextInputs = JSON.stringify([project.environment, project.shaders || []]);
