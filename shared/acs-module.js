@@ -24,7 +24,9 @@ import { SCRIPT_KINDS } from './acs.js';
 export const CODE_START = 8;
 
 const words = values => values.flatMap(value => [value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff, (value >> 24) & 0xff]);
-const chars = value => [...value].map(char => char.charCodeAt(0) & 0xff);
+// Bytes, not UTF-16 units: a code point above 0xff cannot be stored, and its low byte would
+// read back as an unrelated letter, so it becomes '?' instead.
+const chars = value => [...value].map(char => (char.codePointAt(0) > 0xff ? 0x3f : char.codePointAt(0)));
 
 /** A NUL-terminated string table: an offset per entry, then the bytes. */
 function stringTable(strings, header) {

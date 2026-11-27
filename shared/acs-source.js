@@ -157,7 +157,14 @@ function tokenize(text) {
       }
       if (cursor >= text.length) throw new AcsSourceError('Unterminated string', line, columnAt);
       index = cursor + 1;
-      tokens.push({ type: 'string', value: unescapeString(value), line, column: columnAt });
+      const escaped = unescapeString(value);
+      // ACS strings are byte strings: a character above U+00FF would be written as its low byte,
+      // so "Zażółć" came out as different letters entirely. Refusing is honest; mangling is not.
+      const wide = [...escaped].find(character => character.codePointAt(0) > 0xff);
+      if (wide) {
+        throw new AcsSourceError(`The character "${wide}" cannot be written to an ACS string: only Latin-1 is available`, line, columnAt);
+      }
+      tokens.push({ type: 'string', value: escaped, line, column: columnAt });
       continue;
     }
     const punctuation = PUNCTUATION.find(candidate => text.startsWith(candidate, index));
@@ -493,8 +500,8 @@ export function parseAcsSource(text) {
 
 /** The builtins that leave an answer on the stack; everything else is used as a statement. */
 const VALUE_BUILTINS = new Set([
-  'checkinventory', 'checkweapon', 'setweapon', 'spawn', 'spawnspot', 'spawnspotfacing', 'spawnprojectile',
-  'thingdamage2', 'getactorproperty', 'getactorx', 'getactory', 'getactorz', 'getactorangle', 'getactorpitch',
+  'checkinventory', 'checkweapon', 'setweapon', 'spawn', 'spawnspot', 'spawnspotfacing',
+  'thingdamage2', 'getactorproperty', 'acs_executewithresult', 'acs_executealwayswithresult', 'getactorx', 'getactory', 'getactorz', 'getactorangle', 'getactorpitch',
   'getactorfloorz', 'getactorceilingz', 'getactorlightlevel', 'getsectorfloorz', 'getsectorceilingz',
   'getsectorlightlevel', 'thingcount', 'thingcountname', 'timer', 'random', 'getcvar', 'sin', 'cos',
   'vectorangle', 'fixedmul', 'fixeddiv', 'playernumber', 'activatortid', 'playercount', 'gametype',
@@ -547,11 +554,23 @@ const ARRAY_STORE = {
 const PUSH_VAR = { script: 'PUSHSCRIPTVAR', world: 'PUSHWORLDVAR', global: 'PUSHGLOBALVAR', map: 'PUSHMAPVAR' };
 const PUSH_ARRAY = { script: 'PUSHSCRIPTARRAY', world: 'PUSHWORLDARRAY', global: 'PUSHGLOBALARRAY', map: 'PUSHMAPARRAY' };
 
-/** The level's own special table, as names a script can call. */
-const SPECIALS = new Map();
-for (const [index, name] of SPECIAL_NAMES.entries()) {
-  if (!name || name === 'NOP' || SPECIALS.has(name)) continue;
-  SPECIALS.set(name, index);
+/**
+ * The level's own special table, as names a script can call.
+ *
+ * Built on first use, not at module load: `line-specials.js` and this module are in an import
+ * cycle (the special table is read here, the compiler is read there), and reading it eagerly
+ * threw "Cannot access 'SPECIAL_NAMES' before initialization" whenever a caller imported the
+ * special table first.
+ */
+let specialTable = null;
+function specials() {
+  if (specialTable) return specialTable;
+  specialTable = new Map();
+  for (const [index, name] of SPECIAL_NAMES.entries()) {
+    if (!name || name === 'NOP' || specialTable.has(name)) continue;
+    specialTable.set(name, index);
+  }
+  return specialTable;
 }
 
 /**
@@ -608,7 +627,7 @@ export function acsBuiltinReference() {
     'print', 'printbold', 'log', 'printfixed', 'printname', 'hudmessage', 'hudmessagebold', 'delay', 'tagwait',
     'scriptwait', 'polywait', 'random', 'acs_execute', 'acs_executealways', 'acs_terminate', 'acs_suspend',
     'acs_executewithresult'])].sort();
-  const specials = [...SPECIALS.keys()];
+  const specialNames = [...specials().keys()];
   return [
     'script <number> OPEN|ENTER|RESPAWN|DEATH|CLOSED|LIGHTNING|UNLOADING [(int a, ...)] { ... }',
     'script "name" OPEN { ... }            a named script',
@@ -625,8 +644,8 @@ export function acsBuiltinReference() {
     `Builtins (${builtins.length}):`,
     `  ${builtins.join(', ')}`,
     '',
-    `Line specials (${specials.length}) may be called by name, in linedef units:`,
-    `  ${specials.join(', ')}`,
+    `Line specials (${specialNames.length}) may be called by name, in linedef units:`,
+    `  ${specialNames.join(', ')}`,
   ].join('\n');
 }
 
@@ -816,6 +835,16 @@ export function compileAcsSource(text, { baseAddress = 8, strings = [], function
       }
       case 'post':
       case 'pre': {
+        if (node.target.k === 'id') {
+          const variable = resolve(node.target);
+          if (!variable || variable.size !== null) throw new AcsSourceError('Only a variable can be incremented');
+          // Post-increment leaves the value it had, pre-increment the value it has: ACC lets both
+          // be read (`Print(d:count++)`), so the old value is pushed before the store or after it.
+          if (node.k === 'post') insB(PUSH_VAR[variable.scope], variable.index);
+          insB(STORE[variable.scope][node.op === '++' ? 'INC' : 'DEC'], variable.index);
+          if (node.k === 'pre') insB(PUSH_VAR[variable.scope], variable.index);
+          return;
+        }
         if (node.target.k !== 'index') {
           throw new AcsSourceError(`"${node.op}" changes a variable and has no value of its own here`);
         }
@@ -839,8 +868,18 @@ export function compileAcsSource(text, { baseAddress = 8, strings = [], function
         insB(store[node.op === '++' ? 'INC' : 'DEC'], array.index);
         return;
       }
-      case 'assign':
-        throw new AcsSourceError('An assignment has no value of its own here');
+      case 'assign': {
+        // `if ((i = 3))` is ordinary ACS: the stored value is the expression's value.
+        if (node.target.k !== 'id') throw new AcsSourceError('An array element has no value of its own here');
+        const variable = resolve(node.target);
+        if (!variable || variable.size !== null) throw new AcsSourceError('Only a variable can be assigned a value');
+        const kind = node.op === '=' ? 'ASSIGN' : COMPOUND[node.op];
+        if (!kind) throw new AcsSourceError(`Unknown assignment "${node.op}"`);
+        expr(node.value);
+        ins('DUP');
+        insB(STORE[variable.scope][kind], variable.index);
+        return;
+      }
       case 'call':
         if (!leavesValue(node)) throw new AcsSourceError(`${node.name} does not return a value`);
         return call(node);
@@ -898,6 +937,13 @@ export function compileAcsSource(text, { baseAddress = 8, strings = [], function
       return;
     }
     if (node.k === 'pre' || node.k === 'post') {
+      if (node.target.k === 'index') {
+        const array = resolve(node.target.target);
+        if (!array || array.size === null) throw new AcsSourceError('Only an array can be indexed');
+        expr(node.target.index);
+        insB(ARRAY_STORE[array.scope][node.op === '++' ? 'INC' : 'DEC'], array.index);
+        return;
+      }
       const variable = resolve(node.target);
       if (!variable || variable.size !== null) throw new AcsSourceError('Only a variable can be incremented');
       insB(STORE[variable.scope][node.op === '++' ? 'INC' : 'DEC'], variable.index);
@@ -956,6 +1002,9 @@ export function compileAcsSource(text, { baseAddress = 8, strings = [], function
       else pushConstant(0);
     }
     ins('OPTHUDMESSAGE');
+    // The interpreter reads the fade from the stack slot the optional argument occupies, so it is
+    // pushed after the six fixed ones — the point `OPTHUDMESSAGE` marked.
+    if (rest[6]) expr(rest[6].value);
     ins('BEGINPRINT');
     expr(text.value);
     ins('PRINTSTRING');
@@ -972,6 +1021,14 @@ export function compileAcsSource(text, { baseAddress = 8, strings = [], function
     }
     if (!list.length) throw new AcsSourceError(`Line special ${number} needs arguments`);
     if (list.length > 5) throw new AcsSourceError(`Line special ${number} takes at most five arguments`);
+    if (number > 255) {
+      // `LSPECn` carries the special in one byte, so 256 would run special 0 and 275 would run 19.
+      // The extended form takes a word; it always reads five arguments, so the rest are zeroed.
+      while (list.length < 5) list.push({ k: 'num', v: 0 });
+      for (const node of list) expr(node);
+      insW('LSPEC5EX', number);
+      return;
+    }
     for (const node of list) expr(node);
     insB(`LSPEC${list.length}`, number);
   }
@@ -1040,7 +1097,7 @@ export function compileAcsSource(text, { baseAddress = 8, strings = [], function
       return;
     }
 
-    const special = SPECIALS.get(name);
+    const special = specials().get(name);
     if (special !== undefined) { callSpecial(special, args); return; }
 
     const index = names.indexOf(name);

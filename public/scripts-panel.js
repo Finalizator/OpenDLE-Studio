@@ -23,9 +23,10 @@ const KINDS = {
   closed: 'Triggered from a line or another script',
 };
 
-const NEW_SCRIPT = `// A new script for this level. It runs when the level starts; change OPEN to ENTER,
+/** The starter text for a new script: the number has to be the one the panel is about to add. */
+const newScriptSource = number => `// A new script for this level. It runs when the level starts; change OPEN to ENTER,
 // CLOSED (called from a line or another script) or one of the other types as needed.
-script 1 OPEN
+script ${number} OPEN
 {
     Print(s:"the level is running");
 }
@@ -76,7 +77,7 @@ export function createScriptsPanel(nodes, { project, edit, openEditor, detach, s
     else nodes.detail.replaceChildren(element('p', 'muted', 'Pick a script to see what it does.'));
   }
 
-  function addButton(label = 'Write a new script', text = NEW_SCRIPT) {
+  function addButton(label = 'Write a new script', text = null) {
     return action(label, () => openEditorFor(null, text), 'primary');
   }
 
@@ -153,7 +154,7 @@ export function createScriptsPanel(nodes, { project, edit, openEditor, detach, s
   function openEditorFor(entry, text = null) {
     const entries = mapScriptEntries(project());
     const key = entry ? entry.key : nextKey(entries);
-    const source = text ?? entry?.source ?? (entry ? scriptSourceStub(entry) : NEW_SCRIPT);
+    const source = text ?? entry?.source ?? (entry ? scriptSourceStub(entry) : newScriptSource(key.slice(key.lastIndexOf(':') + 1)));
     const listing = entry ? disassemble(program(), entry.number >= 0 ? entry.number : entry.name) : [];
     openEditor({
       title: entry ? (entry.name || `Script ${entry.number}`) : 'New script',
