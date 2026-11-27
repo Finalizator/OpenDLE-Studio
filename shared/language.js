@@ -148,10 +148,31 @@ export function resolveString(strings, value, fallback = null) {
   return fallback ?? key;
 }
 
-/** Collects language tables from every source the import found. */
+/**
+ * How strongly a language file speaks for the game's own language.
+ *
+ * GZDoom loads exactly one language; a package that ships `language.enu` beside `language.deu` means
+ * "this game in English and in German", not "German for everyone". Every file used to be merged in
+ * load order with the last one winning, so a mod whose archive happened to list `language.deu` last
+ * showed a German menu in an English game.
+ */
+export function languageSourceRank(name) {
+  const file = String(name || '').split(/[\\/]/).pop().toLowerCase();
+  if (/\.(?:enu|eng)(?:\.txt)?$/.test(file) || /^language\.(?:enu|eng)(?:\.txt)?$/.test(file)) return 2;
+  // `language.csv`, `language.txt` and `language.def` carry every language inside themselves, with
+  // `[enu]` winning the merge there; they speak for the game as well as any single-language file.
+  if (/^language(?:\.(?:csv|txt|def))?$/.test(file)) return 2;
+  if (/^language\.[a-z]{2,3}(?:\.txt)?$/.test(file)) return 0;
+  return 1;
+}
+
+/** Collects language tables from every source the import found, English last so it wins. */
 export function buildStringTable(sources) {
   const strings = {};
-  for (const source of sources) {
+  const ordered = sources
+    .map((source, index) => ({ source, index, rank: languageSourceRank(typeof source === 'string' ? '' : source.name) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index);
+  for (const { source } of ordered) {
     const text = typeof source === 'string' ? source : source.text;
     if (!text) continue;
     Object.assign(strings, parseLanguage(text));

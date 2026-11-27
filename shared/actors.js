@@ -823,13 +823,11 @@ export function applyDehacked(actors, changes, warnings = []) {
     const letters = new Set();
     for (const actor of actors) for (const state of actor.states.frames) if (state.kind === 'frame') letters.add(state.letter);
     if (change.action) {
-      let applied = 0;
-      for (const actor of actors) for (const state of actor.states.frames) {
-        if (state.kind !== 'frame') continue;
-        if (state.actions.some(action => action.name === change.action)) applied++;
-      }
-      if (!applied) { unbound++; continue; }
-      patchedFrames += applied;
+      // `Frame N` + `Action pointer = A_X` names a frame by its position in Doom's own state table,
+      // which an imported actor table does not carry. The old code counted the frames that already
+      // had that action and reported "applied to N frame group(s)" having changed nothing, so a
+      // patch that never took effect looked like one that did. Say it is unbound instead.
+      unbound++;
       continue;
     }
     if (change.letter && letters.has(change.letter)) {
@@ -839,6 +837,12 @@ export function applyDehacked(actors, changes, warnings = []) {
       }
       patchedFrames++;
     } else if (change.fullbright) patchedFrames++;
+  }
+  if (changes.pointers?.size) {
+    // Same positional problem, reported rather than dropped in silence: silently ignoring a
+    // `[CODEPTR]` block means a mod's rewritten attack does nothing and nothing says why.
+    const names = [...new Set([...changes.pointers.values()])].slice(0, 3).join(', ');
+    warnings.push(`${changes.pointers.size} DEHACKED [CODEPTR] pointer change(s) (${names}${changes.pointers.size > 3 ? ', …' : ''}) could not be bound: a DEH state number does not identify a frame in an imported table.`);
   }
   if (patchedFrames) warnings.push(`DEHACKED frame patches applied to ${patchedFrames} frame group(s).`);
   if (unbound) warnings.push(`${unbound} DEHACKED frame pointer change(s) reference frames this game does not define; they were skipped.`);

@@ -311,9 +311,14 @@ function packageGameInfo(files, maps) {
   const find = name => maps.find(map => basename(map.path, '.wad').toLowerCase() === name.toLowerCase()) ||
     maps.find(map => map.marker.toLowerCase() === name.toLowerCase());
   const declared = episodes[0];
+  // A map called TITLEMAP, TITLE, INTRO or ENDMAP is a cutscene or a bookend, not somewhere a game
+  // starts. The fallback below always knew that; the *declared* list did not, so a mod whose
+  // MAPINFO lists TITLEMAP before its first real map started the player inside the title sequence.
+  const playable = list => list.filter(map => map &&
+    !/title|endmap|testmap|intro/i.test(String(map.path || '')) &&
+    !/title|endmap|testmap|intro/i.test(String(map.marker || '')));
   const entry = declared ? find(declared)
-    : declarations.map(find).find(Boolean) || find('MAP01') ||
-      maps.find(map => !/title|endmap|testmap/i.test(map.path)) || maps[0];
+    : playable(declarations.map(find))[0] || find('MAP01') || playable(maps)[0] || maps[0];
   values.entryMap = entry?.id || null;
   values.entryReason = declared ? `Declared entry: ${declared}` : entry ? 'First declared or conventional gameplay map' : 'Uses the selected base game entry map';
   if (declared && !entry) values.entryError = `The mod declares entry map ${declared}, but that map was not found in this package. Check its required dependency packages.`;

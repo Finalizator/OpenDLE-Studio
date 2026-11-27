@@ -2,7 +2,7 @@ import { sectorAt } from './sectors.js';
 import { damagePlayer, floorAt, canSeePlayer, canSeeTarget, randomDamage, enemyHitscan, moveEnemy, geometryDistance,
   entityDistance, entityHeight, projectileSource, canHearPlayer, checkMeleeRange, sightEyeHeight, SIGHT_RANGE } from './combat.js';
 import { actorIndex, actorForThing, isBossBrainActor, NATIVE_EFFECT_ACTORS, dropItemNumber } from './actors.js';
-import { actorProjectileClips, actorEffectClip, setSpriteState, spriteAssetNames, applyActorSpriteStates } from './sprite-animation.js';
+import { actorProjectileClips, actorEffectClip, setSpriteState, spriteFrameId, applyActorSpriteStates } from './sprite-animation.js';
 import { morphEntity, unmorphEntity, morphTarget } from './morph.js';
 import { actorFunctionSource, runActorFunction } from './actor-functions.js';
 import { floorHeightAt } from './three-d-floors.js';
@@ -63,8 +63,8 @@ function syncActorSprite(project, state, entity, actor, runtime) {
   // Only frames are pictures: a `goto`/`loop`/`stop` record carries none, and it is passed
   // through on the same tic, so hiding the actor there would blink it off and forget its clip.
   if (entity.spriteStates && frame?.kind === 'frame') {
-    const names = spriteAssetNames(project), sprite = String(frame.sprite || '').toUpperCase();
-    const asset = sprite ? names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`) || null : null;
+    const sprite = String(frame.sprite || '').toUpperCase();
+    const asset = sprite ? spriteFrameId(project, sprite, frame.letter) : null;
     if (!asset) {
       state.spriteAnimations.delete(entity.id);
       entity.spriteAsset = null;
@@ -962,7 +962,7 @@ export function dropTemplate(project, itemName) {
   } else {
     // The classic table still knows the item's sprite prefix, so it can at least be drawn.
     const prefix = doomThings[number]?.[0];
-    const stand = prefix ? spriteAssetNames(project).get(`${prefix}A0`) : null;
+    const stand = prefix ? spriteFrameId(project, prefix, 'A') : null;
     if (stand) template.spriteAsset = stand;
   }
   // A template only ever exists to be cloned; the level it belongs to never shows it.
@@ -2898,8 +2898,7 @@ function enterFlashFrame(project, state, frame) {
 /** The picture a state frame draws, or null when the artwork does not exist (Doom's `TNT1`). */
 function frameAsset(project, frame) {
   if (frame?.kind !== 'frame' || !frame.sprite) return null;
-  const names = spriteAssetNames(project), sprite = String(frame.sprite).toUpperCase();
-  return names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`) || null;
+  return spriteFrameId(project, frame.sprite, frame.letter);
 }
 
 /** Advances the muzzle flash one weapon tic; where the drawn flash frame is read at render time. */

@@ -172,6 +172,58 @@ export function spriteAssetNames(project) {
   return names;
 }
 
+const frameIndexCache = new WeakMap();
+
+/**
+ * Sprite prefix + frame letter → the pictures that exist for it, by rotation.
+ *
+ * A Doom sprite lump is `XXXXLRN`: four letters of sprite, the frame letter, the rotation. The old
+ * lookup guessed the names `XXXXL0` and `XXXXL1`, so a frame that only ships another view (a
+ * rotation-2-to-8-only monster), or the second frame packed into an eight-character lump
+ * (`TROOA2A8` is frame A at rotation 2 and at rotation 8), was invisible: the actor drew nothing
+ * and the level's asset list left the picture behind. The index reads what the lumps actually say.
+ */
+function spriteFrameIndex(project) {
+  const assets = project.assets;
+  const cached = frameIndexCache.get(project);
+  if (cached && cached.assetList === assets && cached.assetCount === (assets?.length || 0)) return cached;
+  const index = new Map();
+  const add = (cell, rotation, id) => {
+    if (!cell || !rotation) return;
+    let entry = index.get(cell);
+    if (!entry) index.set(cell, entry = new Map());
+    if (!entry.has(rotation)) entry.set(rotation, id);
+  };
+  for (const asset of assets || []) {
+    if (asset.kind !== 'sprite') continue;
+    const name = String(asset.name).toUpperCase().replace(/[\s_-]+/g, '');
+    // `<sprite><letter><rotation>`, where the sprite part is three or four letters — the vanilla four
+    // (`POSSA1`) and a short one (`BARA0`) both appear in real projects.
+    if (name.length >= 8) {
+      add(name.slice(0, 5), name[5], asset.id);
+      add(name.slice(0, 4) + name[6], name[7], asset.id);
+    } else if (name.length >= 5) {
+      add(name.slice(0, -1), name[name.length - 1], asset.id);
+    }
+  }
+  index.assetList = assets;
+  index.assetCount = assets?.length || 0;
+  frameIndexCache.set(project, index);
+  return index;
+}
+
+/**
+ * The picture for one actor frame: the requested view if the sprite ships one, else the
+ * all-angles picture, else whatever view exists.
+ */
+export function spriteFrameId(project, sprite, letter, rotation = 1) {
+  const cell = `${String(sprite || '').toUpperCase()}${String(letter || '').toUpperCase()}`;
+  if (cell.length < 4) return null;
+  const entry = spriteFrameIndex(project).get(cell);
+  if (!entry) return null;
+  return entry.get(String(rotation)) ?? entry.get('0') ?? entry.values().next().value ?? null;
+}
+
 const effectClipCache = new WeakMap();
 
 /**
@@ -183,14 +235,13 @@ export function actorEffectClip(project, actor) {
   let cached = effectClipCache.get(project);
   if (!cached) effectClipCache.set(project, cached = new Map());
   if (cached.has(actor.id)) return cached.get(actor.id);
-  const names = spriteAssetNames(project);
   const assets = [];
   let duration = 0;
   const run = actorFrameRun(actor, 'Spawn');
   const frames = run.length ? run : actorFrameRun(actor, 'See');
   for (const frame of frames) {
     const sprite = String(frame.sprite || '').toUpperCase();
-    const id = names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`);
+    const id = spriteFrameId(project, sprite, frame.letter);
     if (!id) continue;
     assets.push(id);
     if (frame.duration > 0 && !duration) duration = frame.duration;
@@ -228,7 +279,6 @@ export function actorProjectileClips(project, actor) {
     const key = Object.keys(labels).find(candidate => candidate.toLowerCase() === name.toLowerCase());
     return key === undefined ? null : labels[key];
   };
-  const names = spriteAssetNames(project);
   function sequence(label) {
     return actorFrameRun(actor, label);
   }
@@ -237,7 +287,7 @@ export function actorProjectileClips(project, actor) {
     let seconds = 0;
     for (const frame of sequence(label)) {
       const sprite = String(frame.sprite || '').toUpperCase();
-      const id = names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`);
+      const id = spriteFrameId(project, sprite, frame.letter);
       if (!id) continue;
       assets.push(id);
       if (frame.duration > 0 && !seconds) seconds = frame.duration;
@@ -321,8 +371,7 @@ export function applyActorSpriteStates(project, entity, actor) {
   entity.spriteStates = mapped;
   const first = actorFrameRun(actor, 'Spawn')[0];
   if (first) {
-    const names = spriteAssetNames(project);
-    entity.spriteAsset = names.get(`${String(first.sprite).toUpperCase()}${first.letter}0`) || entity.spriteAsset;
+    entity.spriteAsset = spriteFrameId(project, first.sprite, first.letter) || entity.spriteAsset;
     // A MODELDEF actor shows a mesh on that frame instead of a picture. The mesh is in map
     // units, so it is drawn at 1:1; the spin is the mod's own `ROTATING` declaration.
     const modelAsset = actorModelFor(actor, first.sprite, first.letter);
@@ -349,12 +398,12 @@ export function applyActorSpriteStates(project, entity, actor) {
 
 /** One clip for one actor state, built from that state's own frames. */
 function actorStateClip(project, actor, state, label) {
-  const names = spriteAssetNames(project), frames = [];
+  const frames = [];
   let seconds = 0;
   let previous = null, run = 0;
   for (const frame of actorFrameRun(actor, label)) {
     const sprite = String(frame.sprite || '').toUpperCase();
-    const id = names.get(`${sprite}${frame.letter}0`) || names.get(`${sprite}${frame.letter}1`);
+    const id = spriteFrameId(project, sprite, frame.letter);
     if (!id) continue;
     // Doom holds a walking pose for two states (`AABBCCDD`), and a clip has one duration
     // for all its frames, so a repeated picture becomes one longer frame: the animation

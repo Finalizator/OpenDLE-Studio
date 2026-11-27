@@ -279,7 +279,21 @@ export function defaultLevelMusic(levelId) {
 /** Candidate lump names for a level, most specific first. */
 export function musicCandidates(levelId, explicit) {
   const names = [];
-  if (explicit) names.push(String(explicit).toUpperCase());
+  // A MAPINFO `music = "$MUSIC_RUNNIN"` is a language reference (`LookupMusic` resolves it through
+  // the string table and prefixes the result with `D_`), and `music = ""` asks for silence rather
+  // than for the default — neither was handled, so a mod that named its music by keyword got the
+  // per-level placeholder hash and a level that asked for silence got a soundtrack.
+  if (explicit !== undefined && explicit !== null && String(explicit).trim() === '') return [];
+  if (explicit) {
+    const raw = String(explicit).trim();
+    const keyword = raw.replace(/^\$/, '');
+    if (raw.startsWith('$')) {
+      // Without the string table to read (`language.csv`), the keyword's own tail is all there is —
+      // `$MUSIC_RUNNIN` names the lump `D_RUNNIN`.
+      const tail = keyword.split('_').slice(1).join('_') || keyword;
+      names.push(`D_${tail.toUpperCase()}`, tail.toUpperCase());
+    } else names.push(raw.toUpperCase());
+  }
   // ZDoom's default track for a level is the lump named after the map itself, so a
   // custom map name still finds its own music without any MAPINFO entry.
   if (levelId) names.push(`D_${String(levelId).toUpperCase()}`);
@@ -310,12 +324,23 @@ export function resolveMusicName(levelId, explicit, hasTrack) {
  * a placeholder so the level is not silent, and the caller reports why.
  */
 export function resolveMusicAsset(assets, levelId, explicit) {
-  const tracks = (assets || []).filter(asset => asset.kind === 'music');
+  // A PK3 soundtrack is a streamed file (`music/d_runin.ogg`), stored as a sound that is flagged as
+  // music because only MIDI/MUS can be `kind: 'music'`. Filtering on the kind alone meant a mod's
+  // own soundtrack was never a candidate and every level fell through to the placeholder hash.
+  const tracks = (assets || []).filter(asset => asset.kind === 'music' || (asset.kind === 'sound' && asset.music === true));
   if (!tracks.length) return { asset: null, reason: 'none', candidates: musicCandidates(levelId, explicit), tracks: 0 };
-  const byName = new Map(tracks.map(asset => [String(asset.name).toUpperCase(), asset]));
+  // A streamed track is named by its path (`music/d_runin.ogg`); the lump name it stands for is the
+  // file name without its folder or extension.
+  const lumpName = name => String(name).toUpperCase().split(/[\\/]/).pop().replace(/\.(?:ogg|mp3|wav|flac|mus|mid|midi)$/i, '');
+  const byName = new Map(tracks.map(asset => [lumpName(asset.name), asset]));
   const candidates = musicCandidates(levelId, explicit);
+  // An explicit empty name is a level that asks for silence (`music = ""`): no candidate, no
+  // placeholder, no track.
+  if (explicit !== undefined && explicit !== null && String(explicit).trim() === '') {
+    return { asset: null, reason: 'silent', candidates, tracks: tracks.length };
+  }
   for (const name of candidates) {
-    const asset = byName.get(name);
+    const asset = byName.get(lumpName(name));
     if (asset) return { asset, reason: explicit && name === String(explicit).toUpperCase() ? 'explicit'
       : name === `D_${String(levelId || '').toUpperCase()}` ? 'map-lump' : 'classic', candidates, tracks: tracks.length };
   }
