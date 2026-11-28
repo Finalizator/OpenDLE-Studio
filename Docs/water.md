@@ -134,7 +134,7 @@ brush it *is* the look of the surface: the effect writes the colour it wants, so
 only the frame for the effect.
 
 A water body is given the engine's **StupidWater** shader the moment it becomes water, so it is never
-a flat blue slab. The effect ships with the engine and is stored in the project, so it can be
+a flat blue slab; **Water shader** in the inspector switches it to one of the ports below. The effect ships with the engine and is stored in the project, so it can be
 edited, replaced or removed like any other shader in the **Environment** tab. Its uniforms are the
 dials — and `waveHeight` and `waveSpeed` also move the **mesh**, because the geometry reads them
 from the compiled shader rather than from a second set of numbers:
@@ -167,29 +167,43 @@ breaks. There is no land, shoreline or backdrop in it, because the level is what
 surface — the brush is drawn where the mapper put it, over whatever is under it. It is written the
 way a Shadertoy effect is, so a shader from the web pastes into the same shape.
 
-### The three water looks
+### The three water shaders
 
-A water body runs one of three looks that ship with the engine. **Look** in the inspector's water
-block switches between them; each is an ordinary shader in the project, so the one you pick can be
-opened in the **Environment** tab, dialled, replaced with your own, or removed.
+A water body runs one of three shaders that ship with the engine. **Water shader** in the inspector's
+water block switches between them; each is an ordinary shader in the project, so the one you pick can
+be opened in the **Environment** tab, dialled, replaced with your own, or removed.
 
-| Look | What it is for | Dials |
+| Shader | What it is | Dials |
 | --- | --- | --- |
-| **StupidWater** | The default: a wind sea with visible swell, glitter and foam | `waveHeight`, `waveSpeed`, `ripple`, `chop`, `density`, `refraction`, `fresnel`, `foam`, `sun` |
-| **StillWaterPool** | A calm indoor pool: still, glassy, the bottom legible | `waveHeight`, `waveSpeed`, `ripple`, `refraction`, `absorption`, `depth`, `sun` |
-| **OceanClearwater** | A clear shallow sea: light crossing water, turquoise shadows, sharp glints | `waveHeight`, `waveSpeed`, `ripple`, `chop`, `refraction`, `depth`, `sun` |
+| **StupidWater** | The engine's own wind sea: swell, glitter, foam | `waveHeight`, `waveSpeed`, `ripple`, `chop`, `density`, `refraction`, `fresnel`, `foam`, `sun` |
+| **StillWaterPool** | Evan Wallace's webgl-water surface, ported | `waveHeight`, `waveSpeed`, `refraction`, `sun` |
+| **OceanClearwater** | Lumaris's Clearwater surface, ported | `waveHeight`, `waveSpeed`, `refraction`, `slopeVariance`, `depth`, `chop`, `exposure`, `sun` |
 
-The first is the engine's own. **StillWaterPool** follows Evan Wallace's webgl-water (BSD-3-Clause),
-via Martin Renou's three.js port in `Ancestors/StillWaterPool`: reflections never drop below a
-quarter and the Fresnel curve is a cube, so the water turns silver much sooner than a sea does.
-**OceanClearwater** follows the Clearwater demo by **Lumaris** (MIT) in `Ancestors/OceanClearwater`:
-its index of refraction, its Beer-Lambert absorption that eats red first, and the light it scatters
-back out of the column. Both are written against this engine's inputs rather than translated — those
-demos ray-march a room or a pebble floor, and a surface effect here is handed the level behind it and
-the real surface normal instead. Their optics are kept; their geometry is not.
+**StillWaterPool** is the water surface of `Ancestors/StillWaterPool/shaders/water/fragment.glsl` —
+Evan Wallace's webgl-water (BSD-3-Clause), three.js port by **Martin Renou**. The code is theirs:
+their constants (`IOR_AIR`, `IOR_WATER`, `abovewaterColor`, `underwaterColor`), their
+`getSurfaceRayColor`, their two branches, their `mix(0.25, 1.0, pow(…)` Fresnel curve, and the line
+that adds their sun speckle after the sky sample. Three things their renderer supplied cannot be
+supplied to a brush, and each is marked `engine:` in the source:
 
-`depth` is *how much water the view crosses*, not a map measurement: absorption coefficients are per
-metre and a map unit is an inch, so one unit there is roughly a metre of clear sea.
+- the ripple-simulation texture — the surface this brush draws already carries the wave field's exact
+  slope, so `info` is built from it (their five "make water look peaked" re-samples have nothing to
+  refine);
+- `textureCube(sky, ray)` — there is no cube map in a surface effect, so the sky is evaluated from
+  the reflected direction;
+- `getWallColor`/`intersectCube` — their tiled pool room, which is the level behind the surface here.
+
+**OceanClearwater** is the water surface of `Ancestors/OceanClearwater/index.html` by **Lumaris**
+(MIT). Copied: `sky()` (without the distant headland, which is land), `fresnel()` computed from the
+index of refraction and both polarisations, `SIG_A`/`SIG_S`/`SIG_T`, `SUN`, the Beckmann glints with
+their slope-variance widening, `Tv`/`Lin` for the light scattered out of the column, the haze, and
+the ACES curve their post pass ends the frame with. Their ocean also ray-marches a pebble floor with
+caustics to find the bottom — that is not water, so the level behind the surface takes its place
+(`engine:`).
+
+Both ports keep their own arithmetic; the only edits are the ones this language forces (a local must
+be initialised where they declare and assign later, one local per statement, parameters are
+read-only), each marked in the source.
 
 ### Bringing a shader in from the web
 

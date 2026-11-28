@@ -382,170 +382,256 @@ export const waterUniforms = Object.freeze({
   sun: 1,
 });
 
-/** The project's glass shader, created the first time a curtain is added. */
-/** What the first water effect shipped under, before the looks had names of their own. */
+/** What the first water effect shipped under, before the shipped effects had names of their own. */
 const LEGACY_WATER_SHADER_NAME = 'Water (Shadertoy)';
 
 export const STILL_POOL_SHADER_NAME = 'StillWaterPool';
 /**
- * A calm pool, after `Ancestors/StillWaterPool` — Evan Wallace's webgl-water (BSD-3-Clause), ported
- * to three.js by Martin Renou.
+ * **Evan Wallace's webgl-water**, BSD-3-Clause, as ported to three.js by Martin Renou — the water
+ * surface of `Ancestors/StillWaterPool/shaders/water/fragment.glsl`, copied rather than rewritten.
+ * Their constants, their functions, their two branches, their Fresnel curve.
  *
- * Their surface is two rays: one reflected into the room, one refracted through the water, mixed by
- * Fresnel. A surface effect here has no room to trace, so the refracted ray is the level behind the
- * surface — sampled through the screen at a bent coordinate — and the reflected one is the sky. What
- * makes it *that* pool rather than another is kept: reflections never drop below a quarter, and the
- * Fresnel curve is a cube rather than a fifth power, so the water turns silver much sooner.
+ * What a brush cannot hand a shader is their renderer's scene, so exactly three things are
+ * substituted and every one of them is marked `engine:` in the source: the ripple-simulation texture
+ * (the wave field this brush is drawn with supplies the same slope), the cubemap sky (evaluated from
+ * the reflected direction instead), and `getWallColor`/`intersectCube` — their tiled pool room (the
+ * level behind the surface stands in).
  */
-export const stillPoolShaderTemplate = `// StillWaterPool — a calm, glassy pool, after Evan Wallace's webgl-water (BSD-3-Clause) as ported to
-// three.js by Martin Renou, in Ancestors/StillWaterPool. Their surface casts a reflection ray and a
-// refraction ray into a tiled room and mixes the two through Fresnel; here the room is the level
-// behind the surface, sampled through the screen at a bent coordinate, and the ripples are the mesh's.
+export const stillPoolShaderTemplate = `// ============================================================================
+// StillWaterPool
 //
-// The character comes from two decisions of theirs: reflections never fall below a quarter (a pool is
-// never not a mirror), and the Fresnel curve is a cube rather than Schlick's fifth power — so the
-// water turns silver a good deal sooner than a sea does.
+// Water surface from Ancestors/StillWaterPool — Evan Wallace's webgl-water
+// (BSD-3-Clause), three.js port by Martin Renou. The code below is theirs:
+// the same constants, the same functions, the same two branches and the same
+// Fresnel curve. Where a brush cannot supply what their renderer handed the
+// shader, the line is marked 'engine:' and nothing else was touched.
+// ============================================================================
+vec3 skyAbove(vec3 ray) {
+  // engine: their 'textureCube(sky, ray)'. A surface effect here is handed no cube map, so the sky
+  // is evaluated from the reflected direction instead of sampled from their photograph of one.
+  float up = clamp(ray.y, 0.0, 1.0);
+  vec3 horizon = vec3(0.52, 0.56, 0.60);
+  vec3 zenith = vec3(0.16, 0.24, 0.40);
+  return mix(horizon, zenith, up * up);
+}
+
+vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor, vec3 light) {
+  // engine: theirs is 'vec3 color;', assigned in the branches. This language needs a local to start
+  // with a value, so it starts black; nothing else about the function changes.
+  vec3 color = vec3(0.0);
+  if (ray.y < 0.0) {
+    // engine: their 'getWallColor(origin + ray * t.y)' — the tiled pool wall. Here the level behind
+    // the surface is that wall, and the screen already holds it.
+    vec2 offset = clamp(ray.xz, vec2(-1.0), vec2(1.0)) * 0.05 * refraction;
+    color = texture(iChannel0, clamp(screenUv + offset, vec2(0.001), vec2(0.999))).rgb;
+  } else {
+    color = skyAbove(ray) * sun;
+    color += 0.01 * vec3(pow(max(0.0, dot(light, ray)), 20.0)) * vec3(10.0, 8.0, 6.0);
+  }
+  if (ray.y < 0.0) color *= waterColor;
+  return color;
+}
+
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-  vec3 wave = normalize(surfaceNormal);
-  vec3 eye = normalize(eyePosition - worldPosition);
+  float IOR_AIR = 1.0;
+  float IOR_WATER = 1.333;
+  vec3 abovewaterColor = vec3(0.25, 1.0, 1.25);
+  vec3 underwaterColor = vec3(0.4, 0.9, 1.0);
+  // Their light, exactly as index.js hands it over (already normalised).
+  vec3 light = vec3(0.7559289460184544, 0.7559289460184544, -0.3779644730092272);
 
-  // Still water: a breath across the surface, not a swell. The two trains wander through each other
-  // so the reflection never sits in one moving line.
+  // engine: their 'vec4 info = texture2D(water, coord)', '.r' the ripple height and '.ba' its slope,
+  // followed by five "make water look peaked" re-samples. A brush has no ripple simulation to
+  // re-sample — its surface is drawn from the wave field, whose slope is exact — so 'info' is that.
+  vec3 surface = normalize(surfaceNormal);
+  vec4 info = vec4(0.0, surface.x, surface.z, 0.0);
+
+  vec3 normal = vec3(info.b, sqrt(1.0 - dot(info.ba, info.ba)), info.a);
+  vec3 incomingRay = normalize(worldPosition - eyePosition);
+
+  // engine: their 'underwater' was a uniform because their mesh is drawn twice, once per side. A
+  // brush face is one surface, so which side is being looked at is read from the normal.
+  if (dot(normal, -incomingRay) < 0.0) {
+    normal = -normal;
+    vec3 reflectedRay = reflect(incomingRay, normal);
+    vec3 refractedRay = refract(incomingRay, normal, IOR_WATER / IOR_AIR);
+    float fresnel = mix(0.5, 1.0, pow(1.0 - dot(normal, -incomingRay), 3.0));
+
+    vec3 reflectedColor = getSurfaceRayColor(worldPosition, reflectedRay, underwaterColor, light);
+    vec3 refractedColor = getSurfaceRayColor(worldPosition, refractedRay, vec3(1.0), light) * vec3(0.8, 1.0, 1.1);
+
+    fragColor = vec4(mix(reflectedColor, refractedColor, (1.0 - fresnel) * length(refractedRay)), 1.0);
+  } else {
+    vec3 reflectedRay = reflect(incomingRay, normal);
+    vec3 refractedRay = refract(incomingRay, normal, IOR_AIR / IOR_WATER);
+    float fresnel = mix(0.25, 1.0, pow(1.0 - dot(normal, -incomingRay), 3.0));
+
+    vec3 reflectedColor = getSurfaceRayColor(worldPosition, reflectedRay, abovewaterColor, light);
+    vec3 refractedColor = getSurfaceRayColor(worldPosition, refractedRay, abovewaterColor, light);
+
+    fragColor = vec4(mix(refractedColor, reflectedColor, fresnel), 1.0);
+  }
+}
+`;
+
+export const CLEARWATER_SHADER_NAME = 'OceanClearwater';
+export const clearwaterShaderTemplate = `// ============================================================================
+// OceanClearwater
+//
+// Water surface from Ancestors/OceanClearwater — the Clearwater demo by
+// Lumaris (MIT). Their functions and constants are copied: sky(), fresnel(),
+// the absorption and scattering coefficients, the Beckmann glints, the
+// in-scattered light and the tonemap their post pass ends with. Their ocean
+// also ray-marches a pebble floor with caustics; that is the bottom, not the
+// water, so the level behind the surface takes its place — every such line is
+// marked 'engine:'.
+// ============================================================================
+vec3 waterSky(vec3 d, vec3 uSun) {
+  float e = d.y;
+  float mu = dot(d, uSun);
+  // engine: their 'vec3 zen = ..., hor = ...;' is two statements here, one local each.
+  vec3 zen = vec3(0.11, 0.27, 0.62);
+  vec3 hor = vec3(0.66, 0.78, 0.90);
+  vec3 c = mix(hor, zen, pow(clamp(e, 0.0, 1.0), 0.42));
+  c += vec3(1.0, 0.86, 0.66) * (0.22 * pow(max(mu, 0.0), 6.0) + 0.30 * pow(max(mu, 0.0), 64.0) + 1.6 * pow(max(mu, 0.0), 2400.0));
+  // engine: their distant headland — pine over limestone, with its haze — is land, and this is water
+  // only, so it is not drawn.
+  return c;
+}
+
+float waterFresnel(float incident, float n) {
+  // engine: their parameter 'ci' is clamped in place; parameters are read-only in this language, so
+  // the clamp happens on the way in. The arithmetic is untouched.
+  float ci = clamp(incident, 0.0, 1.0);
+  float st2 = (1.0 - ci * ci) / (n * n);
+  if (st2 >= 1.0) return 1.0;
+  float ct = sqrt(1.0 - st2);
+  // engine: one local per statement.
+  float rs = (ci - n * ct) / (ci + n * ct);
+  float rp = (n * ci - ct) / (n * ci + ct);
+  return 0.5 * (rs * rs + rp * rp);
+}
+
+/** Their post pass ends the frame with ACES; this renderer has no such pass, so the water ends here
+    the way their pipeline ends it. Bloom, glare, vignette and grain are post, and are not drawn. */
+vec3 waterTonemap(vec3 x) {
+  float a = 2.51;
+  float b = 0.03;
+  float c = 2.43;
+  float d = 0.59;
+  float e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  float PI = 3.14159265359;
+  float IOR = 1.3335;
+  vec3 SIG_A = vec3(0.40, 0.074, 0.088);
+  vec3 SIG_S = vec3(0.028, 0.052, 0.068);
+  vec3 SIG_T = SIG_A + SIG_S;
+  vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0 * sun;
+  // Their sun: elevation 31 degrees, azimuth 6 degrees (index.html, SUN_EL/SUN_AZ).
+  vec3 uSun = vec3(0.0896, 0.5150, -0.8525);
+
+  // engine: their 'slope' comes from three scrolling FFT normal textures. Here it is the slope of the
+  // wave field this brush is drawn with, plus the chop the mesh cannot carry.
+  vec3 n = normalize(surfaceNormal);
+  vec2 slope = vec2(-n.x, -n.z) / max(n.y, 0.15);
   vec2 p = worldPosition.xz;
-  vec2 tilt = vec2(
-    sin(p.x * 0.31 + iTime * 0.60 + sin(p.y * 0.19) * 2.3),
-    cos(p.y * 0.27 - iTime * 0.47 + sin(p.x * 0.23) * 2.1)) * ripple;
-  vec3 normal = normalize(wave + vec3(tilt.x, 0.0, tilt.y) * 0.02);
+  slope += vec2(cos(dot(p, vec2(0.92, 0.39)) * 1.9 + iTime * 2.6),
+                cos(dot(p, vec2(-0.51, 0.86)) * 2.3 - iTime * 3.1)) * 0.05 * chop;
+  n = normalize(vec3(-slope.x, 1.0, -slope.y));
 
-  float nv = clamp(dot(normal, eye), 0.0, 1.0);
+  vec3 wd = normalize(worldPosition - eyePosition);
+  float dist = length(eyePosition - worldPosition);
+  vec3 v = -wd;
+  float nv = dot(n, v);
+  if (nv < 0.02) { n = normalize(n + v * (0.02 - nv)); nv = dot(n, v); }
+  float F = waterFresnel(nv, IOR);
 
-  // What is under the surface: the level, bent by the water and tinted by how much water the view
-  // crosses. A pool is blue from the top down because water eats red first.
-  vec2 bend = clamp(normal.xz * 1.1, vec2(-0.02), vec2(0.02)) * refraction;
-  vec3 behind = texture(iChannel0, clamp(screenUv + bend, vec2(0.001), vec2(0.999))).rgb;
-  float path = depth / max(nv, 0.3);
-  float murk = clamp(absorption * (1.0 - exp(-path * 0.5)), 0.0, 1.0);
-  vec3 refracted = mix(behind, color.rgb * 2.2 + 0.01, murk);
+  // ---- reflection ----
+  vec3 bounce = reflect(wd, n);
+  vec3 rr = vec3(bounce.x, abs(bounce.y), bounce.z);
+  vec3 refl = waterSky(rr, uSun) * 1.25;
 
-  // What it reflects: the room and the sky above it.
-  vec3 reflected = reflect(-eye, normal);
-  float up = clamp(reflected.y * 0.5 + 0.5, 0.0, 1.0);
-  vec3 sky = mix(vec3(0.34, 0.30, 0.24), vec3(0.08, 0.13, 0.22), up * up) * sun;
+  // sun glints: GGX with slope-variance widening (LEAN-style)
+  // engine: their 'var' is read from the FFT texture's variance channel. The same idea — the slope
+  // variance the drawn geometry cannot resolve — is a dial here.
+  // engine: 'var' is a reserved word in this language, so their local carries its meaning in the name.
+  float slopeVar = slopeVariance;
+  float a2 = 0.00012 + 1.2 * slopeVar;
+  vec3 h = normalize(v + uSun);
+  // engine: one local per statement.
+  float nh = max(dot(n, h), 0.0);
+  float nl = max(dot(n, uSun), 0.0);
+  float c2 = max(nh * nh, 1e-4);
+  float tan2 = (1.0 - c2) / c2;
+  float D = exp(-tan2 / a2) / (PI * a2 * c2 * c2);
+  float Vis = 0.5 / (nl * sqrt(nv * nv * (1.0 - a2) + a2) + nv * sqrt(nl * nl * (1.0 - a2) + a2) + 1e-5);
+  float Fh = waterFresnel(max(dot(h, v), 0.0), IOR);
+  vec3 spec = SUN * min(D * Vis * Fh * nl, 12000.0);
 
-  // A still pool has one small hard glint, not a glitter path.
-  vec3 light = normalize(vec3(-0.36, 0.72, 0.59));
-  float glint = pow(clamp(dot(normal, normalize(light + eye)), 0.0, 1.0), 420.0) * sun;
+  // ---- refraction / the column of water between the eye and the bottom ----
+  vec3 tr = refract(wd, n, 1.0 / IOR);
+  // engine: their 's' is the distance down the refracted ray to a ray-marched pebble floor. The floor
+  // here is the level behind the surface and its distance is not known to a surface effect, so the
+  // column is the depth dial over the ray's own vertical rate.
+  float depthHere = depth;
+  float s = max(depthHere / max(-tr.y, 0.02), 0.0);
 
-  // Their curve: a quarter of the light reflected even looking straight down, a mirror at the rim.
-  float fresnel = mix(0.25, 1.0, pow(1.0 - nv, 3.0));
+  // engine: their floor is pebbles, cobbles and sand lit by caustics. Water only: what the surface
+  // looks through is the level behind it.
+  vec2 refractOffset = clamp(-tr.xz, vec2(-1.0), vec2(1.0)) * 0.09 * refraction * min(s, 6.0);
+  vec3 Lfloor = texture(iChannel0, clamp(screenUv + refractOffset, vec2(0.001), vec2(0.999))).rgb;
 
-  vec3 shaded = mix(refracted, sky, fresnel) + glint * 2.0;
-  fragColor = vec4(shaded, 1.0);
+  vec3 sunT = refract(-uSun, vec3(0.0, 1.0, 0.0), 1.0 / IOR);
+  float Ts = 1.0 - waterFresnel(uSun.y, IOR);
+  vec3 Tv = exp(-SIG_T * s);
+  float cosS = dot(sunT, -tr);
+  float g = 0.8;
+  float ph = (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * cosS, 1.5));
+  vec3 skyIrr = vec3(0.62, 0.70, 0.78) * PI * 0.22;
+  vec3 Lmid = SUN * Ts * exp(-SIG_T * depthHere * 0.5 / max(-sunT.y, 0.02)) * (ph + 0.02)
+    + skyIrr * exp(-SIG_A * depthHere * 0.6) / (4.0 * PI);
+  vec3 Lin = SIG_S / SIG_T * Lmid * (vec3(1.0) - Tv) * 3.2;
+  vec3 under = Lfloor * Tv + Lin;
+
+  vec3 col = F * refl + (1.0 - F) * under + spec;
+
+  // engine: their distant haze over the water, kept; their sky-above-the-horizon mix is not — every
+  // fragment here is water, so there is no horizon to blend into.
+  float haze = 1.0 - exp(-dist * 0.004);
+  float muh = max(dot(normalize(vec3(wd.x, 0.0, wd.z)), uSun), 0.0);
+  vec3 hazeC = vec3(0.60, 0.71, 0.82) + vec3(1.0, 0.86, 0.66) * (0.22 * pow(muh, 6.0) + 0.3 * pow(muh, 64.0));
+  col = mix(col, hazeC * 0.95, haze * 0.8);
+
+  fragColor = vec4(waterTonemap(max(col, 0.0) * exposure), 1.0);
 }
 `;
 
 export const stillPoolUniforms = Object.freeze({
-  // The mesh's, as on every water look: the surface has to move, and the dials have to move it.
-  waveHeight: 2,
+  // The mesh's: the surface has to move, and these are the dials that move it.
+  waveHeight: 1,
   waveSpeed: 1,
-  // How much the surface breathes. A pool is nearly still, which is the whole difference between
-  // this look and the sea.
-  ripple: .5,
-  // How far the bottom is bent by the surface.
-  refraction: .5,
-  // How much of the water's own colour the view picks up crossing it.
-  absorption: .55,
-  // How much water the view crosses — the column the absorption is computed over. Small: a pool is
-  // shallow and its bottom is supposed to be legible.
-  depth: 2.5,
+  // engine: how far the refracted ray shifts the level behind the surface. Their ray hit a real wall;
+  // a screen-space stand-in needs a strength.
+  refraction: 1,
   sun: 1,
 });
-
-export const CLEARWATER_SHADER_NAME = 'OceanClearwater';
-/**
- * A clear shallow sea, after `Ancestors/OceanClearwater` by Lumaris (MIT).
- *
- * Their ocean ray-marches a height field over a procedural pebble floor with caustics, none of which
- * a single surface effect can do — but the optics carry over whole, and the optics are the look: the
- * index of refraction, Beer-Lambert absorption that eats red first, and the light scattered back out
- * of the water. Their Fresnel is computed from the index itself rather than approximated.
- */
-export const clearwaterShaderTemplate = `// OceanClearwater — a clear shallow sea, after the Clearwater demo by Lumaris (MIT) in
-// Ancestors/OceanClearwater. Their ocean is a ray-marched height field over a procedurally generated
-// pebble floor with Jacobian caustics; none of that survives into a single surface effect, but the
-// *optics* do, and the optics are what the look is: the index of refraction, and the two
-// coefficients that decide what a depth of water does to light. Red is absorbed first, which is why
-// shallow water is green-cyan and deep water is blue.
-void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-  vec3 absorb = vec3(0.40, 0.074, 0.088);
-  vec3 scatter = vec3(0.028, 0.052, 0.068);
-  float ior = 1.3335;
-
-  vec3 wave = normalize(surfaceNormal);
-  vec3 eye = normalize(eyePosition - worldPosition);
-
-  // Chop that is fine and short: three trains at spread angles, so the crests break instead of
-  // running in ridges.
-  vec2 p = worldPosition.xz;
-  vec2 tilt = vec2(0.0);
-  tilt += vec2(0.92, 0.39) * cos(dot(p, vec2(0.92, 0.39)) * 0.95 + iTime * 2.6 + 1.1);
-  tilt += vec2(-0.51, 0.86) * cos(dot(p, vec2(-0.51, 0.86)) * 1.27 - iTime * 3.1 - 0.4);
-  tilt += vec2(0.24, -0.97) * cos(dot(p, vec2(0.24, -0.97)) * 0.73 - iTime * 2.2 + 2.0);
-  vec3 normal = normalize(wave + vec3(tilt.x, 0.0, tilt.y) * 0.05 * ripple * chop);
-  float nv = clamp(dot(normal, eye), 0.0, 1.0);
-
-  // Fresnel from the index itself, both polarisations averaged, as their shader computes it: at a
-  // grazing angle Schlick's approximation and this disagree by enough to see.
-  float st2 = (1.0 - nv * nv) / (ior * ior);
-  float ct = sqrt(max(1.0 - st2, 0.0));
-  float rs = (nv - ior * ct) / (nv + ior * ct);
-  float rp = (ior * nv - ct) / (ior * nv + ct);
-  float reflectivity = clamp(0.5 * (rs * rs + rp * rp), 0.0, 1.0);
-
-  vec3 light = normalize(vec3(-0.42, 0.56, 0.72));
-
-  // The sky above, and the sun in it: a wide glow and a tight one, as their sky function has.
-  // A swizzle cannot be assigned to here, so the mirrored ray is built rather than bent in place.
-  vec3 bounce = reflect(-eye, normal);
-  vec3 reflected = vec3(bounce.x, abs(bounce.y), bounce.z);
-  float up = clamp(reflected.y, 0.0, 1.0);
-  vec3 sky = mix(vec3(0.66, 0.78, 0.90), vec3(0.11, 0.27, 0.62), pow(up, 0.42)) * sun;
-  float mu = clamp(dot(reflected, light), 0.0, 1.0);
-  sky += vec3(1.0, 0.86, 0.66) * (0.22 * pow(mu, 6.0) + 0.30 * pow(mu, 64.0)) * sun;
-
-  // Glints: tight enough to be a sparkle broken up by the chop rather than a smear.
-  vec3 halfway = normalize(light + eye);
-  float glint = pow(clamp(dot(normal, halfway), 0.0, 1.0), 900.0) * sun * 6.0;
-
-  // What is below: the level behind the surface, bent by the water, then attenuated over the column
-  // the view crosses — and pushed back towards its own colour where the light scatters in it.
-  vec2 bend = clamp(normal.xz * 1.2, vec2(-0.025), vec2(0.025)) * refraction;
-  vec3 behind = texture(iChannel0, clamp(screenUv + bend, vec2(0.001), vec2(0.999))).rgb;
-  // The depth dial is how much water the view crosses, not a measurement in map units: absorption
-  // coefficients are per metre and a map unit is an inch, so the two are not interchangeable. One
-  // unit here is roughly a metre of clear sea.
-  float path = depth / max(nv, 0.2);
-  vec3 transmit = exp(-(absorb + scatter) * path);
-  // Light scattered back out of the column: what makes deep water glow instead of going black.
-  vec3 scattered = scatter / (absorb + scatter) * (vec3(1.0) - transmit)
-    * mix(vec3(0.05, 0.13, 0.16), color.rgb * 1.4, 0.45) * 3.2 * sun;
-  vec3 under = behind * transmit + scattered;
-
-  fragColor = vec4(reflectivity * sky + (1.0 - reflectivity) * under + glint, 1.0);
-}
-`;
 
 export const clearwaterUniforms = Object.freeze({
   waveHeight: 4,
   waveSpeed: 1,
-  ripple: .8,
-  // How sharp the chop is: the sea's dial, and the one that decides whether the sun breaks into
-  // sparkles or smears into a line.
+  // engine: the strength of the screen-space stand-in for their refracted ray.
+  refraction: 1,
+  // engine: their 'var', the slope variance of the FFT spectrum that widens the Beckmann lobe.
+  slopeVariance: .002,
+  // Their DEPTH: the mean depth of the water in metres, used for the light the column scatters.
+  depth: 1.6,
+  // engine: how much chop the wave field adds on top of the mesh's own slope.
   chop: 1,
-  refraction: .35,
-  // How much water the view crosses, in metres of clear sea — the whole of the clear/shallow
-  // character is this number and the absorption coefficients.
-  depth: 3,
+  // Their exposure, from the post pass (uExp = 0.63).
+  exposure: .63,
   sun: 1,
 });
 

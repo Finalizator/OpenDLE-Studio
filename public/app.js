@@ -1604,14 +1604,14 @@ function renderBrushTypeControls(brush) {
         target.water = waterFromPreset(value);
       }, 'Water preset applied');
     }, 'Water preset'));
-  // Three looks ship, and a water body runs one of them. Choosing one points the brush at the
-  // project's own copy of that effect, so it can still be opened and edited afterwards.
+  // Three water shaders ship, and a brush runs one of them. Choosing one points the brush at the
+  // project's own copy of that effect, so it can still be opened and edited in the Environment tab.
   const variant = currentWaterVariant(brush);
-  field(holder, 'Look', select(WATER_VARIANTS.map(entry => [entry.id, entry.name]), variant || '',
+  field(holder, 'Water shader', select(WATER_VARIANTS.map(entry => [entry.id, entry.name]), variant || '',
     id => edit(next => {
       const target = next.map.brushes.find(entry => entry.id === brush.id);
       assignWaterVariant(next, target, id);
-    }, 'Water look changed'), 'Water look'));
+    }, 'Water shader changed'), 'Water shader'));
   const grid = make('div', undefined, 'field-grid');
   // A colour swatch rather than a text field: this is the same picker the sky tint uses.
   const colour = make('input');
@@ -1677,7 +1677,8 @@ const SHADER_LOOK_RANGES = {
   waveHeight: [0, 20, .25], waveSpeed: [0, 4, .05], ripple: [0, 2, .02],
   chop: [0, 2.5, .05], density: [0, 1, .05], fresnel: [.5, 6, .1],
   refraction: [0, 1.5, .02], foam: [0, 2, .02], sun: [0, 2, .02],
-  absorption: [0, 2, .02], depth: [2, 200, 1],
+  absorption: [0, 2, .02], depth: [0.2, 20, .1],
+  slopeVariance: [0, .02, .0002], exposure: [.1, 2, .01],
 };
 function openShaderLook(preferredId = '') {
   const shaders = (project.shaders || []).filter(shader => Object.keys(shader.uniforms || {}).length);
