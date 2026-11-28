@@ -33,7 +33,7 @@ import {
 import { requestMouseLock } from './pointer-lock.js';
 import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog, openNodeEventSheet } from './event-sheet.js';
-import { WATER_SHADER_NAME, shaderTemplate, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterShaderId, waterUniforms } from '/shared/shaders.js';
+import { DEFAULT_WATER_VARIANT, WATER_VARIANTS, assignWaterVariant, shaderTemplate, shippedVariant, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterShaderId, waterUniforms, waterVariant } from '/shared/shaders.js';
 import { WATER_DEFAULTS, waterFromPreset, waterPresets, waterSettings } from '/shared/water.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { createProjectAutosave } from './project-autosave.js';
@@ -1604,6 +1604,14 @@ function renderBrushTypeControls(brush) {
         target.water = waterFromPreset(value);
       }, 'Water preset applied');
     }, 'Water preset'));
+  // Three looks ship, and a water body runs one of them. Choosing one points the brush at the
+  // project's own copy of that effect, so it can still be opened and edited afterwards.
+  const variant = currentWaterVariant(brush);
+  field(holder, 'Look', select(WATER_VARIANTS.map(entry => [entry.id, entry.name]), variant || '',
+    id => edit(next => {
+      const target = next.map.brushes.find(entry => entry.id === brush.id);
+      assignWaterVariant(next, target, id);
+    }, 'Water look changed'), 'Water look'));
   const grid = make('div', undefined, 'field-grid');
   // A colour swatch rather than a text field: this is the same picker the sky tint uses.
   const colour = make('input');
@@ -1628,6 +1636,12 @@ function renderBrushTypeControls(brush) {
   holder.append(button('Water look…', () => openShaderLook(brush.shaderId || '')));
   holder.append(make('p', 'Buoyancy 1 holds a swimmer at the depth they stopped at; above 1 they rise, below 1 they sink. Objects float where the water they displace matches their weight.', 'muted'));
   return holder;
+}
+
+/** Which shipped water look a brush currently runs, or '' when it runs something else. */
+function currentWaterVariant(brush) {
+  const shader = (project.shaders || []).find(entry => entry.id === brush.shaderId);
+  return shader ? (shippedVariant(shader) || '') : '';
 }
 
 /** The shader a brush — or one face of it — is drawn with. */
@@ -1663,6 +1677,7 @@ const SHADER_LOOK_RANGES = {
   waveHeight: [0, 20, .25], waveSpeed: [0, 4, .05], ripple: [0, 2, .02],
   chop: [0, 2.5, .05], density: [0, 1, .05], fresnel: [.5, 6, .1],
   refraction: [0, 1.5, .02], foam: [0, 2, .02], sun: [0, 2, .02],
+  absorption: [0, 2, .02], depth: [2, 200, 1],
 };
 function openShaderLook(preferredId = '') {
   const shaders = (project.shaders || []).filter(shader => Object.keys(shader.uniforms || {}).length);
@@ -1670,7 +1685,8 @@ function openShaderLook(preferredId = '') {
   // The brush's own shader, or the water one by name, or whatever has dials: a mapper who asked for
   // a water body's look should not be shown an unrelated effect because their brush lost its link.
   const chosen = shaders.find(shader => shader.id === preferredId)
-    || shaders.find(shader => shader.name === WATER_SHADER_NAME) || shaders[0];
+    || shaders.find(shader => shippedVariant(shader) === DEFAULT_WATER_VARIANT)
+    || shaders.find(shader => shippedVariant(shader)) || shaders[0];
   if (!shaderLookDialog) {
     shaderLookDialog = make('dialog');
     shaderLookDialog.className = 'shader-look';
@@ -1733,7 +1749,9 @@ function openShaderLook(preferredId = '') {
     }
     body.append(button('Reset to the shipped water', () => edit(project_ => {
       const shader = (project_.shaders || []).find(item => item.id === shaderId);
-      if (shader) shader.uniforms = { ...waterUniforms };
+      // The dials to reset to are the *chosen look's*, not the first one the engine shipped.
+      const shipped = waterVariant(shippedVariant(shader));
+      if (shader && shipped) shader.uniforms = { ...shipped.uniforms };
     }, 'Water look reset')));
   }
   drawDials();

@@ -109,7 +109,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   fragColor = vec4(shaded, clamp(color.a + fresnel * 0.40 + rim * 0.22 + glint * 0.8 + caustic * 0.15, 0.0, 1.0));
 }`;
 
-export const WATER_SHADER_NAME = 'Water (Shadertoy)';
+export const WATER_SHADER_NAME = 'StupidWater';
 /**
  * Which build of the water effect this is.
  *
@@ -268,24 +268,45 @@ export function shadertoyFromDownload(text, fileName = 'Shadertoy shader') {
   return { name, source };
 }
 
-/** The project's water shader, created the first time a brush becomes a water body. */
-export function waterShaderId(project) {
+/**
+ * The project's copy of one water look, created the first time a brush asks for it.
+ *
+ * Three looks ship with the engine and a water body runs one of them. They are ordinary shaders in
+ * the project — editable, replaceable, removable — because the look of a pool is the mapper's, and a
+ * preset they cannot open is a preset they cannot learn from.
+ */
+export function waterShaderId(project, variantId = DEFAULT_WATER_VARIANT) {
   project.shaders ||= [];
-  const existing = project.shaders.find(shader => shader.name === WATER_SHADER_NAME);
+  const variant = waterVariant(variantId) || waterVariant(DEFAULT_WATER_VARIANT);
+  const existing = project.shaders.find(shader => shippedVariant(shader) === variant.id);
   // Refreshed rather than reused, exactly like the curtain: the shader is stored in the
   // project, so a preset improved here would otherwise never reach a level made before it.
-  if (existing) refreshWaterShader(existing);
-  if (existing) return existing.id;
+  if (existing) { refreshWaterShader(existing); return existing.id; }
   const used = projectIds(project);
-  let id = 'water', suffix = 1;
-  while (used.has(id)) id = `water_${suffix++}`;
-  project.shaders.push({ id, name: WATER_SHADER_NAME, language: 'glsl', source: waterShaderTemplate,
-    uniforms: { ...waterUniforms }, builtin: 'water', revision: WATER_SHADER_REVISION });
+  let id = variant.id === DEFAULT_WATER_VARIANT ? 'water' : `water_${variant.id}`, suffix = 1;
+  while (used.has(id)) id = `water_${variant.id}_${suffix++}`;
+  project.shaders.push({ id, name: variant.name, language: 'glsl', source: variant.source,
+    uniforms: { ...variant.uniforms }, builtin: 'water', variant: variant.id,
+    revision: WATER_SHADER_REVISION });
   return id;
 }
 
 /**
- * Brings one copy of the shipped water effect up to this build.
+ * Which shipped look a project shader is, or null for a shader the mapper wrote.
+ *
+ * Matched by marker, by variant name, and — for the oldest projects, which have no marker at all —
+ * by the name the first water effect shipped under.
+ */
+export function shippedVariant(shader) {
+  if (shader?.variant && waterVariant(shader.variant)) return shader.variant;
+  const byName = WATER_VARIANTS.find(variant => variant.name === shader?.name);
+  if (byName) return byName.id;
+  if (shader?.builtin === 'water' || shader?.name === LEGACY_WATER_SHADER_NAME) return DEFAULT_WATER_VARIANT;
+  return null;
+}
+
+/**
+ * Brings one copy of a shipped water look up to this build.
  *
  * The **source** is replaced, because a shading bug cannot be fixed by a dial; the mapper's own
  * numbers are kept, because what they dialled in is their look. A dial this build no longer has is
@@ -295,27 +316,28 @@ export function waterShaderId(project) {
 const OLD_WATER_DEFAULTS = Object.freeze({ refraction: .5, waveHeight: 8 });
 
 function refreshWaterShader(shader) {
-  // Matched by name as well as by marker: a project saved before the marker existed carries the
-  // shipped effect under its shipped name and nothing else, and those are exactly the files that
-  // need bringing forward.
-  const shipped = shader?.builtin === 'water' || shader?.name === WATER_SHADER_NAME;
-  if (!shipped || shader.revision === WATER_SHADER_REVISION) return false;
+  const id = shippedVariant(shader);
+  if (!id) return false;
+  const variant = waterVariant(id);
+  if (shader.revision === WATER_SHADER_REVISION && shader.variant === id) return false;
   const kept = {};
   for (const [name, value] of Object.entries(shader.uniforms || {})) {
-    if (!Object.hasOwn(waterUniforms, name)) continue;
+    if (!Object.hasOwn(variant.uniforms, name)) continue;
     // A value the mapper never touched is the old default, and the default changing meaning is
     // exactly the sort of fix that has to reach them; a value they dialled in is theirs.
-    kept[name] = OLD_WATER_DEFAULTS[name] === value ? waterUniforms[name] : value;
+    kept[name] = OLD_WATER_DEFAULTS[name] === value ? variant.uniforms[name] : value;
   }
-  shader.source = waterShaderTemplate;
-  shader.uniforms = { ...waterUniforms, ...kept };
+  shader.source = variant.source;
+  shader.uniforms = { ...variant.uniforms, ...kept };
+  shader.name = variant.name;
   shader.builtin = 'water';
+  shader.variant = id;
   shader.revision = WATER_SHADER_REVISION;
   return true;
 }
 
 /**
- * Updates every shipped effect a project carries — the water, and whatever joins it later.
+ * Updates every shipped effect a project carries — the water looks, and whatever joins them later.
  *
  * Called when a project is opened rather than when a water body is made, so a level keeps working
  * the way the current build draws it. Returns how many were changed, which is what a test asserts.
@@ -349,7 +371,7 @@ export const waterUniforms = Object.freeze({
   // `wave_choppiness`. One is a rubber sheet, two is a sharp-crested sea.
   chop: 1,
   // How much of the water's own colour sits over what is behind it before the reflection is added.
-  density: .6,
+  density: .35,
   // How far the surface bends what is behind it. Small on purpose: a strong bend stretches every
   // straight edge in the level into a long bright line, which reads as scratches on the water
   // rather than as depth.
@@ -361,6 +383,199 @@ export const waterUniforms = Object.freeze({
 });
 
 /** The project's glass shader, created the first time a curtain is added. */
+/** What the first water effect shipped under, before the looks had names of their own. */
+const LEGACY_WATER_SHADER_NAME = 'Water (Shadertoy)';
+
+export const STILL_POOL_SHADER_NAME = 'StillWaterPool';
+/**
+ * A calm pool, after `Ancestors/StillWaterPool` — Evan Wallace's webgl-water (BSD-3-Clause), ported
+ * to three.js by Martin Renou.
+ *
+ * Their surface is two rays: one reflected into the room, one refracted through the water, mixed by
+ * Fresnel. A surface effect here has no room to trace, so the refracted ray is the level behind the
+ * surface — sampled through the screen at a bent coordinate — and the reflected one is the sky. What
+ * makes it *that* pool rather than another is kept: reflections never drop below a quarter, and the
+ * Fresnel curve is a cube rather than a fifth power, so the water turns silver much sooner.
+ */
+export const stillPoolShaderTemplate = `// StillWaterPool — a calm, glassy pool, after Evan Wallace's webgl-water (BSD-3-Clause) as ported to
+// three.js by Martin Renou, in Ancestors/StillWaterPool. Their surface casts a reflection ray and a
+// refraction ray into a tiled room and mixes the two through Fresnel; here the room is the level
+// behind the surface, sampled through the screen at a bent coordinate, and the ripples are the mesh's.
+//
+// The character comes from two decisions of theirs: reflections never fall below a quarter (a pool is
+// never not a mirror), and the Fresnel curve is a cube rather than Schlick's fifth power — so the
+// water turns silver a good deal sooner than a sea does.
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec3 wave = normalize(surfaceNormal);
+  vec3 eye = normalize(eyePosition - worldPosition);
+
+  // Still water: a breath across the surface, not a swell. The two trains wander through each other
+  // so the reflection never sits in one moving line.
+  vec2 p = worldPosition.xz;
+  vec2 tilt = vec2(
+    sin(p.x * 0.31 + iTime * 0.60 + sin(p.y * 0.19) * 2.3),
+    cos(p.y * 0.27 - iTime * 0.47 + sin(p.x * 0.23) * 2.1)) * ripple;
+  vec3 normal = normalize(wave + vec3(tilt.x, 0.0, tilt.y) * 0.02);
+
+  float nv = clamp(dot(normal, eye), 0.0, 1.0);
+
+  // What is under the surface: the level, bent by the water and tinted by how much water the view
+  // crosses. A pool is blue from the top down because water eats red first.
+  vec2 bend = clamp(normal.xz * 1.1, vec2(-0.02), vec2(0.02)) * refraction;
+  vec3 behind = texture(iChannel0, clamp(screenUv + bend, vec2(0.001), vec2(0.999))).rgb;
+  float path = depth / max(nv, 0.3);
+  float murk = clamp(absorption * (1.0 - exp(-path * 0.5)), 0.0, 1.0);
+  vec3 refracted = mix(behind, color.rgb * 2.2 + 0.01, murk);
+
+  // What it reflects: the room and the sky above it.
+  vec3 reflected = reflect(-eye, normal);
+  float up = clamp(reflected.y * 0.5 + 0.5, 0.0, 1.0);
+  vec3 sky = mix(vec3(0.34, 0.30, 0.24), vec3(0.08, 0.13, 0.22), up * up) * sun;
+
+  // A still pool has one small hard glint, not a glitter path.
+  vec3 light = normalize(vec3(-0.36, 0.72, 0.59));
+  float glint = pow(clamp(dot(normal, normalize(light + eye)), 0.0, 1.0), 420.0) * sun;
+
+  // Their curve: a quarter of the light reflected even looking straight down, a mirror at the rim.
+  float fresnel = mix(0.25, 1.0, pow(1.0 - nv, 3.0));
+
+  vec3 shaded = mix(refracted, sky, fresnel) + glint * 2.0;
+  fragColor = vec4(shaded, 1.0);
+}
+`;
+
+export const stillPoolUniforms = Object.freeze({
+  // The mesh's, as on every water look: the surface has to move, and the dials have to move it.
+  waveHeight: 2,
+  waveSpeed: 1,
+  // How much the surface breathes. A pool is nearly still, which is the whole difference between
+  // this look and the sea.
+  ripple: .5,
+  // How far the bottom is bent by the surface.
+  refraction: .5,
+  // How much of the water's own colour the view picks up crossing it.
+  absorption: .55,
+  // How much water the view crosses — the column the absorption is computed over. Small: a pool is
+  // shallow and its bottom is supposed to be legible.
+  depth: 2.5,
+  sun: 1,
+});
+
+export const CLEARWATER_SHADER_NAME = 'OceanClearwater';
+/**
+ * A clear shallow sea, after `Ancestors/OceanClearwater` by Lumaris (MIT).
+ *
+ * Their ocean ray-marches a height field over a procedural pebble floor with caustics, none of which
+ * a single surface effect can do — but the optics carry over whole, and the optics are the look: the
+ * index of refraction, Beer-Lambert absorption that eats red first, and the light scattered back out
+ * of the water. Their Fresnel is computed from the index itself rather than approximated.
+ */
+export const clearwaterShaderTemplate = `// OceanClearwater — a clear shallow sea, after the Clearwater demo by Lumaris (MIT) in
+// Ancestors/OceanClearwater. Their ocean is a ray-marched height field over a procedurally generated
+// pebble floor with Jacobian caustics; none of that survives into a single surface effect, but the
+// *optics* do, and the optics are what the look is: the index of refraction, and the two
+// coefficients that decide what a depth of water does to light. Red is absorbed first, which is why
+// shallow water is green-cyan and deep water is blue.
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec3 absorb = vec3(0.40, 0.074, 0.088);
+  vec3 scatter = vec3(0.028, 0.052, 0.068);
+  float ior = 1.3335;
+
+  vec3 wave = normalize(surfaceNormal);
+  vec3 eye = normalize(eyePosition - worldPosition);
+
+  // Chop that is fine and short: three trains at spread angles, so the crests break instead of
+  // running in ridges.
+  vec2 p = worldPosition.xz;
+  vec2 tilt = vec2(0.0);
+  tilt += vec2(0.92, 0.39) * cos(dot(p, vec2(0.92, 0.39)) * 0.95 + iTime * 2.6 + 1.1);
+  tilt += vec2(-0.51, 0.86) * cos(dot(p, vec2(-0.51, 0.86)) * 1.27 - iTime * 3.1 - 0.4);
+  tilt += vec2(0.24, -0.97) * cos(dot(p, vec2(0.24, -0.97)) * 0.73 - iTime * 2.2 + 2.0);
+  vec3 normal = normalize(wave + vec3(tilt.x, 0.0, tilt.y) * 0.05 * ripple * chop);
+  float nv = clamp(dot(normal, eye), 0.0, 1.0);
+
+  // Fresnel from the index itself, both polarisations averaged, as their shader computes it: at a
+  // grazing angle Schlick's approximation and this disagree by enough to see.
+  float st2 = (1.0 - nv * nv) / (ior * ior);
+  float ct = sqrt(max(1.0 - st2, 0.0));
+  float rs = (nv - ior * ct) / (nv + ior * ct);
+  float rp = (ior * nv - ct) / (ior * nv + ct);
+  float reflectivity = clamp(0.5 * (rs * rs + rp * rp), 0.0, 1.0);
+
+  vec3 light = normalize(vec3(-0.42, 0.56, 0.72));
+
+  // The sky above, and the sun in it: a wide glow and a tight one, as their sky function has.
+  // A swizzle cannot be assigned to here, so the mirrored ray is built rather than bent in place.
+  vec3 bounce = reflect(-eye, normal);
+  vec3 reflected = vec3(bounce.x, abs(bounce.y), bounce.z);
+  float up = clamp(reflected.y, 0.0, 1.0);
+  vec3 sky = mix(vec3(0.66, 0.78, 0.90), vec3(0.11, 0.27, 0.62), pow(up, 0.42)) * sun;
+  float mu = clamp(dot(reflected, light), 0.0, 1.0);
+  sky += vec3(1.0, 0.86, 0.66) * (0.22 * pow(mu, 6.0) + 0.30 * pow(mu, 64.0)) * sun;
+
+  // Glints: tight enough to be a sparkle broken up by the chop rather than a smear.
+  vec3 halfway = normalize(light + eye);
+  float glint = pow(clamp(dot(normal, halfway), 0.0, 1.0), 900.0) * sun * 6.0;
+
+  // What is below: the level behind the surface, bent by the water, then attenuated over the column
+  // the view crosses — and pushed back towards its own colour where the light scatters in it.
+  vec2 bend = clamp(normal.xz * 1.2, vec2(-0.025), vec2(0.025)) * refraction;
+  vec3 behind = texture(iChannel0, clamp(screenUv + bend, vec2(0.001), vec2(0.999))).rgb;
+  // The depth dial is how much water the view crosses, not a measurement in map units: absorption
+  // coefficients are per metre and a map unit is an inch, so the two are not interchangeable. One
+  // unit here is roughly a metre of clear sea.
+  float path = depth / max(nv, 0.2);
+  vec3 transmit = exp(-(absorb + scatter) * path);
+  // Light scattered back out of the column: what makes deep water glow instead of going black.
+  vec3 scattered = scatter / (absorb + scatter) * (vec3(1.0) - transmit)
+    * mix(vec3(0.05, 0.13, 0.16), color.rgb * 1.4, 0.45) * 3.2 * sun;
+  vec3 under = behind * transmit + scattered;
+
+  fragColor = vec4(reflectivity * sky + (1.0 - reflectivity) * under + glint, 1.0);
+}
+`;
+
+export const clearwaterUniforms = Object.freeze({
+  waveHeight: 4,
+  waveSpeed: 1,
+  ripple: .8,
+  // How sharp the chop is: the sea's dial, and the one that decides whether the sun breaks into
+  // sparkles or smears into a line.
+  chop: 1,
+  refraction: .35,
+  // How much water the view crosses, in metres of clear sea — the whole of the clear/shallow
+  // character is this number and the absorption coefficients.
+  depth: 3,
+  sun: 1,
+});
+
+/**
+ * The water looks that ship, in the order the interface offers them.
+ *
+ * A water body runs one of these: the brush points at the project's copy of it (`shaderId`), so a
+ * mapper can open, edit, replace or remove it like any other effect in the project.
+ */
+export const WATER_VARIANTS = Object.freeze([
+  Object.freeze({ id: 'stupid', name: WATER_SHADER_NAME, source: waterShaderTemplate, uniforms: waterUniforms }),
+  Object.freeze({ id: 'pool', name: STILL_POOL_SHADER_NAME, source: stillPoolShaderTemplate, uniforms: stillPoolUniforms }),
+  Object.freeze({ id: 'clearwater', name: CLEARWATER_SHADER_NAME, source: clearwaterShaderTemplate, uniforms: clearwaterUniforms }),
+]);
+
+export const DEFAULT_WATER_VARIANT = 'stupid';
+
+/** One shipped water look by its id, or null. */
+export function waterVariant(id) {
+  return WATER_VARIANTS.find(variant => variant.id === id) || null;
+}
+
+/** Gives one water brush one of the shipped looks, creating the project's copy if it has none. */
+export function assignWaterVariant(project, brush, variantId) {
+  const variant = waterVariant(variantId);
+  if (!variant || !brush) return null;
+  brush.shaderId = waterShaderId(project, variant.id);
+  return brush.shaderId;
+}
+
 export function curtainShaderId(project) {
   project.shaders ||= [];
   const existing = project.shaders.find(shader => shader.name === CURTAIN_SHADER_NAME);
