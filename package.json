@@ -23,6 +23,7 @@
     "automation": "node tools/automation/run.mjs",
     "automation:brushes": "node tools/automation/run.mjs brushes",
     "automation:menus": "node tools/automation/run.mjs menus",
+    "automation:skybox": "node tools/automation/run.mjs skybox",
     "automation:maps": "node tools/automation/run.mjs maps",
     "automation:game": "node tools/automation/run.mjs game",
     "automation:close": "node tools/automation/run.mjs close"

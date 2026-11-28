@@ -75,6 +75,10 @@ assets, so there is no separate build between editing and testing.*
 - **Browser-native rendering:** WebGPU preferred, WebGL2 fallback, Rapier
   physics, portable GLSL effects and a [shader engine](Docs/shader-engine.md)
   ported from *3D Game Shaders For Beginners* with events to drive it at play time.
+- **Design the sky:** a [skybox designer](Docs/skybox.md) with an angular coverage
+  window in degrees, layered pictures with blends, drift and animation, saved
+  presets a rule can switch to, and panoramas in PNG, JPEG, TGA, DDS, HDR, EXR or
+  TIFF — including `.dds` cubemaps.
 - **AI-ready tools:** MCP integration and optional DeepSeek-assisted edits,
   with drafts reviewed before applying.
 - **Extend your workflow:** install project addons or add drop-in scriptlet

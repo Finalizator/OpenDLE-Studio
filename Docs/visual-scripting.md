@@ -722,6 +722,10 @@ coverage. "Needs object" means the action/condition needs an object (`entityId`)
 
 ### Conditions
 
+The sky has its own tab and its own record: [skybox.md](skybox.md) covers the window, the layers and
+the formats. Five conditions and seventeen actions below ask what a sky is doing and change it, so a
+level can raise a sunset without the sky being rebuilt by hand.
+
 Named-signal connections use `onSignal` (`entityId`, `signal`) as the first,
 non-inverted condition of a top-level AND rule. Signals are declared in an object's
 **Signals** property (`signals[]`) or by its terminal's `submitSignal`.
@@ -788,6 +792,11 @@ activate in the shot's original frame.
 | active menu / gameplay screen | `gameScreen` | — | screen |
 | Interacting with screen (aiming at a reachable terminal; blocks weapon fire) | `interactingWithScreen` | — | — |
 | effect is enabled | `shaderEnabled` | — | — |
+| this sky preset is showing | `skyboxPreset` | — | preset |
+| compare the sky shape | `skyboxShape` | — | shape |
+| the sky animation is running | `skyboxAnimating` | — | — |
+| compare the sky animation frame | `skyboxFrame` | — | operator, frame, layer |
+| compare the sky animation speed | `skyboxSpeed` | — | operator, value |
 | shader engine pass is on | `postFxPassEnabled` | — | kind |
 | compare a shader engine parameter | `postFxParamCompare` | — | kind, param, operator, value |
 | compare math / text expressions | `expressionCompare` | — | left, operator, right |
@@ -929,6 +938,23 @@ keep their existing global-variable output.
 | enable / disable the shader engine stack | `setPostFxStack` | — | enabled |
 | enable / disable one shader engine pass | `setPostFxPass` | — | kind, enabled |
 | set a shader engine parameter | `setPostFxParam` | — | kind, param, value |
+| apply a saved sky preset | `setSkyPreset` | — | preset |
+| set the sky shape | `setSkyShape` | — | shape |
+| set the base sky picture | `setSkyTexture` | — | assetId |
+| set a layer's picture | `setSkyLayerTexture` | — | layer, assetId |
+| show / hide a layer | `setSkyLayerVisible` | — | layer, visible |
+| set the window the sky is drawn in | `setSkyCoverage` | — | azimuthFrom, azimuthTo, elevationFrom, elevationTo, edge |
+| set the sky rotation | `setSkyRotation` | — | degrees |
+| set the sky tint | `setSkyTint` | — | color |
+| set the sky exposure | `setSkyExposure` | — | value |
+| start the sky animation | `startSkyAnimation` | — | — |
+| stop the sky animation | `stopSkyAnimation` | — | — |
+| toggle the sky animation | `toggleSkyAnimation` | — | — |
+| set the sky animation speed | `setSkySpeed` | — | value |
+| jump to an animation frame | `setSkyFrame` | — | frame, layer |
+| move a layer | `setSkyLayerOffset` | — | layer, offsetU, offsetV |
+| set a layer's drift speed | `setSkyLayerSpin` | — | layer, degreesPerSecond |
+| set a layer's opacity | `setSkyLayerOpacity` | — | layer, opacity |
 | set a local variable on picked instances | `setPickedVariable` | — | objectType, variable, value |
 | add to a local variable on picked instances | `addPickedVariable` | — | objectType, variable, value |
 | set position of picked instances | `setPickedPosition` | — | objectType, x, y, z |
