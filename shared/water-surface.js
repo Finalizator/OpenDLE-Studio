@@ -15,25 +15,40 @@
 /** How far a surface rides the swells when nothing else is asked for. */
 export const WAVE_DEFAULTS = Object.freeze({
   // Peak height of the biggest swell, in map units.
-  height: 8,
+  height: 5,
   speed: 1,
   // How wide a grid cell is, in map units: the surface is subdivided to this, so a small pool is
-  // not hundreds of pointless vertices and a large sea still has waves.
-  cell: 40,
+  // not hundreds of pointless vertices and a large sea still has waves. It has to stay well under
+  // the shortest *mesh* wavelength below, or the grid aliases into a moiré instead of a wave.
+  cell: 16,
 });
 
 /**
- * The swells, in map units.
+ * A map unit is an inch, so this is the acceleration that decides how fast a swell travels:
+ * `ω = sqrt(g · k)`, the dispersion relation deep water actually obeys.
+ */
+export const WAVE_GRAVITY = 981;
+
+/**
+ * The swells, in map units, as a wind sea at the scale of a room.
  *
- * Three directions at incommensurate angles and wavelengths. Two would read as a corrugation and
- * four cost more than they add; at these ratios the interference is irregular enough that a
- * displaced surface does not look woven.
+ * Four waves: two carry the **mesh**, two only tilt the shading, because a ripple 14 units long
+ * cannot be represented by a grid that is 16 units across — it would alias into a pattern that is
+ * neither a wave nor a ripple. The two that move geometry are long enough for the grid to resolve.
+ * Directions and wavelengths are incommensurate so the interference never settles into a weave.
  */
 export const WATER_SWELLS = Object.freeze([
-  Object.freeze({ direction: [1, 0.32], length: 140, amplitude: .55, rate: .7 }),
-  Object.freeze({ direction: [-0.45, 1], length: 87, amplitude: .3, rate: .95 }),
-  Object.freeze({ direction: [0.75, -0.68], length: 53, amplitude: .15, rate: 1.3 }),
+  Object.freeze({ direction: [1, 0.28], length: 96, amplitude: .55, shading: false }),
+  Object.freeze({ direction: [-0.42, 1], length: 52, amplitude: .3, shading: false }),
+  Object.freeze({ direction: [0.78, -0.62], length: 27, amplitude: .13, shading: true }),
+  Object.freeze({ direction: [-0.9, -0.36], length: 14, amplitude: .07, shading: true }),
 ]);
+
+/** How fast one swell travels, in radians per second: long waves are faster, as on real water. */
+export function swellRate(length, speed = 1) {
+  const k = (Math.PI * 2) / length;
+  return Math.sqrt(WAVE_GRAVITY * k) * (Number(speed) || 1);
+}
 
 /**
  * The height of the water at a point of its own surface, in map units.
@@ -47,8 +62,10 @@ export function waterHeight(u, v, time, waves = WAVE_DEFAULTS) {
   if (!height || !speed) return 0;
   let sum = 0;
   for (const swell of WATER_SWELLS) {
+    // Only the two long swells move the mesh; the short ones tilt the shading and nothing else.
+    if (swell.shading) continue;
     const k = (Math.PI * 2) / swell.length;
-    sum += swell.amplitude * Math.sin((u * swell.direction[0] + v * swell.direction[1]) * k - time * swell.rate * speed);
+    sum += swell.amplitude * Math.sin((u * swell.direction[0] + v * swell.direction[1]) * k - time * swellRate(swell.length, speed));
   }
   return sum * height;
 }
@@ -60,8 +77,9 @@ export function waterSlope(u, v, time, waves = WAVE_DEFAULTS) {
   if (!height || !speed) return [0, 0];
   let du = 0, dv = 0;
   for (const swell of WATER_SWELLS) {
+    if (swell.shading) continue;
     const k = (Math.PI * 2) / swell.length;
-    const slope = swell.amplitude * k * Math.cos((u * swell.direction[0] + v * swell.direction[1]) * k - time * swell.rate * speed) * height;
+    const slope = swell.amplitude * k * Math.cos((u * swell.direction[0] + v * swell.direction[1]) * k - time * swellRate(swell.length, speed)) * height;
     du += slope * swell.direction[0];
     dv += slope * swell.direction[1];
   }
@@ -88,8 +106,10 @@ export function buildWaterSurface(points, { uvAt, water = WAVE_DEFAULTS } = {}) 
   for (const point of points) {
     for (const other of points) longest = Math.max(longest, Math.hypot(point[0] - other[0], point[1] - other[1], point[2] - other[2]));
   }
-  // One segment is a flat quad; beyond sixteen, a pool gets more triangles than it has pixels.
-  const segments = Math.max(1, Math.min(16, Math.ceil(longest / cell)));
+  // One segment is a flat quad. The cap keeps a sea of a thousand units from filling a buffer, but
+  // it has to stay above twice the shortest *mesh* swell (96 units) or a big pool draws its waves
+  // as long flat facets: at 16-unit cells that is 48 segments across.
+  const segments = Math.max(1, Math.min(48, Math.ceil(longest / cell)));
   const positions = [], uvs = [], index = [];
   const at = point => {
     const [u, v] = uvAt(point);

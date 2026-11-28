@@ -66,18 +66,26 @@ crate dropped in a lake bobs to the water line and stays there; one dropped in s
 
 ## The surface is geometry, not a picture
 
-The top of a water body is a **grid of vertices that rides the swells**: three directional swells
-whose heights and slopes are the same three the shader shades. So the waterline against a shore
-moves, the silhouette of the surface moves, and what is behind the water *shifts as the swells pass*
-— the shader refracts the level through the wave normal, which is what makes a pool bottom look like
-a pool bottom instead of a picture of one.
+The top of a water body is a **grid of vertices that rides the swells**. So the waterline against a
+shore moves, the silhouette of the surface moves, and what is behind the water *shifts as the swells
+pass* — the shader refracts the level through the wave normal, which is what makes a pool bottom look
+like a pool bottom instead of a picture of one.
+
+Four swells make the surface, at four wavelengths: **96 and 52 map units** carry the mesh, **27 and
+14** only tilt the shading, because a ripple 14 units long cannot be carried by a 16-unit grid — it
+would alias into a pattern that is neither a wave nor a ripple. That split is why the surface still
+looks alive at the distance a player stands at: the short waves are most of what catches the light.
+
+They travel by **deep-water dispersion**, `ω = √(g·k)`, so a long swell moves faster than a ripple,
+as real water does — 122 units/s for the 96-unit swell, 47 for the 14-unit one. Every swell crosses
+a wavelength in under a second. Doing it any other way (one rate for all of them, or a fixed
+slow drift) is what makes water look like a moving picture.
 
 The swells are written twice on purpose: the mesh is built in JavaScript
 (`shared/water-surface.js`) and the normals are shaded in GLSL (`shared/shaders.js`). The numbers
-are pinned to agree by `test/water.test.js` — change one and the test names the other. The grid's
-cell size is 40 map units, so a small pool is not thousands of vertices and a large sea still has
-waves. Only a **top** face moves: the sides and the underside of the same volume stay flat, and they
-are a separate batch for exactly that reason.
+are pinned to agree by `test/water.test.js` — change one and the test names the other. Only a **top**
+face moves: the sides and the underside of the same volume stay flat, and they are a separate batch
+for exactly that reason.
 
 The editor animates its water on the window's own clock — it does not step the level — and the game
 animates it on the game clock, through the same `animateWaterSurface`.
@@ -99,7 +107,7 @@ from the compiled shader rather than from a second set of numbers:
 
 | Uniform | Default | What it does |
 | --- | --- | --- |
-| `waveHeight` | 8 | Peak height of the biggest swell, in map units — the mesh rides this |
+| `waveHeight` | 5 | Peak height of the biggest swell, in map units — the mesh rides this |
 | `waveSpeed` | 1 | How fast the swells travel |
 | `ripple` | 0.6 | Fine chop, shading only: the sparkle between the swells |
 | `refraction` | 0.5 | How far the swells bend what is behind the surface |

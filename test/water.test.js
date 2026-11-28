@@ -20,7 +20,7 @@ import {
   waterPresets, waterSettings, waterSpeedScale, waterVolumes,
 } from '../shared/water.js';
 import { WATER_SHADER_NAME, shadertoyFromDownload, waterShaderId, waterShaderTemplate, waterUniforms } from '../shared/shaders.js';
-import { WATER_SWELLS, WAVE_DEFAULTS, animateWaterSurface, buildWaterSurface, waterHeight, waterSlope, waterSurfaceData } from '../shared/water-surface.js';
+import { WATER_SWELLS, WAVE_DEFAULTS, WAVE_GRAVITY, animateWaterSurface, buildWaterSurface, swellRate, waterHeight, waterSlope, waterSurfaceData } from '../shared/water-surface.js';
 import { readFileSync } from 'node:fs';
 import { parseShaderSource } from '../shared/shader-language.js';
 
@@ -193,9 +193,24 @@ test('a water surface is a grid that rides the swells, and its shape is the shad
   const epsilon = .01;
   const slope = waterSlope(40, 20, .5);
   assert.ok(Math.abs(slope[0] - (waterHeight(40 + epsilon, 20, .5) - waterHeight(40 - epsilon, 20, .5)) / (2 * epsilon)) < 1e-6);
-  // Every swell in the table is used, and they are not harmonics of one wavelength.
-  assert.equal(WATER_SWELLS.length, 3);
-  assert.equal(new Set(WATER_SWELLS.map(swell => swell.length)).size, 3);
+  // Four swells at four wavelengths: two long ones the mesh can carry, two short ones that only
+  // tilt the shading. Not harmonics of one another, or the interference would read as a weave.
+  assert.equal(WATER_SWELLS.length, 4);
+  assert.equal(WATER_SWELLS.filter(swell => !swell.shading).length, 2);
+  assert.equal(new Set(WATER_SWELLS.map(swell => swell.length)).size, 4);
+  // Deep-water dispersion: a long swell travels faster than a short one, and every swell crosses a
+  // wavelength in well under two seconds. The first version took nine, which is a slow picture of
+  // water rather than water.
+  const [longest, shortest] = [WATER_SWELLS[0], WATER_SWELLS[WATER_SWELLS.length - 1]];
+  // Phase speed — how fast a crest travels — is what a wave looks like, not its angular frequency.
+  const speedOf = length => swellRate(length) / ((Math.PI * 2) / length);
+  assert.ok(speedOf(longest.length) > speedOf(shortest.length),
+    `${speedOf(longest.length).toFixed(0)} vs ${speedOf(shortest.length).toFixed(0)} units/s`);
+  assert.ok(speedOf(longest.length) > 60, 'a swell crosses the room rather than crawling');
+  for (const swell of WATER_SWELLS) {
+    const period = (Math.PI * 2) / swellRate(swell.length);
+    assert.ok(period < 1, `${swell.length} units takes ${period.toFixed(2)}s to pass`);
+  }
 
   // The geometry really moves.
   const geometry = {
@@ -215,8 +230,13 @@ test('the shader shades the swells the mesh rides, so the two cannot drift apart
   // twice on purpose. This is the pin: the same three wavelengths, the same three amplitudes.
   for (const swell of WATER_SWELLS) {
     assert.ok(waterShaderTemplate.includes(`6.2831853 / ${swell.length}.0`), `wavelength ${swell.length} is in the shader`);
-    assert.ok(waterShaderTemplate.includes(`${swell.amplitude.toFixed(2)} * sin`), `amplitude ${swell.amplitude} is in the shader`);
+    // A moving swell multiplies its amplitude into `sin`; a shading-only one tilts the normal by it.
+    const used = swell.shading ? `* ${swell.amplitude.toFixed(2)} * k` : `${swell.amplitude.toFixed(2)} * sin`;
+    assert.ok(waterShaderTemplate.includes(used), `amplitude ${swell.amplitude} is in the shader`);
   }
+  // And the same dispersion constant drives both, or they would travel at different speeds.
+  assert.ok(waterShaderTemplate.includes('sqrt(981.0 * k)'));
+  assert.equal(WAVE_GRAVITY, 981);
   assert.ok(waterShaderTemplate.includes('uv * 64.0'), "the shader reads the face's own frame in map units");
   assert.ok(waterShaderTemplate.includes('texture(iChannel0'), 'and refracts what is behind it');
   assert.equal(waterUniforms.waveHeight, WAVE_DEFAULTS.height, 'the height dial is the same number');

@@ -122,27 +122,44 @@ export const WATER_SHADER_NAME = 'Water (Shadertoy)';
 // The swells are written out here and in `shared/water-surface.js` because the mesh has to be built
 // in JavaScript and the normals have to be shaded in GLSL. The numbers are pinned to agree by
 // `test/water.test.js`: change one and change the other.
-export const waterShaderTemplate = `vec3 swells(vec2 p) {
-  // Height in map units, and the slope it implies across the face, in the same units.
+export const waterShaderTemplate = `// Deep water obeys a dispersion relation: a long swell travels faster than a ripple, because the
+// restoring force is gravity and not the surface tension or the shape of the wave. Without it every
+// swell crawled along at the same speed and the surface read as a slowly moving picture.
+float swellRate(float k) {
+  return sqrt(981.0 * k) * waveSpeed;
+}
+
+// The two long swells. These are the ones the mesh rides, so their height and slope are returned
+// together and the geometry and the normal cannot disagree.
+vec3 swells(vec2 p) {
   float height = 0.0;
   float slopeX = 0.0;
   float slopeY = 0.0;
-  float k = 6.2831853 / 140.0;
-  float a = (p.x * 1.0 + p.y * 0.32) * k - iTime * 0.7 * waveSpeed;
+  float k = 6.2831853 / 96.0;
+  float a = (p.x * 1.0 + p.y * 0.28) * k - iTime * swellRate(k);
   height += 0.55 * sin(a);
   slopeX += 0.55 * cos(a) * k;
-  slopeY += 0.55 * cos(a) * k * 0.32;
-  k = 6.2831853 / 87.0;
-  a = (p.x * -0.45 + p.y * 1.0) * k - iTime * 0.95 * waveSpeed;
+  slopeY += 0.55 * cos(a) * k * 0.28;
+  k = 6.2831853 / 52.0;
+  a = (p.x * -0.42 + p.y * 1.0) * k - iTime * swellRate(k);
   height += 0.30 * sin(a);
-  slopeX += 0.30 * cos(a) * k * -0.45;
+  slopeX += 0.30 * cos(a) * k * -0.42;
   slopeY += 0.30 * cos(a) * k;
-  k = 6.2831853 / 53.0;
-  a = (p.x * 0.75 + p.y * -0.68) * k - iTime * 1.3 * waveSpeed;
-  height += 0.15 * sin(a);
-  slopeX += 0.15 * cos(a) * k * 0.75;
-  slopeY += 0.15 * cos(a) * k * -0.68;
   return vec3(height * waveHeight, slopeX * waveHeight, slopeY * waveHeight);
+}
+
+// The two short swells: too short for a 16-unit grid to carry, so they tilt the normal and leave
+// the mesh alone. This is where most of the "water" in the picture actually comes from at the
+// distance a player stands at, because a ripple a metre across is what catches the light.
+vec2 ripples(vec2 p) {
+  vec2 slope = vec2(0.0);
+  float k = 6.2831853 / 27.0;
+  float a = (p.x * 0.78 + p.y * -0.62) * k - iTime * swellRate(k);
+  slope += vec2(0.78, -0.62) * cos(a) * 0.13 * k;
+  k = 6.2831853 / 14.0;
+  a = (p.x * -0.9 + p.y * -0.36) * k - iTime * swellRate(k);
+  slope += vec2(-0.9, -0.36) * cos(a) * 0.07 * k;
+  return slope * waveHeight;
 }
 
 // The small chop that rides on the swells. Shading only: it is far smaller than a map unit, so it
@@ -166,8 +183,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
   vec3 field = swells(p);
   float height = field.x;
-  vec2 slope = field.yz;
-  // Fine chop, added to the slope only: it is what the sun catches between the swells.
+  vec2 slope = field.yz + ripples(p);
+  // Fine chop on top: the last of the texture, and what the sun actually catches.
   float fine = chop(p * 0.055 + vec2(iTime * 0.22, 0.0)) + chop(p * 0.09 - vec2(0.0, iTime * 0.17));
   slope += vec2(fine, fine * 0.7) * 0.09 * ripple;
 
@@ -201,9 +218,13 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec3 sky = mix(vec3(0.50, 0.62, 0.74) * sun, vec3(0.09, 0.22, 0.44) * sun, up * up);
 
   vec3 light = normalize(vec3(-0.42, 0.58, 0.70));
-  // A broad lobe: a very high exponent turns every swell into a scratch of white, and three swells
-  // make the mirror direction recur in a grid, which reads as hatching rather than as sunlight.
-  float glint = pow(clamp(dot(reflect(-light, normal), eye), 0.0, 1.0), 16.0);
+  // The sun off water is a *glitter path*, not a streak: one wide lobe painted a white smear across
+  // the whole lake, which is the single most artificial thing about the first version. A tight lobe
+  // over a perturbed normal breaks it into the flecks a real surface throws back, and the micro
+  // slope below is what scatters them.
+  vec3 sparkle = normalize(vec3(-(slope + vec2(chop(p * 0.9 + vec2(iTime * 0.7, 0.0)),
+    chop(p * 0.9 + vec2(9.0, iTime * 0.6))) * 0.9), 1.0));
+  float glint = pow(clamp(dot(reflect(-light, sparkle), eye), 0.0, 1.0), 64.0);
   float sheen = pow(clamp(dot(normal, light) * 0.5 + 0.5, 0.0, 1.0), 4.0);
 
   // Foam where the swells break. It follows the swells and not the chop: the chop's cells are a few
@@ -215,7 +236,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   shaded = mix(shaded, white, clamp(crest * 0.8, 0.0, 1.0));
   // The two highlights are the only light the surface adds to the picture, and they are kept
   // small: a surface that adds a constant glow stops being water and becomes frosted glass.
-  shaded += glint * 0.85 * sun + sheen * 0.06;
+  shaded += glint * 1.6 * sun + sheen * 0.05;
 
   float alpha = clamp(color.a * (0.88 + 0.12 * glancing) + crest * 0.4 + glint * 0.4, 0.0, 1.0);
   fragColor = vec4(shaded, alpha);
@@ -285,7 +306,7 @@ export const shadertoyTemplate = `void mainImage(out vec4 fragColor, in vec2 fra
 export const waterUniforms = Object.freeze({
   // The swells. `waveHeight` is in map units, which is why the geometry can be displaced by the
   // same numbers without a conversion nobody would remember to keep in step.
-  waveHeight: 8,
+  waveHeight: 5,
   waveSpeed: 1,
   // Shading-only chop: the small sparkle between the swells.
   ripple: .6,
