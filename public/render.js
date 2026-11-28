@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { uniform, float, vec2, vec3, vec4, attribute, varying, materialColor, positionWorld, positionGeometry, output, uv, screenUV, viewportUV, texture, sin, cos, tan, atan, asin, cross, normalize, length, clamp, mix, fract,
+  pow, floor, step, smoothstep, max, min, abs,
   reference, materialRotation, modelWorldMatrix, cameraViewMatrix, cameraWorldMatrix, rotate } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
@@ -23,6 +24,8 @@ import { createPhysics } from '/shared/physics.js';
 import { eyePosition, upVector, viewDirection } from '/shared/gravity.js';
 import { restoreCulling, restoreVisibility, revealForWarmup, uncullDrawables } from '/shared/render-warmup.js';
 import { skyView } from '/shared/sky-view.js';
+import { decodeSkyImage, skyImageFormat } from './sky-textures.js';
+import { normalizeSkybox, coverageWindow, skyboxSignature, SKY_LAYER_DRAW_LIMIT, animationFrameAt, activeSkybox, SKY_FACES } from '/shared/skybox.js';
 import { liveProjectPlan, entityRepresentation, entityMediaSignature, modelOrientation, modelWorldBox, entityOrigin, spriteWorldBox, spritePlacement } from '/shared/entity-visuals.js';
 import { renderBufferSize } from '/shared/render-resolution.js';
 import { decodeDataURI, readModel, validateModelDocument } from '/shared/gltf.js';
@@ -471,6 +474,16 @@ export async function createPreview(canvas, project, state, { editor = false, on
       loadedIds.add(asset.id); assets.push(asset);
     }
     for (let offset = 0; offset < assets.length; offset += 16) await Promise.all(assets.slice(offset, offset + 16).map(async asset => {
+      // A sky may be a tone-mapped HDR, an EXR, a DDS cubemap or a TGA, none of which an <img>
+      // element can read: those go through the sky decoder, everything else through the ordinary
+      // image loader.
+      const format = asset.kind === 'sky' ? skyImageFormat(asset) : null;
+      if (format && !['png', 'jpeg'].includes(format)) {
+        const decoded = await decodeSkyImage({ src: asset.src, format, name: asset.name }, { THREE });
+        alphaModes.set(asset.id, 'opaque');
+        textures.set(asset.id, decoded.texture);
+        return;
+      }
       const texture = await loader.loadAsync(asset.src);
       if (texture.image.width !== asset.width || texture.image.height !== asset.height) {
         texture.dispose(); throw new Error(`Asset ${asset.name} dimensions do not match its image`);
@@ -1198,6 +1211,8 @@ export async function createPreview(canvas, project, state, { editor = false, on
     // The sky is rebuilt from the environment rather than set up inline, because a
     // script can change it while the level runs (ACS ChangeSky).
     let appliedSky = null, failedSky = null;
+    // Cubes gathered from six separate face pictures, so a rebuild can release them.
+    const cubeTextures = new Set();
     function clearSky() {
       for (const child of [...backgroundScene.children]) {
         backgroundScene.remove(child);
@@ -1209,20 +1224,231 @@ export async function createPreview(canvas, project, state, { editor = false, on
       delete backgroundScene.userData.panorama;
       delete backgroundScene.userData.skyTexture;
       delete backgroundScene.userData.skyAssetId;
+      delete backgroundScene.userData.sky;
+      // Cubes gathered from six face pictures are ours, unlike the textures the assets own.
+      for (const cube of cubeTextures) cube.dispose();
+      cubeTextures.clear();
     }
+    /**
+     * A sky made of layers: the Skybox tab's own record, drawn as one fragment program.
+     *
+     * The numbers here are the same ones `shared/skybox.js#skyTexel` computes on the CPU, so the
+     * tab's coverage diagram and the game agree about where a picture sits. Everything that varies
+     * per frame (the sky's clock, the view) is a uniform; everything structural (which pictures, how
+     * they blend, the window) is baked into the graph and rebuilt when the record changes.
+     */
+    function buildLayeredSky(skybox) {
+      const DEG = Math.PI / 180, TWO_PI = Math.PI * 2;
+      // `vec3(new THREE.Color('#2b4a73'))` is not a colour: a `Color` is a JavaScript object, and
+      // the node builder takes it as no known type and yields (0, 0, 0) — the whole sky came out
+      // black. Its channels are numbers, which is what a node wants.
+      const colourVector = value => {
+        const colour = new THREE.Color(value);
+        return vec3(float(colour.r), float(colour.g), float(colour.b));
+      };
+      const heading = uniform(0, 'float'), pitch = uniform(0, 'float'), aspect = uniform(800 / 450),
+        tanFov = uniform(Math.tan(35 * DEG)), skyTime = uniform(0, 'float');
+      const exposure = uniform(Math.max(0, Number(skybox.exposure === undefined ? 1 : skybox.exposure)), 'float');
+      const zoom = uniform(Math.max(.01, Number(skybox.scale) || 1), 'float');
+      const window = coverageWindow(skybox.coverage, 0);
+
+      // The view ray, built exactly as the panorama path builds it.
+      const p = uv().mul(2).sub(1).mul(tanFov);
+      const forward = vec3(cos(pitch).mul(cos(heading)), sin(pitch), cos(pitch).mul(sin(heading)));
+      const right = vec3(sin(heading).negate(), 0, cos(heading));
+      const ray = normalize(forward.add(right.mul(p.x).mul(aspect)).add(cross(right, forward).mul(p.y)));
+      const elevationWorld = asin(clamp(ray.y, -1, 1));
+      let azimuthWorld = atan(ray.z, ray.x);
+      azimuthWorld = azimuthWorld.sub(azimuthWorld.div(TWO_PI).floor().mul(TWO_PI));
+      const spanTurn = (window.span / 360) * TWO_PI;
+
+      const layers = [];
+      for (const [index, layer] of (skybox.layers || []).entries()) {
+        if (index >= SKY_LAYER_DRAW_LIMIT) break;
+        const faces = layer.faces;
+        const assetId = layer.assetId || (faces ? faces.px : null);
+        const source = assetId ? textures.get(assetId) : null;
+        if (!source) continue;
+        // A `.dds` cubemap decodes to a cube already. A legacy six-face record stores six
+        // separate pictures — the shape `environment.skybox` had before this record existed — so
+        // the six of them are gathered into the cube the shader samples.
+        let cubeTextureSource = source?.isCubeTexture ? source : null;
+        if (!cubeTextureSource && faces) {
+          const faceImages = SKY_FACES.map(face => textures.get(faces[face])?.image).filter(Boolean);
+          const cube = faceImages.length === SKY_FACES.length && faceImages.every(image => image.complete !== false && image.width)
+            ? new THREE.CubeTexture(faceImages) : null;
+          if (cube) {
+            cube.colorSpace = THREE.SRGBColorSpace;
+            cube.needsUpdate = true;
+            cubeTextures.add(cube);
+            cubeTextureSource = cube;
+          }
+        }
+        const cube = Boolean(cubeTextureSource);
+        if (cube) {
+          // A cubemap covers the whole sphere by definition, so it has no window to fall outside
+          // of: it is sampled with the view direction itself.
+          const sampler = cubeTexture(cubeTextureSource, ray);
+          layers.push({ layer, sampler, mask: null, blend: layer.blend, opacity: Number(layer.opacity) || 0 });
+          continue;
+        }
+        // The window this layer is drawn in: its own, or the sky's.
+        const own = layer.coverage?.enabled ? layer.coverage : null;
+        const ownWindow = own ? coverageWindow(own, 0) : null;
+        const azFrom = ((ownWindow ? ((ownWindow.from % 360) + 360) % 360 : ((window.from % 360) + 360) % 360)) * DEG;
+        const azSpan = Math.max(1e-5, (ownWindow ? ownWindow.span : window.span) / 360) * TWO_PI;
+        const elLow = (ownWindow ? ownWindow.lowElevation : window.lowElevation) * DEG;
+        const elSpan = Math.max(1e-5, (ownWindow ? ownWindow.elevationSpan : window.elevationSpan)) * DEG;
+
+        const across = fract(azimuthWorld.sub(azFrom).div(TWO_PI)).mul(TWO_PI).div(azSpan);
+        const up = elevationWorld.sub(elLow).div(elSpan);
+        // The picture slides inside its window and wraps round it: `rotation` pans it.
+        const rotation = Number(skybox.rotation) || 0;
+        const turned = fract(across.add(rotation / Math.max(1e-5, ownWindow ? ownWindow.span : window.span)));
+        const uvRepeat = layer.uv || {};
+        // The clock is a node, so it multiplies rather than being multiplied: `number * node` is
+        // NaN, not a graph, and the whole sky failed to build with "drift.mul is not a function".
+        const drift = skyTime.mul((Number(layer.spin?.azimuth) || 0) / 360);
+        let u = turned.mul(Number(uvRepeat.repeatU ?? 1) || 1).add(Number(uvRepeat.offsetU) || 0).add(drift);
+        let v = up.mul(Number(uvRepeat.repeatV ?? 1) || 1).add(Number(uvRepeat.offsetV) || 0)
+          .add(skyTime.mul((Number(layer.spin?.elevation) || 0) / 360));
+        // Zoom about the middle of the window, as the CPU does.
+        u = u.sub(.5).mul(zoom).add(.5);
+        v = v.sub(.5).mul(zoom).add(.5);
+        // Rotate the layer's own tiling about the middle of the picture.
+        const spin = (Number(uvRepeat.rotate) || 0) * DEG;
+        if (spin) {
+          const cu = u.sub(.5), cv = v.sub(.5);
+          const rotatedU = cu.mul(Math.cos(spin)).sub(cv.mul(Math.sin(spin))).add(.5);
+          const rotatedV = cu.mul(Math.sin(spin)).add(cv.mul(Math.cos(spin))).add(.5);
+          u = rotatedU; v = rotatedV;
+        }
+
+        const edge = (own && skybox.coverage?.edge) || skybox.coverage?.edge || 'fade';
+        const outsideWindow = max(0, across.oneMinus().negate().max(across.sub(1)), up.oneMinus().negate().max(up.sub(1)));
+        // A wrapped picture has no outside; anything else fades or stops at its own edge.
+        const wrapped = edge === 'wrap' || edge === 'mirror';
+        const outsidePicture = wrapped ? float(0)
+          : max(0, u.oneMinus().negate().max(u.sub(1)), v.oneMinus().negate().max(v.sub(1)));
+        const outside = outsideWindow.max(outsidePicture);
+        let mask = float(1);
+        const featherValue = Math.max(0, Number(skybox.coverage?.feather) || 0) * DEG / Math.max(1e-5, elSpan);
+        if (edge === 'none') mask = float(1).sub(step(1e-4, outside));
+        else if (edge === 'fade') mask = featherValue > 1e-5
+          ? smoothstep(0, featherValue, outside).oneMinus()
+          : float(1).sub(step(1e-4, outside));
+        let sampleU = clamp(u, 0, 1), sampleV = clamp(v, 0, 1);
+        if (edge === 'wrap') { sampleU = fract(u); sampleV = fract(v); }
+        if (edge === 'mirror') {
+          sampleU = fract(u).mul(2).sub(1).abs().oneMinus();
+          sampleV = fract(v).mul(2).sub(1).abs().oneMinus();
+        }
+        const sampler = texture(source, vec2(sampleU, sampleV));
+        layers.push({ layer, sampler, mask, blend: layer.blend, opacity: Number(layer.opacity) || 0 });
+      }
+
+      const material = new THREE.MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
+      material.vertexNode = vec4(positionGeometry.xy, 0, 1);
+
+      // The base: a flat colour, or a gradient with a sun and stars for a procedural sky.
+      let colour = colourVector(skybox.coverage?.background || '#000000');
+      if (skybox.shape === 'procedural') {
+        const procedural = skybox.procedural || {};
+        const top = colourVector(procedural.top || '#2b4a73');
+        const horizon = colourVector(procedural.horizon || '#c8ccd2');
+        const groundBottom = colourVector(procedural.groundBottom || '#33291f');
+        const groundHorizon = colourVector(procedural.groundHorizon || '#a5a7a8');
+        const skyCurve = Math.max(.01, Number(procedural.curve) || .15);
+        const groundCurve = Math.max(.01, Number(procedural.groundCurve) || .02);
+        const up = clamp(ray.y, -1, 1);
+        // Godot's `ProceduralSkyMaterial` gradient: `pow(1 - y, curve)` toward the horizon and
+        // `pow(1 + y, curve)` toward the ground, with the two halves chosen by the sign of y.
+        const sky = mix(top, horizon, clamp(pow(up.oneMinus(), float(skyCurve)), 0, 1));
+        const ground = mix(groundBottom, groundHorizon, clamp(pow(up.add(1), float(groundCurve)), 0, 1));
+        colour = mix(ground, sky, step(0, ray.y));
+        if (skybox.sun?.enabled) {
+          const sunDirection = directionFromAngles(skybox.sun.azimuth || 0, skybox.sun.elevation || 0);
+          const disc = step(Math.cos((Number(skybox.sun.size) || 3) * DEG), ray.dot(sunDirection));
+          const glow = pow(clamp(ray.dot(sunDirection), 0, 1), float(24));
+          const strength = Number(skybox.sun.intensity === undefined ? 1 : skybox.sun.intensity);
+          colour = colour.add(colourVector(skybox.sun.color || '#fff4d6')
+            .mul(disc.mul(strength).add(glow.mul(strength * .18))));
+        }
+        if (skybox.stars?.enabled) {
+          const density = Math.max(.02, Math.min(1, Number(skybox.stars.density) || .5));
+          const cell = floor(ray.mul(float(340)));
+          const hash = fract(sin(cell.x.mul(12.9898).add(cell.y.mul(78.233)).add(cell.z.mul(37.719))).mul(43758.5453));
+          const star = step(hash.mul(density).oneMinus().mul(.998).oneMinus(), float(1))
+            .mul(step(hash, float(density)));
+          colour = colour.add(vec3(star).mul(clamp(ray.y, 0, 1).mul(1.4)));
+        }
+      }
+
+      // Fold each layer over the base, one blend at a time. `drawn` accumulates how much of the
+      // view any layer actually covered, which becomes the fragment's alpha: outside the window
+      // the sky must be *transparent* so the level's own background shows through, not an opaque
+      // black band (which is what the first version looked like in the 3D view).
+      let drawn = float(0);
+      for (const entry of layers) {
+        const sample = entry.sampler;
+        const alpha = (sample.a ?? float(1)).mul(float(entry.opacity));
+        const covered = entry.mask ? alpha.mul(entry.mask) : alpha;
+        drawn = drawn.max(entry.mask || covered.oneMinus().oneMinus());
+        colour = blendSkyLayer(colour, vec3(sample.rgb ?? sample), covered, entry.blend);
+      }
+      // A procedural sky and a solid colour need nothing behind them; a picture sky is only as
+      // wide as its window.
+      const alpha = skybox.shape === 'procedural' || skybox.shape === 'solid' ? float(1) : drawn;
+      material.fragmentNode = vec4(colour.mul(colourVector(skybox.tint || '#ffffff')).mul(exposure), alpha);
+      material.transparent = true;
+
+      const geometry = new THREE.PlaneGeometry(2, 2);
+      mesh(geometry, material, backgroundScene);
+      backgroundScene.userData.sky = { material, layers, uniforms: { heading, pitch, aspect, tanFov, skyTime,
+        zoom, exposure }, signature: skyboxSignature(skybox) };
+      appliedSky = 'skybox';
+      failedSky = null;
+      canvas.dataset.skyLayers = String(layers.length);
+      return true;
+    }
+
+    /** The direction a sun azimuth and elevation name, in the renderer's own axes. */
+    function directionFromAngles(azimuthDegrees, elevationDegrees) {
+      const az = Number(azimuthDegrees) * Math.PI / 180, el = Number(elevationDegrees) * Math.PI / 180;
+      return vec3(float(Math.cos(el) * Math.cos(az)), float(Math.sin(el)), float(Math.cos(el) * Math.sin(az)));
+    }
+
+    /** Combines one layer with what is under it; the same blend list the tab offers. */
+    function blendSkyLayer(base, source, alpha, blend) {
+      if (blend === 'add') return base.add(source.mul(alpha));
+      if (blend === 'multiply') return mix(base, base.mul(source), alpha);
+      if (blend === 'screen') return mix(base, base.oneMinus().mul(source.oneMinus()).oneMinus(), alpha);
+      if (blend === 'overlay') {
+        // `overlay(base, source)`: multiply where the base is dark, screen where it is light.
+        const low = base.mul(2).mul(source);
+        const high = base.mul(2).oneMinus().mul(source.oneMinus()).oneMinus();
+        return mix(base, mix(low, high, step(.5, base)), alpha);
+      }
+      // `replace` and `alpha` are the same source-over: a picture with transparency shows what is
+      // behind it, and an opaque one hides it.
+      return mix(base, source, alpha);
+    }
+
     function buildSky(environment, assetId = environment.skyAsset) {
       clearSky();
       const skyAsset = assetMap.get(assetId);
-      if (environment.skybox && assetId === environment.skyAsset) {
-        const faces = ['px', 'nx', 'py', 'ny', 'pz', 'nz'].map(face => {
-          const result = new THREE.MeshBasicMaterial({ map: imageTexture(environment.skybox[face]), side: THREE.BackSide, depthWrite: false });
-          materials.add(result); return result;
-        });
-        const box = new THREE.BoxGeometry(20000, 20000, 20000);
-        const sky = new THREE.Mesh(box, faces); geometries.add(box); backgroundScene.add(sky);
-        backgroundScene.userData.skybox = sky;
-        appliedSky = null;
-      } else if (skyAsset && textures.has(skyAsset.id)) {
+      const skybox = normalizeSkybox(environment.skybox);
+      const drawn = skybox && (skybox.layers.some(layer => layer.assetId || layer.faces) || skybox.shape === 'procedural');
+      if (drawn) {
+        // A sky the author built must not fail silently: if the graph cannot be built the level
+        // would fall back to no sky at all, and the reason is the one thing worth knowing.
+        try { if (buildLayeredSky(skybox)) return; }
+        catch (error) {
+          console.error('The sky could not be built', error);
+          canvas.dataset.skyError = `Sky: ${error.message}`;
+        }
+      }
+      if (skyAsset && textures.has(skyAsset.id)) {
         // `float`, explicitly: `uniform(0)` infers an *int* from a whole number, and assigning
         // 0.05 radians to an int uniform truncates it to 0 — the sky then never turned with the
         // view or scrolled, however correct the number fed to it was.
@@ -1280,9 +1506,51 @@ export async function createPreview(canvas, project, state, { editor = false, on
       }
       failedSky = null;
     }
-    /** Applies a ChangeSky request: an image swap normally, a rebuild when no sky is drawn. */
+    /**
+     * Applies a sky change: an image swap normally, a rebuild when the sky itself changed.
+     *
+     * Two things can change it. ACS `ChangeSky` names a picture, which is a sampler swap. A rule
+     * that applies a preset, moves a layer or narrows the window changes the *structure*, and the
+     * program is rebuilt for that — which is why the signature is compared rather than the name.
+     */
+    let skyRevision = -1;
+    /**
+     * The editor's own 3D view has no runtime state, so a sky the author is designing is applied
+     * here instead: the tab writes the record into the project and this rebuilds the sky when its
+     * structure changed. Without it the preview kept whatever sky the viewport was created with,
+     * and a designer could not see a single thing they changed.
+     */
+    let editorSkyTicks = 0;
+    function syncEditorSky() {
+      // The record is edited in place, so it is compared by signature rather than by identity —
+      // eight times a second, which is far more often than a person can change a control and
+      // rare enough that walking every layer costs nothing.
+      if (editorSkyTicks++ % 8) return;
+      const sky = normalizeSkybox(project.environment?.skybox);
+      const signature = sky ? skyboxSignature(sky) : '';
+      if (signature === editorSkySignature) return;
+      editorSkySignature = signature;
+      buildSky(project.environment);
+      canvas.dataset.sky = appliedSky;
+    }
+
     function applySky(state) {
-      if (editor || !state) return;
+      if (editor) return syncEditorSky();
+      if (!state) return;
+      // A sky action bumps the world revision, so the signature (which walks every layer) is only
+      // built when something could have changed. ACS `ChangeSky` swaps a picture by name and is
+      // checked below, every frame, which is two string compares.
+      if (skyRevision !== state.worldRevision) {
+        skyRevision = state.worldRevision;
+        const sky = activeSkybox(state, project);
+        const signature = sky ? skyboxSignature(sky) : '';
+        const drawn = backgroundScene.userData.sky;
+        if (drawn ? drawn.signature !== signature : Boolean(signature)) {
+          buildSky({ ...project.environment, skybox: sky || project.environment.skybox }, project.environment.skyAsset);
+          canvas.dataset.sky = appliedSky;
+          return;
+        }
+      }
       const name = skyRequestName(state.skyRequest);
       if (!name || name.toUpperCase() === appliedSky) return;
       const asset = skyAssetFor(project, name);
@@ -1307,6 +1575,11 @@ export async function createPreview(canvas, project, state, { editor = false, on
       delete canvas.dataset.skyError;
     }
     buildSky(project.environment);
+    // The viewport may be created long after the level was opened (the tab is switched, the 3D
+    // view is entered), so what it is drawing is reported here as well as on every rebuild.
+    canvas.dataset.sky = appliedSky;
+    // `undefined` rather than `''` so a level with no sky at all is built once too.
+    let editorSkySignature;
     const sprites = new Map(), spriteList = [], colliderBoxList = [];
     // One template per alpha mode: a sprite sheet with partial alpha is blended, a plain one
     // stays alpha-tested, and the mode is baked into the material.
@@ -2797,8 +3070,30 @@ export async function createPreview(canvas, project, state, { editor = false, on
       const firstScrolled = scrolledTextures.values().next().value;
       writeDataset('scrollTexels', firstScrolled
         ? (firstScrolled.u * firstScrolled.texelWidth * scrollerTics).toFixed(2) : '');
-      if (backgroundScene.userData.skybox) backgroundScene.userData.skybox.position.copy(camera.position);
-      else {
+      // A layered sky: the view is a uniform pair, so the whole sky turns with the camera without
+      // rebuilding anything. Its clock drives the layer drift and picks the animation frame, which
+      // is a texture swap on the sampler the layer already draws.
+      const layered = backgroundScene.userData.sky;
+      if (layered) {
+        const view = skyView({ editor, direction: camera.getWorldDirection(cameraDirection), player: state?.player });
+        layered.uniforms.heading.value = view.heading;
+        layered.uniforms.pitch.value = view.pitch;
+        layered.uniforms.aspect.value = camera.aspect;
+        layered.uniforms.tanFov.value = Math.tan(camera.fov * Math.PI / 360);
+        const clock = Number(state?.skyClock) || 0;
+        layered.uniforms.skyTime.value = clock;
+        const sky = activeSkybox(state, project);
+        for (const entry of layered.layers) {
+          const frame = animationFrameAt(entry.layer.animation, clock);
+          if (frame < 0) continue;
+          const assetId = entry.layer.animation.frames[frame]?.assetId;
+          const source = assetId ? textures.get(assetId) : null;
+          if (!source || entry.sampler.value === source) continue;
+          // A sampler node keeps the picture it was built with, so the picture is what changes.
+          entry.sampler.value = source;
+        }
+        void sky;
+      } else {
         const panorama = backgroundScene.userData.panorama;
         if (panorama) {
           const view = skyView({ editor, direction: camera.getWorldDirection(cameraDirection), player: state.player });
