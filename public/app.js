@@ -1678,7 +1678,7 @@ const SHADER_LOOK_RANGES = {
   chop: [0, 2.5, .05], density: [0, 1, .05], fresnel: [.5, 6, .1],
   refraction: [0, 1.5, .02], foam: [0, 2, .02], sun: [0, 2, .02],
   absorption: [0, 2, .02], depth: [0.2, 20, .1],
-  slopeVariance: [0, .02, .0002], exposure: [.1, 2, .01],
+  exposure: [.1, 2, .01], patch: [16, 600, 1], tileSize: [8, 400, 1],
 };
 function openShaderLook(preferredId = '') {
   const shaders = (project.shaders || []).filter(shader => Object.keys(shader.uniforms || {}).length);

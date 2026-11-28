@@ -444,11 +444,15 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // Their light, exactly as index.js hands it over (already normalised).
   vec3 light = vec3(0.7559289460184544, 0.7559289460184544, -0.3779644730092272);
 
-  // engine: their 'vec4 info = texture2D(water, coord)', '.r' the ripple height and '.ba' its slope,
-  // followed by five "make water look peaked" re-samples. A brush has no ripple simulation to
-  // re-sample — its surface is drawn from the wave field, whose slope is exact — so 'info' is that.
-  vec3 surface = normalize(surfaceNormal);
-  vec4 info = vec4(0.0, surface.x, surface.z, 0.0);
+  // Their ripple texture, sampled and refined exactly as written: '.r' is the height and '.ba' the
+  // slope, which is the layout iChannel1 holds. engine: their coord addresses a two-unit pool, so
+  // the tile size is a dial here; the five "make water look peaked" re-samples are untouched.
+  vec2 coord = worldPosition.xz / tileSize + 0.5;
+  vec4 info = texture(iChannel1, coord);
+  for (int i = 0; i < 5; i++) {
+    coord += info.ba * 0.005;
+    info = texture(iChannel1, coord);
+  }
 
   vec3 normal = vec3(info.b, sqrt(1.0 - dot(info.ba, info.ba)), info.a);
   vec3 incomingRay = normalize(worldPosition - eyePosition);
@@ -516,6 +520,29 @@ float waterFresnel(float incident, float n) {
   return 0.5 * (rs * rs + rp * rp);
 }
 
+/** Their cubic B-spline filtering: four bilinear taps, so the slopes the glints are built from are
+    smooth. engine: theirs takes the texture as a parameter, and this language has no sampler
+    parameters or textureSize(), so it samples iChannel1 at its fixed 256 texels. The taps, weights
+    and the reason for them are theirs. */
+vec4 waterTexBS(vec2 uv) {
+  vec2 ts = vec2(256.0, 256.0);
+  vec2 p = uv * ts - 0.5;
+  vec2 f = fract(p);
+  p = floor(p);
+  vec2 f2 = f * f;
+  vec2 f3 = f2 * f;
+  vec2 w0 = (-f3 + 3.0 * f2 - 3.0 * f + 1.0) / 6.0;
+  vec2 w1 = (3.0 * f3 - 6.0 * f2 + 4.0) / 6.0;
+  vec2 w2 = (-3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0) / 6.0;
+  vec2 w3 = f3 / 6.0;
+  vec2 g0 = w0 + w1;
+  vec2 g1 = w2 + w3;
+  vec2 h0 = (w1 / g0 - 0.5 + p) / ts;
+  vec2 h1 = (w3 / g1 + 1.5 + p) / ts;
+  return (texture(iChannel1, vec2(h0.x, h0.y)) * g0.x + texture(iChannel1, vec2(h1.x, h0.y)) * g1.x) * g0.y
+    + (texture(iChannel1, vec2(h0.x, h1.y)) * g0.x + texture(iChannel1, vec2(h1.x, h1.y)) * g1.x) * g1.y;
+}
+
 /** Their post pass ends the frame with ACES; this renderer has no such pass, so the water ends here
     the way their pipeline ends it. Bloom, glare, vignette and grain are post, and are not drawn. */
 vec3 waterTonemap(vec3 x) {
@@ -536,16 +563,32 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0 * sun;
   // Their sun: elevation 31 degrees, azimuth 6 degrees (index.html, SUN_EL/SUN_AZ).
   vec3 uSun = vec3(0.0896, 0.5150, -0.8525);
+  float dist = length(eyePosition - worldPosition);
 
-  // engine: their 'slope' is read from three scrolling FFT normal textures. A brush has no such
-  // textures; the slope here is the one the surface being drawn actually has, taken from its own
-  // normal. Nothing is invented to stand in for the missing spectrum.
-  vec3 surface = normalize(surfaceNormal);
-  vec2 slope = vec2(-surface.x, -surface.z) / max(surface.y, 0.15);
+  // ---- their slope: three scales of the surface spectrum, read from the texture ----
+  // engine: their uSurf is an FFT target and uRip a touch-ripple target. iChannel1 is a tileable
+  // slope texture with the same layout (R height, GB slope, A variance), so their sampling below is
+  // theirs; the R.yz term from the touch ripples is the only one dropped, because nothing touches.
+  mat2 M = mat2(0.8, -0.6, 0.6, 0.8);
+  // engine: transpose(M) written out — this language has no transpose(), and M is orthonormal.
+  mat2 MT = mat2(0.8, 0.6, -0.6, 0.8);
+  float SC = 0.41;
+  float WB = 0.10;
+  vec3 P = worldPosition;
+  vec4 A = waterTexBS(P.xz / patch);
+  vec4 B = waterTexBS((M * P.xz) / (patch * SC) + 0.37);
+  vec2 slope = A.yz + WB * (MT * B.yz);
+  mat2 M2 = mat2(0.28, 0.96, -0.96, 0.28);
+  mat2 M2T = mat2(0.28, -0.96, 0.96, 0.28);
+  vec4 Cm = texture(iChannel1, (M2 * P.xz) / (patch * 0.13) + 0.71);
+  // engine: their 't' is metres along the ray; ours is map units, so it is converted.
+  float rayLength = dist / 39.37;
+  slope += 0.13 * exp(-rayLength * 0.18) * (M2T * Cm.yz);
+  // engine: 'var' is reserved here, so their local is named for it.
+  float slopeVar = max(A.w - dot(A.yz, A.yz), 0.0) + WB * WB * max(B.w - dot(B.yz, B.yz), 0.0);
   vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
 
   vec3 wd = normalize(worldPosition - eyePosition);
-  float dist = length(eyePosition - worldPosition);
   vec3 v = -wd;
   float nv = dot(n, v);
   if (nv < 0.02) { n = normalize(n + v * (0.02 - nv)); nv = dot(n, v); }
@@ -557,10 +600,6 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec3 refl = waterSky(rr, uSun) * 1.25;
 
   // sun glints: GGX with slope-variance widening (LEAN-style)
-  // engine: their 'var' is read from the FFT texture's variance channel. The same idea — the slope
-  // variance the drawn geometry cannot resolve — is a dial here.
-  // engine: 'var' is a reserved word in this language, so their local carries its meaning in the name.
-  float slopeVar = slopeVariance;
   float a2 = 0.00012 + 1.2 * slopeVar;
   vec3 h = normalize(v + uSun);
   // engine: one local per statement.
@@ -620,6 +659,9 @@ export const stillPoolUniforms = Object.freeze({
   // The mesh's: the surface has to move, and these are the dials that move it.
   waveHeight: 1,
   waveSpeed: 1,
+  // engine: their ripple texture covered a pool of two units; this is how many map units one tile of
+  // it covers here.
+  tileSize: 64,
   // engine: how far the refracted ray shifts the level behind the surface. Their ray hit a real wall;
   // a screen-space stand-in needs a strength.
   refraction: 1,
@@ -631,8 +673,8 @@ export const clearwaterUniforms = Object.freeze({
   waveSpeed: 1,
   // engine: the strength of the screen-space stand-in for their refracted ray.
   refraction: 1,
-  // engine: their 'var', the slope variance of the FFT spectrum that widens the Beckmann lobe.
-  slopeVariance: .002,
+  // Their 'uL': the patch size of the surface spectrum, in map units — 4.6 m, as their ocean uses.
+  patch: 181,
   // Their DEPTH: the mean depth of the water in metres, used for the light the column scatters.
   depth: 1.6,
   // Their exposure, from the post pass (uExp = 0.63).

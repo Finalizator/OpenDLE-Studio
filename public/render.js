@@ -3,6 +3,7 @@ import { uniform, float, vec2, vec3, vec4, attribute, varying, materialColor, po
   reference, materialRotation, modelWorldMatrix, cameraViewMatrix, cameraWorldMatrix, rotate } from 'three/tsl';
 import { createBrowserRenderer } from './renderer-backend.js';
 import { compileGLSLEffect } from './shader-effects.js';
+import { buildWaterSpectrum } from '/shared/water-spectrum.js';
 import { createPostFxStack, toDisplaySpace } from './post-fx-pass.js';
 import { LUT_SIZE, lutTableBytes, postFxParamDefault, postFxSignature } from '/shared/post-fx.js';
 import { validateShaders } from '/shared/shaders.js';
@@ -325,6 +326,33 @@ export async function createPreview(canvas, project, state, { editor = false, on
     if (!shader) return null;
     return entityEffects.get([shader.id, shader.source, JSON.stringify(shader.uniforms ?? {})].join('\u0000')) || null;
   }
+  /**
+   * The surface spectrum every effect can sample as `iChannel1`: R height, GB slope, A slope variance.
+   *
+   * The water shaders are ports whose fine detail came from a texture — an FFT target, a ripple
+   * simulation — and a brush has no such pass to run. This is that texture: a tileable wave field
+   * generated once, in the layout those shaders read, so their own sampling code works unchanged.
+   * Built lazily because it costs a few milliseconds and most projects never draw water.
+   */
+  let waterSpectrum = null;
+  function waterSpectrumTexture() {
+    if (waterSpectrum) return waterSpectrum;
+    const { size, data } = buildWaterSpectrum();
+    const half = new Uint16Array(data.length);
+    for (let index = 0; index < data.length; index++) half[index] = THREE.DataUtils.toHalfFloat(data[index]);
+    const texture = new THREE.DataTexture(half, size, size, THREE.RGBAFormat, THREE.HalfFloatType);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+    waterSpectrum = texture;
+    return texture;
+  }
+  /** The extra texture channels an effect may sample besides the screen. */
+  const effectTextures = () => ({ iChannel1: waterSpectrumTexture() });
+
   function effectFor(id) {
     if (!id) return null;
     const shader = (project.shaders || []).find(entry => entry.id === id);
@@ -332,7 +360,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
     const key = [shader.id, shader.source, JSON.stringify(shader.uniforms ?? {})].join('\u0000');
     if (!entityEffects.has(key)) {
       let compiled = null;
-      try { compiled = compileGLSLEffect(shader, { screen: screenTarget.texture, resolution: effectResolution }); }
+      try { compiled = compileGLSLEffect(shader, { screen: screenTarget.texture, resolution: effectResolution, textures: effectTextures() }); }
       catch (error) { compiled = null; canvas.dataset.shaderError = `render.js: ${error.message}`; console.warn(`Shader ${shader.name} failed to compile:`, error); }
       entityEffects.set(key, compiled);
     }
@@ -475,7 +503,7 @@ export async function createPreview(canvas, project, state, { editor = false, on
     if (shaderErrors.length) throw new Error(shaderErrors.join('; '));
     const selectedShader = project.shaders?.find(shader => shader.id === project.environment.shaderId);
     if (selectedShader) {
-      try { shaderEffect = compileGLSLEffect(selectedShader, { screen: screenTarget.texture, resolution: effectResolution }); }
+      try { shaderEffect = compileGLSLEffect(selectedShader, { screen: screenTarget.texture, resolution: effectResolution, textures: effectTextures() }); }
       catch (error) { canvas.dataset.shaderError = error.message; throw new Error(`Shader ${selectedShader.name}: ${error.message}`); }
     }
     canvas.dataset.shaderId = selectedShader?.id || '';

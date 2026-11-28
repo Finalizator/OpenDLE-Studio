@@ -45,7 +45,11 @@ function localName(scope, name) {
  * and `usesScreen` tells the renderer to draw that background pass at all. `resolution`
  * is a uniform holding the viewport size, which `iResolution` (Shadertoy) reports.
  */
-export function compileGLSLEffect(shader, { screen = null, resolution = null } = {}) {
+export function compileGLSLEffect(shader, { screen = null, resolution = null, textures = null } = {}) {
+  // The channels an effect may sample, besides the screen. A water shader reads a real slope texture
+  // the way its source read an FFT one; anything that names a channel it was not given samples black.
+  const channels = { iChannel0: screen || null };
+  if (textures) for (const [channel, texture] of Object.entries(textures)) channels[channel] = texture || null;
   const defaults = shader.uniforms ?? {};
   const parsed = parseShaderSource(shader.source, defaults);
   const prelude = Object.keys(defaults).map(name => `uniform float ${name};`).join('\n');
@@ -90,9 +94,12 @@ export function compileGLSLEffect(shader, { screen = null, resolution = null } =
     if (node.isTernary) return TSL.select(expression(node.condition, scope, builtins, functions),
       expression(node.whenTrue, scope, builtins, functions), expression(node.whenFalse, scope, builtins, functions));
     if (node.isTexture) {
-      // Sampling the screen is how an effect refracts what is drawn behind the object.
-      if (node.channel !== 'iChannel0' || !builtins.screen) return TSL.vec4(0, 0, 0, 1);
-      return TSL.texture(builtins.screen, expression(node.coord, scope, builtins, functions));
+      // iChannel0 is the screen — how an effect refracts what is drawn behind the object. The rest
+      // are textures handed to the effect by whoever built it, sampled with the coordinates the
+      // shader asks for.
+      const sampled = builtins.channels?.[node.channel];
+      if (!sampled) return TSL.vec4(0, 0, 0, 1);
+      return TSL.texture(sampled, expression(node.coord, scope, builtins, functions));
     }
     if (node.isUserCall) {
       const target = functions(node.name);
@@ -205,7 +212,7 @@ export function compileGLSLEffect(shader, { screen = null, resolution = null } =
   const resolutionInput = resolution || TSL.uniform(new Float32Array([1280, 720]));
   const effect = TSL.Fn(([color, uv, time, screenUv]) => {
     const builtins = {
-      ...references, color, uv, time, screenUv, screen: screen,
+      ...references, color, uv, time, screenUv, screen: screen, channels,
       resolution: resolutionInput,
       resolution3: TSL.vec3(resolutionInput.x, resolutionInput.y, 1),
       mouse: TSL.vec4(0, 0, 0, 0),

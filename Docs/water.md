@@ -176,8 +176,8 @@ be opened in the **Environment** tab, dialled, replaced with your own, or remove
 | Shader | What it is | Dials |
 | --- | --- | --- |
 | **StupidWater** | The engine's own wind sea: swell, glitter, foam | `waveHeight`, `waveSpeed`, `ripple`, `chop`, `density`, `refraction`, `fresnel`, `foam`, `sun` |
-| **StillWaterPool** | Evan Wallace's webgl-water surface, ported | `waveHeight`, `waveSpeed`, `refraction`, `sun` |
-| **OceanClearwater** | Lumaris's Clearwater surface, ported | `waveHeight`, `waveSpeed`, `refraction`, `slopeVariance`, `depth`, `exposure`, `sun` |
+| **StillWaterPool** | Evan Wallace's webgl-water surface, ported | `waveHeight`, `waveSpeed`, `tileSize`, `refraction`, `sun` |
+| **OceanClearwater** | Lumaris's Clearwater surface, ported | `waveHeight`, `waveSpeed`, `patch`, `refraction`, `depth`, `exposure`, `sun` |
 
 **StillWaterPool** is the water surface of `Ancestors/StillWaterPool/shaders/water/fragment.glsl` —
 Evan Wallace's webgl-water (BSD-3-Clause), three.js port by **Martin Renou**. The code is theirs:
@@ -206,11 +206,22 @@ be initialised where they declare and assign later, one local per statement, par
 read-only), each marked in the source. Neither port borrows anything from the engine's own water
 shader — they are their sources, on this engine's inputs.
 
-The one thing that genuinely does not survive is `OceanClearwater`'s fine-scale detail: its slope is
-read from three scrolling FFT normal textures, and a brush has no textures to read. The slope used is
-the one the drawn surface actually has, so the fine ripples on that water come from the **mesh**
-(`waveHeight`), not from a spectrum. Their large-scale optics — sky, Fresnel from the index of
-refraction, absorption, glints, in-scatter, tonemap — are all present and all theirs.
+### The surface spectrum texture
+
+Both ports read their fine ripples from a texture rather than computing them per pixel — the pool's
+from a ripple-simulation target, the sea's from an FFT spectrum. Effects can now sample a texture of
+their own as **`iChannel1`**, and the engine binds one: `shared/water-spectrum.js` generates a
+tileable wave field whose channels are exactly what those shaders read — **R height, G and B slope in
+x and z, A slope variance** — from twenty waves with whole numbers of wavelengths across the tile, so
+it repeats without a seam. It is generated once, in the renderer, and shared by every effect.
+
+With that in place their sampling runs as written: the sea takes three scales of it through their
+cubic B-spline filter (`texBS`) and their rotation matrices, and reads the variance channel for the
+glint lobe; the pool samples it and runs their five "make water look peaked" re-samples.
+
+What is still a stand-in is stated per line in each source, marked `engine:`: the sea's touch-ripple
+target (nothing touches), and the room or floor their refracted ray hit (the level behind the surface
+here).
 
 ### Bringing a shader in from the web
 
