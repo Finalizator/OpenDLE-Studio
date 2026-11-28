@@ -252,14 +252,14 @@ test('the play view and the editor build a brush surface through one function', 
   assert.match(render, /const \{ material: surfaceMaterial, waves \} = brushSurface\(\{ shaderId, base: baseMaterial, water \}\)/);
   assert.match(render, /if \(screenMaterials\.has\(surfaceMaterial\)\) screenObjects\.add\(mesh\)/,
     'a shader that reads the screen gets the background pass drawn');
-  assert.match(render, /for \(const mesh of waterMeshes\) animateWaterSurface\(mesh\.geometry, waterTime\)/,
-    'the swells are moved once a frame, from one clock');
-  assert.match(render, /const waterTime = editor \? performance\.now\(\) \/ 1000/,
+  assert.match(render, /mesh\.onBeforeRender = \(\) => animateWaterSurface\(buffer, engineWaterTime\(\)\)/,
+    'the swells are moved as the surface is drawn, whoever asked for the frame');
+  assert.match(render, /const engineWaterTime = \(\) => \(editor \? performance\.now\(\) \/ 1000/,
     'the editor has no game clock, so it animates on its own');
   assert.match(render, /\n      brushSurface,/, 'and the editor can use it too');
   const scene = readFileSync(new URL('../public/scene-editor.js', import.meta.url), 'utf8');
   assert.match(scene, /view\.brushSurface\(\{ shaderId: surface\?\.shaderId \|\| '', base, water: surface\?\.water \|\| null \}\)/);
-  assert.match(scene, /view\.registerWater\?\.\(mesh\)/, 'the editor hands its water to the renderer to move');
+  assert.match(scene, /mesh\.onBeforeRender = \(\) => view\.animateWater\?\.\(mesh\)/, 'the editor hands its water to the renderer to move');
   assert.match(scene, /view\.trackScreen\?\.\(mesh, built\.material\)/, 'and the refraction gets its background pass');
 });
 

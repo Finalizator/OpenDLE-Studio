@@ -44,6 +44,16 @@ lid.
 a starting point, not a link: a level keeps the numbers it was authored with even if a later build
 tunes the preset.
 
+## Adjusting the look
+
+**Water look…** in the brush inspector (and under **Brush type → Water body**) opens a small window
+with a slider per dial: `waveHeight`, `waveSpeed`, `ripple`, `refraction`, `foam`, `sun`. It is
+**not modal** — the viewport stays live behind it, so a slider can be dragged while watching the
+water answer. A drag writes straight into the compiled shader's uniforms, which is why the surface
+follows the pointer without recompiling; letting go stores the number in the project as one undo
+step. `waveHeight` and `waveSpeed` move the mesh as well, so the surface itself rises and falls as
+you drag them.
+
 ## Swimming
 
 Doom's `waterlevel` decides what the body does, and it is the number the engine reports:

@@ -85,6 +85,46 @@ export async function run({ page }) {
   const shaderErrors = await errors();
   check('the water shader compiled', !shaderErrors.some(error => /shader|GLSL/i.test(String(error))), shaderErrors.slice(0, 3));
 
+  // ---------- The look window: every dial of the water shader, in a window that does not cover
+  // the viewport, and the surface answers it.
+  await page.evaluate(`(() => { const found = window.__opendle.ui.find('Water look…', { within: '#inspector' });
+    window.__opendle.ui.click(found); })()`);
+  await wait(350);
+  const dialogs = await page.evaluate('window.__opendle.ui.dialogs()');
+  check('the water look window opened', dialogs.some(dialog => dialog.title === 'Shader look'), dialogs);
+  const sliders = await page.evaluate('window.__opendle.ui.describe("dialog.shader-look input[type=range]")');
+  check('every dial the water shader has is a slider', sliders.count === 6,
+    sliders.items.map(item => item.name));
+  check('the sliders start at the project\'s own values', sliders.items.every(item => Number(item.value) >= 0),
+    sliders.items.map(item => `${item.name}=${item.value}`));
+  const spreadBefore = (await page.evaluate('window.__opendle.sceneStats()')).waterSpread;
+  await page.evaluate(`(() => {
+    const slider = [...document.querySelectorAll('dialog.shader-look input[type=range]')]
+      .find(item => item.getAttribute('aria-label') === 'waveHeight');
+    slider.value = '14';
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    slider.dispatchEvent(new Event('change', { bubbles: true }));
+    return slider.value;
+  })()`);
+  // Wait for a frame rather than for a fixed time: the surface is moved as it is drawn, and an
+  // automation window's frames are throttled, so a fixed sleep measures nothing but the clock.
+  const waitForSpread = async (over = -1) => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const spread = (await page.evaluate('window.__opendle.sceneStats()')).waterSpread;
+      if (spread > over) return spread;
+      await page.evaluate('window.__opendle.focus({ x: -48, y: 0, z: 96 }, { distance: 420, angle: 0.6 })');
+      await wait(200);
+    }
+    return (await page.evaluate('window.__opendle.sceneStats()')).waterSpread;
+  };
+  const spreadAfter = await waitForSpread(spreadBefore);
+  check('a taller swell moves the mesh, not only the shading', spreadAfter > spreadBefore + 1,
+    { before: spreadBefore, after: spreadAfter });
+  const stored = await page.evaluate(`[...document.querySelectorAll('dialog.shader-look input[type=range]')]
+    .find(item => item.getAttribute('aria-label') === 'waveHeight').value`);
+  check('and the number is stored in the project', stored === '14', stored);
+  await page.evaluate('document.querySelector("dialog.shader-look").close()');
+
   // ---------- Any brush can carry a shader, not only water.
   await page.evaluate('window.__opendle.view("2d")');
   await wait(200);

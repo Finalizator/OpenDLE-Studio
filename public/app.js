@@ -33,7 +33,7 @@ import {
 import { requestMouseLock } from './pointer-lock.js';
 import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog, openNodeEventSheet } from './event-sheet.js';
-import { shaderTemplate, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterShaderId } from '/shared/shaders.js';
+import { shaderTemplate, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterShaderId, waterUniforms } from '/shared/shaders.js';
 import { WATER_DEFAULTS, waterFromPreset, waterPresets, waterSettings } from '/shared/water.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { createProjectAutosave } from './project-autosave.js';
@@ -1623,6 +1623,7 @@ function renderBrushTypeControls(brush) {
       value => change({ current: { ...settings.current, [axis]: value } })));
   }
   holder.append(grid, make('h4', 'Current'), currentGrid);
+  holder.append(button('Water look…', () => openShaderLook(brush.shaderId || '')));
   holder.append(make('p', 'Buoyancy 1 holds a swimmer at the depth they stopped at; above 1 they rise, below 1 they sink. Objects float where the water they displace matches their weight.', 'muted'));
   return holder;
 }
@@ -1637,9 +1638,97 @@ function renderBrushShaderControls(brush) {
       const target = next.map.brushes.find(entry => entry.id === brush.id);
       if (id) target.shaderId = id; else delete target.shaderId;
     }, id ? 'Shader applied to the brush' : 'Brush shader removed'), 'Brush shader'));
+  holder.append(button(isWaterBrush(brush) ? 'Water look…' : 'Adjust the look…', () => openShaderLook(brush.shaderId || '')));
   holder.append(make('p', 'Every brush can run a shader — a water body already runs the engine\'s water effect. A face can run one of its own instead.', 'muted'));
   return holder;
 }
+
+/**
+ * The dials a shader exposes, in a window that does not block the view.
+ *
+ * A shader is a look, so it can only be judged on the thing it is drawing: a modal dialog would
+ * hide the water it is adjusting, and a field in the inspector would be read from a panel that
+ * covers the viewport on a narrow window. This is a *non-modal* window — the viewport stays live
+ * behind it, so a slider can be dragged while watching the surface answer.
+ *
+ * A drag writes straight into the compiled effect's uniforms, which is what makes the surface
+ * follow the pointer without a recompile, and letting go commits the number to the project once,
+ * as one undo step.
+ */
+let shaderLookDialog = null;
+const SHADER_LOOK_RANGES = {
+  // name: [min, max, step] — the shipped water dials first, then a sane default for anything else.
+  waveHeight: [0, 20, .25], waveSpeed: [0, 4, .05], ripple: [0, 2, .02],
+  refraction: [0, 1.5, .02], foam: [0, 2, .02], sun: [0, 2, .02],
+};
+function openShaderLook(preferredId = '') {
+  const shaders = (project.shaders || []).filter(shader => Object.keys(shader.uniforms || {}).length);
+  if (!shaders.length) { status('This project has no shader with adjustable dials yet', true); return; }
+  const chosen = shaders.find(shader => shader.id === preferredId) || shaders[0];
+  if (!shaderLookDialog) {
+    shaderLookDialog = make('dialog');
+    shaderLookDialog.className = 'shader-look';
+    shaderLookDialog.setAttribute('aria-label', 'Shader look');
+    // Non-modal: show(), never showModal(). The point of the window is to watch what it changes.
+    shaderLookDialog.addEventListener('close', () => { shaderLookDialog = null; });
+  }
+  shaderLookDialog.replaceChildren();
+  shaderLookDialog.append(make('h2', 'Shader look'));
+  let shaderId = chosen.id;
+  const body = make('div', 'shader-look-body');
+  const shaderField = select(shaders.map(shader => [shader.id, shader.name]), shaderId, id => {
+    shaderId = id; drawDials(); }, 'Shader');
+  const head = make('div', undefined, 'shader-look-head');
+  field(head, 'Shader', shaderField);
+  shaderLookDialog.append(head);
+  shaderLookDialog.append(body);
+  shaderLookDialog.append(make('p', 'Every dial is stored in the project. The water body reads its height and speed as well, so the surface moves as the numbers do.', 'muted'));
+
+  function drawDials() {
+    const shader = (project.shaders || []).find(item => item.id === shaderId);
+    body.replaceChildren();
+    if (!shader) return;
+    for (const [name, value] of Object.entries(shader.uniforms || {})) {
+      const [low, high, step] = SHADER_LOOK_RANGES[name] || [0, 10, .05];
+      const row = make('div', undefined, 'shader-look-row');
+      const readout = make('output', String(Math.round(value * 100) / 100));
+      const slider = make('input');
+      slider.type = 'range';
+      slider.min = String(low); slider.max = String(high); slider.step = String(step);
+      slider.value = String(value);
+      slider.setAttribute('aria-label', name);
+      slider.addEventListener('input', guard(() => {
+        const next = Number(slider.value);
+        readout.textContent = String(Math.round(next * 100) / 100);
+        // Live: the compiled effect's own uniform box. Nothing is cloned or recompiled, so the
+        // surface answers the slider in the same frame.
+        const live = sceneEditor?.shaderUniforms?.(shaderId)?.[name];
+        if (live) live.value = next;
+        else if (runtime?.shaderUniforms) runtime.shaderUniforms[name] = next;
+        mapNeedsDraw = true;
+      }));
+      const commit = () => {
+        const next = Number(slider.value);
+        edit(project_ => {
+          const target = (project_.shaders || []).find(item => item.id === shaderId);
+          if (target) { target.uniforms ||= {}; target.uniforms[name] = next; }
+        }, `${name} set to ${Math.round(next * 100) / 100}`);
+        drawDials();
+      };
+      slider.addEventListener('change', guard(commit));
+      row.append(make('label', name), slider, readout);
+      body.append(row);
+    }
+    body.append(button('Reset to the shipped water', () => edit(project_ => {
+      const shader = (project_.shaders || []).find(item => item.id === shaderId);
+      if (shader) shader.uniforms = { ...waterUniforms };
+    }, 'Water look reset')));
+  }
+  drawDials();
+  if (!shaderLookDialog.isConnected) document.body.append(shaderLookDialog);
+  if (!shaderLookDialog.open) shaderLookDialog.show();
+}
+
 
 /**
  * Make one brush the given kind, inside an edit that is already running.

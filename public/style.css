@@ -967,3 +967,22 @@ body.scene-dragging { cursor: grabbing; }
 .sky-empty { display: flex; flex-direction: column; gap: 6px; }
 .sky-empty h2 { font-size: 13px; margin: 0; }
 @media (max-width: 900px) { .sky-body { grid-template-columns: 1fr; } }
+
+/* The shader look window: non-modal, so the viewport it is adjusting stays live behind it. */
+dialog.shader-look {
+  position: fixed; right: 18px; bottom: 18px; left: auto; top: auto;
+  width: 320px; max-width: calc(100vw - 36px); max-height: 70vh; overflow: auto;
+  padding: 14px 16px; margin: 0;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .55);
+}
+dialog.shader-look h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
+dialog.shader-look .shader-look-head { margin-bottom: 10px; }
+dialog.shader-look .shader-look-row {
+  display: grid; grid-template-columns: 84px 1fr 42px; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+dialog.shader-look .shader-look-row label { font-size: 12px; color: var(--muted, #a9a9a9); }
+dialog.shader-look .shader-look-row output { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+dialog.shader-look input[type="range"] { width: 100%; accent-color: var(--accent); }
+dialog.shader-look p { margin: 10px 0 0; font-size: 11px; line-height: 1.45; }
+dialog.shader-look button { width: 100%; margin-top: 8px; }

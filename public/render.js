@@ -297,8 +297,16 @@ export async function createPreview(canvas, project, state, { editor = false, on
   // `iResolution` for Shadertoy effects: one uniform shared by every compiled effect.
   const effectResolution = uniform(new THREE.Vector2(1280, 720));
   const screenObjects = new Set();
-  /** Every mesh whose surface rides the water: the play view's and the editor's. */
-  const waterMeshes = new Set();
+  /**
+   * The clock a water surface rides.
+   *
+   * The game uses its own clock, which is the clock the shader on it uses, so the geometry and the
+   * shading are one wave and the surface cannot shear. The editor does not step the level, so it
+   * uses the window's — which is what makes water move while it is being authored instead of
+   * standing still like a picture of water.
+   */
+  const engineWaterTime = () => (editor ? performance.now() / 1000
+    : (Number.isFinite(state.time) ? state.time : 0));
   function needsScreenPass() {
     for (const object of screenObjects) if (object.visible) return true;
     return false;
@@ -306,6 +314,17 @@ export async function createPreview(canvas, project, state, { editor = false, on
   // Objects can carry their own shader; compile each one once and reuse it. The key holds
   // the source too, so editing a shader rebuilds its effect instead of drawing a stale one.
   const entityEffects = new Map();
+  /**
+   * The compiled effect a shader id is already drawing with, or null.
+   *
+   * Never compiles: a panel asks for this to turn a dial on a surface that is on screen, and a
+   * shader nothing is drawing has nothing to turn.
+   */
+  function effectOf(id) {
+    const shader = (project.shaders || []).find(entry => entry.id === id);
+    if (!shader) return null;
+    return entityEffects.get([shader.id, shader.source, JSON.stringify(shader.uniforms ?? {})].join('\u0000')) || null;
+  }
   function effectFor(id) {
     if (!id) return null;
     const shader = (project.shaders || []).find(entry => entry.id === id);
@@ -1236,7 +1255,11 @@ export async function createPreview(canvas, project, state, { editor = false, on
             // On the geometry: the animator is handed a geometry so it never has to know what
             // kind of object is drawing it.
             buffer.userData.waterSurface = waterSurfaceData(positions, uvs, [0, 1, 0], waves);
-            waterMeshes.add(mesh);
+            // Moved as it is drawn. A registry and a frame loop looked simpler and was wrong twice:
+            // the editor's meshes are rebuilt by a different module, and a renderer that draws when
+            // it is asked to — not on a loop of its own — never reached the loop's list. This way a
+            // surface is never drawn flat, whoever asked for the frame.
+            mesh.onBeforeRender = () => animateWaterSurface(buffer, engineWaterTime());
           }
           brushRoot.add(mesh);
         }
@@ -2487,12 +2510,6 @@ export async function createPreview(canvas, project, state, { editor = false, on
         }
       } else applyRenderSize(null);
       effectTime.value = Number.isFinite(state.time) ? state.time : 0;
-      // Water rides its swells on the same clock the shader on it uses, so the geometry and the
-      // shading are one wave and the surface cannot shear. The editor has no game clock — it does
-      // not step the level — so it uses the window's own, which is what makes the water move while
-      // it is being authored instead of standing still like a picture of water.
-      const waterTime = editor ? performance.now() / 1000 : effectTime.value;
-      for (const mesh of waterMeshes) animateWaterSurface(mesh.geometry, waterTime);
       effectEnabled.value = state.shaderEnabled === false ? 0 : 1;
       for (let index = 0; index < shaderUniformEntries.length; index++) {
         const entry = shaderUniformEntries[index];
@@ -3206,12 +3223,20 @@ export async function createPreview(canvas, project, state, { editor = false, on
        */
       trackScreen,
       /**
-       * Registers a water surface made outside this renderer — the editor's own brush meshes —
-       * so it moves with the same clock and the same swells as the game's.
+       * Moves a water surface made outside this renderer — the editor's own brush meshes — with the
+       * same clock and the same swells as the game's. It is wired to the mesh's own draw, so there
+       * is nothing to register or forget.
        */
-      registerWater(mesh) { if (mesh) waterMeshes.add(mesh); return mesh; },
-      /** Forgets those surfaces; the editor calls this before it rebuilds its brushes. */
-      clearWater() { waterMeshes.clear(); },
+      animateWater(mesh) {
+        const data = mesh?.geometry?.userData?.waterSurface;
+        animateWaterSurface(mesh.geometry, engineWaterTime());
+        return Boolean(data);
+      },
+      /**
+       * The compiled effect of one shader, or null: its `uniforms` are `{ value }` boxes, which is
+       * what lets a panel turn a dial and see the surface move without recompiling anything.
+       */
+      effectOf,
       /** Editor only: hide a ceiling once the camera is above it, so rooms open up. */
       ceilings(visible) { ceilingsHidden = !visible; },
       /** Every object drawn without artwork, one record each, for the placeholder log. */

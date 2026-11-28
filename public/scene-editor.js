@@ -604,6 +604,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    */
   function brushFingerprint() {
     let hash = 2166136261;
+    // A brush drawn through a shader looks different when the shader does, so the shaders are part
+    // of the fingerprint: without this, turning a dial in the water look window changed the project
+    // and left the surface exactly as it was until something else rebuilt the brushes.
+    for (const shader of project.shaders || []) {
+      for (let index = 0; index < String(shader.source || '').length; index++) { hash ^= String(shader.source).charCodeAt(index); hash = Math.imul(hash, 16777619); }
+      hash ^= JSON.stringify(shader.uniforms || {}).length; hash = Math.imul(hash, 16777619);
+      for (const value of Object.values(shader.uniforms || {})) { hash ^= Math.round((Number(value) || 0) * 1000); hash = Math.imul(hash, 16777619); }
+    }
     const feed = value => { hash ^= value | 0; hash = Math.imul(hash, 16777619); };
     const feedText = text => { for (let index = 0; index < text.length; index++) feed(text.charCodeAt(index)); feed(0); };
     const feedNumber = value => feed(Math.round((Number(value) || 0) * 64));
@@ -638,7 +646,6 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     // resolved by the triangle it hit: `selectionRanges` names the brush and face of each.
     const { batches, edges, surfaces } = batchBrushes(project.map.brushes);
     waterMeshes = [];
-    view.clearWater?.();
     for (const [key, merged] of batches) {
       const buffer = new THREE.BufferGeometry();
       brushResources.push(buffer);
@@ -665,8 +672,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // own uniforms, so the mesh and the shading cannot drift apart.
       if (surface?.water?.surface) {
         buffer.userData.waterSurface = waterSurfaceData(merged.positions, merged.uvs, [0, 1, 0], built.waves || undefined);
-        // The renderer owns the clock and the swells, so the editor's water is the game's water.
-        view.registerWater?.(mesh);
+        // Moved as it is drawn, on the renderer's own clock, so the editor's water is the game's
+        // water — and a frame the view is asked for draws it right, with no loop to rely on.
+        mesh.onBeforeRender = () => view.animateWater?.(mesh);
         waterMeshes.push(mesh);
       }
       brushGroup.add(mesh);
@@ -1809,7 +1817,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       const entry = brush && brushGeometry(brush).faces[selection.face];
       if (!entry || !hit?.point) { callbacks.select(selection); return; }
       callbacks.select(selection);
-      action = { kind: 'brushFace', selection: { ...selection }, normal: new THREE.Vector3(...entry.plane.normal),
+      // The plane's normal is in the map's axes (x, y, **z up**); the pointer is followed in the
+      // view's (x, y up, z). Handing the drag the map's normal made the dot product below compare
+      // two different frames: a face pointing along map +y moved only when the mouse went sideways,
+      // and an up-facing one only when it did not move at all. So the normal is turned into the
+      // view's axes here, once, and the drag works on every face the same way.
+      const normal = entry.plane.normal;
+      action = { kind: 'brushFace', selection: { ...selection },
+        normal: new THREE.Vector3(normal[0], normal[2], normal[1]),
         origin: hit.point.clone(), press: hit.point.clone(), x: event.clientX, y: event.clientY,
         distance: 0, baseline: project, moved: false };
       return;
@@ -2110,6 +2125,13 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       return true;
     },
     mode(value) { mode = value; select(callbacks.selection()); },
+    /**
+     * The live uniforms of the effect a shader is drawing with, or null.
+     *
+     * A panel turns these dials directly while it is being dragged — no recompile, no rebuild — and
+     * commits the number to the project when the slider is let go.
+     */
+    shaderUniforms(id) { return view.effectOf?.(id)?.uniforms || null; },
     /** Does the selection have a volume? Form and volume scaling only apply when it does. */
     hasVolume(value) { hasVolume = Boolean(value); select(callbacks.selection(), { rebuildHandles: false }); },
     /** Engine tweaks (render resolution, FOV, brightness) apply to the editor preview too. */

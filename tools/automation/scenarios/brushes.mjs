@@ -202,6 +202,29 @@ export async function run({ page }) {
     || arrowAfter.bounds.height !== arrowBefore.height,
     { before: arrowBefore, after: arrowAfter.bounds });
   check('the arrow drag left a closed volume', arrowAfter.faces === 6, arrowAfter.faces);
+  // ---------- Every arrow drags *its own* way, not only the ones whose axis happens to line up.
+  //
+  // The drag compared the pointer's travel in the view's axes with the face's normal in the map's,
+  // so a face pointing along map +Y only moved when the mouse went sideways and an up-facing one
+  // never moved at all. The top face is the one that caught it.
+  const top = (await brushes())[0].faceList.find(face => face.normal[2] > 0.9);
+  check('the brush has a top face to drag', Boolean(top), (await brushes())[0].faceList);
+  const topHeight = (await brushes())[0].bounds.height;
+  const topPoint = await screen(top.centroid[0] + top.normal[0] * 40,
+    top.centroid[1] + top.normal[1] * 40, top.centroid[2] + top.normal[2] * 40);
+  const abovePoint = await screen(top.centroid[0] + top.normal[0] * 80,
+    top.centroid[1] + top.normal[1] * 80, top.centroid[2] + top.normal[2] * 80);
+  const upX = abovePoint.x - topPoint.x, upY = abovePoint.y - topPoint.y;
+  const upLength = Math.hypot(upX, upY);
+  check('the top arrow is on screen', topPoint.visible !== false && upLength > 2, { topPoint, upLength });
+  await page.drag(topPoint, { x: topPoint.x + (upX / upLength) * 40, y: topPoint.y + (upY / upLength) * 40 }, { steps: 10 });
+  await wait(400);
+  const grown = (await brushes())[0];
+  check('dragging the top arrow lifts the top face', grown.bounds.height > topHeight,
+    { before: topHeight, after: grown.bounds.height });
+  check('and leaves the footprint alone', near(grown.bounds.width, arrowAfter.bounds.width, 1)
+    && near(grown.bounds.depth, arrowAfter.bounds.depth, 1), { before: arrowAfter.bounds, after: grown.bounds });
+
   // The face tool is only half of it: the corner tool draws its own handles.
   await page.evaluate('window.__opendle.brushMode("vertex")');
   await wait(250);

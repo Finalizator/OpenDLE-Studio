@@ -164,7 +164,11 @@ export function waterSurfaceData(positions, uvs, direction = [0, 1, 0], water = 
     base: Float32Array.from(positions),
     uvs: Float32Array.from(uvs),
     direction: [direction[0] || 0, direction[1] || 0, direction[2] || 0],
-    water: { height: Number(water?.height ?? WAVE_DEFAULTS.height), speed: Number(water?.speed ?? WAVE_DEFAULTS.speed) },
+    // Kept by reference, not copied: these are the shader's own live dials, so turning the height
+    // up in the water look window moves the mesh in the same frame the shading changes. A copy
+    // would be a snapshot of the settings at build time, and the two would drift the moment a
+    // mapper touched a slider.
+    water: water || WAVE_DEFAULTS,
   };
 }
 
