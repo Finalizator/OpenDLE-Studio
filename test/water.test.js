@@ -19,8 +19,7 @@ import {
   WATER_DEFAULTS, buoyancyFraction, currentAt, swimLevel, swimTarget, waterAt, waterFromPreset,
   waterPresets, waterSettings, waterSpeedScale, waterVolumes,
 } from '../shared/water.js';
-import { WATER_SHADER_NAME, WATER_SHADER_REVISION, WATER_VARIANTS, assignWaterVariant, refreshShippedShaders, shadertoyFromDownload, shippedVariant, waterShaderId, waterShaderTemplate, waterUniforms } from '../shared/shaders.js';
-import { SPECTRUM_WAVES, buildWaterSpectrum, spectrumAt } from '../shared/water-spectrum.js';
+import { WATER_SHADER_NAME, WATER_SHADER_REVISION, refreshShippedShaders, shadertoyFromDownload, shippedWaterShader, waterShaderId, waterShaderTemplate, waterUniforms } from '../shared/shaders.js';
 import { WATER_SWELLS, WAVE_DEFAULTS, WAVE_GRAVITY, animateWaterSurface, buildWaterSurface, swellRate, waterHeight, waterSlope, waterSurfaceData } from '../shared/water-surface.js';
 import { readFileSync } from 'node:fs';
 import { parseShaderSource } from '../shared/shader-language.js';
@@ -330,86 +329,23 @@ test('the shader is told the real surface and the real camera, not a guess from 
   assert.deepEqual(unused.sort(), ['waveHeight', 'waveSpeed'], 'every other dial drives the shading');
 });
 
-test('there are three water looks, and each one is a real effect', () => {
-  // One look was never going to be right for a swimming pool, a still indoor pool and an open sea.
-  // Each ships as an ordinary shader in the project, so it can be opened, dialled, replaced or removed.
-  assert.deepEqual(WATER_VARIANTS.map(variant => variant.name), ['StupidWater', 'StillWaterPool', 'OceanClearwater']);
-  assert.equal(new Set(WATER_VARIANTS.map(variant => variant.id)).size, 3);
-  for (const variant of WATER_VARIANTS) {
-    assert.ok(/mainImage\s*\(/.test(variant.source), `${variant.name} has an entry point`);
-    // Every dial except the two the *mesh* reads has to be read by the shader, or it is a slider
-    // that does nothing.
-    const unread = Object.keys(variant.uniforms).filter(name => !new RegExp(`\\b${name}\\b`).test(variant.source));
-    assert.deepEqual(unread.sort(), ['waveHeight', 'waveSpeed'], `${variant.name} reads its dials`);
-    // And the wave dials are in every look, because every look's surface has to move.
-    assert.ok(Object.hasOwn(variant.uniforms, 'waveHeight') && Object.hasOwn(variant.uniforms, 'waveSpeed'));
-    // The two ports read their fine detail from the spectrum texture, as their sources did.
-    if (variant.id !== 'stupid') assert.ok(variant.source.includes('iChannel1'), `${variant.name} samples the spectrum`);
-  }
 
-  const project = createProject();
-  const stupid = waterShaderId(project);
-  const pool = waterShaderId(project, 'pool');
-  const sea = waterShaderId(project, 'clearwater');
-  assert.equal(new Set([stupid, pool, sea]).size, 3, 'three separate effects in the project');
-  assert.equal(waterShaderId(project, 'pool'), pool, 'asking twice does not add a second copy');
-  assert.deepEqual(project.shaders.map(shader => shader.name), ['StupidWater', 'StillWaterPool', 'OceanClearwater']);
-  assert.equal(shippedVariant(project.shaders.find(shader => shader.id === pool)), 'pool');
 
-  // A water brush runs one of them, and switching look points it at that effect rather than
-  // replacing the pad it was standing on.
-  const brush = createBoxBrush(project, { x: 0, y: 0, z: 0, width: 64, depth: 64, height: 64 });
-  setBrushKind(project, brush.id, 'water');
-  assert.equal(assignWaterVariant(project, brush, 'clearwater'), sea);
-  assert.equal(brush.shaderId, sea);
-  assert.equal(assignWaterVariant(project, brush, 'typo'), null, 'a look that does not ship is refused');
-  assert.equal(brush.shaderId, sea, 'and the brush keeps the one it had');
-});
 
-test('a project saved with the old water effect is brought to the named one', () => {
+test('a project saved with the old water effect is brought forward and renamed', () => {
   const project = createProject();
   project.shaders = [{ id: 'water', name: 'Water (Shadertoy)', language: 'glsl', builtin: 'water', revision: 1,
     source: 'void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }', uniforms: { waveHeight: 12, ripple: .3 } }];
-  assert.equal(shippedVariant(project.shaders[0]), 'stupid', 'the unnamed first effect is StupidWater');
+  assert.equal(shippedWaterShader(project.shaders[0]), true, 'the unnamed first effect is the shipped one');
   assert.equal(refreshShippedShaders(project), 1);
   const [shader] = project.shaders;
-  assert.equal(shader.name, 'StupidWater');
-  assert.equal(shader.variant, 'stupid');
+  assert.equal(shader.name, WATER_SHADER_NAME);
   assert.equal(shader.revision, WATER_SHADER_REVISION);
   assert.equal(shader.source, waterShaderTemplate);
   assert.equal(shader.uniforms.waveHeight, 12, 'a dial the mapper set is theirs');
   assert.equal(shader.uniforms.ripple, .3);
   assert.ok(Object.hasOwn(shader.uniforms, 'density'), 'a dial the build added starts at its default');
   validateProject(project);
-});
-
-test('the spectrum texture is a tileable height field with slopes, as the ports read it', () => {
-  // Both ports read their fine detail from a texture: R height, GB slope, A slope variance. That is
-  // what an FFT target and a ripple simulation held; this is the same data, generated once.
-  assert.ok(SPECTRUM_WAVES.length >= 12, 'enough waves that no two crests line up into a ridge');
-  for (const wave of SPECTRUM_WAVES) {
-    assert.ok(Number.isInteger(wave.kx) && Number.isInteger(wave.kz),
-      `whole wavelengths across the tile (${wave.kx}, ${wave.kz}) — anything else is a seam`);
-  }
-  // Seamless: the field at the right edge is the field at the left edge, to the bit.
-  for (const v of [0, .13, .5, .77]) {
-    const left = spectrumAt(0, v), right = spectrumAt(1, v);
-    for (let channel = 0; channel < 3; channel++) assert.ok(Math.abs(left[channel] - right[channel]) < 1e-9);
-    const top = spectrumAt(v, 0), bottom = spectrumAt(v, 1);
-    for (let channel = 0; channel < 3; channel++) assert.ok(Math.abs(top[channel] - bottom[channel]) < 1e-9);
-  }
-  const { size, data } = buildWaterSpectrum(32);
-  assert.equal(data.length, size * size * 4);
-  let tallest = 0, steepest = 0, variance = 0;
-  for (let at = 0; at < data.length; at += 4) {
-    tallest = Math.max(tallest, Math.abs(data[at]));
-    steepest = Math.max(steepest, Math.abs(data[at + 1]), Math.abs(data[at + 2]));
-    variance += data[at + 3];
-  }
-  assert.ok(tallest > .1 && tallest <= .5001, `height in ±0.5, got ${tallest}`);
-  assert.ok(steepest > .05 && steepest <= .3501, `slope as a gradient, got ${steepest}`);
-  const mean = variance / (data.length / 4);
-  assert.ok(Math.abs(mean - .004) < .0005, `mean slope variance 0.004, got ${mean}`);
 });
 
 test('the play view and the editor build a brush surface through one function', () => {

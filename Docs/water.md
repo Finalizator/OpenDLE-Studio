@@ -134,7 +134,7 @@ brush it *is* the look of the surface: the effect writes the colour it wants, so
 only the frame for the effect.
 
 A water body is given the engine's **StupidWater** shader the moment it becomes water, so it is never
-a flat blue slab; **Water shader** in the inspector switches it to one of the ports below. The effect ships with the engine and is stored in the project, so it can be
+a flat blue slab. The effect ships with the engine and is stored in the project, so it can be
 edited, replaced or removed like any other shader in the **Environment** tab. Its uniforms are the
 dials — and `waveHeight` and `waveSpeed` also move the **mesh**, because the geometry reads them
 from the compiled shader rather than from a second set of numbers:
@@ -166,62 +166,6 @@ takes out of what it looks through, the sky it reflects, the sun it catches, and
 breaks. There is no land, shoreline or backdrop in it, because the level is what is behind the
 surface — the brush is drawn where the mapper put it, over whatever is under it. It is written the
 way a Shadertoy effect is, so a shader from the web pastes into the same shape.
-
-### The three water shaders
-
-A water body runs one of three shaders that ship with the engine. **Water shader** in the inspector's
-water block switches between them; each is an ordinary shader in the project, so the one you pick can
-be opened in the **Environment** tab, dialled, replaced with your own, or removed.
-
-| Shader | What it is | Dials |
-| --- | --- | --- |
-| **StupidWater** | The engine's own wind sea: swell, glitter, foam | `waveHeight`, `waveSpeed`, `ripple`, `chop`, `density`, `refraction`, `fresnel`, `foam`, `sun` |
-| **StillWaterPool** | Evan Wallace's webgl-water surface, ported | `waveHeight`, `waveSpeed`, `tileSize`, `refraction`, `sun` |
-| **OceanClearwater** | Lumaris's Clearwater surface, ported | `waveHeight`, `waveSpeed`, `patch`, `refraction`, `depth`, `exposure`, `sun` |
-
-**StillWaterPool** is the water surface of `Ancestors/StillWaterPool/shaders/water/fragment.glsl` —
-Evan Wallace's webgl-water (BSD-3-Clause), three.js port by **Martin Renou**. The code is theirs:
-their constants (`IOR_AIR`, `IOR_WATER`, `abovewaterColor`, `underwaterColor`), their
-`getSurfaceRayColor`, their two branches, their `mix(0.25, 1.0, pow(…)` Fresnel curve, and the line
-that adds their sun speckle after the sky sample. Three things their renderer supplied cannot be
-supplied to a brush, and each is marked `engine:` in the source:
-
-- the ripple-simulation texture — the surface this brush draws already carries the wave field's exact
-  slope, so `info` is built from it (their five "make water look peaked" re-samples have nothing to
-  refine);
-- `textureCube(sky, ray)` — there is no cube map in a surface effect, so the sky is evaluated from
-  the reflected direction;
-- `getWallColor`/`intersectCube` — their tiled pool room, which is the level behind the surface here.
-
-**OceanClearwater** is the water surface of `Ancestors/OceanClearwater/index.html` by **Lumaris**
-(MIT). Copied: `sky()` (without the distant headland, which is land), `fresnel()` computed from the
-index of refraction and both polarisations, `SIG_A`/`SIG_S`/`SIG_T`, `SUN`, the Beckmann glints with
-their slope-variance widening, `Tv`/`Lin` for the light scattered out of the column, the haze, and
-the ACES curve their post pass ends the frame with. Their ocean also ray-marches a pebble floor with
-caustics to find the bottom — that is not water, so the level behind the surface takes its place
-(`engine:`).
-
-Both ports keep their own arithmetic; the only edits are the ones this language forces (a local must
-be initialised where they declare and assign later, one local per statement, parameters are
-read-only), each marked in the source. Neither port borrows anything from the engine's own water
-shader — they are their sources, on this engine's inputs.
-
-### The surface spectrum texture
-
-Both ports read their fine ripples from a texture rather than computing them per pixel — the pool's
-from a ripple-simulation target, the sea's from an FFT spectrum. Effects can now sample a texture of
-their own as **`iChannel1`**, and the engine binds one: `shared/water-spectrum.js` generates a
-tileable wave field whose channels are exactly what those shaders read — **R height, G and B slope in
-x and z, A slope variance** — from twenty waves with whole numbers of wavelengths across the tile, so
-it repeats without a seam. It is generated once, in the renderer, and shared by every effect.
-
-With that in place their sampling runs as written: the sea takes three scales of it through their
-cubic B-spline filter (`texBS`) and their rotation matrices, and reads the variance channel for the
-glint lobe; the pool samples it and runs their five "make water look peaked" re-samples.
-
-What is still a stand-in is stated per line in each source, marked `engine:`: the sea's touch-ripple
-target (nothing touches), and the room or floor their refracted ray hit (the level behind the surface
-here).
 
 ### Bringing a shader in from the web
 

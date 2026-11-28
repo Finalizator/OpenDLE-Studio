@@ -279,34 +279,29 @@ export function shadertoyFromDownload(text, fileName = 'Shadertoy shader') {
  * the project — editable, replaceable, removable — because the look of a pool is the mapper's, and a
  * preset they cannot open is a preset they cannot learn from.
  */
-export function waterShaderId(project, variantId = DEFAULT_WATER_VARIANT) {
+export function waterShaderId(project) {
   project.shaders ||= [];
-  const variant = waterVariant(variantId) || waterVariant(DEFAULT_WATER_VARIANT);
-  const existing = project.shaders.find(shader => shippedVariant(shader) === variant.id);
+  const existing = project.shaders.find(shader => shippedWaterShader(shader));
   // Refreshed rather than reused, exactly like the curtain: the shader is stored in the
   // project, so a preset improved here would otherwise never reach a level made before it.
   if (existing) { refreshWaterShader(existing); return existing.id; }
   const used = projectIds(project);
-  let id = variant.id === DEFAULT_WATER_VARIANT ? 'water' : `water_${variant.id}`, suffix = 1;
-  while (used.has(id)) id = `water_${variant.id}_${suffix++}`;
-  project.shaders.push({ id, name: variant.name, language: 'glsl', source: variant.source,
-    uniforms: { ...variant.uniforms }, builtin: 'water', variant: variant.id,
-    revision: WATER_SHADER_REVISION });
+  let id = 'water', suffix = 1;
+  while (used.has(id)) id = `water_${suffix++}`;
+  project.shaders.push({ id, name: WATER_SHADER_NAME, language: 'glsl', source: waterShaderTemplate,
+    uniforms: { ...waterUniforms }, builtin: 'water', revision: WATER_SHADER_REVISION });
   return id;
 }
 
 /**
- * Which shipped look a project shader is, or null for a shader the mapper wrote.
+ * Whether a project shader is the engine's shipped water effect.
  *
- * Matched by marker, by variant name, and — for the oldest projects, which have no marker at all —
- * by the name the first water effect shipped under.
+ * Matched by marker, by name, and — for the oldest projects, which have no marker at all — by the
+ * name the effect first shipped under.
  */
-export function shippedVariant(shader) {
-  if (shader?.variant && waterVariant(shader.variant)) return shader.variant;
-  const byName = WATER_VARIANTS.find(variant => variant.name === shader?.name);
-  if (byName) return byName.id;
-  if (shader?.builtin === 'water' || shader?.name === LEGACY_WATER_SHADER_NAME) return DEFAULT_WATER_VARIANT;
-  return null;
+export function shippedWaterShader(shader) {
+  return shader?.builtin === 'water' || shader?.name === WATER_SHADER_NAME
+    || shader?.name === LEGACY_WATER_SHADER_NAME;
 }
 
 /**
@@ -320,22 +315,20 @@ export function shippedVariant(shader) {
 const OLD_WATER_DEFAULTS = Object.freeze({ refraction: .5, waveHeight: 8 });
 
 function refreshWaterShader(shader) {
-  const id = shippedVariant(shader);
-  if (!id) return false;
-  const variant = waterVariant(id);
-  if (shader.revision === WATER_SHADER_REVISION && shader.variant === id) return false;
+  if (!shippedWaterShader(shader)) return false;
+  if (shader.revision === WATER_SHADER_REVISION) return false;
   const kept = {};
   for (const [name, value] of Object.entries(shader.uniforms || {})) {
-    if (!Object.hasOwn(variant.uniforms, name)) continue;
+    if (!Object.hasOwn(waterUniforms, name)) continue;
     // A value the mapper never touched is the old default, and the default changing meaning is
     // exactly the sort of fix that has to reach them; a value they dialled in is theirs.
-    kept[name] = OLD_WATER_DEFAULTS[name] === value ? variant.uniforms[name] : value;
+    kept[name] = OLD_WATER_DEFAULTS[name] === value ? waterUniforms[name] : value;
   }
-  shader.source = variant.source;
-  shader.uniforms = { ...variant.uniforms, ...kept };
-  shader.name = variant.name;
+  shader.source = waterShaderTemplate;
+  shader.uniforms = { ...waterUniforms, ...kept };
+  shader.name = WATER_SHADER_NAME;
   shader.builtin = 'water';
-  shader.variant = id;
+  delete shader.variant;
   shader.revision = WATER_SHADER_REVISION;
   return true;
 }
@@ -389,325 +382,7 @@ export const waterUniforms = Object.freeze({
 /** What the first water effect shipped under, before the shipped effects had names of their own. */
 const LEGACY_WATER_SHADER_NAME = 'Water (Shadertoy)';
 
-export const STILL_POOL_SHADER_NAME = 'StillWaterPool';
-/**
- * **Evan Wallace's webgl-water**, BSD-3-Clause, as ported to three.js by Martin Renou — the water
- * surface of `Ancestors/StillWaterPool/shaders/water/fragment.glsl`, copied rather than rewritten.
- * Their constants, their functions, their two branches, their Fresnel curve.
- *
- * What a brush cannot hand a shader is their renderer's scene, so exactly three things are
- * substituted and every one of them is marked `engine:` in the source: the ripple-simulation texture
- * (the wave field this brush is drawn with supplies the same slope), the cubemap sky (evaluated from
- * the reflected direction instead), and `getWallColor`/`intersectCube` — their tiled pool room (the
- * level behind the surface stands in).
- */
-export const stillPoolShaderTemplate = `// ============================================================================
-// StillWaterPool
-//
-// Water surface from Ancestors/StillWaterPool — Evan Wallace's webgl-water
-// (BSD-3-Clause), three.js port by Martin Renou. The code below is theirs:
-// the same constants, the same functions, the same two branches and the same
-// Fresnel curve. Where a brush cannot supply what their renderer handed the
-// shader, the line is marked 'engine:' and nothing else was touched.
-// ============================================================================
-vec3 skyAbove(vec3 ray) {
-  // engine: their 'textureCube(sky, ray)'. A surface effect here is handed no cube map, so the sky
-  // is evaluated from the reflected direction instead of sampled from their photograph of one.
-  float up = clamp(ray.y, 0.0, 1.0);
-  vec3 horizon = vec3(0.52, 0.56, 0.60);
-  vec3 zenith = vec3(0.16, 0.24, 0.40);
-  return mix(horizon, zenith, up * up);
-}
 
-vec3 getSurfaceRayColor(vec3 origin, vec3 ray, vec3 waterColor, vec3 light) {
-  // engine: theirs is 'vec3 color;', assigned in the branches. This language needs a local to start
-  // with a value, so it starts black; nothing else about the function changes.
-  vec3 color = vec3(0.0);
-  if (ray.y < 0.0) {
-    // engine: their 'getWallColor(origin + ray * t.y)' — the tiled pool wall. Here the level behind
-    // the surface is that wall, and the screen already holds it.
-    vec2 offset = clamp(ray.xz, vec2(-1.0), vec2(1.0)) * 0.05 * refraction;
-    color = texture(iChannel0, clamp(screenUv + offset, vec2(0.001), vec2(0.999))).rgb;
-  } else {
-    color = skyAbove(ray) * sun;
-    color += 0.01 * vec3(pow(max(0.0, dot(light, ray)), 20.0)) * vec3(10.0, 8.0, 6.0);
-  }
-  if (ray.y < 0.0) color *= waterColor;
-  return color;
-}
-
-void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-  float IOR_AIR = 1.0;
-  float IOR_WATER = 1.333;
-  vec3 abovewaterColor = vec3(0.25, 1.0, 1.25);
-  vec3 underwaterColor = vec3(0.4, 0.9, 1.0);
-  // Their light, exactly as index.js hands it over (already normalised).
-  vec3 light = vec3(0.7559289460184544, 0.7559289460184544, -0.3779644730092272);
-
-  // Their ripple texture, sampled and refined exactly as written: '.r' is the height and '.ba' the
-  // slope, which is the layout iChannel1 holds. engine: their coord addresses a two-unit pool, so
-  // the tile size is a dial here; the five "make water look peaked" re-samples are untouched.
-  vec2 coord = worldPosition.xz / tileSize + 0.5;
-  vec4 info = texture(iChannel1, coord);
-  for (int i = 0; i < 5; i++) {
-    coord += info.ba * 0.005;
-    info = texture(iChannel1, coord);
-  }
-
-  vec3 normal = vec3(info.b, sqrt(1.0 - dot(info.ba, info.ba)), info.a);
-  vec3 incomingRay = normalize(worldPosition - eyePosition);
-
-  // engine: their 'underwater' was a uniform because their mesh is drawn twice, once per side. A
-  // brush face is one surface, so which side is being looked at is read from the normal.
-  if (dot(normal, -incomingRay) < 0.0) {
-    normal = -normal;
-    vec3 reflectedRay = reflect(incomingRay, normal);
-    vec3 refractedRay = refract(incomingRay, normal, IOR_WATER / IOR_AIR);
-    float fresnel = mix(0.5, 1.0, pow(1.0 - dot(normal, -incomingRay), 3.0));
-
-    vec3 reflectedColor = getSurfaceRayColor(worldPosition, reflectedRay, underwaterColor, light);
-    vec3 refractedColor = getSurfaceRayColor(worldPosition, refractedRay, vec3(1.0), light) * vec3(0.8, 1.0, 1.1);
-
-    fragColor = vec4(mix(reflectedColor, refractedColor, (1.0 - fresnel) * length(refractedRay)), 1.0);
-  } else {
-    vec3 reflectedRay = reflect(incomingRay, normal);
-    vec3 refractedRay = refract(incomingRay, normal, IOR_AIR / IOR_WATER);
-    float fresnel = mix(0.25, 1.0, pow(1.0 - dot(normal, -incomingRay), 3.0));
-
-    vec3 reflectedColor = getSurfaceRayColor(worldPosition, reflectedRay, abovewaterColor, light);
-    vec3 refractedColor = getSurfaceRayColor(worldPosition, refractedRay, abovewaterColor, light);
-
-    fragColor = vec4(mix(refractedColor, reflectedColor, fresnel), 1.0);
-  }
-}
-`;
-
-export const CLEARWATER_SHADER_NAME = 'OceanClearwater';
-export const clearwaterShaderTemplate = `// ============================================================================
-// OceanClearwater
-//
-// Water surface from Ancestors/OceanClearwater — the Clearwater demo by
-// Lumaris (MIT). Their functions and constants are copied: sky(), fresnel(),
-// the absorption and scattering coefficients, the Beckmann glints, the
-// in-scattered light and the tonemap their post pass ends with. Their ocean
-// also ray-marches a pebble floor with caustics; that is the bottom, not the
-// water, so the level behind the surface takes its place — every such line is
-// marked 'engine:'.
-// ============================================================================
-vec3 waterSky(vec3 d, vec3 uSun) {
-  float e = d.y;
-  float mu = dot(d, uSun);
-  // engine: their 'vec3 zen = ..., hor = ...;' is two statements here, one local each.
-  vec3 zen = vec3(0.11, 0.27, 0.62);
-  vec3 hor = vec3(0.66, 0.78, 0.90);
-  vec3 c = mix(hor, zen, pow(clamp(e, 0.0, 1.0), 0.42));
-  c += vec3(1.0, 0.86, 0.66) * (0.22 * pow(max(mu, 0.0), 6.0) + 0.30 * pow(max(mu, 0.0), 64.0) + 1.6 * pow(max(mu, 0.0), 2400.0));
-  // engine: their distant headland — pine over limestone, with its haze — is land, and this is water
-  // only, so it is not drawn.
-  return c;
-}
-
-float waterFresnel(float incident, float n) {
-  // engine: their parameter 'ci' is clamped in place; parameters are read-only in this language, so
-  // the clamp happens on the way in. The arithmetic is untouched.
-  float ci = clamp(incident, 0.0, 1.0);
-  float st2 = (1.0 - ci * ci) / (n * n);
-  if (st2 >= 1.0) return 1.0;
-  float ct = sqrt(1.0 - st2);
-  // engine: one local per statement.
-  float rs = (ci - n * ct) / (ci + n * ct);
-  float rp = (n * ci - ct) / (n * ci + ct);
-  return 0.5 * (rs * rs + rp * rp);
-}
-
-/** Their cubic B-spline filtering: four bilinear taps, so the slopes the glints are built from are
-    smooth. engine: theirs takes the texture as a parameter, and this language has no sampler
-    parameters or textureSize(), so it samples iChannel1 at its fixed 256 texels. The taps, weights
-    and the reason for them are theirs. */
-vec4 waterTexBS(vec2 uv) {
-  vec2 ts = vec2(256.0, 256.0);
-  vec2 p = uv * ts - 0.5;
-  vec2 f = fract(p);
-  p = floor(p);
-  vec2 f2 = f * f;
-  vec2 f3 = f2 * f;
-  vec2 w0 = (-f3 + 3.0 * f2 - 3.0 * f + 1.0) / 6.0;
-  vec2 w1 = (3.0 * f3 - 6.0 * f2 + 4.0) / 6.0;
-  vec2 w2 = (-3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0) / 6.0;
-  vec2 w3 = f3 / 6.0;
-  vec2 g0 = w0 + w1;
-  vec2 g1 = w2 + w3;
-  vec2 h0 = (w1 / g0 - 0.5 + p) / ts;
-  vec2 h1 = (w3 / g1 + 1.5 + p) / ts;
-  return (texture(iChannel1, vec2(h0.x, h0.y)) * g0.x + texture(iChannel1, vec2(h1.x, h0.y)) * g1.x) * g0.y
-    + (texture(iChannel1, vec2(h0.x, h1.y)) * g0.x + texture(iChannel1, vec2(h1.x, h1.y)) * g1.x) * g1.y;
-}
-
-/** Their post pass ends the frame with ACES; this renderer has no such pass, so the water ends here
-    the way their pipeline ends it. Bloom, glare, vignette and grain are post, and are not drawn. */
-vec3 waterTonemap(vec3 x) {
-  float a = 2.51;
-  float b = 0.03;
-  float c = 2.43;
-  float d = 0.59;
-  float e = 0.14;
-  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
-
-void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-  float PI = 3.14159265359;
-  float IOR = 1.3335;
-  vec3 SIG_A = vec3(0.40, 0.074, 0.088);
-  vec3 SIG_S = vec3(0.028, 0.052, 0.068);
-  vec3 SIG_T = SIG_A + SIG_S;
-  vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0 * sun;
-  // Their sun: elevation 31 degrees, azimuth 6 degrees (index.html, SUN_EL/SUN_AZ).
-  vec3 uSun = vec3(0.0896, 0.5150, -0.8525);
-  float dist = length(eyePosition - worldPosition);
-
-  // ---- their slope: three scales of the surface spectrum, read from the texture ----
-  // engine: their uSurf is an FFT target and uRip a touch-ripple target. iChannel1 is a tileable
-  // slope texture with the same layout (R height, GB slope, A variance), so their sampling below is
-  // theirs; the R.yz term from the touch ripples is the only one dropped, because nothing touches.
-  mat2 M = mat2(0.8, -0.6, 0.6, 0.8);
-  // engine: transpose(M) written out — this language has no transpose(), and M is orthonormal.
-  mat2 MT = mat2(0.8, 0.6, -0.6, 0.8);
-  float SC = 0.41;
-  float WB = 0.10;
-  vec3 P = worldPosition;
-  vec4 A = waterTexBS(P.xz / patch);
-  vec4 B = waterTexBS((M * P.xz) / (patch * SC) + 0.37);
-  vec2 slope = A.yz + WB * (MT * B.yz);
-  mat2 M2 = mat2(0.28, 0.96, -0.96, 0.28);
-  mat2 M2T = mat2(0.28, -0.96, 0.96, 0.28);
-  vec4 Cm = texture(iChannel1, (M2 * P.xz) / (patch * 0.13) + 0.71);
-  // engine: their 't' is metres along the ray; ours is map units, so it is converted.
-  float rayLength = dist / 39.37;
-  slope += 0.13 * exp(-rayLength * 0.18) * (M2T * Cm.yz);
-  // engine: 'var' is reserved here, so their local is named for it.
-  float slopeVar = max(A.w - dot(A.yz, A.yz), 0.0) + WB * WB * max(B.w - dot(B.yz, B.yz), 0.0);
-  vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
-
-  vec3 wd = normalize(worldPosition - eyePosition);
-  vec3 v = -wd;
-  float nv = dot(n, v);
-  if (nv < 0.02) { n = normalize(n + v * (0.02 - nv)); nv = dot(n, v); }
-  float F = waterFresnel(nv, IOR);
-
-  // ---- reflection ----
-  vec3 bounce = reflect(wd, n);
-  vec3 rr = vec3(bounce.x, abs(bounce.y), bounce.z);
-  vec3 refl = waterSky(rr, uSun) * 1.25;
-
-  // sun glints: GGX with slope-variance widening (LEAN-style)
-  float a2 = 0.00012 + 1.2 * slopeVar;
-  vec3 h = normalize(v + uSun);
-  // engine: one local per statement.
-  float nh = max(dot(n, h), 0.0);
-  float nl = max(dot(n, uSun), 0.0);
-  float c2 = max(nh * nh, 1e-4);
-  float tan2 = (1.0 - c2) / c2;
-  float D = exp(-tan2 / a2) / (PI * a2 * c2 * c2);
-  float Vis = 0.5 / (nl * sqrt(nv * nv * (1.0 - a2) + a2) + nv * sqrt(nl * nl * (1.0 - a2) + a2) + 1e-5);
-  float Fh = waterFresnel(max(dot(h, v), 0.0), IOR);
-  vec3 spec = SUN * min(D * Vis * Fh * nl, 12000.0);
-
-  // ---- refraction / the column of water between the eye and the bottom ----
-  vec3 tr = refract(wd, n, 1.0 / IOR);
-  // engine: their 's' is the distance down the refracted ray to a ray-marched pebble floor. The floor
-  // here is the level behind the surface and its distance is not known to a surface effect, so the
-  // column is the depth dial over the ray's own vertical rate.
-  float depthHere = depth;
-  float s = max(depthHere / max(-tr.y, 0.02), 0.0);
-
-  // engine: their floor is pebbles, cobbles and sand lit by caustics. Water only: what the surface
-  // looks through is the level behind it.
-  // The bend is screen space, so it is bounded in screen space: their refracted ray travelled
-  // metres into a real floor, while a sample can only move so far across the frame before it is
-  // reading something that is not behind the water at all.
-  vec2 refractOffset = clamp(-tr.xz, vec2(-1.0), vec2(1.0)) * 0.05 * refraction;
-  vec3 Lfloor = texture(iChannel0, clamp(screenUv + refractOffset, vec2(0.001), vec2(0.999))).rgb;
-
-  vec3 sunT = refract(-uSun, vec3(0.0, 1.0, 0.0), 1.0 / IOR);
-  float Ts = 1.0 - waterFresnel(uSun.y, IOR);
-  vec3 Tv = exp(-SIG_T * s);
-  float cosS = dot(sunT, -tr);
-  float g = 0.8;
-  float ph = (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * cosS, 1.5));
-  vec3 skyIrr = vec3(0.62, 0.70, 0.78) * PI * 0.22;
-  vec3 Lmid = SUN * Ts * exp(-SIG_T * depthHere * 0.5 / max(-sunT.y, 0.02)) * (ph + 0.02)
-    + skyIrr * exp(-SIG_A * depthHere * 0.6) / (4.0 * PI);
-  vec3 Lin = SIG_S / SIG_T * Lmid * (vec3(1.0) - Tv) * 3.2;
-  vec3 under = Lfloor * Tv + Lin;
-
-  vec3 col = F * refl + (1.0 - F) * under + spec;
-
-  // engine: their distant haze over the water, kept; their sky-above-the-horizon mix is not — every
-  // fragment here is water, so there is no horizon to blend into.
-  // engine: their distance is metres and a map unit is an inch, so it is converted before their
-  // haze coefficient sees it - at map units a pool a few hundred units away hazed over completely.
-  float haze = 1.0 - exp(-(dist / 39.37) * 0.004);
-  float muh = max(dot(normalize(vec3(wd.x, 0.0, wd.z)), uSun), 0.0);
-  vec3 hazeC = vec3(0.60, 0.71, 0.82) + vec3(1.0, 0.86, 0.66) * (0.22 * pow(muh, 6.0) + 0.3 * pow(muh, 64.0));
-  col = mix(col, hazeC * 0.95, haze * 0.8);
-
-  fragColor = vec4(waterTonemap(max(col, 0.0) * exposure), 1.0);
-}
-`;
-
-export const stillPoolUniforms = Object.freeze({
-  // The mesh's: the surface has to move, and these are the dials that move it.
-  waveHeight: 1,
-  waveSpeed: 1,
-  // engine: their ripple texture covered a pool of two units; this is how many map units one tile of
-  // it covers here.
-  tileSize: 64,
-  // engine: how far the refracted ray shifts the level behind the surface. Their ray hit a real wall;
-  // a screen-space stand-in needs a strength.
-  refraction: 1,
-  sun: 1,
-});
-
-export const clearwaterUniforms = Object.freeze({
-  waveHeight: 4,
-  waveSpeed: 1,
-  // engine: the strength of the screen-space stand-in for their refracted ray.
-  refraction: 1,
-  // Their 'uL': the patch size of the surface spectrum, in map units — 4.6 m, as their ocean uses.
-  patch: 181,
-  // Their DEPTH: the mean depth of the water in metres, used for the light the column scatters.
-  depth: 1.6,
-  // Their exposure, from the post pass (uExp = 0.63).
-  exposure: .63,
-  sun: 1,
-});
-
-/**
- * The water looks that ship, in the order the interface offers them.
- *
- * A water body runs one of these: the brush points at the project's copy of it (`shaderId`), so a
- * mapper can open, edit, replace or remove it like any other effect in the project.
- */
-export const WATER_VARIANTS = Object.freeze([
-  Object.freeze({ id: 'stupid', name: WATER_SHADER_NAME, source: waterShaderTemplate, uniforms: waterUniforms }),
-  Object.freeze({ id: 'pool', name: STILL_POOL_SHADER_NAME, source: stillPoolShaderTemplate, uniforms: stillPoolUniforms }),
-  Object.freeze({ id: 'clearwater', name: CLEARWATER_SHADER_NAME, source: clearwaterShaderTemplate, uniforms: clearwaterUniforms }),
-]);
-
-export const DEFAULT_WATER_VARIANT = 'stupid';
-
-/** One shipped water look by its id, or null. */
-export function waterVariant(id) {
-  return WATER_VARIANTS.find(variant => variant.id === id) || null;
-}
-
-/** Gives one water brush one of the shipped looks, creating the project's copy if it has none. */
-export function assignWaterVariant(project, brush, variantId) {
-  const variant = waterVariant(variantId);
-  if (!variant || !brush) return null;
-  brush.shaderId = waterShaderId(project, variant.id);
-  return brush.shaderId;
-}
 
 export function curtainShaderId(project) {
   project.shaders ||= [];

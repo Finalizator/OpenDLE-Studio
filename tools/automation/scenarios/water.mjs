@@ -192,23 +192,6 @@ export async function run({ page }) {
   await wait(250);
   check('and closing it leaves no dialog open', (await page.evaluate('window.__opendle.ui.dialogs()')).length === 0);
 
-  // ---------- The three shipped looks: switching one points the brush at that effect.
-  const lookBefore = (await brushes())[0].shaderId;
-  await page.evaluate(`(() => {
-    const row = [...document.querySelectorAll('#inspector label')].find(label => label.textContent.startsWith('Water shader'));
-    const select = row.querySelector('select');
-    select.value = 'pool';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    return select.value;
-  })()`);
-  await wait(400);
-  const lookAfter = (await brushes())[0].shaderId;
-  check('a water body can switch to another shipped shader', lookAfter && lookAfter !== lookBefore,
-    { before: lookBefore, after: lookAfter });
-  check('and the picker shows the shader it now runs',
-    (await page.evaluate(`(() => { const row = [...document.querySelectorAll('#inspector label')]
-      .find(label => label.textContent.startsWith('Water shader')); return row.querySelector('select').value; })()`)) === 'pool');
-
   // ---------- Any brush can carry a shader, not only water.
   await page.evaluate('window.__opendle.view("2d")');
   await wait(200);
