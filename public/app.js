@@ -4823,7 +4823,7 @@ function brushMenuItems(brush) {
     // water is on screen was the wrong way round.
     ...(brush.shaderId || isWaterBrush(brush) ? [{
       label: isWaterBrush(brush) ? 'Water look\u2026' : 'Shader look\u2026',
-      hint: 'Opens the dials in a window over the view, so the surface can be watched while it changes',
+      hint: 'Dials for the shader on this brush',
       run: () => openShaderLook(brush.shaderId || ''),
     }] : []),
     // What the brush *is*, and what draws it. Both live here because both are things a mapper

@@ -95,6 +95,16 @@ export async function run({ page }) {
   const brushMenu = await page.evaluate('window.__opendle.ui.menu()');
   const lookItem = (brushMenu?.items || []).find(item => /Water look/.test(item.text || ''));
   check('right-clicking a water body offers its look', Boolean(lookItem), (brushMenu?.items || []).map(item => item.text));
+  // And the label is *readable*: a hint long enough to take the whole row used to squeeze the label
+  // to nothing, and the item rendered as a blank line with an explanation under it.
+  const collapsed = await page.evaluate(`[...document.querySelectorAll('.context-menu-item')]
+    .filter(row => row.querySelector('.context-menu-hint'))
+    .filter(row => (row.querySelector('.context-menu-label')?.getBoundingClientRect().width || 0) < 8).length`);
+  check('no menu label is pushed out by its own hint', collapsed === 0, collapsed);
+  const lookWidth = await page.evaluate(`Math.round([...document.querySelectorAll('.context-menu-item')]
+    .find(row => /Water look/.test(row.textContent))
+    ?.querySelector('.context-menu-label')?.getBoundingClientRect().width || 0)`);
+  check('the Water look entry reads as a label', lookWidth > 40, lookWidth);
   await page.evaluate('window.__opendle.ui.click(window.__opendle.ui.menu().items.find(item => /Water look/.test(item.text || "")).ref)');
   await wait(350);
   const dialogs = await page.evaluate('window.__opendle.ui.dialogs()');
