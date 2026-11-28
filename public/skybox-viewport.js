@@ -142,6 +142,7 @@ export async function createSkyViewport(canvas, { background = '#333333' } = {})
     built.uniforms.pitch.value = view.elevation * DEG;
     built.uniforms.aspect.value = camera.aspect;
     built.uniforms.tanFov.value = Math.tan(view.fov * DEG / 2);
+    built.uniforms.pixelsPerRadian.value = Math.max(1, (bounds.height || 240) / (view.fov * DEG));
   }
 
   function draw() {

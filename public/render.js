@@ -2892,6 +2892,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
         layered.uniforms.pitch.value = view.pitch;
         layered.uniforms.aspect.value = camera.aspect;
         layered.uniforms.tanFov.value = Math.tan(camera.fov * Math.PI / 360);
+        // The sky picks its mip level from this rather than from screen-space derivatives, so the
+        // wrap at one meridian cannot spike them into the coarsest level and draw a line.
+        layered.uniforms.pixelsPerRadian.value = Math.max(1, canvas.height / (camera.fov * Math.PI / 180));
         const clock = Number(state?.skyClock) || 0;
         layered.uniforms.skyTime.value = clock;
         const sky = activeSkybox(state, project);

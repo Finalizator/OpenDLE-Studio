@@ -9,8 +9,8 @@
 // background of the level) and the Skybox tab's own viewport (`public/skybox-viewport.js`). One
 // builder means the tab cannot drift away from what the game draws.
 import * as THREE from 'three/webgpu';
-import { uniform, float, vec2, vec3, vec4, uv, positionGeometry, texture, cubeTexture, sin, cos, tan, atan, asin, clamp, mix,
-  fract, pow, floor, step, smoothstep, max, min, abs, normalize, cross } from 'three/tsl';
+import { uniform, float, vec2, vec3, vec4, uv, positionGeometry, texture, textureLevel, cubeTexture, sin, cos, tan, atan, asin, clamp, mix,
+  fract, pow, log2, floor, step, smoothstep, max, min, abs, normalize, cross } from 'three/tsl';
 import { coverageWindow, SKY_LAYER_DRAW_LIMIT, SKY_FACES } from '/shared/skybox.js';
 import { skyDomeMapping, SKY_DOME_DEGREES } from '/shared/sky-dome.js';
 
@@ -58,6 +58,11 @@ export function createSkyMaterial(skybox, textures) {
   const heading = uniform(0, 'float'), pitch = uniform(0, 'float'), aspect = uniform(800 / 450),
     tanFov = uniform(Math.tan(35 * DEG)), skyTime = uniform(0, 'float');
   const exposure = uniform(Math.max(0, Number(skybox.exposure === undefined ? 1 : skybox.exposure)), 'float');
+  // Pixels per radian of view. The sky samples its mip level explicitly from this instead of letting
+  // the GPU derive one per fragment: a panorama's longitude wraps at one meridian, and there the
+  // derived level jumps to the smallest mip (the picture's average colour), which draws a bright
+  // line down the sky. An explicit level has no derivative to spike.
+  const pixelsPerRadian = uniform(600, 'float');
   const zoom = uniform(Math.max(.01, Number(skybox.scale) || 1), 'float');
   const window = coverageWindow(skybox.coverage, 0);
   const doomSky = skybox.projection === 'doom';
@@ -173,7 +178,11 @@ export function createSkyMaterial(skybox, textures) {
       sampleU = fract(u).mul(2).sub(1).abs().oneMinus();
       sampleV = fract(v).mul(2).sub(1).abs().oneMinus();
     }
-    const sampler = texture(source, vec2(sampleU, sampleV));
+    // How much picture one radian of view holds, so the explicit level matches the screen's detail.
+    const texelsPerRadian = Math.max(1, (Number(source.image?.width) || 1024) *
+      Math.max(1, Number(uvRepeat.repeatU ?? 1) || 1) / (Math.max(1e-5, window.span / 360) * Math.PI * 2));
+    const level = float(texelsPerRadian).div(pixelsPerRadian.max(1)).log2().max(0);
+    const sampler = textureLevel(source, vec2(sampleU, sampleV), level);
     layers.push({ layer, sampler, mask, blend: layer.blend, opacity: Number(layer.opacity) || 0 });
   }
 
@@ -233,6 +242,6 @@ export function createSkyMaterial(skybox, textures) {
   material.transparent = true;
 
   return { material, layers, geometry: new THREE.PlaneGeometry(2, 2), cubes,
-    uniforms: { heading, pitch, aspect, tanFov, skyTime, zoom, exposure } };
+    uniforms: { heading, pitch, aspect, tanFov, skyTime, zoom, exposure, pixelsPerRadian } };
 
 }

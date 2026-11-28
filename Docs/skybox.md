@@ -127,6 +127,31 @@ Half-float pictures keep their samples as raw 16-bit words, so the check decodes
 comparing the words as numbers. The import reports what was found — `EXR 7680x3840` — so a picture
 that still looks wrong says what it is instead of only looking wrong.
 
+## Sampling, and the line at the seam
+
+A panorama's longitude wraps at one meridian. A sampler left to choose its own mip level measures how
+fast the texture coordinates change across a pixel, and at that meridian the coordinate jumps from 1
+back to 0: the measured rate explodes, the fragment asks for the smallest mip — the whole picture
+averaged to one colour — and a bright line is drawn down the sky. It is a sampling artefact, not a
+torn picture: the texels either side of it are correct.
+
+So a picture layer is sampled at an **explicit** level, `textureLevel(source, uv, level)`, with
+
+```
+level = log2(texelsPerRadian / pixelsPerRadian)
+```
+
+where `texelsPerRadian` is the picture's own density (`width × repeatU` over the layer's window in
+radians) and `pixelsPerRadian` is the screen's, `height / vertical FOV`. Both renderers set
+`pixelsPerRadian` every frame from their canvas and camera — `public/render.js` for the game,
+`public/skybox-viewport.js` for the tab — so the sky is as sharp as the screen allows and never
+derives a level from a coordinate jump.
+
+The horizontal density stands in for the vertical one: near the poles an equirect picture is
+stretched, and the level can blur there sooner than strictly necessary. For a background that is
+invisible; for a picture where it is not, tile it or crop it. Cubemap layers still sample with
+derived levels — a cubemap has no wrap meridian, though its face edges are their own subject.
+
 ## Rules
 
 Five conditions and seventeen actions, all under **Sky:** in the event sheet.
