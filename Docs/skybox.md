@@ -15,8 +15,12 @@ The tab is in the editor's tab strip (`Skybox`). It edits the layout that is ope
 carries its own sky.
 
 * **Start from this level's sky** — an imported Doom level already has a sky picture. This adopts it
-  as a dome window (-20 to 60 degrees, clamped edges), which is the picture the level drew, now with
-  the tab's controls on it.
+  exactly as the level drew it: `projection: doom` keeps GZDoom's own dome mapping (`skyDomeV` — the
+  dome is pushed 1250 units down and squashed by `texh / 230`, so the picture's rows are compressed
+  towards the zenith and its bottom rows fall below the horizon), and the picture is tiled round the
+  level the way `SetupMatrices` tiles it (1024 pixels per turn, so a 256-wide `SKY1` wraps four
+  times). Two renders of the same picture — the legacy path and the adopted record — come out
+  pixel-for-pixel identical, so adopting changes nothing on screen.
 * **Start blank** — an empty sky: a full-sphere window with no picture, drawn as a gradient or as a
   flat colour until you choose a panorama.
 * **Presets** — sky designs are saved with the project (`project.skyPresets`) and a rule can switch
@@ -35,7 +39,9 @@ carries its own sky.
 
 ### The window
 
-The window is fixed in the **level**, not in the picture. Everything outside it is *not drawn*, so
+The window is fixed in the **level**, not in the picture. (A `doom`-projected picture takes its
+vertical position from the dome instead; the window then only says how far round the level it is
+drawn.) Everything outside it is *not drawn*, so
 the level's own background shows through — that is the area that used to be streaked.
 
 * **Edge** says what happens at the boundary: `fade` (nothing outside), `clamp` (repeat the edge row),
@@ -50,19 +56,26 @@ Turning the sky slides the **picture inside its window** and wraps it round. The
 was placed: a backdrop covering the west keeps covering the west when you turn the picture inside it,
 and a full panorama behaves as it always did because its window is the whole turn.
 
-## The preview
+## The two views
 
-The preview is the whole sky as a plate — azimuth across, elevation up — painted with the same maths
-the shader uses (`skyTexel` in `shared/skybox.js`), so the two cannot disagree. Each cell is filled
-with the texel the game samples there:
+The tab shows the sky two ways, from one record.
+
+**3D view** (the one that opens) is a real renderer: the same fragment program the game runs, built
+by `public/sky-material.js`, over a grid on the level's floor and the four cardinal marks. Drag to
+look around, wheel to zoom, double-click to reset. This answers "what will the player see", and the
+line under it reports the same window numbers as the coverage map.
+
+**Coverage map** is the whole sky as a plate — azimuth across, elevation up — painted with the same
+maths the shader uses (`skyTexel` in `shared/skybox.js`). Each cell is filled with the texel the game
+samples there:
 
 * **grey** — outside the window, i.e. not drawn;
 * the picture's own colours — a stretched picture shows as stretched texels, not as streaks;
 * the gradient — a procedural sky is painted from the same curve the shader uses
   (`proceduralSkyColour`).
 
-The line under it reports the window, how much of the view is inside it, what is painting it, and how
-many cells were painted.
+A camera view cannot show a 360 by 180 degree window at once, which is the one question the plate
+answers; the plate cannot show what the level will look like, which is the one the 3D view answers.
 
 ## Layers
 
@@ -125,9 +138,13 @@ and `skyError` (why the last sky action did nothing) is a session diagnostic tha
 | `shared/sky-preview.js` | The plate and camera previews, as numbers |
 | `shared/dds.js` | The DDS decoder |
 | `public/sky-textures.js` | Format detection and decoding for the renderer |
-| `public/skybox-panel.js` | The tab |
-| `public/render.js` | `buildLayeredSky`, the shader the record becomes |
+| `public/skybox-panel.js` | The tab: the form, the two views, the readout |
+| `public/skybox-viewport.js` | The tab's 3D view: a renderer, the horizon grid, look and zoom |
+| `public/sky-material.js` | The fragment program the record becomes — used by the engine **and** the tab |
+| `public/render.js` | The engine's use of it: the mesh, the rebuild signature, `ChangeSky` |
 | `test/skybox*.test.js` | The maths, the rules, the tab |
 
 The legacy Doom/panorama shader is still there and still used by a level that has no skybox record, so
-an imported map keeps the sky it was drawn with until someone opens this tab.
+an imported map keeps the sky it was drawn with until someone opens this tab. Once adopted, the record
+reproduces that picture — the same rows on the same 60-degree dome, the same horizontal tiling — so
+"Start from this level's sky" changes nothing on screen until a control is touched.
