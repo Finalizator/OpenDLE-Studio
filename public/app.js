@@ -33,7 +33,9 @@ import {
 import { requestMouseLock } from './pointer-lock.js';
 import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog, openNodeEventSheet } from './event-sheet.js';
-import { WATER_SHADER_NAME, shaderTemplate, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterShaderId, waterUniforms } from '/shared/shaders.js';
+import { WATER_SHADER_NAME, shaderTemplate, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterDefaults, waterShaderId } from '/shared/shaders.js';
+import { libraryShader, libraryShadersOfKind, setShaderLibrary, shaderFromLibrary } from '/shared/shader-library.js';
+import { projectIds } from '/shared/project-ids.js';
 import { WATER_DEFAULTS, waterFromPreset, waterPresets, waterSettings } from '/shared/water.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { createProjectAutosave } from './project-autosave.js';
@@ -413,6 +415,11 @@ addonsPanel = createAddonsPanel({
 
 const shaderEnginePanel = createShaderEnginePanel($('shader-engine'), {
   project: () => project, edit,
+  // The library's full-screen shaders, listed in the tab they belong to.
+  screenShaders: () => libraryShadersOfKind('screen'),
+  applyScreenShader: entry => edit(next => {
+    next.environment.shaderId = installLibraryShader(next, entry.folder);
+  }, `${entry.name} applied over the frame`),
 });
 
 const hudEditor = createHUDEditor($('hud-editor'), {
@@ -1630,15 +1637,48 @@ function renderBrushTypeControls(brush) {
   return holder;
 }
 
+/**
+ * Copies a library shader into the project and returns the id of the copy.
+ *
+ * A level keeps the copy rather than a path, so the look it was built with survives the folder
+ * changing — and a mapper can edit the copy without editing the engine's library. Called inside an
+ * edit, on the project that is already being changed.
+ */
+function installLibraryShader(next, folder) {
+  const entry = libraryShader(folder);
+  if (!entry) throw new Error(`The shader library has no "${folder}"`);
+  next.shaders ||= [];
+  const existing = next.shaders.find(shader => shader.library === entry.folder);
+  if (existing) {
+    // Applying the same library shader twice must not leave two copies drifting apart.
+    existing.source = entry.source;
+    existing.uniforms = { ...entry.uniforms, ...existing.uniforms };
+    return existing.id;
+  }
+  const used = projectIds(next);
+  let id = entry.folder.replace(/[^a-z0-9]+/gi, '_').toLowerCase(), suffix = 1;
+  while (used.has(id)) id = `${entry.folder.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${suffix++}`;
+  next.shaders.push(shaderFromLibrary(entry, id));
+  return id;
+}
+
+/** The library's shaders of one kind, as `[value, label]` pairs for a select. */
+function libraryOptions(kind) {
+  return libraryShadersOfKind(kind).map(entry => [`library:${entry.folder}`, entry.name]);
+}
+
 /** The shader a brush — or one face of it — is drawn with. */
 function renderBrushShaderControls(brush) {
   const holder = make('div');
   const shaders = project.shaders || [];
   const value = brush.shaderId || '';
-  field(holder, 'Brush shader', select([['', 'No shader'], ...shaders.map(shader => [shader.id, shader.name])], value,
+  field(holder, 'Brush shader', select([['', 'No shader'], ...shaders.map(shader => [shader.id, shader.name]),
+    ...libraryOptions('surface')], value,
     id => edit(next => {
       const target = next.map.brushes.find(entry => entry.id === brush.id);
-      if (id) target.shaderId = id; else delete target.shaderId;
+      if (id.startsWith('library:')) target.shaderId = installLibraryShader(next, id.slice('library:'.length));
+      else if (id) target.shaderId = id;
+      else delete target.shaderId;
     }, id ? 'Shader applied to the brush' : 'Brush shader removed'), 'Brush shader'));
   holder.append(button(isWaterBrush(brush) ? 'Water look…' : 'Adjust the look…', () => openShaderLook(brush.shaderId || '')));
   holder.append(make('p', 'Every brush can run a shader — a water body already runs the engine\'s water effect. A face can run one of its own instead.', 'muted'));
@@ -1735,7 +1775,7 @@ function openShaderLook(preferredId = '') {
     }
     body.append(button('Reset to the shipped water', () => edit(project_ => {
       const shader = (project_.shaders || []).find(item => item.id === shaderId);
-      if (shader) shader.uniforms = { ...waterUniforms };
+      if (shader) shader.uniforms = { ...waterDefaults() };
     }, 'Water look reset')));
   }
   drawDials();
@@ -9116,6 +9156,30 @@ function installWindowMenus() {
   });
 }
 
+/**
+ * Reads the shader library the engine ships.
+ *
+ * `shaders/<name>/` holds the shaders that go on surfaces and `shaders/on_screen/<name>/` the ones
+ * that are drawn over the finished frame. It is fetched before the project is opened, because a
+ * project that carries a water body or a plastic curtain is refreshed from it while loading.
+ */
+async function loadShaderLibrary() {
+  try {
+    // Through `api()`, like every other service call: the local service wants the session's bearer
+    // token, which is why this runs after the session is read.
+    const payload = await api('/api/shaders');
+    setShaderLibrary(payload.shaders || []);
+    const problems = payload.problems || [];
+    if (problems.length) {
+      status(`${problems.length} shader folder${problems.length === 1 ? '' : 's'} could not be read: ${problems[0].folder} — ${problems[0].error}`, true);
+    }
+  } catch (error) {
+    // A library that failed to load leaves the editor able to open a project but not to create a
+    // new water body or curtain, which is the honest state; say so once rather than fail to start.
+    status(`The shader library could not be read (${error.message}); surface shaders from it are unavailable.`, true);
+  }
+}
+
 async function start() {
   const accepted = await requireLicenseAgreement({
     dialog: $('license-dialog'), text: $('license-text'), accept: $('license-accept'),
@@ -9141,6 +9205,9 @@ async function start() {
   if (!response.ok) throw new Error(`Local session failed (HTTP ${response.status})`);
   const session = await response.json(); token = session.token;
   $('ai-state').textContent = session.deepseekConfigured ? session.model : 'Not configured';
+  // The shader library is read before the project is opened, because a project that carries a water
+  // body or a curtain is refreshed from it while loading.
+  await loadShaderLibrary();
   $('ask-ai').disabled = !session.deepseekConfigured;
   // A disabled button that cannot say why it is disabled is a dead end, so it carries the fix.
   $('ask-ai').title = session.deepseekConfigured ? '' :

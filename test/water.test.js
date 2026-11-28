@@ -19,7 +19,13 @@ import {
   WATER_DEFAULTS, buoyancyFraction, currentAt, swimLevel, swimTarget, waterAt, waterFromPreset,
   waterPresets, waterSettings, waterSpeedScale, waterVolumes,
 } from '../shared/water.js';
-import { WATER_SHADER_NAME, WATER_SHADER_REVISION, refreshShippedShaders, shadertoyFromDownload, shippedWaterShader, waterShaderId, waterShaderTemplate, waterUniforms } from '../shared/shaders.js';
+import { WATER_SHADER_NAME, refreshShippedShaders, shadertoyFromDownload, shippedWaterShader, waterDefaults, waterRevision, waterShaderId, waterSource } from '../shared/shaders.js';
+import { installTestShaderLibrary } from './shader-library-helper.js';
+
+installTestShaderLibrary();
+const waterUniforms = waterDefaults();
+const waterShaderTemplate = waterSource();
+const WATER_SHADER_REVISION = waterRevision();
 import { WATER_SWELLS, WAVE_DEFAULTS, WAVE_GRAVITY, animateWaterSurface, buildWaterSurface, swellRate, waterHeight, waterSlope, waterSurfaceData } from '../shared/water-surface.js';
 import { readFileSync } from 'node:fs';
 import { parseShaderSource } from '../shared/shader-language.js';

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ASSET_DIRECTORY, PROJECT_FILE, documentBytes, isFolderDocument, packProject, readFolderFile, unpackProject } from './project-folder.js';
 import { migrateModelFacing } from '../shared/entity-visuals.js';
 import { migrateEnemySpriteRules } from '../shared/sprite-animation.js';
@@ -8,7 +9,15 @@ import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { upgradePickupReach } from '../shared/doom-hud.js';
 import { refreshShippedShaders } from '../shared/shaders.js';
+import { setShaderLibrary } from '../shared/shader-library.js';
+import { readShaderLibrary } from './shader-library.js';
 import { syncRampModels } from '../shared/ramp-model.js';
+
+// The shaders the engine ships are folders under `shaders/`, so the store reads them once at
+// start-up: everything that creates or refreshes a shipped effect works from that library.
+const shaderLibrary = readShaderLibrary(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'shaders'));
+setShaderLibrary(shaderLibrary.shaders);
+for (const problem of shaderLibrary.problems) console.warn(`Shader library: shaders/${problem.folder}: ${problem.error}`);
 
 function prepareProceduralRamps(project) {
   validateProject(project);

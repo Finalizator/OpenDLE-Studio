@@ -25,6 +25,7 @@
     "automation:menus": "node tools/automation/run.mjs menus",
     "automation:skybox": "node tools/automation/run.mjs skybox",
     "automation:water": "node tools/automation/run.mjs water",
+    "automation:shaders": "node tools/automation/run.mjs shaders",
     "automation:maps": "node tools/automation/run.mjs maps",
     "automation:game": "node tools/automation/run.mjs game",
     "automation:close": "node tools/automation/run.mjs close"

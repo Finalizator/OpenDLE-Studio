@@ -31,6 +31,7 @@ import { contentSecurityPolicy } from './export-launcher.js';
 import { createPlaytestLogStore, DEFAULT_LOG_DIRECTORY, DEFAULT_PLACEHOLDER_DIRECTORY } from './playtest-logs.js';
 import { isLogId, normalizeLogEntry, LOG_LIMITS } from '../shared/playtest-log.js';
 import { fetchShadertoy } from './shadertoy.js';
+import { shaderLibraryPayload } from './shader-library.js';
 import { fetchAddon } from './addons.js';
 import { addonFile, projectAddons } from '../shared/addons.js';
 import { scriptletFiles } from './scriptlets.js';
@@ -105,6 +106,14 @@ export function createApp({
   });
   app.get('/api/session', (req, res) => {
     res.set('Cache-Control', 'no-store').json({ token, deepseekConfigured: Boolean(apiKey), model });
+  });
+  // The shader library: every folder under `shaders/`, one shader each, read on request so editing a
+  // folder shows up in the studio without restarting it.
+  app.get('/api/shaders', (req, res) => {
+    try {
+      const library = shaderLibraryPayload(resolve(root, 'shaders'));
+      res.set('Cache-Control', 'no-store').json(library);
+    } catch (error) { res.status(500).json({ error: error.message }); }
   });
   app.get('/api/health', (req, res) => {
     res.set('Cache-Control', 'no-store').json({ service: 'OpenDLE', version: readEngineVersion(versionFile) });
@@ -589,6 +598,8 @@ export function createApp({
   // editor show stale geometry with no visible sign that it is out of date.
   const revalidate = (res) => res.set('Cache-Control', 'no-cache');
   app.use('/shared', express.static(resolve(root, 'shared'), { setHeaders: revalidate }));
+  // A shader folder is readable as it sits on disk, so a shader can also be fetched by path.
+  app.use('/shaders', express.static(resolve(root, 'shaders'), { setHeaders: revalidate }));
   app.use('/scriptlets', express.static(scriptletsDir, { setHeaders: revalidate }));
   app.use('/vendor/three', express.static(resolve(root, 'node_modules/three/build')));
   app.get('/vendor/rapier/rapier.mjs', (req, res) => res.sendFile(resolve(root, 'node_modules/@dimforge/rapier3d-compat/rapier.mjs')));

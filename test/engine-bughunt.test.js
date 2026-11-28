@@ -24,7 +24,11 @@ import { driveRouteTimesheet } from '../shared/timesheet-recipe.js';
 import { assembleGameLevels, parseLevelRoutes, selectGameLevel } from '../shared/game-levels.js';
 import { overlayVolumes } from '../shared/areas.js';
 import { installEngineSounds } from '../shared/sound.js';
-import { curtainShaderId, curtainShaderTemplate } from '../shared/shaders.js';
+import { curtainShaderId } from '../shared/shaders.js';
+import { libraryShader } from '../shared/shader-library.js';
+import { installTestShaderLibrary } from './shader-library-helper.js';
+
+installTestShaderLibrary();
 import { encodeImage } from '../server/import.js';
 
 await R.init();
@@ -533,6 +537,6 @@ test('hunt 41: adding the glass preset never returns an unrelated colliding shad
   project.shaders = [simpleShader('plastic_curtain')];
   const id = curtainShaderId(project);
   assert.notEqual(id, 'plastic_curtain');
-  assert.equal(project.shaders.find(shader => shader.id === id).source, curtainShaderTemplate);
+  assert.equal(project.shaders.find(shader => shader.id === id).source, libraryShader('plastic-curtain').source);
   validateProject(project);
 });

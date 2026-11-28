@@ -9,12 +9,14 @@
 //   4. every brush can carry a shader, water or not;
 //   5. the water brush is not solid: a trajectory through it is unobstructed, which is what "swim
 //      through it" means for the engine's own traces.
-import { waterUniforms } from '../../../shared/shaders.js';
+import { waterDefaults } from '../../../shared/shaders.js';
+import { installTestShaderLibrary } from '../../../test/shader-library-helper.js';
 
 const near = (a, b, tolerance = 1) => Math.abs(a - b) <= tolerance;
 const wait = ms => new Promise(done => setTimeout(done, ms));
 
 export async function run({ page }) {
+  installTestShaderLibrary();
   const steps = [];
   const check = (name, ok, detail) => {
     steps.push({ name, ok: Boolean(ok), ...(detail === undefined ? {} : { detail }) });
@@ -152,7 +154,7 @@ export async function run({ page }) {
   const sliders = await page.evaluate('window.__opendle.ui.describe("dialog.shader-look input[type=range]")');
   // Counted from the shader's own uniforms rather than a literal: a dial added to the effect has to
   // appear in the window, and a number written here would silently stop testing that.
-  const dials = Object.keys(waterUniforms);
+  const dials = Object.keys(waterDefaults());
   check('every dial the water shader has is a slider', sliders.count === dials.length
     && dials.every(name => sliders.items.some(item => item.name === name)),
     { got: sliders.items.map(item => item.name), want: dials });

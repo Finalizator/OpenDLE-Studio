@@ -1,0 +1,21 @@
+{
+  "name": "StupidWater",
+  "kind": "surface",
+  "description": "The engine's water body effect: swells shaded from the real surface normal, isotropic chop, refraction of the level behind, sky reflection, sun glitter, crest foam.",
+  "author": "OpenDLE",
+  "license": "project",
+  "entry": "main.glsl",
+  "builtin": "water",
+  "revision": 6,
+  "uniforms": {
+    "waveHeight": 5,
+    "waveSpeed": 1,
+    "ripple": 0.6,
+    "chop": 1,
+    "density": 0.35,
+    "refraction": 0.22,
+    "fresnel": 3,
+    "foam": 0,
+    "sun": 1
+  }
+}

@@ -134,7 +134,8 @@ brush it *is* the look of the surface: the effect writes the colour it wants, so
 only the frame for the effect.
 
 A water body is given the engine's **StupidWater** shader the moment it becomes water, so it is never
-a flat blue slab. The effect ships with the engine and is stored in the project, so it can be
+a flat blue slab. That effect is a folder — `shaders/water/shader.json` and `main.glsl` — like every
+shader the engine ships; see [shader-library.md](./shader-library.md). The effect ships with the engine and is stored in the project, so it can be
 edited, replaced or removed like any other shader in the **Environment** tab. Its uniforms are the
 dials — and `waveHeight` and `waveSpeed` also move the **mesh**, because the geometry reads them
 from the compiled shader rather than from a second set of numbers:

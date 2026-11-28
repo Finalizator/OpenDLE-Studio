@@ -1,0 +1,11 @@
+{
+  "name": "Vignette",
+  "kind": "screen",
+  "description": "Darkens the corners of the frame. A full-screen effect, not something to put on a surface.",
+  "author": "OpenDLE",
+  "license": "project",
+  "entry": "main.glsl",
+  "uniforms": {
+    "strength": 1
+  }
+}

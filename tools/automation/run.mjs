@@ -21,6 +21,7 @@ const scenarios = {
   menus: () => import('./scenarios/menus.mjs'),
   skybox: () => import('./scenarios/skybox.mjs'),
   water: () => import('./scenarios/water.mjs'),
+  shaders: () => import('./scenarios/shaders.mjs'),
   maps: () => import('./scenarios/maps.mjs'),
   game: () => import('./scenarios/game.mjs'),
   close: () => import('./scenarios/close.mjs'),

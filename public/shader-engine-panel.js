@@ -23,7 +23,7 @@ const node = (tag, text, className) => {
 
 const BOOK_URL = 'https://github.com/lettier/3d-game-shaders-for-beginners/blob/master/sections/';
 
-export function createShaderEnginePanel(host, { project: getProject, edit }) {
+export function createShaderEnginePanel(host, { project: getProject, edit, screenShaders = null, applyScreenShader = null }) {
   const safe = fn => (...args) => {
     try {
       const result = fn(...args);
@@ -150,6 +150,23 @@ export function createShaderEnginePanel(host, { project: getProject, edit }) {
     }, checked ? 'Shader stack enabled' : 'Shader stack disabled'));
     heading.append(master);
     children.push(heading);
+
+    // The library's full-screen shaders. They are drawn over the finished frame, which is what this
+    // tab is for — a shader that belongs on a surface is offered on the brush instead.
+    const library = typeof screenShaders === 'function' ? screenShaders() : [];
+    if (library.length && applyScreenShader) {
+      const section = node('div', undefined, 'shader-presets');
+      section.append(node('strong', 'From the shader library'));
+      for (const entry of library) {
+        const button = node('button', entry.name);
+        button.type = 'button';
+        button.title = entry.description || `shaders/${entry.folder}`;
+        button.addEventListener('click', () => applyScreenShader(entry));
+        section.append(button);
+      }
+      section.append(node('p', 'Full-screen effects from shaders/on_screen/, added to this project and drawn over the frame.'));
+      children.push(section);
+    }
 
     const presets = node('div', undefined, 'shader-presets');
     presets.append(node('strong', 'Presets'));

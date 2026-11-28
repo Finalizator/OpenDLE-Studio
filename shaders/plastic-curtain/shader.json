@@ -1,0 +1,10 @@
+{
+  "name": "Glass (Shadertoy)",
+  "kind": "surface",
+  "description": "Thick rippled glass for a strip or a pane: the level behind is bent through a noisy normal with per-channel dispersion.",
+  "author": "OpenDLE",
+  "license": "project",
+  "entry": "main.glsl",
+  "builtin": "curtain",
+  "uniforms": {}
+}
