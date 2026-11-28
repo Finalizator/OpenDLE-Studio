@@ -87,8 +87,15 @@ export async function run({ page }) {
 
   // ---------- The look window: every dial of the water shader, in a window that does not cover
   // the viewport, and the surface answers it.
-  await page.evaluate(`(() => { const found = window.__opendle.ui.find('Water look…', { within: '#inspector' });
-    window.__opendle.ui.click(found); })()`);
+  // Reached the way a mapper reaches it: right-click the water body itself. It was in the inspector
+  // only, which is not where anyone looks while looking at the water.
+  const poolCentre = await screen(-48, 0);
+  await page.rightClick(poolCentre.x, poolCentre.y);
+  await wait(300);
+  const brushMenu = await page.evaluate('window.__opendle.ui.menu()');
+  const lookItem = (brushMenu?.items || []).find(item => /Water look/.test(item.text || ''));
+  check('right-clicking a water body offers its look', Boolean(lookItem), (brushMenu?.items || []).map(item => item.text));
+  await page.evaluate('window.__opendle.ui.click(window.__opendle.ui.menu().items.find(item => /Water look/.test(item.text || "")).ref)');
   await wait(350);
   const dialogs = await page.evaluate('window.__opendle.ui.dialogs()');
   check('the water look window opened', dialogs.some(dialog => dialog.title === 'Shader look'), dialogs);
@@ -142,6 +149,15 @@ export async function run({ page }) {
   await wait(250);
   const shaded = (await brushes()).find(brush => brush.kind === 'solid');
   check('a solid brush took the shader too', shaded.shaderId === 'water', shaded.shaderId);
+  // A brush that is not water but carries a shader gets the same window, named for the shader.
+  const solidCentre = await screen(250, -40);
+  await page.rightClick(solidCentre.x, solidCentre.y);
+  await wait(300);
+  const solidMenu = await page.evaluate('window.__opendle.ui.menu()');
+  check('a shaded solid brush offers its look too',
+    (solidMenu?.items || []).some(item => /Shader look/.test(item.text || '')),
+    (solidMenu?.items || []).map(item => item.text));
+  await page.evaluate('window.__opendle.ui.press("Escape")');
   const finalErrors = await errors();
   check('no page error along the way', finalErrors.length === 0, finalErrors.slice(0, 3));
 

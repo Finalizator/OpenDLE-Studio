@@ -46,7 +46,8 @@ tunes the preset.
 
 ## Adjusting the look
 
-**Water look…** in the brush inspector (and under **Brush type → Water body**) opens a small window
+**Water look…** — right-click the water body (in either the 2D or the 3D view), or use the button in
+the inspector's **Brush type** block — opens a small window
 with a slider per dial: `waveHeight`, `waveSpeed`, `ripple`, `refraction`, `foam`, `sun`. It is
 **not modal** — the viewport stays live behind it, so a slider can be dragged while watching the
 water answer. A drag writes straight into the compiled shader's uniforms, which is why the surface

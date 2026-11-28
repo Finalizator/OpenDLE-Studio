@@ -33,7 +33,7 @@ import {
 import { requestMouseLock } from './pointer-lock.js';
 import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog, openNodeEventSheet } from './event-sheet.js';
-import { shaderTemplate, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterShaderId, waterUniforms } from '/shared/shaders.js';
+import { WATER_SHADER_NAME, shaderTemplate, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterShaderId, waterUniforms } from '/shared/shaders.js';
 import { WATER_DEFAULTS, waterFromPreset, waterPresets, waterSettings } from '/shared/water.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { createProjectAutosave } from './project-autosave.js';
@@ -1664,7 +1664,10 @@ const SHADER_LOOK_RANGES = {
 function openShaderLook(preferredId = '') {
   const shaders = (project.shaders || []).filter(shader => Object.keys(shader.uniforms || {}).length);
   if (!shaders.length) { status('This project has no shader with adjustable dials yet', true); return; }
-  const chosen = shaders.find(shader => shader.id === preferredId) || shaders[0];
+  // The brush's own shader, or the water one by name, or whatever has dials: a mapper who asked for
+  // a water body's look should not be shown an unrelated effect because their brush lost its link.
+  const chosen = shaders.find(shader => shader.id === preferredId)
+    || shaders.find(shader => shader.name === WATER_SHADER_NAME) || shaders[0];
   if (!shaderLookDialog) {
     shaderLookDialog = make('dialog');
     shaderLookDialog.className = 'shader-look';
@@ -4815,6 +4818,14 @@ function brushMenuItems(brush) {
       const target = next.map.brushes.find(item => item.id === brush.id);
       target.passable = !brush.passable;
     }, brush.passable ? 'Brush is solid again' : 'Brush is passable: walk, shoot and see through it') },
+    // The look of the shader this brush is drawn with, one click from the brush itself. A water
+    // body's waves are part of its shape, and hunting the Environment tab for the dials while the
+    // water is on screen was the wrong way round.
+    ...(brush.shaderId || isWaterBrush(brush) ? [{
+      label: isWaterBrush(brush) ? 'Water look\u2026' : 'Shader look\u2026',
+      hint: 'Opens the dials in a window over the view, so the surface can be watched while it changes',
+      run: () => openShaderLook(brush.shaderId || ''),
+    }] : []),
     // What the brush *is*, and what draws it. Both live here because both are things a mapper
     // decides while looking at the brush, not while hunting through a panel.
     { label: 'Brush type', submenu: [
