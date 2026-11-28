@@ -126,7 +126,7 @@ export function openCommandDialog({ kind, labels, command, defaults, entities, z
           const [id, name] = Array.isArray(value) ? value : [value, value];
           const option = document.createElement('option'); option.value = id; option.textContent = name; input.append(option);
         }
-        else input.type = 'text';
+        else input.type = field.kind === 'color' ? 'color' : 'text';
         // A picker whose stored value is not on offer — an expression, or a waypoint of a route
         // that no longer exists — has to say so instead of painting the first option as if chosen.
         if (field.options && draft[field.name] !== undefined && draft[field.name] !== ''

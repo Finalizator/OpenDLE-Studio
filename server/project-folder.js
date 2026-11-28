@@ -49,6 +49,9 @@ export function documentBytes(value) {
 const MIME_EXTENSIONS = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp',
   'image/x-ms-bmp': 'bmp', 'image/svg+xml': 'svg', 'image/tga': 'tga', 'image/x-tga': 'tga',
+  // Sky pictures keep their own container: a float HDR or a compressed cubemap has no PNG form.
+  'image/vnd.radiance': 'hdr', 'image/hdr': 'hdr', 'image/x-exr': 'exr', 'image/exr': 'exr',
+  'image/vnd-ms.dds': 'dds', 'image/x-dds': 'dds', 'image/tiff': 'tif',
   'audio/wav': 'wav', 'audio/wave': 'wav', 'audio/x-wav': 'wav', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3',
   'audio/ogg': 'ogg', 'audio/opus': 'opus', 'audio/flac': 'flac', 'audio/x-flac': 'flac', 'audio/mp4': 'm4a',
   'video/mp4': 'mp4', 'video/webm': 'webm',
@@ -59,7 +62,8 @@ const MIME_EXTENSIONS = {
 };
 const EXTENSION_MIME = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
-  svg: 'image/svg+xml', tga: 'image/tga', wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', opus: 'audio/opus',
+  svg: 'image/svg+xml', tga: 'image/tga', hdr: 'image/vnd.radiance', exr: 'image/x-exr', dds: 'image/vnd-ms.dds',
+  tif: 'image/tiff', tiff: 'image/tiff', wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', opus: 'audio/opus',
   flac: 'audio/flac', m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'video/webm',
   mid: 'audio/midi', mus: 'audio/x-mus', glb: 'model/gltf-binary', gltf: 'model/gltf+json',
   obj: 'model/obj', woff2: 'font/woff2', woff: 'font/woff', ttf: 'font/ttf', otf: 'font/otf',

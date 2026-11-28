@@ -4,7 +4,10 @@
 const MODEL_SOURCE = /\.(glb|gltf|bbmodel)$/i;
 // A saved node is a scene object of its own, not artwork.
 const NODE_FILE = /\.node$/i;
-const IMAGE = /\.(png|jpe?g|webp)$/i;
+// A sky is allowed the formats a panorama really ships in, and a drop has to recognise them or the
+// file is reported as "ignored" before the Skybox tab ever sees it.
+const IMAGE = /\.(png|jpe?g|webp|tga|dds|hdr|exr|tiff?)$/i;
+export const SKY_IMAGE_FILE = /\.(tga|dds|hdr|exr|tiff?)$/i;
 const SOUND = /\.(wav|ogg|mp3)$/i;
 const VIDEO = /\.(mp4|webm)$/i;
 

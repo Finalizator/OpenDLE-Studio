@@ -22,8 +22,10 @@ import { modelAssetTriangles } from '/shared/model-geometry.js';
 import { measureAssetForward } from '/shared/model-forward.js';
 import { nodeIcon } from './node-icons.js';
 import { groupDroppedFiles, readDroppedFiles, IMAGE_KINDS } from './asset-drop.js';
+import { skyImageFormat, decodeSkyImage, SKY_IMAGE_ACCEPT } from './sky-textures.js';
 import { createSceneEditor } from './scene-editor.js';
 import { createMaterialPanel } from './material-panel.js';
+import { createSkyboxPanel } from './skybox-panel.js';
 import { createTerrainPanel } from './terrain-panel.js';
 import {
   cloneEntitiesForPaste, entityGroups, groupEntities, groupOf, leaveGroup, membersOf, ungroup,
@@ -354,6 +356,7 @@ materialPanel = createMaterialPanel({
 const terrainPanel = createTerrainPanel({
   root: $('terrain-panel'), project: () => project, edit, status, addModel: placeTerrainModel,
 });
+const skyboxPanel = createSkyboxPanel({ root: $('skybox-panel'), project: () => project, edit, status });
 const playtestLogPanel = createPlaytestLogPanel({
   directory: $('log-directory'), totals: $('log-totals'), list: $('log-list'), detail: $('log-detail'),
   refresh: $('log-refresh'), clear: $('log-clear'),
@@ -2545,7 +2548,9 @@ function showTab(tab) {
   }
   // The terrain viewport owns a WebGL2 loop; leaving the tab has to stop it.
   terrainPanel.setVisible(tab === 'terrain');
-  for (const name of ['map', 'events', 'environment', 'shaders', 'hud', 'terrain', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'addons', 'about', 'scene'])
+  // The skybox tab runs a slow preview clock; it stops with the tab.
+  if (tab !== 'skybox') skyboxPanel.stop();
+  for (const name of ['map', 'events', 'environment', 'skybox', 'shaders', 'hud', 'terrain', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'addons', 'about', 'scene'])
     $(name + '-panel').hidden = tab !== name;
   // Tabs an addon added belong to the same strip and must close with it.
   for (const entry of addonTabs.values()) entry.panel.hidden = tab !== entry.id;
@@ -2556,6 +2561,7 @@ function showTab(tab) {
   if (tab === 'shaders') shaderEnginePanel.render(message => status(message, true));
   if (tab === 'hud') hudEditor.render();
   if (tab === 'terrain') terrainPanel.render();
+  if (tab === 'skybox') skyboxPanel.render();
   if (tab === 'scene') { sceneObjectEditor?.render(); /* the scene editor's columns are fitted to the panel, so measure it now that it is visible */ splitters.refresh(); }
   if (tab === 'actors') actorsPanel.render();
   if (tab === 'scripts') scriptsPanel.render();
@@ -7513,6 +7519,29 @@ async function importImageFiles(files, kind) {
   const version = editVersion;
   const assets = [];
   for (const file of files) {
+    // A sky keeps the picture it was given, in the format it was given in: an HDR or an EXR is a
+    // float image whose values above white are what make a sun bright, and re-encoding it to PNG
+    // as 8-bit would clip exactly that. Everything else is normalised to PNG as before.
+    const skyFormat = kind === 'sky' ? skyImageFormat({ name: file.name, type: file.type }) : null;
+    if (skyFormat && !['png', 'jpeg'].includes(skyFormat)) {
+      if (file.size > 16 * 1024 * 1024) throw new Error(`${file.name} is larger than 16 MiB`);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const mime = { tga: 'image/x-tga', dds: 'image/vnd-ms.dds', hdr: 'image/vnd.radiance',
+        exr: 'image/x-exr', tiff: 'image/tiff' }[skyFormat] || 'application/octet-stream';
+      let binary = '';
+      for (let index = 0; index < bytes.length; index += 0x8000)
+        binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+      const src = `data:${mime};base64,${btoa(binary)}`;
+      // Decoding here is what gives the project real dimensions, and it catches a file this build
+      // cannot read at the moment it is imported rather than the moment its level is played.
+      const THREE = await import('three/webgpu');
+      const decoded = await decodeSkyImage({ src, format: skyFormat, name: file.name }, { THREE });
+      decoded.texture.dispose?.();
+      assets.push({ id: newId('asset'), name: file.name.slice(0, 100), kind: 'sky', format: skyFormat,
+        width: Math.max(1, Math.round(decoded.width || 1)), height: Math.max(1, Math.round(decoded.height || 1)),
+        offsetX: 0, offsetY: 0, src });
+      continue;
+    }
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 6 * 1024 * 1024) throw new Error('Use PNG, JPEG or WebP images no larger than 6 MiB');
     const bitmap = await createImageBitmap(file);
     try {
@@ -7528,6 +7557,13 @@ async function importImageFiles(files, kind) {
   if (version !== editVersion) throw new Error('Project changed during image import. Retry.');
   edit(next => { next.assets ||= []; next.assets.push(...assets); }, `${assets.length} images imported`);
 }
+// A sky is imported in whatever format a panorama really ships in, so the picker offers those
+// formats only while "Import as: Sky" is selected — a .hdr among wall textures is a mistake.
+function syncImageAccept() {
+  $('image-file').accept = $('image-kind').value === 'sky' ? SKY_IMAGE_ACCEPT : 'image/png,image/jpeg,image/webp';
+}
+$('image-kind').addEventListener('change', syncImageAccept);
+syncImageAccept();
 $('image-file').addEventListener('change', guard(async event => {
   const files = [...event.target.files];
   event.target.value = '';

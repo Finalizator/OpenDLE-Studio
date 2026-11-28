@@ -924,3 +924,39 @@ body.scene-dragging { cursor: grabbing; }
 .text-prompt-buttons button { font: inherit; font-size: 11px; padding: 4px 12px; color: #e8fbff;
   background: #3c4a54; border: 1px solid #5a6a75; border-radius: 2px; cursor: pointer; }
 .text-prompt-buttons button.primary { background: #2e6d86; border-color: #7fe6ff; }
+
+/* The Skybox tab: the form on the left, the coverage preview on the right. */
+.sky-body { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 10px; height: 100%;
+  overflow: hidden; }
+.sky-form { overflow: auto; padding-right: 6px; display: flex; flex-direction: column; gap: 8px; }
+.sky-stage { position: relative; min-width: 0; display: flex; flex-direction: column; gap: 6px;
+  padding: 8px; background: #1d2429; border: 1px solid #3c4a54; border-radius: 3px; overflow: hidden; }
+.sky-preview { width: 100%; height: auto; aspect-ratio: 2 / 1; background: #12181c;
+  border: 1px solid #2b333a; border-radius: 2px; image-rendering: pixelated; }
+.sky-readout { font-size: 11px; color: #cfe6f2; margin: 0; }
+.sky-group { border: 1px solid #3c4a54; border-radius: 3px; padding: 6px 8px; background: #262f36; }
+.sky-group > summary { cursor: pointer; font-size: 11px; font-weight: 600; color: #cfe6f2;
+  letter-spacing: .02em; }
+.sky-field { display: grid; grid-template-columns: 1fr 110px; gap: 6px; align-items: center;
+  font-size: 11px; color: #c8d6de; margin: 3px 0; }
+.sky-field > input, .sky-field > select { font: inherit; font-size: 11px; padding: 2px 4px; color: #e8fbff;
+  background: #1d2429; border: 1px solid #5a6a75; border-radius: 2px; }
+.sky-field > input[type="color"] { padding: 0; height: 20px; }
+.sky-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+.sky-row > button, .sky-group > button { font: inherit; font-size: 11px; padding: 3px 9px; color: #e8fbff;
+  background: #3c4a54; border: 1px solid #5a6a75; border-radius: 2px; cursor: pointer; }
+.sky-row > button.primary, .sky-group button.primary { background: #2e6d86; border-color: #7fe6ff; }
+.sky-row > button.danger, .sky-group button.danger { background: #6d3030; border-color: #c76a6a; }
+.sky-row > input[type="text"] { font: inherit; font-size: 11px; padding: 2px 4px; color: #e8fbff;
+  background: #1d2429; border: 1px solid #5a6a75; border-radius: 2px; }
+.sky-layers { display: flex; flex-direction: column; gap: 6px; }
+.sky-layer { border: 1px solid #39454e; border-radius: 3px; padding: 6px; background: #222a31; }
+.sky-layer.selected { border-color: #7fe6ff77; }
+.sky-frames { margin-top: 6px; padding-top: 6px; border-top: 1px dashed #3c4a54; display: flex;
+  flex-direction: column; gap: 4px; font-size: 11px; color: #c8d6de; }
+.sky-frames .sky-field { grid-template-columns: 1fr 90px; }
+.sky-add-frame { font: inherit; font-size: 11px; padding: 2px 4px; color: #e8fbff; background: #1d2429;
+  border: 1px solid #5a6a75; border-radius: 2px; max-width: 240px; }
+.sky-empty { display: flex; flex-direction: column; gap: 6px; }
+.sky-empty h2 { font-size: 13px; margin: 0; }
+@media (max-width: 900px) { .sky-body { grid-template-columns: 1fr; } }
