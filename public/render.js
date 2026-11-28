@@ -1164,9 +1164,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
       // The swells the geometry rides are the swells the shader shades. They are read off the
       // compiled effect's own uniforms rather than from a second set of numbers, so a mapper who
       // turns `waveHeight` up in the Environment tab moves the surface as well as its shading.
+      // Read through the effect's own uniform boxes rather than copied out of them: a dial dragged in
+      // the water look window moves the shading immediately, and the mesh has to move with it or a
+      // mapper watches the highlights swim while the surface stays still.
       const waves = {
-        height: Number(effect?.uniforms?.waveHeight?.value ?? WAVE_DEFAULTS.height),
-        speed: Number(effect?.uniforms?.waveSpeed?.value ?? WAVE_DEFAULTS.speed),
+        get height() { return Number(effect?.uniforms?.waveHeight?.value ?? WAVE_DEFAULTS.height); },
+        get speed() { return Number(effect?.uniforms?.waveSpeed?.value ?? WAVE_DEFAULTS.speed); },
       };
       if (!effect) {
         if (!water) return { material: base, waves };

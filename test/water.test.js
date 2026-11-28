@@ -264,6 +264,39 @@ test('a water surface is a grid that rides the swells, and its shape is the shad
   assert.ok(moved > 2, `${moved} vertices of ${before.length / 3} ride the swell`);
 });
 
+test('a water vertex is shaded from the slope of the field, not from averaged triangles', () => {
+  // A wave three cells long drawn on a grid is a row of flat plates, and a normal averaged out of
+  // the plates lights each one as a facet — the surface reads as tiles. The height field knows its
+  // own slope exactly, so the normal comes from the field and the grid never shows.
+  const square = [[0, 0, 0], [64, 0, 0], [64, 0, 64], [0, 0, 64]];
+  const surface = buildWaterSurface(square, { uvAt: ([x, , z]) => [x / 64, z / 64], water: { cell: 16 } });
+  const data = waterSurfaceData(surface.positions, surface.uvs, [0, 1, 0], { height: 8, speed: 1 });
+  assert.ok(data.basis, 'a plain quad has a texture frame');
+  const geometry = {
+    attributes: {
+      position: { array: Float32Array.from(surface.positions), needsUpdate: false },
+      normal: { array: new Float32Array(surface.positions.length), needsUpdate: false },
+    },
+    userData: { waterSurface: data },
+  };
+  assert.equal(animateWaterSurface(geometry, .7), true);
+  const normals = geometry.attributes.normal.array;
+  let tilted = 0;
+  for (let index = 0; index < normals.length; index += 3) {
+    const length = Math.hypot(normals[index], normals[index + 1], normals[index + 2]);
+    assert.ok(Math.abs(length - 1) < 1e-4, `unit normal, got ${length}`);
+    assert.ok(normals[index + 1] > 0, 'and still facing up');
+    if (Math.abs(normals[index]) > 1e-3 || Math.abs(normals[index + 2]) > 1e-3) tilted++;
+  }
+  assert.ok(tilted > 2, `${tilted} vertices are tilted by the swells`);
+
+  // A batch whose faces do not share one texture frame keeps geometry normals rather than being
+  // shaded with somebody else's axes.
+  const turned = [[0, 0, 0], [64, 0, 0], [64, 0, 64], [0, 0, 64]];
+  const mixed = waterSurfaceData(turned, [0, 0, 1, 0, 1, 1, 0, 1], [0, 1, 0], { height: 8 });
+  assert.equal(mixed.basis, null, 'a frame that does not fit every vertex is refused');
+});
+
 test('the shader is told the real surface and the real camera, not a guess from the screen', () => {
   // The first water shader worked out an "eye" from the pixel's place on the viewport. Every
   // highlight then followed the *screen* rather than the wave, which drew long parallel stripes

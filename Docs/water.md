@@ -95,25 +95,31 @@ like a pool bottom instead of a picture of one.
 
 Seven swells make the surface, in two tiers the way the reference water shader below builds its
 waves: **110, 78, 58 and 44 map units** set the scale of the sea and lift the whole surface, and
-**34, 28 and 25** chop the crests. Every one of them moves geometry — the surface is subdivided to
-8-unit cells, so even the 25-unit swell is drawn by three vertices a wavelength, and nothing is
-"shading only" any more. Seven *directions* rather than two is the point: two sine families
-interfere into straight parallel crests across a whole pool, and a straight crest reflects the sky as
-one long band, which reads as combed corrugation. No single swell carries more than a fifth of the
-height, for the same reason.
+**34, 28 and 25** chop the crests. Every one of them moves geometry, and no single one carries more
+than a fifth of the height.
+
+What matters as much as the number is the **spread of their directions**: 3°, 29°, 63°, 84°, 119°,
+141° and 168°. Seven *names* over three *directions* is two crossing trains, and two crossing trains
+interfere into ridges that all run the same way — the surface then looks combed and, as one report
+put it, "moves only in one direction". Uneven gaps around the compass make short, broken crests.
 
 They travel by **deep-water dispersion**, `ω = √(g·k)`, so a long swell moves faster than a ripple,
 as real water does — 128 units/s for the 110-unit swell, 60 for the 25-unit one. Every swell crosses
 a wavelength in under a second. Doing it any other way (one rate for all of them, or a fixed slow
 drift) is what makes water look like a moving picture.
 
-The wave field is written **once**, in JavaScript (`shared/water-surface.js`): the mesh is moved and
-its normals are rebuilt from the moved geometry, and the shader is *told* the surface normal rather
-than a second copy of the wavelengths to shade. One field, one source of truth, and the shading
-cannot drift from the shape. The grid shares the vertices two triangles of a fan have in common;
-without that, a vertex knows only its own triangle and every fan edge draws a crease across the pool.
-Only a **top** face moves: the sides and the underside of the same volume stay flat, and they are a
-separate batch for exactly that reason.
+The wave field is written **once**, in JavaScript (`shared/water-surface.js`): the mesh is moved, and
+the shader is *told* the surface normal rather than a second copy of the wavelengths to shade. One
+field, one source of truth, and the shading cannot drift from the shape.
+
+That normal is the **slope of the field**, not an average of the moved triangles. A wave three cells
+long drawn on a grid is a row of flat plates, and a normal averaged from the plates lights each one
+as a facet — the surface reads as tiles rather than as water. The field knows its own derivative
+exactly, so the normal is computed from it per vertex, which costs nothing extra beyond the sine the
+height already needed and leaves the grid free to be as coarse as it likes. The grid also shares the
+vertices two triangles of a fan have in common, so nothing creases along a fan edge. Only a **top**
+face moves: the sides and the underside of the same volume stay flat, and they are a separate batch
+for exactly that reason.
 
 The editor animates its water on the window's own clock — it does not step the level — and the game
 animates it on the game clock, through the same `animateWaterSurface`.
@@ -135,11 +141,11 @@ from the compiled shader rather than from a second set of numbers:
 
 | Uniform | Default | What it does |
 | --- | --- | --- |
-| `waveHeight` | 8 | Peak height of the biggest swell, in map units — the mesh rides this |
+| `waveHeight` | 5 | Peak height of the biggest swell, in map units — the mesh rides this |
 | `waveSpeed` | 1 | How fast the swells travel |
 | `ripple` | 0.6 | How hard the fine chop tilts the surface: the sparkle between the swells |
 | `chop` | 1 | Sharpness of that chop — the reference shader's *choppiness*. 1 is a rubber sheet, 2 a sharp-crested sea |
-| `density` | 1 | How much of the water's own colour sits over what is behind it; lower is clearer |
+| `density` | 0.6 | How much of the water's own colour sits over what is behind it; lower is clearer. At 1 the bottom is hidden, at 0.3 it is a window |
 | `refraction` | 0.22 | How far the surface bends what is behind it — small on purpose, a strong bend stretches every straight edge in the level into a long bright line |
 | `fresnel` | 3 | Exponent of the reflection curve: low reflects a wide band of the sky, high only the rim |
 | `foam` | 0 | White water on the crests — raise it for a sea, leave it alone for a pool |

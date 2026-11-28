@@ -43,18 +43,18 @@ export const WAVE_GRAVITY = 981;
  * Directions and wavelengths are incommensurate so the interference never settles into a weave.
  */
 export const WATER_SWELLS = Object.freeze([
-  // The swell. Seven directions, not two: two sine families interfere into straight parallel crests
-  // across a whole pool, and a straight crest reflects the sky as one long band — the surface reads
-  // as combed corrugation. Seven incommensurate directions at similar heights make a sea instead.
-  Object.freeze({ tier: 'large', direction: [1, 0.28], length: 110, amplitude: .20 }),
-  Object.freeze({ tier: 'large', direction: [-0.42, 1], length: 78, amplitude: .19 }),
-  Object.freeze({ tier: 'large', direction: [0.63, -0.77], length: 58, amplitude: .17 }),
-  Object.freeze({ tier: 'large', direction: [-0.88, -0.47], length: 44, amplitude: .16 }),
-  // The chop. Short enough to break a swell crest in two and carry it away, long enough that the
-  // grid still draws a wave rather than a sawtooth.
-  Object.freeze({ tier: 'medium', direction: [0.90, 0.40], length: 34, amplitude: .16 }),
-  Object.freeze({ tier: 'medium', direction: [-0.60, 0.80], length: 28, amplitude: .15 }),
-  Object.freeze({ tier: 'medium', direction: [-0.70, 1.10], length: 25, amplitude: .14 }),
+  // Seven directions spread around the compass with uneven gaps — 3°, 29°, 63°, 84°, 119°, 141°,
+  // 168°. The gaps matter as much as the count: the first version had seven *names* over three
+  // *directions* (16/24/28° and 113/122/127/129°), which is two crossing trains, and two crossing
+  // trains interfere into ridges that all run the same way. That is what "it only moves in one
+  // direction" looks like: the surface is a comb, not a sea.
+  Object.freeze({ tier: 'large', direction: [0.999, 0.052], length: 110, amplitude: .20 }),
+  Object.freeze({ tier: 'large', direction: [0.875, 0.485], length: 78, amplitude: .19 }),
+  Object.freeze({ tier: 'large', direction: [0.454, 0.891], length: 58, amplitude: .17 }),
+  Object.freeze({ tier: 'large', direction: [0.105, 0.995], length: 44, amplitude: .16 }),
+  Object.freeze({ tier: 'medium', direction: [-0.485, 0.875], length: 34, amplitude: .16 }),
+  Object.freeze({ tier: 'medium', direction: [-0.777, 0.629], length: 28, amplitude: .15 }),
+  Object.freeze({ tier: 'medium', direction: [-0.978, 0.208], length: 25, amplitude: .14 }),
 ]);
 
 /** How fast one swell travels, in radians per second: long waves are faster, as on real water. */
@@ -200,12 +200,57 @@ export function waterSurfaceData(positions, uvs, direction = [0, 1, 0], water = 
     base: Float32Array.from(positions),
     uvs: Float32Array.from(uvs),
     direction: [direction[0] || 0, direction[1] || 0, direction[2] || 0],
+    // The three vertices that give the face's own frame: world units per unit of u and of v, so a
+    // slope of the height field can be turned into a normal without moving a vertex to measure it.
+    basis: uvBasis(positions, uvs),
     // Kept by reference, not copied: these are the shader's own live dials, so turning the height
     // up in the water look window moves the mesh in the same frame the shading changes. A copy
     // would be a snapshot of the settings at build time, and the two would drift the moment a
     // mapper touched a slider.
     water: water || WAVE_DEFAULTS,
   };
+}
+
+/**
+ * The affine frame of a planar face: the world vector of one unit of `u` and of one unit of `v`.
+ *
+ * Three vertices with distinct texture coordinates are enough, because the face is a plane. Returns
+ * null for a degenerate face, which then falls back to geometry normals.
+ */
+function uvBasis(positions, uvs) {
+  const count = Math.min(positions.length / 3, uvs.length / 2);
+  if (count < 3) return null;
+  const at = index => [positions[index * 3], positions[index * 3 + 1], positions[index * 3 + 2]];
+  const origin = at(0), u0 = uvs[0], v0 = uvs[1];
+  for (let a = 1; a < count; a++) {
+    const du0 = uvs[a * 2] - u0, dv0 = uvs[a * 2 + 1] - v0;
+    if (!du0 && !dv0) continue;
+    for (let b = a + 1; b < count; b++) {
+      const du1 = uvs[b * 2] - u0, dv1 = uvs[b * 2 + 1] - v0;
+      const det = du0 * dv1 - du1 * dv0;
+      if (Math.abs(det) < 1e-9) continue;
+      const pa = at(a), pb = at(b);
+      const e1 = [pa[0] - origin[0], pa[1] - origin[1], pa[2] - origin[2]];
+      const e2 = [pb[0] - origin[0], pb[1] - origin[1], pb[2] - origin[2]];
+      const u = [(e1[0] * dv1 - e2[0] * dv0) / det, (e1[1] * dv1 - e2[1] * dv0) / det, (e1[2] * dv1 - e2[2] * dv0) / det];
+      const v = [(e2[0] * du0 - e1[0] * du1) / det, (e2[1] * du0 - e1[1] * du1) / det, (e2[2] * du0 - e1[2] * du1) / det];
+      // The three vertices describe *their* frame, and a batch can hold faces whose textures are
+      // scaled, turned or offset differently — a mapper may turn one face's texture and not the
+      // next. Every vertex is checked against the frame before it is trusted, so a mixed batch
+      // falls back to geometry normals instead of being shaded with somebody else's axes.
+      const tolerance = 0.01 * (Math.hypot(u[0], u[1], u[2]) + Math.hypot(v[0], v[1], v[2]));
+      for (let check = 0; check < count; check++) {
+        const point = at(check);
+        const du = uvs[check * 2] - u0, dv = uvs[check * 2 + 1] - v0;
+        const predicted = [origin[0] + du * u[0] + dv * v[0],
+          origin[1] + du * u[1] + dv * v[1],
+          origin[2] + du * u[2] + dv * v[2]];
+        if (Math.hypot(point[0] - predicted[0], point[1] - predicted[1], point[2] - predicted[2]) > tolerance) return null;
+      }
+      return { u, v };
+    }
+  }
+  return null;
 }
 
 /**
@@ -222,17 +267,40 @@ export function animateWaterSurface(geometry, time) {
   const position = geometry.attributes?.position;
   if (!position) return false;
   const array = position.array;
-  const { base, uvs, direction, water } = data;
+  const { base, uvs, direction, water, basis } = data;
+  // Analytic normals where the face has a frame, geometry normals where it does not. Measuring the
+  // normal by averaging the moved triangles is what a grid *cannot* do honestly: a wave three cells
+  // long is drawn as flat facets, each one lit as a plate, and the surface reads as tiles rather
+  // than as water. The height field knows its own slope exactly, so ask it instead — the price is
+  // four sines a vertex that the height already needed.
+  const normal = basis && geometry.attributes?.normal ? geometry.attributes.normal : null;
+  // Which way the cross product of the two tangents points depends on how the face's texture axes
+  // are wound, so it is oriented to the face's own normal once and kept.
+  const flip = !normal ? 1 : (Math.sign(
+    (basis.u[1] * basis.v[2] - basis.u[2] * basis.v[1]) * direction[0]
+    + (basis.u[2] * basis.v[0] - basis.u[0] * basis.v[2]) * direction[1]
+    + (basis.u[0] * basis.v[1] - basis.u[1] * basis.v[0]) * direction[2]) || 1);
   for (let vertex = 0; vertex < base.length / 3; vertex++) {
-    const height = waterHeight(uvs[vertex * 2] * FACE_UNITS, uvs[vertex * 2 + 1] * FACE_UNITS, time, water);
+    const u = uvs[vertex * 2] * FACE_UNITS, v = uvs[vertex * 2 + 1] * FACE_UNITS;
+    const height = waterHeight(u, v, time, water);
     array[vertex * 3] = base[vertex * 3] + direction[0] * height;
     array[vertex * 3 + 1] = base[vertex * 3 + 1] + direction[1] * height;
     array[vertex * 3 + 2] = base[vertex * 3 + 2] + direction[2] * height;
+    if (!normal) continue;
+    const [du, dv] = waterSlope(u, v, time, water);
+    const tu = [basis.u[0] + direction[0] * du * FACE_UNITS, basis.u[1] + direction[1] * du * FACE_UNITS, basis.u[2] + direction[2] * du * FACE_UNITS];
+    const tv = [basis.v[0] + direction[0] * dv * FACE_UNITS, basis.v[1] + direction[1] * dv * FACE_UNITS, basis.v[2] + direction[2] * dv * FACE_UNITS];
+    let nx = tu[1] * tv[2] - tu[2] * tv[1];
+    let ny = tu[2] * tv[0] - tu[0] * tv[2];
+    let nz = tu[0] * tv[1] - tu[1] * tv[0];
+    const length = Math.hypot(nx, ny, nz) || 1;
+    nx *= flip / length; ny *= flip / length; nz *= flip / length;
+    normal.array[vertex * 3] = nx;
+    normal.array[vertex * 3 + 1] = ny;
+    normal.array[vertex * 3 + 2] = nz;
   }
   position.needsUpdate = true;
-  // The shading normal is the *geometry's* normal: the surface is a real wave, and an effect that
-  // is told where its surface faces reflects the sun and the sky correctly instead of guessing the
-  // view. It costs one pass over the grid per frame and is what stops highlights being stripes.
-  geometry.computeVertexNormals?.();
+  if (normal) normal.needsUpdate = true;
+  else geometry.computeVertexNormals?.();
   return true;
 }

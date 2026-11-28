@@ -118,7 +118,7 @@ export const WATER_SHADER_NAME = 'Water (Shadertoy)';
  * ago and reporting that the water has long straight stripes. The revision is written into the
  * project with the shader and checked when the project is opened.
  */
-export const WATER_SHADER_REVISION = 5;
+export const WATER_SHADER_REVISION = 6;
 // The look a water body ships with, written the way a Shadertoy effect is — `mainImage`, `iTime`,
 // `iChannel0` for what is drawn behind it — so a shader from the web pastes into the same shape.
 //
@@ -147,10 +147,16 @@ export const waterShaderTemplate = `// Water, following the Godot ocean shader i
 // position is what the first version did, and it turned every highlight into a stripe lying across
 // the water — the highlight followed the screen, not the wave.
 vec2 rippleLayer(vec2 p, float scale, vec2 drift, float rate) {
-  // Warped, not crossed. Two straight sine families make a woven grid of highlights; letting every
-  // crest wander with the other axis scatters the glitter the way open water does.
+  // Three wave trains at spread angles, returned as the *gradient* of their sum rather than as the
+  // sines themselves. One train gives parallel bands and two give a woven grid; three at uneven
+  // angles interfere into blobs and short crests, which is what a chop looks like. Returns how much
+  // this layer tilts the surface in x and z.
   vec2 q = (p + drift * (iTime * rate)) * scale;
-  return vec2(sin(q.x + sin(q.y * 1.7) * 1.3), cos(q.y + sin(q.x * 1.3) * 1.7));
+  vec2 tilt = vec2(0.0);
+  tilt += vec2(0.91, 0.41) * cos(dot(q, vec2(0.91, 0.41)) + 1.7);
+  tilt += vec2(-0.54, 0.84) * cos(dot(q, vec2(-0.54, 0.84)) * 1.31 - 0.6);
+  tilt += vec2(0.28, -0.96) * cos(dot(q, vec2(0.28, -0.96)) * 0.79 + 2.4);
+  return tilt;
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
@@ -174,7 +180,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // the eye does.
   float range = length(eyePosition - worldPosition);
   detail *= clamp(1.0 - (range - 48.0) / 320.0, 0.12, 1.0);
-  vec3 normal = normalize(wave + vec3(detail.x, 0.0, detail.y) * 0.06 * ripple);
+  vec3 normal = normalize(wave + vec3(detail.x, 0.0, detail.y) * 0.08 * ripple);
 
   // What is behind the water, bent by the surface's own tilt: the whole difference between water
   // and a blue picture of water.
@@ -199,7 +205,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // after the frame is encoded rather than before it.
   vec3 reflected = reflect(-eye, normal);
   float up = clamp(reflected.y * 0.5 + 0.5, 0.0, 1.0);
-  vec3 sky = mix(vec3(0.20, 0.30, 0.46), vec3(0.02, 0.06, 0.20), up * up) * sun;
+  vec3 sky = mix(vec3(0.09, 0.17, 0.34), vec3(0.008, 0.03, 0.15), up * up) * sun;
 
   // The sun. A real eye and a real normal make this a glitter path that follows the waves from
   // wherever the camera stands, which is the one thing that reads as water at a distance.
@@ -216,8 +222,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // The reflection is most of what water *looks* like, and the body colour is what makes it water.
   // A flat mix of the two is a painted sheet; letting the ripples move the reflection is the whole
   // trick, because the sky above is a gradient and every wave then picks a different part of it.
-  vec3 shaded = mix(mix(behind, body, surface), sky, clamp(reflectivity * 1.3 + 0.28, 0.0, 1.0));
-  shaded += glint * 2.5 + disc * 1.5;
+  vec3 shaded = mix(mix(behind, body, surface), sky, clamp(reflectivity * 1.3 + 0.22, 0.0, 1.0));
+  shaded += glint * 1.8 + disc * 1.0;
 
   // Foam on the crests, where the *swell* is steepest: a measurement of the wave, not a texture
   // painted on. Two slow sines stand in for the foam map the reference samples, so the white
@@ -286,7 +292,7 @@ export function waterShaderId(project) {
  * dropped, and one it added starts at its default.
  */
 /** Defaults this effect has shipped with before: a stored value equal to one is not a choice. */
-const OLD_WATER_DEFAULTS = Object.freeze({ refraction: .5, waveHeight: 5 });
+const OLD_WATER_DEFAULTS = Object.freeze({ refraction: .5, waveHeight: 8 });
 
 function refreshWaterShader(shader) {
   // Matched by name as well as by marker: a project saved before the marker existed carries the
@@ -335,7 +341,7 @@ export const shadertoyTemplate = `void mainImage(out vec4 fragColor, in vec2 fra
 export const waterUniforms = Object.freeze({
   // The swells. `waveHeight` is in map units, which is why the geometry can be displaced by the
   // same numbers without a conversion nobody would remember to keep in step.
-  waveHeight: 8,
+  waveHeight: 5,
   waveSpeed: 1,
   // Shading-only chop: the small sparkle between the swells.
   ripple: .6,
@@ -343,7 +349,7 @@ export const waterUniforms = Object.freeze({
   // `wave_choppiness`. One is a rubber sheet, two is a sharp-crested sea.
   chop: 1,
   // How much of the water's own colour sits over what is behind it before the reflection is added.
-  density: 1,
+  density: .6,
   // How far the surface bends what is behind it. Small on purpose: a strong bend stretches every
   // straight edge in the level into a long bright line, which reads as scratches on the water
   // rather than as depth.
