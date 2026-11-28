@@ -15,7 +15,7 @@ import { skyTexel } from './skybox.js';
  * horizontally, exactly as the camera does in the renderer.
  */
 export function skyPreviewCells({ skybox, columns = 32, rows = 16, heading = 0, pitch = 0,
-  fov = Math.PI * 70 / 180, aspect = 16 / 9 } = {}) {
+  fov = Math.PI * 70 / 180, aspect = 16 / 9, pictureRows = 240 } = {}) {
   const cells = [];
   const halfTan = Math.tan(fov / 2);
   for (let row = 0; row < rows; row++) {
@@ -32,7 +32,7 @@ export function skyPreviewCells({ skybox, columns = 32, rows = 16, heading = 0, 
       const texel = skyTexel({ direction: { x: dx / length, y: dy / length, z: dz / length },
         projection: skybox?.projection || 'equirect', coverage: skybox?.coverage,
         rotation: skybox?.rotation || 0, pitch: skybox?.pitch || 0, scale: skybox?.scale || 1,
-        elevationLimit: skybox?.shape === 'dome' ? 60 : null });
+        rows: pictureRows });
       // The ray is kept with the cell: a preview of a procedural sky lights it, and re-deriving the
       // direction in the panel would be a second copy of this arithmetic to keep in step.
       cells.push({ column, row, direction: { x: dx / length, y: dy / length, z: dz / length }, ...texel });
@@ -49,7 +49,7 @@ export function skyPreviewCells({ skybox, columns = 32, rows = 16, heading = 0, 
  * window, and grey wherever nothing is drawn. Column 0 is -180 degrees and the rightmost column
  * is just short of +180, so the plate's two edges are the same direction, as a panorama's are.
  */
-export function skyPlateCells({ skybox, columns = 72, rows = 36 } = {}) {
+export function skyPlateCells({ skybox, columns = 72, rows = 36, pictureRows = 240, layerUv = null } = {}) {
   const cells = [];
   for (let row = 0; row < rows; row++) {
     const elevation = 90 - (row + .5) / rows * 180;
@@ -60,7 +60,7 @@ export function skyPlateCells({ skybox, columns = 72, rows = 36 } = {}) {
       const direction = { x: ring * Math.cos(az), y: up, z: ring * Math.sin(az) };
       const texel = skyTexel({ direction, projection: skybox?.projection || 'equirect', coverage: skybox?.coverage,
         rotation: skybox?.rotation || 0, pitch: skybox?.pitch || 0, scale: skybox?.scale || 1,
-        elevationLimit: skybox?.shape === 'dome' ? 60 : null });
+        rows: pictureRows, uv: layerUv });
       // The plate's own coordinates win over the texel's, which are the same direction in the
       // sky's rotated frame: a caller asking "which cell is this" means the plate's row and column.
       cells.push({ ...texel, column, row, direction, azimuth, elevation });

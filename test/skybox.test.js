@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decodeDds, parseDdsHeader } from '../shared/dds.js';
 import { skyTexel, normalizeSkybox, defaultSkybox, animationFrameAt, layerAssetAt, edgeSampleMode,
-  coverageWindow, SKY_FACES } from '../shared/skybox.js';
+  coverageWindow, skyboxFromEnvironment, SKY_FACES } from '../shared/skybox.js';
+import { skyDomeV } from '../shared/sky-dome.js';
 
 // ------------------------------------------------------------------------------- DDS
 
@@ -147,13 +148,43 @@ test('zooming the picture inside the window leaves the edges uncovered', () => {
     'the middle of the picture is still covered');
 });
 
-test('a dome has no rows above its top, and says so instead of stretching the last one', () => {
-  const coverage = defaultSkybox().coverage;
-  const low = skyTexel({ direction: direction(0, 40), coverage, projection: 'doom', elevationLimit: 60 });
-  assert.equal(low.inside, true);
-  const high = skyTexel({ direction: direction(0, 75), coverage, projection: 'doom', elevationLimit: 60 });
-  assert.equal(high.inside, false);
-  assert.ok(high.outside > 0, 'a Doom dome is 60 degrees tall');
+test('a Doom dome is a 60-degree window, and the edge mode decides what is above it', () => {
+  // The dome's limit is its own window, not a hidden number: the whole picture is laid over 0..60
+  // degrees, so above it the author's edge mode applies. GZDoom clamps (the top row continues up);
+  // `fade` is how a picture stops instead of being stretched into streaks.
+  const clamped = { azimuth: { from: -180, to: 180 }, elevation: { from: 0, to: 60 }, edge: 'clamp' };
+  assert.equal(skyTexel({ direction: direction(0, 30), coverage: clamped }).inside, true);
+  assert.ok(Math.abs(skyTexel({ direction: direction(0, 30), coverage: clamped }).v - .5) < 1e-9,
+    'halfway up the dome is halfway up the picture');
+  const above = skyTexel({ direction: direction(0, 75), coverage: clamped });
+  assert.equal(above.inside, false);
+  assert.ok(above.outside > 0, 'a clamped dome still reports the area above its top');
+  const faded = { ...clamped, edge: 'fade' };
+  assert.equal(skyTexel({ direction: direction(0, 30), coverage: faded }).inside, true);
+  assert.equal(edgeSampleMode('clamp'), 'clamp', 'the shader repeats the top row above the dome');
+});
+
+test("a level's own Doom sky is adopted over its whole dome, tiled the way GZDoom tiles it", () => {
+  const sky = skyboxFromEnvironment({ skyAsset: 'sky1', skyMode: 'doom' },
+    [{ id: 'sky1', name: 'SKY1', width: 256, height: 128 }]);
+  assert.equal(sky.shape, 'dome');
+  assert.equal(sky.projection, 'doom');
+  // The dome mapping places the picture, not a guessed window: its rows sit where `skyDomeV` puts
+  // them, which for a 128-row sky starts below the horizon and compresses towards the zenith.
+  assert.deepEqual({ ...sky.coverage.elevation }, { from: -90, to: 90 }, 'the whole sky is the window');
+  assert.equal(sky.coverage.edge, 'clamp');
+  const at = elevation => skyTexel({ direction: { x: Math.cos(elevation * Math.PI / 180),
+    y: Math.sin(elevation * Math.PI / 180), z: 0 }, projection: sky.projection, coverage: sky.coverage,
+    rows: 128, uv: sky.layers[0].uv });
+  // The horizon samples the picture 78% down (GZDoom pushes the dome down 1250 units), and the
+  // zenith is the top row — the numbers `skyDomeV` gives, not a straight stretch.
+  assert.ok(Math.abs(at(0).v - skyDomeV(128, 0)) < 1e-9, `horizon v ${at(0).v}`);
+  assert.ok(Math.abs(at(30).v - skyDomeV(128, 30)) < 1e-9, `30 degrees v ${at(30).v}`);
+  assert.ok(at(0).v > .7 && at(40).v < .2, 'the rows are compressed towards the top');
+  // 1024 / 256 = four turns of a 256-wide picture, which is GZDoom's `xscale`.
+  assert.equal(sky.layers[0].uv.repeatU, 4);
+  const wide = skyboxFromEnvironment({ skyAsset: 'big', skyMode: 'doom' }, [{ id: 'big', width: 1024, height: 512 }]);
+  assert.equal(wide.layers[0].uv.repeatU, 1, 'a 1024-wide sky covers the turn once');
 });
 
 test('the edge mode decides what a texel outside the window does', () => {

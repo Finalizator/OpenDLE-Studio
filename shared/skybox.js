@@ -14,6 +14,8 @@
  * window, so what the author sees is what the game draws.
  */
 
+import { skyDomeV } from './sky-dome.js';
+
 export const SKYBOX_VERSION = 1;
 
 /** How the sky's geometry is built. `solid` is a flat colour, `procedural` is a gradient. */
@@ -280,7 +282,7 @@ export function coverageWindow(coverage, rotation = 0) {
  * stretch, wrap or mirror.
  */
 export function skyTexel({ direction, projection = 'equirect', coverage = null, rotation = 0, pitch = 0,
-  scale = 1, tiling = 1, uv = null, elevationLimit = null } = {}) {
+  scale = 1, uv = null, rows = 240 } = {}) {
   const x = number(direction?.x, 0), y = number(direction?.y, 1), z = number(direction?.z, 0);
   const length = Math.hypot(x, y, z) || 1;
   // The window is fixed in the level: it says which part of the view the sky covers, and that does
@@ -295,6 +297,11 @@ export function skyTexel({ direction, projection = 'equirect', coverage = null, 
   const across = (azimuthWorld - windowStart + 360) % 360;
   const fullTurn = window.span >= 359.999;
   const insideAzimuth = fullTurn || across <= window.span + 1e-9;
+  // A Doom sky is not a rectangle stretched over the sky: GZDoom lays it on a dome pushed down
+  // 1250 units and squashed by `texh / 230`, so its rows are compressed towards the zenith and the
+  // bottom rows sit below the horizon. `skyDomeV` is that mapping, and using it here is what makes
+  // "Start from this level's sky" change nothing on screen until a control is touched.
+  const doom = projection === 'doom';
   // The picture slides inside its window and wraps round it, so `rotation` is a pan control: a
   // panorama turns under the view, a backdrop slides within the arc it covers, and neither moves
   // the arc itself. A window that is the whole turn is the same maths with a 360-degree span.
@@ -302,29 +309,29 @@ export function skyTexel({ direction, projection = 'equirect', coverage = null, 
   const turnedFraction = turned / window.span;
   const elevationFraction = (elevationWorld - window.lowElevation) / window.elevationSpan;
 
-  // A dome has no rows above its own top: past there the picture used to be stretched from its
-  // last row, which is the streaks in the report.
-  const pastDome = elevationLimit !== null && Number.isFinite(elevationLimit) && elevation > elevationLimit;
-
   // Outside the window, in window widths. The azimuth distance takes the short way round.
   const azimuthOutside = insideAzimuth ? 0 : Math.min(across - window.span, 360 - across) / Math.max(1e-6, window.span);
-  const windowOutside = Math.max(azimuthOutside, -elevationFraction, elevationFraction - 1, 0);
+  // A Doom sky's vertical position comes from its own mapping, not from the window, so only the
+  // azimuth and the picture's own edges can put a texel outside.
+  const windowOutside = doom ? azimuthOutside : Math.max(azimuthOutside, -elevationFraction, elevationFraction - 1, 0);
 
   const zoom = clamp(number(scale, 1), .01, 64);
-  let u, v;
-  if (projection === 'doom') {
-    u = (azimuth / 360) * Math.max(1, number(tiling, 1));
-    v = (elevation - window.lowElevation) / window.elevationSpan;
-  } else {
-    // Both the panorama and the cylinder read their picture across the window, so the whole
-    // window is one turn of the picture; `flat` is the same maths with the window being the
-    // picture's own rectangle.
-    u = turnedFraction; v = (elevation - window.lowElevation) / window.elevationSpan;
-  }
+  // Every single-picture projection reads its picture across the window, so the whole window is one
+  // turn of the picture; `flat` is the same maths with the window being the picture's own rectangle,
+  // and a Doom sky's four-times tiling is `uv.repeatU`, not a second convention. (It used to have
+  // its own branch here that measured from absolute north, which the shader never did — the preview
+  // and the game then disagreed about the same sky.)
+  let u = turnedFraction;
+  let v = doom ? skyDomeV(number(rows, 240), elevation) : (elevation - window.lowElevation) / window.elevationSpan;
   // Zoom about the middle of the window.
   u = (u - .5) * zoom + .5;
   v = (v - .5) * zoom + .5;
-  const wrapped = coverage?.edge === 'wrap' || coverage?.edge === 'mirror';
+  // A tiled layer repeats its picture, so `u = 3.2` is a texel inside the picture, not outside it:
+  // `uv.repeatU/repeatV` other than 1 means the caller wraps (`fract`) rather than clamps. A Doom
+  // sky is tiled four times round the level, and reading that as "outside the picture" turned the
+  // whole sky into the colour of its edge texel.
+  const repeated = Boolean(uv) && (number(uv.repeatU, 1) !== 1 || number(uv.repeatV, 1) !== 1);
+  const wrapped = repeated || coverage?.edge === 'wrap' || coverage?.edge === 'mirror';
   const pictureOutside = wrapped ? 0 : Math.max(0, -u, u - 1, -v, v - 1);
   if (uv) {
     let tu = u * number(uv.repeatU, 1), tv = v * number(uv.repeatV, 1);
@@ -337,7 +344,7 @@ export function skyTexel({ direction, projection = 'equirect', coverage = null, 
     u = tu + number(uv.offsetU, 0);
     v = tv + number(uv.offsetV, 0);
   }
-  const outside = Math.max(windowOutside, pictureOutside, pastDome ? (elevation - elevationLimit) / 90 : 0);
+  const outside = Math.max(windowOutside, pictureOutside);
   return { u, v, inside: outside <= 1e-9, outside, elevation, azimuth,
     window: { from: windowStart, span: window.span, low: window.lowElevation, high: window.highElevation } };
 }
@@ -636,10 +643,17 @@ export function skyboxFromEnvironment(environment, assets = []) {
   sky.projection = doom ? 'doom' : 'equirect';
   sky.layers[0] = { ...sky.layers[0], assetId: environment.skyAsset, name: asset?.name || 'Sky' };
   if (doom) {
-    // A Doom dome is 60 degrees tall (`SkyVertexDoom`'s `maxSideAngle`); above it the picture has
-    // no rows, which is exactly the region that used to be stretched into streaks.
-    sky.coverage.elevation = { from: -20, to: 60 };
+    // A Doom sky is not a rectangle over a window: its rows follow the dome (see `skyDomeV`), which
+    // puts the picture's bottom rows below the horizon and compresses the rest towards the zenith.
+    // So the window is the whole sky and the projection does the placing — which is what makes the
+    // adopted record draw exactly what the level drew before anyone touched it.
+    sky.coverage.elevation = { from: -90, to: 90 };
     sky.coverage.edge = 'clamp';
+    // `SetupMatrices` tiles a narrow sky until it is 1024 pixels wide (`xscale = texw < 1024 ?
+    // 1024 / texw : 1`), so a 256-wide SKY1 wraps four times round the level. Without this the
+    // picture is stretched four times too wide, which is "only part of the texture" on screen.
+    const tiling = Math.max(1, Math.floor(1024 / Math.max(1, Number(asset?.width) || 1024)));
+    sky.layers[0].uv = { ...sky.layers[0].uv, repeatU: tiling };
   }
   return sky;
 }
