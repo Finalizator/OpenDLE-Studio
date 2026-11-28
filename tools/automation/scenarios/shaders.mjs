@@ -29,7 +29,9 @@ export async function run({ page }) {
   check('the library lists shaders read from folders', Array.isArray(library.shaders) && library.shaders.length >= 2,
     library.shaders?.map(entry => entry.folder));
   check('every folder reads cleanly', (library.problems || []).length === 0, library.problems);
-  const surface = (library.shaders || []).filter(entry => entry.kind === 'surface');
+  // Starters are templates, not looks: they are in the library and in neither list, which the
+  // editor enforces through `libraryShadersOfKind`, and which this scenario has to mirror.
+  const surface = (library.shaders || []).filter(entry => entry.kind === 'surface' && !entry.starter);
   const screen = (library.shaders || []).filter(entry => entry.kind === 'screen');
   check('a surface shader and a full-screen shader ship', surface.length > 0 && screen.length > 0,
     { surface: surface.map(entry => entry.folder), screen: screen.map(entry => entry.folder) });
