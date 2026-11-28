@@ -51,7 +51,8 @@ would not dismiss it on its own.
 
 **Water look…** — right-click the water body (in either the 2D or the 3D view), or use the button in
 the inspector's **Brush type** block — opens a small window
-with a slider per dial: `waveHeight`, `waveSpeed`, `ripple`, `refraction`, `foam`, `sun`. It is
+with a slider per dial: `waveHeight`, `waveSpeed`, `ripple`, `chop`, `density`, `refraction`,
+`fresnel`, `foam`, `sun`. It is
 **not modal** — the viewport stays live behind it, so a slider can be dragged while watching the
 water answer. A drag writes straight into the compiled shader's uniforms, which is why the surface
 follows the pointer without recompiling; letting go stores the number in the project as one undo
@@ -92,22 +93,27 @@ shore moves, the silhouette of the surface moves, and what is behind the water *
 pass* — the shader refracts the level through the wave normal, which is what makes a pool bottom look
 like a pool bottom instead of a picture of one.
 
-Six swells make the surface, at six wavelengths: **110, 78, 58 and 44 map units** carry the mesh,
-**27 and 14** only tilt the shading, because a ripple 14 units long cannot be carried by a 12-unit
-grid — it would alias into a pattern that is neither a wave nor a ripple. Four *directions* rather
-than two is the point: two sine families interfere into straight parallel crests across a whole
-pool, and a straight crest reflects the sun as one long band, which reads as combed corrugation.
+Seven swells make the surface, in two tiers the way the reference water shader below builds its
+waves: **110, 78, 58 and 44 map units** set the scale of the sea and lift the whole surface, and
+**34, 28 and 25** chop the crests. Every one of them moves geometry — the surface is subdivided to
+8-unit cells, so even the 25-unit swell is drawn by three vertices a wavelength, and nothing is
+"shading only" any more. Seven *directions* rather than two is the point: two sine families
+interfere into straight parallel crests across a whole pool, and a straight crest reflects the sky as
+one long band, which reads as combed corrugation. No single swell carries more than a fifth of the
+height, for the same reason.
 
 They travel by **deep-water dispersion**, `ω = √(g·k)`, so a long swell moves faster than a ripple,
-as real water does — 128 units/s for the 110-unit swell, 47 for the 14-unit one. Every swell crosses
-a wavelength in under a second. Doing it any other way (one rate for all of them, or a fixed
-slow drift) is what makes water look like a moving picture.
+as real water does — 128 units/s for the 110-unit swell, 60 for the 25-unit one. Every swell crosses
+a wavelength in under a second. Doing it any other way (one rate for all of them, or a fixed slow
+drift) is what makes water look like a moving picture.
 
-The swells are written twice on purpose: the mesh is built in JavaScript
-(`shared/water-surface.js`) and the normals are shaded in GLSL (`shared/shaders.js`). The numbers
-are pinned to agree by `test/water.test.js` — change one and the test names the other. Only a **top**
-face moves: the sides and the underside of the same volume stay flat, and they are a separate batch
-for exactly that reason.
+The wave field is written **once**, in JavaScript (`shared/water-surface.js`): the mesh is moved and
+its normals are rebuilt from the moved geometry, and the shader is *told* the surface normal rather
+than a second copy of the wavelengths to shade. One field, one source of truth, and the shading
+cannot drift from the shape. The grid shares the vertices two triangles of a fan have in common;
+without that, a vertex knows only its own triangle and every fan edge draws a crease across the pool.
+Only a **top** face moves: the sides and the underside of the same volume stay flat, and they are a
+separate batch for exactly that reason.
 
 The editor animates its water on the window's own clock — it does not step the level — and the game
 animates it on the game clock, through the same `animateWaterSurface`.
@@ -129,12 +135,25 @@ from the compiled shader rather than from a second set of numbers:
 
 | Uniform | Default | What it does |
 | --- | --- | --- |
-| `waveHeight` | 5 | Peak height of the biggest swell, in map units — the mesh rides this |
+| `waveHeight` | 8 | Peak height of the biggest swell, in map units — the mesh rides this |
 | `waveSpeed` | 1 | How fast the swells travel |
-| `ripple` | 0.6 | Fine chop, shading only: the sparkle between the swells |
-| `refraction` | 0.3 | How far the swells bend what is behind the surface — small on purpose, a strong bend stretches every straight edge in the level into a long bright line |
+| `ripple` | 0.6 | How hard the fine chop tilts the surface: the sparkle between the swells |
+| `chop` | 1 | Sharpness of that chop — the reference shader's *choppiness*. 1 is a rubber sheet, 2 a sharp-crested sea |
+| `density` | 1 | How much of the water's own colour sits over what is behind it; lower is clearer |
+| `refraction` | 0.22 | How far the surface bends what is behind it — small on purpose, a strong bend stretches every straight edge in the level into a long bright line |
+| `fresnel` | 3 | Exponent of the reflection curve: low reflects a wide band of the sky, high only the rim |
 | `foam` | 0 | White water on the crests — raise it for a sea, leave it alone for a pool |
-| `sun` | 1 | How bright the sky the surface reflects is |
+| `sun` | 1 | How bright the sky and sun the surface reflects are |
+
+The shading is modelled on the Godot ocean shader in `Ancestors/GodotWater` by **TSS ENTERTAIN**,
+who publishes it for any use provided the author is credited: a stack of scrolling ripple layers
+blended at falling weights, choppiness on their tilt, exponential absorption of the water column, a
+power-curve fresnel and crest foam. It is written from scratch against this engine's inputs rather
+than translated, because the two have different ones — Godot samples a depth texture and a reflection
+probe, we are handed the real camera, the real surface normal and the screen behind the surface. Two
+of Godot's terms have no equivalent here and are approximated: the depth of the water behind a pixel
+is derived from the view angle (a column seen at an angle is longer by 1/cos), and the sky it
+reflects is a gradient rather than the level's skybox.
 
 The shader paints water and nothing else: swells with exact slopes, fine chop, the colour the water
 takes out of what it looks through, the sky it reflects, the sun it catches, and foam where it

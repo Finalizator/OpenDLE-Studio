@@ -9,6 +9,8 @@
 //   4. every brush can carry a shader, water or not;
 //   5. the water brush is not solid: a trajectory through it is unobstructed, which is what "swim
 //      through it" means for the engine's own traces.
+import { waterUniforms } from '../../../shared/shaders.js';
+
 const near = (a, b, tolerance = 1) => Math.abs(a - b) <= tolerance;
 const wait = ms => new Promise(done => setTimeout(done, ms));
 
@@ -148,8 +150,12 @@ export async function run({ page }) {
   const dialogs = await page.evaluate('window.__opendle.ui.dialogs()');
   check('the water look window opened', dialogs.some(dialog => dialog.title === 'Shader look'), dialogs);
   const sliders = await page.evaluate('window.__opendle.ui.describe("dialog.shader-look input[type=range]")');
-  check('every dial the water shader has is a slider', sliders.count === 6,
-    sliders.items.map(item => item.name));
+  // Counted from the shader's own uniforms rather than a literal: a dial added to the effect has to
+  // appear in the window, and a number written here would silently stop testing that.
+  const dials = Object.keys(waterUniforms);
+  check('every dial the water shader has is a slider', sliders.count === dials.length
+    && dials.every(name => sliders.items.some(item => item.name === name)),
+    { got: sliders.items.map(item => item.name), want: dials });
   check('the sliders start at the project\'s own values', sliders.items.every(item => Number(item.value) >= 0),
     sliders.items.map(item => `${item.name}=${item.value}`));
   const spreadBefore = (await page.evaluate('window.__opendle.sceneStats()')).waterSpread;

@@ -152,6 +152,13 @@ export function parseShaderSource(rawSource, uniforms = {}) {
     // drawn behind the object and refract it.
     ['screenUv', { type: 'vec2', mutable: false, input: 'screenUv' }],
     ['resolution', { type: 'vec2', mutable: false, input: 'resolution' }],
+    // The three things a *surface* effect can know and a Shadertoy one could not: where the pixel
+    // is in the world, which way its surface faces, and where the camera stands. Guessing the view
+    // from `screenUv` makes every highlight depend on the screen rather than on the surface, which
+    // draws stripes across the picture.
+    ['worldPosition', { type: 'vec3', mutable: false, input: 'worldPosition' }],
+    ['surfaceNormal', { type: 'vec3', mutable: false, input: 'surfaceNormal' }],
+    ['eyePosition', { type: 'vec3', mutable: false, input: 'eyePosition' }],
     ['iResolution', { type: 'vec3', mutable: false, input: 'resolution3' }],
     ['iMouse', { type: 'vec4', mutable: false, input: 'mouse' }],
     ['iFrame', { type: 'float', mutable: false, input: 'frame' }],

@@ -118,153 +118,118 @@ export const WATER_SHADER_NAME = 'Water (Shadertoy)';
  * ago and reporting that the water has long straight stripes. The revision is written into the
  * project with the shader and checked when the project is opened.
  */
-export const WATER_SHADER_REVISION = 4;
-// The look a water body ships with. It is written the way a Shadertoy effect is — `mainImage`,
-// `iTime`, `iResolution`, the surface's own `uv`, and `iChannel0` for what is drawn behind it — so
-// a shader from the web pastes into the same shape this one is written in.
+export const WATER_SHADER_REVISION = 5;
+// The look a water body ships with, written the way a Shadertoy effect is — `mainImage`, `iTime`,
+// `iChannel0` for what is drawn behind it — so a shader from the web pastes into the same shape.
 //
-// It draws water and nothing else: three swells whose heights and slopes are the *same three*
-// `shared/water-surface.js` rides, fine chop that is only shading, what is behind the surface bent
-// by those swells, the sky the surface reflects, and the sun it catches. There is no land, no
+// The model is the Godot ocean shader the user put in `Ancestors/GodotWater` (by TSS ENTERTAIN, who
+// publishes it for any use as long as the author is credited): a stack of scrolling ripple layers,
+// choppiness, exponential absorption of the water column, power-curve fresnel and crest foam. It is
+// written from scratch against this engine's inputs rather than translated, because the two have
+// different ones — Godot has a depth texture and a reflection probe, we have the real camera, the
+// real surface normal and the screen behind the surface.
+//
+// It draws water and nothing else: the swells are the *mesh's* (`shared/water-surface.js` moves the
+// vertices and rebuilds the normals), the shader only adds the ripples too fine to model, refracts
+// the level through the surface, reflects the sky and catches the sun. There is no land, no
 // shoreline and no backdrop in it, because the level is what is behind the surface.
+export const waterShaderTemplate = `// Water, following the Godot ocean shader in Ancestors/GodotWater (TSS ENTERTAIN, who publishes
+// it for any use provided the author is not written out of it). What carried over is the *model*:
+// scrolling ripple layers blended at falling weights, choppiness scaling their tilt, exponential
+// absorption of the water column, a power-curve fresnel, and foam on the crests.
 //
-// The swells are written out here and in `shared/water-surface.js` because the mesh has to be built
-// in JavaScript and the normals have to be shaded in GLSL. The numbers are pinned to agree by
-// `test/water.test.js`: change one and change the other.
-export const waterShaderTemplate = `// Deep water obeys a dispersion relation: a long swell travels faster than a ripple, because the
-// restoring force is gravity and not the surface tension or the shape of the wave. Without it every
-// swell crawled along at the same speed and the surface read as a slowly moving picture.
-float swellRate(float k) {
-  return sqrt(981.0 * k) * waveSpeed;
-}
-
-// The two long swells. These are the ones the mesh rides, so their height and slope are returned
-// together and the geometry and the normal cannot disagree.
-vec3 swells(vec2 p) {
-  // Four directions, not two: two sine families draw straight parallel crests across a whole pool,
-  // and a straight crest reflects the sun as one long band — the surface reads as combed
-  // corrugation. Four incommensurate directions make a chop sea instead.
-  float height = 0.0;
-  float slopeX = 0.0;
-  float slopeY = 0.0;
-  float k = 6.2831853 / 110.0;
-  float a = (p.x * 1.0 + p.y * 0.28) * k - iTime * swellRate(k);
-  height += 0.40 * sin(a);
-  slopeX += 0.40 * cos(a) * k;
-  slopeY += 0.40 * cos(a) * k * 0.28;
-  k = 6.2831853 / 78.0;
-  a = (p.x * -0.42 + p.y * 1.0) * k - iTime * swellRate(k);
-  height += 0.26 * sin(a);
-  slopeX += 0.26 * cos(a) * k * -0.42;
-  slopeY += 0.26 * cos(a) * k;
-  k = 6.2831853 / 58.0;
-  a = (p.x * 0.63 + p.y * -0.77) * k - iTime * swellRate(k);
-  height += 0.18 * sin(a);
-  slopeX += 0.18 * cos(a) * k * 0.63;
-  slopeY += 0.18 * cos(a) * k * -0.77;
-  k = 6.2831853 / 44.0;
-  a = (p.x * -0.88 + p.y * -0.47) * k - iTime * swellRate(k);
-  height += 0.12 * sin(a);
-  slopeX += 0.12 * cos(a) * k * -0.88;
-  slopeY += 0.12 * cos(a) * k * -0.47;
-  return vec3(height * waveHeight, slopeX * waveHeight, slopeY * waveHeight);
-}
-
-// The two short swells: too short for a 16-unit grid to carry, so they tilt the normal and leave
-// the mesh alone. This is where most of the "water" in the picture actually comes from at the
-// distance a player stands at, because a ripple a metre across is what catches the light.
-vec2 ripples(vec2 p) {
-  vec2 slope = vec2(0.0);
-  float k = 6.2831853 / 27.0;
-  float a = (p.x * 0.78 + p.y * -0.62) * k - iTime * swellRate(k);
-  slope += vec2(0.78, -0.62) * cos(a) * 0.13 * k;
-  k = 6.2831853 / 14.0;
-  a = (p.x * -0.9 + p.y * -0.36) * k - iTime * swellRate(k);
-  slope += vec2(-0.9, -0.36) * cos(a) * 0.07 * k;
-  return slope * waveHeight;
-}
-
-// The small chop that rides on the swells. Shading only: it is far smaller than a map unit, so it
-// would need a grid finer than any pool to displace, and it is what makes the surface sparkle.
-float chop(vec2 p) {
-  vec2 cell = floor(p);
-  vec2 local = fract(p);
-  vec2 fade = local * local * (3.0 - 2.0 * local);
-  float a = fract(sin(dot(cell, vec2(41.7, 289.3))) * 43758.5453);
-  float b = fract(sin(dot(cell + vec2(1.0, 0.0), vec2(41.7, 289.3))) * 43758.5453);
-  float c = fract(sin(dot(cell + vec2(0.0, 1.0), vec2(41.7, 289.3))) * 43758.5453);
-  float d = fract(sin(dot(cell + vec2(1.0, 1.0), vec2(41.7, 289.3))) * 43758.5453);
-  return mix(mix(a, b, fade.x), mix(c, d, fade.x), fade.y) - 0.5;
+// What could not carry over is Godot's depth texture — a surface effect here is handed no depth
+// buffer — so the column of water a pixel looks through is the geometric one instead: the water's
+// depth divided by how steeply the view crosses it. Same quantity, derived rather than sampled.
+//
+// Everything else is drawn from three things a Shadertoy shader could never know: where this pixel
+// is, which way the surface faces, and where the camera stands. Guessing the view from the screen
+// position is what the first version did, and it turned every highlight into a stripe lying across
+// the water — the highlight followed the screen, not the wave.
+vec2 rippleLayer(vec2 p, float scale, vec2 drift, float rate) {
+  // Warped, not crossed. Two straight sine families make a woven grid of highlights; letting every
+  // crest wander with the other axis scatters the glitter the way open water does.
+  vec2 q = (p + drift * (iTime * rate)) * scale;
+  return vec2(sin(q.x + sin(q.y * 1.7) * 1.3), cos(q.y + sin(q.x * 1.3) * 1.7));
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-  vec2 view = fragCoord / iResolution.xy;
-  // The face's own frame in map units: the brush's texture coordinates are one texture (64 units)
-  // per unit, so this is the same space the mesh is displaced in.
-  vec2 p = uv * 64.0;
+  vec3 wave = normalize(surfaceNormal);
+  vec3 eye = normalize(eyePosition - worldPosition);
+  float facing = clamp(dot(wave, eye), 0.0, 1.0);
 
-  vec3 field = swells(p);
-  float height = field.x;
-  vec2 slope = field.yz + ripples(p);
-  // Fine chop on top: the last of the texture, and what the sun actually catches.
-  float fine = chop(p * 0.055 + vec2(iTime * 0.22, 0.0)) + chop(p * 0.09 - vec2(0.0, iTime * 0.17));
-  slope += vec2(fine, fine * 0.7) * 0.09 * ripple;
+  // Three ripple layers at scales the mesh is too coarse to draw: one broad, one turned across it,
+  // one fine. Blended 1 / 0.5 / 0.25 — the weights of a triple-scrolled normal map — the pattern
+  // never repeats at a scale the eye can find, which a single layer of sines always does.
+  vec2 detail =
+      rippleLayer(worldPosition.xz, 0.55, vec2(0.8, 0.45), 1.6)
+    + rippleLayer(worldPosition.xz, 0.95, vec2(-0.6, 0.9), 2.3) * 0.5
+    + rippleLayer(worldPosition.xz, 1.70, vec2(0.35, -0.8), 3.1) * 0.25;
+  // Choppiness: the same ripple tilting the surface harder, which is what makes a sea read as
+  // sharp-crested rather than as a rubber sheet.
+  detail *= chop;
+  // Ripples finer than a pixel are not detail, they are noise — and a sine sampled below its period
+  // is the worst of it, a crawling checkerboard. A normal map would fade into its mip chain at
+  // distance; a procedural field has to be faded by hand, so the detail thins out with range the way
+  // the eye does.
+  float range = length(eyePosition - worldPosition);
+  detail *= clamp(1.0 - (range - 48.0) / 320.0, 0.12, 1.0);
+  vec3 normal = normalize(wave + vec3(detail.x, 0.0, detail.y) * 0.06 * ripple);
 
-  vec3 normal = normalize(vec3(-slope, 1.0));
-
-  // The eye ray, from this pixel of the viewport. An effect on a surface is not told where the
-  // camera is, so the picture carries its own perspective: near the top of the view the surface is
-  // seen almost edge-on and near the bottom it is seen from above, which is what puts the far
-  // water in the sky's colour and the near water in its own.
-  vec3 eye = normalize(vec3((view - 0.5) * vec2(1.2, 1.0), 0.30 + 0.55 * view.y));
-  float facing = clamp(dot(normal, eye), 0.0, 1.0);
-  float glancing = pow(1.0 - facing, 3.2);
-
-  // What is behind the water, bent where the surface is tilted. This is the whole difference
-  // between water and a blue picture of water: the pool's floor, the wall at the far end and the
-  // level's own light all shift as the swells pass, and they shift most along a steep one.
-  vec2 bend = clamp(slope * 1.6, vec2(-0.12), vec2(0.12)) * refraction;
+  // What is behind the water, bent by the surface's own tilt: the whole difference between water
+  // and a blue picture of water.
+  vec2 bend = clamp(normal.xz * 2.2, vec2(-0.06), vec2(0.06)) * refraction;
   vec3 behind = texture(iChannel0, clamp(screenUv + bend, vec2(0.001), vec2(0.999))).rgb;
 
-  // Water absorbs: the deeper the eye looks into it the more of the level it takes out, so the
-  // body of the water is its own colour and only the top of it is a window.
-  vec3 through = behind * mix(vec3(1.0), color.rgb * 3.0, 0.45 + 0.35 * (1.0 - facing));
-  vec3 body = mix(through, color.rgb * 2.4, 0.30 + 0.35 * (1.0 - facing));
-  // A crest catches light and a trough keeps it: that gradient is the shape of the wave.
-  body *= 0.82 + 0.36 * clamp(height * 0.35 + 0.5, 0.0, 1.0);
+  // How much water this pixel is looking through. Water seen at an angle holds 1/cos of the column
+  // underfoot, so the same pool is clear when you look straight down and is its own colour at a
+  // grazing angle — exponential absorption, in the shape of the reference's depth term.
+  float column = 1.0 / max(facing, 0.14);
+  float absorbed = 1.0 - exp(-1.4 * column);
 
-  // The sky the surface reflects. There is no land in it: the reflected direction's height above
-  // the horizon picks a gradient, and the sun's own glint is added on top.
+  // The water's own colour, shallow to deep. The brush's colour arrives in linear space, so it is
+  // used as it is: scaling it here would be a gamma correction done twice.
+  vec3 body = mix(color.rgb * 1.5 + 0.02, color.rgb * 0.55, absorbed);
+
+  // Fresnel: water reflects almost nothing looking straight down and almost everything edge-on.
+  float reflectivity = clamp(0.02 + 0.98 * pow(1.0 - facing, fresnel), 0.0, 1.0);
+
+  // The sky it reflects: the bright horizon when the surface is seen edge-on, the deep zenith when it
+  // is seen from above. Kept in the renderer's own space, so these read as the blue they look like
+  // after the frame is encoded rather than before it.
   vec3 reflected = reflect(-eye, normal);
   float up = clamp(reflected.y * 0.5 + 0.5, 0.0, 1.0);
-  vec3 sky = mix(vec3(0.50, 0.62, 0.74) * sun, vec3(0.09, 0.22, 0.44) * sun, up * up);
+  vec3 sky = mix(vec3(0.20, 0.30, 0.46), vec3(0.02, 0.06, 0.20), up * up) * sun;
 
+  // The sun. A real eye and a real normal make this a glitter path that follows the waves from
+  // wherever the camera stands, which is the one thing that reads as water at a distance.
   vec3 light = normalize(vec3(-0.42, 0.58, 0.70));
-  // The sun off water is a *glitter path*, not a streak: one wide lobe painted a white smear across
-  // the whole lake, which is the single most artificial thing about the first version. A tight lobe
-  // over a perturbed normal breaks it into the flecks a real surface throws back, and the micro
-  // slope below is what scatters them.
-  // The micro slope has to be *resolvable*: at a cell less than a pixel across it aliases into
-  // long streaks along one screen direction, which is what made the surface look combed. A quarter
-  // of a unit per cell, a few units across, scatters the glitter without that.
-  vec3 sparkle = normalize(vec3(-(slope + vec2(chop(p * 0.24 + vec2(iTime * 0.5, 0.0)),
-    chop(p * 0.26 + vec2(9.0, iTime * 0.45))) * 0.5), 1.0));
-  float glint = pow(clamp(dot(reflect(-light, sparkle), eye), 0.0, 1.0), 64.0);
-  float sheen = pow(clamp(dot(normal, light) * 0.5 + 0.5, 0.0, 1.0), 4.0);
+  vec3 halfway = normalize(light + eye);
+  float glint = pow(clamp(dot(normal, halfway), 0.0, 1.0), 160.0) * sun;
+  // The sun itself in the reflection, found by the wave that happens to point at it: this is what a
+  // glittering sea is, one narrow bright thing broken into pieces by the surface.
+  float disc = pow(clamp(dot(reflected, light), 0.0, 1.0), 900.0) * sun;
 
-  // Foam where the swells break. It follows the swells and not the chop: the chop's cells are a few
-  // pixels wide, and white water made of them is a rash rather than a wave crest.
-  float crest = smoothstep(0.75, 1.05, height) * foam;
-  vec3 white = vec3(0.92, 0.97, 1.0);
+  // How much of the body's own colour sits over what is behind it: the pool's density, deepening
+  // with the column of water, and the brush's own opacity thinning it out.
+  float surface = clamp(density * absorbed * (0.55 + 0.45 * color.a) + reflectivity * 0.5, 0.0, 1.0);
+  // The reflection is most of what water *looks* like, and the body colour is what makes it water.
+  // A flat mix of the two is a painted sheet; letting the ripples move the reflection is the whole
+  // trick, because the sky above is a gradient and every wave then picks a different part of it.
+  vec3 shaded = mix(mix(behind, body, surface), sky, clamp(reflectivity * 1.3 + 0.28, 0.0, 1.0));
+  shaded += glint * 2.5 + disc * 1.5;
 
-  vec3 shaded = mix(body, sky, glancing * 0.85);
-  shaded = mix(shaded, white, clamp(crest * 0.8, 0.0, 1.0));
-  // The two highlights are the only light the surface adds to the picture, and they are kept
-  // small: a surface that adds a constant glow stops being water and becomes frosted glass.
-  shaded += glint * 1.6 * sun + sheen * 0.05;
+  // Foam on the crests, where the *swell* is steepest: a measurement of the wave, not a texture
+  // painted on. Two slow sines stand in for the foam map the reference samples, so the white
+  // breaks up as it drifts instead of sitting in one clean band.
+  float foamNoise = 0.55 + 0.3 * sin(worldPosition.x * 0.31 + iTime * 0.7) * sin(worldPosition.z * 0.27 - iTime * 0.9);
+  float crest = clamp(smoothstep(0.10, 0.26, length(wave.xz)) * foam * foamNoise, 0.0, 1.0);
+  shaded = mix(shaded, vec3(0.92, 0.97, 1.0), crest * 0.75);
 
-  float alpha = clamp(color.a * (0.88 + 0.12 * glancing) + crest * 0.4 + glint * 0.4, 0.0, 1.0);
-  fragColor = vec4(shaded, alpha);
+  // The level behind the surface was already blended in above, so the surface is drawn opaque: a
+  // second, half-transparent pass over the same background would mix the level in twice and wash
+  // the water out to the colour of whatever is under it.
+  fragColor = vec4(shaded, 1.0);
 }
 `
 
@@ -321,7 +286,7 @@ export function waterShaderId(project) {
  * dropped, and one it added starts at its default.
  */
 /** Defaults this effect has shipped with before: a stored value equal to one is not a choice. */
-const OLD_WATER_DEFAULTS = Object.freeze({ refraction: .5, waveHeight: 8 });
+const OLD_WATER_DEFAULTS = Object.freeze({ refraction: .5, waveHeight: 5 });
 
 function refreshWaterShader(shader) {
   // Matched by name as well as by marker: a project saved before the marker existed carries the
@@ -370,14 +335,21 @@ export const shadertoyTemplate = `void mainImage(out vec4 fragColor, in vec2 fra
 export const waterUniforms = Object.freeze({
   // The swells. `waveHeight` is in map units, which is why the geometry can be displaced by the
   // same numbers without a conversion nobody would remember to keep in step.
-  waveHeight: 5,
+  waveHeight: 8,
   waveSpeed: 1,
   // Shading-only chop: the small sparkle between the swells.
   ripple: .6,
+  // How hard the ripples tilt the surface for the same height — the reference shader's
+  // `wave_choppiness`. One is a rubber sheet, two is a sharp-crested sea.
+  chop: 1,
+  // How much of the water's own colour sits over what is behind it before the reflection is added.
+  density: 1,
   // How far the surface bends what is behind it. Small on purpose: a strong bend stretches every
   // straight edge in the level into a long bright line, which reads as scratches on the water
   // rather than as depth.
-  refraction: .3,
+  refraction: .22,
+  // The exponent of the fresnel term: low reflects a wide band of the sky, high only the rim.
+  fresnel: 3,
   foam: 0,
   sun: 1,
 });

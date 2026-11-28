@@ -210,6 +210,13 @@ export function compileGLSLEffect(shader, { screen = null, resolution = null } =
       resolution3: TSL.vec3(resolutionInput.x, resolutionInput.y, 1),
       mouse: TSL.vec4(0, 0, 0, 0),
       frame: time.mul(60).floor(),
+      // What a *surface* effect needs and a Shadertoy one never had: where the pixel is, which way
+      // its surface faces, and where the camera is. Without these an effect can only guess the view
+      // from `screenUv`, and a guess that varies across the screen turns every highlight into a
+      // screen-aligned stripe — which is exactly what the water did.
+      worldPosition: TSL.positionWorld,
+      surfaceNormal: TSL.normalWorld,
+      eyePosition: TSL.cameraPosition,
       // Shadertoy names for the same inputs: the parser accepts them, so the compiler
       // must hand them the engine value rather than the zero it falls back to.
       iTime: time,

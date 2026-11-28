@@ -204,6 +204,15 @@ test('a water surface is a grid that rides the swells, and its shape is the shad
   assert.ok(surface.positions.length / 3 > 4, `subdivided, not a quad (${surface.positions.length / 3} vertices)`);
   assert.equal(surface.index.length % 3, 0);
 
+  // The two triangles of the fan share the diagonal between them instead of each keeping a copy of
+  // it. A vertex that only knows its own triangle gets a shading normal bent halfway towards it, so
+  // an unwelded surface draws a crease along every fan edge — visible as a straight line across a
+  // pool that should be smooth. Ten vertices a triangle, four of them on the diagonal.
+  const welded = buildWaterSurface(square, { uvAt: ([x, , z]) => [x / 64, z / 64], water: { cell: 32 } });
+  assert.equal(welded.positions.length / 3, 16, `${welded.positions.length / 3} vertices, not 20`);
+  assert.equal(welded.index.length % 3, 0);
+  assert.ok(welded.index.every(at => at >= 0 && at < welded.positions.length / 3), 'every index names a welded vertex');
+
   // The height field is a sum of swells: it is not constant, and it moves with time.
   assert.notEqual(waterHeight(10, 10, 0), waterHeight(90, 40, 0));
   assert.notEqual(waterHeight(10, 10, 0), waterHeight(10, 10, 1));
@@ -211,13 +220,21 @@ test('a water surface is a grid that rides the swells, and its shape is the shad
   const epsilon = .01;
   const slope = waterSlope(40, 20, .5);
   assert.ok(Math.abs(slope[0] - (waterHeight(40 + epsilon, 20, .5) - waterHeight(40 - epsilon, 20, .5)) / (2 * epsilon)) < 1e-6);
-  // Six swells at six wavelengths: four long enough for the mesh to carry, two short ones that
-  // only tilt the shading. Not harmonics of one another — two directions alone draw straight
-  // parallel crests across a whole pool, which is what the surface looked like when it was combed.
-  assert.equal(WATER_SWELLS.length, 6);
-  assert.equal(WATER_SWELLS.filter(swell => !swell.shading).length, 4);
-  assert.equal(new Set(WATER_SWELLS.map(swell => swell.length)).size, 6);
-  for (const swell of WATER_SWELLS.filter(swell => !swell.shading)) {
+  // Seven swells in two tiers, at seven wavelengths: the long ones lift the whole surface and set its
+  // scale, the medium ones chop the crests. Every one of them moves the mesh, so every one has to be
+  // fine enough for the grid — and none is a harmonic of another, because two directions alone draw
+  // straight parallel crests across a whole pool, which is what the surface looked like when it was
+  // combed.
+  assert.equal(WATER_SWELLS.length, 7);
+  assert.equal(WATER_SWELLS.filter(swell => swell.tier === 'large').length, 4);
+  assert.equal(WATER_SWELLS.filter(swell => swell.tier === 'medium').length, 3);
+  assert.equal(new Set(WATER_SWELLS.map(swell => swell.length)).size, 7);
+  // No one swell may carry the surface: a dominant wavelength is a visible ridge that runs straight
+  // across the pool, however many smaller ones ride on it.
+  const tallest = Math.max(...WATER_SWELLS.map(swell => swell.amplitude));
+  const total = WATER_SWELLS.reduce((sum, swell) => sum + swell.amplitude, 0);
+  assert.ok(tallest / total < 0.2, `${(tallest / total).toFixed(2)} of the height is one swell`);
+  for (const swell of WATER_SWELLS) {
     assert.ok(swell.length >= WAVE_DEFAULTS.cell * 3, `a ${swell.length}-unit swell needs a grid finer than ${WAVE_DEFAULTS.cell}`);
   }
   // Deep-water dispersion: a long swell travels faster than a short one, and every swell crosses a
@@ -247,48 +264,36 @@ test('a water surface is a grid that rides the swells, and its shape is the shad
   assert.ok(moved > 2, `${moved} vertices of ${before.length / 3} ride the swell`);
 });
 
-test('the shader shades the swells the mesh rides, so the two cannot drift apart', () => {
-  // The mesh is built in JavaScript and the normals are shaded in GLSL, so the numbers are written
-  // twice on purpose. This is the pin: the same three wavelengths, the same three amplitudes.
+test('the shader is told the real surface and the real camera, not a guess from the screen', () => {
+  // The first water shader worked out an "eye" from the pixel's place on the viewport. Every
+  // highlight then followed the *screen* rather than the wave, which drew long parallel stripes
+  // across the water at any angle. A surface effect is handed where the pixel is, which way its
+  // surface faces and where the camera stands, and nothing has to be guessed.
+  assert.ok(waterShaderTemplate.includes('normalize(surfaceNormal)'));
+  assert.ok(waterShaderTemplate.includes('normalize(eyePosition - worldPosition)'));
+  assert.ok(!/view - 0\.5/.test(waterShaderTemplate), 'no fake eye from the viewport');
+  // The swell table belongs to the mesh; the shader must not carry a second copy that can drift.
   for (const swell of WATER_SWELLS) {
-    assert.ok(waterShaderTemplate.includes(`6.2831853 / ${swell.length}.0`), `wavelength ${swell.length} is in the shader`);
-    // A moving swell multiplies its amplitude into `sin`; a shading-only one tilts the normal by it.
-    const used = swell.shading ? `* ${swell.amplitude.toFixed(2)} * k` : `${swell.amplitude.toFixed(2)} * sin`;
-    assert.ok(waterShaderTemplate.includes(used), `amplitude ${swell.amplitude} is in the shader`);
+    assert.ok(!waterShaderTemplate.includes(`6.2831853 / ${swell.length}.0`), `${swell.length} is the mesh's`);
   }
-  // And the same dispersion constant drives both, or they would travel at different speeds.
-  assert.ok(waterShaderTemplate.includes('sqrt(981.0 * k)'));
-  assert.equal(WAVE_GRAVITY, 981);
-  assert.ok(waterShaderTemplate.includes('uv * 64.0'), "the shader reads the face's own frame in map units");
-  assert.ok(waterShaderTemplate.includes('texture(iChannel0'), 'and refracts what is behind it');
-  assert.equal(waterUniforms.waveHeight, WAVE_DEFAULTS.height, 'the height dial is the same number');
-});
-
-test('a project opened with an old water shader is brought up to this build, keeping the dials', () => {
-  const project = createProject();
-  // What a level saved two builds ago carries: the shipped name, an old body, old dials.
-  project.shaders = [{ id: 'water', name: WATER_SHADER_NAME, language: 'glsl',
-    source: 'void mainImage(out vec4 c, in vec2 p) { c = vec4(0.2); }',
-    uniforms: { waveHeight: 11, refraction: .9, waveScale: 4, warp: 1 } }];
-  const changed = refreshShippedShaders(project);
-  const shader = project.shaders[0];
-  assert.equal(changed, 1, 'one shipped effect was upgraded');
-  assert.equal(shader.source, waterShaderTemplate, 'the shading code is this build\'s');
-  assert.equal(shader.uniforms.waveHeight, 11, 'the number the mapper dialled in survives');
-  assert.equal(shader.uniforms.refraction, .9);
-  assert.equal(shader.uniforms.waveScale, undefined, 'a dial this build does not have is gone');
-  assert.equal(shader.uniforms.waveSpeed, waterUniforms.waveSpeed, 'and a new one starts at its default');
-  assert.equal(shader.revision, WATER_SHADER_REVISION);
-  // Running it again changes nothing, so opening a project twice is not two edits.
-  assert.equal(refreshShippedShaders(project), 0);
-});
-
-test('a shader named like the engine\'s but written by the mapper is never touched', () => {
-  const project = createProject();
-  project.shaders = [{ id: 'mine', name: 'My water', language: 'glsl',
-    source: 'void mainImage(out vec4 c, in vec2 p) { c = vec4(0.2); }', uniforms: { glow: 1 } }];
-  assert.equal(refreshShippedShaders(project), 0);
-  assert.equal(project.shaders[0].uniforms.glow, 1);
+  // What the mesh cannot carry it does, in world space.
+  assert.ok(waterShaderTemplate.includes('worldPosition.xz'));
+  // The look is modelled on the Godot ocean shader the user supplied: three ripple layers blended
+  // at falling weights, choppiness on their tilt, and exponential absorption of the water column.
+  // A single family of sines reads as corrugation, and flat tint reads as a blue picture.
+  assert.equal((waterShaderTemplate.match(/rippleLayer\(worldPosition\.xz/g) || []).length, 3,
+    'three ripple layers, not one repeating pattern');
+  assert.match(waterShaderTemplate, /\* 0\.5\b[\s\S]*\* 0\.25\b/, 'blended at falling weights');
+  assert.ok(waterShaderTemplate.includes('detail *= chop'), 'choppiness tilts the surface');
+  assert.match(waterShaderTemplate, /exp\(-[\d.]+ \* column\)/, 'the water column absorbs exponentially');
+  assert.match(waterShaderTemplate, /pow\(1\.0 - facing, fresnel\)/, 'fresnel is the dial it says it is');
+  // Godot reads the scene depth to know how much water is in the way. A surface effect here is
+  // handed no depth buffer, so the column has to be derived from the view or not exist at all.
+  assert.ok(!/DEPTH_TEXTURE|depthTexture/.test(waterShaderTemplate), 'no depth texture to sample');
+  // Every dial has to be read by the shader, or it is a slider that does nothing. The two that are
+  // not are the mesh's, and the mesh reads them.
+  const unused = Object.keys(waterUniforms).filter(name => !new RegExp(`\\b${name}\\b`).test(waterShaderTemplate));
+  assert.deepEqual(unused.sort(), ['waveHeight', 'waveSpeed'], 'every other dial drives the shading');
 });
 
 test('the play view and the editor build a brush surface through one function', () => {

@@ -1661,6 +1661,7 @@ let shaderLookDialog = null;
 const SHADER_LOOK_RANGES = {
   // name: [min, max, step] — the shipped water dials first, then a sane default for anything else.
   waveHeight: [0, 20, .25], waveSpeed: [0, 4, .05], ripple: [0, 2, .02],
+  chop: [0, 2.5, .05], density: [0, 1, .05], fresnel: [.5, 6, .1],
   refraction: [0, 1.5, .02], foam: [0, 2, .02], sun: [0, 2, .02],
 };
 function openShaderLook(preferredId = '') {
