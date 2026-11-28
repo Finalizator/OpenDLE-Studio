@@ -129,7 +129,11 @@ export function createSkyboxPanel({ root, project: getProject, edit, status, imp
       // legacy path underneath it.
       delete next.environment.skyAsset;
     }, `Sky picture ${asset.name || 'imported'}`);
-    status(`Sky picture ${asset.name || 'imported'} is on layer ${index + 1}`);
+    const info = asset.skyInfo;
+    const reported = info ? ` (${info.format.toUpperCase()} ${info.width}x${info.height}`
+      + `${info.repaired && (info.repaired.nonFinite || info.repaired.negative)
+        ? `, repaired ${info.repaired.nonFinite} non-finite and ${info.repaired.negative} negative samples` : ''})` : '';
+    status(`Sky picture ${asset.name || 'imported'} is on layer ${index + 1}${reported}`);
     render();
   }
   const importButton = (label = 'Import sky picture') => button(label, () => skyFile.click(), 'primary');

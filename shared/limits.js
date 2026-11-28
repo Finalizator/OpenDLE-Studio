@@ -35,7 +35,12 @@ export const LIMITS = Object.freeze({
   assetPixels: 96 * 1024 * 1024,
   imageSize: 4096,
   imageBytes: 16 * MiB,
-  imageTotalBytes: 192 * MiB,
+  // A float panorama is not a texture: an 8K OpenEXR nebula is tens of megabytes, and refusing it
+  // because it is bigger than a PNG is refusing a format this editor advertises. The dimension
+  // ceiling (`imageSize` for ordinary art) is what actually protects the renderer.
+  skyImageBytes: 64 * MiB,
+  skyImageSize: 8192,
+  imageTotalBytes: 320 * MiB,
   // Events and the tables that grow with the game.
   events: 16384,
   soundAliases: 50000,

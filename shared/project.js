@@ -212,7 +212,8 @@ function measureAssetPayload(asset) {
     // that should be caught at import rather than at play time.
     assert(isDataUri(asset.src, SKY_FORMATS.map(format => SKY_MIME[format])),
       'A sky must be an embedded PNG, JPEG, TGA, DDS, HDR, EXR or TIFF image');
-    assert(asset.src.length <= LIMITS.imageBytes, `Embedded image budget exceeded (${LIMITS.imageBytes / 1024 / 1024} MiB per image, ${LIMITS.imageTotalBytes / 1024 / 1024} MiB total)`);
+    assert(asset.src.length <= LIMITS.skyImageBytes,
+      `A sky image may be at most ${LIMITS.skyImageBytes / 1024 / 1024} MiB (${LIMITS.imageTotalBytes / 1024 / 1024} MiB in the project)`);
     if (asset.format !== undefined) {
       assert(SKY_FORMATS.includes(String(asset.format).toLowerCase()), 'Unknown sky image format');
       assert(skyFormatOf(asset.src) === String(asset.format).toLowerCase() ||
@@ -770,7 +771,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     if (asset.kind !== 'model' && asset.kind !== 'font') {
       // A sky panorama is looked at across the whole horizon, so an 8K one is worth having; every
       // other picture is a surface or a sprite and 4096 is already generous.
-      const ceiling = asset.kind === 'sky' ? 8192 : LIMITS.imageSize;
+      const ceiling = asset.kind === 'sky' ? LIMITS.skyImageSize : LIMITS.imageSize;
       number(asset.width, 'Image width', 1, ceiling);
       number(asset.height, 'Image height', 1, ceiling);
       assert(Number.isInteger(asset.width) && Number.isInteger(asset.height), 'Image dimensions must be integers');

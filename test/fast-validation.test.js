@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProject, cloneProjectForEdit, validateProject } from '../shared/project.js';
+import { LIMITS } from '../shared/limits.js';
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 
@@ -38,7 +39,10 @@ test('fast validation still enforces cumulative artwork budgets', () => {
   const src = `data:image/png;base64,${'A'.repeat(15 * 1024 * 1024)}`;
   project.assets[0].src = src;
   validateProject(project, { fast: true });
-  for (let index = 0; index < 13; index++) {
+  // Enough copies to pass the total, whatever the total is: a hand-picked count went stale the
+  // moment skies were given a budget of their own and the total grew.
+  const copies = Math.ceil(LIMITS.imageTotalBytes / src.length) + 1;
+  for (let index = 0; index < copies; index++) {
     project.assets.push({ ...project.assets[0], id: `img_copy_${index}`, name: `Copy ${index}` });
   }
   assert.throws(() => validateProject(project, { fast: true }), /Embedded image budget exceeded/);

@@ -7520,6 +7520,8 @@ function captureIntoSceneObject(id) {
   sceneObjectEditor?.render();
 }
 $('new-scene-object').addEventListener('click', guard(createSceneObject));
+/** The largest sky file the importer accepts; a float panorama is tens of megabytes. */
+const SKY_IMPORT_BYTES = 128 * 1024 * 1024;
 async function importImageFiles(files, kind) {
   if (files.length > 64) throw new Error('Import at most 64 images at a time');
   const version = editVersion;
@@ -7530,7 +7532,10 @@ async function importImageFiles(files, kind) {
     // as 8-bit would clip exactly that. Everything else is normalised to PNG as before.
     const skyFormat = kind === 'sky' ? skyImageFormat({ name: file.name, type: file.type }) : null;
     if (skyFormat && !['png', 'jpeg'].includes(skyFormat)) {
-      if (file.size > 16 * 1024 * 1024) throw new Error(`${file.name} is larger than 16 MiB`);
+      // A float panorama is big: an 8K OpenEXR nebula is tens of megabytes and is a normal sky,
+      // not a mistake. The dimension ceiling in project validation is what actually protects the
+      // renderer, so this only keeps out something absurd.
+      if (file.size > SKY_IMPORT_BYTES) throw new Error(`${file.name} is larger than ${Math.round(SKY_IMPORT_BYTES / (1024 * 1024))} MiB`);
       const bytes = new Uint8Array(await file.arrayBuffer());
       const mime = { tga: 'image/x-tga', dds: 'image/vnd-ms.dds', hdr: 'image/vnd.radiance',
         exr: 'image/x-exr', tiff: 'image/tiff' }[skyFormat] || 'application/octet-stream';
@@ -7543,9 +7548,16 @@ async function importImageFiles(files, kind) {
       const THREE = await import('three/webgpu');
       const decoded = await decodeSkyImage({ src, format: skyFormat, name: file.name }, { THREE });
       decoded.texture.dispose?.();
-      assets.push({ id: newId('asset'), name: file.name.slice(0, 100), kind: 'sky', format: skyFormat,
+      const asset = { id: newId('asset'), name: file.name.slice(0, 100), kind: 'sky', format: skyFormat,
         width: Math.max(1, Math.round(decoded.width || 1)), height: Math.max(1, Math.round(decoded.height || 1)),
-        offsetX: 0, offsetY: 0, src });
+        offsetX: 0, offsetY: 0, src };
+      // What the decoder actually found — dimensions and any float samples it had to repair. Not
+      // part of the document (a save must not carry it), but the tab reports it when the picture is
+      // imported, which is the difference between "it looks wrong" and "it is 6 channels of NaN".
+      Object.defineProperty(asset, 'skyInfo', { value: {
+        format: skyFormat, width: asset.width, height: asset.height,
+        repaired: decoded.texture.userData?.repair || null }, enumerable: false });
+      assets.push(asset);
       continue;
     }
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 6 * 1024 * 1024) throw new Error('Use PNG, JPEG or WebP images no larger than 6 MiB');

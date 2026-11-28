@@ -9,6 +9,8 @@
  * test with a hand-built file.
  */
 
+import { isFloatSampleArray, repairFloatSamples, samplerReadyTexture } from '/shared/sky-hdr.js';
+
 /** The formats a sky may be stored as, in the order the file picker offers them. */
 export const SKY_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'tga', 'dds', 'hdr', 'exr', 'tif', 'tiff'];
 
@@ -143,6 +145,18 @@ export async function decodeSkyImage({ src, format = null, name = '' }, options 
  */
 function finish(texture, THREE, { hdr = false } = {}) {
   if (!texture) return texture;
+  // A float panorama is repaired before it reaches the GPU: one NaN sample is undefined behaviour
+  // and shows up as a colour that has nothing to do with the picture, and a negative sample has no
+  // meaning in a sky. `texture.userData.repair` says whether anything was changed.
+  if (hdr) {
+    const ready = samplerReadyTexture(texture, THREE);
+    if (!ready.ok) throw new Error(`${ready.reason}`);
+    const image = texture.image;
+    if (isFloatSampleArray(image?.data)) {
+      const channels = image.data.length / Math.max(1, image.width * image.height);
+      texture.userData.repair = repairFloatSamples(image.data, { channels: Math.round(channels) || 4 });
+    }
+  }
   texture.colorSpace = hdr ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
