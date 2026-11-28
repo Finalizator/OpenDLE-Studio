@@ -356,7 +356,12 @@ materialPanel = createMaterialPanel({
 const terrainPanel = createTerrainPanel({
   root: $('terrain-panel'), project: () => project, edit, status, addModel: placeTerrainModel,
 });
-const skyboxPanel = createSkyboxPanel({ root: $('skybox-panel'), project: () => project, edit, status });
+const skyboxPanel = createSkyboxPanel({
+  root: $('skybox-panel'), project: () => project, edit, status,
+  // The tab imports through the editor's own image path, so a `.dds`, `.hdr`, `.exr`, `.tga` or
+  // `.tiff` sky keeps its bytes exactly as the Assets tab would have kept them.
+  importSky: files => importImageFiles(files, 'sky'),
+});
 const playtestLogPanel = createPlaytestLogPanel({
   directory: $('log-directory'), totals: $('log-totals'), list: $('log-list'), detail: $('log-detail'),
   refresh: $('log-refresh'), clear: $('log-clear'),
@@ -7557,6 +7562,9 @@ async function importImageFiles(files, kind) {
   }
   if (version !== editVersion) throw new Error('Project changed during image import. Retry.');
   edit(next => { next.assets ||= []; next.assets.push(...assets); }, `${assets.length} images imported`);
+  // The caller may want to point something at what it just imported — the Skybox tab's own
+  // "Import sky picture" button does exactly that.
+  return assets;
 }
 // A sky is imported in whatever format a panorama really ships in, so the picker offers those
 // formats only while "Import as: Sky" is selected — a .hdr among wall textures is a mistake.

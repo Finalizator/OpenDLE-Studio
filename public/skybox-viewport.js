@@ -68,8 +68,10 @@ export async function createSkyViewport(canvas, { background = '#333333' } = {})
     const texture = new THREE.CanvasTexture(face);
     texture.colorSpace = THREE.SRGBColorSpace;
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
+    // Doom's north is the engine's +z (`render.js` places an entity at `(x, height, y)`), and the
+    // sky's own basis turns with `heading = atan2(z, x)`, so the marks use the same mapping.
     const az = azimuth * DEG;
-    sprite.position.set(Math.cos(az) * 1600, 220, -Math.sin(az) * 1600);
+    sprite.position.set(Math.cos(az) * 1600, 220, Math.sin(az) * 1600);
     sprite.scale.set(120, 120, 1);
     return sprite;
   }
@@ -127,14 +129,16 @@ export async function createSkyViewport(canvas, { background = '#333333' } = {})
   function placeCamera() {
     const azimuth = view.azimuth * DEG, elevation = view.elevation * DEG;
     camera.position.set(0, EYE_HEIGHT, 0);
+    // The engine's own axes: x east, z north, and `heading = atan2(z, x)` is what the sky draws
+    // with (`shared/sky-view.js`). The camera must look down exactly that direction, or the grid
+    // and the sky disagree — with the z term negated the sky was mirrored, so it slid one way while
+    // the ground slid the other.
     camera.lookAt(Math.cos(azimuth) * Math.cos(elevation) * 1000, EYE_HEIGHT + Math.sin(elevation) * 1000,
-      -Math.sin(azimuth) * Math.cos(elevation) * 1000);
+      Math.sin(azimuth) * Math.cos(elevation) * 1000);
     camera.fov = view.fov;
     camera.updateProjectionMatrix();
     if (!built) return;
-    // The sky's own frame: x east, z north, azimuth clockwise from east — the same convention the
-    // engine's view uses, so a window at -90 is the cardinal mark labelled W.
-    built.uniforms.heading.value = (view.azimuth - 90) * DEG;
+    built.uniforms.heading.value = azimuth;
     built.uniforms.pitch.value = view.elevation * DEG;
     built.uniforms.aspect.value = camera.aspect;
     built.uniforms.tanFov.value = Math.tan(view.fov * DEG / 2);
@@ -158,6 +162,10 @@ export async function createSkyViewport(canvas, { background = '#333333' } = {})
     renderer.clearDepth();
     renderer.render(world, camera);
     canvas.dataset.skyFrame = String(frame);
+    // What the view is doing, for the automation harness and for anyone reading the DOM: one
+    // azimuth drives both the camera and the sky's `heading`, which is why they cannot disagree.
+    canvas.dataset.skyAzimuth = view.azimuth.toFixed(2);
+    canvas.dataset.skyElevation = view.elevation.toFixed(2);
   }
 
   let running = false, raf = 0, last = 0;

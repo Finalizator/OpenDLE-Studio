@@ -41,7 +41,7 @@ const BLEND_LABELS = {
   replace: 'Replace', alpha: 'Alpha over', add: 'Add', multiply: 'Multiply', screen: 'Screen', overlay: 'Overlay',
 };
 
-export function createSkyboxPanel({ root, project: getProject, edit, status }) {
+export function createSkyboxPanel({ root, project: getProject, edit, status, importSky }) {
   const body = element('div', 'sky-body');
   const form = element('form', 'sky-form');
   const stage = element('div', 'sky-stage');
@@ -77,6 +77,62 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
   stage.append(viewHolder, toolbar, readout, legend);
   body.append(form, stage);
   root.replaceChildren(body);
+
+  // One picker for the whole tab. It accepts every format a sky may be in, and the editor's own
+  // import path does the decoding, so a cubemap `.dds` or a float `.hdr` keeps its bytes.
+  const skyFile = document.createElement('input');
+  skyFile.type = 'file';
+  skyFile.accept = SKY_IMAGE_ACCEPT;
+  skyFile.multiple = false;
+  skyFile.hidden = true;
+  skyFile.addEventListener('change', () => {
+    const [file] = [...(skyFile.files || [])];
+    skyFile.value = '';
+    if (file) void adoptImportedSky([file]);
+  });
+  stage.append(skyFile);
+
+  /**
+   * Imports a picture and puts it on the layer the author is editing.
+   *
+   * A sky that had nothing in it becomes a normal panorama: a picture on a sphere, the whole turn
+   * round and 60 degrees over the horizon — what a panorama is before anyone narrows it. A sky that
+   * already has a record keeps its shape and window, because the author is swapping the picture,
+   * not starting over.
+   */
+  async function adoptImportedSky(files) {
+    if (!importSky) { status('Importing is not available in this window', true); return; }
+    status('Importing the sky picture…');
+    let imported;
+    try { imported = await importSky(files); }
+    catch (error) { status(`Could not import that sky: ${error.message}`, true); return; }
+    const asset = imported?.[0];
+    if (!asset) { status('That file was not an image a sky can use', true); return; }
+    const index = Math.min(selectedLayer, SKY_LIMITS.layers - 1);
+    edit(next => {
+      const hadPicture = (next.environment.skybox?.layers || []).some(layer => layer.assetId || layer.faces);
+      const base = normalizeSkybox(next.environment.skybox) ||
+        skyboxFromEnvironment(next.environment, next.assets) || defaultSkybox();
+      if (!hadPicture && !next.environment.skyAsset) {
+        base.shape = 'sphere';
+        base.projection = 'equirect';
+        base.coverage.elevation = { from: -90, to: 90 };
+      }
+      if (!base.layers[index]) base.layers[index] = defaultLayer(index);
+      const layer = base.layers[index];
+      layer.assetId = asset.id;
+      layer.faces = null;
+      layer.animation.frames = [];
+      layer.name = String(asset.name || `Layer ${index + 1}`).slice(0, SKY_LIMITS.nameLength);
+      next.environment.skybox = base;
+      // The level's own Doom sky is now an editable record, so it must not also be drawn by the
+      // legacy path underneath it.
+      delete next.environment.skyAsset;
+    }, `Sky picture ${asset.name || 'imported'}`);
+    status(`Sky picture ${asset.name || 'imported'} is on layer ${index + 1}`);
+    render();
+  }
+  const importButton = (label = 'Import sky picture') => button(label, () => skyFile.click(), 'primary');
 
   let selectedLayer = 0;
   let animationClock = 0;
@@ -193,8 +249,8 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
     if (!current) {
       const empty = element('div', 'sky-empty');
       empty.append(element('h2', null, 'No sky yet'),
-        element('p', 'muted', 'This level has no sky picture. Import a panorama (PNG, JPEG, TGA, DDS, HDR, EXR or TIFF) '
-          + 'in the Assets tab, then choose it here — or start from a procedural preset.'));
+        element('p', 'muted', 'Import a panorama or a cubemap — PNG, JPEG, TGA, DDS, HDR, EXR or TIFF — or start '
+          + 'from this level\'s own sky or a procedural one.'));
       form.append(empty);
       const presets = element('div', 'sky-row');
       for (const preset of getProject()?.skyPresets || []) {
@@ -204,6 +260,7 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
       // shortest way to the tab's controls without losing the look it was imported with, so it is
       // offered first; a sky from nothing at all is still one click away.
       const startRow = element('div', 'sky-row');
+      startRow.append(importButton('Import sky picture…'));
       if (getProject()?.environment?.skyAsset)
         startRow.append(button('Start from this level\'s sky', () => touch(() => {}, 'Sky started from the level\'s own sky'), 'primary'));
       startRow.append(button(getProject()?.environment?.skyAsset ? 'Start blank' : 'Start from scratch',
@@ -366,6 +423,9 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
     layers.append(element('p', 'muted',
       'The first layer replaces what is under it; the rest blend over it. Each layer has its own window, '
       + 'motion and animation, so clouds move over a still sky.'));
+    // Importing from here puts the picture straight on the layer that is selected, which is the
+    // whole job: choose a file, see it on the sky.
+    layers.append(element('div', 'sky-row', importButton('Import a sky picture…')));
     const list = element('div', 'sky-layers');
     current.layers.forEach((layer, index) => {
       const row = element('div', `sky-layer${index === selectedLayer ? ' selected' : ''}`);

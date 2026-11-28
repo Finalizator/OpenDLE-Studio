@@ -87,6 +87,51 @@ export async function run({ page }) {
     })()`));
   check('the viewport built the sky the tab wrote',
     await page.evaluate(`document.querySelector('.sky-canvas').dataset.skyLayers !== undefined`));
+
+  // The tab imports its own pictures: the button drives the file input, and the picture lands on
+  // the layer being edited with the sky becoming a plain panorama.
+  const imported = await page.evaluate(`(async () => {
+    const input = document.querySelector('#skybox-panel input[type=file]');
+    let clicked = false;
+    const original = input.click.bind(input);
+    input.click = () => { clicked = true; original(); };
+    const button = [...document.querySelectorAll('#skybox-panel button')].find(b => /Import/.test(b.textContent));
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const canvas = document.createElement('canvas'); canvas.width = 128; canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ['#8b2f2f', '#2f6b3a', '#2f4f8b', '#8b7a2f'].forEach((colour, index) => {
+      ctx.fillStyle = colour; ctx.fillRect(index * 32, 0, 32, 64);
+    });
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([blob], 'tab-sky.png', { type: 'image/png' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 900));
+    return { clicked, accept: input.accept, status: document.getElementById('status').textContent };
+  })()`);
+  check('the tab has its own import button', imported.clicked, imported);
+  check('the picker accepts the sky formats', imported.accept.includes('.dds') && imported.accept.includes('.hdr'),
+    imported.accept.split(',').slice(0, 4));
+  const afterImport = await page.evaluate(`(() => ({
+    readout: document.querySelector('.sky-readout').textContent,
+    layers: document.querySelector('.sky-canvas').dataset.skyLayers,
+    view: document.querySelector('.sky-view').dataset.view }))()`);
+  check('the imported picture is on the sky',
+    afterImport.readout.includes('covered by the layer pictures') && afterImport.layers === '1', afterImport);
+
+  // Dragging turns the view, and the sky follows the pointer: one azimuth drives the camera and the
+  // sky's own heading, so a rightward drag slides the sky right rather than mirroring it.
+  const beforeDrag = await page.evaluate(`document.querySelector('.sky-canvas').dataset.skyAzimuth`);
+  const rect = await page.evaluate(`(() => { const r = document.querySelector('.sky-canvas').getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+  await page.drag({ x: rect.x, y: rect.y }, { x: rect.x + 100, y: rect.y }, { steps: 6 });
+  await wait(300);
+  const afterDrag = await page.evaluate(`document.querySelector('.sky-canvas').dataset.skyAzimuth`);
+  check('a rightward drag turns the view one way and not the other',
+    Number(afterDrag) < Number(beforeDrag) - 20, { beforeDrag, afterDrag });
+
   // The tab wears the studio's colours, not a palette of its own.
   check('the tab uses the editor palette',
     await page.evaluate(`(() => {
@@ -118,25 +163,19 @@ export async function run({ page }) {
   // back to the whole sphere first, so the plate is the picture and not a patch of it.
   await page.evaluate(`[...document.querySelectorAll('#skybox-panel button')].find(b => b.textContent === 'Whole sphere').click()`);
   await wait(250);
-  await page.evaluate(`document.querySelector('[data-tab="assets"]').click()`);
-  await wait(200);
-  await page.evaluate(`document.getElementById('image-kind').value = 'sky'; document.getElementById('image-kind').dispatchEvent(new Event('change', { bubbles: true }))`);
-  check('the picker offers the sky formats',
-    (await page.evaluate(`document.getElementById('image-file').accept`)).includes('.hdr'));
-  await page.evaluate(IMPORT_SKY);
-  await open();
-  await page.evaluate(`(() => {
-    const layer = document.querySelector('#skybox-panel .sky-layer');
-    const field = [...layer.querySelectorAll('.sky-field')].find(f => f.textContent.startsWith('Picture'));
-    const select = field.querySelector('select');
-    select.value = select.options[1].value;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    return select.value;
+
+  // The imported picture is four vertical bands, so the plate must show several colours across a
+  // row: one flat colour would mean it sampled a single texel.
+  const bands = await page.evaluate(`(() => {
+    const canvas = document.querySelector('.sky-preview');
+    if (!canvas || canvas.hidden) return { distinct: 0 };
+    const ctx = canvas.getContext('2d');
+    const row = ctx.getImageData(0, Math.round(canvas.height / 2), canvas.width, 1).data;
+    const seen = new Set();
+    for (let x = 0; x < canvas.width; x++) seen.add([row[x * 4], row[x * 4 + 1], row[x * 4 + 2]].join(','));
+    return { distinct: seen.size, coverage: canvas.dataset.skyCoverage };
   })()`);
-  await wait(300);
-  const painted = await page.evaluate(pixel);
-  check('the plate samples the picture it was given',
-    painted.top[2] > painted.top[0] && painted.bottom[1] > painted.bottom[2], painted);
+  check('the plate samples the picture it was given', bands.distinct >= 3, bands);
   check('the readout names what is drawing the sky',
     (await page.evaluate(`document.querySelector('.sky-readout').textContent`)).includes('covered by the layer pictures'));
   // The tab's own viewport draws the picture too, through the same material builder.

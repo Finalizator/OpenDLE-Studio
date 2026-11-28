@@ -23,6 +23,10 @@ carries its own sky.
   pixel-for-pixel identical, so adopting changes nothing on screen.
 * **Start blank** — an empty sky: a full-sphere window with no picture, drawn as a gradient or as a
   flat colour until you choose a panorama.
+* **Import sky picture** — in the empty state and above the layer list. It opens a file picker with
+  every sky format the editor reads (`SKY_IMAGE_ACCEPT`) and puts the picture on the layer being
+  edited; a sky with nothing in it becomes a plain panorama (sphere, equirect, the whole turn
+  round) while a sky that already has a record keeps its shape and window.
 * **Presets** — sky designs are saved with the project (`project.skyPresets`) and a rule can switch
   to one by name.
 
@@ -62,8 +66,9 @@ The tab shows the sky two ways, from one record.
 
 **3D view** (the one that opens) is a real renderer: the same fragment program the game runs, built
 by `public/sky-material.js`, over a grid on the level's floor and the four cardinal marks. Drag to
-look around, wheel to zoom, double-click to reset. This answers "what will the player see", and the
-line under it reports the same window numbers as the coverage map.
+look around (the sky and the ground follow the pointer together — one azimuth drives both), wheel to
+zoom, double-click to reset. This answers "what will the player see", and the line under it reports
+the same window numbers as the coverage map.
 
 **Coverage map** is the whole sky as a plate — azimuth across, elevation up — painted with the same
 maths the shader uses (`skyTexel` in `shared/skybox.js`). Each cell is filled with the texel the game
