@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readShaderLibrary } from '../server/shader-library.js';
 import {
-  SCREEN_SHADER_FOLDER, getShaderLibrary, libraryShader, libraryShadersOfKind, setShaderLibrary,
-  shaderFromLibrary, shaderLibraryEntry,
+  SCREEN_SHADER_FOLDER, getShaderLibrary, libraryShader, libraryShadersOfKind, libraryStarter,
+  setShaderLibrary, shaderFromLibrary, shaderLibraryEntry, starterSource,
 } from '../shared/shader-library.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -83,6 +83,35 @@ test('the installed library refuses two shaders that claim the same folder or bu
   // Whatever the test raised, the real library is what the rest of the suite uses.
   setShaderLibrary(library.shaders);
   assert.equal(getShaderLibrary().shaders.length, library.shaders.length);
+});
+
+test('starters are templates: in the library, never in a list', () => {
+  setShaderLibrary(library.shaders);
+  const starters = library.shaders.filter(entry => entry.starter);
+  assert.ok(starters.length >= 1, 'the engine ships a starter for a new effect');
+  for (const entry of starters) {
+    assert.ok(entry.source.trim().length > 20, `${entry.folder} has source`);
+    assert.equal(libraryShader(entry.folder)?.starter, true, 'and is reachable by folder');
+  }
+  // The lists the interface draws leave them out, both of them.
+  for (const kind of ['surface', 'screen']) {
+    assert.ok(libraryShadersOfKind(kind).every(entry => !entry.starter), `${kind} lists no starter`);
+  }
+  assert.equal(libraryStarter('water'), null, 'a normal shader is not a starter');
+  // And the editor's two "add an effect" sources come from there.
+  return import('../shared/shaders.js').then(shaders => {
+    assert.equal(shaders.effectStarter(), starterSource('_starter-effect'));
+    assert.equal(shaders.shadertoyStarter(), starterSource('_starter-shadertoy'));
+    // A starter has to be a shader the language accepts, or "add an effect" adds a broken one.
+    for (const source of [shaders.effectStarter(), shaders.shadertoyStarter()]) {
+      assert.ok(/mainImage\s*\(|vec4\s+effect\s*\(/.test(source));
+    }
+  });
+});
+
+test('asking for a starter the library does not have says which folder is missing', () => {
+  setShaderLibrary(library.shaders);
+  assert.throws(() => starterSource('_starter-nothing'), /shaders\/_starter-nothing\/ is missing/);
 });
 
 test('applying a library shader copies it into the project, dials and all', () => {

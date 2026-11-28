@@ -1,0 +1,10 @@
+{
+  "name": "World effect",
+  "kind": "surface",
+  "starter": true,
+  "description": "The starting point for a new GLSL effect: a pulsing tint driven by one uniform.",
+  "author": "OpenDLE",
+  "license": "project",
+  "entry": "main.glsl",
+  "uniforms": { "strength": 1 }
+}

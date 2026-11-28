@@ -1,0 +1,10 @@
+{
+  "name": "Shadertoy effect",
+  "kind": "surface",
+  "starter": true,
+  "description": "The starting point for a shader pasted from the web: mainImage, iTime, iChannel0.",
+  "author": "OpenDLE",
+  "license": "project",
+  "entry": "main.glsl",
+  "uniforms": {}
+}

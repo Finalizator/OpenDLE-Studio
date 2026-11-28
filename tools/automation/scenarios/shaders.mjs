@@ -54,6 +54,10 @@ export async function run({ page }) {
     { offered: fromLibrary.map(option => option.text), library: surface.map(entry => entry.name) });
   check('and not the full-screen ones', !fromLibrary.some(option => screen.some(entry => option.text === entry.name)),
     fromLibrary.map(option => option.text));
+  const starters = (library.shaders || []).filter(entry => entry.starter);
+  check('nor the starters, which are templates rather than looks',
+    starters.length > 0 && !fromLibrary.some(option => starters.some(entry => option.text === entry.name)),
+    { starters: starters.map(entry => entry.name), offered: fromLibrary.map(option => option.text) });
 
   const chosen = fromLibrary[0];
   await evaluate(`(() => {

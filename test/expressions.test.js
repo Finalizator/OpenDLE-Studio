@@ -6,7 +6,10 @@ import { evaluateExpression, validateExpression, expressionContext, parseExpress
 import { applyTool } from '../server/tools.js';
 import { ProjectStore } from '../server/store.js';
 import { installDefaultHUD } from '../shared/hud.js';
-import { shaderTemplate } from '../shared/shaders.js';
+import { effectStarter } from '../shared/shaders.js';
+import { installTestShaderLibrary } from './shader-library-helper.js';
+
+installTestShaderLibrary();
 
 const expr = source => ({ expr: source });
 const context = { time: 3, dt: .05, random: () => .25, reference: () => 10 };
@@ -128,7 +131,7 @@ test('HUD numeric properties and captions accept expressions with their existing
 test('GLSL effects and uniforms are controlled by the same visual-script expressions and persisted through MCP', () => {
   let p = fixture();
   p = applyTool(p, 'shaders_set', { shaders: [{ id: 'effect', name: 'World effect', language: 'glsl',
-    source: shaderTemplate, uniforms: { strength: 1 } }], shaderId: 'effect' }).project;
+    source: effectStarter(), uniforms: { strength: 1 } }], shaderId: 'effect' }).project;
   p.events.push({ id: 'shader_rule', enabled: true, once: true, condition: { type: 'shaderEnabled' }, actions: [
     { type: 'setShaderUniform', uniform: 'strength', value: expr('sin(time) * 0.25 + 0.5') },
     { type: 'setShaderEnabled', enabled: 'no' },

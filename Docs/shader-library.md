@@ -65,6 +65,21 @@ editing the engine's library. `builtin` effects are the exception: their source 
 folder when `revision` moves, because a shading fix has to reach levels made before it, while the
 mapper's dial values are kept.
 
+## Starters
+
+A folder can be a **template** rather than a look: `"starter": true` in its manifest. The library
+keeps it, the editor never offers it on a brush or over the frame, and it is what **Add GLSL effect**
+and **Add Shadertoy effect** begin a new effect with. The engine ships two:
+
+| Folder | What a new effect starts as |
+| --- | --- |
+| `shaders/_starter-effect/` | A `vec4 effect(color, uv, time)` tint with one `strength` uniform |
+| `shaders/_starter-shadertoy/` | A `mainImage` in the Shadertoy shape, reading `iChannel0` |
+
+Marking a folder as a starter is how "this is a template, not a shader to apply" is expressed in
+data, so a `_starter-…` folder needs no special case in the scanner — only the list filters, which
+skip it.
+
 ## Adding one
 
 1. Make the folder: `shaders/<name>/` for a surface shader, `shaders/on_screen/<name>/` for a

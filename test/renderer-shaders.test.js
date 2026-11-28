@@ -2,14 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { shaderTemplate, validateShaders } from '../shared/shaders.js';
+import { effectStarter, validateShaders } from '../shared/shaders.js';
+import { installTestShaderLibrary } from './shader-library-helper.js';
+
+installTestShaderLibrary();
 import { compileGLSLEffect } from '../public/shader-effects.js';
 import { contentSecurityPolicy } from '../server/export-launcher.js';
 import { selectRendererBackend, createBrowserRenderer } from '../public/renderer-backend.js';
 import { vec4, vec2, float, uniform } from 'three/tsl';
 import { isShadertoySource, parseShaderSource } from '../shared/shader-language.js';
 
-const shader = (overrides = {}) => ({ id: 'pulse', name: 'Pulse', language: 'glsl', source: shaderTemplate, uniforms: { strength: 1 }, ...overrides });
+const shader = (overrides = {}) => ({ id: 'pulse', name: 'Pulse', language: 'glsl', source: effectStarter(), uniforms: { strength: 1 }, ...overrides });
 
 test('shader documents validate IDs, selected shader, language and finite scalar uniforms', () => {
   assert.deepEqual(validateShaders({ shaders: [shader()], environment: { shaderId: 'pulse' } }), []);
@@ -51,7 +54,7 @@ test('portable GLSL reports unsupported syntax rather than interpreting arbitrar
   // The entry point keeps its signature, so a shader cannot quietly change what it is fed.
   assert.throws(() => compileGLSLEffect(shader({ source: 'vec4 effect(vec4 color) { return color; }' })), /effect expects \(vec4 color, vec2 uv, float time\)/);
   assert.ok(compileGLSLEffect(shader({ source: 'vec4 effect(vec4 paint, vec2 st, float clock) { return vec4(paint.rgb * st.x * clock, paint.a); }' })));
-  assert.throws(() => compileGLSLEffect(shader({ source: `uniform float x;\n${shaderTemplate}` })), /uniforms object/);
+  assert.throws(() => compileGLSLEffect(shader({ source: `uniform float x;\n${effectStarter()}` })), /uniforms object/);
   assert.throws(() => compileGLSLEffect(shader({ uniforms: { sin: 1 } })), /reserved/);
 });
 
@@ -84,7 +87,7 @@ test('Save/MCP shader validation parses source without browser or Three dependen
   assert.match(validateShaders({ shaders: [shader({ source: 'vec4 effect(vec4 color, vec2 uv, float time) { for (;;) {} return color; }' })] }).join(), /A for loop must declare its counter/);
   assert.match(validateShaders({ shaders: [shader({ source: 'vec4 effect(vec4 color, vec2 uv, float time) { while (true) {} return color; }' })] }).join(), /Unsupported GLSL statement while/);
   assert.throws(() => parseShaderSource('/*'), /Unterminated/);
-  assert.throws(() => parseShaderSource(`${shaderTemplate} arbitrary`, { strength: 1 }), /Unsupported GLSL type arbitrary/);
+  assert.throws(() => parseShaderSource(`${effectStarter()} arbitrary`, { strength: 1 }), /Unsupported GLSL type arbitrary/);
 });
 
 test('Shadertoy shaders run as effects: mainImage, uniforms, control flow and channels', () => {

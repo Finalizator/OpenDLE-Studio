@@ -62,6 +62,9 @@ export function shaderLibraryEntry({ manifest, source, folder, kind }) {
     author: String(manifest.author ?? '').trim(),
     license: String(manifest.license ?? '').trim(),
     builtin: String(manifest.builtin ?? '').trim() || null,
+    // A starter is a template a new effect begins as, not a look anyone applies: the lists leave it
+    // out, and the editor reaches for it by name.
+    starter: manifest.starter === true,
     revision: Number.isFinite(manifest.revision) ? manifest.revision : 0,
     entry: String(manifest.entry ?? 'main.glsl'),
     uniforms: Object.freeze({ ...uniforms }),
@@ -130,8 +133,25 @@ export function builtinShader(name) {
   return installed.byBuiltin.get(name) || null;
 }
 
-/** The library's shaders of one kind, in name order — what a list in the interface shows. */
+/**
+ * The library's shaders of one kind, in name order — what a list in the interface shows.
+ *
+ * Starters are left out: they are templates for a new effect, not looks to put on anything.
+ */
 export function libraryShadersOfKind(kind) {
-  return installed.shaders.filter(entry => entry.kind === kind)
+  return installed.shaders.filter(entry => entry.kind === kind && !entry.starter)
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/** One of the library's starters by folder, or null. A starter is a template, never listed. */
+export function libraryStarter(folder) {
+  const entry = installed.byFolder.get(folder) || null;
+  return entry && entry.starter ? entry : null;
+}
+
+/** A starter's source, by folder. Throws with the folder name if the library has no such starter. */
+export function starterSource(folder) {
+  const entry = libraryStarter(folder);
+  if (!entry) throw new Error(`The shader library has no starter "${folder}"; shaders/${folder}/ is missing`);
+  return entry.source;
 }

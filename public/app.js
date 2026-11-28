@@ -33,7 +33,7 @@ import {
 import { requestMouseLock } from './pointer-lock.js';
 import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog, openNodeEventSheet } from './event-sheet.js';
-import { WATER_SHADER_NAME, shaderTemplate, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterDefaults, waterShaderId } from '/shared/shaders.js';
+import { WATER_SHADER_NAME, effectStarter, shadertoyFromDownload as readShadertoyJson, shadertoyStarter, waterDefaults, waterShaderId } from '/shared/shaders.js';
 import { libraryShader, libraryShadersOfKind, setShaderLibrary, shaderFromLibrary } from '/shared/shader-library.js';
 import { projectIds } from '/shared/project-ids.js';
 import { WATER_DEFAULTS, waterFromPreset, waterPresets, waterSettings } from '/shared/water.js';
@@ -3721,7 +3721,7 @@ function renderEnvironment() {
   parent.append(button('Add GLSL effect', () => edit(next => {
     next.shaders ||= [];
     const id = newId('shader');
-    next.shaders.push({ id, name: 'World effect', language: 'glsl', source: shaderTemplate, uniforms: { strength: 1 } });
+    next.shaders.push({ id, name: 'World effect', language: 'glsl', source: effectStarter(), uniforms: { strength: 1 } });
     next.environment.shaderId ||= id;
   })));
   // A shader from the web is somebody else's work, so it is the *mapper* who brings it in: the
@@ -3753,7 +3753,7 @@ function renderEnvironment() {
   parent.append(button('Add a Shadertoy effect', () => edit(next => {
     next.shaders ||= [];
     const id = newId('shader');
-    next.shaders.push({ id, name: 'Shadertoy effect', language: 'glsl', source: shadertoyTemplate, uniforms: {} });
+    next.shaders.push({ id, name: 'Shadertoy effect', language: 'glsl', source: shadertoyStarter(), uniforms: {} });
     next.environment.shaderId ||= id;
   })));
   // A Shadertoy link is read by this server, because the studio's content policy only

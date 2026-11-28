@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { shaderTemplate } from '../shared/shaders.js';
+import { effectStarter } from '../shared/shaders.js';
+import { installTestShaderLibrary } from './shader-library-helper.js';
+
+installTestShaderLibrary();
 import { createProject, validateProject, removeEntity } from '../shared/project.js';
 import { installEngineScripts, ENGINE_ACTIONS, ENGINE_CONDITIONS, defaultEngineCommand } from '../shared/engine-script.js';
 import { createRuntime, lookPlayer, stepRuntime } from '../shared/runtime.js';
@@ -92,7 +95,7 @@ test('every Engine command has shared editor defaults and validates after adding
       Object.assign(project, assembleGameLevels([{ id: 'MAP01', project: structuredClone(project) }], 'MAP01', project.title).project);
     if (['gameScreen', 'setGameScreen'].includes(command.type)) value.screen = 'playing';
     if (['setShaderUniform', 'setShaderEnabled', 'shaderEnabled'].includes(command.type)) {
-      project.shaders = [{ id: 'test_shader', name: 'Test effect', language: 'glsl', source: shaderTemplate, uniforms: { strength: 1 } }];
+      project.shaders = [{ id: 'test_shader', name: 'Test effect', language: 'glsl', source: effectStarter(), uniforms: { strength: 1 } }];
       project.environment.shaderId = 'test_shader';
     }
     if (command.target) {

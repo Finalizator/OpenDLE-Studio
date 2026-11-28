@@ -1,13 +1,21 @@
 import { parseShaderSource, validShaderUniformName } from './shader-language.js';
 import { projectIds } from './project-ids.js';
-import { builtinShader, shaderFromLibrary } from './shader-library.js';
+import { builtinShader, shaderFromLibrary, starterSource } from './shader-library.js';
 
-// Pair this source with uniforms: { strength: 1 } for a live-editable tint gain.
-export const shaderTemplate = `vec4 effect(vec4 color, vec2 uv, float time) {
-  float pulse = 0.75 + 0.25 * sin(time + uv.x * 6.2831853);
-  vec3 tint = color.rgb * pulse * strength;
-  return vec4(tint, color.a);
-}`;
+/**
+ * The source a new GLSL effect begins as, from `shaders/_starter-effect/`.
+ *
+ * A starter is a template, not a look: the library does not offer it on anything, and this is how
+ * the editor reaches for it. Pair it with uniforms: { strength: 1 } for a live-editable tint gain.
+ */
+export function effectStarter() {
+  return starterSource('_starter-effect');
+}
+
+/** The source a new Shadertoy-style effect begins as, from `shaders/_starter-shadertoy/`. */
+export function shadertoyStarter() {
+  return starterSource('_starter-shadertoy');
+}
 
 /**
  * The shipped water effect, as installed from `shaders/water/`.
@@ -137,13 +145,6 @@ export function refreshShippedShaders(project) {
   return changed;
 }
 
-// A starting point for a pasted Shadertoy shader: mainImage, iResolution, iTime and
-// iChannel0 (what is drawn behind the object) all work here.
-export const shadertoyTemplate = `void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-  vec2 uv = fragCoord / iResolution.xy;
-  vec3 behind = texture(iChannel0, uv).rgb;
-  fragColor = vec4(behind * 0.9 + 0.1 * vec3(uv.y), 1.0);
-}`;
 
 /** What the first water effect shipped under, before the shipped effects had names of their own. */
 const LEGACY_WATER_SHADER_NAME = 'Water (Shadertoy)';
