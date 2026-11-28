@@ -10,6 +10,7 @@ import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, sectorSu
 import { wallQuadUv, flatUv, brushFaceUv } from '/shared/uv.js';
 import { brushGeometry, isWaterBrush } from '/shared/brushes.js';
 import { waterSettings } from '/shared/water.js';
+import { WAVE_DEFAULTS, animateWaterSurface, buildWaterSurface, waterSurfaceData } from '/shared/water-surface.js';
 import { wallScroll, TICRATE } from '/shared/scrollers.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
 import { verticalFov } from '/shared/game-settings.js';
@@ -296,6 +297,8 @@ export async function createPreview(canvas, project, state, { editor = false, on
   // `iResolution` for Shadertoy effects: one uniform shared by every compiled effect.
   const effectResolution = uniform(new THREE.Vector2(1280, 720));
   const screenObjects = new Set();
+  /** Every mesh whose surface rides the water: the play view's and the editor's. */
+  const waterMeshes = new Set();
   function needsScreenPass() {
     for (const object of screenObjects) if (object.visible) return true;
     return false;
@@ -1139,16 +1142,23 @@ export async function createPreview(canvas, project, state, { editor = false, on
       const opacity = water ? Math.max(0, Math.min(1, Number(water.opacity) || 0)) : 1;
       const tint = water?.color || '#ffffff';
       const effect = shaderId ? effectFor(shaderId) : null;
+      // The swells the geometry rides are the swells the shader shades. They are read off the
+      // compiled effect's own uniforms rather than from a second set of numbers, so a mapper who
+      // turns `waveHeight` up in the Environment tab moves the surface as well as its shading.
+      const waves = {
+        height: Number(effect?.uniforms?.waveHeight?.value ?? WAVE_DEFAULTS.height),
+        speed: Number(effect?.uniforms?.waveSpeed?.value ?? WAVE_DEFAULTS.speed),
+      };
       if (!effect) {
-        if (!water) return base;
-        return new THREE.MeshBasicMaterial({ color: tint, transparent: true, opacity,
-          side: THREE.DoubleSide, depthWrite: false });
+        if (!water) return { material: base, waves };
+        return { material: new THREE.MeshBasicMaterial({ color: tint, transparent: true, opacity,
+          side: THREE.DoubleSide, depthWrite: false }), waves };
       }
       const colour = new THREE.Color(tint);
       const material = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide, transparent: true, depthWrite: false });
       material.colorNode = effect.effect(vec4(colour.r, colour.g, colour.b, opacity), uv(), effectTime, screenUV, effectResolution);
       if (effect.usesScreen) screenMaterials.add(material);
-      return material;
+      return { material, waves };
     }
     const brushPbrMeshes = [];
     function rebuildBrushMeshes() {
@@ -1166,33 +1176,50 @@ export async function createPreview(canvas, project, state, { editor = false, on
         for (const entry of shapes.faces) {
           if (entry.points.length < 3) continue;
           const face = brush.faces?.[entry.index] || {};
-          const positions = [], uvs = [];
           // Same frame as the editor and the `.map` importer (`/shared/uv.js`), so a brush's
           // texture is not projected one way while it is edited and another way while it plays.
-          const push = point => {
-            positions.push(point[0], point[2], point[1]);
-            uvs.push(...brushFaceUv(face, entry.plane.normal, point));
+          const flat = () => {
+            const positions = [], uvs = [], index = [];
+            const push = point => {
+              positions.push(point[0], point[2], point[1]);
+              uvs.push(...brushFaceUv(face, entry.plane.normal, point));
+            };
+            for (let at = 1; at < entry.points.length - 1; at++) {
+              const base = positions.length / 3;
+              push(entry.points[0]); push(entry.points[at]); push(entry.points[at + 1]);
+              index.push(base, base + 1, base + 2);
+            }
+            return { positions, uvs, index };
           };
-          for (let index = 1; index < entry.points.length - 1; index++) {
-            push(entry.points[0]); push(entry.points[index]); push(entry.points[index + 1]);
-          }
+          // The top of a water body is a grid that rides the swells; the engine moves it every
+          // frame with the same field the shader shades and refracts through. Everything else is
+          // the flat fan it always was.
+          const moving = isWaterBrush(brush) && entry.plane.normal[2] > .5;
+          const piece = (moving && buildWaterSurface(entry.points.map(point => [point[0], point[2], point[1]]),
+            { uvAt: point => brushFaceUv(face, entry.plane.normal, point), water: waterSettings(brush) })) || flat();
           // A water body's own colour and transparency are part of the look, so they join the
           // batch key: two pools of different blues are two draws, not one average.
           const water = isWaterBrush(brush) ? waterSettings(brush) : null;
           const shaderId = face.shaderId || brush.shaderId || '';
-          const key = [shaderId, face.material || face.texture || '', water ? `${water.color}/${water.opacity}` : ''].join('|');
+          // A moving surface and a still one cannot share a buffer, so the key says which it is.
+          const key = [shaderId, face.material || face.texture || '',
+            water ? `${water.color}/${water.opacity}/${moving ? 'moving' : 'still'}` : ''].join('|');
           if (!byMaterial.has(key)) {
-            byMaterial.set(key, { positions: [], uvs: [], shaderId, water,
-              material: (face.material && brushMaterialForMaterial(face.material)) || brushMaterialFor(face.texture) });
+            byMaterial.set(key, { positions: [], uvs: [], index: [], shaderId, water,
+              moving, material: (face.material && brushMaterialForMaterial(face.material)) || brushMaterialFor(face.texture) });
           }
           const target = byMaterial.get(key);
-          target.positions.push(...positions); target.uvs.push(...uvs);
+          const base = target.positions.length / 3;
+          target.positions.push(...piece.positions);
+          target.uvs.push(...piece.uvs);
+          for (const value of piece.index) target.index.push(value + base);
         }
-        for (const { positions, uvs, material: baseMaterial, shaderId, water } of byMaterial.values()) {
-          const surfaceMaterial = brushSurface({ shaderId, base: baseMaterial, water });
+        for (const { positions, uvs, index, material: baseMaterial, shaderId, water, moving } of byMaterial.values()) {
+          const { material: surfaceMaterial, waves } = brushSurface({ shaderId, base: baseMaterial, water });
           const buffer = new THREE.BufferGeometry();
           buffer.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
           buffer.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+          buffer.setIndex(index);
           buffer.computeVertexNormals();
           buffer.computeBoundingSphere();
           const mesh = new THREE.Mesh(buffer, surfaceMaterial);
@@ -1205,6 +1232,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
           // A surface that reads what is behind it needs the background pass drawn, exactly as a
           // shader on an object does.
           if (screenMaterials.has(surfaceMaterial)) screenObjects.add(mesh);
+          if (moving && water) {
+            // On the geometry: the animator is handed a geometry so it never has to know what
+            // kind of object is drawing it.
+            buffer.userData.waterSurface = waterSurfaceData(positions, uvs, [0, 1, 0], waves);
+            waterMeshes.add(mesh);
+          }
           brushRoot.add(mesh);
         }
       }
@@ -2454,6 +2487,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
         }
       } else applyRenderSize(null);
       effectTime.value = Number.isFinite(state.time) ? state.time : 0;
+      // Water rides its swells on the same clock the shader on it uses, so the geometry and the
+      // shading are one wave and the surface cannot shear. The editor has no game clock — it does
+      // not step the level — so it uses the window's own, which is what makes the water move while
+      // it is being authored instead of standing still like a picture of water.
+      const waterTime = editor ? performance.now() / 1000 : effectTime.value;
+      for (const mesh of waterMeshes) animateWaterSurface(mesh.geometry, waterTime);
       effectEnabled.value = state.shaderEnabled === false ? 0 : 1;
       for (let index = 0; index < shaderUniformEntries.length; index++) {
         const entry = shaderUniformEntries[index];
@@ -3160,6 +3199,19 @@ export async function createPreview(canvas, project, state, { editor = false, on
        * pool a mapper sees while drawing is drawn by the program the player will see it with.
        */
       brushSurface,
+      /**
+       * Registers an object drawn with one of those surfaces. A shader that reads the screen needs
+       * the background pass drawn, and the editor's own brush meshes are not in this renderer's
+       * object list.
+       */
+      trackScreen,
+      /**
+       * Registers a water surface made outside this renderer — the editor's own brush meshes —
+       * so it moves with the same clock and the same swells as the game's.
+       */
+      registerWater(mesh) { if (mesh) waterMeshes.add(mesh); return mesh; },
+      /** Forgets those surfaces; the editor calls this before it rebuilds its brushes. */
+      clearWater() { waterMeshes.clear(); },
       /** Editor only: hide a ceiling once the camera is above it, so rooms open up. */
       ceilings(visible) { ceilingsHidden = !visible; },
       /** Every object drawn without artwork, one record each, for the placeholder log. */

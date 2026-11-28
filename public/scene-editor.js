@@ -21,7 +21,8 @@ import {
   GIZMO_LENGTH, axisAmount, axisByKey, axisDirection, axisField, dragPlaneNormal, formDrag,
   rayPlaneHit, ringDegrees, ringDelta, rotationDetent, scaleFactorFromDrag, screenAngle,
 } from '/shared/gizmo-math.js';
-import { buildFaceArrows, buildGizmo, disposeHandles, handleKey, paintHandles } from './gizmo.js';
+import { buildBrushFaceArrows, buildFaceArrows, buildGizmo, disposeHandles, handleKey, paintHandles } from './gizmo.js';
+import { waterSurfaceData } from '/shared/water-surface.js';
 import { geometryEdges, geometrySurfaceEdges, MAX_CUT_POINTS } from '/shared/geometry-cut.js';
 import { brushGeometry, brushBounds, brushVertices, brushDragSelection, facePlane } from '/shared/brushes.js';
 
@@ -58,12 +59,17 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   // not part of the scaled `handles` group.
   const faceGroup = new THREE.Group();
   faceGroup.visible = false;
+  // One arrow standing on each face of the selected brush, so a mapper can see where the faces
+  // are and which way each one moves. Kept apart from `faceGroup`, whose arrows are positioned by
+  // the volume's own transform; a brush's faces are already in world space.
+  const brushArrowGroup = new THREE.Group();
+  brushArrowGroup.name = 'Brush face arrows';
   // Paths are drawn as their curve, not as their waypoints: the line a traveller follows is the
   // thing being authored, and the control points are what shape it.
   const pathGroup = new THREE.Group();
   // Where the routes are, so the pick radius for a line can follow the viewing distance.
   const pathCentre = new THREE.Vector3();
-  scene.add(handles, helperGroup, vertexGroup, pathGroup, faceGroup, brushGroup);
+  scene.add(handles, helperGroup, vertexGroup, pathGroup, faceGroup, brushArrowGroup, brushGroup);
   // A PBR material is a lit surface, so the view needs a light to show one: a soft sky fill and a
   // key that separates faces, the same pair the play view lights imported models with. Everything
   // else in this view is an unlit editor material and is unaffected.
@@ -417,7 +423,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
   function collectSceneHandles() {
     pickables = [];
     for (const child of scene.children) {
-      if (child === handles || child === faceGroup || child === helperGroup || child === vertexGroup || child === roomOutline || child === pathGroup) continue;
+      if (child === handles || child === faceGroup || child === brushArrowGroup || child === helperGroup || child === vertexGroup || child === roomOutline || child === pathGroup) continue;
       child.traverse(object => {
         // The static world is drawn from merged buffers, so a world mesh names the wall
         // or sector it belongs to per triangle instead of holding one selection itself.
@@ -477,6 +483,9 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    */
   let brushResources = [];
   let brushSignature = '';
+  /** The brush meshes whose surface rides the water, animated once a frame. */
+  let waterMeshes = [];
+
   const brushTextures = new Map();
   function brushTexture(assetId, { color = true } = {}) {
     const key = `${assetId}/${color}`;
@@ -544,8 +553,31 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    * imported Quake map never finished its first frame. When nothing is selected the first few
    * brushes get handles, which is what a hand-drawn map needs and a compiled one does not.
    */
+  /**
+   * An arrow on every face of the selected brush, while the face tool is the one in hand.
+   *
+   * Face mode let a mapper drag a face along its normal without ever showing them a face: the only
+   * sign of where the planes were was the shape of the mesh, and on a flat-shaded volume seen end
+   * on there is nothing to see at all. The arrows are the affordance the corner spheres already
+   * were for the corner tool.
+   */
+  function syncBrushFaceArrows() {
+    disposeHandles([...brushArrowGroup.children]);
+    brushArrowGroup.clear();
+    if ((callbacks.brushMode?.() || 'object') !== 'face') { canvas.dataset.brushFaceArrows = '0'; return; }
+    const brush = selected?.kind === 'brush' || selected?.kind === 'brushFace'
+      ? (project.map.brushes || []).find(item => item.id === selected.id) : null;
+    if (!brush) { canvas.dataset.brushFaceArrows = '0'; return; }
+    let faces = [];
+    try { faces = brushGeometry(brush).faces.filter(face => face.points.length >= 3); } catch { faces = []; }
+    // Twelve faces is already a prism with an arrow on every side of it; a compiled brush with
+    // more is not something a mapper is dragging a face of by hand, and the arrows would bury it.
+    for (const mesh of buildBrushFaceArrows(faces.slice(0, 32))) brushArrowGroup.add(mesh);
+    canvas.dataset.brushFaceArrows = String(brushArrowGroup.children.length / 3);
+  }
   function rebuildBrushHandles() {
     for (const child of [...brushHandleGroup.children]) brushHandleGroup.remove(child);
+    syncBrushFaceArrows();
     if ((callbacks.brushMode?.() || 'object') !== 'vertex') return;
     const brushes = project.map.brushes || [];
     const wanted = ['brush', 'brushFace', 'brushVertex'].includes(selected?.kind) ? selected.id : null;
@@ -605,6 +637,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     // five thousand brushes is a handful of draw calls instead of fifty thousand. A click is
     // resolved by the triangle it hit: `selectionRanges` names the brush and face of each.
     const { batches, edges, surfaces } = batchBrushes(project.map.brushes);
+    waterMeshes = [];
+    view.clearWater?.();
     for (const [key, merged] of batches) {
       const buffer = new THREE.BufferGeometry();
       brushResources.push(buffer);
@@ -617,11 +651,24 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       // The editor draws a shader or a water body with the same look the game will: the preview
       // hands out the material builder it uses itself, so a pool cannot be blue here and grey in
       // play.
-      const material = view.brushSurface
+      const built = view.brushSurface
         ? view.brushSurface({ shaderId: surface?.shaderId || '', base, water: surface?.water || null })
-        : base;
-      const mesh = new THREE.Mesh(buffer, material);
+        : { material: base, waves: null };
+      const mesh = new THREE.Mesh(buffer, built.material);
+      // A water shader refracts what is behind it, so this mesh has to be drawn into the pass that
+      // captures the level behind it — otherwise the editor would show the water sampling a black
+      // screen while the game showed the level.
+      view.trackScreen?.(mesh, built.material);
       mesh.userData.selectionRanges = merged.ranges;
+      // A moving water surface keeps the still position of every vertex, so each frame is one
+      // addition per vertex rather than a rebuild of the mesh. The swells come from the shader's
+      // own uniforms, so the mesh and the shading cannot drift apart.
+      if (surface?.water?.surface) {
+        buffer.userData.waterSurface = waterSurfaceData(merged.positions, merged.uvs, [0, 1, 0], built.waves || undefined);
+        // The renderer owns the clock and the swells, so the editor's water is the game's water.
+        view.registerWater?.(mesh);
+        waterMeshes.push(mesh);
+      }
       brushGroup.add(mesh);
     }
     if (edges.length) {
@@ -630,6 +677,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       buffer.setAttribute('position', new THREE.Float32BufferAttribute(edges, 3));
       brushGroup.add(new THREE.LineSegments(buffer, brushEdgeMaterial));
     }
+    canvas.dataset.waterMeshes = String(waterMeshes.length);
     rebuildBrushHandles();
     collectSceneHandles();
   }
@@ -1339,8 +1387,14 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
    * cannot tell apart from the one beside it until it tells you which axis it is.
    */
   function updateHover(event) {
-    if (!handles.visible && !faceGroup.visible) return;
+    if (!handles.visible && !faceGroup.visible && !brushArrowGroup.children.length) return;
     cast(event);
+    const arrow = hits(brushArrowGroup)[0];
+    const arrowKey = arrow ? `brushFace:${arrow.object.userData.brushFace}` : null;
+    if (arrowKey !== canvas.dataset.brushFaceHover) {
+      canvas.dataset.brushFaceHover = arrowKey || '';
+      paintHandles([...brushArrowGroup.children], arrowKey);
+    }
     const face = faceAt(event);
     const faceKey = face ? face.key : null;
     paintFaces(faceKey);
@@ -1732,8 +1786,16 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       canvas.dataset.transform = `transform:${axis}`;
       return;
     }
-    const hit = hits(pathGroup)[0] || hits(vertexGroup)[0] || worldHit();
-    const selection = hit ? { ...selectionOf(hit) } : null;
+    // An arrow standing on a face is that face: aiming at the handle and aiming at the plane are
+    // the same edit, and the handle is the only one of the two a mapper can see.
+    const arrowHit = hits(brushArrowGroup)[0];
+    const arrowFace = arrowHit?.object.userData.brushFace;
+    // Recorded so a test (and the browser's own inspector) can tell an arrow pick from a face pick.
+    canvas.dataset.brushArrowPick = arrowFace === undefined ? '' : String(arrowFace);
+    const arrowed = arrowFace !== undefined && selected?.kind?.startsWith('brush')
+      ? { kind: 'brushFace', id: selected.id, face: arrowFace, point: arrowHit.point } : null;
+    const hit = arrowed || hits(pathGroup)[0] || hits(vertexGroup)[0] || worldHit();
+    const selection = arrowed ? { ...arrowed } : hit ? { ...selectionOf(hit) } : null;
     // A route's arrows belong where its line was clicked, so the pick records that place as a
     // fraction of the route rather than a fixed point that the route would leave behind.
     if (selection?.kind === 'path' && hit?.point) {
@@ -2076,11 +2138,25 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
         const count = geometry?.index ? geometry.index.count : geometry?.attributes?.position?.count || 0;
         brushTriangles += Math.floor(count / 3);
       }
+      // How far the water moves, so "the waves do nothing" is answerable without a screenshot: the
+      // spread of a still surface is a flat top face's own height, an animated one is bigger.
+      let waterSpread = 0;
+      for (const mesh of waterMeshes) {
+        const position = mesh.geometry?.attributes?.position;
+        if (!position) continue;
+        let low = Infinity, high = -Infinity;
+        for (let index = 1; index < position.array.length; index += 3) {
+          low = Math.min(low, position.array[index]); high = Math.max(high, position.array[index]);
+        }
+        if (Number.isFinite(low)) waterSpread = Math.max(waterSpread, high - low);
+      }
       return { objects, triangles, brushMeshes, brushTriangles, handles: brushHandleGroup.children.length,
+        waterMeshes: waterMeshes.length, waterSpread: Math.round(waterSpread * 100) / 100,
         position: camera.position.toArray().map(value => Math.round(value)),
         far: Math.round(camera.far) };
     },
     frame(dt) {
+      canvas.dataset.frameRan = String(Number(canvas.dataset.frameRan || 0) + 1);
       const rect = canvas.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       // The renderer owns the drawing-buffer size (Engine tweaks render resolution).
@@ -2126,6 +2202,8 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       updateFacingMarkers(rect, frustum);
       updateCutPreview();
       updateCeilings(dt);
+      // The water rides its swells with the same clock the game uses, so the surface a mapper
+      // designs is the surface that moves in play.
       view.render(state);
       canvas.dataset.camera = camera.position.toArray().map(value => value.toFixed(2)).join(',');
       canvas.dataset.flySpeed = String(Math.round(speed));

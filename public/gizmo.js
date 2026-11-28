@@ -162,7 +162,8 @@ export function buildFaceArrows(volume) {
 /** What a handle is called when the pointer is over it: an axis, or an axis and a side. */
 export const handleKey = mesh => mesh.userData.face
   ? `${mesh.userData.face.axis}${mesh.userData.face.side > 0 ? '+' : '-'}`
-  : mesh.userData.axis;
+  : mesh.userData.brushFace !== undefined ? `brushFace:${mesh.userData.brushFace}`
+    : mesh.userData.axis;
 
 /**
  * Paints one handle, or one face, as the one the pointer is over.
@@ -170,6 +171,50 @@ export const handleKey = mesh => mesh.userData.face
  * Godot lights up the handle under the pointer, and without that an arrow pointing at the camera
  * is a blip you cannot tell apart from the one beside it.
  */
+/**
+ * An arrow standing on each face of a brush, pointing out of it.
+ *
+ * A brush is not a box: its faces are planes at any angle, so the arrows follow the planes rather
+ * than three axes. They exist because a brush's face can be dragged along its normal in 3D and
+ * nothing said so — the only way to find a face was to guess where it was and hope. Each arrow
+ * carries the face it stands on, and dragging one is the same edit as dragging the face itself.
+ *
+ * `entries` is what `brushGeometry` reports: `{ index, plane: { normal }, points }`, in map axes
+ * (z up), which is also the axes the view draws in but with y and z swapped.
+ */
+export function buildBrushFaceArrows(entries) {
+  const meshes = [];
+  const up = new THREE.Vector3(0, 1, 0);
+  for (const entry of entries || []) {
+    const normal = entry.plane?.normal;
+    if (!Array.isArray(normal) || normal.length < 3) continue;
+    // Map (z up) to the view's y-up world: the same swap `upright` does everywhere else.
+    const direction = new THREE.Vector3(normal[0], normal[2], normal[1]).normalize();
+    const points = entry.points || [];
+    if (points.length < 3) continue;
+    let x = 0, y = 0, z = 0;
+    for (const point of points) { x += point[0] / points.length; y += point[2] / points.length; z += point[1] / points.length; }
+    const colour = Math.abs(direction.y) > .7 ? axisByKey('y').color
+      : Math.abs(direction.x) > Math.abs(direction.z) ? axisByKey('x').color : axisByKey('z').color;
+    const reach = FACE_ARM + HEAD_LENGTH;
+    const shaft = new THREE.CylinderGeometry(SHAFT_RADIUS, SHAFT_RADIUS, FACE_ARM, 8).translate(0, FACE_ARM / 2, 0);
+    const head = new THREE.ConeGeometry(HEAD_RADIUS, HEAD_LENGTH, 12).translate(0, FACE_ARM + HEAD_LENGTH / 2, 0);
+    const body = new THREE.CylinderGeometry(PICK_RADIUS, PICK_RADIUS, reach, 6).translate(0, reach / 2, 0);
+    for (const [part, geometry] of [['shaft', shaft], ['tip', head], ['pick', body]]) {
+      const material = part === 'pick'
+        ? new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, depthTest: false })
+        : axisMaterial(colour);
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(x, y, z);
+      mesh.quaternion.setFromUnitVectors(up, direction);
+      mesh.userData = { brushFace: entry.index, part, baseColor: colour, pick: part === 'pick' };
+      mesh.renderOrder = 200;
+      meshes.push(mesh);
+    }
+  }
+  return meshes;
+}
+
 export function paintHandles(meshes, hovered = null) {
   const highlight = new THREE.Color('#ffffff');
   for (const mesh of meshes) {

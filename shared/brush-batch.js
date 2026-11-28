@@ -10,7 +10,8 @@
 // that every face's triangles are in the buffer and that each of them still names its brush and face.
 
 import { brushGeometry, isWaterBrush } from './brushes.js';
-import { WATER_DEFAULTS } from './water.js';
+import { WATER_DEFAULTS, waterSettings } from './water.js';
+import { buildWaterSurface } from './water-surface.js';
 import { brushFaceUv } from './uv.js';
 import { mergePiece } from './surface-batch.js';
 
@@ -27,6 +28,16 @@ export function brushFaceRecord(brush, entry) {
   const positions = [], uvs = [], indices = [];
   const plane = entry.plane;
   const face = brush.faces?.[entry.index] || {};
+  // The top of a water body is a grid that rides the swells; every other face is a flat fan. A
+  // surface that is not displaced has no reason to carry the extra vertices.
+  if (isWaterBrush(brush) && plane.normal[2] > .5) {
+    const grid = buildWaterSurface(polygon.map(point => [point[0], point[2], point[1]]),
+      { uvAt: point => brushFaceUv(face, plane.normal, point), water: waterSettings(brush) });
+    if (grid) {
+      return { positions: grid.positions, uvs: grid.uvs, light: 1, indices: grid.index,
+        selection: { kind: 'brush', id: brush.id, face: entry.index } };
+    }
+  }
   const push = point => {
     positions.push(point[0], point[2], point[1]);
     uvs.push(...brushFaceUv(face, plane.normal, point));
@@ -54,11 +65,17 @@ export function brushFaceRecord(brush, entry) {
 export function brushSurfaceKey(brush, entry) {
   const face = brush.faces?.[entry.index];
   const shaderId = face?.shaderId || brush.shaderId || '';
-  const water = isWaterBrush(brush) ? { color: brush.water?.color || WATER_DEFAULTS.color,
-    opacity: brush.water?.opacity ?? WATER_DEFAULTS.opacity } : null;
+  // The top of a water body moves and its sides do not, so they are two batches even though they
+  // are one brush: a moving vertex and a still one cannot share a buffer without one of them
+  // being wrong.
+  const moving = isWaterBrush(brush) && (entry?.plane?.normal?.[2] || 0) > .5;
+  const water = isWaterBrush(brush)
+    ? { color: brush.water?.color || WATER_DEFAULTS.color, opacity: brush.water?.opacity ?? WATER_DEFAULTS.opacity,
+      surface: moving ? waterSettings(brush) : null } : null;
   const base = face?.material ? `material:${face.material}` : face?.texture || '';
   // A plain face keeps the key it always had, so nothing that reads a batch key has to change.
-  const key = !shaderId && !water ? base : [shaderId, base, water ? `${water.color}/${water.opacity}` : ''].join('|');
+  const key = !shaderId && !water ? base
+    : [shaderId, base, water ? `${water.color}/${water.opacity}/${moving ? 'moving' : 'still'}` : ''].join('|');
   return { key, shaderId, material: face?.material || null, texture: face?.texture || '', water };
 }
 

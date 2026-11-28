@@ -19,7 +19,8 @@ import {
   WATER_DEFAULTS, buoyancyFraction, currentAt, swimLevel, swimTarget, waterAt, waterFromPreset,
   waterPresets, waterSettings, waterSpeedScale, waterVolumes,
 } from '../shared/water.js';
-import { WATER_SHADER_NAME, waterShaderId, waterShaderTemplate, waterUniforms } from '../shared/shaders.js';
+import { WATER_SHADER_NAME, shadertoyFromDownload, waterShaderId, waterShaderTemplate, waterUniforms } from '../shared/shaders.js';
+import { WATER_SWELLS, WAVE_DEFAULTS, animateWaterSurface, buildWaterSurface, waterHeight, waterSlope, waterSurfaceData } from '../shared/water-surface.js';
 import { readFileSync } from 'node:fs';
 import { parseShaderSource } from '../shared/shader-language.js';
 
@@ -166,9 +167,9 @@ test('the water shader ships with the engine, parses, and is refreshed rather th
   assert.equal(shader.name, WATER_SHADER_NAME);
   assert.deepEqual(shader.uniforms, { ...waterUniforms });
   parseShaderSource(shader.source, shader.uniforms);
-  // Water only: the shipped effect paints the surface and samples nothing else, so there is no
-  // land, shoreline or backdrop it could be showing through.
-  assert.doesNotMatch(waterShaderTemplate, /iChannel|texture\(/);
+  // Water only: the one thing the shipped effect samples is the level behind it, which is what it
+  // refracts. There is no land, shoreline or backdrop painted into it.
+  assert.equal([...waterShaderTemplate.matchAll(/iChannel\d/g)].every(match => match[0] === 'iChannel0'), true);
   assert.doesNotMatch(waterShaderTemplate.replace(/\/\/.*$/gm, ''), /shore|land|mountain|terrain/i);
   // Called again, it is the same shader — and an old copy in a project is brought up to date.
   shader.source = 'void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }';
@@ -178,18 +179,68 @@ test('the water shader ships with the engine, parses, and is refreshed rather th
   validateProject(project);
 });
 
+test('a water surface is a grid that rides the swells, and its shape is the shader\'s', () => {
+  const square = [[0, 0, 0], [64, 0, 0], [64, 0, 64], [0, 0, 64]];
+  const surface = buildWaterSurface(square, { uvAt: ([x, , z]) => [x / 64, z / 64], water: { cell: 16 } });
+  assert.ok(surface, 'a quad becomes a grid');
+  assert.ok(surface.positions.length / 3 > 4, `subdivided, not a quad (${surface.positions.length / 3} vertices)`);
+  assert.equal(surface.index.length % 3, 0);
+
+  // The height field is a sum of swells: it is not constant, and it moves with time.
+  assert.notEqual(waterHeight(10, 10, 0), waterHeight(90, 40, 0));
+  assert.notEqual(waterHeight(10, 10, 0), waterHeight(10, 10, 1));
+  // The slope is that field's derivative, which is what the normal is built from.
+  const epsilon = .01;
+  const slope = waterSlope(40, 20, .5);
+  assert.ok(Math.abs(slope[0] - (waterHeight(40 + epsilon, 20, .5) - waterHeight(40 - epsilon, 20, .5)) / (2 * epsilon)) < 1e-6);
+  // Every swell in the table is used, and they are not harmonics of one wavelength.
+  assert.equal(WATER_SWELLS.length, 3);
+  assert.equal(new Set(WATER_SWELLS.map(swell => swell.length)).size, 3);
+
+  // The geometry really moves.
+  const geometry = {
+    attributes: { position: { array: Float32Array.from(surface.positions), needsUpdate: false } },
+    userData: { waterSurface: waterSurfaceData(surface.positions, surface.uvs, [0, 1, 0], { height: 8, speed: 1 }) },
+  };
+  const before = Float32Array.from(geometry.attributes.position.array);
+  assert.equal(animateWaterSurface(geometry, 1.5), true);
+  assert.ok(geometry.attributes.position.needsUpdate);
+  let moved = 0;
+  for (let index = 1; index < before.length; index += 3) if (Math.abs(before[index] - geometry.attributes.position.array[index]) > 1e-4) moved++;
+  assert.ok(moved > 2, `${moved} vertices of ${before.length / 3} ride the swell`);
+});
+
+test('the shader shades the swells the mesh rides, so the two cannot drift apart', () => {
+  // The mesh is built in JavaScript and the normals are shaded in GLSL, so the numbers are written
+  // twice on purpose. This is the pin: the same three wavelengths, the same three amplitudes.
+  for (const swell of WATER_SWELLS) {
+    assert.ok(waterShaderTemplate.includes(`6.2831853 / ${swell.length}.0`), `wavelength ${swell.length} is in the shader`);
+    assert.ok(waterShaderTemplate.includes(`${swell.amplitude.toFixed(2)} * sin`), `amplitude ${swell.amplitude} is in the shader`);
+  }
+  assert.ok(waterShaderTemplate.includes('uv * 64.0'), "the shader reads the face's own frame in map units");
+  assert.ok(waterShaderTemplate.includes('texture(iChannel0'), 'and refracts what is behind it');
+  assert.equal(waterUniforms.waveHeight, WAVE_DEFAULTS.height, 'the height dial is the same number');
+});
+
 test('the play view and the editor build a brush surface through one function', () => {
   // Two renderers draw brushes — the game's and the editor's 3D view — and a water body that looked
-  // like water in one of them only would be a preview that lies. Both go through `brushSurface`.
+  // like water in one of them only would be a preview that lies. Both go through `brushSurface`,
+  // and both hand the renderer the same clock for the swells.
   const render = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
   assert.match(render, /function brushSurface\(\{ shaderId, base, water \}\)/);
   assert.match(render, /const water = isWaterBrush\(brush\) \? waterSettings\(brush\) : null/);
-  assert.match(render, /const surfaceMaterial = brushSurface\(\{ shaderId, base: baseMaterial, water \}\)/);
+  assert.match(render, /const \{ material: surfaceMaterial, waves \} = brushSurface\(\{ shaderId, base: baseMaterial, water \}\)/);
   assert.match(render, /if \(screenMaterials\.has\(surfaceMaterial\)\) screenObjects\.add\(mesh\)/,
     'a shader that reads the screen gets the background pass drawn');
+  assert.match(render, /for \(const mesh of waterMeshes\) animateWaterSurface\(mesh\.geometry, waterTime\)/,
+    'the swells are moved once a frame, from one clock');
+  assert.match(render, /const waterTime = editor \? performance\.now\(\) \/ 1000/,
+    'the editor has no game clock, so it animates on its own');
   assert.match(render, /\n      brushSurface,/, 'and the editor can use it too');
   const scene = readFileSync(new URL('../public/scene-editor.js', import.meta.url), 'utf8');
   assert.match(scene, /view\.brushSurface\(\{ shaderId: surface\?\.shaderId \|\| '', base, water: surface\?\.water \|\| null \}\)/);
+  assert.match(scene, /view\.registerWater\?\.\(mesh\)/, 'the editor hands its water to the renderer to move');
+  assert.match(scene, /view\.trackScreen\?\.\(mesh, built\.material\)/, 'and the refraction gets its background pass');
 });
 
 test('a crate dropped into a pool floats instead of lying on the bottom', async t => {

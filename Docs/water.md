@@ -64,6 +64,24 @@ Objects float by the same record: the water pushes up with the weight of what th
 scaled by the share of it that is under the surface, and drags on it in proportion to its speed. A
 crate dropped in a lake bobs to the water line and stays there; one dropped in sludge sinks.
 
+## The surface is geometry, not a picture
+
+The top of a water body is a **grid of vertices that rides the swells**: three directional swells
+whose heights and slopes are the same three the shader shades. So the waterline against a shore
+moves, the silhouette of the surface moves, and what is behind the water *shifts as the swells pass*
+— the shader refracts the level through the wave normal, which is what makes a pool bottom look like
+a pool bottom instead of a picture of one.
+
+The swells are written twice on purpose: the mesh is built in JavaScript
+(`shared/water-surface.js`) and the normals are shaded in GLSL (`shared/shaders.js`). The numbers
+are pinned to agree by `test/water.test.js` — change one and the test names the other. The grid's
+cell size is 40 map units, so a small pool is not thousands of vertices and a large sea still has
+waves. Only a **top** face moves: the sides and the underside of the same volume stay flat, and they
+are a separate batch for exactly that reason.
+
+The editor animates its water on the window's own clock — it does not step the level — and the game
+animates it on the game clock, through the same `animateWaterSurface`.
+
 ## Water and shaders
 
 Every brush can run a **shader**, water or not: **Shader** in the inspector or in the brush's
@@ -76,28 +94,41 @@ only the frame for the effect.
 A water body is given the engine's **Water (Shadertoy)** shader the moment it becomes water, so it is
 never a flat blue slab. The effect ships with the engine and is stored in the project, so it can be
 edited, replaced or removed like any other shader in the **Environment** tab. Its uniforms are the
-dials:
+dials — and `waveHeight` and `waveSpeed` also move the **mesh**, because the geometry reads them
+from the compiled shader rather than from a second set of numbers:
 
 | Uniform | Default | What it does |
 | --- | --- | --- |
-| `waveScale` | 3.2 | How much water the face's texture frame covers; bigger means more, smaller waves |
-| `waveHeight` | 0.7 | How steep the swells are |
-| `waveSpeed` | 1 | How fast they travel |
-| `warp` | 1 | How much the swells wander, which is what stops three sines reading as a woven lattice |
+| `waveHeight` | 8 | Peak height of the biggest swell, in map units — the mesh rides this |
+| `waveSpeed` | 1 | How fast the swells travel |
+| `ripple` | 0.6 | Fine chop, shading only: the sparkle between the swells |
+| `refraction` | 0.5 | How far the swells bend what is behind the surface |
 | `foam` | 0 | White water on the crests — raise it for a sea, leave it alone for a pool |
 | `sun` | 1 | How bright the sky the surface reflects is |
 
-The shader paints water and nothing else: swells with exact slopes, fine chop, the sky it reflects,
-the sun it catches, and foam where it breaks. There is no land, shoreline or backdrop in it, because
-the level is what is behind the surface — the brush is drawn where the mapper put it, over whatever
-is under it. It is written the way a Shadertoy effect is, so a shader from the web pastes into the
-same shape.
+The shader paints water and nothing else: swells with exact slopes, fine chop, the colour the water
+takes out of what it looks through, the sky it reflects, the sun it catches, and foam where it
+breaks. There is no land, shoreline or backdrop in it, because the level is what is behind the
+surface — the brush is drawn where the mapper put it, over whatever is under it. It is written the
+way a Shadertoy effect is, so a shader from the web pastes into the same shape.
+
+### Bringing a shader in from the web
+
+Shadertoy effects are their authors' work, so **the engine ships none of them**. What it does have is
+a way to take yours: **Environment → Import a shadertoy.py download (.json)** reads the file that
+`shadertoy.py download <url> <file.json>` writes, joins its passes and stores the source in *your*
+project. A plain `.txt` of the source is accepted too. Once imported it is an ordinary shader: assign
+it to the world, to an object, or to any brush — including a water body.
+
+Nothing about that changes the licence of what you imported: check the shader page before you ship a
+level that uses one.
 
 ## Files
 
 `shared/water.js` holds the record, the volumes, the `waterlevel` thresholds, the swim model and the
 presets. `shared/brushes.js` owns the `kind` and the fact that a water brush is not solid.
-`shared/physics.js` swims, floats and drags. `shared/shaders.js` ships the water shader. The play
-view (`public/render.js`) and the editor's 3D view (`public/scene-editor.js`) build the surface
-through the same `brushSurface`, so a pool cannot be blue here and grey there. Tests:
-`test/water.test.js`; end to end: `npm run automation:water`.
+`shared/physics.js` swims, floats and drags. `shared/water-surface.js` builds and animates the
+surface. `shared/shaders.js` ships the water shader. The play view (`public/render.js`) and the
+editor's 3D view (`public/scene-editor.js`) build the surface through the same `brushSurface`, so a
+pool cannot be blue here and grey there. Tests: `test/water.test.js`; end to end:
+`npm run automation:water`.

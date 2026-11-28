@@ -33,7 +33,7 @@ import {
 import { requestMouseLock } from './pointer-lock.js';
 import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog, openNodeEventSheet } from './event-sheet.js';
-import { shaderTemplate, shadertoyTemplate, waterShaderId } from '/shared/shaders.js';
+import { shaderTemplate, shadertoyFromDownload as readShadertoyJson, shadertoyTemplate, waterShaderId } from '/shared/shaders.js';
 import { WATER_DEFAULTS, waterFromPreset, waterPresets, waterSettings } from '/shared/water.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { createProjectAutosave } from './project-autosave.js';
@@ -3580,6 +3580,32 @@ function renderEnvironment() {
     next.shaders.push({ id, name: 'World effect', language: 'glsl', source: shaderTemplate, uniforms: { strength: 1 } });
     next.environment.shaderId ||= id;
   })));
+  // A shader from the web is somebody else's work, so it is the *mapper* who brings it in: the
+  // editor reads the file they downloaded and stores it in their own project. Nothing here ships
+  // with the engine, which is the difference between a tool that accepts shaders and a tool that
+  // redistributes them.
+  const shadertoyFile = make('input');
+  shadertoyFile.type = 'file';
+  shadertoyFile.accept = '.json,.txt,application/json,text/plain';
+  shadertoyFile.id = 'shadertoy-file';
+  shadertoyFile.addEventListener('change', guard(async () => {
+    const file = shadertoyFile.files?.[0];
+    if (!file) return;
+    try {
+      const shader = readShadertoyJson(await file.text(), file.name);
+      edit(next => {
+        next.shaders ||= [];
+        const used = new Set((next.shaders || []).map(item => item.id));
+        let id = `shader_${shader.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'shadertoy'}`;
+        let suffix = 1;
+        while (used.has(id)) id = `${id}_${suffix++}`;
+        next.shaders.push({ id, name: shader.name, language: 'glsl', source: shader.source, uniforms: {} });
+      }, `Shader ${shader.name} imported`);
+    } catch (error) { status(`That file is not a shader: ${error.message}`, true); }
+    shadertoyFile.value = '';
+  }));
+  field(parent, 'Import a shadertoy.py download (.json)', shadertoyFile);
+  parent.append(make('p', 'A Shadertoy shader is its author\'s work, so the engine ships none of them: download one with your own tool, import it here, and it lives in your project. It can then be assigned to a world, an object, or any brush — a water body included.', 'muted'));
   parent.append(button('Add a Shadertoy effect', () => edit(next => {
     next.shaders ||= [];
     const id = newId('shader');

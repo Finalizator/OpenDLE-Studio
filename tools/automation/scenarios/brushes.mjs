@@ -184,6 +184,34 @@ export async function run({ page }) {
     { before: moved3d, after: pushed.bounds });
   check('the brush is still a closed convex volume', pushed.faces === 6, pushed.faces);
 
+  // ---------- Face mode shows an arrow on every face, and an arrow drags the face it stands on.
+  //
+  // Face mode used to let a face be dragged without ever showing a face: the only way to find one
+  // was to guess where the plane was, which on a flat-shaded volume seen end on is nowhere.
+  const arrows = await page.evaluate('document.querySelector("canvas#scene-3d").dataset.brushFaceArrows');
+  check('face mode puts an arrow on every face', arrows === '6', arrows);
+  const arrowBefore = (await brushes())[0].bounds;
+  // The arrow on the face that points at the camera: its shaft starts where the face does.
+  const arrowPick = await screen(front.centroid[0] + front.normal[0] * 40,
+    front.centroid[1] + front.normal[1] * 40, front.centroid[2] + front.normal[2] * 40);
+  await page.drag(arrowPick, { x: arrowPick.x + (dx / length) * 48, y: arrowPick.y + (dy / length) * 48 }, { steps: 10 });
+  await wait(420);
+  const arrowAfter = (await brushes())[0];
+  check('dragging an arrow is the same edit as dragging its face',
+    arrowAfter.bounds.width !== arrowBefore.width || arrowAfter.bounds.depth !== arrowBefore.depth
+    || arrowAfter.bounds.height !== arrowBefore.height,
+    { before: arrowBefore, after: arrowAfter.bounds });
+  check('the arrow drag left a closed volume', arrowAfter.faces === 6, arrowAfter.faces);
+  // The face tool is only half of it: the corner tool draws its own handles.
+  await page.evaluate('window.__opendle.brushMode("vertex")');
+  await wait(250);
+  // Counted from the scene rather than from the canvas readout: the readout is written by the view's
+  // frame loop, and a scenario must not depend on that loop having run.
+  const cornerStats = await page.evaluate('window.__opendle.sceneStats()');
+  check('corner mode draws its corner handles', cornerStats.handles > 0, cornerStats);
+  await page.evaluate('window.__opendle.brushMode("face")');
+  await wait(150);
+
   // ---------- Multi-selection: the set the CSG tools act on.
   //
   // A brush used to be unselectable as part of a set: Ctrl+click collapsed the selection to the one
