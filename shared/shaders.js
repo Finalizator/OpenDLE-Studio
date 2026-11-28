@@ -110,6 +110,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }`;
 
 export const WATER_SHADER_NAME = 'StupidWater';
+
+
+
 /**
  * Which build of the water effect this is.
  *
@@ -146,6 +149,7 @@ export const waterShaderTemplate = `// Water, following the Godot ocean shader i
 // is, which way the surface faces, and where the camera stands. Guessing the view from the screen
 // position is what the first version did, and it turned every highlight into a stripe lying across
 // the water — the highlight followed the screen, not the wave.
+
 vec2 rippleLayer(vec2 p, float scale, vec2 drift, float rate) {
   // Three wave trains at spread angles, returned as the *gradient* of their sum rather than as the
   // sines themselves. One train gives parallel bands and two give a woven grid; three at uneven
@@ -533,14 +537,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // Their sun: elevation 31 degrees, azimuth 6 degrees (index.html, SUN_EL/SUN_AZ).
   vec3 uSun = vec3(0.0896, 0.5150, -0.8525);
 
-  // engine: their 'slope' comes from three scrolling FFT normal textures. Here it is the slope of the
-  // wave field this brush is drawn with, plus the chop the mesh cannot carry.
-  vec3 n = normalize(surfaceNormal);
-  vec2 slope = vec2(-n.x, -n.z) / max(n.y, 0.15);
-  vec2 p = worldPosition.xz;
-  slope += vec2(cos(dot(p, vec2(0.92, 0.39)) * 1.9 + iTime * 2.6),
-                cos(dot(p, vec2(-0.51, 0.86)) * 2.3 - iTime * 3.1)) * 0.05 * chop;
-  n = normalize(vec3(-slope.x, 1.0, -slope.y));
+  // engine: their 'slope' is read from three scrolling FFT normal textures. A brush has no such
+  // textures; the slope here is the one the surface being drawn actually has, taken from its own
+  // normal. Nothing is invented to stand in for the missing spectrum.
+  vec3 surface = normalize(surfaceNormal);
+  vec2 slope = vec2(-surface.x, -surface.z) / max(surface.y, 0.15);
+  vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
 
   vec3 wd = normalize(worldPosition - eyePosition);
   float dist = length(eyePosition - worldPosition);
@@ -581,7 +583,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
   // engine: their floor is pebbles, cobbles and sand lit by caustics. Water only: what the surface
   // looks through is the level behind it.
-  vec2 refractOffset = clamp(-tr.xz, vec2(-1.0), vec2(1.0)) * 0.09 * refraction * min(s, 6.0);
+  // The bend is screen space, so it is bounded in screen space: their refracted ray travelled
+  // metres into a real floor, while a sample can only move so far across the frame before it is
+  // reading something that is not behind the water at all.
+  vec2 refractOffset = clamp(-tr.xz, vec2(-1.0), vec2(1.0)) * 0.05 * refraction;
   vec3 Lfloor = texture(iChannel0, clamp(screenUv + refractOffset, vec2(0.001), vec2(0.999))).rgb;
 
   vec3 sunT = refract(-uSun, vec3(0.0, 1.0, 0.0), 1.0 / IOR);
@@ -600,7 +605,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
   // engine: their distant haze over the water, kept; their sky-above-the-horizon mix is not — every
   // fragment here is water, so there is no horizon to blend into.
-  float haze = 1.0 - exp(-dist * 0.004);
+  // engine: their distance is metres and a map unit is an inch, so it is converted before their
+  // haze coefficient sees it - at map units a pool a few hundred units away hazed over completely.
+  float haze = 1.0 - exp(-(dist / 39.37) * 0.004);
   float muh = max(dot(normalize(vec3(wd.x, 0.0, wd.z)), uSun), 0.0);
   vec3 hazeC = vec3(0.60, 0.71, 0.82) + vec3(1.0, 0.86, 0.66) * (0.22 * pow(muh, 6.0) + 0.3 * pow(muh, 64.0));
   col = mix(col, hazeC * 0.95, haze * 0.8);
@@ -628,8 +635,6 @@ export const clearwaterUniforms = Object.freeze({
   slopeVariance: .002,
   // Their DEPTH: the mean depth of the water in metres, used for the light the column scatters.
   depth: 1.6,
-  // engine: how much chop the wave field adds on top of the mesh's own slope.
-  chop: 1,
   // Their exposure, from the post pass (uExp = 0.63).
   exposure: .63,
   sun: 1,

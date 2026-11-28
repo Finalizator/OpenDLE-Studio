@@ -177,7 +177,7 @@ be opened in the **Environment** tab, dialled, replaced with your own, or remove
 | --- | --- | --- |
 | **StupidWater** | The engine's own wind sea: swell, glitter, foam | `waveHeight`, `waveSpeed`, `ripple`, `chop`, `density`, `refraction`, `fresnel`, `foam`, `sun` |
 | **StillWaterPool** | Evan Wallace's webgl-water surface, ported | `waveHeight`, `waveSpeed`, `refraction`, `sun` |
-| **OceanClearwater** | Lumaris's Clearwater surface, ported | `waveHeight`, `waveSpeed`, `refraction`, `slopeVariance`, `depth`, `chop`, `exposure`, `sun` |
+| **OceanClearwater** | Lumaris's Clearwater surface, ported | `waveHeight`, `waveSpeed`, `refraction`, `slopeVariance`, `depth`, `exposure`, `sun` |
 
 **StillWaterPool** is the water surface of `Ancestors/StillWaterPool/shaders/water/fragment.glsl` —
 Evan Wallace's webgl-water (BSD-3-Clause), three.js port by **Martin Renou**. The code is theirs:
@@ -203,7 +203,14 @@ caustics to find the bottom — that is not water, so the level behind the surfa
 
 Both ports keep their own arithmetic; the only edits are the ones this language forces (a local must
 be initialised where they declare and assign later, one local per statement, parameters are
-read-only), each marked in the source.
+read-only), each marked in the source. Neither port borrows anything from the engine's own water
+shader — they are their sources, on this engine's inputs.
+
+The one thing that genuinely does not survive is `OceanClearwater`'s fine-scale detail: its slope is
+read from three scrolling FFT normal textures, and a brush has no textures to read. The slope used is
+the one the drawn surface actually has, so the fine ripples on that water come from the **mesh**
+(`waveHeight`), not from a spectrum. Their large-scale optics — sky, Fresnel from the index of
+refraction, absorption, glints, in-scatter, tonemap — are all present and all theirs.
 
 ### Bringing a shader in from the web
 
