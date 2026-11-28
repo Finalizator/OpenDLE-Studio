@@ -17,6 +17,8 @@ import { POST_FX_BY_KIND, validatePostFx } from './post-fx.js';
 import { AREA_SHAPES } from './areas.js';
 import { MAX_SCENES, MAX_SCENE_ENTITIES, MAX_SCENE_EVENTS } from './scenes.js';
 import { MATERIAL_CHANNELS, MAX_MATERIALS } from './materials.js';
+import { SKY_SHAPES, SKY_PROJECTIONS, SKY_EDGES, SKY_BLENDS, SKY_FACES, SKY_LIMITS, SKY_FORMATS,
+  SKY_MIME, skyFormatOf } from './skybox.js';
 import { MAX_JOINTS, validateJoint } from './joints.js';
 import { validatePanel } from './panel.js';
 import { GAME_SETTINGS, validateSetting } from './game-settings.js';
@@ -200,6 +202,23 @@ function measureAssetPayload(asset) {
     if (asset.preview !== undefined) {
       assert(isDataUri(asset.preview, ['image/png']), 'Model preview must be an embedded PNG');
       assert(asset.preview.length <= 96 * 1024, 'Model preview is too large');
+    }
+    return { bucket: 'image', bytes: asset.src.length };
+  }
+  if (asset.kind === 'sky') {
+    // A sky may be a tone-mapped panorama (HDR/EXR), a compressed cubemap (DDS) or one of the
+    // textures a mod ships as-is. Every other kind stays PNG: the sprite, material and HUD
+    // pipelines decode PNG and nothing else, and a picture that cannot be decoded there is a bug
+    // that should be caught at import rather than at play time.
+    assert(isDataUri(asset.src, SKY_FORMATS.map(format => SKY_MIME[format])),
+      'A sky must be an embedded PNG, JPEG, TGA, DDS, HDR, EXR or TIFF image');
+    assert(asset.src.length <= LIMITS.imageBytes, `Embedded image budget exceeded (${LIMITS.imageBytes / 1024 / 1024} MiB per image, ${LIMITS.imageTotalBytes / 1024 / 1024} MiB total)`);
+    if (asset.format !== undefined) {
+      assert(SKY_FORMATS.includes(String(asset.format).toLowerCase()), 'Unknown sky image format');
+      assert(skyFormatOf(asset.src) === String(asset.format).toLowerCase() ||
+        (asset.format === 'tiff' && skyFormatOf(asset.src) === 'tif') ||
+        (asset.format === 'jpg' && skyFormatOf(asset.src) === 'jpeg'),
+        'A sky asset\'s format does not match its image');
     }
     return { bucket: 'image', bytes: asset.src.length };
   }
@@ -749,8 +768,11 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     assert(assetBytes <= LIMITS.imageTotalBytes, asset.kind === 'model' ? 'Embedded model budget exceeded' : asset.kind === 'font'
       ? 'Embedded font budget exceeded' : `Embedded image budget exceeded (${LIMITS.imageBytes / 1024 / 1024} MiB per image, ${LIMITS.imageTotalBytes / 1024 / 1024} MiB total)`);
     if (asset.kind !== 'model' && asset.kind !== 'font') {
-      number(asset.width, 'Image width', 1, LIMITS.imageSize);
-      number(asset.height, 'Image height', 1, LIMITS.imageSize);
+      // A sky panorama is looked at across the whole horizon, so an 8K one is worth having; every
+      // other picture is a surface or a sprite and 4096 is already generous.
+      const ceiling = asset.kind === 'sky' ? 8192 : LIMITS.imageSize;
+      number(asset.width, 'Image width', 1, ceiling);
+      number(asset.height, 'Image height', 1, ceiling);
       assert(Number.isInteger(asset.width) && Number.isInteger(asset.height), 'Image dimensions must be integers');
       for (const key of ['offsetX', 'offsetY']) if (asset[key] !== undefined) number(asset[key], key);
     }
@@ -1320,11 +1342,107 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     }
   }
   if (project.environment.skyMode !== undefined) assert(['doom', 'panorama'].includes(project.environment.skyMode), 'Invalid sky projection');
-  if (project.environment.skybox !== undefined) {
-    object(project.environment.skybox, 'Skybox');
-    for (const face of ['px', 'nx', 'py', 'ny', 'pz', 'nz']) {
-      assert(typeof project.environment.skybox[face] === 'string', 'A skybox needs all six faces');
-      assetRef(project.environment.skybox[face], 'Skybox face');
+  // The sky's own record: a full six-face cube, or the layered skybox with its angular window.
+  // Both shapes are read; the layered one is what the Skybox tab writes.
+  const validateSkybox = (value, label) => {
+    object(value, label);
+    const isFaces = SKY_FACES.every(face => typeof value[face] === 'string');
+    if (isFaces && value.layers === undefined) {
+      for (const face of SKY_FACES) assetRef(value[face], `${label} face`);
+      return;
+    }
+    // A record that names *some* faces and no layers is a six-face cube somebody broke: it would
+    // be read as a layered sky with nothing in it, and the level would draw no sky at all.
+    const partialFaces = SKY_FACES.filter(face => value[face] !== undefined);
+    assert(partialFaces.length === 0 || value.layers !== undefined,
+      `${label} names ${partialFaces.join(', ')} but not all six faces`);
+    if (value.shape !== undefined) assert(SKY_SHAPES.includes(value.shape), `${label} has an unknown shape`);
+    if (value.projection !== undefined) assert(SKY_PROJECTIONS.includes(value.projection), `${label} has an unknown projection`);
+    for (const key of ['rotation', 'pitch']) if (value[key] !== undefined) number(value[key], `${label} ${key}`, -3600, 3600);
+    if (value.scale !== undefined) number(value.scale, `${label} scale`, .01, 64);
+    if (value.exposure !== undefined) number(value.exposure, `${label} exposure`, 0, 64);
+    if (value.tint !== undefined) assert(colorPattern.test(value.tint), `${label} tint must be #rrggbb`);
+    if (value.coverage !== undefined) {
+      object(value.coverage, `${label} coverage`);
+      const coverage = value.coverage;
+      for (const axis of ['azimuth', 'elevation']) {
+        if (coverage[axis] === undefined) continue;
+        object(coverage[axis], `${label} ${axis} window`);
+        const limit = axis === 'elevation' ? 90 : 360;
+        for (const end of ['from', 'to']) if (coverage[axis][end] !== undefined)
+          number(coverage[axis][end], `${label} ${axis} ${end}`, -limit, limit);
+      }
+      if (coverage.edge !== undefined) assert(SKY_EDGES.includes(coverage.edge), `${label} has an unknown edge mode`);
+      if (coverage.feather !== undefined) number(coverage.feather, `${label} feather`, 0, 90);
+      if (coverage.background !== undefined && coverage.background !== null)
+        assert(colorPattern.test(coverage.background), `${label} background must be #rrggbb`);
+    }
+    if (value.layers !== undefined) {
+      array(value.layers, `${label} layers`, SKY_LIMITS.layers);
+      const layerIds = new Set();
+      value.layers.forEach((layer, index) => {
+        object(layer, `${label} layer ${index + 1}`);
+        if (layer.id !== undefined) { identifier(layer.id, `${label} layer id`); assert(!layerIds.has(layer.id), `Duplicate ${label} layer id`); layerIds.add(layer.id); }
+        if (layer.name !== undefined) text(layer.name, `${label} layer name`, SKY_LIMITS.nameLength);
+        if (layer.assetId !== undefined && layer.assetId !== null) assetRef(layer.assetId, `${label} layer`);
+        if (layer.faces !== undefined && layer.faces !== null) {
+          object(layer.faces, `${label} layer faces`);
+          for (const face of SKY_FACES) assetRef(layer.faces[face], `${label} face`);
+        }
+        if (layer.blend !== undefined) assert(SKY_BLENDS.includes(layer.blend), `${label} layer has an unknown blend`);
+        if (layer.opacity !== undefined) number(layer.opacity, `${label} layer opacity`, 0, 1);
+        if (layer.uv !== undefined) {
+          object(layer.uv, `${label} layer uv`);
+          for (const key of ['offsetU', 'offsetV']) if (layer.uv[key] !== undefined) number(layer.uv[key], `${label} layer ${key}`, -64, 64);
+          for (const key of ['repeatU', 'repeatV']) if (layer.uv[key] !== undefined) number(layer.uv[key], `${label} layer ${key}`, -64, 64);
+          if (layer.uv.rotate !== undefined) number(layer.uv.rotate, `${label} layer rotation`, -3600, 3600);
+        }
+        if (layer.spin !== undefined) {
+          object(layer.spin, `${label} layer spin`);
+          for (const key of ['azimuth', 'elevation']) if (layer.spin[key] !== undefined) number(layer.spin[key], `${label} layer spin ${key}`, -360, 360);
+          if (layer.spin.speed !== undefined) number(layer.spin.speed, `${label} layer spin speed`, -64, 64);
+        }
+        if (layer.animation !== undefined) {
+          object(layer.animation, `${label} layer animation`);
+          if (layer.animation.frames !== undefined) {
+            array(layer.animation.frames, `${label} layer frames`, SKY_LIMITS.frames);
+            for (const frame of layer.animation.frames) {
+              object(frame, `${label} layer frame`);
+              assetRef(frame.assetId, `${label} frame`);
+              if (frame.seconds !== undefined) number(frame.seconds, `${label} frame seconds`, .01, 3600);
+            }
+          }
+          if (layer.animation.speed !== undefined) number(layer.animation.speed, `${label} animation speed`, 0, 64);
+        }
+      });
+    }
+    if (value.sun !== undefined) {
+      object(value.sun, `${label} sun`);
+      if (value.sun.azimuth !== undefined) number(value.sun.azimuth, `${label} sun azimuth`, -360, 360);
+      if (value.sun.elevation !== undefined) number(value.sun.elevation, `${label} sun elevation`, -90, 90);
+      if (value.sun.size !== undefined) number(value.sun.size, `${label} sun size`, .1, 45);
+      if (value.sun.color !== undefined) assert(colorPattern.test(value.sun.color), `${label} sun colour must be #rrggbb`);
+      if (value.sun.intensity !== undefined) number(value.sun.intensity, `${label} sun intensity`, 0, 16);
+    }
+    for (const key of ['top', 'horizon', 'groundBottom', 'groundHorizon']) {
+      if (value.procedural?.[key] !== undefined) assert(colorPattern.test(value.procedural[key]), `${label} ${key} must be #rrggbb`);
+    }
+  };
+  if (project.environment.skybox !== undefined && project.environment.skybox !== null) validateSkybox(project.environment.skybox, 'Skybox');
+  // Named skies a rule can switch to: the preset list is project-wide, like the actor table, so a
+  // level's rule can name a sky the Skybox tab saved.
+  if (project.skyPresets !== undefined) {
+    array(project.skyPresets, 'Sky presets', SKY_LIMITS.presets);
+    const presetIds = new Set(), presetNames = new Set();
+    for (const preset of project.skyPresets) {
+      object(preset, 'Sky preset');
+      identifier(preset.id, 'Sky preset id');
+      assert(!presetIds.has(preset.id), `Duplicate sky preset ${preset.id}`);
+      presetIds.add(preset.id);
+      text(preset.name, 'Sky preset name', SKY_LIMITS.nameLength);
+      assert(!presetNames.has(preset.name.toLowerCase()), `Duplicate sky preset name ${preset.name}`);
+      presetNames.add(preset.name.toLowerCase());
+      validateSkybox(preset.skybox, `Sky preset ${preset.name}`);
     }
   }
   if (sectors.length) sectorGeometry(project);
@@ -1517,6 +1635,8 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
           // A flat or texture name a script did not resolve stays empty rather than failing:
           // the action then leaves the surface as it is.
           continue;
+        } else if (field.kind === 'color') {
+          assert(colorPattern.test(String(command[field.name] || '')), `${field.name} must be #rrggbb`);
         } else if (field.kind === 'image') {
           // An empty image means "not chosen yet": the event is still valid, and the
           // runtime reports which spray needed artwork when it is triggered.
@@ -1626,6 +1746,37 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         const scripts = project.mapScripts;
         const hasModule = Boolean(scripts && (scripts.data || scripts.libraries?.length));
         assert(hasModule, `Event "${event.name || event.id}": ${command.type} needs the level to have a compiled ACS module (import the map's BEHAVIOR or write a script)`);
+      }
+      if (command.type === 'skyboxPreset') {
+        const wanted = String(command.preset || '').trim().toLowerCase();
+        assert((project.skyPresets || []).some(preset =>
+          String(preset.id).toLowerCase() === wanted || String(preset.name).toLowerCase() === wanted),
+          `Event "${event.name || event.id}": there is no sky preset named ${command.preset || '(none)'}`);
+      }
+      if (command.type === 'setSkyPreset') {
+        const wanted = String(command.preset || '').trim().toLowerCase();
+        assert((project.skyPresets || []).some(preset =>
+          String(preset.id).toLowerCase() === wanted || String(preset.name).toLowerCase() === wanted),
+          `Event "${event.name || event.id}": there is no sky preset named ${command.preset || '(none)'}`);
+      }
+      if (['setSkyTexture', 'setSkyLayerTexture'].includes(command.type)) {
+        // The runtime cannot decode a picture, so a name that is not an imported image would be a
+        // sky that silently turned blank the moment the action ran.
+        if (command.assetId) {
+          assert(assetIds.has(command.assetId), 'Sky texture references an unknown asset');
+          assert(!['model', 'font', 'sound', 'music', 'video'].includes(assetById.get(command.assetId)?.kind),
+            'Sky texture must be an imported image');
+        }
+      }
+      if (command.type === 'setSkyCoverage') {
+        for (const key of ['azimuthFrom', 'azimuthTo']) number(command[key], `Sky ${key}`, -360, 360);
+        for (const key of ['elevationFrom', 'elevationTo']) number(command[key], `Sky ${key}`, -90, 90);
+        assert(SKY_EDGES.includes(command.edge), 'Sky coverage has an unknown edge mode');
+      }
+      if (command.type === 'setSkyFrame') {
+        const layer = Math.round(Number(command.layer) || 1);
+        number(command.frame, 'Sky frame', 0, SKY_LIMITS.frames);
+        assert(Number.isInteger(layer) && layer >= 1 && layer <= SKY_LIMITS.layers, 'Sky layer is out of range');
       }
       if (command.type === 'loadGameLevel')
         assert(project.game?.levels.some(level => level.id === command.levelId) || gameLevelIds?.has(command.levelId), 'Command references an unknown game level');

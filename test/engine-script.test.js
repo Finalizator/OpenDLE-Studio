@@ -7,6 +7,7 @@ import { createRuntime, lookPlayer, stepRuntime } from '../shared/runtime.js';
 import { compileScriptSource } from '../shared/map-scripts.js';
 import { applyTool } from '../server/tools.js';
 import { assembleGameLevels } from '../shared/game-levels.js';
+import { defaultSkybox } from '../shared/skybox.js';
 
 function fixture() {
   const project = installEngineScripts(createProject());
@@ -148,6 +149,14 @@ test('every Engine command has shared editor defaults and validates after adding
     if (command.sound) {
       project.assets.push({ id: 'sound_test', name: 'TESTSND', kind: 'sound', src: 'data:audio/wav;base64,AAAA' });
       value.assetId = 'sound_test';
+    }
+    // A sky action names a saved preset or an imported picture, so the fixture saves one of each.
+    if (command.sky) {
+      project.assets.push({ id: 'sky_image', name: 'Sky', kind: 'sky', format: 'png', width: 512, height: 256,
+        offsetX: 0, offsetY: 0, src: 'data:image/png;base64,AAAA' });
+      project.skyPresets = [{ id: 'preset_day', name: 'Day', skybox: { ...defaultSkybox(), source: 'sky_image' } }];
+      if ('preset' in value) value.preset = 'preset_day';
+      if ('assetId' in value) value.assetId = 'sky_image';
     }
     // An array action needs a grid to act on, the same way a HUD action needs an element.
     if (command.array) {

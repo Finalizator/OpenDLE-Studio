@@ -99,6 +99,7 @@ import { clipFrame, setSpriteState } from './sprite-animation.js';
 import { gameSettings, changeSetting, setGameScreen } from './game-settings.js';
 import { createLevelStatistics, updateLevelStatistics, recordRemovedEntity, beginIntermission, continueIntermission } from './intermission.js';
 import { emitSignal, signalBatch, hasSignalCondition, SIGNAL_LIMIT } from './signals.js';
+import { normalizeSkybox, applySkyAction, currentSkyFrame, advanceSky } from './skybox.js';
 import {
   PLAYER_VIEW, ACTIVE_VIEW, activeCamera, advanceCameras, buildCamera, requireCamera, startCameraMove, switchView, viewFov,
 } from './camera-runtime.js';
@@ -384,6 +385,13 @@ export function createRuntime(project, { settings = {}, screen = 'playing', game
     postFx: { stackEnabled: true, disabled: new Map(), values: new Map() },
     // The stack as the project saved it; a script enables passes and sets values on top.
     projectPostFx: project.postFx ? structuredClone(project.postFx) : null,
+    // The sky the game is drawing, copied from the level so a rule can change it, and the sky's own
+    // clock — separate from `time` because stopping the sky animation has to stop its layers and
+    // its frames together. Both travel with a save, so a checkpoint resumes at the same frame.
+    skybox: normalizeSkybox(project.environment?.skybox),
+    skyClock: 0,
+    // Why the last sky action did nothing, for the playtest log and the editor's diagnostics.
+    skyError: '',
     shaderUniforms: new Map(Object.entries(project.shaders?.find(shader => shader.id === project.environment.shaderId)?.uniforms || {})),
     sectorMotions: new Map(),
     // Switch pictures that come back a second after the press, and the one-shot switches that
@@ -993,6 +1001,7 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
   }
   state.worldTriggers.shoot = new Set();
   state.time += dt;
+  advanceSky(state, dt);
   // Timelines run on the game's clock, so they pause with the game and a save keeps their place.
   // Cues are executed later in the frame by the rule runner, which is why the due set outlives
   // this call.
@@ -1684,6 +1693,22 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
           // The rule editor stores a yes/no choice, hand-written rules may use a boolean.
           { overSteps: condition.reachOverSteps === true || condition.reachOverSteps === 'yes' });
       }
+      if (condition.type === 'skyboxPreset') {
+        const wanted = String(condition.preset || '').trim().toLowerCase();
+        const sky = state.skybox;
+        const name = String(sky?.presetName || '').toLowerCase();
+        return Boolean(wanted) && name === wanted;
+      }
+      if (condition.type === 'skyboxShape') return state.skybox?.shape === condition.shape;
+      if (condition.type === 'skyboxAnimating') return state.skybox?.animation?.playing === true;
+      if (condition.type === 'skyboxFrame') {
+        const frame = currentSkyFrame(state, project, condition.layer);
+        return frame >= 0 && compareValues(frame, condition.operator, condition.frame);
+      }
+      if (condition.type === 'skyboxSpeed') {
+        const speed = Number(state.skybox?.animation?.speed);
+        return Number.isFinite(speed) && compareValues(speed, condition.operator, condition.value);
+      }
       if (condition.type === 'enemyAlert') return state.time < (state.timers.get(`${resolveEntityId(event, condition.entityId)}:alert`) || 0);
       if (condition.type === 'enemyHearsPlayer') {
         const entity = findTarget(condition.entityId);
@@ -2048,6 +2073,18 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
             case 'setPostFxStack': state.postFx.stackEnabled = action.enabled === 'yes'; break;
             case 'setPostFxPass': state.postFx.disabled.set(action.kind, action.enabled !== 'yes'); break;
             case 'setPostFxParam': state.postFx.values.set(`${action.kind}.${action.param}`, action.value); break;
+            // The sky owns a small vocabulary of its own; `applySkyAction` keeps the rules for it
+            // (an unknown preset is a message, a speed change keeps the frame) beside the model.
+            case 'setSkyPreset': case 'setSkyShape': case 'setSkyTexture': case 'setSkyLayerTexture':
+            case 'setSkyLayerVisible': case 'setSkyCoverage': case 'setSkyRotation': case 'setSkyTint':
+            case 'setSkyExposure': case 'startSkyAnimation': case 'stopSkyAnimation':
+            case 'toggleSkyAnimation': case 'setSkySpeed': case 'setSkyFrame':
+            case 'setSkyLayerOffset': case 'setSkyLayerSpin': case 'setSkyLayerOpacity':
+              if (!applySkyAction(state, project, action, message => { state.skyError = String(message); }))
+                state.skyError = state.skyError || `The sky action ${action.type} did nothing`;
+              else state.skyError = '';
+              state.worldRevision = (state.worldRevision || 0) + 1;
+              break;
             // ---- Instances: acting on the picked set ------------------------------------------
             // One action, every instance the event picked. This is GDevelop's and Construct's central
             // idea — "Add 1 to Enemy.score" with no loop written — and it is why the picking

@@ -13,6 +13,7 @@ import { POST_FX_KINDS } from './post-fx.js';
 import { GAME_SETTINGS, GAME_BINDINGS } from './game-settings.js';
 import { addonCommands, addonCommand, declaredAddonTypes } from './addons.js';
 import { PATH_EASINGS } from './timesheet.js';
+import { SKY_SHAPES, SKY_EDGES, SKY_LIMITS } from './skybox.js';
 import { PAD_BUTTONS } from './gamepad.js';
 import { INSTANCE_PICKABLE_TYPES, INSTANCE_PROPERTIES } from './instance-properties.js';
 import { weaponScriptRules } from './weapon-script.js';
@@ -217,6 +218,14 @@ export const ENGINE_CONDITIONS = [
   { type: 'pickRandom', label: 'Object: pick a random instance', fields: [objectType(), numeric('count', 1, 1, 1024)] },
   { type: 'pickedCount', label: 'Object: compare how many instances are picked', fields: [
     objectType(), comparison(), numeric('value', 1, 0, 100000)] },
+  // Skybox conditions: a rule can ask which sky is showing and what its clock is doing, so a
+  // level can react to a sunset rather than only cause one.
+  { sky: true, type: 'skyboxPreset', label: 'Sky: a preset is showing', fields: [{ name: 'preset', kind: 'text', value: '' }] },
+  { sky: true, type: 'skyboxShape', label: 'Sky: compare the sky shape', fields: [choice('shape', 'sphere', SKY_SHAPES)] },
+  { sky: true, type: 'skyboxAnimating', label: 'Sky: the sky animation is running', fields: [] },
+  { sky: true, type: 'skyboxFrame', label: 'Sky: compare the animation frame', fields: [
+    comparison(), numeric('frame', 0, 0, SKY_LIMITS.frames), numeric('layer', 1, 1, SKY_LIMITS.layers)] },
+  { sky: true, type: 'skyboxSpeed', label: 'Sky: compare the animation speed', fields: [comparison(), numeric('value', 1, 0, 64)] },
   { type: 'cameraActive', label: 'Camera: this object is the active view', target: true, fields: [] },
   { type: 'cameraFovCompare', label: 'Camera: compare the view field of view', fields: [comparison(), numeric('value', 90, 0, 360)] },
   { type: 'variableCompare', label: 'System: compare variable', fields: [comparison(), { name: 'value', kind: 'value', value: 0 }], variable: true },
@@ -242,6 +251,35 @@ export const ENGINE_ACTIONS = [
     fields: [{ name: 'file', kind: 'text', value: 'checkpoint' }] },
   { type: 'loadGameState', label: 'Save: load the whole game from a save file',
     fields: [{ name: 'file', kind: 'text', value: 'checkpoint' }] },
+  // The sky. `setSkyPreset` swaps the whole sky for one the Skybox tab saved; the rest change one
+  // thing about the sky that is showing, which is what a sunrise wants: the same sky, its clock
+  // running faster, its cloud layer swapped for a darker one.
+  { sky: true, type: 'setSkyPreset', label: 'Sky: apply a saved preset', fields: [{ name: 'preset', kind: 'text', value: '' }] },
+  { sky: true, type: 'setSkyShape', label: 'Sky: set the sky shape', fields: [choice('shape', 'sphere', SKY_SHAPES)] },
+  { sky: true, type: 'setSkyTexture', label: 'Sky: set the base texture', fields: [{ name: 'assetId', kind: 'image', value: '' }] },
+  { sky: true, type: 'setSkyLayerTexture', label: 'Sky: set a layer texture', fields: [
+    numeric('layer', 1, 1, SKY_LIMITS.layers), { name: 'assetId', kind: 'image', value: '' }] },
+  { sky: true, type: 'setSkyLayerVisible', label: 'Sky: show / hide a layer', fields: [
+    numeric('layer', 1, 1, SKY_LIMITS.layers), choice('visible', 'yes', ['yes', 'no'])] },
+  { sky: true, type: 'setSkyCoverage', label: 'Sky: set the window it is drawn in', fields: [
+    numeric('azimuthFrom', -180, -360, 360), numeric('azimuthTo', 180, -360, 360),
+    numeric('elevationFrom', -90, -90, 90), numeric('elevationTo', 90, -90, 90),
+    choice('edge', 'fade', SKY_EDGES)] },
+  { sky: true, type: 'setSkyRotation', label: 'Sky: set the sky rotation', fields: [numeric('degrees', 0, -3600, 3600)] },
+  { sky: true, type: 'setSkyTint', label: 'Sky: set the sky tint', fields: [{ name: 'color', kind: 'color', value: '#ffffff' }] },
+  { sky: true, type: 'setSkyExposure', label: 'Sky: set the sky exposure', fields: [numeric('value', 1, 0, 16)] },
+  { sky: true, type: 'startSkyAnimation', label: 'Sky: start the sky animation', fields: [] },
+  { sky: true, type: 'stopSkyAnimation', label: 'Sky: stop the sky animation', fields: [] },
+  { sky: true, type: 'toggleSkyAnimation', label: 'Sky: toggle the sky animation', fields: [] },
+  { sky: true, type: 'setSkySpeed', label: 'Sky: set the animation speed', fields: [numeric('value', 1, 0, 64)] },
+  { sky: true, type: 'setSkyFrame', label: 'Sky: jump to an animation frame', fields: [
+    numeric('frame', 0, 0, SKY_LIMITS.frames), numeric('layer', 1, 1, SKY_LIMITS.layers)] },
+  { sky: true, type: 'setSkyLayerOffset', label: 'Sky: move a layer', fields: [
+    numeric('layer', 1, 1, SKY_LIMITS.layers), numeric('offsetU', 0, -64, 64), numeric('offsetV', 0, -64, 64)] },
+  { sky: true, type: 'setSkyLayerSpin', label: 'Sky: set a layer\'s drift speed', fields: [
+    numeric('layer', 1, 1, SKY_LIMITS.layers), numeric('degreesPerSecond', 0, -360, 360)] },
+  { sky: true, type: 'setSkyLayerOpacity', label: 'Sky: set a layer\'s opacity', fields: [
+    numeric('layer', 1, 1, SKY_LIMITS.layers), numeric('opacity', 1, 0, 1)] },
   { type: 'setGameScreen', label: 'Game: open menu / resume', fields: [{ name: 'screen', kind: 'text', value: 'title' }] },
   { type: 'startGame', label: 'Game: start a new game', fields: [] },
   { type: 'selectGameEpisode', label: 'Game: select new game episode', fields: [{ name: 'levelId', kind: 'text', value: 'MAP01' }] },
