@@ -5,10 +5,10 @@
  * program from that same record, so there is one description of a sky rather than two. Presets are
  * project-wide (`project.skyPresets`), which is what lets a rule switch the whole sky by name.
  *
- * The preview is deliberately not a second renderer: it draws the coverage grid with the same
- * `skyTexel` maths the shader uses and fills each cell from the layer's picture. A gap in the
- * angular window is then a visible gap, and a stretched picture shows its stretched texels, instead
- * of the author having to guess what a shader will do.
+ * Two views, one record. The **3D view** is a real renderer — the same fragment program the game
+ * runs, built by `public/sky-material.js` — so what the tab shows is what the player sees. The
+ * **coverage map** is the whole sky as a plate, painted with the same `skyTexel` maths, which is
+ * the one thing a camera view cannot answer: where the picture stops covering the sky.
  */
 import {
   defaultSkybox, normalizeSkybox, skyboxFromEnvironment, defaultLayer, SKY_SHAPES, SKY_PROJECTIONS,
@@ -45,24 +45,56 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
   const body = element('div', 'sky-body');
   const form = element('form', 'sky-form');
   const stage = element('div', 'sky-stage');
+
+  // The viewport is the sky as the game draws it; the plate is the same sky as a coverage diagram.
+  // Two views of one record, switched rather than duplicated: the plate answers "which degrees",
+  // the viewport answers "what will the player see".
+  const viewHolder = element('div', 'sky-view');
   const canvas = document.createElement('canvas');
-  canvas.className = 'sky-preview';
-  canvas.width = 720;
-  canvas.height = 360;
+  canvas.className = 'sky-canvas';
+  canvas.title = 'Drag to look around, wheel to zoom, double-click to reset';
+  const plate = document.createElement('canvas');
+  plate.className = 'sky-preview';
+  plate.width = 720;
+  plate.height = 360;
+  plate.hidden = true;
+  viewHolder.append(canvas, plate);
+
+  const toolbar = element('div', 'sky-view-bar');
+  const viewTabs = element('div', 'sky-view-tabs');
+  const viewportButton = element('button', null, '3D view');
+  const plateButton = element('button', null, 'Coverage map');
+  viewportButton.type = plateButton.type = 'button';
+  viewTabs.append(viewportButton, plateButton);
+  const hint = element('span', 'sky-view-hint muted', 'drag to look · wheel to zoom');
+  toolbar.append(viewTabs, hint);
+
   const readout = element('p', 'sky-readout muted');
-  const legend = element('p', 'muted',
-    'Each cell is one view direction, filled with the texel the game draws there. Grey means the '
-    + 'picture does not cover that direction — that is the area that used to be stretched into streaks.');
-  stage.append(canvas, readout, legend);
+  const legend = element('p', 'sky-legend muted',
+    'The 3D view draws the sky exactly as the game does. The coverage map is the whole sky as a '
+    + 'plate — azimuth across, elevation up — with grey where the picture does not reach, which is '
+    + 'the area that used to be stretched into streaks.');
+  stage.append(viewHolder, toolbar, readout, legend);
   body.append(form, stage);
   root.replaceChildren(body);
 
   let selectedLayer = 0;
   let animationClock = 0;
   let timer = 0;
+  let showPlate = false;
+  let viewport = null;
+  let viewportStarting = false;
+  let visible = false;
 
   const assets = () => (getProject()?.assets || []).filter(asset => asset.kind === 'sky' ||
     ['texture', 'flat', 'image'].includes(asset.kind));
+  /** The rows of the picture on top, which a Doom-projected sky's dome mapping is derived from. */
+  const pictureRows = () => {
+    const current = sky();
+    const layer = [...(current?.layers || [])].reverse().find(item => item.assetId);
+    const asset = layer ? assets().find(item => item.id === layer.assetId) : null;
+    return Number(asset?.height) || 240;
+  };
   const sky = () => normalizeSkybox(getProject()?.environment?.skybox) || skyboxFromEnvironment(getProject()?.environment, assets());
   // `blank` starts from an empty sky instead of adopting the level's own Doom picture, which is
   // what a creator who wants to design one from nothing is asking for.
@@ -437,15 +469,81 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
     render();
   }
 
-  // ------------------------------------------------------------------------ the preview
+  // ------------------------------------------------------------------------ the views
+  /**
+   * The 3D view is a real renderer built on demand: a project with no sky yet should not pay for a
+   * WebGL context, and the tab must stop drawing when it is hidden.
+   */
+  function startViewport() {
+    if (viewport || viewportStarting) return;
+    const current = sky();
+    if (!current) return;
+    viewportStarting = true;
+    import('./skybox-viewport.js').then(async module => {
+      viewport = await module.createSkyViewport(canvas, { background: getProject()?.environment?.sky || '#333333' });
+      viewportStarting = false;
+      await viewport.setSky(current, assets());
+      viewport.setBackground(getProject()?.environment?.sky);
+      if (visible && !showPlate) viewport.start();
+      readViewout();
+      status('3D sky view ready');
+    }).catch(error => {
+      viewportStarting = false;
+      // A machine without a usable renderer still gets the coverage map, so the tab keeps working.
+      status(`3D sky view could not start: ${error.message} — showing the coverage map`, true);
+      setView('plate');
+    });
+  }
+
+  function setView(name) {
+    showPlate = name === 'plate';
+    canvas.hidden = showPlate;
+    plate.hidden = !showPlate;
+    viewportButton.classList.toggle('active', !showPlate);
+    plateButton.classList.toggle('active', showPlate);
+    hint.textContent = showPlate ? 'the whole sky: azimuth across, elevation up' : 'drag to look · wheel to zoom';
+    viewHolder.dataset.view = showPlate ? 'plate' : '3d';
+    if (showPlate) {
+      viewport?.stop();
+      drawPreview();
+    } else {
+      startViewport();
+      if (visible) viewport?.start();
+      readViewout();
+    }
+  }
+  viewportButton.addEventListener('click', () => setView('3d'));
+  plateButton.addEventListener('click', () => setView('plate'));
+
+  /** The line under either view: the same numbers, whichever one is showing. */
+  function readViewout() {
+    const current = sky();
+    if (!current) { readout.textContent = 'No sky: the level draws its environment colour.'; return; }
+    const cells = skyPlateCells({ skybox: current, columns: 72, rows: 36, pictureRows: pictureRows() });
+    const coverage = previewCoverage(cells);
+    const picture = current.shape === 'procedural' ? 'drawn from its gradient'
+      : current.layers.some(layer => layer.assetId || layer.faces) ? 'covered by the layer pictures'
+      : 'no picture chosen yet — the background colour stands in';
+    readout.textContent = `${current.shape} · ${current.projection} · `
+      + `${current.coverage.azimuth.from}°…${current.coverage.azimuth.to}° across, `
+      + `${current.coverage.elevation.from}°…${current.coverage.elevation.to}° up · `
+      + `${Math.round(coverage.fraction * 100)}% of the sky is inside the window · ${picture}`
+      + ` · ${current.layers.length} layer(s)`;
+    readout.dataset.coverage = coverage.fraction.toFixed(3);
+    readout.dataset.shape = current.shape;
+    plate.dataset.skyCoverage = coverage.fraction.toFixed(3);
+    canvas.dataset.skyCoverage = coverage.fraction.toFixed(3);
+    canvas.dataset.skySignature = String(skyboxSignature(current).length);
+  }
+
   function drawPreview() {
-    const context = canvas.getContext('2d');
+    const context = plate.getContext('2d');
     if (!context) return;
     const current = sky();
-    const width = canvas.width, height = canvas.height;
+    const width = plate.width, height = plate.height;
     context.clearRect(0, 0, width, height);
     if (!current) {
-      context.fillStyle = '#1d242a';
+      context.fillStyle = '#262626';
       context.fillRect(0, 0, width, height);
       readout.textContent = 'No sky: the level draws its environment colour.';
       return;
@@ -453,7 +551,9 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
     // The whole sky as a plate — azimuth across, elevation up — so the window and everything
     // outside it are both visible at once, which is the question this preview answers.
     const columns = 72, rows = 36;
-    const cells = skyPlateCells({ skybox: current, columns, rows });
+    const topPicture = [...current.layers].reverse().find(item => item.assetId);
+    const cells = skyPlateCells({ skybox: current, columns, rows, pictureRows: pictureRows(),
+      layerUv: topPicture?.uv ?? null });
     const cellWidth = width / columns, cellHeight = height / rows;
     const byId = new Map(assets().map(asset => [asset.id, asset]));
     const images = new Map();
@@ -461,8 +561,9 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
     for (const cell of cells) {
       const x = cell.column * cellWidth, y = cell.row * cellHeight;
       if (!cell.inside) {
-        // Uncovered: flat grey, so a gap in the window reads as a gap rather than as artwork.
-        context.fillStyle = '#3a4046';
+        // Uncovered: the editor's own grey, so a gap in the window reads as a gap rather than as
+        // artwork and the plate looks like the rest of the studio.
+        context.fillStyle = '#3f3f3f';
         context.fillRect(x, y, cellWidth + .5, cellHeight + .5);
         continue;
       }
@@ -489,27 +590,24 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
         images.set(assetId, image);
       }
       if (image.complete && image.naturalWidth) {
-        const su = clamp01(cell.u) * image.naturalWidth;
-        const sv = (1 - clamp01(cell.v)) * image.naturalHeight;
+        // A tiled layer repeats: `u` of 3.2 samples the same texel as 0.2, not the picture's edge.
+        const wrappedU = layer && (Number(layer.uv?.repeatU ?? 1) !== 1 || Number(layer.uv?.repeatV ?? 1) !== 1);
+        const frac = value => ((value % 1) + 1) % 1;
+        const su = Math.min(image.naturalWidth - 1, Math.max(0,
+          Math.round((wrappedU ? frac(cell.u) : clamp01(cell.u)) * (image.naturalWidth - 1))));
+        // A whole pixel, never a sliver at the last row: asking for a 1-pixel rect that runs off the
+        // bottom edge draws nothing at all, which painted the plate black wherever the mapping
+        // clamped a texel to the picture's edge.
+        const sv = Math.min(image.naturalHeight - 1, Math.max(0,
+          Math.round((1 - (wrappedU ? frac(cell.v) : clamp01(cell.v))) * (image.naturalHeight - 1))));
         context.drawImage(image, su, sv, 1, 1, x, y, cellWidth + .5, cellHeight + .5);
       } else {
-        context.fillStyle = '#2b3238';
+        context.fillStyle = '#303030';
         context.fillRect(x, y, cellWidth + .5, cellHeight + .5);
       }
     }
-    const coverage = previewCoverage(cells);
-    const picture = current.shape === 'procedural' ? 'drawn from its gradient'
-      : current.layers.some(layer => layer.assetId || layer.faces) ? 'covered by the layer pictures'
-      : 'no picture chosen yet — the background colour stands in';
-    readout.textContent = `${current.shape} · ${current.projection} · `
-      + `${current.coverage.azimuth.from}°…${current.coverage.azimuth.to}° across, `
-      + `${current.coverage.elevation.from}°…${current.coverage.elevation.to}° up · `
-      + `${Math.round(coverage.fraction * 100)}% of this view is inside the window`
-      + ` · ${picture} · ${current.layers.length} layer(s) · ${painted} cells painted`;
-    readout.dataset.coverage = coverage.fraction.toFixed(3);
-    readout.dataset.shape = current.shape;
-    canvas.dataset.skyCoverage = coverage.fraction.toFixed(3);
-    canvas.dataset.skySignature = skyboxSignature(current).length;
+    readViewout();
+    readout.dataset.painted = String(painted);
   }
   const clamp01 = value => Math.max(0, Math.min(1, Number(value) || 0));
 
@@ -517,28 +615,54 @@ export function createSkyboxPanel({ root, project: getProject, edit, status }) {
 
   function render() {
     renderForm();
-    drawPreview();
-    if (timer) clearInterval(timer);
-    // A slow clock so an animated layer visibly moves in the preview; the game's own clock runs at
-    // the level's rate.
-    timer = setInterval(() => {
-      const current = sky();
-      if (!current?.animation?.playing) return;
-      animationClock += .1 * (Number(current.animation.speed) || 1);
+    readViewout();
+    if (showPlate) {
       drawPreview();
-    }, 100);
+      if (timer) clearInterval(timer);
+      // A slow clock so an animated layer visibly moves in the plate; the 3D view runs its own.
+      timer = setInterval(() => {
+        const current = sky();
+        if (!current?.animation?.playing) return;
+        animationClock += .1 * (Number(current.animation.speed) || 1);
+        drawPreview();
+      }, 100);
+    } else {
+      if (timer) { clearInterval(timer); timer = 0; }
+      const current = sky();
+      if (!current) { viewport?.stop(); return; }
+      startViewport();
+      viewport?.setSky(current, assets());
+      viewport?.setBackground(getProject()?.environment?.sky);
+      if (visible) viewport?.start();
+    }
   }
+
+  // The 3D view is the one that opens. Called here, not at the top: it reads the project, so every
+  // helper it goes through has to exist first.
+  setView('3d');
 
   return {
     render,
-    stop() { if (timer) clearInterval(timer); timer = 0; },
+    /** The tab machinery tells the panel when it is on screen: the renderer must not run hidden. */
+    setVisible(next) {
+      visible = Boolean(next);
+      if (visible) render();
+      else { viewport?.stop(); if (timer) { clearInterval(timer); timer = 0; } }
+    },
+    stop() {
+      if (timer) clearInterval(timer);
+      timer = 0;
+      viewport?.stop();
+    },
+    setView,
     /** A view of the sky the tab is showing, for the automation harness. */
     state() {
       const current = sky();
       return { shape: current?.shape ?? null, projection: current?.projection ?? null,
         coverage: current?.coverage ?? null, layers: current?.layers?.length ?? 0,
         frame: current ? animationFrameAt(current.layers[0]?.animation, animationClock) : -1,
-        signature: current ? skyboxSignature(current) : '' };
+        signature: current ? skyboxSignature(current) : '',
+        view: showPlate ? 'plate' : '3d', viewport: viewport?.state() ?? null };
     },
     /** `state.skybox` as the running game sees it, so a rule's effect can be inspected. */
     runtimeSky: state => activeSkybox(state, getProject()),

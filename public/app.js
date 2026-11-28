@@ -2548,7 +2548,8 @@ function showTab(tab) {
   }
   // The terrain viewport owns a WebGL2 loop; leaving the tab has to stop it.
   terrainPanel.setVisible(tab === 'terrain');
-  // The skybox tab runs a slow preview clock; it stops with the tab.
+  // The skybox tab owns a WebGL viewport; it must not draw while the tab is hidden.
+  skyboxPanel.setVisible(tab === 'skybox');
   if (tab !== 'skybox') skyboxPanel.stop();
   for (const name of ['map', 'events', 'environment', 'skybox', 'shaders', 'hud', 'terrain', 'actors', 'scripts', 'logs', 'tweaks', 'scriptlets', 'timesheet', 'addons', 'about', 'scene'])
     $(name + '-panel').hidden = tab !== name;

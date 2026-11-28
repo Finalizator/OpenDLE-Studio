@@ -32,9 +32,33 @@ test('the page has a Skybox tab with a panel the tab machinery can show', () => 
 });
 
 test('the panel is styled by the editor and not by the browser', () => {
-  for (const selector of ['.sky-body', '.sky-form', '.sky-stage', '.sky-preview', '.sky-field', '.sky-group', '.sky-layer'])
+  for (const selector of ['.sky-body', '.sky-form', '.sky-stage', '.sky-canvas', '.sky-preview', '.sky-field',
+    '.sky-group', '.sky-layer', '.sky-view-tabs'])
     assert.match(style, new RegExp(`${selector.replace('.', '\\.')} \\{`), `${selector} has its own rule`);
-  assert.match(panel, /canvas\.className = 'sky-preview'/, 'the preview canvas is the styled element');
+  // The tab belongs to the studio: its surfaces are the editor's variables, not a second palette
+  // with its own blues. A colour written as a literal here is a colour that drifts from the theme.
+  const block = style.slice(style.indexOf('/* The Skybox tab'));
+  assert.match(block, /background: var\(--panel\)/);
+  assert.match(block, /background: var\(--raised\)/);
+  assert.match(block, /border: 1px solid var\(--border\)/);
+  assert.doesNotMatch(block, /#7fe6ff|#2e6d86|#3c4a54|#262f36/, 'no leftover blue chrome');
+  assert.match(panel, /canvas\.className = 'sky-canvas'/, 'the 3D canvas is the styled element');
+  assert.match(panel, /plate\.className = 'sky-preview'/, 'the coverage map is the second view');
+});
+
+test('the tab opens on a 3D viewport and offers the coverage map beside it', () => {
+  assert.match(panel, /import\('\.\/skybox-viewport\.js'\)/, 'the viewport is built on demand');
+  assert.match(panel, /setView\('3d'\)/, 'the 3D view is the one that opens');
+  assert.match(panel, /viewport\??\.start\(\)/);
+  assert.match(panel, /viewport\??\.stop\(\)/);
+  assert.match(panel, /setVisible\(next\)/, 'the tab machinery can stop it when the tab is hidden');
+  assert.match(app, /skyboxPanel\.setVisible\(tab === 'skybox'\)/);
+  const viewport = readFileSync(resolve(root, 'public/skybox-viewport.js'), 'utf8');
+  // One builder for both: the tab cannot show a sky the game would not draw.
+  assert.match(viewport, /import \{ createSkyMaterial \} from '\.\/sky-material\.js'/);
+  const render = readFileSync(resolve(root, 'public/render.js'), 'utf8');
+  assert.match(render, /import \{ createSkyMaterial \} from '\.\/sky-material\.js'/);
+  assert.match(viewport, /createBrowserRenderer/, 'it is a real renderer, not a picture');
 });
 
 test('a full window covers the preview and a narrow one leaves a visible gap', () => {
