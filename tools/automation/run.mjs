@@ -20,6 +20,7 @@ const scenarios = {
   brushes: () => import('./scenarios/brushes.mjs'),
   menus: () => import('./scenarios/menus.mjs'),
   skybox: () => import('./scenarios/skybox.mjs'),
+  water: () => import('./scenarios/water.mjs'),
   maps: () => import('./scenarios/maps.mjs'),
   game: () => import('./scenarios/game.mjs'),
   close: () => import('./scenarios/close.mjs'),

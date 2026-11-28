@@ -9,7 +9,8 @@
 // The merging lives here rather than in the view so it can be tested without a GPU: what matters is
 // that every face's triangles are in the buffer and that each of them still names its brush and face.
 
-import { brushGeometry } from './brushes.js';
+import { brushGeometry, isWaterBrush } from './brushes.js';
+import { WATER_DEFAULTS } from './water.js';
 import { brushFaceUv } from './uv.js';
 import { mergePiece } from './surface-batch.js';
 
@@ -45,23 +46,33 @@ export function brushFaceRecord(brush, entry) {
  * A face with a PBR material is batched under the material, not the texture: the material brings
  * a normal map and a roughness map as well, and they are per-material state, so one batch per
  * material is the only way to draw them without splitting a merged buffer per map.
+ *
+ * A shader and a water body both change the *program*, not only the picture, so each becomes part
+ * of the key too: a face with a shader cannot share a batch with the plain faces of the same
+ * texture, and a pool of one blue cannot share one with a pool of another.
  */
-const materialKey = (brush, entry) => {
+export function brushSurfaceKey(brush, entry) {
   const face = brush.faces?.[entry.index];
-  if (face?.material) return `material:${face.material}`;
-  return face?.texture || '';
-};
+  const shaderId = face?.shaderId || brush.shaderId || '';
+  const water = isWaterBrush(brush) ? { color: brush.water?.color || WATER_DEFAULTS.color,
+    opacity: brush.water?.opacity ?? WATER_DEFAULTS.opacity } : null;
+  const base = face?.material ? `material:${face.material}` : face?.texture || '';
+  // A plain face keeps the key it always had, so nothing that reads a batch key has to change.
+  const key = !shaderId && !water ? base : [shaderId, base, water ? `${water.color}/${water.opacity}` : ''].join('|');
+  return { key, shaderId, material: face?.material || null, texture: face?.texture || '', water };
+}
 
 /**
  * Every visible brush as merged geometry: one batch per texture, and one edge list for all of them.
  *
- * Returns `{ batches, edges, faces }` — `batches` is a `Map` from texture asset id (empty string for
- * no texture) to `{ positions, uvs, index, ranges }`, which is what a `BufferGeometry` needs plus the
- * triangle ranges a raycast hit is resolved through. `edges` is a flat `[x, y, z, …]` line list for
+ * Returns `{ batches, edges, faces, surfaces }` — `batches` is a `Map` from a surface key (see
+ * `brushSurfaceKey`: the shader, the texture or material, and the water if there is any) to
+ * `{ positions, uvs, index, ranges }`, which is what a `BufferGeometry` needs plus the triangle
+ * ranges a raycast hit is resolved through, and `surfaces` says what each key means. `edges` is a flat `[x, y, z, …]` line list for
  * the whole level, because a wireframe is one draw call too.
  */
 export function batchBrushes(brushes, { includeHidden = false } = {}) {
-  const batches = new Map();
+  const batches = new Map(), surfaces = new Map();
   const edges = [];
   let faces = 0;
   for (const brush of brushes || []) {
@@ -72,7 +83,9 @@ export function batchBrushes(brushes, { includeHidden = false } = {}) {
       const record = brushFaceRecord(brush, entry);
       if (!record) continue;
       faces++;
-      const key = materialKey(brush, entry);
+      const surface = brushSurfaceKey(brush, entry);
+      const key = surface.key;
+      if (!surfaces.has(key)) surfaces.set(key, surface);
       let batch = batches.get(key);
       if (!batch) batches.set(key, batch = []);
       batch.push(record);
@@ -81,5 +94,5 @@ export function batchBrushes(brushes, { includeHidden = false } = {}) {
   }
   const merged = new Map();
   for (const [key, records] of batches) merged.set(key, mergePiece({ records }));
-  return { batches: merged, edges, faces };
+  return { batches: merged, edges, faces, surfaces };
 }

@@ -8,7 +8,8 @@ import { LUT_SIZE, lutTableBytes, postFxParamDefault, postFxSignature } from '/s
 import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, sectorSurfaces, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv, brushFaceUv } from '/shared/uv.js';
-import { brushGeometry } from '/shared/brushes.js';
+import { brushGeometry, isWaterBrush } from '/shared/brushes.js';
+import { waterSettings } from '/shared/water.js';
 import { wallScroll, TICRATE } from '/shared/scrollers.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
 import { verticalFov } from '/shared/game-settings.js';
@@ -1125,6 +1126,30 @@ export async function createPreview(canvas, project, state, { editor = false, on
       brushTextureCache.set(assetId, next);
       return next;
     }
+    /**
+     * What one brush face is drawn with.
+     *
+     * A face is normally its texture or its PBR material. Two things change that: a shader names
+     * a program instead of a picture, and a water body is see-through and coloured by its own
+     * record. A shader on a brush is drawn the way a panel's shader is — as the look of the
+     * surface, not as a tint laid over a lit one — because an effect writes the colour it wants
+     * and has nothing to say about a normal map.
+     */
+    function brushSurface({ shaderId, base, water }) {
+      const opacity = water ? Math.max(0, Math.min(1, Number(water.opacity) || 0)) : 1;
+      const tint = water?.color || '#ffffff';
+      const effect = shaderId ? effectFor(shaderId) : null;
+      if (!effect) {
+        if (!water) return base;
+        return new THREE.MeshBasicMaterial({ color: tint, transparent: true, opacity,
+          side: THREE.DoubleSide, depthWrite: false });
+      }
+      const colour = new THREE.Color(tint);
+      const material = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide, transparent: true, depthWrite: false });
+      material.colorNode = effect.effect(vec4(colour.r, colour.g, colour.b, opacity), uv(), effectTime, screenUV, effectResolution);
+      if (effect.usesScreen) screenMaterials.add(material);
+      return material;
+    }
     const brushPbrMeshes = [];
     function rebuildBrushMeshes() {
       brushPbrMeshes.length = 0;
@@ -1151,15 +1176,20 @@ export async function createPreview(canvas, project, state, { editor = false, on
           for (let index = 1; index < entry.points.length - 1; index++) {
             push(entry.points[0]); push(entry.points[index]); push(entry.points[index + 1]);
           }
-          const key = face.material ? `material:${face.material}` : face.texture || '';
+          // A water body's own colour and transparency are part of the look, so they join the
+          // batch key: two pools of different blues are two draws, not one average.
+          const water = isWaterBrush(brush) ? waterSettings(brush) : null;
+          const shaderId = face.shaderId || brush.shaderId || '';
+          const key = [shaderId, face.material || face.texture || '', water ? `${water.color}/${water.opacity}` : ''].join('|');
           if (!byMaterial.has(key)) {
-            byMaterial.set(key, { positions: [], uvs: [],
+            byMaterial.set(key, { positions: [], uvs: [], shaderId, water,
               material: (face.material && brushMaterialForMaterial(face.material)) || brushMaterialFor(face.texture) });
           }
           const target = byMaterial.get(key);
           target.positions.push(...positions); target.uvs.push(...uvs);
         }
-        for (const { positions, uvs, material: surfaceMaterial } of byMaterial.values()) {
+        for (const { positions, uvs, material: baseMaterial, shaderId, water } of byMaterial.values()) {
+          const surfaceMaterial = brushSurface({ shaderId, base: baseMaterial, water });
           const buffer = new THREE.BufferGeometry();
           buffer.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
           buffer.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
@@ -1172,6 +1202,9 @@ export async function createPreview(canvas, project, state, { editor = false, on
             mesh.userData.pbrVariants = surfaceMaterial.userData.pbrVariants;
             brushPbrMeshes.push(mesh);
           }
+          // A surface that reads what is behind it needs the background pass drawn, exactly as a
+          // shader on an object does.
+          if (screenMaterials.has(surfaceMaterial)) screenObjects.add(mesh);
           brushRoot.add(mesh);
         }
       }
@@ -3121,6 +3154,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
       return true;
     }
     return { render, dispose, scene, camera, renderer, rendererStatus, setProject, boundsOfEntity, handlePointerDown, updateScreenInteraction, closeWorldTerminal,
+      /**
+       * The look of one brush face: its texture or material, or — when it carries a shader or is
+       * a water body — the surface built for it here. The editor's 3D view calls this too, so the
+       * pool a mapper sees while drawing is drawn by the program the player will see it with.
+       */
+      brushSurface,
       /** Editor only: hide a ceiling once the camera is above it, so rooms open up. */
       ceilings(visible) { ceilingsHidden = !visible; },
       /** Every object drawn without artwork, one record each, for the placeholder log. */

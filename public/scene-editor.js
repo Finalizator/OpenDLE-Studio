@@ -604,7 +604,7 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     // Every face is merged into one mesh per material, and every edge into one line, so a level of
     // five thousand brushes is a handful of draw calls instead of fifty thousand. A click is
     // resolved by the triangle it hit: `selectionRanges` names the brush and face of each.
-    const { batches, edges } = batchBrushes(project.map.brushes);
+    const { batches, edges, surfaces } = batchBrushes(project.map.brushes);
     for (const [key, merged] of batches) {
       const buffer = new THREE.BufferGeometry();
       brushResources.push(buffer);
@@ -612,7 +612,15 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
       buffer.setAttribute('uv', new THREE.Float32BufferAttribute(merged.uvs, 2));
       buffer.setIndex(new THREE.BufferAttribute(merged.index, 1));
       buffer.computeVertexNormals();
-      const mesh = new THREE.Mesh(buffer, brushTextureFor(key || null));
+      const surface = surfaces.get(key);
+      const base = brushTextureFor(surface?.material ? `material:${surface.material}` : surface?.texture || null);
+      // The editor draws a shader or a water body with the same look the game will: the preview
+      // hands out the material builder it uses itself, so a pool cannot be blue here and grey in
+      // play.
+      const material = view.brushSurface
+        ? view.brushSurface({ shaderId: surface?.shaderId || '', base, water: surface?.water || null })
+        : base;
+      const mesh = new THREE.Mesh(buffer, material);
       mesh.userData.selectionRanges = merged.ranges;
       brushGroup.add(mesh);
     }

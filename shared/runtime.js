@@ -71,6 +71,7 @@ import {
 } from './gravity.js';
 import { damagePlayer, canSeePlayer, canHearPlayer, canSeeTarget, moveEnemy, launchProjectile, advanceProjectiles, soundEvent, randomDamage, geometryDistance, entityDistance, playerReachesEntity, enemyHitscan, enemyAttackChance, enemyFloats, floorAt } from './combat.js';
 import { brushVolumes } from './brushes.js';
+import { swimTarget, waterSpeedScale } from './water.js';
 import { createTerrainSurface } from './terrain-surface.js';
 import { useWall, crossedWalls, moveSector, advanceSectors, PLAYER_TOUCH } from './world-motion.js';
 import { advanceSwitches, pressSwitch, pressUsedSwitches, wallCanBeShot, wallSwitchRepeats } from './switches.js';
@@ -1136,6 +1137,14 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       bunnyhop.multiplier = Math.max(1, bunnyhop.multiplier - state.settings.bunnyhopGain * 8 * dt);
     }
   }
+  // How wet the player is this frame. One query, asked of the same volumes the collision world
+  // leaves out, so the swim model, the speed loss and anything a script reads agree on the water.
+  const water = state.physics?.waterLevel ? state.physics.waterLevel(player) : null;
+  state.waterLevel = water?.level ?? 0;
+  state.waterSurface = water?.surfaceZ ?? null;
+  state.waterSettings = water?.settings ?? null;
+  const waterScale = water ? waterSpeedScale(water.level, water.settings) : 1;
+  const swimming = water ? water.level >= 2 : false;
   const speed = runMultiplier * bunnyhop.multiplier;
   state.playerClock = (state.playerClock || 0) + dt * TIC_RATE;
   const wholeTics = Math.floor(state.playerClock + 1e-6);
@@ -1164,16 +1173,26 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
       // nothing could fly off the end of one.
       state.motion ||= { x: 0, y: 0, z: 0 };
       const tick = 1 / TIC_RATE;
-      // `CheckJumpButton`, once: `jumpHeld` is the press edge, not the held key.
-      if (grounded && jumpHeld) {
+      // `CheckJumpButton`, once: `jumpHeld` is the press edge, not the held key. A swimmer's
+      // stroke is the water's, exactly as it is under the controller.
+      if (grounded && jumpHeld && !swimming) {
         state.motion = { x: state.motion.x, y: state.motion.y, z: sourceModel.jumpSpeed };
         state.sourceGrounded = false;
       }
-      // `StartGravity`/`FinishGravity` add `sv_gravity` over the tic.
-      state.motion = { x: state.motion.x, y: state.motion.y, z: state.motion.z - sourceModel.gravity * tick };
+      if (swimming) {
+        // Water replaces `StartGravity`/`FinishGravity`: the swimmer's vertical speed is dragged
+        // towards the speed the view and the stroke ask for, so no tic of gravity is added at all.
+        const target = swimTarget({ level: water.level, settings: water.settings,
+          pitch: player.pitch || 0, forward: axisForward, jump: jumpHeld });
+        const drag = Math.min(1, Math.max(.1, Number(water.settings.drag) || 3) * tick);
+        state.motion = { x: state.motion.x, y: state.motion.y, z: state.motion.z + (target - state.motion.z) * drag };
+      } else {
+        state.motion = { x: state.motion.x, y: state.motion.y, z: state.motion.z - sourceModel.gravity * tick };
+      }
       state.motion = clampHorizontal(horizontalStep(state.motion, {
         grounded, forward: axisForward, side: axisSide, angle: player.angle, dt: tick,
         settings: sourceModel }), sourceModel);
+      if (waterScale < 1) state.motion = { x: state.motion.x * waterScale, y: state.motion.y * waterScale, z: state.motion.z };
       state.motion.z = Math.max(-sourceModel.maxVelocity, Math.min(sourceModel.maxVelocity, state.motion.z));
       // The move happens on this tic too, not once per drawn frame. A frame is not a tic: how far
       // apart they fall decides how often a velocity is clipped against a ramp, and gaining speed
@@ -1222,7 +1241,11 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     const travelled = momentumSpeed(state.momentum);
     state.speed = Math.hypot(travelled.x, travelled.y);
   }
+  // Wading and swimming are slower than walking, and the slowdown is applied to the speed the
+  // body actually travels at rather than to the momentum the model accumulates: a player who
+  // steps out of a pool has not forgotten how to run.
   const velocity = sourceModel ? { ...state.motion } : momentumSpeed(state.momentum);
+  if (waterScale < 1 && !sourceModel) { velocity.x *= waterScale; velocity.y *= waterScale; }
   const dx = velocity.x * dt, dy = velocity.y * dt, dz = velocity.z * dt;
   state.physics?.syncWorld();
   if (state.physics && sourceModel) {
@@ -1231,7 +1254,8 @@ export function stepRuntime(project, state, dt, keys, pressed = new Set()) {
     // on any frame.
     if (projectUsesSurfaces(project)) state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
   } else if (state.physics) {
-    state.physics.step(dt, { x: velocity.x, y: velocity.y, z: velocity.z, jump: jumpHeld, up: player.up });
+    state.physics.step(dt, { x: velocity.x, y: velocity.y, z: velocity.z, jump: jumpHeld, up: player.up,
+      water: water ? { level: water.level, settings: water.settings, pitch: player.pitch || 0, forward: forwardAxis } : null });
     // Surfaces the capsule touches, for the wall-walking events and conditions.
     if (projectUsesSurfaces(project)) state.surfaces = state.physics.probeSurfaces?.(player.up) || [];
   }

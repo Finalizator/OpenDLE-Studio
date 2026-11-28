@@ -74,6 +74,10 @@ const omitted = new Set(['physics', 'scripts', 'saveSlots', 'saveStatus', 'pendi
   'acsScriptArrays', 'acsArrayStore',
   // Why the last sky action did nothing: a session diagnostic, rebuilt as actions run.
   'skyError',
+  // How wet the player is. It is answered from the level's water volumes and the player's own
+  // position every frame, so it is read off the state rather than stored in it — a save is taken
+  // where the player stands, not in the water they were standing in.
+  'waterLevel', 'waterSurface', 'waterSettings',
   // Ids compacted out of the level this frame, drained by the same step: transient bookkeeping.
   'removedActors',
   // `removeLiveActor` leaves `actorRemovals` set on the state after a boss cube lands, and a key

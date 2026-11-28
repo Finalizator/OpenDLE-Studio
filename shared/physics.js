@@ -8,7 +8,8 @@ import { tiltQuaternion } from './source-motion.js';
 import { wedgeCorners } from './ramp.js';
 import { SV_STEPSIZE, categorizePosition, playerMove } from './try-player-move.js';
 import { modelAssetTriangles } from './model-geometry.js';
-import { brushPolygons } from './brushes.js';
+import { brushPolygons, isWaterBrush } from './brushes.js';
+import { buoyancyFraction, currentAt, swimLevel, swimTarget, waterAt, waterVolumes } from './water.js';
 
 export const PHYSICS_SCALE = 64;
 export const FIXED_STEP = 1 / 60;
@@ -22,6 +23,9 @@ export const FIXED_STEP = 1 / 60;
  * root of two times as long as it does in Doom.
  */
 export const DOOM_GRAVITY = 35 * 35;
+
+/** The gravity the collision world runs at, in metres per second squared. */
+export const GRAVITY_MS2 = 9.81;
 
 /** `DIST_EPSILON`: how far short of a surface a sweep is allowed to stop. */
 const DIST_EPSILON = 1 / 32;
@@ -172,7 +176,9 @@ export function collisionMesh(project, triangulate, { sectors: liveSectors, movi
     for (const brush of project.map.brushes) {
       // A brush the mapper marked passable is scenery: nothing walks into it, and it must not be
       // in the collision mesh either, or "walk through it" would only hold for the game's own traces.
-      if (brush.passable) continue;
+      // A water body is the same, and for a second reason: its volume is where the swimmer *is*,
+      // so making it solid would stand the swimmer on top of the water instead of in it.
+      if (brush.passable || isWaterBrush(brush)) continue;
       for (const polygon of brushPolygons(brush)) {
         // A brush's face is convex and its outline is already ordered, so a fan is its triangulation.
         for (let index = 1; index < polygon.length - 1; index++) {
@@ -336,7 +342,7 @@ function wedgeVertices(config) {
 export function createPhysics(project, state, R, triangulate) {
   const initialUnbodiedHeights = new Map(state.entities.filter(entity => entity.type !== 'player' &&
     (!entity.physics || entity.physics.body === 'none') && Number.isFinite(entity.z)).map(entity => [entity.id, entity.z]));
-  const world = new R.World({ x: 0, y: -9.81, z: 0 }), events = new R.EventQueue(true);
+  const world = new R.World({ x: 0, y: -GRAVITY_MS2, z: 0 }), events = new R.EventQueue(true);
   // Parsed model geometry, keyed by the asset source: a rebuild reads each mesh once.
   const modelCache = new Map();
   world.timestep = FIXED_STEP;
@@ -353,6 +359,9 @@ export function createPhysics(project, state, R, triangulate) {
   const unbodiedHeights = new WeakMap();
   /** Heights of the imported actors that block the player; see `solidActor`. */
   const actorHeights = new Map();
+  // The water bodies of this level, read once with the world: a level's brushes are fixed while
+  // it is played, so a query is a walk down a short list rather than a rebuild of geometry.
+  const levelWater = waterVolumes(project.map?.brushes);
   // Impulse joints and the fixed bodies a world-side joint pins to.
   const jointHandles = [], pinnedHandles = [];
   let dynamicCollider = null, worldRevision = -1;
@@ -416,6 +425,32 @@ export function createPhysics(project, state, R, triangulate) {
   function floorAt(entity) {
     const sector = entitySector(mesh.sectors, entity);
     return sector ? floorHeightAt(sector, entity.z) : 0;
+  }
+  /**
+   * What the water does to one object: it pushes up, it carries it along and it slows it down.
+   *
+   * The push is the weight of the water the object pushes aside, which is why it is scaled by
+   * the share of the object that is under the surface and by the volume's buoyancy: a body
+   * floats where `buoyancy * share` balances gravity, so a buoyancy of 1.2 leaves a crate riding
+   * with a fifth of itself above the water line and a buoyancy of 0.5 sinks it to the bottom.
+   * The drag is linear in the velocity, which is what makes an object drift to a stop in water
+   * instead of falling through it at the speed a fall in air would reach.
+   */
+  function floatInWater(body) {
+    if (!levelWater.length) return;
+    const at = body.translation();
+    const centre = [at.x * PHYSICS_SCALE, at.z * PHYSICS_SCALE, at.y * PHYSICS_SCALE];
+    const { fraction, settings } = buoyancyFraction(levelWater, centre);
+    if (!(fraction > 0) || !settings) return;
+    const mass = body.mass() || 1;
+    const push = mass * GRAVITY_MS2 * (Number(settings.buoyancy) || 0) * fraction;
+    const current = currentAt(settings);
+    // A current is drawn in the map's own axes: x east, y north, z up.
+    body.addForce({ x: current.x * mass * fraction, y: push + current.z * mass * fraction,
+      z: current.y * mass * fraction }, true);
+    const velocity = body.linvel();
+    const drag = Math.max(0, Number(settings.drag) || 0) * .25 * mass * fraction;
+    body.addForce({ x: -velocity.x * drag, y: -velocity.y * drag, z: -velocity.z * drag }, true);
   }
   // Shortest-arc rotation from the capsule's +Y axis to `axis` (Rapier space).
   function capsuleRotation(axis) {
@@ -962,14 +997,22 @@ export function createPhysics(project, state, R, triangulate) {
       accumulator = Math.min(accumulator + dt, FIXED_STEP * 8);
       // A movement model can supply its own jump impulse (`sv_jumpvelocity`).
       const jumpSpeed = Number.isFinite(movement.jumpSpeed) ? movement.jumpSpeed / PHYSICS_SCALE : DOOM_JUMP_SPEED;
+      // In deep water the swimmer moves to a speed of their own choosing instead of falling: the
+      // view points the way, a stroke pushes up, and the volume's buoyancy decides what "doing
+      // nothing" means. Water over the ankles is not that — it only slows the body down.
+      const swim = movement.water && movement.water.level >= 2 ? movement.water : null;
+      const swimVertical = swim ? swimTarget({ level: swim.level, settings: swim.settings,
+        pitch: swim.pitch || 0, forward: swim.forward || 0, jump: Boolean(movement.jump) }) : null;
       // A jump is the one upward move that ignores the ground; stepping up onto a ledge also
-      // raises the player, and that must still count as standing.
-      if (movement.jump && grounded) { verticalSpeed = jumpSpeed; grounded = false; jumping = true; }
+      // raises the player, and that must still count as standing. A swimmer's stroke is the
+      // swim model's business, so it does not also impulse the capsule.
+      if (movement.jump && grounded && swimVertical === null) { verticalSpeed = jumpSpeed; grounded = false; jumping = true; }
       while (accumulator + 1e-9 >= FIXED_STEP) {
         for (const [id, body] of bodies) if (body.isDynamic()) {
           body.resetForces(true);
           const force = forces.get(id);
           if (force) body.addForce({ x: force.x, y: force.z, z: force.y }, true);
+          floatInWater(body);
         }
         forces.clear();
         const body = bodies.get(playerId), collider = colliders.get(playerId);
@@ -984,8 +1027,13 @@ export function createPhysics(project, state, R, triangulate) {
         // 0.005 m offset before pushing back out, so the capsule oscillated by 0.4 units every
         // substep — which reads as the whole view jiggling while walking. This is a twentieth of
         // that, well inside the offset, so the press is absorbed instead of answered.
-        verticalSpeed = grounded ? GGROUND_PRESS
-          : Math.max(-50, verticalSpeed - gravity / PHYSICS_SCALE * FIXED_STEP * (fell ? LEDGE_GRAVITY : 1));
+        if (swimVertical !== null) {
+          const waterDrag = Math.min(1, Math.max(.1, Number(swim.settings.drag) || 3) * FIXED_STEP);
+          verticalSpeed += (swimVertical - verticalSpeed) * waterDrag;
+        } else {
+          verticalSpeed = grounded ? GGROUND_PRESS
+            : Math.max(-50, verticalSpeed - gravity / PHYSICS_SCALE * FIXED_STEP * (fell ? LEDGE_GRAVITY : 1));
+        }
         const fall = verticalSpeed * FIXED_STEP;
         // Snap-to-ground keeps a walking player glued to a step-down instead of bouncing off
         // it, but it also swallows a jump: it pulls the character back down over up to
@@ -1164,6 +1212,24 @@ export function createPhysics(project, state, R, triangulate) {
       const velocity = body.linvel();
       return { x: velocity.x * PHYSICS_SCALE, y: velocity.z * PHYSICS_SCALE, z: velocity.y * PHYSICS_SCALE };
     },
+    /**
+     * How wet a body standing at this position is, as Doom's waterlevel.
+     *
+     * The runtime asks once a frame and hands the answer to `step`, so the swimming model, the
+     * script that reads the level and the camera tint all come from one query rather than three
+     * that could disagree about where the surface is.
+     */
+    waterLevel(player) {
+      if (!levelWater.length || !player) return null;
+      return swimLevel(levelWater, { x: player.x, y: player.y, feet: player.z ?? 0,
+        height: PLAYER_CYLINDER.halfHeight * 2 });
+    },
+    /** The water at a point in map space, or null above the surface. */
+    waterAt(point) {
+      return levelWater.length ? waterAt(levelWater, point) : null;
+    },
+    /** Every water body of the level, so a script or a preview can ask about all of them. */
+    waterVolumeList() { return levelWater; },
     gravityScale(id, scale) {
       const body = bodies.get(id);
       if (body) body.setGravityScale(scale, true);

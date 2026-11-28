@@ -140,7 +140,7 @@ test('a brush face that names a material draws that material in play, not the wh
   assert.equal(face.material, material.id);
 
   const source = readFileSync(new URL('../public/render.js', import.meta.url), 'utf8');
-  assert.match(source, /const key = face\.material \? `material:\$\{face\.material\}`/,
+  assert.match(source, /const key = \[shaderId, face\.material \|\| face\.texture \|\| ''/,
     'the brush path groups by the material when there is one');
   assert.match(source, /brushMaterialForMaterial\(face\.material\)/, 'and builds a lit material for it');
   assert.match(source, /full\.userData\.pbrVariants = \{ full, normalOnly: build/, 'with the same levels of detail the walls get');

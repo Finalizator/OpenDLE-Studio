@@ -57,6 +57,16 @@ export function facesOf(brush) {
   return [];
 }
 
+/**
+ * True when a brush is a body of water rather than something solid.
+ *
+ * The kind is the one question every reader asks — collision, traces, surfaces, the renderer —
+ * so it lives beside the geometry those readers already import.
+ */
+export function isWaterBrush(brush) {
+  return brush?.kind === 'water';
+}
+
 /** Signed distance from a point to a face's plane: positive outside the brush. */
 export function faceDistance(face, point) {
   const plane = facePlane(face);
@@ -249,7 +259,7 @@ export function brushBounds(brush) {
 export function brushSurfaceAt(brushes, x, y) {
   let best = null;
   for (const brush of brushes || []) {
-    if (brush.visible === false) continue;
+    if (brush.visible === false || isWaterBrush(brush)) continue;
     const box = brushBounds(brush);
     if (!Number.isFinite(box.x) || x < box.x || x > box.x + box.width || y < box.y || y > box.y + box.depth) continue;
     // The *surface* over the point, not the top of its bounding box: on a wedge or a ramp the two
@@ -288,12 +298,14 @@ export function brushSurfaceAt(brushes, x, y) {
  * `brushPolygons` already rely on: a face's normal points out, so `normal . point <= distance` is
  * inside. A `passable` brush — the mapper's "passthrough object" — is left out, which is what makes
  * it walkable, shootable and see-through; `passable` is set from the brush menu and skipped by
- * `collisionMesh` too.
+ * `collisionMesh` too. A water body is left out for the same reason and one more: it has to be
+ * transparent to a trace so a swimmer can be shot at *through* the water, and so a monster can
+ * see into a pool instead of being blind at its edge.
  */
 export function brushVolumes(brushes) {
   const volumes = [];
   for (const brush of brushes || []) {
-    if (!brush || brush.passable) continue;
+    if (!brush || brush.passable || isWaterBrush(brush)) continue;
     const faces = facesOf(brush);
     if (faces.length < 4) continue;
     const box = brushBounds(brush);
@@ -611,6 +623,24 @@ export function hollowBrush(project, brushId, thickness) {
 /** Apply a texture (or the editor's white filler) and its UV settings to one face. */
 /** UV fields an imported face keeps a basis instead of. Editing one replaces the basis with it. */
 const PARAXIAL_KEYS = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation'];
+
+/**
+ * Give a brush a kind: an ordinary solid one, or a body of water.
+ *
+ * `water` is the record `shared/water.js` reads. Converting keeps it, so a mapper who tries a
+ * water body and turns it solid again gets the settings back when they turn it wet again; only
+ * `kind` decides what the brush *is*, and every reader asks that one question.
+ */
+export function setBrushKind(project, brushId, kind, water) {
+  const brush = findBrush(project, brushId);
+  if (kind === 'solid' || kind === undefined || kind === null) delete brush.kind;
+  else if (kind === 'water') brush.kind = 'water';
+  else throw new Error(`Unknown brush kind: ${kind}`);
+  if (kind === 'water' && water) brush.water = { ...(brush.water || {}), ...water, current: { ...(brush.water?.current || {}), ...(water.current || {}) } };
+  else if (kind === 'water' && !brush.water) brush.water = {};
+  project.map.worldRevision = (project.map.worldRevision || 0) + 1;
+  return brush;
+}
 
 export function setBrushFaceMaterial(project, brushId, faceIndex, patch) {
   const brush = findBrush(project, brushId);

@@ -33,7 +33,8 @@ import {
 import { requestMouseLock } from './pointer-lock.js';
 import { formDrag } from '/shared/gizmo-math.js';
 import { commandRow, openCommandDialog, openNodeEventSheet } from './event-sheet.js';
-import { shaderTemplate, shadertoyTemplate } from '/shared/shaders.js';
+import { shaderTemplate, shadertoyTemplate, waterShaderId } from '/shared/shaders.js';
+import { WATER_DEFAULTS, waterFromPreset, waterPresets, waterSettings } from '/shared/water.js';
 import { draftProject, recoverProject, writeProjectDraft } from './project-recovery.js';
 import { createProjectAutosave } from './project-autosave.js';
 import { eventBranch, eventDepth, moveAction, moveCondition, moveEventBranch, moveEventBranchBeside,
@@ -112,7 +113,7 @@ import { alignWorldSelection, distributeWorldSelection, flipWorldSelection,
   lockWorldEntities, unlockWorldEntities, worldLayers,
   createWorldLayer, setWorldLayer, assignWorldLayer } from '/shared/world-tools.js';
 import {
-  createBoxBrush, createWedgeBrush, brushGeometry, brushBounds, brushVertices,
+  createBoxBrush, createWedgeBrush, brushGeometry, brushBounds, brushVertices, isWaterBrush, setBrushKind,
   moveBrush, moveBrushFace, moveBrushVertex, clipBrush, clipPlaneFromView, subtractBrush,
   mergeBrushes, hollowBrush, duplicateBrush, removeBrushes, setBrushFaceMaterial,
   setBrushFacePosition, facePlane, facesOf, brushSurfaceAt,
@@ -295,6 +296,8 @@ let mapProjection = 'xy';
 // TrenchBroom edits a brush as a whole, or one of its faces, or one of its corners. The mode is
 // a property of the brush tools rather than a separate editor, so it lives beside the view.
 let brushMode = 'object';
+/** The kind the next drawn brush becomes, set by "Draw water body" and cleared after one brush. */
+let pendingBrushKind = null;
 /** A clip in progress: the brush, and the line drawn so far in the 2D view. */
 let clipDraft = null;
 const keys = new Set(), pressed = new Set();
@@ -688,14 +691,17 @@ async function refreshScene() {
       room: (start, end) => {
         try {
           const a = snap({ x: start.x, y: start.z }), b = snap({ x: end.x, y: end.z });
+          const createKind = pendingBrushKind;
+          pendingBrushKind = null;
           edit(next => {
-            if (toolMode() === 'wedge') createWedgeBrush(next, {
+            const created = toolMode() === 'wedge' ? createWedgeBrush(next, {
               x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: 0,
               width: Math.abs(a.x - b.x), depth: Math.abs(a.y - b.y), height: 128,
-            });
-            else createBoxBrush(next, { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: 0,
+            }) : createBoxBrush(next, { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), z: 0,
               width: Math.abs(a.x - b.x), depth: Math.abs(a.y - b.y), height: 128 });
-          }, toolMode() === 'wedge' ? 'Wedge brush added in 3D' : 'Room added in 3D');
+            if (createKind) applyKindToBrush(next, created, createKind);
+          }, createKind === 'water' ? 'Water body added in 3D'
+            : toolMode() === 'wedge' ? 'Wedge brush added in 3D' : 'Room added in 3D');
         } catch (error) { status(error.message, true); }
       },
       menu: (event, picked) => mapViewMenu(event, picked),
@@ -1563,6 +1569,113 @@ function renderDoorProperties(parent, sector) {
 }
 
 /**
+ * What a brush *is*: a solid volume, or a body of water the game swims in.
+ *
+ * Both are ordinary brushes — the planes, the tools, clipping and CSG do not change — so the type
+ * is one switch with the water's own settings under it, not a second kind of object to learn.
+ */
+function renderBrushTypeControls(brush) {
+  const holder = make('div');
+  const water = isWaterBrush(brush);
+  const row = make('div', undefined, 'field-grid');
+  const solidButton = button('Solid', () => setSelectedBrushKind('solid'));
+  const waterButton = button('Water body', () => setSelectedBrushKind('water'));
+  // The studio's own "this one is on" look, rather than a class of its own.
+  solidButton.classList.toggle('primary', !water);
+  waterButton.classList.toggle('primary', water);
+  row.append(solidButton, waterButton);
+  holder.append(row);
+  if (!water) {
+    holder.append(make('p', 'A solid brush blocks movement, shots and sight. A water body is a volume you swim, float and sink in — nothing collides with it.', 'muted'));
+    return holder;
+  }
+  const settings = waterSettings(brush);
+  const change = patch => edit(next => {
+    const target = next.map.brushes.find(entry => entry.id === brush.id);
+    target.kind = 'water';
+    target.water = { ...waterSettings(target), ...patch };
+  }, 'Water updated');
+  field(holder, 'Preset', select([['', 'Custom'], ...waterPresets().map(preset => [preset.id, preset.name])], '',
+    value => {
+      if (!value) return;
+      edit(next => {
+        const target = next.map.brushes.find(entry => entry.id === brush.id);
+        target.kind = 'water';
+        target.water = waterFromPreset(value);
+      }, 'Water preset applied');
+    }, 'Water preset'));
+  const grid = make('div', undefined, 'field-grid');
+  // A colour swatch rather than a text field: this is the same picker the sky tint uses.
+  const colour = make('input');
+  colour.type = 'color'; colour.value = settings.color;
+  colour.setAttribute('aria-label', 'Water colour');
+  colour.addEventListener('change', guard(() => change({ color: colour.value })));
+  field(grid, 'Colour', colour);
+  field(grid, 'Opacity', input(settings.opacity, 'number', value => change({ opacity: Math.max(0, Math.min(1, value)) })));
+  field(grid, 'Buoyancy', input(settings.buoyancy, 'number', value => change({ buoyancy: value })));
+  field(grid, 'Swim speed', input(settings.swimSpeed, 'number', value => change({ swimSpeed: value })));
+  field(grid, 'Sink speed', input(settings.sinkSpeed, 'number', value => change({ sinkSpeed: value })));
+  field(grid, 'Water drag', input(settings.drag, 'number', value => change({ drag: value })));
+  field(grid, 'Speed in water', input(settings.speedScale, 'number', value => change({ speedScale: Math.max(.05, Math.min(1, value)) })));
+  const currentGrid = make('div', undefined, 'field-grid');
+  for (const axis of ['x', 'y', 'z']) {
+    field(currentGrid, `Current ${axis.toUpperCase()}`, input(settings.current?.[axis] ?? 0, 'number',
+      value => change({ current: { ...settings.current, [axis]: value } })));
+  }
+  holder.append(grid, make('h4', 'Current'), currentGrid);
+  holder.append(make('p', 'Buoyancy 1 holds a swimmer at the depth they stopped at; above 1 they rise, below 1 they sink. Objects float where the water they displace matches their weight.', 'muted'));
+  return holder;
+}
+
+/** The shader a brush — or one face of it — is drawn with. */
+function renderBrushShaderControls(brush) {
+  const holder = make('div');
+  const shaders = project.shaders || [];
+  const value = brush.shaderId || '';
+  field(holder, 'Brush shader', select([['', 'No shader'], ...shaders.map(shader => [shader.id, shader.name])], value,
+    id => edit(next => {
+      const target = next.map.brushes.find(entry => entry.id === brush.id);
+      if (id) target.shaderId = id; else delete target.shaderId;
+    }, id ? 'Shader applied to the brush' : 'Brush shader removed'), 'Brush shader'));
+  holder.append(make('p', 'Every brush can run a shader — a water body already runs the engine\'s water effect. A face can run one of its own instead.', 'muted'));
+  return holder;
+}
+
+/**
+ * Make one brush the given kind, inside an edit that is already running.
+ *
+ * A water body brings its own look: the engine's water shader is added to the project the first
+ * time one is made, and the brush is pointed at it. Without that a pool would be a flat blue slab
+ * until the mapper found the shader list, which is not what "make it water" should mean.
+ */
+function applyKindToBrush(next, brush, kind) {
+  setBrushKind(next, brush.id, kind);
+  if (kind !== 'water') return;
+  brush.water = { ...waterFromPreset('lake'), ...(brush.water || {}) };
+  if (!brush.shaderId) brush.shaderId = waterShaderId(next);
+}
+
+/** A water body's settings for a report, or null for a brush that is not one. */
+function frameWater(brush) {
+  if (!isWaterBrush(brush)) return null;
+  const settings = waterSettings(brush);
+  return { color: settings.color, opacity: settings.opacity, buoyancy: settings.buoyancy,
+    swimSpeed: settings.swimSpeed, sinkSpeed: settings.sinkSpeed, speedScale: settings.speedScale };
+}
+
+/** Turn the selected brushes (or the brush of the selected face) into one kind. */
+function setSelectedBrushKind(kind) {
+  const ids = selectedBrushIds();
+  if (!ids.length) { status('Select a brush first', true); return; }
+  edit(next => {
+    for (const id of ids) {
+      const target = next.map.brushes.find(entry => entry.id === id);
+      if (target) applyKindToBrush(next, target, kind);
+    }
+  }, kind === 'water' ? 'Water body: swims, floats and submerges' : 'Brush is solid again');
+}
+
+/**
  * A brush's properties. The numbers are its bounding planes, and changing one moves that
  * plane — the same thing as dragging the matching face, so typing and dragging never disagree.
  */
@@ -1589,6 +1702,8 @@ function renderBrushInspector(parent, brush) {
   field(grid, 'Depth', input(bounds.depth, 'number', value => extent(1, bounds.y + Math.max(1, value), 1)));
   field(grid, 'Height', input(bounds.height, 'number', value => extent(2, bounds.z + Math.max(1, value), 1)));
   parent.append(grid);
+  parent.append(make('h3', 'Brush type'), renderBrushTypeControls(brush));
+  parent.append(make('h3', 'Shader'), renderBrushShaderControls(brush));
   parent.append(make('h3', 'Brush editing'));
   parent.append(
     button('Face mode', () => { setBrushMode('face'); status('Face mode: click a face to select it, drag to move it along its normal.'); }),
@@ -1642,6 +1757,12 @@ function renderBrushFaceInspector(parent, brush) {
   field(parent, 'Push along normal', input(0, 'number', value => edit(next => {
     moveBrushFace(next, brush.id, selection.face, value);
   }, 'Face pushed')));
+  field(parent, 'Shader', select([['', 'Same as the brush'], ...(project.shaders || []).map(shader => [shader.id, shader.name])],
+    face.shaderId || '', id => edit(next => {
+      const target = next.map.brushes.find(entry => entry.id === brush.id);
+      const faces = facesOf(target);
+      if (id) faces[selection.face].shaderId = id; else delete faces[selection.face].shaderId;
+    }, 'Face shader changed'), 'Face shader'));
   parent.append(button('Back to the brush', () => { selection = { kind: 'brush', id: brush.id }; render(); }));
   parent.append(make('p', 'A face is a plane and a texture frame. Moving it keeps that frame, so a texture does not slide when a wall is pushed out.', 'muted'));
 }
@@ -4114,6 +4235,7 @@ function drawBrushes2d(hiddenWorldLayers) {
   for (const brush of brushes) {
     if (!brushVisible(brush, hiddenWorldLayers)) continue;
     const selected = selectedSet.has(brush.id);
+    const water = isWaterBrush(brush);
     const previewPoint = corner => brushPointPreview(brush, corner);
     const geometry = brushGeometry(brush);
     // Filled faces read as a solid brush and show the shape a slope actually has; the white
@@ -4126,11 +4248,14 @@ function drawBrushes2d(hiddenWorldLayers) {
       ctx.closePath();
       const faceSelected = faces.has(`${brush.id}:${face.index}`) ||
         (selection?.kind === 'brushFace' && selection.id === brush.id && selection.face === face.index);
+      // A water body reads as water in the plan too: a mapper looking at the top view should be
+      // able to see where the pool is without selecting it.
       ctx.fillStyle = faceSelected ? 'rgba(220,196,124,0.55)'
-        : selected ? 'rgba(228,228,228,0.42)' : 'rgba(222,222,222,0.24)';
+        : selected ? 'rgba(228,228,228,0.42)'
+          : water ? 'rgba(80,180,220,0.30)' : 'rgba(222,222,222,0.24)';
       ctx.fill();
     }
-    ctx.strokeStyle = selected ? '#ffe08a' : '#d8d8d8';
+    ctx.strokeStyle = selected ? '#ffe08a' : water ? '#7fd8f5' : '#d8d8d8';
     ctx.lineWidth = (selected ? 2 : 1) / camera.zoom;
     ctx.beginPath();
     for (const [a, b] of geometry.edges) {
@@ -4575,6 +4700,24 @@ function brushMenuItems(brush) {
       const target = next.map.brushes.find(item => item.id === brush.id);
       target.passable = !brush.passable;
     }, brush.passable ? 'Brush is solid again' : 'Brush is passable: walk, shoot and see through it') },
+    // What the brush *is*, and what draws it. Both live here because both are things a mapper
+    // decides while looking at the brush, not while hunting through a panel.
+    { label: 'Brush type', submenu: [
+      { label: 'Solid: blocks movement, shots and sight', checked: !isWaterBrush(brush), run: () => {
+        selection = { kind: 'brush', id: brush.id }; setSelectedBrushKind('solid');
+      } },
+      { label: 'Water body: swim, float and sink in it', checked: isWaterBrush(brush), run: () => {
+        selection = { kind: 'brush', id: brush.id }; setSelectedBrushKind('water');
+      } },
+    ] },
+    { label: 'Shader', submenu: [
+      { label: 'No shader', checked: !brush.shaderId, run: () => edit(next => {
+        delete next.map.brushes.find(item => item.id === brush.id).shaderId;
+      }, 'Brush shader removed') },
+      ...(project.shaders || []).map(shader => ({ label: shader.name, checked: brush.shaderId === shader.id,
+        run: () => edit(next => { next.map.brushes.find(item => item.id === brush.id).shaderId = shader.id; },
+          `Shader ${shader.name} applied`) })),
+    ] },
     { label: 'Move to layer', submenu: worldLayers(project).map(layer => ({
       label: layer.name, run: () => edit(next => {
         next.map.brushes.find(item => item.id === brush.id).layerId = layer.id;
@@ -4594,6 +4737,11 @@ function brushCreateMenuItems() {
     { label: 'Draw wedge brush', run: () => {
       $('tool').value = 'wedge'; $('tool').dispatchEvent(new Event('change'));
       status('Wedge brush: drag in the 2D or 3D view to create a triangular brush.');
+    } },
+    { label: 'Draw water body', hint: 'A box brush that becomes a volume of water', run: () => {
+      pendingBrushKind = 'water';
+      $('tool').value = 'room'; $('tool').dispatchEvent(new Event('change'));
+      status('Water body: drag in the 2D or 3D view. The brush becomes the water volume, top face = water line.');
     } },
     { label: 'Frame the level', run: () => { fitMap(); mapNeedsDraw = true; } },
     { label: 'Bake this level to 3D (GLB)\u2026', run: guard(downloadBakedWorld) },
@@ -5101,11 +5249,15 @@ canvas.addEventListener('pointerup', guard(event => {
     const a = viewCoordsOf(finished.start), b = viewCoordsOf(finished.end);
     if (Math.abs(a.u - b.u) < 1 || Math.abs(a.v - b.v) < 1) { status('Drag a larger area to draw a brush', true); return; }
     const bounds = brushBoundsFromView(a, b);
+    const createKind = pendingBrushKind;
+    pendingBrushKind = null;
     let created = null;
     try {
       edit(next => {
         created = finished.kind === 'room' ? createBoxBrush(next, bounds) : createWedgeBrush(next, bounds);
-      }, finished.kind === 'room' ? 'Box brush created' : 'Wedge brush created');
+        if (createKind) applyKindToBrush(next, created, createKind);
+      }, createKind === 'water' ? 'Water body created'
+        : finished.kind === 'room' ? 'Box brush created' : 'Wedge brush created');
     } catch (error) { status(error.message, true); return; }
     if (created) {
       selection = { kind: 'brush', id: created.id };
@@ -8950,6 +9102,11 @@ function installAutomation() {
         locked: Boolean(brush.locked), bounds: brushBounds(brush), faceList,
         // A passthrough brush: still drawn, but nothing collides with it or is hidden by it.
         passable: Boolean(brush.passable),
+        // A water body, with the settings the game will read, so a test can drive the switch and
+        // see the volume it made rather than only the button it pressed.
+        kind: brush.kind || 'solid',
+        water: frameWater(brush),
+        shaderId: brush.shaderId || '',
       };
     }),
     isReady: () => Boolean(project && !$('editor-shell').hidden),

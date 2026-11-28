@@ -68,6 +68,8 @@ const BUILT_IN_TYPES = new Set([...CONDITIONS, ...ACTIONS]);
 // been, so every existing importer keeps working.
 export const ENTITY_TYPES = INSTANCE_TYPES;
 const colorPattern = /^#[0-9a-f]{6}$/i;
+/** What a brush can be: a solid volume, or a body of water the game swims in. */
+const BRUSH_KINDS = ['solid', 'water'];
 // Surface texture scaling: one texture tile covers `scale` times its pixel size in map
 // units, so 2 draws the artwork twice as large and 0.5 twice as fine.
 export const MIN_TEXTURE_SCALE = .05;
@@ -564,8 +566,8 @@ export function validateEntity(entity, { assetRef, clipRef, modelRef, assets = [
  * a joint to a deleted object is a broken project, not a harmless leftover.
  */
 /**
- * An object may run a shader of its own instead of the level-wide one, so the reference
- * has to exist; the shader validation in shared/shaders.js checks the rest.
+ * An object or a brush may run a shader of its own instead of the level-wide one, so the
+ * reference has to exist; the shader validation in shared/shaders.js checks the rest.
  */
 function validateEntityShaders(project) {
   const known = new Set((project.shaders || []).map(shader => shader.id));
@@ -576,6 +578,35 @@ function validateEntityShaders(project) {
   };
   for (const entity of project.map?.entities || []) check(entity, `Object ${entity.id}`);
   for (const scene of project.scenes || []) for (const entity of scene.entities || []) check(entity, `Scene object ${entity.id}`);
+  // A brush carries a shader the same way an object does, and one of its faces may name its
+  // own: a water body is a shader on a brush, so this is the reference that makes it draw.
+  for (const brush of project.map?.brushes || []) {
+    check(brush, `Brush ${brush?.id}`);
+    for (const [index, face] of (brush?.faces || []).entries()) check(face, `Brush ${brush.id} face ${index + 1}`);
+  }
+}
+
+/**
+ * A water body's settings, checked where the brush is.
+ *
+ * These are the numbers a swimmer's speed and a crate's floating height are made of, so a
+ * negative swim speed or a NaN buoyancy would not be a wrong-looking pool, it would be a
+ * player who cannot leave the water.
+ */
+function validateWater(water, label) {
+  object(water, label);
+  if (water.color !== undefined) assert(colorPattern.test(water.color), `${label} colour must be #rrggbb`);
+  if (water.opacity !== undefined) number(water.opacity, `${label} opacity`, 0, 1);
+  if (water.buoyancy !== undefined) number(water.buoyancy, `${label} buoyancy`, 0, 4);
+  if (water.sinkSpeed !== undefined) number(water.sinkSpeed, `${label} sink speed`, 0, 2000);
+  if (water.swimSpeed !== undefined) number(water.swimSpeed, `${label} swim speed`, 0, 4000);
+  if (water.drag !== undefined) number(water.drag, `${label} drag`, .1, 40);
+  if (water.speedScale !== undefined) number(water.speedScale, `${label} speed scale`, .05, 1);
+  if (water.surfaceZ !== undefined) number(water.surfaceZ, `${label} surface`, -65536, 65536);
+  if (water.current !== undefined) {
+    object(water.current, `${label} current`);
+    for (const key of ['x', 'y', 'z']) if (water.current[key] !== undefined) number(water.current[key], `${label} current ${key}`, -4000, 4000);
+  }
 }
 
 function validateLevelJoints(map, entityIds) {
@@ -976,6 +1007,9 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
     identifier(brush.id, 'Brush ID');
     assert(typeof brush.name === 'string' && brush.name.length <= 100, 'Brush name must contain at most 100 characters');
     if (brush.passable !== undefined) assert(typeof brush.passable === 'boolean', 'Brush passable flag must be boolean');
+    if (brush.kind !== undefined) assert(BRUSH_KINDS.includes(brush.kind), 'Brush kind must be solid or water');
+    if (brush.shaderId !== undefined && brush.shaderId !== null) assert(typeof brush.shaderId === 'string', 'Brush shader must be a shader id');
+    if (brush.water !== undefined) validateWater(brush.water, `Brush ${brush.id} water`);
     assert(brush.faces === undefined || brush.planes === undefined, 'A brush stores faces or planes, never both');
     const faces = brush.faces || [];
     if (brush.planes !== undefined) array(brush.planes, 'Brush planes', 64);
@@ -990,6 +1024,7 @@ export function validateProject(project, { gameLevelIds, fast = false } = {}) {
         Array.isArray(point) && point.length === 3 && point.every(Number.isFinite)), 'A brush face needs three finite points');
       if (face.texture !== undefined && face.texture !== null) assetRef(face.texture, 'Brush face texture');
       materialRef(face.material, 'Brush face');
+      if (face.shaderId !== undefined && face.shaderId !== null) assert(typeof face.shaderId === 'string', 'Brush face shader must be a shader id');
       for (const key of ['offsetX', 'offsetY']) if (face[key] !== undefined) number(face[key], `Brush face ${key}`);
       for (const key of ['scaleX', 'scaleY']) if (face[key] !== undefined) assertTextureScale(face[key], `Brush face ${key}`);
       if (face.rotation !== undefined) number(face.rotation, 'Brush face rotation', -360, 360);
