@@ -33,6 +33,22 @@ function setAudioPosition(param, value, context) {
   else if (param) param.value = value;
 }
 
+/**
+ * Puts a panner (or the listener) at a place in the level.
+ *
+ * Both the looping world sounds and the one-shot effects need it, and the one-shot path used to
+ * call a copy that only existed inside the other closure: every positioned effect — a monster
+ * firing, a door, a pickup — threw `positionNode is not defined` and was dropped.
+ */
+function positionNode(context, node, x, y, z) {
+  if (!node) return;
+  if (node.positionX) {
+    setAudioPosition(node.positionX, x, context);
+    setAudioPosition(node.positionY, y, context);
+    setAudioPosition(node.positionZ, z, context);
+  } else node.setPosition?.(x, y, z);
+}
+
 /** Positional looping sources for sound components on ordinary project entities. */
 export function createEntityAudioRuntime(project, context, destination, onError = () => {}) {
   const soundAssets = new Map((project.assets || []).filter(asset => asset.kind === 'sound').map(asset => [asset.id, asset]));
@@ -84,21 +100,13 @@ export function createEntityAudioRuntime(project, context, destination, onError 
       setAudioPosition(listener.upZ, 0, context);
     } else listener.setOrientation?.(...forward, 0, 1, 0);
   };
-  const positionNode = (node, x, y, z) => {
-    if (!node) return;
-    if (node.positionX) {
-      setAudioPosition(node.positionX, x, context);
-      setAudioPosition(node.positionY, y, context);
-      setAudioPosition(node.positionZ, z, context);
-    } else node.setPosition?.(x, y, z);
-  };
   const update = state => {
     if (disposed) return;
     latestState = state;
     const active = state.gameScreen === 'playing' || state.ambientWorld;
     const player = state.player || {};
     const listener = context.listener;
-    positionNode(listener, player.x || 0, player.z || 0, player.y || 0);
+    positionNode(context, listener, player.x || 0, player.z || 0, player.y || 0);
     // Only the position used to be written, so the listener kept the spec default `(0,0,-1)` and
     // every panned sound was rotated by the player's yaw — correct only when facing south.
     orientListener(listener, player);
@@ -130,7 +138,7 @@ export function createEntityAudioRuntime(project, context, destination, onError 
       const attenuation = Math.max(0, 1 - distance / radius);
       if (entry.source) {
         if (entry.gain) setAudioPosition(entry.gain.gain, (Number.isFinite(Number(sound.volume)) ? Number(sound.volume) : 1) * attenuation, context);
-        positionNode(entry.panner, entity.x || 0, entity.z ?? entity.elevation ?? 0, entity.y || 0);
+        positionNode(context, entry.panner, entity.x || 0, entity.z ?? entity.elevation ?? 0, entity.y || 0);
         continue;
       }
       if (entry.finished) continue;
@@ -157,7 +165,7 @@ export function createEntityAudioRuntime(project, context, destination, onError 
           panner.refDistance = 1;
           panner.maxDistance = currentRadius;
           panner.rolloffFactor = 0;
-          positionNode(panner, current.x || 0, current.z ?? current.elevation ?? 0, current.y || 0);
+          positionNode(context, panner, current.x || 0, current.z ?? current.elevation ?? 0, current.y || 0);
           source.connect(panner);
           panner.connect(gain);
         } else source.connect(gain);
@@ -370,7 +378,7 @@ export function createAudioPlayer(project, onError, AudioContextClass = globalTh
             panner.rolloffFactor = 0;
             panner.refDistance = 1;
             panner.maxDistance = 1e6;
-            positionNode(panner, at.x, at.z || 0, at.y);
+            positionNode(context, panner, at.x, at.z || 0, at.y);
             source.connect(gain); gain.connect(panner); panner.connect(master);
           } else {
             source.connect(gain); gain.connect(master);
