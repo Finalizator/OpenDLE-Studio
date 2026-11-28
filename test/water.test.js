@@ -19,7 +19,7 @@ import {
   WATER_DEFAULTS, buoyancyFraction, currentAt, swimLevel, swimTarget, waterAt, waterFromPreset,
   waterPresets, waterSettings, waterSpeedScale, waterVolumes,
 } from '../shared/water.js';
-import { WATER_SHADER_NAME, shadertoyFromDownload, waterShaderId, waterShaderTemplate, waterUniforms } from '../shared/shaders.js';
+import { WATER_SHADER_NAME, WATER_SHADER_REVISION, refreshShippedShaders, shadertoyFromDownload, waterShaderId, waterShaderTemplate, waterUniforms } from '../shared/shaders.js';
 import { WATER_SWELLS, WAVE_DEFAULTS, WAVE_GRAVITY, animateWaterSurface, buildWaterSurface, swellRate, waterHeight, waterSlope, waterSurfaceData } from '../shared/water-surface.js';
 import { readFileSync } from 'node:fs';
 import { parseShaderSource } from '../shared/shader-language.js';
@@ -114,6 +114,20 @@ test('a body floats where the water holds the share of it that displaces its wei
   assert.ok(partial > .5 && partial < 1, 'the band is a smooth share, not a switch');
 });
 
+test('a water body draws its top surface only, unless it was asked to show its volume', async () => {
+  const { project } = pool();
+  const brush = project.map.brushes[0];
+  // Six faces as a solid; the pool draws one of them.
+  const { batchBrushes } = await import('../shared/brush-batch.js');
+  const waterOnly = batchBrushes(project.map.brushes);
+  assert.equal([...waterOnly.batches.values()].length, 1, 'one batch: the top');
+  // Turn the volume back on and all six faces are there.
+  setBrushKind(project, brush.id, 'water', { surfaceOnly: false });
+  const whole = batchBrushes(project.map.brushes);
+  const faces = [...whole.batches.values()].reduce((sum, batch) => sum + batch.ranges.length, 0);
+  assert.equal(faces, 6, 'a volume meant to be seen from the side draws every face');
+});
+
 test('a water brush is not an obstacle: no collision, no trace volume, no surface to stand on', () => {
   const { project } = pool();
   const brush = project.map.brushes[0];
@@ -166,16 +180,20 @@ test('the water shader ships with the engine, parses, and is refreshed rather th
   const shader = project.shaders.find(entry => entry.id === id);
   assert.equal(shader.name, WATER_SHADER_NAME);
   assert.deepEqual(shader.uniforms, { ...waterUniforms });
+  assert.equal(shader.builtin, 'water', 'the shader knows it is one of the engine\'s');
+  assert.equal(shader.revision, WATER_SHADER_REVISION);
   parseShaderSource(shader.source, shader.uniforms);
   // Water only: the one thing the shipped effect samples is the level behind it, which is what it
   // refracts. There is no land, shoreline or backdrop painted into it.
   assert.equal([...waterShaderTemplate.matchAll(/iChannel\d/g)].every(match => match[0] === 'iChannel0'), true);
   assert.doesNotMatch(waterShaderTemplate.replace(/\/\/.*$/gm, ''), /shore|land|mountain|terrain/i);
-  // Called again, it is the same shader — and an old copy in a project is brought up to date.
+  // Called again, it is the same shader, and an edit the mapper made to it is *theirs*: the
+  // upgrade path is the revision (see the test below), not a refresh on every call.
   shader.source = 'void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }';
   assert.equal(waterShaderId(project), id);
   assert.equal(project.shaders.length, 1);
-  assert.equal(project.shaders[0].source, waterShaderTemplate);
+  assert.equal(project.shaders[0].source, 'void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }');
+  shader.source = waterShaderTemplate;
   validateProject(project);
 });
 
@@ -193,11 +211,15 @@ test('a water surface is a grid that rides the swells, and its shape is the shad
   const epsilon = .01;
   const slope = waterSlope(40, 20, .5);
   assert.ok(Math.abs(slope[0] - (waterHeight(40 + epsilon, 20, .5) - waterHeight(40 - epsilon, 20, .5)) / (2 * epsilon)) < 1e-6);
-  // Four swells at four wavelengths: two long ones the mesh can carry, two short ones that only
-  // tilt the shading. Not harmonics of one another, or the interference would read as a weave.
-  assert.equal(WATER_SWELLS.length, 4);
-  assert.equal(WATER_SWELLS.filter(swell => !swell.shading).length, 2);
-  assert.equal(new Set(WATER_SWELLS.map(swell => swell.length)).size, 4);
+  // Six swells at six wavelengths: four long enough for the mesh to carry, two short ones that
+  // only tilt the shading. Not harmonics of one another — two directions alone draw straight
+  // parallel crests across a whole pool, which is what the surface looked like when it was combed.
+  assert.equal(WATER_SWELLS.length, 6);
+  assert.equal(WATER_SWELLS.filter(swell => !swell.shading).length, 4);
+  assert.equal(new Set(WATER_SWELLS.map(swell => swell.length)).size, 6);
+  for (const swell of WATER_SWELLS.filter(swell => !swell.shading)) {
+    assert.ok(swell.length >= WAVE_DEFAULTS.cell * 3, `a ${swell.length}-unit swell needs a grid finer than ${WAVE_DEFAULTS.cell}`);
+  }
   // Deep-water dispersion: a long swell travels faster than a short one, and every swell crosses a
   // wavelength in well under two seconds. The first version took nine, which is a slow picture of
   // water rather than water.
@@ -240,6 +262,33 @@ test('the shader shades the swells the mesh rides, so the two cannot drift apart
   assert.ok(waterShaderTemplate.includes('uv * 64.0'), "the shader reads the face's own frame in map units");
   assert.ok(waterShaderTemplate.includes('texture(iChannel0'), 'and refracts what is behind it');
   assert.equal(waterUniforms.waveHeight, WAVE_DEFAULTS.height, 'the height dial is the same number');
+});
+
+test('a project opened with an old water shader is brought up to this build, keeping the dials', () => {
+  const project = createProject();
+  // What a level saved two builds ago carries: the shipped name, an old body, old dials.
+  project.shaders = [{ id: 'water', name: WATER_SHADER_NAME, language: 'glsl',
+    source: 'void mainImage(out vec4 c, in vec2 p) { c = vec4(0.2); }',
+    uniforms: { waveHeight: 11, refraction: .9, waveScale: 4, warp: 1 } }];
+  const changed = refreshShippedShaders(project);
+  const shader = project.shaders[0];
+  assert.equal(changed, 1, 'one shipped effect was upgraded');
+  assert.equal(shader.source, waterShaderTemplate, 'the shading code is this build\'s');
+  assert.equal(shader.uniforms.waveHeight, 11, 'the number the mapper dialled in survives');
+  assert.equal(shader.uniforms.refraction, .9);
+  assert.equal(shader.uniforms.waveScale, undefined, 'a dial this build does not have is gone');
+  assert.equal(shader.uniforms.waveSpeed, waterUniforms.waveSpeed, 'and a new one starts at its default');
+  assert.equal(shader.revision, WATER_SHADER_REVISION);
+  // Running it again changes nothing, so opening a project twice is not two edits.
+  assert.equal(refreshShippedShaders(project), 0);
+});
+
+test('a shader named like the engine\'s but written by the mapper is never touched', () => {
+  const project = createProject();
+  project.shaders = [{ id: 'mine', name: 'My water', language: 'glsl',
+    source: 'void mainImage(out vec4 c, in vec2 p) { c = vec4(0.2); }', uniforms: { glow: 1 } }];
+  assert.equal(refreshShippedShaders(project), 0);
+  assert.equal(project.shaders[0].uniforms.glow, 1);
 });
 
 test('the play view and the editor build a brush surface through one function', () => {

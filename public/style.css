@@ -989,3 +989,4 @@ dialog.shader-look .shader-look-row output { font-size: 12px; text-align: right;
 dialog.shader-look input[type="range"] { width: 100%; accent-color: var(--accent); }
 dialog.shader-look p { margin: 10px 0 0; font-size: 11px; line-height: 1.45; }
 dialog.shader-look button { width: 100%; margin-top: 8px; }
+dialog.shader-look .shader-look-close { background: var(--raised); border-color: var(--border); }

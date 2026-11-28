@@ -9,7 +9,7 @@ import { validateShaders } from '/shared/shaders.js';
 import { sectorGeometry, createSectorIndex, entitySector, sectorShapes, sectorSurfaces, surfaceMaterials } from '/shared/sectors.js';
 import { wallQuadUv, flatUv, brushFaceUv } from '/shared/uv.js';
 import { brushGeometry, isWaterBrush } from '/shared/brushes.js';
-import { waterSettings } from '/shared/water.js';
+import { waterFaceDrawn, waterSettings } from '/shared/water.js';
 import { WAVE_DEFAULTS, animateWaterSurface, buildWaterSurface, waterSurfaceData } from '/shared/water-surface.js';
 import { wallScroll, TICRATE } from '/shared/scrollers.js';
 import { surfaceBrightness } from '/shared/light-levels.js';
@@ -1192,8 +1192,12 @@ export async function createPreview(canvas, project, state, { editor = false, on
         let shapes;
         try { shapes = brushGeometry(brush); } catch { continue; }
         const byMaterial = new Map();
+        const waterBrush = isWaterBrush(brush);
         for (const entry of shapes.faces) {
           if (entry.points.length < 3) continue;
+          // A pool's sides and underside are inside the floor, and each one is a full water
+          // shader with a screen sample behind it: `surfaceOnly` stops paying for faces nobody sees.
+          if (waterBrush && !waterFaceDrawn(brush, entry.plane.normal)) continue;
           const face = brush.faces?.[entry.index] || {};
           // Same frame as the editor and the `.map` importer (`/shared/uv.js`), so a brush's
           // texture is not projected one way while it is edited and another way while it plays.

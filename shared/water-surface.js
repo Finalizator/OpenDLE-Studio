@@ -18,9 +18,9 @@ export const WAVE_DEFAULTS = Object.freeze({
   height: 5,
   speed: 1,
   // How wide a grid cell is, in map units: the surface is subdivided to this, so a small pool is
-  // not hundreds of pointless vertices and a large sea still has waves. It has to stay well under
-  // the shortest *mesh* wavelength below, or the grid aliases into a moiré instead of a wave.
-  cell: 16,
+  // not hundreds of pointless vertices and a large sea still has waves. It has to stay under the
+  // shortest *mesh* wavelength below (44 units), or the grid aliases into a moiré instead of a wave.
+  cell: 12,
 });
 
 /**
@@ -38,8 +38,13 @@ export const WAVE_GRAVITY = 981;
  * Directions and wavelengths are incommensurate so the interference never settles into a weave.
  */
 export const WATER_SWELLS = Object.freeze([
-  Object.freeze({ direction: [1, 0.28], length: 96, amplitude: .55, shading: false }),
-  Object.freeze({ direction: [-0.42, 1], length: 52, amplitude: .3, shading: false }),
+  // Four directions, not two. Two sine families interfere into straight parallel crests across a
+  // whole pool, and a straight crest reflects the sun as one long band — the surface reads as
+  // combed corrugation. Four incommensurate directions make a chop sea instead.
+  Object.freeze({ direction: [1, 0.28], length: 110, amplitude: .40, shading: false }),
+  Object.freeze({ direction: [-0.42, 1], length: 78, amplitude: .26, shading: false }),
+  Object.freeze({ direction: [0.63, -0.77], length: 58, amplitude: .18, shading: false }),
+  Object.freeze({ direction: [-0.88, -0.47], length: 44, amplitude: .12, shading: false }),
   Object.freeze({ direction: [0.78, -0.62], length: 27, amplitude: .13, shading: true }),
   Object.freeze({ direction: [-0.9, -0.36], length: 14, amplitude: .07, shading: true }),
 ]);

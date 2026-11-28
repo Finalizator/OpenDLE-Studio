@@ -85,6 +85,44 @@ export async function run({ page }) {
   const shaderErrors = await errors();
   check('the water shader compiled', !shaderErrors.some(error => /shader|GLSL/i.test(String(error))), shaderErrors.slice(0, 3));
 
+  // ---------- Top surface only: a pool draws one face, not six, unless it is asked for its volume.
+  check('a water body draws its top surface by default', (await brushes())[0].water.surfaceOnly === true,
+    (await brushes())[0].water);
+  // `sceneReady` is the renderer's word; the editor that owns the brushes is built a moment later,
+  // so the stats are polled until they exist rather than trusted to be there.
+  const sceneStats = async () => {
+    await page.evaluate('window.__opendle.view("3d")');
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const stats = await page.evaluate('window.__opendle.sceneStats()');
+      if (stats) return stats;
+      await wait(100);
+    }
+    throw new Error('the 3D view never built its scene');
+  };
+  const topOnly = (await sceneStats()).brushTriangles;
+  // The switch itself: a checkbox inside its label, so it is driven through that label.
+  await page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('#inspector label')].find(label => /Draw the top surface only/.test(label.textContent));
+    const box = row.querySelector('input[type=checkbox]');
+    box.checked = false;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    return box.checked;
+  })()`);
+  await wait(800);
+  const wholeVolume = (await page.evaluate('window.__opendle.sceneStats()')).brushTriangles;
+  check('turning the volume on draws the other faces too', wholeVolume > topOnly + 8,
+    { topOnly, wholeVolume });
+  check('and the setting is stored in the brush', (await brushes())[0].water.surfaceOnly === false,
+    (await brushes())[0].water);
+  await page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('#inspector label')].find(label => /Draw the top surface only/.test(label.textContent));
+    const box = row.querySelector('input[type=checkbox]');
+    box.checked = true;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    return box.checked;
+  })()`);
+  await wait(600);
+
   // ---------- The look window: every dial of the water shader, in a window that does not cover
   // the viewport, and the surface answers it.
   // Reached the way a mapper reaches it: right-click the water body itself. It was in the inspector
@@ -140,7 +178,13 @@ export async function run({ page }) {
   const stored = await page.evaluate(`[...document.querySelectorAll('dialog.shader-look input[type=range]')]
     .find(item => item.getAttribute('aria-label') === 'waveHeight').value`);
   check('and the number is stored in the project', stored === '14', stored);
-  await page.evaluate('document.querySelector("dialog.shader-look").close()');
+  // And there is a way out of it: a non-modal dialog has no title bar and no Escape of its own.
+  const lookButtons = await page.evaluate('window.__opendle.ui.describe("dialog.shader-look button")');
+  check('the window can be closed', lookButtons.items.some(item => /Close/.test(item.text)),
+    lookButtons.items.map(item => item.text));
+  await page.evaluate('window.__opendle.ui.click(window.__opendle.ui.find("Close", { within: "dialog.shader-look" }))');
+  await wait(250);
+  check('and closing it leaves no dialog open', (await page.evaluate('window.__opendle.ui.dialogs()')).length === 0);
 
   // ---------- Any brush can carry a shader, not only water.
   await page.evaluate('window.__opendle.view("2d")');

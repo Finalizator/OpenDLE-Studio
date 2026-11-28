@@ -110,6 +110,15 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }`;
 
 export const WATER_SHADER_NAME = 'Water (Shadertoy)';
+/**
+ * Which build of the water effect this is.
+ *
+ * The effect is stored in the *project*, so a level made before it improved would keep the old
+ * shading forever — which is exactly how a mapper ends up looking at a shader shipped two versions
+ * ago and reporting that the water has long straight stripes. The revision is written into the
+ * project with the shader and checked when the project is opened.
+ */
+export const WATER_SHADER_REVISION = 4;
 // The look a water body ships with. It is written the way a Shadertoy effect is — `mainImage`,
 // `iTime`, `iResolution`, the surface's own `uv`, and `iChannel0` for what is drawn behind it — so
 // a shader from the web pastes into the same shape this one is written in.
@@ -132,19 +141,32 @@ float swellRate(float k) {
 // The two long swells. These are the ones the mesh rides, so their height and slope are returned
 // together and the geometry and the normal cannot disagree.
 vec3 swells(vec2 p) {
+  // Four directions, not two: two sine families draw straight parallel crests across a whole pool,
+  // and a straight crest reflects the sun as one long band — the surface reads as combed
+  // corrugation. Four incommensurate directions make a chop sea instead.
   float height = 0.0;
   float slopeX = 0.0;
   float slopeY = 0.0;
-  float k = 6.2831853 / 96.0;
+  float k = 6.2831853 / 110.0;
   float a = (p.x * 1.0 + p.y * 0.28) * k - iTime * swellRate(k);
-  height += 0.55 * sin(a);
-  slopeX += 0.55 * cos(a) * k;
-  slopeY += 0.55 * cos(a) * k * 0.28;
-  k = 6.2831853 / 52.0;
+  height += 0.40 * sin(a);
+  slopeX += 0.40 * cos(a) * k;
+  slopeY += 0.40 * cos(a) * k * 0.28;
+  k = 6.2831853 / 78.0;
   a = (p.x * -0.42 + p.y * 1.0) * k - iTime * swellRate(k);
-  height += 0.30 * sin(a);
-  slopeX += 0.30 * cos(a) * k * -0.42;
-  slopeY += 0.30 * cos(a) * k;
+  height += 0.26 * sin(a);
+  slopeX += 0.26 * cos(a) * k * -0.42;
+  slopeY += 0.26 * cos(a) * k;
+  k = 6.2831853 / 58.0;
+  a = (p.x * 0.63 + p.y * -0.77) * k - iTime * swellRate(k);
+  height += 0.18 * sin(a);
+  slopeX += 0.18 * cos(a) * k * 0.63;
+  slopeY += 0.18 * cos(a) * k * -0.77;
+  k = 6.2831853 / 44.0;
+  a = (p.x * -0.88 + p.y * -0.47) * k - iTime * swellRate(k);
+  height += 0.12 * sin(a);
+  slopeX += 0.12 * cos(a) * k * -0.88;
+  slopeY += 0.12 * cos(a) * k * -0.47;
   return vec3(height * waveHeight, slopeX * waveHeight, slopeY * waveHeight);
 }
 
@@ -201,7 +223,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // What is behind the water, bent where the surface is tilted. This is the whole difference
   // between water and a blue picture of water: the pool's floor, the wall at the far end and the
   // level's own light all shift as the swells pass, and they shift most along a steep one.
-  vec2 bend = clamp(slope * 1.6, vec2(-0.25), vec2(0.25)) * refraction;
+  vec2 bend = clamp(slope * 1.6, vec2(-0.12), vec2(0.12)) * refraction;
   vec3 behind = texture(iChannel0, clamp(screenUv + bend, vec2(0.001), vec2(0.999))).rgb;
 
   // Water absorbs: the deeper the eye looks into it the more of the level it takes out, so the
@@ -222,8 +244,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // the whole lake, which is the single most artificial thing about the first version. A tight lobe
   // over a perturbed normal breaks it into the flecks a real surface throws back, and the micro
   // slope below is what scatters them.
-  vec3 sparkle = normalize(vec3(-(slope + vec2(chop(p * 0.9 + vec2(iTime * 0.7, 0.0)),
-    chop(p * 0.9 + vec2(9.0, iTime * 0.6))) * 0.9), 1.0));
+  // The micro slope has to be *resolvable*: at a cell less than a pixel across it aliases into
+  // long streaks along one screen direction, which is what made the surface look combed. A quarter
+  // of a unit per cell, a few units across, scatters the glitter without that.
+  vec3 sparkle = normalize(vec3(-(slope + vec2(chop(p * 0.24 + vec2(iTime * 0.5, 0.0)),
+    chop(p * 0.26 + vec2(9.0, iTime * 0.45))) * 0.5), 1.0));
   float glint = pow(clamp(dot(reflect(-light, sparkle), eye), 0.0, 1.0), 64.0);
   float sheen = pow(clamp(dot(normal, light) * 0.5 + 0.5, 0.0, 1.0), 4.0);
 
@@ -278,17 +303,56 @@ export function waterShaderId(project) {
   const existing = project.shaders.find(shader => shader.name === WATER_SHADER_NAME);
   // Refreshed rather than reused, exactly like the curtain: the shader is stored in the
   // project, so a preset improved here would otherwise never reach a level made before it.
-  if (existing) {
-    existing.source = waterShaderTemplate;
-    existing.uniforms = { ...waterUniforms, ...(existing.uniforms || {}) };
-    return existing.id;
-  }
+  if (existing) refreshWaterShader(existing);
+  if (existing) return existing.id;
   const used = projectIds(project);
   let id = 'water', suffix = 1;
   while (used.has(id)) id = `water_${suffix++}`;
   project.shaders.push({ id, name: WATER_SHADER_NAME, language: 'glsl', source: waterShaderTemplate,
-    uniforms: { ...waterUniforms } });
+    uniforms: { ...waterUniforms }, builtin: 'water', revision: WATER_SHADER_REVISION });
   return id;
+}
+
+/**
+ * Brings one copy of the shipped water effect up to this build.
+ *
+ * The **source** is replaced, because a shading bug cannot be fixed by a dial; the mapper's own
+ * numbers are kept, because what they dialled in is their look. A dial this build no longer has is
+ * dropped, and one it added starts at its default.
+ */
+/** Defaults this effect has shipped with before: a stored value equal to one is not a choice. */
+const OLD_WATER_DEFAULTS = Object.freeze({ refraction: .5, waveHeight: 8 });
+
+function refreshWaterShader(shader) {
+  // Matched by name as well as by marker: a project saved before the marker existed carries the
+  // shipped effect under its shipped name and nothing else, and those are exactly the files that
+  // need bringing forward.
+  const shipped = shader?.builtin === 'water' || shader?.name === WATER_SHADER_NAME;
+  if (!shipped || shader.revision === WATER_SHADER_REVISION) return false;
+  const kept = {};
+  for (const [name, value] of Object.entries(shader.uniforms || {})) {
+    if (!Object.hasOwn(waterUniforms, name)) continue;
+    // A value the mapper never touched is the old default, and the default changing meaning is
+    // exactly the sort of fix that has to reach them; a value they dialled in is theirs.
+    kept[name] = OLD_WATER_DEFAULTS[name] === value ? waterUniforms[name] : value;
+  }
+  shader.source = waterShaderTemplate;
+  shader.uniforms = { ...waterUniforms, ...kept };
+  shader.builtin = 'water';
+  shader.revision = WATER_SHADER_REVISION;
+  return true;
+}
+
+/**
+ * Updates every shipped effect a project carries — the water, and whatever joins it later.
+ *
+ * Called when a project is opened rather than when a water body is made, so a level keeps working
+ * the way the current build draws it. Returns how many were changed, which is what a test asserts.
+ */
+export function refreshShippedShaders(project) {
+  let changed = 0;
+  for (const shader of project?.shaders || []) if (refreshWaterShader(shader)) changed++;
+  return changed;
 }
 
 // A starting point for a pasted Shadertoy shader: mainImage, iResolution, iTime and
@@ -310,8 +374,10 @@ export const waterUniforms = Object.freeze({
   waveSpeed: 1,
   // Shading-only chop: the small sparkle between the swells.
   ripple: .6,
-  // How far the surface bends what is behind it.
-  refraction: .5,
+  // How far the surface bends what is behind it. Small on purpose: a strong bend stretches every
+  // straight edge in the level into a long bright line, which reads as scratches on the water
+  // rather than as depth.
+  refraction: .3,
   foam: 0,
   sun: 1,
 });

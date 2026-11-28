@@ -7,6 +7,7 @@ import { migratePropDeathStates } from '../shared/actors.js';
 import { createProject, validateProject } from '../shared/project.js';
 import { installEngineScripts } from '../shared/engine-script.js';
 import { upgradePickupReach } from '../shared/doom-hud.js';
+import { refreshShippedShaders } from '../shared/shaders.js';
 import { syncRampModels } from '../shared/ramp-model.js';
 
 function prepareProceduralRamps(project) {
@@ -117,6 +118,10 @@ export class ProjectStore {
     // Older imports reach only 36 units and 56 up, which cannot take an item from a
     // ledge; this is idempotent and the next save keeps it.
     upgradePickupReach(this.project);
+    // The water effect ships with the engine but lives in the project, so a level made before it
+    // was fixed would keep its old shading forever. Opened files are brought up to this build.
+    // A project with no shipped effects is untouched.
+    refreshShippedShaders(this.project);
     validateProject(this.project);
   }
 

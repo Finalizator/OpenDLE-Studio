@@ -46,6 +46,9 @@ tunes the preset.
 
 ## Adjusting the look
 
+The window has a **Close** button: it is deliberately not modal, so it has no title bar and Escape
+would not dismiss it on its own.
+
 **Water look…** — right-click the water body (in either the 2D or the 3D view), or use the button in
 the inspector's **Brush type** block — opens a small window
 with a slider per dial: `waveHeight`, `waveSpeed`, `ripple`, `refraction`, `foam`, `sun`. It is
@@ -54,6 +57,13 @@ water answer. A drag writes straight into the compiled shader's uniforms, which 
 follows the pointer without recompiling; letting go stores the number in the project as one undo
 step. `waveHeight` and `waveSpeed` move the mesh as well, so the surface itself rises and falls as
 you drag them.
+
+## Top surface only
+
+A water body draws **one face**, not six. Its sides and underside are inside the floor around it,
+and each face is a full water shader with a screen sample behind it, so **Draw the top surface only**
+(the water's inspector block) is on by default. Turn it off for water meant to be seen from the side
+— an aquarium, a flooded room, a waterfall — and every face is drawn again.
 
 ## Swimming
 
@@ -82,13 +92,14 @@ shore moves, the silhouette of the surface moves, and what is behind the water *
 pass* — the shader refracts the level through the wave normal, which is what makes a pool bottom look
 like a pool bottom instead of a picture of one.
 
-Four swells make the surface, at four wavelengths: **96 and 52 map units** carry the mesh, **27 and
-14** only tilt the shading, because a ripple 14 units long cannot be carried by a 16-unit grid — it
-would alias into a pattern that is neither a wave nor a ripple. That split is why the surface still
-looks alive at the distance a player stands at: the short waves are most of what catches the light.
+Six swells make the surface, at six wavelengths: **110, 78, 58 and 44 map units** carry the mesh,
+**27 and 14** only tilt the shading, because a ripple 14 units long cannot be carried by a 12-unit
+grid — it would alias into a pattern that is neither a wave nor a ripple. Four *directions* rather
+than two is the point: two sine families interfere into straight parallel crests across a whole
+pool, and a straight crest reflects the sun as one long band, which reads as combed corrugation.
 
 They travel by **deep-water dispersion**, `ω = √(g·k)`, so a long swell moves faster than a ripple,
-as real water does — 122 units/s for the 96-unit swell, 47 for the 14-unit one. Every swell crosses
+as real water does — 128 units/s for the 110-unit swell, 47 for the 14-unit one. Every swell crosses
 a wavelength in under a second. Doing it any other way (one rate for all of them, or a fixed
 slow drift) is what makes water look like a moving picture.
 
@@ -121,7 +132,7 @@ from the compiled shader rather than from a second set of numbers:
 | `waveHeight` | 5 | Peak height of the biggest swell, in map units — the mesh rides this |
 | `waveSpeed` | 1 | How fast the swells travel |
 | `ripple` | 0.6 | Fine chop, shading only: the sparkle between the swells |
-| `refraction` | 0.5 | How far the swells bend what is behind the surface |
+| `refraction` | 0.3 | How far the swells bend what is behind the surface — small on purpose, a strong bend stretches every straight edge in the level into a long bright line |
 | `foam` | 0 | White water on the crests — raise it for a sea, leave it alone for a pool |
 | `sun` | 1 | How bright the sky the surface reflects is |
 

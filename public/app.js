@@ -1623,6 +1623,8 @@ function renderBrushTypeControls(brush) {
       value => change({ current: { ...settings.current, [axis]: value } })));
   }
   holder.append(grid, make('h4', 'Current'), currentGrid);
+  holder.append(checkbox('Draw the top surface only', settings.surfaceOnly !== false,
+    value => change({ surfaceOnly: value })));
   holder.append(button('Water look…', () => openShaderLook(brush.shaderId || '')));
   holder.append(make('p', 'Buoyancy 1 holds a swimmer at the depth they stopped at; above 1 they rise, below 1 they sink. Objects float where the water they displace matches their weight.', 'muted'));
   return holder;
@@ -1686,6 +1688,12 @@ function openShaderLook(preferredId = '') {
   shaderLookDialog.append(head);
   shaderLookDialog.append(body);
   shaderLookDialog.append(make('p', 'Every dial is stored in the project. The water body reads its height and speed as well, so the surface moves as the numbers do.', 'muted'));
+  // A non-modal dialog does not close on Escape by itself, and it has no title bar: without this
+  // button there is no way out of the window at all.
+  const close = button('Close', () => shaderLookDialog?.close());
+  close.className = 'shader-look-close';
+  shaderLookDialog.append(close);
+  shaderLookDialog.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); shaderLookDialog?.close(); } });
 
   function drawDials() {
     const shader = (project.shaders || []).find(item => item.id === shaderId);
@@ -1752,7 +1760,8 @@ function frameWater(brush) {
   if (!isWaterBrush(brush)) return null;
   const settings = waterSettings(brush);
   return { color: settings.color, opacity: settings.opacity, buoyancy: settings.buoyancy,
-    swimSpeed: settings.swimSpeed, sinkSpeed: settings.sinkSpeed, speedScale: settings.speedScale };
+    swimSpeed: settings.swimSpeed, sinkSpeed: settings.sinkSpeed, speedScale: settings.speedScale,
+    surfaceOnly: settings.surfaceOnly !== false };
 }
 
 /** Turn the selected brushes (or the brush of the selected face) into one kind. */

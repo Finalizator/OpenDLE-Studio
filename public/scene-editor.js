@@ -620,6 +620,12 @@ export async function createSceneEditor(canvas, project, callbacks, pose) {
     for (const brush of list) {
       feedText(brush.id);
       feed(brush.visible === false ? 0 : 1);
+      // What the brush *is* decides how it is drawn — a water body's colour and whether it shows
+      // only its top are part of the look, so a change to either has to rebuild the meshes.
+      feedText(brush.kind || '');
+      feedText(JSON.stringify(brush.water || null));
+      feedText(brush.shaderId || '');
+      for (const face of brush.faces || []) feedText(face.shaderId || '');
       feed(brush.faces?.length || 0);
       for (const face of brush.faces || []) {
         feedText(face.texture || '');

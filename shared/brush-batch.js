@@ -10,7 +10,7 @@
 // that every face's triangles are in the buffer and that each of them still names its brush and face.
 
 import { brushGeometry, isWaterBrush } from './brushes.js';
-import { WATER_DEFAULTS, waterSettings } from './water.js';
+import { WATER_DEFAULTS, waterFaceDrawn, waterSettings } from './water.js';
 import { buildWaterSurface } from './water-surface.js';
 import { brushFaceUv } from './uv.js';
 import { mergePiece } from './surface-batch.js';
@@ -97,6 +97,8 @@ export function batchBrushes(brushes, { includeHidden = false } = {}) {
     let geometry;
     try { geometry = brushGeometry(brush); } catch { continue; }
     for (const entry of geometry.faces) {
+      // A water body draws its top unless it was asked to show its whole volume.
+      if (isWaterBrush(brush) && !waterFaceDrawn(brush, entry.plane.normal)) continue;
       const record = brushFaceRecord(brush, entry);
       if (!record) continue;
       faces++;

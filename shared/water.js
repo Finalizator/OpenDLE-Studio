@@ -35,6 +35,11 @@ export const WATER_DEFAULTS = Object.freeze({
   speedScale: .62,
   // A current the volume carries, in units per second along the map's own axes.
   current: Object.freeze({ x: 0, y: 0, z: 0 }),
+  // Draw only the top of the volume. A pool cut into a floor shows its sides to nobody, and every
+  // face is a full water shader with a screen sample behind it: this is the setting that stops a
+  // mapper paying for four faces they cannot see. Turn it off for water that is meant to be seen
+  // from the side — an aquarium, a waterfall, a flooded room.
+  surfaceOnly: true,
 });
 
 /** Doom's `waterlevel`, which is the vocabulary the rest of the engine already speaks. */
@@ -180,6 +185,19 @@ export function swimTarget({ level, settings, pitch = 0, forward = 0, jump = fal
   if (level >= 3) target += clamp(forward, -1, 1) * Math.sin(pitch) * climb * 1.4;
   if (jump) target += climb;
   return clamp(target, -(Number(settings.sinkSpeed) || 0), climb);
+}
+
+/**
+ * Whether a face of this water body is drawn.
+ *
+ * Only the top is water as a player sees it: the sides and the underside of a pool are inside the
+ * floor around it. `surfaceOnly` says so, and a mapper who wants to see the volume from outside
+ * turns it off.
+ */
+export function waterFaceDrawn(brush, normal) {
+  const settings = waterSettings(brush);
+  if (settings.surfaceOnly === false) return true;
+  return (normal?.[2] || 0) > .5;
 }
 
 /** The share of the walking speed that survives at a given water level. */
