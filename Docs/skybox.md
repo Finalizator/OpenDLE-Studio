@@ -112,7 +112,20 @@ A sky may be any of these, imported in the Assets tab with **Import as: Sky**:
 | TIFF | `TIFFLoader` |
 
 A sky is stored byte-for-byte in the format it arrived in: re-encoding an HDR through a canvas would
-clip exactly the values that make it an HDR.
+clip exactly the values that make it an HDR. A float panorama is big — an 8K OpenEXR nebula is 47 MB
+— so skies have a budget of their own: 64 MiB per picture and 320 MiB per project, with the 8192-pixel
+dimension ceiling that every sky keeps.
+
+Two things are repaired when a float picture is decoded, because decoders and the tools that write
+them disagree about what an empty sample is:
+
+* non-finite samples (NaN, ±Inf) become zero. One NaN is undefined behaviour on the GPU and can paint
+  a whole surface a colour that has nothing to do with the picture;
+* negative samples become zero, since a sky has no meaning below black.
+
+Half-float pictures keep their samples as raw 16-bit words, so the check decodes them rather than
+comparing the words as numbers. The import reports what was found — `EXR 7680x3840` — so a picture
+that still looks wrong says what it is instead of only looking wrong.
 
 ## Rules
 
