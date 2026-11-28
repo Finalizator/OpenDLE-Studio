@@ -27,7 +27,8 @@ test('the page has a Skybox tab with a panel the tab machinery can show', () => 
   assert.match(app, /for \(const name of \[[^\]]*'skybox'/, 'showTab knows the skybox panel');
   assert.match(app, /if \(tab === 'skybox'\) skyboxPanel\.render\(\)/, 'opening the tab renders it');
   assert.match(app, /if \(tab !== 'skybox'\) skyboxPanel\.stop\(\)/, 'leaving the tab stops its clock');
-  assert.match(app, /const skyboxPanel = createSkyboxPanel\(\{ root: \$\('skybox-panel'\)/, 'the panel is created');
+  assert.match(app, /const skyboxPanel = createSkyboxPanel\(\{\s*root: \$\('skybox-panel'\)/, 'the panel is created');
+  assert.match(app, /importSky: files => importImageFiles\(files, 'sky'\)/, 'the tab imports through the editor');
   assert.match(page, /<script type="module" src="\/app\.js">/, 'the page still loads one module entry point');
 });
 
