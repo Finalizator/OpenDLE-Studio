@@ -192,6 +192,32 @@ test('the play view and the editor build a brush surface through one function', 
   assert.match(scene, /view\.brushSurface\(\{ shaderId: surface\?\.shaderId \|\| '', base, water: surface\?\.water \|\| null \}\)/);
 });
 
+test('a crate dropped into a pool floats instead of lying on the bottom', async t => {
+  const project = createProject();
+  project.events = [];
+  const brush = createBoxBrush(project, { x: -260, y: -96, z: 0, width: 160, depth: 192, height: 96 });
+  setBrushKind(project, brush.id, 'water', { buoyancy: 1.6 });
+  const crate = project.map.entities.find(entity => entity.type !== 'player');
+  // A dynamic box the size of a crate, dropped in the pool but away from the player's spawn —
+  // the character controller shoves anything it appears inside, which would push the crate out of
+  // the water and turn this into a test of the controller.
+  crate.x = -225; crate.y = 60; crate.z = 8;
+  crate.physics = { body: 'dynamic', shape: 'box', width: 24, height: 32, depth: 24, radius: 12,
+    mass: 1, friction: .7, restitution: 0, sensor: false, lockRotation: true };
+  const state = createRuntime(project);
+  state.physics = createPhysics(project, state, R, triangulate);
+  t.after(() => state.physics.dispose());
+  const tick = (count = 1) => {
+    for (let index = 0; index < count; index++) stepRuntime(project, state, 1 / 60, new Set(), new Set());
+  };
+  tick(900);
+  const live = state.entities.find(entity => entity.id === crate.id);
+  // It starts on the pool floor at 8 and the water line is 96: floating means it climbed well off
+  // the floor and settled under the surface rather than passing through it.
+  assert.ok(live.z > 40, `the crate floated up to ${Number(live.z).toFixed(1)}`);
+  assert.ok(live.z < 120, `and did not fly out of the water (${Number(live.z).toFixed(1)})`);
+});
+
 test('a player dropped into a pool floats near the surface instead of standing on it', async t => {
   const project = createProject();
   project.events = [];
